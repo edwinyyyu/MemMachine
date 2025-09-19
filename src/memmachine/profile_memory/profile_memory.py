@@ -445,56 +445,67 @@ class ProfileMemory:
         # TODO: Consider improving this design in a breaking change.
         if not isinstance(profile_update_commands, dict):
             logger.warning(
-                "AI response format incorrect: expected dict, got %s",
+                "AI response format incorrect: expected dict, got %s %s",
                 type(profile_update_commands).__name__,
+                profile_update_commands,
             )
             profile_update_commands = {}
 
         commands = profile_update_commands.values()
 
-        if not all(isinstance(command, dict) for command in commands):
-            logger.warning(
-                "AI response format incorrect: "
-                "expected only dict values, got %s",
-                [type(command).__name__ for command in commands],
-            )
-            commands = []
-
-        if not all(
-            "command" in command and command["command"] in ("add", "delete")
-            for command in commands
-        ):
-            logger.warning(
-                "AI response format incorrect: "
-                "expected 'command' keys "
-                "with values 'add' or 'delete', got %s",
-                commands,
-            )
-            commands = []
-
-        if not all(
-            "feature" in command and "tag" in command for command in commands
-        ):
-            logger.warning(
-                "AI response format incorrect: "
-                "expected 'feature' and 'tag' keys, got %s",
-                commands,
-            )
-            commands = []
-
-        if not all(
-            "value" in command
-            for command in commands
-            if command["command"] == "add"
-        ):
-            logger.warning(
-                "AI response format incorrect: "
-                "expected 'value' key for 'add' commands, got %s",
-                commands,
-            )
-            commands = []
-
+        valid_commands = []
         for command in commands:
+            if not isinstance(command, dict):
+                logger.warning(
+                    "AI response format incorrect: "
+                    "expected profile update command to be dict, got %s %s",
+                    type(command).__name__,
+                    command,
+                )
+                continue
+
+            if "command" not in command:
+                logger.warning(
+                    "AI response format incorrect: "
+                    "missing 'command' key in %s",
+                    command,
+                )
+                continue
+
+            if command["command"] not in ("add", "delete"):
+                logger.warning(
+                    "AI response format incorrect: "
+                    "expected 'command' value in profile update command "
+                    "to be 'add' or 'delete', got '%s'",
+                    command["command"],
+                )
+                continue
+
+            if "feature" not in command:
+                logger.warning(
+                    "AI response format incorrect: "
+                    "missing 'feature' key in %s",
+                    command,
+                )
+                continue
+
+            if "tag" not in command:
+                logger.warning(
+                    "AI response format incorrect: missing 'tag' key in %s",
+                    command,
+                )
+                continue
+
+            if command["command"] == "add" and "value" not in command:
+                logger.warning(
+                    "AI response format incorrect: missing 'value' key in %s",
+                    command,
+                )
+                continue
+
+            valid_commands.append(command)
+
+        for command in valid_commands:
             if command["command"] == "add":
                 await self.add_new_profile(
                     user_id,
@@ -571,8 +582,9 @@ class ProfileMemory:
 
         if not isinstance(updated_profile_entries, dict):
             logger.warning(
-                "AI response format incorrect: expected dict, got %s",
+                "AI response format incorrect: expected dict, got %s %s",
                 type(updated_profile_entries).__name__,
+                updated_profile_entries,
             )
             updated_profile_entries = {}
 
@@ -595,33 +607,48 @@ class ProfileMemory:
         consolidate_memories = updated_profile_entries["consolidate_memories"]
         keep_memories = updated_profile_entries["keep_memories"]
 
+        keep_all_memories = False
+
         if not isinstance(consolidate_memories, list):
             logger.warning(
                 "AI response format incorrect: "
-                "'consolidate_memories' value is not a list, got %s",
+                "'consolidate_memories' value is not a list, got %s %s",
                 type(consolidate_memories).__name__,
+                consolidate_memories,
             )
             consolidate_memories = []
+            keep_all_memories = True
 
         if not isinstance(keep_memories, list):
             logger.warning(
                 "AI response format incorrect: "
-                "'keep_memories' value is not a list, got %s",
+                "'keep_memories' value is not a list, got %s %s",
                 type(keep_memories).__name__,
+                keep_memories,
             )
             keep_memories = []
+            keep_all_memories = True
 
-        if not all(isinstance(memory_id, int) for memory_id in keep_memories):
-            logger.warning(
-                "AI response format incorrect: "
-                "expected only int entries in 'keep_memories', got %s",
-                [type(memory_id).__name__ for memory_id in keep_memories],
-            )
-            keep_memories = [
-                memory_id
-                for memory_id in keep_memories
-                if isinstance(memory_id, int)
-            ]
+        if not keep_all_memories:
+            valid_keep_memories = []
+            for memory_id in keep_memories:
+                if not isinstance(memory_id, int):
+                    logger.warning(
+                        "AI response format incorrect: "
+                        "expected int memory id in 'keep_memories', got %s %s",
+                        type(memory_id).__name__,
+                        memory_id,
+                    )
+                    continue
+
+                valid_keep_memories.append(memory_id)
+
+            for memory in memories:
+                if memory["metadata"]["id"] not in valid_keep_memories:
+                    self._profile_cache.erase(user_id)
+                    await self._profile_storage.delete_profile_feature_by_id(
+                        memory["metadata"]["id"]
+                    )
 
         class ConsolidateMemoryMetadata(BaseModel):
             citations: list[int]
@@ -681,10 +708,3 @@ class ProfileMemory:
                 citations=new_citations,
                 isolations=new_isolations,
             )
-
-        for memory in memories:
-            if memory["metadata"]["id"] not in keep_memories:
-                self._profile_cache.erase(user_id)
-                await self._profile_storage.delete_profile_feature_by_id(
-                    memory["metadata"]["id"]
-                )
