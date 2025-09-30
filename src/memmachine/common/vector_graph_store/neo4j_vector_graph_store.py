@@ -10,12 +10,12 @@ from typing import Any
 from uuid import UUID
 
 from neo4j import AsyncGraphDatabase
-from neo4j.graph import Node as Neo4jNode
+from neo4j.graph import Node as Neo4jNode, Path as Neo4jPath, Relationship as Neo4jRelationship
 from neo4j.time import DateTime as Neo4jDateTime
 
 from memmachine.common.utils import async_with
 
-from .data_types import Edge, Node, Property
+from .data_types import Edge, Node, Path, Property
 from .vector_graph_store import VectorGraphStore
 
 
@@ -320,6 +320,29 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             matching_neo4j_nodes
         )
 
+    async def find_paths(
+        self,
+        source_node_uuid: UUID,
+        target_node_uuid: UUID,
+        max_hops: int = 1,
+        unidirectional: bool = False,
+    ) -> list[Path]:
+        async with self._semaphore:
+            records, _, _ = await self._driver.execute_query(
+                "MATCH p =\n"
+                "(source {uuid: $source_node_uuid})"
+                f"-[*1..{max_hops}]{'->' if unidirectional else '-'}"
+                "(target {uuid: $target_node_uuid})\n"
+                "RETURN p",
+                source_node_uuid=str(source_node_uuid),
+                target_node_uuid=str(target_node_uuid),
+            )
+
+        matching_neo4j_paths = [record["p"] for record in records]
+        return Neo4jVectorGraphStore._paths_from_neo4j_paths(
+            matching_neo4j_paths
+        )
+
     async def delete_nodes(
         self,
         node_uuids: list[UUID],
@@ -421,6 +444,61 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 },
             )
             for neo4j_node in neo4j_nodes
+        ]
+
+    @staticmethod
+    def _edges_from_neo4j_relationships(
+        neo4j_relationships: list[Neo4jRelationship]
+    ) -> list[Edge]:
+        """
+        Convert a list of Neo4j Relationships to a list of Edges.
+
+        Args:
+            neo4j_relationships (list[Neo4jRelationship]):
+                List of Neo4j Relationships.
+
+        Returns:
+            list[Edge]: List of Edges.
+        """
+        return [
+            Edge(
+                uuid=UUID(neo4j_relationship["uuid"]),
+                source_uuid=UUID(neo4j_relationship.start_node["uuid"]),
+                target_uuid=UUID(neo4j_relationship.end_node["uuid"]),
+                relation=neo4j_relationship.type,
+                properties={
+                    key: Neo4jVectorGraphStore._python_value_from_neo4j_value(
+                        value
+                    )
+                    for key, value in neo4j_relationship.items()
+                    if key != "uuid"
+                },
+            )
+            for neo4j_relationship in neo4j_relationships
+        ]
+
+    @staticmethod
+    def _paths_from_neo4j_paths(neo4j_paths: list[Neo4jPath]) -> list[Path]:
+        """
+        Convert a list of Neo4j Paths to a list of Paths.
+
+        Args:
+            neo4j_paths (list[Neo4jPath]):
+                List of Neo4j Paths.
+
+        Returns:
+            list[Path]: List of Paths.
+        """
+        return [
+            Path(
+                nodes=Neo4jVectorGraphStore._nodes_from_neo4j_nodes(
+                    list(neo4j_path.nodes)
+                ),
+                edges=Neo4jVectorGraphStore._edges_from_neo4j_relationships(
+                    list(neo4j_path.relationships)
+                ),
+            )
+            for neo4j_path in neo4j_paths
         ]
 
     @staticmethod

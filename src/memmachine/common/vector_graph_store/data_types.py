@@ -52,3 +52,8 @@ class Edge:
 
     def __hash__(self):
         return hash(self.uuid)
+
+@dataclass(kw_only=True)
+class Path:
+    nodes: list[Node] = field(default_factory=list)
+    edges: list[Edge] = field(default_factory=list)
