@@ -541,9 +541,17 @@ class DeclarativeMemory:
         )
 
         # Embed derivatives.
-        derivative_embeddings = await self._embedder.search_embed(
-            [derivative.content for derivative in derivatives]
-        )
+        try:
+            derivative_embeddings = await self._embedder.search_embed(
+                [derivative.content for derivative in derivatives],
+                max_attempts=3
+            )
+        except (ValueError, IOError) as e:
+            logger.error(
+                "Failed to create embeddings for mutated derivatives %s",
+                str(e)
+            )
+            return []
 
         # Search graph store for vector matches.
         search_similar_nodes_tasks = [

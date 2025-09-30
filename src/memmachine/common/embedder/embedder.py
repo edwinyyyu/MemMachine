@@ -31,6 +31,12 @@ class Embedder(ABC):
         Returns:
             list[list[float]]:
                 A list of embedding vectors corresponding to each input.
+
+        Raises:
+            IOError:
+                Network error, rate limit, timeout, etc.
+            ValueError:
+                Invalid input or configuration.
         """
         raise NotImplementedError
 
@@ -56,9 +62,8 @@ class Embedder(ABC):
 
         Raises:
             IOError:
-                If IO error happens. The IO errors can include: Netowrk Error,
-                Rate Litmit, Timeout, etc.
+                Network error, rate limit, timeout, etc.
             ValueError:
-                Any other errors except the IOError.
+                Invalid input or configuration.
         """
         raise NotImplementedError
