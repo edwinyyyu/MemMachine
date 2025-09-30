@@ -169,7 +169,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 "WHERE n.embedding IS NOT NULL\n"
                 f"AND {
                     Neo4jVectorGraphStore._format_required_properties(
-                        required_properties, include_missing_properties
+                        "n", required_properties, include_missing_properties
                     )
                 }\n"
                 "WITH n,"
@@ -219,7 +219,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                     })"
                     f"WHERE {
                         Neo4jVectorGraphStore._format_required_properties(
-                            required_properties, include_missing_properties
+                            "n", required_properties, include_missing_properties
                         )
                     }\n"
                     "RETURN n\n"
@@ -274,7 +274,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 }\n"
                 f"AND {
                     Neo4jVectorGraphStore._format_required_properties(
-                        required_properties, include_missing_properties
+                        "n", required_properties, include_missing_properties
                     )
                 }\n"
                 "RETURN n\n"
@@ -306,7 +306,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 })\n"
                 f"WHERE {
                     Neo4jVectorGraphStore._format_required_properties(
-                        required_properties, include_missing_properties
+                        "n", required_properties, include_missing_properties
                     )
                 }\n"
                 "RETURN n\n"
@@ -319,6 +319,60 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         return Neo4jVectorGraphStore._nodes_from_neo4j_nodes(
             matching_neo4j_nodes
         )
+
+    async def search_similar_edges(
+        self,
+        query_embedding: list[float],
+        similarity_threshold: float = 0.2,
+        limit: int | None = 100,
+        allowed_relations: set[str] | None = None,
+        required_properties: dict[str, Property] = {},
+        include_missing_properties: bool = False,
+    ) -> list[Edge]:
+        search_similar_edges_tasks = [
+            async_with(
+                self._semaphore,
+                self._driver.execute_query(
+                    "MATCH p =\n"
+                    f"()-[r{f':{relation}' if relation is not None else ''}]-()"
+                    "WHERE r.embedding IS NOT NULL\n"
+                    f"AND {
+                        Neo4jVectorGraphStore._format_required_properties(
+                            "r", required_properties, include_missing_properties
+                        )
+                    }\n"
+                    "WITH p,"
+                    "    vector.similarity.cosine("
+                    "        r.embedding, $query_embedding"
+                    "    ) AS similarity\n"
+                    "WHERE similarity > $similarity_threshold\n"
+                    "RETURN p\n"
+                    "ORDER BY similarity DESC\n"
+                    f"{'LIMIT $limit' if limit is not None else ''}",
+                    query_embedding=query_embedding,
+                    similarity_threshold=similarity_threshold,
+                    limit=limit,
+                    required_properties=required_properties,
+                ),
+            )
+            for relation in (allowed_relations or [None])
+        ]
+
+        results = await asyncio.gather(*search_similar_edges_tasks)
+
+        similar_edges: set[Edge] = set()
+        for records, _, _ in results:
+            similar_neo4j_paths = [record["p"] for record in records]
+            similar_edges.update(
+                Neo4jVectorGraphStore._edges_from_neo4j_relationships(
+                    [
+                        similar_neo4j_path.relationships[0]
+                        for similar_neo4j_path in similar_neo4j_paths
+                    ]
+                )
+            )
+
+        return list(similar_edges)[:limit]
 
     async def find_paths(
         self,
@@ -385,6 +439,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
     @staticmethod
     def _format_required_properties(
+        identifier: str,
         required_properties: dict[str, Property],
         include_missing_properties: bool,
     ) -> str:
@@ -405,10 +460,10 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         return (
             " AND ".join(
                 [
-                    f"(n.{property_name}"
+                    f"({identifier}.{property_name}"
                     f"    = $required_properties.{property_name}"
                     f"{
-                        f' OR n.{property_name} IS NULL'
+                        f' OR {identifier}.{property_name} IS NULL'
                         if include_missing_properties
                         else ''
                     })"
