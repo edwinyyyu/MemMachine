@@ -297,12 +297,12 @@ class DeclarativeMemory:
         try:
             mutated_derivative_embeddings = await self._embedder.ingest_embed(
                 [derivative.content for derivative in mutated_derivatives],
-                max_attempts=3
+                max_attempts=3,
             )
         except (ValueError, IOError) as e:
             logger.error(
                 "Failed to create embeddings for mutated derivatives %s",
-                str(e)
+                str(e),
             )
             return []
 
@@ -544,12 +544,12 @@ class DeclarativeMemory:
         try:
             derivative_embeddings = await self._embedder.search_embed(
                 [derivative.content for derivative in derivatives],
-                max_attempts=3
+                max_attempts=3,
             )
         except (ValueError, IOError) as e:
             logger.error(
                 "Failed to create embeddings for mutated derivatives %s",
-                str(e)
+                str(e),
             )
             return []
 

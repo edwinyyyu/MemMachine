@@ -87,23 +87,18 @@ class OpenAIEmbedder(Embedder):
             )
 
     async def ingest_embed(
-        self,
-        inputs: list[Any],
-        max_attempts: int = 1
+        self, inputs: list[Any], max_attempts: int = 1
     ) -> list[list[float]]:
         return await self._embed(inputs, max_attempts)
 
     async def search_embed(
-        self,
-        queries: list[Any],
-        max_attempts: int = 1
+        self, queries: list[Any], max_attempts: int = 1
     ) -> list[list[float]]:
         return await self._embed(queries, max_attempts)
 
     async def _embed(
-            self,
-            inputs: list[Any],
-            max_attempts: int = 1) -> list[list[float]]:
+        self, inputs: list[Any], max_attempts: int = 1
+    ) -> list[list[float]]:
         if not inputs:
             return []
         if max_attempts <= 0:

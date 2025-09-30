@@ -7,8 +7,8 @@ import json
 import time
 from typing import Any
 
-from openai import AsyncOpenAI
 import openai
+
 from memmachine.common.metrics_factory.metrics_factory import MetricsFactory
 
 from .language_model import LanguageModel
@@ -53,7 +53,7 @@ class OpenAILanguageModel(LanguageModel):
         if api_key is None:
             raise ValueError("Language API key must be provided")
 
-        self._client = AsyncOpenAI(api_key=api_key)
+        self._client = openai.AsyncOpenAI(api_key=api_key)
 
         metrics_factory = config.get("metrics_factory")
         if metrics_factory is not None and not isinstance(
