@@ -61,6 +61,39 @@ Follow these steps to set up your local development environment:
 The project enforces a strict code style using [Ruff](https://docs.astral.sh/ruff/) for formatting and linting.
 The project also uses [Mypy](https://mypy-lang.org/) for type checking.
 
+These tools are installed automatically as part of the `dev` group if using uv.
+
+Alternatively, they may be installed by:
+```
+pip install ruff
+pip install mypy
+# OR, if pip is new enough:
+pip install --group dev
+```
+
+From the project root (where `pyproject.toml` is):
+
+To run the Ruff linter:
+```
+uv run ruff check
+# OR
+ruff check
+```
+
+To run the Ruff formatter:
+```
+uv run ruff format
+# OR
+ruff format
+```
+
+To run the Mypy type checker:
+```
+uv run mypy src
+# OR
+mypy src
+```
+
 ## 4. Testing
 
 All contributions should include unit tests to ensure functionality.
