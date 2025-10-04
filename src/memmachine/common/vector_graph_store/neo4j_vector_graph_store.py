@@ -15,7 +15,7 @@ from uuid import UUID
 from neo4j import AsyncDriver, AsyncGraphDatabase
 from neo4j.graph import Node as Neo4jNode
 from neo4j.time import DateTime as Neo4jDateTime
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from memmachine.common.embedder import SimilarityMetric
 from memmachine.common.utils import async_locked, async_with
@@ -35,7 +35,7 @@ class Neo4jVectorGraphStoreConfig(BaseModel):
             Neo4j connection URI.
         username (str | None):
             Neo4j username.
-        password (str | None):
+        password (pydantic.SecretStr | None):
             Neo4j password.
         max_concurrent_transactions (int):
             Maximum number of concurrent transactions
@@ -52,7 +52,7 @@ class Neo4jVectorGraphStoreConfig(BaseModel):
 
     uri: str | None = Field(None, description="Neo4j connection URI")
     username: str | None = Field(None, description="Neo4j username")
-    password: str | None = Field(None, description="Neo4j password")
+    password: SecretStr | None = Field(None, description="Neo4j password")
     max_concurrent_transactions: int = Field(
         100, description="Maximum number of concurrent transactions", gt=0
     )
