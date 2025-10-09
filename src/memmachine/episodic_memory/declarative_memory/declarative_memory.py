@@ -13,6 +13,8 @@ from string import Template
 from typing import Any, Self, cast
 from uuid import UUID, uuid4
 
+from pydantic import BaseModel, ConfigDict
+
 from memmachine.common.data_types import ExternalServiceAPIError
 from memmachine.common.embedder.embedder import Embedder
 from memmachine.common.reranker.reranker import Reranker
@@ -35,66 +37,95 @@ from .related_episode_postulator import RelatedEpisodePostulator
 logger = logging.getLogger(__name__)
 
 
+class
+
+
+class Workflow(BaseModel):
+
+
+class DerivationWorkflow(BaseModel):
+    """
+      Each config contains:
+        - related_episode_postulator:
+          RelatedEpisodePostulator instance
+          used for assembling episode clusters.
+        - derivative_derivation_workflows:
+          List of workflow configs.
+          Each config contains:
+            - derivative_deriver:
+              DerivativeDeriver instance
+              used for deriving derivatives.
+            - derivative_mutation_workflows:
+              List of workflow configs.
+              Each config contains:
+                - derivative_mutator:
+                  DerivativeMutator instance
+                  used for mutating derivatives.
+    """
+    related_episode_postulator: RelatedEpisodePostulator
+    workflow_configs: Collection[Workflow]
+
+
+class DeclarativeMemoryConfig(BaseModel):
+    """
+    Configuration for DeclarativeMemory.
+
+    Attributes:
+    vector_graph_store (VectorGraphStore):
+        Vector graph store for storing and retrieving memories.
+    embedder (Embedder):
+        Embedder for creating embeddings.
+    reranker (Reranker):
+        Reranker for reranking search results.
+    related_episode_postulators (Collection[RelatedEpisodePostulator]):
+        Collection of RelatedEpisodePostulator instances
+        for connecting related episodes.
+    episode_metadata_template (str, optional):
+        Template string supporting $-substitutions
+        for augmenting episode content with contextual metadata
+        (default: "[$timestamp] $content").
+    query_derivative_deriver (DerivativeDeriver):
+        DerivativeDeriver instance
+        for deriving derivatives from queries.
+
+    derivation_workflows:
+      Mapping from episode types to collections of workflow configs.
+    """
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    vector_graph_store: VectorGraphStore
+    embedder: Embedder
+    reranker: Reranker
+    related_episode_postulators: Collection[RelatedEpisodePostulator]
+    episode_metadata_template: str = "[$timestamp] $content"
+    query_derivative_deriver: DerivativeDeriver
+    derivation_workflows: Mapping[str, Collection[
+        DerivationWorkflow
+    ]]
+
+
 class DeclarativeMemory:
     """
     Memory system for episodic and semantic memory.
     """
 
-    def __init__(self, config: dict[str, Any]):
+    def __init__(self, config: DeclarativeMemoryConfig):
         """
-        Initialize a DeclarativeMemory with the provided config.
+        Initialize a DeclarativeMemory
+        with the provided configuration.
 
         Args:
-            config (dict[str, Any]):
-                Configuration dictionary containing:
-                - vector_graph_store:
-                  VectorGraphStore instance
-                  for storing and retrieving memories.
-                - embedder:
-                  Embedder instance for similarity checks.
-                - reranker:
-                  Reranker instance for reranking search results.
-                - related_episode_postulators:
-                  List of RelatedEpisodePostulator instances
-                  for connecting related episodes.
-                - query_derivative_deriver:
-                  DerivativeDeriver instance
-                  for deriving derivatives from queries.
-                - derivation_workflows:
-                  Dict mapping episode types
-                  to lists of workflow configs.
-                  Each config contains:
-                    - related_episode_postulator:
-                      RelatedEpisodePostulator instance
-                      used for assembling episode clusters.
-                    - derivative_derivation_workflows:
-                      List of workflow configs.
-                      Each config contains:
-                        - derivative_deriver:
-                          DerivativeDeriver instance
-                          used for deriving derivatives.
-                        - derivative_mutation_workflows:
-                          List of workflow configs.
-                          Each config contains:
-                            - derivative_mutator:
-                              DerivativeMutator instance
-                              used for mutating derivatives.
-                - episode_metadata_template:
-                    Template string supporting $-substitutions
-                    (default: "[$timestamp] $content").
+            config (DeclarativeMemoryConfig):
+                Configuration for the declarative memory system.
         """
+        self._vector_graph_store: VectorGraphStore = config.vector_graph_store
+        self._embedder: Embedder = config.embedder
+        self._reranker: Reranker = config.reranker
+        self._related_episode_postulators: Collection[RelatedEpisodePostulator] = config.related_episode_postulators
 
-        self._vector_graph_store: VectorGraphStore = config["vector_graph_store"]
+        self._episode_metadata_template = Template(config.episode_metadata_template)
 
-        self._embedder: Embedder = config["embedder"]
-        self._reranker: Reranker = config["reranker"]
-
-        self._related_episode_postulators: list[RelatedEpisodePostulator] = config[
-            "related_episode_postulators"
-        ]
-        self._query_derivative_deriver: DerivativeDeriver = config[
-            "query_derivative_deriver"
-        ]
+        self._query_derivative_deriver: DerivativeDeriver = config.query_derivative_deriver
 
         def build_episode_cluster_assembly_workflow(
             config: dict[str, Any],
@@ -150,10 +181,6 @@ class DeclarativeMemory:
                 "derivation_workflows"
             ].items()
         }
-
-        self._episode_metadata_template = Template(
-            config.get("episode_metadata_template", "[$timestamp] $content")
-        )
 
     class Workflow:
         def __init__(
@@ -893,6 +920,10 @@ class DeclarativeMemory:
         """
         Forget all episodes with the given UUIDs
         and data derived from them.
+
+        Args:
+            episode_uuids (Iterable[UUID]):
+                An iterable of episode UUIDs for episodes to forget.
         """
         episode_uuids_list = list(episode_uuids)
 
@@ -951,6 +982,23 @@ class DeclarativeMemory:
             episode_uuids_list + episode_cluster_uuids + derivative_uuids
         )
         await self._vector_graph_store.delete_nodes(node_uuids_to_delete)
+
+    async def get_episodes_by_uuids(self, episode_uuids: Iterable[UUID]) -> list[Episode]:
+        """
+        Retrieve episodes with the given UUIDs.
+
+        Args:
+            episode_uuids (Iterable[UUID]):
+                An iterable of episode UUIDs for episodes to retrieve.
+        """
+        episode_uuids_list = list(episode_uuids)
+
+        matching_episode_nodes = await self._vector_graph_store.search_matching_nodes(
+            required_labels={"Episode"},
+            required_properties={"uuid": episode_uuids_list},
+        )
+
+        return DeclarativeMemory._episodes_from_episode_nodes(matching_episode_nodes)
 
     async def close(self):
         await self._vector_graph_store.close()

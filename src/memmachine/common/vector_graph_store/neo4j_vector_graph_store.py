@@ -149,6 +149,8 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 ],
             )
 
+    async def get_nodes_by_uuids()
+
     async def search_similar_nodes(
         self,
         collection: str,
