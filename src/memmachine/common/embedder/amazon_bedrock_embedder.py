@@ -9,6 +9,7 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 from uuid import uuid4
 
+import botocore
 from langchain_aws import BedrockEmbeddings
 from pydantic import BaseModel, Field, SecretStr
 
@@ -80,6 +81,12 @@ class AmazonBedrockEmbedder(Embedder):
             aws_access_key_id=aws_access_key_id,
             aws_secret_access_key=aws_secret_access_key,
             model_id=self._model_id,
+            config=botocore.config.Config(
+                retries={
+                    "total_max_attempts": 1,
+                    "mode": "standard",
+                }
+            ),
         )
 
     async def ingest_embed(
