@@ -58,11 +58,12 @@ class LanguageModelBuilder(Builder):
 
                 return OpenAILanguageModel(
                     {
-                        "model": config.get("model", "gpt-5-nano"),
-                        "api_key": config["api_key"],
+                        key: value
+                        for key, value in config.items()
+                        if key != "metrics_factory_id"
+                    }
+                    | {
                         "metrics_factory": get_metrics_factory(config),
-                        "user_metrics_labels": config.get("user_metrics_labels", {}),
-                        "max_delay": config.get("max_delay", 120),
                     }
                 )
 
@@ -73,14 +74,12 @@ class LanguageModelBuilder(Builder):
 
                 return OpenAICompatibleLanguageModel(
                     {
-                        "model": config.get("model"),
-                        "api_key": config.get("api_key", "EMPTY"),
-                        "base_url": config.get("base_url"),
+                        key: value
+                        for key, value in config.items()
+                        if key != "metrics_factory_id"
+                    }
+                    | {
                         "metrics_factory": get_metrics_factory(config),
-                        "user_metrics_labels": config.get("user_metrics_labels", {}),
-                        "max_retry_interval_seconds": config.get(
-                            "max_retry_interval_seconds", 120
-                        ),
                     }
                 )
 

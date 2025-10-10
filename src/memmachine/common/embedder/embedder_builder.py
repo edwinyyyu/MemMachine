@@ -58,16 +58,11 @@ class EmbedderBuilder(Builder):
 
                 return OpenAIEmbedder(
                     {
-                        "model": config.get("model", "text-embedding-3-small"),
-                        "api_key": config["api_key"],
-                        "dimensions": config.get("dimensions"),
-                        "metrics_factory": injected_metrics_factory,
-                        "max_retry_interval_seconds": config.get(
-                            "max_retry_interval_seconds", 120
-                        ),
-                        "base_url": config.get("base_url"),
-                        "user_metrics_labels": config.get("user_metrics_labels", {}),
+                        key: value
+                        for key, value in config.items()
+                        if key != "metrics_factory_id"
                     }
+                    | {"metrics_factory": injected_metrics_factory}
                 )
             case _:
                 raise ValueError(f"Unknown Embedder name: {name}")
