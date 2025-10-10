@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, SecretStr
 
 from memmachine.common.data_types import ExternalServiceAPIError
 
+from .data_types import SimilarityMetric
 from .embedder import Embedder
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,11 @@ class AmazonBedrockEmbedderConfig(BaseModel):
         model_id (str):
             ID of the Bedrock model to use for embedding
             (e.g. 'amazon.titan-embed-text-v2:0').
+        dimensions (int):
+            Dimensionality of the embedding vectors.
+        similarity_metric (SimilarityMetric):
+            Similarity metric to use for comparing embeddings
+            (default: SimilarityMetric.COSINE).
     """
 
     region: str = Field(
@@ -51,6 +57,14 @@ class AmazonBedrockEmbedderConfig(BaseModel):
             "ID of the Bedrock model to use for embedding "
             "(e.g. 'amazon.titan-embed-text-v2:0')."
         ),
+    )
+    dimensions: int = Field(
+        description="Dimensionality of the embedding vectors.",
+        gt=0,
+    )
+    similarity_metric: SimilarityMetric = Field(
+        SimilarityMetric.COSINE,
+        description="Similarity metric to use for comparing embeddings.",
     )
 
 
@@ -75,6 +89,8 @@ class AmazonBedrockEmbedder(Embedder):
         aws_access_key_id = config.aws_access_key_id
         aws_secret_access_key = config.aws_secret_access_key
         self._model_id = config.model_id
+        self._dimensions = config.dimensions
+        self._similarity_metric = config.similarity_metric
 
         self._embeddings = BedrockEmbeddings(
             region_name=region,
@@ -187,3 +203,15 @@ class AmazonBedrockEmbedder(Embedder):
         )
 
         return embeddings
+
+    @property
+    def model_id(self) -> str:
+        return self._model_id
+
+    @property
+    def dimensions(self) -> int:
+        return self._dimensions
+
+    @property
+    def similarity_metric(self) -> SimilarityMetric:
+        return self._similarity_metric
