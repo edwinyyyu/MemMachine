@@ -1,6 +1,6 @@
 from typing import Any
 
-from memmachine.common.bootstrap_initializer import BootstrapInitializer
+from memmachine.common.resource_initializer import ResourceInitializer
 
 from ..data_types import ContentType, Episode, MemoryContext
 from ..declarative_memory.data_types import (
@@ -203,7 +203,7 @@ class LongTermMemory:
             },
         }
 
-        resources = BootstrapInitializer.initialize(
+        resources = ResourceInitializer.initialize(
             resource_definitions | reranker_resource_definitions
         )
 

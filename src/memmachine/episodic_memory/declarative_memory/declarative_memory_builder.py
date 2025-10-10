@@ -15,7 +15,7 @@ class DeclarativeMemoryBuilder(Builder):
     """
 
     @staticmethod
-    def get_dependency_ids(name: str, config: dict[str, Any]) -> set[str]:
+    def get_dependency_ids(variant: str, config: dict[str, Any]) -> set[str]:
         dependency_ids = set()
         dependency_ids.add(config["vector_graph_store_id"])
         dependency_ids.add(config["embedder_id"])
@@ -54,7 +54,7 @@ class DeclarativeMemoryBuilder(Builder):
 
     @staticmethod
     def build(
-        name: str, config: dict[str, Any], injections: dict[str, Any]
+        variant: str, config: dict[str, Any], injections: dict[str, Any]
     ) -> DeclarativeMemory:
         def build_injected_derivative_mutation_workflow_config(
             config: dict[str, Any], injections: dict[str, Any]

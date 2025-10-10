@@ -15,10 +15,10 @@ class RerankerBuilder(Builder):
     """
 
     @staticmethod
-    def get_dependency_ids(name: str, config: dict[str, Any]) -> set[str]:
+    def get_dependency_ids(variant: str, config: dict[str, Any]) -> set[str]:
         dependency_ids = set()
 
-        match name:
+        match variant:
             case "bm25" | "cross-encoder" | "identity":
                 pass
             case "embedder":
@@ -30,9 +30,9 @@ class RerankerBuilder(Builder):
 
     @staticmethod
     def build(
-        name: str, config: dict[str, Any], injections: dict[str, Any]
+        variant: str, config: dict[str, Any], injections: dict[str, Any]
     ) -> Reranker:
-        match name:
+        match variant:
             case "bm25":
                 from .bm25_reranker import BM25Reranker
 
@@ -80,4 +80,4 @@ class RerankerBuilder(Builder):
                     }
                 )
             case _:
-                raise ValueError(f"Unknown Reranker name: {name}")
+                raise ValueError(f"Unknown Reranker variant: {variant}")

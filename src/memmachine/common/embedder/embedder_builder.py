@@ -16,10 +16,10 @@ class EmbedderBuilder(Builder):
     """
 
     @staticmethod
-    def get_dependency_ids(name: str, config: dict[str, Any]) -> set[str]:
+    def get_dependency_ids(variant: str, config: dict[str, Any]) -> set[str]:
         dependency_ids: set[str] = set()
 
-        match name:
+        match variant:
             case "openai":
                 if "metrics_factory_id" in config:
                     dependency_ids.add(config["metrics_factory_id"])
@@ -28,9 +28,9 @@ class EmbedderBuilder(Builder):
 
     @staticmethod
     def build(
-        name: str, config: dict[str, Any], injections: dict[str, Any]
+        variant: str, config: dict[str, Any], injections: dict[str, Any]
     ) -> Embedder:
-        match name:
+        match variant:
             case "openai":
                 from .openai_embedder import OpenAIEmbedder
 
@@ -65,4 +65,4 @@ class EmbedderBuilder(Builder):
                     | {"metrics_factory": injected_metrics_factory}
                 )
             case _:
-                raise ValueError(f"Unknown Embedder name: {name}")
+                raise ValueError(f"Unknown Embedder variant: {variant}")
