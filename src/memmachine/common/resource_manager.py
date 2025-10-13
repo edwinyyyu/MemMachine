@@ -1,5 +1,5 @@
 """
-Resource initializer for building resources
+Resource manager for building and managing resources
 based on their definitions and dependencies.
 """
 
@@ -58,21 +58,33 @@ resource_builder_map: dict[str, type[Builder]] = {
 }
 
 
-class ResourceInitializer:
+class ResourceManager:
     """
-    Resource initializer for building resources
+    Resource manager for building and managing resources
     based on their definitions and dependencies.
     """
-
-    @staticmethod
-    def initialize(
-        resource_definitions: dict[str, Any],
+    def __init__(
+        self,
         resource_cache: dict[str, Any] | None = None,
+    ):
+        self._resource_cache = resource_cache.copy() if resource_cache is not None else {}
+
+    def get_resource(self, resource_id: str) -> Any:
+        """
+        Get a resource by its ID from the resource cache.
+        """
+        return self._resource_cache.get(resource_id)
+
+    def create_resources(
+        self,
+        resource_definitions: dict[str, Any],
     ):
         """
         Initialize resources
         based on their definitions and dependencies.
         """
+
+        # Map from resource ID to a set of dependency resource IDs
         resource_dependency_graph = {}
 
         for (
@@ -89,6 +101,7 @@ class ResourceInitializer:
 
         def order_resources(
             resource_dependency_graph: dict[str, set[str]],
+            resource_cache: dict[str, Any],
         ) -> list[str]:
             """
             Order resources based on their dependencies
@@ -108,15 +121,18 @@ class ResourceInitializer:
                 dependency_ids,
             ) in resource_dependency_graph.items():
                 for dependency_id in dependency_ids:
-                    if dependency_id not in resource_dependency_graph.keys():
+                    # Check that the dependency exists in either the resource definitions or the resource cache.
+                    if dependency_id not in resource_dependency_graph.keys() and dependency_id not in resource_cache.keys():
                         raise ValueError(
                             f"Dependency {dependency_id} "
                             f"for resource {resource_id} "
-                            "not found in resource definitions"
+                            "found in neither resource definitions nor resource cache"
                         )
 
-                    dependency_counts[resource_id] += 1
-                    dependent_resource_ids[dependency_id].add(resource_id)
+                    # Only count depdencies that have not been initialized yet.
+                    if dependency_id in resource_dependency_graph.keys():
+                        dependency_counts[resource_id] += 1
+                        dependent_resource_ids[dependency_id].add(resource_id)
 
             queue = deque(
                 [
@@ -142,19 +158,20 @@ class ResourceInitializer:
 
         ordered_resource_ids = order_resources(resource_dependency_graph)
 
-        resources = resource_cache.copy() if resource_cache is not None else {}
+        initialized_resources = {}
         for resource_id in ordered_resource_ids:
-            if resource_id in resources:
+            if resource_id in self._resource_cache:
                 continue
 
             resource_definition = resource_definitions[resource_id]
 
             resource_builder = resource_builder_map[resource_definition["type"]]
 
-            resources[resource_id] = resource_builder.build(
-                resource_definition["variant"],
-                resource_definition["config"],
-                resources,
+            initialized_resource = resource_builder.build(
+                variant=resource_definition["variant"],
+                config=resource_definition["config"],
+                injections=self._resource_cache,
             )
 
-        return resources
+            initialized_resources[resource_id] = initialized_resource
+            self._resource_cache[resource_id] = initialized_resource
