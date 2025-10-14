@@ -283,7 +283,7 @@ class LongTermMemory:
 
     async def forget_session(self):
         await self._declarative_memory.forget_filtered_episodes(
-            filterable_properties={
+            property_filter={
                 "group_id": self._memory_context.group_id,
                 "session_id": self._memory_context.session_id,
             }
