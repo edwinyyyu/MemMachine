@@ -6,6 +6,8 @@ based on their definitions and dependencies.
 from collections import deque
 from typing import Any, Iterable
 
+from memmachine.common.utils import get_nested_values
+from memmachine.common.resource_definition import ResourceDefinition
 from memmachine.common.factory import Factory
 from memmachine.common.embedder.embedder_factory import EmbedderFactory
 from memmachine.common.language_model.language_model_factory import (
@@ -77,6 +79,7 @@ class ResourceManager:
     def create_resources(
         self,
         resource_definitions: dict[str, Any],
+        resource_definitions: Iterable[ResourceDefinition],
     ):
         """
         Initialize resources
@@ -97,6 +100,13 @@ class ResourceManager:
                     resource_definition["config"],
                 )
             )
+
+
+        for resource_definition in resource_definitions:
+            get_nested_values(resource_definition.dependencies)
+
+
+
 
         def order_resources(
             resource_dependency_graph: dict[str, set[str]],

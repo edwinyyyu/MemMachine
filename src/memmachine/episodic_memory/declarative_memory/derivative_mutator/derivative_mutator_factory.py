@@ -14,18 +14,6 @@ class DerivativeMutatorFactory:
     """
 
     @staticmethod
-    def get_dependency_ids(variant: str, config: dict[str, Any]) -> set[str]:
-        dependency_ids = set()
-
-        match variant:
-            case "identity" | "metadata":
-                pass
-            case "third-person-rewrite":
-                dependency_ids.add(config["language_model_id"])
-
-        return dependency_ids
-
-    @staticmethod
     def create(
         variant: str, config: dict[str, Any], injections: dict[str, Any]
     ) -> DerivativeMutator:

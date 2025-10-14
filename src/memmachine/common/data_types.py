@@ -2,6 +2,11 @@
 Common data types for MemMachine.
 """
 
+from typing import TypeVar
+
+T = TypeVar("T")
+Nested = T | list["Nested"] | dict[str, "Nested"]
+
 
 class ExternalServiceAPIError(Exception):
     """

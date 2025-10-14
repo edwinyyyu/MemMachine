@@ -15,16 +15,6 @@ class MetricsManagerFactory(Factory):
     """
 
     @staticmethod
-    def get_dependency_ids(variant: str, config: dict[str, Any]) -> set[str]:
-        dependency_ids: set[str] = set()
-
-        match variant:
-            case "prometheus":
-                pass
-
-        return dependency_ids
-
-    @staticmethod
     def create(
         variant: str, config: dict[str, Any], injections: dict[str, Any]
     ) -> MetricsManager:

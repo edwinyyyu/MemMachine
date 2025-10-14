@@ -14,18 +14,6 @@ class RelatedEpisodePostulatorFactory(Factory):
     """
 
     @staticmethod
-    def get_dependency_ids(variant: str, config: dict[str, Any]) -> set[str]:
-        dependency_ids = set()
-
-        match variant:
-            case "null":
-                pass
-            case "previous":
-                dependency_ids.add(config["vector_graph_store_id"])
-
-        return dependency_ids
-
-    @staticmethod
     def create(
         variant: str, config: dict[str, Any], injections: dict[str, Any]
     ) -> RelatedEpisodePostulator:

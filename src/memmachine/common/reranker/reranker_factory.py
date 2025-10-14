@@ -15,20 +15,6 @@ class RerankerFactory(Factory):
     """
 
     @staticmethod
-    def get_dependency_ids(variant: str, config: dict[str, Any]) -> set[str]:
-        dependency_ids = set()
-
-        match variant:
-            case "bm25" | "cross-encoder" | "identity":
-                pass
-            case "embedder":
-                dependency_ids.add(config["embedder_id"])
-            case "rrf-hybrid":
-                dependency_ids.update(config["reranker_ids"])
-
-        return dependency_ids
-
-    @staticmethod
     def create(
         variant: str, config: dict[str, Any], injections: dict[str, Any]
     ) -> Reranker:

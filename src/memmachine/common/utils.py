@@ -4,9 +4,11 @@ Common utility functions.
 
 import asyncio
 import functools
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Generator
 from contextlib import AbstractAsyncContextManager
-from typing import Any
+from typing import Any, TypeVar
+
+from .data_types import Nested
 
 
 async def async_with(
@@ -43,3 +45,18 @@ def async_locked(func):
             return await func(*args, **kwargs)
 
     return wrapper
+
+T = TypeVar("T")
+
+def get_nested_values(nested: Nested[T]) -> Generator[T, None, None]:
+    """
+    Recursively yield all values from a nested dict/list structure.
+    """
+    if isinstance(nested, dict):
+        for value in nested.values():
+            yield from get_nested_values(value)
+    elif isinstance(nested, list):
+        for item in nested:
+            yield from get_nested_values(item)
+    else:
+        yield nested

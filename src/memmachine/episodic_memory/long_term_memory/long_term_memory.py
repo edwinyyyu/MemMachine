@@ -2,12 +2,13 @@ from collections.abc import Mapping
 
 from pydantic import BaseModel, Field
 
+from memmachine.common.utils import get_nested_values
 from memmachine.common.factory import Factory
 from memmachine.common.embedder import Embedder
 from memmachine.common.reranker import Reranker
 from memmachine.common.resource_manager import ResourceManager
 from memmachine.common.vector_graph_store import VectorGraphStore
-from memmachine.config import ResourceDefinition
+from memmachine.common.resource_definition import ResourceDefinition
 
 from ..data_types import ContentType, Episode
 from ..declarative_memory import ContentType as DeclarativeMemoryContentType
@@ -67,9 +68,8 @@ class LongTermMemory:
             if resource_factory is None:
                 raise ValueError(f"Unknown resource type: {resource_definition.type}")
 
-            injections = resource_manager.resolve_resources(
-                resource_definition.dependency_ids
-            )
+            dependency_ids = get_nested_values(resource_definition.dependencies)
+            injections = resource_manager.resolve_resources(dependency_ids)
 
             resource = resource_factory.create(
                 resource_definition.variant,

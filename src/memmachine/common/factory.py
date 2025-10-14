@@ -15,26 +15,6 @@ class Factory(ABC):
 
     @staticmethod
     @abstractmethod
-    def get_dependency_ids(variant: str, config: dict[str, Any]) -> set[str]:
-        """
-        Get the set of dependency IDs
-        required for building the resource.
-
-        Args:
-            variant (str):
-                The variant of the resource to build.
-            config (dict[str, Any]):
-                The configuration dictionary for the resource.
-
-        Returns:
-            set[str]:
-                A set of dependency IDs
-                required for building the resource.
-        """
-        raise NotImplementedError
-
-    @staticmethod
-    @abstractmethod
     def create(variant: str, config: dict[str, Any], injections: dict[str, Any]) -> Any:
         """
         Build the resource
