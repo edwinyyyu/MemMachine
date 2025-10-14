@@ -35,7 +35,7 @@ class Factory(ABC):
 
     @staticmethod
     @abstractmethod
-    def build(variant: str, config: dict[str, Any], injections: dict[str, Any]) -> Any:
+    def create(variant: str, config: dict[str, Any], injections: dict[str, Any]) -> Any:
         """
         Build the resource
         based on its variant,

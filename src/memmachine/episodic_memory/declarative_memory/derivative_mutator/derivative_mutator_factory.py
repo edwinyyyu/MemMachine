@@ -26,7 +26,7 @@ class DerivativeMutatorFactory:
         return dependency_ids
 
     @staticmethod
-    def build(
+    def create(
         variant: str, config: dict[str, Any], injections: dict[str, Any]
     ) -> DerivativeMutator:
         match variant:

@@ -27,7 +27,7 @@ class LanguageModelFactory(Factory):
         return dependency_ids
 
     @staticmethod
-    def build(
+    def create(
         variant: str, config: dict[str, Any], injections: dict[str, Any]
     ) -> LanguageModel:
         def get_metrics_manager(config: dict[str, Any]):

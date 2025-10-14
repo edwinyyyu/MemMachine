@@ -29,7 +29,7 @@ class RerankerFactory(Factory):
         return dependency_ids
 
     @staticmethod
-    def build(
+    def create(
         variant: str, config: dict[str, Any], injections: dict[str, Any]
     ) -> Reranker:
         match variant:

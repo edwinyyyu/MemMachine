@@ -25,7 +25,7 @@ declarative_memory_content_type_to_content_type_map = {
     DeclarativeMemoryContentType.STRING: ContentType.STRING,
 }
 
-resource_type_factory_map: dict[str, Factory] = {
+declarative_memory_resource_type_factory_map: dict[str, Factory] = {
     "derivative_deriver": DerivativeDeriverFactory,
     "derivative_mutator": DerivativeMutatorFactory,
     "related_episode_postulator": RelatedEpisodePostulatorFactory,
@@ -62,13 +62,8 @@ class LongTermMemory:
         # LongTermMemory is responsible for providing dependencies
         # to its internal DeclarativeMemory.
         # Create all derivative derivers, mutators, related episode postulators here based on workflow spec and workflow resources.
-        {
-            dependency_id: resource_manager.get_resource(dependency_id)
-            for dependency_id in DerivativeDeriverFactory.get_dependency_ids(variant, config) # Loop this.
-        }
-
         for resource_id, resource_definition in config.resource_definitions.items():
-            resource_factory = resource_type_factory_map.get(resource_definition.type)
+            resource_factory = declarative_memory_resource_type_factory_map.get(resource_definition.type)
             if resource_factory is None:
                 raise ValueError(f"Unknown resource type: {resource_definition.type}")
 
@@ -77,8 +72,12 @@ class LongTermMemory:
             )
 
             resource = resource_factory.create(
-
+                resource_definition.variant,
+                resource_definition.config,
+                injections,
             )
+
+            resources[resource_id] = resource
 
 
 
