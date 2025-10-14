@@ -4,31 +4,19 @@ based on their definitions and dependencies.
 """
 
 from collections import deque
-from typing import Any
+from typing import Any, Iterable
 
-from memmachine.common.builder import Builder
-from memmachine.common.embedder.embedder_builder import EmbedderBuilder
-from memmachine.common.language_model.language_model_builder import (
-    LanguageModelBuilder,
+from memmachine.common.factory import Factory
+from memmachine.common.embedder.embedder_factory import EmbedderFactory
+from memmachine.common.language_model.language_model_factory import (
+    LanguageModelFactory,
 )
-from memmachine.common.metrics_factory.metrics_factory_builder import (
-    MetricsFactoryBuilder,
+from memmachine.common.metrics_manager.metrics_manager_factory import (
+    MetricsManagerFactory,
 )
-from memmachine.common.reranker.reranker_builder import RerankerBuilder
-from memmachine.common.vector_graph_store.vector_graph_store_builder import (
-    VectorGraphStoreBuilder,
-)
-from memmachine.episodic_memory.declarative_memory import (
-    DeclarativeMemoryBuilder,
-)
-from memmachine.episodic_memory.declarative_memory.derivative_deriver import (
-    DerivativeDeriverBuilder,
-)
-from memmachine.episodic_memory.declarative_memory.derivative_mutator import (
-    DerivativeMutatorBuilder,
-)
-from memmachine.episodic_memory.declarative_memory.related_episode_postulator import (
-    RelatedEpisodePostulatorBuilder,
+from memmachine.common.reranker.reranker_factory import RerankerFactory
+from memmachine.common.vector_graph_store.vector_graph_store_factory import (
+    VectorGraphStoreFactory,
 )
 
 """
@@ -44,17 +32,13 @@ resource_id: {
 ```
 """
 
-# Map resource types to their corresponding builder classes
-resource_builder_map: dict[str, type[Builder]] = {
-    "declarative_memory": DeclarativeMemoryBuilder,
-    "derivative_deriver": DerivativeDeriverBuilder,
-    "derivative_mutator": DerivativeMutatorBuilder,
-    "related_episode_postulator": RelatedEpisodePostulatorBuilder,
-    "embedder": EmbedderBuilder,
-    "language_model": LanguageModelBuilder,
-    "metrics_factory": MetricsFactoryBuilder,
-    "reranker": RerankerBuilder,
-    "vector_graph_store": VectorGraphStoreBuilder,
+# Map resource types to their corresponding factory classes
+resource_factory_map: dict[str, type[Factory]] = {
+    "embedder": EmbedderFactory,
+    "language_model": LanguageModelFactory,
+    "metrics_manager": MetricsManagerFactory,
+    "reranker": RerankerFactory,
+    "vector_graph_store": VectorGraphStoreFactory,
 }
 
 
@@ -63,17 +47,32 @@ class ResourceManager:
     Resource manager for building and managing resources
     based on their definitions and dependencies.
     """
+
     def __init__(
         self,
         resource_cache: dict[str, Any] | None = None,
     ):
-        self._resource_cache = resource_cache.copy() if resource_cache is not None else {}
+        self._resource_cache = (
+            resource_cache.copy() if resource_cache is not None else {}
+        )
 
     def get_resource(self, resource_id: str) -> Any:
         """
         Get a resource by its ID from the resource cache.
         """
         return self._resource_cache.get(resource_id)
+
+    def resolve_resources(self, resource_ids: Iterable[str]) -> dict[str, Any]:
+        """
+        Resolve an iterable of resource IDs to a dict
+        mapping resource IDs to their corresponding resources.
+        """
+        return {
+            resource_id: resource
+            for resource_id in resource_ids
+            if (resource := self.get_resource(resource_id))
+            is not None
+        }
 
     def create_resources(
         self,
@@ -91,9 +90,9 @@ class ResourceManager:
             resource_id,
             resource_definition,
         ) in resource_definitions.items():
-            resource_builder = resource_builder_map[resource_definition["type"]]
+            resource_factory = resource_factory_map[resource_definition["type"]]
             resource_dependency_graph[resource_id] = (
-                resource_builder.get_dependency_ids(
+                resource_factory.get_dependency_ids(
                     resource_definition["variant"],
                     resource_definition["config"],
                 )
@@ -122,7 +121,10 @@ class ResourceManager:
             ) in resource_dependency_graph.items():
                 for dependency_id in dependency_ids:
                     # Check that the dependency exists in either the resource definitions or the resource cache.
-                    if dependency_id not in resource_dependency_graph.keys() and dependency_id not in resource_cache.keys():
+                    if (
+                        dependency_id not in resource_dependency_graph.keys()
+                        and dependency_id not in resource_cache.keys()
+                    ):
                         raise ValueError(
                             f"Dependency {dependency_id} "
                             f"for resource {resource_id} "
@@ -165,9 +167,9 @@ class ResourceManager:
 
             resource_definition = resource_definitions[resource_id]
 
-            resource_builder = resource_builder_map[resource_definition["type"]]
+            resource_factory = resource_factory_map[resource_definition["type"]]
 
-            initialized_resource = resource_builder.build(
+            initialized_resource = resource_factory.build(
                 variant=resource_definition["variant"],
                 config=resource_definition["config"],
                 injections=self._resource_cache,

@@ -11,14 +11,14 @@ from memmachine.common.data_types import ExternalServiceAPIError
 from memmachine.common.language_model.openai_compatible_language_model import (
     OpenAICompatibleLanguageModel,
 )
-from memmachine.common.metrics_factory.metrics_factory import MetricsFactory
+from memmachine.common.metrics_manager.metrics_manager import MetricsManager
 
 
 @pytest.fixture
-def mock_metrics_factory():
-    """Fixture for a mocked MetricsFactory."""
+def mock_metrics_manager():
+    """Fixture for a mocked MetricsManager."""
 
-    class MockMetricsFactory(MetricsFactory):
+    class MockMetricsManager(MetricsManager):
         def __init__(self):
             self.counters = MagicMock()
             self.gauge = MagicMock()
@@ -40,7 +40,7 @@ def mock_metrics_factory():
         def reset(self):
             return MagicMock()
 
-    factory = MockMetricsFactory()
+    factory = MockMetricsManager()
     return factory
 
 
@@ -51,14 +51,14 @@ def minimal_config():
 
 
 @pytest.fixture
-def full_config(mock_metrics_factory):
+def full_config(mock_metrics_manager):
     """Fixture for a full valid configuration with metrics."""
     return {
         "api_key": "test_api_key",
         "model": "test-model",
         "base_url": "http://localhost:8080",
         "max_retry_interval_seconds": 60,
-        "metrics_factory": mock_metrics_factory,
+        "metrics_manager": mock_metrics_manager,
         "user_metrics_labels": {"user": "test-user"},
     }
 
@@ -131,20 +131,20 @@ def test_init_invalid_max_retry_interval_seconds_value(minimal_config):
         OpenAICompatibleLanguageModel(config)
 
 
-def test_init_invalid_metrics_factory_type(minimal_config):
-    """Test initialization fails with invalid metrics_factory type."""
-    config = {**minimal_config, "metrics_factory": "not-a-factory"}
+def test_init_invalid_metrics_manager_type(minimal_config):
+    """Test initialization fails with invalid metrics_manager type."""
+    config = {**minimal_config, "metrics_manager": "not-a-factory"}
     with pytest.raises(
-        TypeError, match="Metrics factory must be an instance of MetricsFactory"
+        TypeError, match="Metrics factory must be an instance of MetricsManager"
     ):
         OpenAICompatibleLanguageModel(config)
 
 
-def test_init_invalid_user_metrics_labels_type(minimal_config, mock_metrics_factory):
+def test_init_invalid_user_metrics_labels_type(minimal_config, mock_metrics_manager):
     """Test initialization fails with invalid user_metrics_labels type."""
     config = {
         **minimal_config,
-        "metrics_factory": mock_metrics_factory,
+        "metrics_manager": mock_metrics_manager,
         "user_metrics_labels": "not-a-dict",
     }
     with pytest.raises(TypeError, match="user_metrics_labels must be a dictionary"):
@@ -390,13 +390,13 @@ async def test_metrics_collection(mock_async_openai, full_config):
     lm = OpenAICompatibleLanguageModel(full_config)
     await lm.generate_response()
 
-    metrics_factory = full_config["metrics_factory"]
+    metrics_manager = full_config["metrics_manager"]
     labels = full_config["user_metrics_labels"]
 
-    input_counter = metrics_factory.get_counter("test", "test")
-    output_counter = metrics_factory.get_counter("test", "test")
-    total_counter = metrics_factory.get_counter("test", "test")
-    latency_summary = metrics_factory.get_summary("test", "test")
+    input_counter = metrics_manager.get_counter("test", "test")
+    output_counter = metrics_manager.get_counter("test", "test")
+    total_counter = metrics_manager.get_counter("test", "test")
+    latency_summary = metrics_manager.get_summary("test", "test")
 
     # Note: Since get_counter returns the same mock, we check the calls on that mock.
     input_counter.increment.assert_any_call(value=100, labels=labels)

@@ -1,5 +1,5 @@
 """
-Abstract base class for a builder that construct resources
+Abstract base class for a factory that constructs objects
 based on their definitions and dependencies.
 """
 
@@ -7,9 +7,9 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 
-class Builder(ABC):
+class Factory(ABC):
     """
-    Abstract base class for a builder that construct resources
+    Abstract base class for a factory that constructs objects
     based on their definitions and dependencies.
     """
 

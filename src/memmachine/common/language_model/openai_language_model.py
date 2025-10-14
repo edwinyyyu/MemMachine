@@ -12,7 +12,7 @@ from uuid import uuid4
 import openai
 
 from memmachine.common.data_types import ExternalServiceAPIError
-from memmachine.common.metrics_factory.metrics_factory import MetricsFactory
+from memmachine.common.metrics_manager.metrics_manager import MetricsManager
 
 from .language_model import LanguageModel
 
@@ -37,8 +37,8 @@ class OpenAILanguageModel(LanguageModel):
                   API key for accessing the OpenAI service.
                 - model (str, optional):
                   Name of the OpenAI model to use
-                - metrics_factory (MetricsFactory, optional):
-                  An instance of MetricsFactory
+                - metrics_manager (MetricsManager, optional):
+                  An instance of MetricsManager
                   for collecting usage metrics.
                 - user_metrics_labels (dict[str, str], optional):
                   Labels to attach to the collected metrics.
@@ -73,26 +73,26 @@ class OpenAILanguageModel(LanguageModel):
         if self._max_retry_interval_seconds <= 0:
             raise ValueError("max_retry_interval_seconds must be a positive integer")
 
-        metrics_factory = config.get("metrics_factory")
-        if metrics_factory is not None and not isinstance(
-            metrics_factory, MetricsFactory
+        metrics_manager = config.get("metrics_manager")
+        if metrics_manager is not None and not isinstance(
+            metrics_manager, MetricsManager
         ):
-            raise TypeError("Metrics factory must be an instance of MetricsFactory")
+            raise TypeError("Metrics factory must be an instance of MetricsManager")
 
         self._collect_metrics = False
-        if metrics_factory is not None:
+        if metrics_manager is not None:
             self._collect_metrics = True
             self._user_metrics_labels = config.get("user_metrics_labels", {})
             if not isinstance(self._user_metrics_labels, dict):
                 raise TypeError("user_metrics_labels must be a dictionary")
             label_names = self._user_metrics_labels.keys()
 
-            self._input_tokens_usage_counter = metrics_factory.get_counter(
+            self._input_tokens_usage_counter = metrics_manager.get_counter(
                 "language_model_openai_usage_input_tokens",
                 "Number of input tokens used for OpenAI language model",
                 label_names=label_names,
             )
-            self._input_cached_tokens_usage_counter = metrics_factory.get_counter(
+            self._input_cached_tokens_usage_counter = metrics_manager.get_counter(
                 "language_model_openai_usage_input_cached_tokens",
                 (
                     "Number of tokens retrieved from cache "
@@ -100,22 +100,22 @@ class OpenAILanguageModel(LanguageModel):
                 ),
                 label_names=label_names,
             )
-            self._output_tokens_usage_counter = metrics_factory.get_counter(
+            self._output_tokens_usage_counter = metrics_manager.get_counter(
                 "language_model_openai_usage_output_tokens",
                 "Number of output tokens used for OpenAI language model",
                 label_names=label_names,
             )
-            self._output_reasoning_tokens_usage_counter = metrics_factory.get_counter(
+            self._output_reasoning_tokens_usage_counter = metrics_manager.get_counter(
                 "language_model_openai_usage_output_reasoning_tokens",
                 ("Number of reasoning tokens used for OpenAI language model"),
                 label_names=label_names,
             )
-            self._total_tokens_usage_counter = metrics_factory.get_counter(
+            self._total_tokens_usage_counter = metrics_manager.get_counter(
                 "language_model_openai_usage_total_tokens",
                 "Number of tokens used for OpenAI language model",
                 label_names=label_names,
             )
-            self._latency_summary = metrics_factory.get_summary(
+            self._latency_summary = metrics_manager.get_summary(
                 "language_model_openai_latency_seconds",
                 "Latency in seconds for OpenAI language model requests",
                 label_names=label_names,

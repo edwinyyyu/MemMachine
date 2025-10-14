@@ -1,17 +1,17 @@
 """
-Builder for VectorGraphStore instances.
+Factory for VectorGraphStore instances.
 """
 
 from typing import Any
 
-from memmachine.common.builder import Builder
+from memmachine.common.factory import Factory
 
 from .vector_graph_store import VectorGraphStore
 
 
-class VectorGraphStoreBuilder(Builder):
+class VectorGraphStoreFactory(Factory):
     """
-    Builder for VectorGraphStore instances.
+    Factory for VectorGraphStore instances.
     """
 
     @staticmethod

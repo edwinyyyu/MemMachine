@@ -1,9 +1,9 @@
 from .data_types import SimilarityMetric
 from .embedder import Embedder
-from .embedder_builder import EmbedderBuilder
+from .embedder_factory import EmbedderFactory
 
 __all__ = [
     "Embedder",
-    "EmbedderBuilder",
+    "EmbedderFactory",
     "SimilarityMetric",
 ]

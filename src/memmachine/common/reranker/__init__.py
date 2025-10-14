@@ -1,7 +1,7 @@
 from .reranker import Reranker
-from .reranker_builder import RerankerBuilder
+from .reranker_factory import RerankerFactory
 
 __all__ = [
     "Reranker",
-    "RerankerBuilder",
+    "RerankerFactory",
 ]

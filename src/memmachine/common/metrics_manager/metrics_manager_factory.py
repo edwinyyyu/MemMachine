@@ -1,17 +1,17 @@
 """
-Builder for MetricsFactory instances.
+Factory for MetricsManager instances.
 """
 
 from typing import Any
 
-from memmachine.common.builder import Builder
+from memmachine.common.factory import Factory
 
-from .metrics_factory import MetricsFactory
+from .metrics_manager import MetricsManager
 
 
-class MetricsFactoryBuilder(Builder):
+class MetricsManagerFactory(Factory):
     """
-    Builder for MetricsFactory instances.
+    Factory for MetricsManager instances.
     """
 
     @staticmethod
@@ -27,13 +27,13 @@ class MetricsFactoryBuilder(Builder):
     @staticmethod
     def build(
         variant: str, config: dict[str, Any], injections: dict[str, Any]
-    ) -> MetricsFactory:
+    ) -> MetricsManager:
         match variant:
             case "prometheus":
-                from .prometheus_metrics_factory import (
-                    PrometheusMetricsFactory,
+                from .prometheus_metrics_manager import (
+                    PrometheusMetricsManager,
                 )
 
-                return PrometheusMetricsFactory()
+                return PrometheusMetricsManager()
             case _:
-                raise ValueError(f"Unknown MetricsFactory variant: {variant}")
+                raise ValueError(f"Unknown MetricsManager variant: {variant}")

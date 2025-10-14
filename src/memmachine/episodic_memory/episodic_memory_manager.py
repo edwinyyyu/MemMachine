@@ -1,14 +1,14 @@
 """
-Manages the lifecycle and configuration of memory instances.
+Manages the lifecycle of EpisodicMemory instances.
 
 This module provides the `EpisodicMemoryMemoryManager`, a singleton class that
 acts as a central factory and registry for `EpisodicMemory` objects. It
 is responsible for:
 
 - Loading and merging configurations from files.
-- Creating, retrieving, and managing context-specific memory instances based
- on group, agent, user, and session IDs.
-- Ensuring that each unique conversational context has a dedicated memory
+- Creating, retrieving, and managing session-specific memory instances based
+  on group and session IDs.
+- Ensuring that each unique conversational session has a dedicated memory
   instance.
 - Interacting with a `SessionManager` to persist and retrieve session
   information.
@@ -21,12 +21,9 @@ from typing import Any
 
 import yaml
 
-from .data_types import GroupConfiguration, MemoryContext, SessionInfo
+from .data_types import MemoryContext
 from .episodic_memory import EpisodicMemory
-from .prompt.summary_prompt import (
-    episode_summary_system_prompt,
-    episode_summary_user_prompt,
-)
+from .session_manager.data_types import SessionInfo
 from .session_manager.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -34,11 +31,11 @@ logger = logging.getLogger(__name__)
 
 class EpisodicMemoryManager:
     """
-    Manages the creation and lifecycle of ContextMemory instances.
+    Manages the creation and lifecycle of EpisodicMemory instances.
 
     This class acts as a factory and a central registry for all
-    context-specific memories (EpisodicMemory). It ensures that each
-    unique context (defined by group, agent, user, and session IDs) has its
+    session-specific memories (EpisodicMemory). It ensures that each
+    unique session (defined by group and session IDs) has its
     own dedicated EpisodicMemory.
 
     It follows a singleton pattern, ensuring only one manager exists. It
@@ -48,144 +45,58 @@ class EpisodicMemoryManager:
 
     _instance = None
 
-    def __init__(self, config: dict):
-        """
-        Initializes the MemoryManager.
+    def __new__(cls, config: dict[str, Any] | None = None) -> Self:
+        # Enforce singleton pattern
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            return cls._instance
 
-        Note: This constructor should not be called directly. Use the factory
-        method `create_memory_manager` instead.
+        if config is not None and config is not cls._instance._config:
+            raise RuntimeError(
+                "EpisodicMemoryManager is a singleton; cannot reinitialize with new config."
+            )
+
+        return cls._instance
+
+    def __init__(self, config: dict[str, Any]):
+        """
+        Initializes the EpisodicMemoryManager.
 
         Args:
             config: A configuration dictionary containing all necessary
                     settings for models, storage, and memory parameters.
         """
-        self._memory_config = config
-        # A dictionary to hold active memory instances, keyed by their context
-        # hash string.
-        self._context_memory: dict[MemoryContext, EpisodicMemory] = {}
-        # A lock to ensure thread-safe access to the _context_memory
-        # dictionary.
-        self._lock = asyncio.Lock()
-        # Initialize the session manager for handling session data persistence.
-
-        sessiondb = config.get("sessiondb", {})
-        self._session_manager = SessionManager(sessiondb)
-
-    @classmethod
-    async def reset(cls):
-        """
-        Reset the singleton instance.
-        """
-        if cls._instance is None:
+        if self._instance is not None:
             return
-        await cls._instance.shut_down()
-        cls._instance = None
 
-    @classmethod
-    def create_episodic_memory_manager(cls, config_path: str):
-        """
-        Factory class method to create a MemoryManager instance from
-        environment variables.
+        self._config = config
 
-        This method implements the singleton pattern. It reads all necessary
-        configurations for models, storage, and prompts, sets up logging,
-        and creates a new instance of MemoryManager if one does not already
-        exist.
-        Args:
-            config_path: The path to the configuration file.
+        self._resources = config.get("resources", {})
 
-        Returns:
-            A new instance of MemoryManager.
-        """
+        self._episodic_memories: dict[MemoryContext, EpisodicMemory] = {}
+        self._episodic_memories_lock = asyncio.Lock()
 
-        if cls._instance is not None:
-            return cls._instance
-
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f)
-        except FileNotFoundError as e:
-            raise ValueError(f"Configuration file '{config_path}' not found") from e
-        except OSError as e:
-            raise OSError(f"Failed to read configuration file '{config_path}'") from e
-
-        def config_to_lowercase(data: Any) -> Any:
-            """Recursively converts all dictionary keys in a nested structure
-            to lowercase."""
-            if isinstance(data, dict):
-                return {k.lower(): config_to_lowercase(v) for k, v in data.items()}
-            if isinstance(data, list):
-                return [config_to_lowercase(i) for i in data]
-            return data
-
-        config = config_to_lowercase(config)
-
-        # Configure logging based on the loaded configuration.
-        log_path = config.get("logging", {}).get("path", "/tmp/MemMachine.log")
-        log_level = config.get("logging", {}).get("level", "info")
-        logging.basicConfig(filename=log_path, level=log_level.upper())
-
-        # Load custom prompts from files if specified in the config,
-        # overriding defaults.
-        def load_prompt(prompt_config: dict, key: str, default_value: str) -> str:
-            """
-            Helper function to load a prompt from a file path specified in the
-            config.
-
-            Args:
-                prompt_config: The dictionary containing prompt file paths.
-                key: The key for the specific prompt to load.
-                default_value: The default prompt content to use if the file
-                is not specified or found.
-
-            Returns:
-                The content of the prompt.
-            """
-            custom_prompt_path = prompt_config.get(key)
-            if custom_prompt_path:
-                with open(custom_prompt_path, "r", encoding="utf-8") as f:
-                    return f.read()
-            return default_value
-
-        prompt_config = config.get("prompts", {})
-
-        prompt_config["episode_summary_prompt_system"] = load_prompt(
-            prompt_config,
-            "episode_summary_prompt_system",
-            episode_summary_system_prompt,
-        )
-        prompt_config["episode_summary_prompt_user"] = load_prompt(
-            prompt_config,
-            "episode_summary_prompt_user",
-            episode_summary_user_prompt,
+        self._base_episodic_memory_config = config.get(
+            "base_episodic_memory_config", {}
         )
 
-        config["prompts"] = prompt_config
+        session_manager_config = config.get("session_manager_config", {})
+        self._session_manager = SessionManager(session_manager_config)
 
-        manager = cls(config)
-        cls._instance = manager
-        return manager
-
-    def _merge_configs(self, base_config: dict, override_config: dict) -> dict:
+    def _merge_episodic_memory_configs(
+        self,
+        base_episodic_memory_config: dict[str, Any] = {},
+        override_episodic_memory_config: dict[str, Any] = {},
+    ) -> dict[str, Any]:
         """Recursively merges two dictionaries. `override_config` values take
         precedence."""
-        result = base_config.copy()
-        for k, v in override_config.items():
+        result = base_episodic_memory_config.copy()
+        for k, v in override_episodic_memory_config.items():
             if k in result and isinstance(result[k], dict) and isinstance(v, dict):
-                result[k] = self._merge_configs(result[k], v)
+                result[k] = self._merge_episodic_memory_configs(result[k], v)
             else:
                 result[k] = v
         return result
-
-    @property
-    def session_manager(self) -> SessionManager:
-        """Get the manager's session manager."""
-        return self._session_manager
-
-    @property
-    def configuration(self) -> dict:
-        """Get the manager's configuration."""
-        return self._memory_config
 
     async def close_episodic_memory_instance(
         self,
@@ -214,9 +125,8 @@ class EpisodicMemoryManager:
         context = MemoryContext(
             group_id=group_id, agent_id=set(), user_id=set(), session_id=session_id
         )
-        async with self._lock:
-            if context in self._context_memory:
-                inst = self._context_memory[context]
+        if context in self._context_memory:
+            inst = self._context_memory[context]
         if inst is None:
             return False
         await inst.close()
@@ -352,8 +262,6 @@ class EpisodicMemoryManager:
         session_id: str = "",
         configuration: dict | None = None,
     ) -> EpisodicMemory | None:
-        # pylint: disable=too-many-arguments
-        # pylint: disable=too-many-positional-arguments
         """
         Retrieves or creates a EpisodicMemory instance for a specific context.
 
@@ -363,71 +271,77 @@ class EpisodicMemoryManager:
 
         Args:
             group_id: The identifier for the group context.
-            agent_id: The identifier for the list of agent context.
-            user_id: The identifier for the list of user context.
             session_id: The identifier for the session context.
             configuration: session specific configuration.
 
         Returns:
             The EpisodicMemory instance for the specified context.
         """
-        if configuration is None:
-            configuration = {}
+        episodic_memory_config = {}
+        if config_path is not None:
+            with open(config_path) as config_file:
+                episodic_memory_config = yaml.safe_load(config_file)
 
         # Validate that the context is sufficiently defined.
-        if user_id is None:
-            user_id = []
-        if agent_id is None:
-            agent_id = []
-        if len(user_id) < 1 and len(agent_id) < 1:
-            raise ValueError("The group must have at least one agent or user")
-        if group_id is None or len(group_id) < 1:
-            group_id = "_".join(user_id).join(agent_id)
-        if session_id is None or len(session_id) < 1:
+        if group_id is None and len(user_ids) < 1 and len(agent_ids) < 1:
+            raise ValueError("Invalid context")
+        if session_id is None:
             raise ValueError("Invalid session id")
-        if len(user_id) < 1:
-            user_id = agent_id
+        if len(user_ids) < 1:
+            user_ids = agent_ids
+
+        # If group_id is not provided, create a composite ID from user IDs.
+        if group_id is None or len(group_id) < 1:
+            group_id = EpisodicMemoryManager._group_id_from_users_and_agents(
+                user_ids, agent_ids
+            )
 
         # Create the unique memory context object.
-        context = MemoryContext(
+        memory_context = MemoryContext(
             group_id=group_id,
-            agent_id=set(agent_id),
-            user_id=set(user_id),
+            agent_id=set(agent_ids),
+            user_id=set(user_ids),
             session_id=session_id,
         )
 
-        async with self._lock:
+        async with self._episodic_memories_lock:
             # If an instance for this context already exists, increment its
             # reference count and return it.
-            if context in self._context_memory:
-                instance = self._context_memory[context]
+            if memory_context in self._episodic_memories:
+                print("Use existing session")
+                instance = self._episodic_memories[memory_context]
                 get_it = await instance.reference()
                 if get_it:
                     return instance
                 # The instance was closed between checking and referencing.
                 logger.error("Failed get instance reference")
                 return None
+            print("Create new session")
             # If no instance exists, create a new one.
-            try:
-                info = self._session_manager.open_session(group_id, session_id)
-                final_config = info.configuration
-            except ValueError:
-                if configuration is None:
-                    configuration = {}
-                final_config = self._merge_configs(self._memory_config, configuration)
-                info = self._session_manager.create_session_if_not_exist(
-                    group_id, agent_id, user_id, session_id, final_config
-                )
+            info = self._session_manager.create_session_if_not_exist(
+                group_id,
+                agent_ids,
+                user_ids,
+                session_id,
+                episodic_memory_config,
+            )
+
+            # Merge the base config with the session-specific config.
+            final_config = self._merge_episodic_memory_configs(
+                self._base_episodic_memory_config, info.configuration or {}
+            )
 
             # Create and store the new memory instance.
-            memory_instance = EpisodicMemory(self, final_config, context)
+            memory_instance = EpisodicMemory(
+                self, memory_context, final_config, self._resources
+            )
 
-            self._context_memory[context] = memory_instance
+            self._episodic_memories[memory_context] = memory_instance
 
             await memory_instance.reference()
             return memory_instance
 
-    async def delete_context_memory(self, context: MemoryContext):
+    async def delete_episodic_memory(self, context: MemoryContext):
         """
         Removes a specific EpisodicMemory instance from the manager's registry.
 
@@ -437,22 +351,19 @@ class EpisodicMemoryManager:
         Args:
             context: The memory context of the instance to delete.
         """
-
-        async with self._lock:
-            if context in self._context_memory:
+        async with self._episodic_memories_lock:
+            if context in self._episodic_memories:
                 logger.info("Deleting context memory %s\n", context)
-                del self._context_memory[context]
+                del self._episodic_memories[context]
             else:
                 logger.info("Context memory %s does not exist\n", context)
 
-    async def shut_down(self):
+    def shut_down(self):
         """
         Close all sessions and clean up resources.
         """
-        tasks = []
-        for inst in self._context_memory.values():
-            tasks.append(inst.close())
-        await asyncio.gather(*tasks)
+        for episodic_memory in self._episodic_memories.values():
+            episodic_memory.close()
         del self._session_manager
         self._session_manager = None
 

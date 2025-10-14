@@ -9,9 +9,9 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable
 
 
-class MetricsFactory(ABC):
+class MetricsManager(ABC):
     """
-    Abstract base class for a metrics factory.
+    Abstract base class for a metrics manager.
     """
 
     class Counter(ABC):

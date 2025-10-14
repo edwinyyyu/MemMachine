@@ -7,43 +7,46 @@ orchestrator for an individual memory session. It integrates short-term
 interface for adding and retrieving conversational data.
 
 Key responsibilities include:
-- Managing the lifecycle of the memory instance through reference counting.
 - Adding new conversational `Episode` objects to both session and declarative
   memory.
 - Retrieving relevant context for a query by searching both memory types.
-- Interacting with a language model for memory-related tasks.
 - Each instance is uniquely identified by a `MemoryContext` and managed by the
   `EpisodicMemoryManager`.
 """
 
 import asyncio
-import copy
 import logging
 import uuid
 from datetime import datetime
-from typing import cast
+from typing import Any
 
-from memmachine.common.language_model.language_model_builder import (
-    LanguageModelBuilder,
-)
-from memmachine.common.metrics_factory.metrics_factory_builder import (
-    MetricsFactoryBuilder,
-)
+from pydantic import BaseModel
+
+from memmachine.common.metrics_manager import MetricsManager
+from memmachine.common.resource_manager import ResourceManager
+from memmachine.episodic_memory.episodic_memory_manager import EpisodicMemoryManager
 
 from .data_types import ContentType, Episode, MemoryContext
-from .long_term_memory.long_term_memory import LongTermMemory
-from .short_term_memory.session_memory import SessionMemory
+from .long_term_memory.long_term_memory import LongTermMemory, LongTermMemoryConfig
+from .short_term_memory.session_memory import SessionMemoryConfig
 
 logger = logging.getLogger(__name__)
 
 
+class EpisodicMemoryConfig(BaseModel):
+    episodic_memory_manager: EpisodicMemoryManager
+    memory_context: MemoryContext
+    session_memory_config: SessionMemoryConfig
+    long_term_memory_config: LongTermMemoryConfig
+    shared_resource_manager: ResourceManager
+
+
 class EpisodicMemory:
-    # pylint: disable=too-many-instance-attributes
     """
     Represents a single, isolated memory instance for a specific context.
 
-    This class orchestrates the interaction between short-term (session)
-    memory and long-term (declarative) memory. It manages the lifecycle of
+    This class orchestrates the interaction between short-term
+    memory and long-term memory. It manages the lifecycle of
     the memory, handles adding new information (episodes), and provides
     methods to retrieve contextual information for queries.
 
@@ -52,137 +55,173 @@ class EpisodicMemory:
     `EpisodicMemoryManager`.
     """
 
-    def __init__(self, manager, config: dict, memory_context: MemoryContext):
-        # pylint: disable=too-many-instance-attributes
+    def __init__(
+        self,
+        config: EpisodicMemoryConfig,
+        resources: dict[str, Any],
+    ):
         """
         Initializes a EpisodicMemory instance.
 
         Args:
             manager: The EpisodicMemoryManager that created this instance.
+            memory_context: The unique context for this memory instance.
             config: A dictionary containing the configuration for this memory
                     instance.
-            memory_context: The unique context for this memory instance.
+            resources: A dictionary of pre-initialized dependencies to be
+                        injected into memory components.
         """
-        self._memory_context = memory_context
-        self._manager = manager  # The manager that created this instance
-        self._lock = asyncio.Lock()  # Lock for thread-safe operations
-
-        model_config = config.get("model")
-        short_config = config.get("sessionmemory", {})
-        long_term_config = config.get("long_term_memory", {})
-
+        self._manager = manager  # The manager that created this instance.
         self._ref_count = 1  # For reference counting to manage lifecycle
-        self._session_memory: SessionMemory | None = None
-        self._long_term_memory: LongTermMemory | None = None
-        metrics_manager = MetricsFactoryBuilder.build("prometheus", {}, {})
 
-        if len(short_config) > 0 and short_config.get("enabled") != "false":
-            model_name = short_config.get("model_name")
-            if model_name is None or len(model_name) < 1:
-                raise ValueError("Invalid model name")
+        self._memory_context = memory_context
 
-            if model_config is None or model_config.get(model_name) is None:
-                raise ValueError("Invalid model configuration")
+        self._lock = asyncio.Lock()
 
-            model_config = copy.deepcopy(model_config.get(model_name))
-            """
-            only support prometheus now.
-            TODO: support different metrics and make it configurable
-            """
-            model_config["metrics_factory_id"] = "prometheus"
-            metrics_injection = {}
-            metrics_injection["prometheus"] = metrics_manager
+        long_term_memory_config = config.long_term_memory_config
+        session_memory_config = config.short_term_memory_config
 
-            llm_model = LanguageModelBuilder.build(
-                model_config.get("model_vendor", "openai"),
-                model_config,
-                metrics_injection,
+        vector_graph_store_id = long_term_memory_config.get("vector_graph_store_id")
+        embedder_id = long_term_memory_config.get("embedder_id")
+        reranker_id = long_term_memory_config.get("reranker_id")
+
+        # Configure derivative deriver.
+        derivative_deriver_name = long_term_memory_config.get(
+            "derivative_deriver", "sentence"
+        )
+
+        # Configure metadata derivative mutator and episode metadata template.
+        metadata_prefix = long_term_memory_config.get(
+            "metadata_prefix",
+            "[$timestamp] $producer_id: ",
+        )
+        if not isinstance(metadata_prefix, str):
+            raise TypeError("Metadata prefix must be a string")
+
+        derivative_metadata_template = f"{metadata_prefix}$content"
+        episode_metadata_template = f"{metadata_prefix}$content"
+
+        derivation_workflow_definition = {
+            "related_episode_postulator_id": ("_null_related_episode_postulator"),
+            "derivative_derivation_workflows": [
+                {
+                    "derivative_deriver_id": ("_episode_derivative_deriver"),
+                    "derivative_mutation_workflows": [
+                        {
+                            "derivative_mutator_id": ("_metadata_derivative_mutator"),
+                        },
+                    ],
+                },
+            ],
+        }
+
+        long_term_memory_resource_definitions = {
+            "_long_term_memory": {
+                "type": "long_term_memory",
+                "name": "long_term_memory",
+                "config": {
+                    "declarative_memory_id": "_declarative_memory",
+                },
+            },
+            "_declarative_memory": {
+                "type": "declarative_memory",
+                "name": "declarative_memory",
+                "config": {
+                    "vector_graph_store_id": vector_graph_store_id,
+                    "embedder_id": embedder_id,
+                    "reranker_id": reranker_id,
+                    "query_derivative_deriver_id": "_query_derivative_deriver",
+                    "related_episode_postulator_ids": [
+                        "_previous_related_episode_postulator"
+                    ],
+                    "derivation_workflows": {
+                        "default": [derivation_workflow_definition],
+                    },
+                    "episode_metadata_template": episode_metadata_template,
+                },
+            },
+            "_previous_related_episode_postulator": {
+                "type": "related_episode_postulator",
+                "name": "previous",
+                "config": {
+                    "vector_graph_store_id": vector_graph_store_id,
+                    "filterable_property_keys": [
+                        "group_id",
+                        "session_id",
+                    ],
+                },
+            },
+            "_query_derivative_deriver": {
+                "type": "derivative_deriver",
+                "name": "identity",
+                "config": {},
+            },
+            "_metadata_derivative_mutator": {
+                "type": "derivative_mutator",
+                "name": "metadata",
+                "config": {
+                    "template": derivative_metadata_template,
+                },
+            },
+            "_episode_derivative_deriver": {
+                "type": "derivative_deriver",
+                "name": derivative_deriver_name,
+                "config": {},
+            },
+            "_null_related_episode_postulator": {
+                "type": "related_episode_postulator",
+                "name": "null",
+                "config": {},
+            },
+        }
+
+        session_memory_resource_definitions = {
+            "_session_memory": {
+                "type": "session_memory",
+                "name": "session_memory",
+                "config": session_memory_config,
+            }
+        }
+
+        resources = ResourceManager.create_resources(
+            long_term_memory_resource_definitions | session_memory_resource_definitions,
+        )
+
+        self._long_term_memory = resources.get("_long_term_memory")
+        self._session_memory = resources.get("_session_memory")
+
+        metrics_manager = config.get("metrics_manager")
+        if metrics_manager is not None and not isinstance(
+            metrics_manager, MetricsManager
+        ):
+            raise TypeError("Metrics factory must be an instance of MetricsManager")
+
+        self._collect_metrics = False
+        if metrics_manager is not None:
+            self._collect_metrics = True
+            self._user_metrics_labels = config.get("user_metrics_labels", {})
+            label_names = self._user_metrics_labels.keys()
+
+            self._ingestion_latency_summary = metrics_manager.get_summary(
+                "ingestion_latency",
+                "Latency of Episode ingestion in milliseconds",
+                label_names=label_names,
             )
-
-            # Initialize short-term session memory
-            self._session_memory = SessionMemory(
-                llm_model,
-                config.get("prompts", {}).get("episode_summary_prompt_system"),
-                config.get("prompts", {}).get("episode_summary_prompt_user"),
-                short_config.get("message_capacity", 1000),
-                short_config.get("max_message_length", 128000),
-                short_config.get("max_token_num", 65536),
-                self._memory_context,
+            self._query_latency_summary = metrics_manager.get_summary(
+                "query_latency",
+                "Latency of query processing in milliseconds",
+                label_names=label_names,
             )
-
-        if len(long_term_config) > 0 and long_term_config.get("enabled") != "false":
-            # Initialize long-term declarative memory
-            self._long_term_memory = LongTermMemory(config, self._memory_context)
-        if self._session_memory is None and self._long_term_memory is None:
-            raise ValueError("No memory is configured")
-
-        # Initialize metrics
-        self._ingestion_latency_summary = metrics_manager.get_summary(
-            "Ingestion_latency", "Latency of Episode ingestion in milliseconds"
-        )
-        self._query_latency_summary = metrics_manager.get_summary(
-            "query_latency", "Latency of query processing in milliseconds"
-        )
-        self._ingestion_counter = metrics_manager.get_counter(
-            "Ingestion_count", "Count of Episode ingestion"
-        )
-        self._query_counter = metrics_manager.get_counter(
-            "query_count", "Count of query processing"
-        )
-
-    @property
-    def short_term_memory(self) -> SessionMemory | None:
-        """
-        Get the short-term memory of the episodic memory instance
-        Returns:
-            The short-term memory of the episodic memory instance.
-        """
-        return self._session_memory
-
-    @short_term_memory.setter
-    def short_term_memory(self, value: SessionMemory | None):
-        """
-        Set the short-term memory of the episodic memory instance
-        This makes the short term memory can be injected
-        Args:
-            value: The new short-term memory of the episodic memory instance.
-        """
-        self._session_memory = value
-
-    @property
-    def long_term_memory(self) -> LongTermMemory | None:
-        """
-        Get the long-term memory of the episodic memory instance
-        Returns:
-            The long-term memory of the episodic memory instance.
-        """
-        return self._long_term_memory
-
-    @long_term_memory.setter
-    def long_term_memory(self, value: LongTermMemory | None):
-        """
-        Set the long-term memory of the episodic memory instance
-        This makes the long term memory can be injected
-        Args:
-            value: The new long-term memory of the episodic memory instance.
-        """
-        self._long_term_memory = value
-
-    def get_memory_context(self) -> MemoryContext:
-        """
-        Get the memory context of the episodic memory instance
-        Returns:
-            The memory context of the episodic memory instance.
-        """
-        return self._memory_context
-
-    def get_reference_count(self) -> int:
-        """
-        Get the reference count of the episodic memory instance
-        Returns:
-            The reference count of the episodic memory instance.
-        """
-        return self._ref_count
+            self._ingestion_counter = metrics_manager.get_counter(
+                "ingestion_count",
+                "Count of Episode ingestion",
+                label_names=label_names,
+            )
+            self._query_counter = metrics_manager.get_counter(
+                "query_count",
+                "Count of query processing",
+                label_names=label_names,
+            )
 
     async def reference(self) -> bool:
         """
@@ -409,7 +448,6 @@ class EpisodicMemory:
         self,
         query: str,
         limit: int | None = None,
-        property_filter: dict | None = None,
     ) -> str:
         """
         Constructs a finalized query string that includes context from memory.

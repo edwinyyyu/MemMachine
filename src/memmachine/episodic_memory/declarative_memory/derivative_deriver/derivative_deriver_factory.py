@@ -1,17 +1,16 @@
 """
-Builder for DerivativeDeriver instances.
+Factory for DerivativeDeriver instances.
 """
 
 from typing import Any
 
-from memmachine.common.builder import Builder
-
+from memmachine.common.factory import Factory
 from .derivative_deriver import DerivativeDeriver
 
 
-class DerivativeDeriverBuilder(Builder):
+class DerivativeDeriverFactory(Factory):
     """
-    Builder for DerivativeDeriver instances.
+    Factory for DerivativeDeriver instances.
     """
 
     @staticmethod

@@ -1,18 +1,18 @@
 """
-Builder for LanguageModel instances.
+Factory for LanguageModel instances.
 """
 
 from typing import Any
 
-from memmachine.common.builder import Builder
-from memmachine.common.metrics_factory.metrics_factory import MetricsFactory
+from memmachine.common.factory import Factory
+from memmachine.common.metrics_manager.metrics_manager import MetricsManager
 
 from .language_model import LanguageModel
 
 
-class LanguageModelBuilder(Builder):
+class LanguageModelFactory(Factory):
     """
-    Builder for LanguageModel instances.
+    Factory for LanguageModel instances.
     """
 
     @staticmethod
@@ -21,8 +21,8 @@ class LanguageModelBuilder(Builder):
 
         match variant:
             case "openai":
-                if "metrics_factory_id" in config:
-                    dependency_ids.add(config["metrics_factory_id"])
+                if "metrics_manager_id" in config:
+                    dependency_ids.add(config["metrics_manager_id"])
 
         return dependency_ids
 
@@ -30,27 +30,27 @@ class LanguageModelBuilder(Builder):
     def build(
         variant: str, config: dict[str, Any], injections: dict[str, Any]
     ) -> LanguageModel:
-        def get_metrics_factory(config: dict[str, Any]):
-            injected_metrics_factory_id = config.get("metrics_factory_id")
-            if injected_metrics_factory_id is None:
-                injected_metrics_factory = None
-            elif not isinstance(injected_metrics_factory_id, str):
-                raise TypeError("metrics_factory_id must be a string if provided")
+        def get_metrics_manager(config: dict[str, Any]):
+            injected_metrics_manager_id = config.get("metrics_manager_id")
+            if injected_metrics_manager_id is None:
+                injected_metrics_manager = None
+            elif not isinstance(injected_metrics_manager_id, str):
+                raise TypeError("metrics_manager_id must be a string if provided")
             else:
-                injected_metrics_factory = injections.get(injected_metrics_factory_id)
-                if injected_metrics_factory is None:
+                injected_metrics_manager = injections.get(injected_metrics_manager_id)
+                if injected_metrics_manager is None:
                     raise ValueError(
-                        "MetricsFactory with id "
-                        f"{injected_metrics_factory_id} "
+                        "MetricsManager with id "
+                        f"{injected_metrics_manager_id} "
                         "not found in injections"
                     )
-                if not isinstance(injected_metrics_factory, MetricsFactory):
+                if not isinstance(injected_metrics_manager, MetricsManager):
                     raise TypeError(
                         "Injected dependency with id "
-                        f"{injected_metrics_factory_id} "
-                        "is not a MetricsFactory"
+                        f"{injected_metrics_manager_id} "
+                        "is not a MetricsManager"
                     )
-            return injected_metrics_factory
+            return injected_metrics_manager
 
         match variant:
             case "openai":
@@ -60,10 +60,10 @@ class LanguageModelBuilder(Builder):
                     {
                         key: value
                         for key, value in config.items()
-                        if key != "metrics_factory_id"
+                        if key != "metrics_manager_id"
                     }
                     | {
-                        "metrics_factory": get_metrics_factory(config),
+                        "metrics_manager": get_metrics_manager(config),
                     }
                 )
 
@@ -76,10 +76,10 @@ class LanguageModelBuilder(Builder):
                     {
                         key: value
                         for key, value in config.items()
-                        if key != "metrics_factory_id"
+                        if key != "metrics_manager_id"
                     }
                     | {
-                        "metrics_factory": get_metrics_factory(config),
+                        "metrics_manager": get_metrics_manager(config),
                     }
                 )
 

@@ -1,17 +1,16 @@
 """
-Builder for RelatedEpisodePostulator instances.
+Factory for RelatedEpisodePostulator instances.
 """
 
 from typing import Any
 
-from memmachine.common.builder import Builder
-
+from memmachine.common.factory import Factory
 from .related_episode_postulator import RelatedEpisodePostulator
 
 
-class RelatedEpisodePostulatorBuilder(Builder):
+class RelatedEpisodePostulatorFactory(Factory):
     """
-    Builder for RelatedEpisodePostulator instances.
+    Factory for RelatedEpisodePostulator instances.
     """
 
     @staticmethod

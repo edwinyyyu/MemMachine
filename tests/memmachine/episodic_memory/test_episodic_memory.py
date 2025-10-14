@@ -84,10 +84,10 @@ def episodic_memory_instance(mock_manager, mock_config, memory_context):
     """Provides an EpisodicMemory instance with mocked dependencies."""
     with (
         patch(
-            "memmachine.episodic_memory.episodic_memory.LanguageModelBuilder"
+            "memmachine.episodic_memory.episodic_memory.LanguageModelFactory"
         ) as MockLMB,
         patch(
-            "memmachine.episodic_memory.episodic_memory.MetricsFactoryBuilder"
+            "memmachine.episodic_memory.episodic_memory.MetricsManagerFactory"
         ) as MockMFB,
         patch(
             "memmachine.episodic_memory.episodic_memory.SessionMemory"
@@ -96,7 +96,7 @@ def episodic_memory_instance(mock_manager, mock_config, memory_context):
             "memmachine.episodic_memory.episodic_memory.LongTermMemory"
         ) as MockLongTermMemory,
     ):
-        # Mock the builders and their build methods
+        # Mock the factories and their build methods
         mock_model = MagicMock()
         MockLMB.build.return_value = mock_model
 
@@ -134,16 +134,16 @@ def episodic_memory_instance_without_sessionmemory(
     """Provides an EpisodicMemory instance with mocked dependencies."""
     with (
         patch(
-            "memmachine.episodic_memory.episodic_memory.LanguageModelBuilder"
+            "memmachine.episodic_memory.episodic_memory.LanguageModelFactory"
         ) as MockLMB,
         patch(
-            "memmachine.episodic_memory.episodic_memory.MetricsFactoryBuilder"
+            "memmachine.episodic_memory.episodic_memory.MetricsManagerFactory"
         ) as MockMFB,
         patch(
             "memmachine.episodic_memory.episodic_memory.LongTermMemory"
         ) as MockLongTermMemory,
     ):
-        # Mock the builders and their build methods
+        # Mock the factories and their build methods
         mock_model = MagicMock()
         MockLMB.build.return_value = mock_model
 
@@ -174,16 +174,16 @@ def episodic_memory_instance_without_longterm(
     """Provides an EpisodicMemory instance with mocked dependencies."""
     with (
         patch(
-            "memmachine.episodic_memory.episodic_memory.LanguageModelBuilder"
+            "memmachine.episodic_memory.episodic_memory.LanguageModelFactory"
         ) as MockLMB,
         patch(
-            "memmachine.episodic_memory.episodic_memory.MetricsFactoryBuilder"
+            "memmachine.episodic_memory.episodic_memory.MetricsManagerFactory"
         ) as MockMFB,
         patch(
             "memmachine.episodic_memory.episodic_memory.SessionMemory"
         ) as MockSessionMemory,
     ):
-        # Mock the builders and their build methods
+        # Mock the factories and their build methods
         mock_model = MagicMock()
         MockLMB.build.return_value = mock_model
 

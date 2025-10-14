@@ -1,7 +1,7 @@
 from .language_model import LanguageModel
-from .language_model_builder import LanguageModelBuilder
+from .language_model_factory import LanguageModelFactory
 
 __all__ = [
     "LanguageModel",
-    "LanguageModelBuilder",
+    "LanguageModelFactory",
 ]

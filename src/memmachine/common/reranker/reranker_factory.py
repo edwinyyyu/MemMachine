@@ -1,17 +1,17 @@
 """
-Builder for Reranker instances.
+Factory for Reranker instances.
 """
 
 from typing import Any
 
-from memmachine.common.builder import Builder
+from memmachine.common.factory import Factory
 
 from .reranker import Reranker
 
 
-class RerankerBuilder(Builder):
+class RerankerFactory(Factory):
     """
-    Builder for Reranker instances.
+    Factory for Reranker instances.
     """
 
     @staticmethod

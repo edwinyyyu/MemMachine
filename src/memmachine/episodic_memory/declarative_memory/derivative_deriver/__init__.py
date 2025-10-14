@@ -1,7 +1,7 @@
 from .derivative_deriver import DerivativeDeriver
-from .derivative_deriver_builder import DerivativeDeriverBuilder
+from .derivative_deriver_factory import DerivativeDeriverFactory
 
 __all__ = [
     "DerivativeDeriver",
-    "DerivativeDeriverBuilder",
+    "DerivativeDeriverFactory",
 ]

@@ -11,7 +11,7 @@ from uuid import uuid4
 import openai
 
 from memmachine.common.data_types import ExternalServiceAPIError
-from memmachine.common.metrics_factory.metrics_factory import MetricsFactory
+from memmachine.common.metrics_manager.metrics_manager import MetricsManager
 
 from .data_types import SimilarityMetric
 from .embedder import Embedder
@@ -43,8 +43,8 @@ class OpenAIEmbedder(Embedder):
                   (default: None).
                 - base_url (str, optional):
                   Base URL of the OpenAI embedding model to use.
-                - metrics_factory (MetricsFactory, optional):
-                  An instance of MetricsFactory
+                - metrics_manager (MetricsManager, optional):
+                  An instance of MetricsManager
                   for collecting usage metrics.
                 - user_metrics_labels (dict[str, str], optional):
                   Labels to attach to the collected metrics.
@@ -116,11 +116,11 @@ class OpenAIEmbedder(Embedder):
             api_key=api_key, base_url=config.get("base_url")
         )
 
-        metrics_factory = config.get("metrics_factory")
-        if metrics_factory is not None and not isinstance(
-            metrics_factory, MetricsFactory
+        metrics_manager = config.get("metrics_manager")
+        if metrics_manager is not None and not isinstance(
+            metrics_manager, MetricsManager
         ):
-            raise TypeError("Metrics factory must be an instance of MetricsFactory")
+            raise TypeError("Metrics factory must be an instance of MetricsManager")
 
         self._max_retry_interval_seconds = config.get("max_retry_interval_seconds", 120)
         if not isinstance(self._max_retry_interval_seconds, int):
@@ -129,22 +129,22 @@ class OpenAIEmbedder(Embedder):
             raise ValueError("max_retry_interval_seconds must be a positive integer")
 
         self._collect_metrics = False
-        if metrics_factory is not None:
+        if metrics_manager is not None:
             self._collect_metrics = True
             self._user_metrics_labels = config.get("user_metrics_labels", {})
             label_names = self._user_metrics_labels.keys()
 
-            self._prompt_tokens_usage_counter = metrics_factory.get_counter(
+            self._prompt_tokens_usage_counter = metrics_manager.get_counter(
                 "embedder_openai_usage_prompt_tokens",
                 "Number of tokens used by prompts to OpenAI embedder",
                 label_names=label_names,
             )
-            self._total_tokens_usage_counter = metrics_factory.get_counter(
+            self._total_tokens_usage_counter = metrics_manager.get_counter(
                 "embedder_openai_usage_total_tokens",
                 "Number of tokens used by requests to OpenAI embedder",
                 label_names=label_names,
             )
-            self._latency_summary = metrics_factory.get_summary(
+            self._latency_summary = metrics_manager.get_summary(
                 "embedder_openai_latency_seconds",
                 "Latency in seconds for OpenAI embedder requests",
                 label_names=label_names,

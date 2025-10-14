@@ -4,19 +4,20 @@ episodic and semantic memory.
 """
 
 import asyncio
-import functools
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from string import Template
-from typing import Any, Self, cast
+from typing import cast
 from uuid import uuid4
 
 from memmachine.common.data_types import ExternalServiceAPIError
 from memmachine.common.embedder.embedder import Embedder
 from memmachine.common.reranker.reranker import Reranker
 from memmachine.common.vector_graph_store import Edge, Node, VectorGraphStore
+
+from pydantic import BaseModel, Field
 
 from .data_types import (
     ContentType,
@@ -31,29 +32,58 @@ from .data_types import (
 from .derivative_deriver import DerivativeDeriver
 from .derivative_mutator import DerivativeMutator
 from .related_episode_postulator import RelatedEpisodePostulator
+from .workflow import Workflow
 
 logger = logging.getLogger(__name__)
 
+
+class DeclarativeMemoryConfig(BaseModel):
+    """
+    Configuration for the declarative memory system.
+
+    Attributes:
+        episode_metadata_template (str, optional):
+            Template string supporting $-substitutions
+            (default: "[$timestamp] $content").
+    """
+    episode_metadata_template: str = Field(
+        "[$timestamp] $content",
+        description=(
+            "Template string supporting $-substitutions "
+            "to format episodes with episode metadata for the reranker "
+            "(default: '[$timestamp] $content')."
+        ),
+    )
 
 class DeclarativeMemory:
     """
     Memory system for episodic and semantic memory.
     """
 
-    def __init__(self, config: dict[str, Any]):
+    def __init__(
+        self,
+        config: DeclarativeMemoryConfig,
+        embedder: Embedder,
+        reranker: Reranker,
+        vector_graph_store: VectorGraphStore,
+        episode_connection_postulators: Iterable[RelatedEpisodePostulator],
+        ingestion_workflows: Mapping[str, Iterable[Workflow]],
+        query_workflow: Mapping[str, Workflow],
+    ):
         """
         Initialize a DeclarativeMemory with the provided config.
 
         Args:
-            config (dict[str, Any]):
-                Configuration dictionary containing:
-                - vector_graph_store:
-                  VectorGraphStore instance
-                  for storing and retrieving memories.
-                - embedder:
-                  Embedder instance for similarity checks.
-                - reranker:
-                  Reranker instance for reranking search results.
+            config (DeclarativeMemoryConfig):
+                Configuration for the declarative memory system.
+            embedder (Embedder):
+                Embedder for creating embeddings.
+            reranker (Reranker):
+                Reranker for reranking search results.
+            vector_graph_store (VectorGraphStore):
+                Vector graph store for storing and retrieving memories.
+
+
                 - related_episode_postulators:
                   List of RelatedEpisodePostulator instances
                   for connecting related episodes.
@@ -79,9 +109,6 @@ class DeclarativeMemory:
                             - derivative_mutator:
                               DerivativeMutator instance
                               used for mutating derivatives.
-                - episode_metadata_template:
-                    Template string supporting $-substitutions
-                    (default: "[$timestamp] $content").
         """
 
         self._vector_graph_store: VectorGraphStore = config["vector_graph_store"]
@@ -89,126 +116,15 @@ class DeclarativeMemory:
         self._embedder: Embedder = config["embedder"]
         self._reranker: Reranker = config["reranker"]
 
-        self._related_episode_postulators: list[RelatedEpisodePostulator] = config[
-            "related_episode_postulators"
+        self._episode_connection_related_episode_postulators: list[RelatedEpisodePostulator] = config[
+            "episode_connection_related_episode_postulators"
         ]
         self._query_derivative_deriver: DerivativeDeriver = config[
             "query_derivative_deriver"
         ]
 
-        def build_episode_cluster_assembly_workflow(
-            config: dict[str, Any],
-        ) -> DeclarativeMemory.Workflow:
-            return DeclarativeMemory.Workflow(
-                executable=functools.partial(
-                    DeclarativeMemory._assemble_episode_cluster,
-                    config["related_episode_postulator"],
-                ),
-                subworkflows=[
-                    build_derivative_derivation_workflow(derivative_derivation_workflow)
-                    for derivative_derivation_workflow in config[
-                        "derivative_derivation_workflows"
-                    ]
-                ],
-                callback=self._process_episode_cluster_assembly,
-            )
-
-        def build_derivative_derivation_workflow(
-            config: dict[str, Any],
-        ) -> DeclarativeMemory.Workflow:
-            return DeclarativeMemory.Workflow(
-                executable=functools.partial(
-                    DeclarativeMemory._derive_derivatives,
-                    config["derivative_deriver"],
-                ),
-                subworkflows=[
-                    build_derivative_mutation_workflow(derivative_mutation_workflow)
-                    for derivative_mutation_workflow in config[
-                        "derivative_mutation_workflows"
-                    ]
-                ],
-                callback=self._process_derivative_derivation,
-            )
-
-        def build_derivative_mutation_workflow(
-            config: dict[str, Any],
-        ) -> DeclarativeMemory.Workflow:
-            return DeclarativeMemory.Workflow(
-                executable=functools.partial(
-                    DeclarativeMemory._mutate_derivatives,
-                    config["derivative_mutator"],
-                ),
-                callback=self._process_derivative_mutation,
-            )
-
-        self._derivation_workflows = {
-            episode_type: [
-                build_episode_cluster_assembly_workflow(workflow_config)
-                for workflow_config in derivation_workflows
-            ]
-            for episode_type, derivation_workflows in config[
-                "derivation_workflows"
-            ].items()
-        }
-
-        self._episode_metadata_template = Template(
-            config.get("episode_metadata_template", "[$timestamp] $content")
-        )
-
-    class Workflow:
-        def __init__(
-            self,
-            executable: Callable[..., Awaitable],
-            subworkflows: list[Self] = [],
-            callback: Callable[..., Awaitable] | None = None,
-        ):
-            """
-            Initialize a Workflow.
-
-            Args:
-                executable (Callable[..., Awaitable]):
-                    An asynchronous callable
-                    that performs the main operation of the workflow.
-                subworkflows (list[Workflow], optional):
-                    A list of subworkflows to execute
-                    on the result of the main operation (default: []).
-                callback (Callable[..., Awaitable], optional):
-                    An asynchronous callable that processes
-                    the results of the main operation
-                    and subworkflows (default: None).
-            """
-            self._executable = executable
-            self._subworkflows = subworkflows
-            self._callback = callback
-
-        async def execute(self, arguments: Any) -> Any:
-            """
-            Execute the workflow with the provided arguments.
-
-            Args:
-                arguments (Any): Arguments to pass to the executable.
-
-            Returns:
-                Any:
-                    The result of the workflow execution,
-                    potentially processed by the callback if provided.
-            """
-            execution_result = await self._executable(arguments)
-
-            subworkflow_results = await asyncio.gather(
-                *[
-                    subworkflow.execute(execution_result)
-                    for subworkflow in self._subworkflows
-                ]
-            )
-
-            if self._callback is not None:
-                if subworkflow_results:
-                    return await self._callback(execution_result, subworkflow_results)
-                else:
-                    return await self._callback(execution_result)
-
-            return execution_result
+        self._ingestion_workflows = ingestion_workflows
+        self._episode_metadata_template = Template(config.episode_metadata_template)
 
     @staticmethod
     async def _assemble_episode_cluster(

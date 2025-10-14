@@ -12,15 +12,15 @@ from prometheus_client import Gauge as PrometheusGauge
 from prometheus_client import Histogram as PrometheusHistogram
 from prometheus_client import Summary as PrometheusSummary
 
-from .metrics_factory import MetricsFactory
+from .metrics_manager import MetricsManager
 
 
-class PrometheusMetricsFactory(MetricsFactory):
+class PrometheusMetricsManager(MetricsManager):
     """
-    Prometheus-based implementation of MetricsFactory.
+    Prometheus-based implementation of MetricsManager.
     """
 
-    class Counter(MetricsFactory.Counter):
+    class Counter(MetricsManager.Counter):
         """
         Prometheus-based implementation of a counter metric.
         """
@@ -34,7 +34,7 @@ class PrometheusMetricsFactory(MetricsFactory):
             else:
                 self._counter.inc(value)
 
-    class Gauge(MetricsFactory.Gauge):
+    class Gauge(MetricsManager.Gauge):
         """
         Prometheus-based implementation of a gauge metric.
         """
@@ -48,7 +48,7 @@ class PrometheusMetricsFactory(MetricsFactory):
             else:
                 self._gauge.set(value)
 
-    class Histogram(MetricsFactory.Histogram):
+    class Histogram(MetricsManager.Histogram):
         """
         Prometheus-based implementation of a histogram metric.
         """
@@ -62,7 +62,7 @@ class PrometheusMetricsFactory(MetricsFactory):
             else:
                 self._histogram.observe(value)
 
-    class Summary(MetricsFactory.Summary):
+    class Summary(MetricsManager.Summary):
         """
         Prometheus-based implementation of a summary metric.
         """
@@ -86,11 +86,11 @@ class PrometheusMetricsFactory(MetricsFactory):
         label_names: Iterable[str] = (),
     ) -> Counter:
         if name not in self._metrics:
-            self._metrics[name] = PrometheusMetricsFactory.Counter(
+            self._metrics[name] = PrometheusMetricsManager.Counter(
                 PrometheusCounter(name, description, labelnames=label_names)
             )
         counter = self._metrics[name]
-        if not isinstance(counter, PrometheusMetricsFactory.Counter):
+        if not isinstance(counter, PrometheusMetricsManager.Counter):
             raise ValueError(f"{name} is not the name of a Counter")
 
         return counter
@@ -102,11 +102,11 @@ class PrometheusMetricsFactory(MetricsFactory):
         label_names: Iterable[str] = (),
     ) -> Gauge:
         if name not in self._metrics:
-            self._metrics[name] = PrometheusMetricsFactory.Gauge(
+            self._metrics[name] = PrometheusMetricsManager.Gauge(
                 PrometheusGauge(name, description, labelnames=label_names)
             )
         gauge = self._metrics[name]
-        if not isinstance(gauge, PrometheusMetricsFactory.Gauge):
+        if not isinstance(gauge, PrometheusMetricsManager.Gauge):
             raise ValueError(f"{name} is not the name of a Gauge")
 
         return gauge
@@ -118,11 +118,11 @@ class PrometheusMetricsFactory(MetricsFactory):
         label_names: Iterable[str] = (),
     ) -> Histogram:
         if name not in self._metrics:
-            self._metrics[name] = PrometheusMetricsFactory.Histogram(
+            self._metrics[name] = PrometheusMetricsManager.Histogram(
                 PrometheusHistogram(name, description, labelnames=label_names)
             )
         histogram = self._metrics[name]
-        if not isinstance(histogram, PrometheusMetricsFactory.Histogram):
+        if not isinstance(histogram, PrometheusMetricsManager.Histogram):
             raise ValueError(f"{name} is not the name of a Histogram")
 
         return histogram
@@ -134,11 +134,11 @@ class PrometheusMetricsFactory(MetricsFactory):
         label_names: Iterable[str] = (),
     ) -> Summary:
         if name not in self._metrics:
-            self._metrics[name] = PrometheusMetricsFactory.Summary(
+            self._metrics[name] = PrometheusMetricsManager.Summary(
                 PrometheusSummary(name, description, labelnames=label_names)
             )
         summary = self._metrics[name]
-        if not isinstance(summary, PrometheusMetricsFactory.Summary):
+        if not isinstance(summary, PrometheusMetricsManager.Summary):
             raise ValueError(f"{name} is not the name of a Summary")
 
         return summary

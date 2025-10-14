@@ -175,7 +175,7 @@ async def http_app_lifespan(application: FastAPI):
             api_key = model_def.get("api_key", api_key)
             model = model_def.get("model_name", model)
 
-    # TODO switch to using builder initialization
+    # TODO switch to using factory initialization
     llm_model = OpenAILanguageModel({"api_key": api_key, "model": model})
     embeddings = OpenAIEmbedder({"api_key": api_key})
 

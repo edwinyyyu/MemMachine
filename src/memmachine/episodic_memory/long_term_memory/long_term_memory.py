@@ -1,9 +1,21 @@
 from collections.abc import Mapping
 
+from pydantic import BaseModel, Field
+
+from memmachine.common.factory import Factory
+from memmachine.common.embedder import Embedder
+from memmachine.common.reranker import Reranker
+from memmachine.common.resource_manager import ResourceManager
+from memmachine.common.vector_graph_store import VectorGraphStore
+from memmachine.config import ResourceDefinition
+
 from ..data_types import ContentType, Episode
 from ..declarative_memory import ContentType as DeclarativeMemoryContentType
-from ..declarative_memory import DeclarativeMemory
+from ..declarative_memory import DeclarativeMemory, DeclarativeMemoryConfig
 from ..declarative_memory import Episode as DeclarativeMemoryEpisode
+from ..declarative_memory.derivative_deriver import DerivativeDeriver, DerivativeDeriverFactory
+from ..declarative_memory.derivative_mutator import DerivativeMutator, DerivativeMutatorFactory
+from ..declarative_memory.related_episode_postulator import RelatedEpisodePostulator, RelatedEpisodePostulatorFactory
 
 content_type_to_declarative_memory_content_type_map = {
     ContentType.STRING: DeclarativeMemoryContentType.STRING,
@@ -13,10 +25,79 @@ declarative_memory_content_type_to_content_type_map = {
     DeclarativeMemoryContentType.STRING: ContentType.STRING,
 }
 
+resource_type_factory_map: dict[str, Factory] = {
+    "derivative_deriver": DerivativeDeriverFactory,
+    "derivative_mutator": DerivativeMutatorFactory,
+    "related_episode_postulator": RelatedEpisodePostulatorFactory,
+}
+
+class LongTermMemoryConfig(BaseModel):
+    metadata_prefix: str = Field(
+        "[$timestamp] $producer_id: ",
+        description=(
+            "Template prefix supporting $-substitutions "
+            "to format episodes with episode metadata for the reranker "
+            "(default: '[$timestamp] $producer_id: ')."
+        )
+    )
+
+    workflow_specification: None = None
+
+    # TODO: Convert from config file format (type first) to this format (homogeneous) in previous layer.
+    resource_definitions: dict[str, ResourceDefinition]
 
 class LongTermMemory:
-    def __init__(self, declarative_memory: DeclarativeMemory):
-        self._declarative_memory = declarative_memory
+    def __init__(
+        self,
+        config: LongTermMemoryConfig,
+        embedder: Embedder, # TODO: make this part of workflow spec
+        reranker: Reranker,
+        vector_graph_store: VectorGraphStore,
+        resource_manager: ResourceManager,
+    ):
+        episode_metadata_template = f"{config.metadata_prefix}$content"
+
+        # Only execute the following couple of blocks if workflow overriden.
+
+        # LongTermMemory is responsible for providing dependencies
+        # to its internal DeclarativeMemory.
+        # Create all derivative derivers, mutators, related episode postulators here based on workflow spec and workflow resources.
+        {
+            dependency_id: resource_manager.get_resource(dependency_id)
+            for dependency_id in DerivativeDeriverFactory.get_dependency_ids(variant, config) # Loop this.
+        }
+
+        for resource_id, resource_definition in config.resource_definitions.items():
+            resource_factory = resource_type_factory_map.get(resource_definition.type)
+            if resource_factory is None:
+                raise ValueError(f"Unknown resource type: {resource_definition.type}")
+
+            injections = resource_manager.resolve_resources(
+                resource_definition.dependency_ids
+            )
+
+            resource = resource_factory.create(
+
+            )
+
+
+
+        DerivativeDeriverFactory.build(variant, config, injections) # Loop this.
+        DerivativeMutatorFactory.build(variant, config, injections) # Loop this.
+        RelatedEpisodePostulatorFactory.build(variant, config, injections) # Loop this.
+
+        declarative_memory_config = DeclarativeMemoryConfig(
+            episode_metadata_template=episode_metadata_template,
+        )
+
+        self._declarative_memory = DeclarativeMemory(
+            declarative_memory_config,
+            embedder=embedder,
+            reranker=reranker,
+            vector_graph_store=vector_graph_store,
+            ingestion_workflow=ingestion_workflow,
+            query_workflow=query_workflow,
+        )
 
     async def add_episode(self, episode: Episode):
         declarative_memory_episode = DeclarativeMemoryEpisode(
