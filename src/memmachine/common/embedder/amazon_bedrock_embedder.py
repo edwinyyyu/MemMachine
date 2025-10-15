@@ -40,6 +40,9 @@ class AmazonBedrockEmbedderConfig(BaseModel):
         similarity_metric (SimilarityMetric):
             Similarity metric to use for comparing embeddings
             (default: SimilarityMetric.COSINE).
+        max_retry_interval_seconds (int, optional):
+            Maximal retry interval in seconds
+            (default: 120).
     """
 
     region: str = Field(
@@ -66,6 +69,11 @@ class AmazonBedrockEmbedderConfig(BaseModel):
         SimilarityMetric.COSINE,
         description="Similarity metric to use for comparing embeddings.",
     )
+    max_retry_interval_seconds: int = Field(
+        120,
+        description="Maximal retry interval in seconds (defualt: 120).",
+        gt=0,
+    )
 
 
 class AmazonBedrockEmbedder(Embedder):
@@ -91,6 +99,7 @@ class AmazonBedrockEmbedder(Embedder):
         self._model_id = config.model_id
         self._dimensions = config.dimensions
         self._similarity_metric = config.similarity_metric
+        self._max_retry_interval_seconds = config.max_retry_interval_seconds
 
         self._embeddings = BedrockEmbeddings(
             region_name=region,
@@ -192,7 +201,9 @@ class AmazonBedrockEmbedder(Embedder):
                     attempt,
                     type(e).__name__,
                 )
-                await asyncio.sleep(sleep_seconds)
+                await asyncio.sleep(
+                    min(sleep_seconds, self._max_retry_interval_seconds)
+                )
                 sleep_seconds *= 2
 
         end_time = time.monotonic()
