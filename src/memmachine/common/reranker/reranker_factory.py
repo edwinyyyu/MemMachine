@@ -19,7 +19,7 @@ class RerankerFactory(Factory):
     def create(
         variant: str,
         config: dict[str, ConfigValue],
-        dependencies: Nested[str],
+        dependencies: dict[str, Nested[str]],
         injections: dict[str, Any],
     ) -> Reranker:
         match variant:
@@ -45,9 +45,10 @@ class RerankerFactory(Factory):
                 from .embedder_reranker import EmbedderReranker
 
                 return EmbedderReranker(
-                    {
-                        "embedder": injections[config["embedder_id"]],
-                    }
+                    dict(config) |
+                    Factory.inject_dependencies(
+                        dependencies, injections
+                    )
                 )
             case "identity":
                 from .identity_reranker import IdentityReranker
@@ -57,17 +58,10 @@ class RerankerFactory(Factory):
                 from .rrf_hybrid_reranker import RRFHybridReranker
 
                 return RRFHybridReranker(
-                    {
-                        key: value
-                        for key, value in config.items()
-                        if key != "reranker_ids"
-                    }
-                    | {
-                        "rerankers": [
-                            injections[reranker_id]
-                            for reranker_id in config["reranker_ids"]
-                        ],
-                    }
+                    dict(config) |
+                    Factory.inject_dependencies(
+                        dependencies, injections
+                    )
                 )
             case _:
                 raise ValueError(f"Unknown Reranker variant: {variant}")

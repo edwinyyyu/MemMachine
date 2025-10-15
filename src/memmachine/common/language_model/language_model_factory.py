@@ -20,7 +20,7 @@ class LanguageModelFactory(Factory):
     def create(
         variant: str,
         config: dict[str, ConfigValue],
-        dependencies: Nested[str],
+        dependencies: dict[str, Nested[str]],
         injections: dict[str, Any],
     ) -> LanguageModel:
         match variant:
@@ -29,9 +29,6 @@ class LanguageModelFactory(Factory):
 
                 # TODO: Temporary until refactoring of OpenAILanguageModel is done,
                 # so that we do not union config and injected dependencies.
-                if not isinstance(dependencies, dict):
-                    raise TypeError("Dependencies must be a dictionary for OpenAILanguageModel")
-
                 return OpenAILanguageModel(
                     dict(config) |
                     Factory.inject_dependencies(
@@ -46,9 +43,6 @@ class LanguageModelFactory(Factory):
 
                 # TODO: Temporary until refactoring of OpenAICompatibleLanguageModel is done,
                 # so that we do not union config and injected dependencies.
-                if not isinstance(dependencies, dict):
-                    raise TypeError("Dependencies must be a dictionary for OpenAICompatibleLanguageModel")
-
                 return OpenAICompatibleLanguageModel(
                     dict(config) |
                     Factory.inject_dependencies(

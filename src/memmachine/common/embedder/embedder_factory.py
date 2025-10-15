@@ -19,7 +19,7 @@ class EmbedderFactory(Factory):
     def create(
         variant: str,
         config: dict[str, ConfigValue],
-        dependencies: Nested[str],
+        dependencies: dict[str, Nested[str]],
         injections: dict[str, Any],
     ) -> Embedder:
         match variant:
@@ -28,9 +28,6 @@ class EmbedderFactory(Factory):
 
                 # TODO: Temporary until refactoring of OpenAIEmbedder is done,
                 # so that we do not union config and injected dependencies.
-                if not isinstance(dependencies, dict):
-                    raise TypeError("Dependencies must be a dictionary for OpenAIEmbedder")
-
                 return OpenAIEmbedder(
                     dict(config) |
                     Factory.inject_dependencies(

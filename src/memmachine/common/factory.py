@@ -19,7 +19,7 @@ class Factory(ABC):
     def create(
         variant: str,
         config: dict[str, ConfigValue],
-        dependencies: Nested[str],
+        dependencies: dict[str, Nested[str]],
         injections: dict[str, Any]
     ) -> Any:
         """
@@ -33,7 +33,7 @@ class Factory(ABC):
                 The variant of the resource to create.
             config (dict[str, ConfigValue]):
                 The configuration dictionary for the resource.
-            dependencies (Nested[str]):
+            dependencies (dict[str, Nested[str]]):
                 The nested structure (list/dict) of dependency IDs to wire.
             injections (dict[str, Any]):
                 A dictionary of injected dependencies,
@@ -44,34 +44,49 @@ class Factory(ABC):
 
     @staticmethod
     def inject_dependencies(
-        dependencies: Nested[str],
+        dependencies: dict[str, Nested[str]],
         injections: dict[str, Any]
-    ) -> Nested[Any]:
+    ) -> dict[str, Nested[Any]]:
         """
-        Recursively replace dependency IDs in the nested structure
-        with the actual injected resource instances.
+        Inject dependencies into a nested structure
+        by replacing IDs with their corresponding instances.
 
         Args:
-            dependencies (Nested[str]):
-                The nested structure (list/dict) of dependency IDs.
+            dependencies (dict[str, Nested[str]]):
+                The nested structure (list/dict) containing dependency IDs.
             injections (dict[str, Any]):
-                A dictionary of injected dependencies,
-                where keys are dependency IDs
-                and values are the corresponding resource instances.
+                A dictionary mapping IDs to their corresponding instances.
         """
-        if isinstance(dependencies, str):
-            if dependencies not in injections:
-                raise ValueError(f"Dependency with id {dependencies} not found in injections")
-            return injections[dependencies]
-        elif isinstance(dependencies, list):
+        return Factory._replace_nested_ids(dependencies, injections)
+
+    @staticmethod
+    def _inject_nested_ids(
+        nested: Nested[str],
+        injections: dict[str, Any],
+    ) -> Nested[Any]:
+        """
+        Recursively replace IDs in a nested structure
+        with their corresponding values from an injections dictionary.
+
+        Args:
+            nested_ids (Nested[str]):
+                A nested structure (list/dict) containing string IDs.
+            injections (dict[str, Any]):
+                A dictionary mapping IDs to their corresponding instances.
+        """
+        if isinstance(nested, str):
+            if nested not in injections:
+                raise ValueError(f"Instance with id {nested} not found in injections")
+            return injections[nested]
+        elif isinstance(nested, list):
             return [
-                Factory.inject_dependencies(dependency, injections)
-                for dependency in dependencies
+                Factory._inject_nested_ids(item, injections)
+                for item in nested
             ]
-        elif isinstance(dependencies, dict):
+        elif isinstance(nested, dict):
             return {
-                key: Factory.inject_dependencies(value, injections)
-                for key, value in dependencies.items()
+                key: Factory._inject_nested_ids(value, injections)
+                for key, value in nested.items()
             }
         else:
-            raise TypeError("Dependencies must be a string, list, or dict")
+            raise TypeError("Nested structure must be a string, list, or dict")

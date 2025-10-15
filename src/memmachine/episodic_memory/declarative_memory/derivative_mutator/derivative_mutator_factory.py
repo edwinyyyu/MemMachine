@@ -18,7 +18,7 @@ class DerivativeMutatorFactory(Factory):
     def create(
         variant: str,
         config: dict[str, ConfigValue],
-        dependencies: Nested[str],
+        dependencies: dict[str, Nested[str]],
         injections: dict[str, Any],
     ) -> DerivativeMutator:
         match variant:

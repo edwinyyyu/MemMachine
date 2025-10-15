@@ -24,7 +24,7 @@ class ResourceDefinition(BaseModel):
     type: str
     variant: str
     config: dict[str, ConfigValue]
-    dependencies: Nested[str] # TODO @edwinyyyu: documentation
+    dependencies: dict[str, Nested[str]] # TODO @edwinyyyu: documentation
 
 
 class ExternalServiceAPIError(Exception):
