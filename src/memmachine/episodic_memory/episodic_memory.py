@@ -194,7 +194,7 @@ class EpisodicMemory:
         if metrics_manager is not None and not isinstance(
             metrics_manager, MetricsManager
         ):
-            raise TypeError("Metrics factory must be an instance of MetricsManager")
+            raise TypeError("Metrics manager must be an instance of MetricsManager")
 
         self._collect_metrics = False
         if metrics_manager is not None:

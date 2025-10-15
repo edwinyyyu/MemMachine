@@ -120,7 +120,7 @@ class OpenAIEmbedder(Embedder):
         if metrics_manager is not None and not isinstance(
             metrics_manager, MetricsManager
         ):
-            raise TypeError("Metrics factory must be an instance of MetricsManager")
+            raise TypeError("Metrics manager must be an instance of MetricsManager")
 
         self._max_retry_interval_seconds = config.get("max_retry_interval_seconds", 120)
         if not isinstance(self._max_retry_interval_seconds, int):

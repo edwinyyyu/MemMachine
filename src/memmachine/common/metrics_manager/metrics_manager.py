@@ -1,5 +1,5 @@
 """
-Abstract base classes for a metrics factory and its metrics.
+Abstract base classes for a metrics manager and its metrics.
 
 Defines the interface for creating and managing different types
 of metrics such as counters, gauges, histograms, and summaries.

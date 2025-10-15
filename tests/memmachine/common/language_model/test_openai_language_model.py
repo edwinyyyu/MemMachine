@@ -119,7 +119,7 @@ def test_init_invalid_metrics_manager_type(minimal_config):
     """Test initialization fails with invalid metrics_manager type."""
     config = {**minimal_config, "metrics_manager": "not-a-factory"}
     with pytest.raises(
-        TypeError, match="Metrics factory must be an instance of MetricsManager"
+        TypeError, match="Metrics manager must be an instance of MetricsManager"
     ):
         OpenAILanguageModel(config)
 

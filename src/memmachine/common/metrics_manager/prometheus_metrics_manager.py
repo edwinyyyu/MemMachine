@@ -1,5 +1,5 @@
 """
-Prometheus-based metrics factory and metrics implementations.
+Prometheus-based metrics manager and metrics implementations.
 
 Uses the prometheus_client library
 to create and manage Prometheus metrics.
