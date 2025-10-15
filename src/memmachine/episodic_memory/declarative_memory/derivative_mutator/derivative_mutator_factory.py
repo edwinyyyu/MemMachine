@@ -40,9 +40,11 @@ class DerivativeMutatorFactory(Factory):
                     ThirdPersonRewriteDerivativeMutator,
                 )
 
-                populated_config = {
-                    "language_model": injections[config["language_model_id"]],
-                }
-                return ThirdPersonRewriteDerivativeMutator(populated_config)
+                return ThirdPersonRewriteDerivativeMutator(
+                    dict(config) |
+                    Factory.inject_dependencies(
+                        dependencies, injections
+                    )
+                )
             case _:
                 raise ValueError(f"Unknown DerivativeMutator variant: {variant}")
