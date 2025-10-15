@@ -4,6 +4,7 @@ Factory for DerivativeDeriver instances.
 
 from typing import Any
 
+from memmachine.common.data_types import Nested
 from memmachine.common.factory import Factory
 from .derivative_deriver import DerivativeDeriver
 
@@ -15,7 +16,10 @@ class DerivativeDeriverFactory(Factory):
 
     @staticmethod
     def create(
-        variant: str, config: dict[str, Any], injections: dict[str, Any]
+        variant: str,
+        config: dict[str, Any],
+        dependencies: Nested[str],
+        injections: dict[str, Any],
     ) -> DerivativeDeriver:
         match variant:
             case "concatenation":

@@ -4,18 +4,22 @@ Factory for DerivativeMutator instances.
 
 from typing import Any
 
+from memmachine.common.data_types import Nested
 from memmachine.common.factory import Factory
 from .derivative_mutator import DerivativeMutator
 
 
-class DerivativeMutatorFactory:
+class DerivativeMutatorFactory(Factory):
     """
     Factory for DerivativeMutator instances.
     """
 
     @staticmethod
     def create(
-        variant: str, config: dict[str, Any], injections: dict[str, Any]
+        variant: str,
+        config: dict[str, Any],
+        dependencies: Nested[str],
+        injections: dict[str, Any],
     ) -> DerivativeMutator:
         match variant:
             case "identity":

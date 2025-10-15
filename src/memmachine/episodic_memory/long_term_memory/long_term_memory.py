@@ -77,6 +77,7 @@ class LongTermMemory:
             declarative_memory_resource = declarative_memory_resource_factory.create(
                 declarative_memory_resource_definition.variant,
                 declarative_memory_resource_definition.config,
+                declarative_memory_resource_definition.dependencies,
                 injections,
             )
 

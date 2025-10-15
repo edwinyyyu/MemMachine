@@ -4,6 +4,7 @@ Factory for VectorGraphStore instances.
 
 from typing import Any
 
+from memmachine.common.data_types import Nested
 from memmachine.common.factory import Factory
 
 from .vector_graph_store import VectorGraphStore
@@ -16,7 +17,10 @@ class VectorGraphStoreFactory(Factory):
 
     @staticmethod
     def create(
-        variant: str, config: dict[str, Any], injections: dict[str, Any]
+        variant: str,
+        config: dict[str, Any],
+        dependencies: Nested[str],
+        injections: dict[str, Any],
     ) -> VectorGraphStore:
         match variant:
             case "neo4j":

@@ -4,6 +4,7 @@ Factory for RelatedEpisodePostulator instances.
 
 from typing import Any
 
+from memmachine.common.data_types import Nested
 from memmachine.common.factory import Factory
 from .related_episode_postulator import RelatedEpisodePostulator
 
@@ -15,7 +16,10 @@ class RelatedEpisodePostulatorFactory(Factory):
 
     @staticmethod
     def create(
-        variant: str, config: dict[str, Any], injections: dict[str, Any]
+        variant: str,
+        config: dict[str, Any],
+        dependencies: Nested[str],
+        injections: dict[str, Any],
     ) -> RelatedEpisodePostulator:
         match variant:
             case "null":

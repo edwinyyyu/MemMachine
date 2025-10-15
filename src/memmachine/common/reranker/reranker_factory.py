@@ -4,6 +4,7 @@ Factory for Reranker instances.
 
 from typing import Any
 
+from memmachine.common.data_types import Nested
 from memmachine.common.factory import Factory
 
 from .reranker import Reranker
@@ -16,7 +17,10 @@ class RerankerFactory(Factory):
 
     @staticmethod
     def create(
-        variant: str, config: dict[str, Any], injections: dict[str, Any]
+        variant: str,
+        config: dict[str, Any],
+        dependencies: Nested[str],
+        injections: dict[str, Any],
     ) -> Reranker:
         match variant:
             case "bm25":

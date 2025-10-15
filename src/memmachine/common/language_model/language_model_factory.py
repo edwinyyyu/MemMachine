@@ -4,6 +4,7 @@ Factory for LanguageModel instances.
 
 from typing import Any
 
+from memmachine.common.data_types import Nested
 from memmachine.common.factory import Factory
 from memmachine.common.metrics_manager.metrics_manager import MetricsManager
 
@@ -17,7 +18,10 @@ class LanguageModelFactory(Factory):
 
     @staticmethod
     def create(
-        variant: str, config: dict[str, Any], injections: dict[str, Any]
+        variant: str,
+        config: dict[str, Any],
+        dependencies: Nested[str],
+        injections: dict[str, Any],
     ) -> LanguageModel:
         def get_metrics_manager(config: dict[str, Any]):
             injected_metrics_manager_id = config.get("metrics_manager_id")
