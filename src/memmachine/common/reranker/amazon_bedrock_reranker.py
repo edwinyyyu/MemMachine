@@ -133,66 +133,56 @@ class AmazonBedrockReranker(Reranker):
 
         start_time = time.monotonic()
 
-        logger.debug(
-            "[call uuid: %s] "
-            "Scoring %d candidates for query using %s Amazon Bedrock model",
-            score_call_uuid,
-            len(candidates),
-            self._model_id,
-        )
-
-        try:
-            response = await asyncio.to_thread(
-                self._client.rerank,
-                **rerank_kwargs,
-            )
-        except Exception as e:
-            error_message = (
-                f"[call uuid: {score_call_uuid}] "
-                "Failed to score candidates "
-                f"due to {type(e).__name__}"
-            )
-            logger.error(error_message)
-            raise ExternalServiceAPIError(error_message)
-
-        results = response["results"]
-        logger.debug(
-            "[call uuid: %s] Received %d initial scores",
-            score_call_uuid,
-            len(results),
-        )
-
-        while len(results) < len(candidates) and "nextToken" in response:
-            next_token = response["nextToken"]
-
-            logger.debug(
-                "[call uuid: %s] Retrieving next batch of scoring results",
-                score_call_uuid,
-            )
+        results: list = []
+        next_token = ""
+        while len(results) < len(candidates) and next_token is not None:
+            if len(results) == 0:
+                logger.debug(
+                    "[call uuid: %s] "
+                    "Scoring %d candidates for query using %s Amazon Bedrock model",
+                    score_call_uuid,
+                    len(candidates),
+                    self._model_id,
+                )
+            else:
+                logger.debug(
+                    "[call uuid: %s] Retrieving next batch of scoring results",
+                    score_call_uuid,
+                )
 
             try:
                 response = await asyncio.to_thread(
                     self._client.rerank,
                     **rerank_kwargs,
-                    nextToken=next_token,
                 )
             except Exception as e:
-                error_message = (
-                    f"[call uuid: {score_call_uuid}] "
-                    "Failed to retrieve next batch of scoring results "
-                    f"due to {type(e).__name__}"
-                )
+                if len(results) == 0:
+                    error_message = (
+                        f"[call uuid: {score_call_uuid}] "
+                        "Failed to score candidates "
+                        f"due to {type(e).__name__}"
+                    )
+                else:
+                    error_message = (
+                        f"[call uuid: {score_call_uuid}] "
+                        "Failed to retrieve next batch of scoring results "
+                        f"due to {type(e).__name__}"
+                    )
                 logger.error(error_message)
                 raise ExternalServiceAPIError(error_message)
 
-            new_results = response["results"]
+            next_token = response.get("nextToken")
+            rerank_kwargs["nextToken"] = next_token
 
+            batch_results = response["results"]
             logger.debug(
-                "[call uuid: %s] Received %d additional scores",
+                "[call uuid: %s] Received %d %s scores in batch",
                 score_call_uuid,
-                len(new_results),
+                len(batch_results),
+                "initial" if len(results) == 0 else "additional",
             )
-            results += new_results
+
+            results += batch_results
 
         if len(results) != len(candidates):
             error_message = (
