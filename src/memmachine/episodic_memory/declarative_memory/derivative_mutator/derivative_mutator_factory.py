@@ -41,10 +41,7 @@ class DerivativeMutatorFactory(Factory):
                 )
 
                 return ThirdPersonRewriteDerivativeMutator(
-                    dict(config) |
-                    Factory.inject_dependencies(
-                        dependencies, injections
-                    )
+                    dict(config) | Factory.inject_dependencies(dependencies, injections)
                 )
             case _:
                 raise ValueError(f"Unknown DerivativeMutator variant: {variant}")

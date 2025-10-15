@@ -8,6 +8,7 @@ from typing import Any
 
 from .data_types import Nested, ConfigValue
 
+
 class Factory(ABC):
     """
     Abstract base class for a factory that constructs objects
@@ -20,7 +21,7 @@ class Factory(ABC):
         variant: str,
         config: dict[str, ConfigValue],
         dependencies: dict[str, Nested[str]],
-        injections: dict[str, Any]
+        injections: dict[str, Any],
     ) -> Any:
         """
         Create the resource
@@ -44,8 +45,7 @@ class Factory(ABC):
 
     @staticmethod
     def inject_dependencies(
-        dependencies: dict[str, Nested[str]],
-        injections: dict[str, Any]
+        dependencies: dict[str, Nested[str]], injections: dict[str, Any]
     ) -> dict[str, Nested[Any]]:
         """
         Inject dependencies into a nested structure
@@ -57,7 +57,7 @@ class Factory(ABC):
             injections (dict[str, Any]):
                 A dictionary mapping IDs to their corresponding instances.
         """
-        return Factory._replace_nested_ids(dependencies, injections)
+        return Factory._inject_nested_ids(dependencies, injections)
 
     @staticmethod
     def _inject_nested_ids(
@@ -79,10 +79,7 @@ class Factory(ABC):
                 raise ValueError(f"Instance with id {nested} not found in injections")
             return injections[nested]
         elif isinstance(nested, list):
-            return [
-                Factory._inject_nested_ids(item, injections)
-                for item in nested
-            ]
+            return [Factory._inject_nested_ids(item, injections) for item in nested]
         elif isinstance(nested, dict):
             return {
                 key: Factory._inject_nested_ids(value, injections)

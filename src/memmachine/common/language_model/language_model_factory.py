@@ -30,10 +30,7 @@ class LanguageModelFactory(Factory):
                 # TODO: Temporary until refactoring of OpenAILanguageModel is done,
                 # so that we do not union config and injected dependencies.
                 return OpenAILanguageModel(
-                    dict(config) |
-                    Factory.inject_dependencies(
-                        dependencies, injections
-                    )
+                    dict(config) | Factory.inject_dependencies(dependencies, injections)
                 )
 
             case "vllm" | "sglang" | "openai-compatible":
@@ -44,10 +41,7 @@ class LanguageModelFactory(Factory):
                 # TODO: Temporary until refactoring of OpenAICompatibleLanguageModel is done,
                 # so that we do not union config and injected dependencies.
                 return OpenAICompatibleLanguageModel(
-                    dict(config) |
-                    Factory.inject_dependencies(
-                        dependencies, injections
-                    )
+                    dict(config) | Factory.inject_dependencies(dependencies, injections)
                 )
 
             case _:

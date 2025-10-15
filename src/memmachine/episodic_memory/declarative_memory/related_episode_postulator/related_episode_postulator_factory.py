@@ -34,10 +34,7 @@ class RelatedEpisodePostulatorFactory(Factory):
                 )
 
                 return PreviousRelatedEpisodePostulator(
-                    dict(config) |
-                    Factory.inject_dependencies(
-                        dependencies, injections
-                    )
+                    dict(config) | Factory.inject_dependencies(dependencies, injections)
                 )
             case _:
                 raise ValueError(f"Unknown RelatedEpisodePostulator variant: {variant}")

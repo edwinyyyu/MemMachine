@@ -45,10 +45,7 @@ class RerankerFactory(Factory):
                 from .embedder_reranker import EmbedderReranker
 
                 return EmbedderReranker(
-                    dict(config) |
-                    Factory.inject_dependencies(
-                        dependencies, injections
-                    )
+                    dict(config) | Factory.inject_dependencies(dependencies, injections)
                 )
             case "identity":
                 from .identity_reranker import IdentityReranker
@@ -58,10 +55,7 @@ class RerankerFactory(Factory):
                 from .rrf_hybrid_reranker import RRFHybridReranker
 
                 return RRFHybridReranker(
-                    dict(config) |
-                    Factory.inject_dependencies(
-                        dependencies, injections
-                    )
+                    dict(config) | Factory.inject_dependencies(dependencies, injections)
                 )
             case _:
                 raise ValueError(f"Unknown Reranker variant: {variant}")

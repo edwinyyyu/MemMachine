@@ -5,10 +5,12 @@ Factory for Embedder instances.
 from typing import Any
 
 from memmachine.common.data_types import Nested, ConfigValue
+from memmachine.common.utils import Nested, ConfigValue
 from memmachine.common.factory import Factory
 from memmachine.common.metrics_manager.metrics_manager import MetricsManager
 
 from .embedder import Embedder
+
 
 class EmbedderFactory(Factory):
     """
@@ -29,10 +31,7 @@ class EmbedderFactory(Factory):
                 # TODO: Temporary until refactoring of OpenAIEmbedder is done,
                 # so that we do not union config and injected dependencies.
                 return OpenAIEmbedder(
-                    dict(config) |
-                    Factory.inject_dependencies(
-                        dependencies, injections
-                    )
+                    dict(config) | Factory.inject_dependencies(dependencies, injections)
                 )
 
             case _:
