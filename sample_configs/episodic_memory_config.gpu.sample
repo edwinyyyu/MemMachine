@@ -24,7 +24,7 @@ Model:
     model_vendor: openai
     model_name: "gpt-4o-mini"
     api_key: <YOUR_API_KEY>
-    
+
 storage:
   my_storage_id:
     vendor_name: neo4j
@@ -49,9 +49,10 @@ sessionMemory:
 
 embedder:
   my_embedder_id:
-    model_vendor: openai
-    model_name: "text-embedding-3-small"
-    api_key: <YOUR_API_KEY>
+    name: openai
+    config:
+      model_name: "text-embedding-3-small"
+      api_key: <YOUR_API_KEY>
 
 reranker:
   my_reranker_id:
