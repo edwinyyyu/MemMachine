@@ -10,7 +10,6 @@ from memmachine.common.metrics_manager.metrics_manager import MetricsManager
 
 from .embedder import Embedder
 
-
 class EmbedderFactory(Factory):
     """
     Factory for Embedder instances.
@@ -26,6 +25,12 @@ class EmbedderFactory(Factory):
         match variant:
             case "openai":
                 from .openai_embedder import OpenAIEmbedder
+                return OpenAIEmbedder(
+                    config,
+                    Factory.inject_dependencies(
+                        dependencies, injections
+                    )
+                )
 
                 injected_metrics_manager_id = config.get("metrics_manager_id")
                 if injected_metrics_manager_id is None:

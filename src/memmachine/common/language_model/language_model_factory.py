@@ -20,7 +20,7 @@ class LanguageModelFactory(Factory):
     def create(
         variant: str,
         config: dict[str, ConfigValue],
-        dependencies: dict[str, Nested[str]],
+        dependencies: Nested[str],
         injections: dict[str, Any],
     ) -> LanguageModel:
         def get_metrics_manager(config: dict[str, Any]):
