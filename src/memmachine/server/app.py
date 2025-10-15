@@ -301,21 +301,22 @@ async def initialize_resource(
 
     # create embedder
     embedders = yaml_config.get("embedder", {})
-    embedder_name = profile_config.get("embedding_model")
-    if embedder_name is None:
+    embedder_id = profile_config.get("embedding_model")
+    if embedder_id is None:
         raise ValueError(
             "Embedding model not configured in config file for profile memory"
         )
 
-    embedder_def = embedders.get(embedder_name)
+    embedder_def = embedders.get(embedder_id)
     if embedder_def is None:
-        raise ValueError(f"Can not find definition of embedder {embedder_name}")
+        raise ValueError(f"Can not find definition of embedder {embedder_id}")
 
-    embedder_config = copy.deepcopy(embedder_def)
-    embedder_config["metrics_factory_id"] = "prometheus"
+    embedder_config = copy.deepcopy(embedder_def["config"])
+    if embedder_def["name"] == "openai":
+        embedder_config["metrics_factory_id"] = "prometheus"
 
     embeddings = EmbedderBuilder.build(
-        embedder_def.get("model_vendor", "openai"), embedder_config, metrics_injection
+        embedder_def["name"], embedder_config, metrics_injection
     )
 
     # Get the database configuration
