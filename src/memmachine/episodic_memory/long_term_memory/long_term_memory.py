@@ -58,32 +58,33 @@ class LongTermMemory:
     ):
         episode_metadata_template = f"{config.metadata_prefix}$content"
 
-        # Only execute the following couple of blocks if workflow overriden.
+        # Only execute the following couple of blocks if workflow overriden. TODO @edwinyyyu: REMOVE THIS MESSAGE AFTER IMPL
+        # TODO @edwinyyyu: check that all resource ids are unique since it's typed in config but untyped here, else mangle ids based on type
 
         # LongTermMemory is responsible for providing dependencies
         # to its internal DeclarativeMemory.
         # Create all derivative derivers, mutators, related episode postulators here based on workflow spec and workflow resources.
-        for resource_id, resource_definition in config.resource_definitions.items():
-            resource_factory = declarative_memory_resource_type_factory_map.get(resource_definition.type)
-            if resource_factory is None:
-                raise ValueError(f"Unknown resource type: {resource_definition.type}")
+        declarative_memory_resources = {}
 
-            dependency_ids = get_nested_values(resource_definition.dependencies)
+        for declarative_memory_resource_id, declarative_memory_resource_definition in config.resource_definitions.items():
+            declarative_memory_resource_factory = declarative_memory_resource_type_factory_map.get(declarative_memory_resource_definition.type)
+            if declarative_memory_resource_factory is None:
+                raise ValueError(f"Unknown declarative memory resource type: {declarative_memory_resource_definition.type}")
+
+            dependency_ids = get_nested_values(declarative_memory_resource_definition.dependencies)
             injections = resource_manager.resolve_resources(dependency_ids)
 
-            resource = resource_factory.create(
-                resource_definition.variant,
-                resource_definition.config,
+            declarative_memory_resource = declarative_memory_resource_factory.create(
+                declarative_memory_resource_definition.variant,
+                declarative_memory_resource_definition.config,
                 injections,
             )
 
-            resources[resource_id] = resource
+            declarative_memory_resources[declarative_memory_resource_id] = declarative_memory_resource
 
-
-
-        DerivativeDeriverFactory.build(variant, config, injections) # Loop this.
-        DerivativeMutatorFactory.build(variant, config, injections) # Loop this.
-        RelatedEpisodePostulatorFactory.build(variant, config, injections) # Loop this.
+        ingestion_workflows = {
+            episode_type:
+        }
 
         declarative_memory_config = DeclarativeMemoryConfig(
             episode_metadata_template=episode_metadata_template,
@@ -94,7 +95,7 @@ class LongTermMemory:
             embedder=embedder,
             reranker=reranker,
             vector_graph_store=vector_graph_store,
-            ingestion_workflow=ingestion_workflow,
+            ingestion_workflows=ingestion_workflows,
             query_workflow=query_workflow,
         )
 
