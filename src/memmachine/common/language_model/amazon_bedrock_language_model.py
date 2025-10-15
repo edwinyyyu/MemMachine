@@ -29,7 +29,17 @@ class AmazonBedrockConverseInferenceConfig(BaseModel):
             The maximum number of tokens to allow in the generated response.
             The default value is the maximum allowed value
             for the model that you are using.
-
+        stop_sequences (list[str] | None, optional):
+            A list of stop sequences that will stop response generation
+            (default: None).
+        temperature (float | None, optional):
+            What sampling temperature to use, between 0 and 1.
+            The default value is the default value
+            for the model that you are using, applied when None
+            (default: None).
+        top_p (float | None, optional):
+            The percentage of probability mass to consider for the next token
+            (default: None).
     """
 
     max_tokens: int | None = Field(
