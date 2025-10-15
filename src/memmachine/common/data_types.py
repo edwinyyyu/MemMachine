@@ -2,7 +2,7 @@
 Common data types for MemMachine.
 """
 
-from typing import Any
+from typing import Any, TypeAlias
 
 from pydantic import BaseModel
 
@@ -11,7 +11,7 @@ from .data_types import Nested
 from typing import TypeVar
 
 T = TypeVar("T")
-Nested = T | list["Nested"] | dict[str, "Nested"]
+Nested: TypeAlias = T | list["Nested"] | dict[str, "Nested"]
 
 class ResourceDefinition(BaseModel):
     type: str

@@ -1,9 +1,10 @@
 """
-Resource manager for building and managing resources
+Resource manager for creating and managing resources
 based on their definitions and dependencies.
 """
 
 from collections import deque
+from collections.abc import Mapping
 from typing import Any, Iterable
 
 from memmachine.common.utils import get_nested_values
@@ -46,7 +47,7 @@ resource_factory_map: dict[str, type[Factory]] = {
 
 class ResourceManager:
     """
-    Resource manager for building and managing resources
+    Resource manager for creating and managing resources
     based on their definitions and dependencies.
     """
 
@@ -78,33 +79,18 @@ class ResourceManager:
 
     def create_resources(
         self,
-        resource_definitions: Iterable[ResourceDefinition],
+        resource_definitions: Mapping[str, ResourceDefinition],
     ):
         """
-        Initialize resources
+        Create resources
         based on their definitions and dependencies.
         """
 
         # Map from resource ID to a set of dependency resource IDs
         resource_dependency_graph = {}
-
-        for (
-            resource_id,
-            resource_definition,
-        ) in resource_definitions.items():
-            resource_factory = resource_factory_map[resource_definition["type"]]
-            resource_dependency_graph[resource_id] = (
-                resource_factory.get_dependency_ids(
-                    resource_definition["variant"],
-                    resource_definition["config"],
-                )
-            )
-
-
-        for resource_definition in resource_definitions:
+        for resource_id, resource_definition in resource_definitions.items():
             dependency_ids = get_nested_values(resource_definition.dependencies)
-
-
+            resource_dependency_graph[resource_id] = set(dependency_ids)
 
 
         def order_resources(
@@ -176,11 +162,11 @@ class ResourceManager:
 
             resource_definition = resource_definitions[resource_id]
 
-            resource_factory = resource_factory_map[resource_definition["type"]]
+            resource_factory = resource_factory_map[resource_definition.type]
 
-            initialized_resource = resource_factory.build(
-                variant=resource_definition["variant"],
-                config=resource_definition["config"],
+            initialized_resource = resource_factory.create(
+                variant=resource_definition.variant,
+                config=resource_definition.config,
                 injections=self._resource_cache,
             )
 
