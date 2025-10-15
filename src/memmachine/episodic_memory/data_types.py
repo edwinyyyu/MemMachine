@@ -4,9 +4,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
-# Type alias for JSON-compatible data structures.
-JSONValue = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
-
+from memmachine.common.data_types import JSONValue
 
 class ContentType(Enum):
     """Enumeration for the type of content within an Episode."""

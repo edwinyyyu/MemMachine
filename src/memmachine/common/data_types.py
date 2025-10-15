@@ -13,10 +13,17 @@ from typing import TypeVar
 T = TypeVar("T")
 Nested: TypeAlias = T | list["Nested"] | dict[str, "Nested"]
 
+
+# Type alias for JSON-compatible data structures.
+JSONValue = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
+
+# Type alias for configuration values.
+ConfigValue = None | bool | int | float | str | list["ConfigValue"] | dict[str, "ConfigValue"]
+
 class ResourceDefinition(BaseModel):
     type: str
     variant: str
-    config: dict[str, Any]
+    config: dict[str, ConfigValue]
     dependencies: Nested[str] # TODO @edwinyyyu: documentation
 
 

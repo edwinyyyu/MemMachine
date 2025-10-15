@@ -2,15 +2,13 @@ from .data_types import (
     ContentType,
     Episode,
     FilterablePropertyValue,
-    JSONValue,
 )
-from .declarative_memory import DeclarativeMemory
+from .declarative_memory import DeclarativeMemory, DeclarativeMemoryConfig
 
 __all__ = [
     "DeclarativeMemory",
-    "DeclarativeMemoryConfig"
+    "DeclarativeMemoryConfig",
     "Episode",
     "ContentType",
     "FilterablePropertyValue",
-    "JSONValue",
 ]
