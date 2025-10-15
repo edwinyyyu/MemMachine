@@ -6,7 +6,7 @@ based on their definitions and dependencies.
 from abc import ABC, abstractmethod
 from typing import Any
 
-from .data_types import Nested
+from .data_types import Nested, ConfigValue
 
 class Factory(ABC):
     """
@@ -18,7 +18,7 @@ class Factory(ABC):
     @abstractmethod
     def create(
         variant: str,
-        config: dict[str, Any],
+        config: dict[str, ConfigValue],
         dependencies: Nested[str],
         injections: dict[str, Any]
     ) -> Any:
@@ -31,7 +31,7 @@ class Factory(ABC):
         Args:
             variant (str):
                 The variant of the resource to create.
-            config (dict[str, Any]):
+            config (dict[str, ConfigValue]):
                 The configuration dictionary for the resource.
             dependencies (Nested[str]):
                 The nested structure (list/dict) of dependency IDs to wire.

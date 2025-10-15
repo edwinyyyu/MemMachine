@@ -4,7 +4,7 @@ Factory for MetricsManager instances.
 
 from typing import Any
 
-from memmachine.common.data_types import Nested
+from memmachine.common.data_types import Nested, ConfigValue
 from memmachine.common.factory import Factory
 
 from .metrics_manager import MetricsManager
@@ -18,7 +18,7 @@ class MetricsManagerFactory(Factory):
     @staticmethod
     def create(
         variant: str,
-        config: dict[str, Any],
+        config: dict[str, ConfigValue],
         dependencies: Nested[str],
         injections: dict[str, Any],
     ) -> MetricsManager:

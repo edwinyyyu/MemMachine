@@ -4,7 +4,7 @@ Factory for DerivativeDeriver instances.
 
 from typing import Any
 
-from memmachine.common.data_types import Nested
+from memmachine.common.data_types import Nested, ConfigValue
 from memmachine.common.factory import Factory
 from .derivative_deriver import DerivativeDeriver
 
@@ -17,7 +17,7 @@ class DerivativeDeriverFactory(Factory):
     @staticmethod
     def create(
         variant: str,
-        config: dict[str, Any],
+        config: dict[str, ConfigValue],
         dependencies: Nested[str],
         injections: dict[str, Any],
     ) -> DerivativeDeriver:
