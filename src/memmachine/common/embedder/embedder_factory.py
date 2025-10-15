@@ -25,42 +25,18 @@ class EmbedderFactory(Factory):
         match variant:
             case "openai":
                 from .openai_embedder import OpenAIEmbedder
+
+                # TODO: Temporary until refactoring of OpenAIEmbedder is done,
+                # so that we do not union config and injected dependencies.
+                if not isinstance(dependencies, dict):
+                    raise TypeError("Dependencies must be a dictionary for OpenAIEmbedder")
+
                 return OpenAIEmbedder(
-                    config,
+                    dict(config) |
                     Factory.inject_dependencies(
                         dependencies, injections
                     )
                 )
 
-                injected_metrics_manager_id = config.get("metrics_manager_id")
-                if injected_metrics_manager_id is None:
-                    injected_metrics_manager = None
-                elif not isinstance(injected_metrics_manager_id, str):
-                    raise TypeError("metrics_manager_id must be a string if provided")
-                else:
-                    injected_metrics_manager = injections.get(
-                        injected_metrics_manager_id
-                    )
-                    if injected_metrics_manager is None:
-                        raise ValueError(
-                            "MetricsManager with id "
-                            f"{injected_metrics_manager_id} "
-                            "not found in injections"
-                        )
-                    elif not isinstance(injected_metrics_manager, MetricsManager):
-                        raise TypeError(
-                            "Injected dependency with id "
-                            f"{injected_metrics_manager_id} "
-                            "is not a MetricsManager"
-                        )
-
-                return OpenAIEmbedder(
-                    {
-                        key: value
-                        for key, value in config.items()
-                        if key != "metrics_manager_id"
-                    }
-                    | {"metrics_manager": injected_metrics_manager}
-                )
             case _:
                 raise ValueError(f"Unknown Embedder variant: {variant}")
