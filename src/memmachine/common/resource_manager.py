@@ -7,7 +7,7 @@ from collections import deque
 from typing import Any, Iterable
 
 from memmachine.common.utils import get_nested_values
-from memmachine.common.resource_definition import ResourceDefinition
+from memmachine.common.data_types import ResourceDefinition
 from memmachine.common.factory import Factory
 from memmachine.common.embedder.embedder_factory import EmbedderFactory
 from memmachine.common.language_model.language_model_factory import (
@@ -78,7 +78,6 @@ class ResourceManager:
 
     def create_resources(
         self,
-        resource_definitions: dict[str, Any],
         resource_definitions: Iterable[ResourceDefinition],
     ):
         """
@@ -103,7 +102,7 @@ class ResourceManager:
 
 
         for resource_definition in resource_definitions:
-            get_nested_values(resource_definition.dependencies)
+            dependency_ids = get_nested_values(resource_definition.dependencies)
 
 
 

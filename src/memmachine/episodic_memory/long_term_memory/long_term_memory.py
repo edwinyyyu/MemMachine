@@ -8,7 +8,7 @@ from memmachine.common.embedder import Embedder
 from memmachine.common.reranker import Reranker
 from memmachine.common.resource_manager import ResourceManager
 from memmachine.common.vector_graph_store import VectorGraphStore
-from memmachine.common.resource_definition import ResourceDefinition
+from memmachine.common.data_types import ResourceDefinition
 
 from ..data_types import ContentType, Episode
 from ..declarative_memory import ContentType as DeclarativeMemoryContentType
