@@ -58,7 +58,7 @@ class DeclarativeMemoryConfig(BaseModel):
     )
 
 
-class MutationWorkflow:
+class MutationWorkflowSpec:
     def __init__(
         self,
         derivative_mutator: DerivativeMutator,
@@ -68,11 +68,11 @@ class MutationWorkflow:
         self.derivative_mutator = derivative_mutator
 
 
-class DerivationWorkflow:
+class DerivationWorkflowSpec:
     def __init__(
         self,
         derivative_deriver: DerivativeDeriver,
-        mutation_workflows: Iterable[MutationWorkflow],
+        mutation_workflows: Iterable[MutationWorkflowSpec],
     ):
         if not isinstance(derivative_deriver, DerivativeDeriver):
             raise TypeError("derivative_deriver must be a DerivativeDeriver")
@@ -86,7 +86,7 @@ class DerivationWorkflow:
             )
 
         if not all(
-            isinstance(mutation_workflow, MutationWorkflow)
+            isinstance(mutation_workflow, MutationWorkflowSpec)
             for mutation_workflow in mutation_workflows
         ):
             raise TypeError("All items in mutation_workflows must be MutationWorkflow")
@@ -95,11 +95,11 @@ class DerivationWorkflow:
         self.mutation_workflows = mutation_workflow_list
 
 
-class IngestionWorkflow:
+class IngestionWorkflowSpec:
     def __init__(
         self,
         related_episode_postulator: RelatedEpisodePostulator,
-        derivation_workflows: Iterable[DerivationWorkflow],
+        derivation_workflows: Iterable[DerivationWorkflowSpec],
     ):
         if not isinstance(related_episode_postulator, RelatedEpisodePostulator):
             raise TypeError(
@@ -115,7 +115,7 @@ class IngestionWorkflow:
             )
 
         if not all(
-            isinstance(derivation_workflow, DerivationWorkflow)
+            isinstance(derivation_workflow, DerivationWorkflowSpec)
             for derivation_workflow in derivation_workflows
         ):
             raise TypeError(
@@ -137,8 +137,9 @@ class DeclarativeMemory:
         embedder: Embedder,
         reranker: Reranker,
         vector_graph_store: VectorGraphStore,
-        episode_connection_postulators: Iterable[RelatedEpisodePostulator],
-        ingestion_workflows: Mapping[str, Iterable[IngestionWorkflow]],
+        episode_connection_related_episode_postulators: Iterable[RelatedEpisodePostulator],
+        episode_type_ingestion_workflow_specs_map: Mapping[str, Iterable[IngestionWorkflowSpec]],
+        query_workflow_specs: Iterable[DerivationWorkflowSpec],
     ):
         """
         Initialize a DeclarativeMemory with the provided config.
@@ -181,14 +182,14 @@ class DeclarativeMemory:
                               used for mutating derivatives.
         """
 
-        self._vector_graph_store: VectorGraphStore = config["vector_graph_store"]
-
-        self._embedder: Embedder = config["embedder"]
-        self._reranker: Reranker = config["reranker"]
+        self._embedder: Embedder = embedder
+        self._reranker: Reranker = reranker
+        self._vector_graph_store: VectorGraphStore = vector_graph_store
 
         self._episode_connection_related_episode_postulators: list[
             RelatedEpisodePostulator
-        ] = config["episode_connection_related_episode_postulators"]
+        ] = episode_connection_related_episode_postulators
+
         self._query_derivative_deriver: DerivativeDeriver = config[
             "query_derivative_deriver"
         ]
@@ -196,7 +197,7 @@ class DeclarativeMemory:
         self._episode_metadata_template = Template(config.episode_metadata_template)
 
         def build_ingestion_workflow(
-            config: dict[str, Any],
+            ingestion_workflow: IngestionWorkflow,
         ) -> Workflow:
             return Workflow(
                 executable=functools.partial(
@@ -204,7 +205,7 @@ class DeclarativeMemory:
                     config["related_episode_postulator"],
                 ),
                 subworkflows=[
-                    build_derivative_derivation_workflow(derivative_derivation_workflow)
+                    build_ingestion_derivation_workflow(derivative_derivation_workflow)
                     for derivative_derivation_workflow in config[
                         "derivative_derivation_workflows"
                     ]
@@ -212,32 +213,42 @@ class DeclarativeMemory:
                 callback=self._process_episode_cluster_assembly,
             )
 
-        def build_derivative_derivation_workflow(
-            config: dict[str, Any],
+        def build_ingestion_derivation_workflow(
+            derivation_workflow: DerivationWorkflow,
         ) -> Workflow:
             return Workflow(
                 executable=functools.partial(
-                    DeclarativeMemory._derive_derivatives,
+                    DeclarativeMemory._ingestion_derive_derivatives,
                     config["derivative_deriver"],
                 ),
                 subworkflows=[
-                    build_derivative_mutation_workflow(derivative_mutation_workflow)
+                    build_ingestion_mutation_workflow(derivative_mutation_workflow)
                     for derivative_mutation_workflow in config[
                         "derivative_mutation_workflows"
                     ]
                 ],
-                callback=self._process_derivative_derivation,
+                callback=self._process_ingestion_derivative_derivation,
             )
 
-        def build_derivative_mutation_workflow(
-            config: dict[str, Any],
+        def build_ingestion_mutation_workflow(
+            mutation_workflow: MutationWorkflow,
         ) -> Workflow:
             return Workflow(
                 executable=functools.partial(
-                    DeclarativeMemory._mutate_derivatives,
-                    config["derivative_mutator"],
+                    DeclarativeMemory._ingestion_mutate_derivatives,
+                    mutation_workflow.derivative_mutator,
                 ),
-                callback=self._process_derivative_mutation,
+                callback=self._process_ingestion_derivative_mutation,
+            )
+
+        def build_query_workflow(
+            query_workflow: DerivationWorkflow,
+        ) -> Workflow:
+            return Workflow(
+                executable=functools.partial(
+                    DeclarativeMemory._query_derive_derivatives,
+                    query_workflow.derivative_deriver,
+                )
             )
 
         self._ingestion_workflows = {
@@ -247,6 +258,11 @@ class DeclarativeMemory:
             ]
             for episode_type, ingestion_workflows in ingestion_workflows.items()
         }
+
+        self._query_workflows = [
+            build_query_workflow(query_workflow)
+            for query_workflow in query_workflows
+        ]
 
     @staticmethod
     async def _assemble_episode_cluster(
@@ -279,7 +295,7 @@ class DeclarativeMemory:
         return episode_cluster
 
     @staticmethod
-    async def _derive_derivatives(
+    async def _ingestion_derive_derivatives(
         derivative_deriver: DerivativeDeriver,
         episode_cluster: EpisodeCluster,
     ) -> tuple[list[Derivative], EpisodeCluster]:
@@ -290,7 +306,7 @@ class DeclarativeMemory:
         return derivatives, episode_cluster
 
     @staticmethod
-    async def _mutate_derivatives(
+    async def _ingestion_mutate_derivatives(
         derivative_mutator: DerivativeMutator,
         derivative_derivation_result: tuple[list[Derivative], EpisodeCluster],
     ) -> list[Derivative]:
@@ -313,7 +329,7 @@ class DeclarativeMemory:
         ]
         return mutated_derivatives
 
-    async def _process_derivative_mutation(
+    async def _process_ingestion_derivative_mutation(
         self,
         mutated_derivatives: list[Derivative],
     ) -> list[Node]:
@@ -354,7 +370,7 @@ class DeclarativeMemory:
         ]
         return mutated_derivative_nodes
 
-    async def _process_derivative_derivation(
+    async def _process_ingestion_derivative_derivation(
         self,
         derived_derivatives: list[Derivative],
         mutation_workflows_derivative_nodes: list[list[Node]],
@@ -373,7 +389,7 @@ class DeclarativeMemory:
         ]
         return derivative_nodes
 
-    async def _process_episode_cluster_assembly(
+    async def _process_ingestion_episode_cluster_assembly(
         self,
         episode_cluster: EpisodeCluster,
         derivation_workflows_derivative_nodes: list[list[Node]],

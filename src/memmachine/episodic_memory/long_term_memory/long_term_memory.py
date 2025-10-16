@@ -17,9 +17,9 @@ from ..declarative_memory import ContentType as DeclarativeMemoryContentType
 from ..declarative_memory import (
     DeclarativeMemory,
     DeclarativeMemoryConfig,
-    IngestionWorkflow,
-    DerivationWorkflow,
-    MutationWorkflow,
+    IngestionWorkflowSpec,
+    DerivationWorkflowSpec,
+    MutationWorkflowSpec,
     Derivation,
 )
 from ..declarative_memory import Episode as DeclarativeMemoryEpisode
@@ -51,13 +51,13 @@ declarative_memory_resource_type_factory_map: dict[str, Factory] = {
 }
 
 
-class MutationWorkflowSpec(BaseModel):
+class MutationWorkflowDefinition(BaseModel):
     derivative_mutator: str
 
 
-class DerivationWorkflowSpec(BaseModel):
+class DerivationWorkflowDefinition(BaseModel):
     derivative_deriver: str = Field()
-    mutation_workflows: list[MutationWorkflowSpec]
+    mutation_workflows: list[MutationWorkflowDefinition]
 
     @field_validator("mutation_workflows", mode="after")
     @classmethod
@@ -67,9 +67,9 @@ class DerivationWorkflowSpec(BaseModel):
         return v
 
 
-class IngestionWorkflowSpec(BaseModel):
+class IngestionWorkflowDefinition(BaseModel):
     related_episode_postulator: str
-    derivation_workflows: list[DerivationWorkflowSpec]
+    derivation_workflows: list[DerivationWorkflowDefinition]
 
     @field_validator("derivation_workflows", mode="after")
     @classmethod
@@ -90,7 +90,7 @@ class LongTermMemoryConfig(BaseModel):
     )
     # TODO: Convert from config file format (type first) to this format (homogeneous) in previous layer.
     declarative_memory_workflows_resource_definitions: dict[str, ResourceDefinition]
-    declarative_memory_ingestion_workflows_specs: dict[str, list[IngestionWorkflowSpec]]
+    declarative_memory_ingestion_workflows_specs: dict[str, list[IngestionWorkflowDefinition]]
 
     @model_validator(mode="after")
     def check_workflows_resource_definitions_and_specs(
@@ -219,21 +219,21 @@ class LongTermMemory:
         )
 
     @staticmethod
-    def _build_ingestion_workflow(
-        ingestion_workflow: IngestionWorkflowSpec,
+    def _build_ingestion_workflow_spec(
+        ingestion_workflow_definition: IngestionWorkflowDefinition,
         resources: Mapping[str, Any],
-    ) -> IngestionWorkflow:
-        return IngestionWorkflow(
+    ) -> IngestionWorkflowSpec:
+        return IngestionWorkflowSpec(
             related_episode_postulator=resources[
                 ingestion_workflow.related_episode_postulator
             ],
             derivation_workflows=[
-                DerivationWorkflow(
+                DerivationWorkflowSpec(
                     derivative_deriver=resources[
                         derivation_workflow.derivative_deriver
                     ],
                     mutation_workflows=[
-                        MutationWorkflow(
+                        MutationWorkflowSpec(
                             derivative_mutator=resources[
                                 mutation_workflow.derivative_mutator
                             ],

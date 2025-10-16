@@ -6,17 +6,17 @@ from .data_types import (
 from .declarative_memory import (
     DeclarativeMemory,
     DeclarativeMemoryConfig,
-    IngestionWorkflow,
-    DerivationWorkflow,
-    MutationWorkflow,
+    IngestionWorkflowSpec,
+    DerivationWorkflowSpec,
+    MutationWorkflowSpec,
 )
 
 __all__ = [
     "DeclarativeMemory",
     "DeclarativeMemoryConfig",
-    "IngestionWorkflow",
-    "DerivationWorkflow",
-    "MutationWorkflow",
+    "IngestionWorkflowSpec",
+    "DerivationWorkflowSpec",
+    "MutationWorkflowSpec",
     "Episode",
     "ContentType",
     "FilterablePropertyValue",
