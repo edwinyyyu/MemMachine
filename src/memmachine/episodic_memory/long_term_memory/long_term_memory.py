@@ -100,7 +100,11 @@ class LongTermMemory:
             reranker_id: {
                 "type": "reranker",
                 "name": reranker_config.get("type"),
-                "config": reranker_config,
+                "config": {
+                    key: value
+                    for key, value in reranker_config.items()
+                    if key != "type"
+                },
             }
             for reranker_id, reranker_config in reranker_configs.items()
         }
