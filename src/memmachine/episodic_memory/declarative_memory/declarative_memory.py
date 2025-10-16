@@ -3,14 +3,13 @@ Declarative memory system for storing and retrieving
 episodic and semantic memory.
 """
 
-import functools
 import asyncio
 import json
 import logging
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 from string import Template
-from typing import Any, cast
+from typing import cast
 from uuid import uuid4
 
 from memmachine.common.data_types import ExternalServiceAPIError
@@ -33,7 +32,6 @@ from .data_types import (
 from .derivative_deriver import DerivativeDeriver
 from .derivative_mutator import DerivativeMutator
 from .related_episode_postulator import RelatedEpisodePostulator
-from .workflow import Workflow
 
 logger = logging.getLogger(__name__)
 
@@ -58,72 +56,47 @@ class DeclarativeMemoryConfig(BaseModel):
     )
 
 
-class MutationWorkflowSpec:
-    def __init__(
-        self,
-        derivative_mutator: DerivativeMutator,
-    ):
-        if not isinstance(derivative_mutator, DerivativeMutator):
-            raise TypeError("derivative_mutator must be a DerivativeMutator")
-        self.derivative_mutator = derivative_mutator
-
-
-class DerivationWorkflowSpec:
-    def __init__(
-        self,
-        derivative_deriver: DerivativeDeriver,
-        mutation_workflows: Iterable[MutationWorkflowSpec],
-    ):
-        if not isinstance(derivative_deriver, DerivativeDeriver):
-            raise TypeError("derivative_deriver must be a DerivativeDeriver")
-        if not isinstance(mutation_workflows, Iterable):
-            raise TypeError("mutation_workflows must be an Iterable")
-
-        mutation_workflow_list = list(mutation_workflows)
-        if len(mutation_workflow_list) == 0:
-            raise ValueError(
-                "mutation_workflows must contain at least one MutationWorkflow"
-            )
-
-        if not all(
-            isinstance(mutation_workflow, MutationWorkflowSpec)
-            for mutation_workflow in mutation_workflows
-        ):
-            raise TypeError("All items in mutation_workflows must be MutationWorkflow")
-
-        self.derivative_deriver = derivative_deriver
-        self.mutation_workflows = mutation_workflow_list
-
-
-class IngestionWorkflowSpec:
+class IngestionWorkflow:
     def __init__(
         self,
         related_episode_postulator: RelatedEpisodePostulator,
-        derivation_workflows: Iterable[DerivationWorkflowSpec],
+        derivative_deriver: DerivativeDeriver,
+        derivative_mutator: DerivativeMutator,
+        embedder: Embedder,
     ):
         if not isinstance(related_episode_postulator, RelatedEpisodePostulator):
             raise TypeError(
                 "related_episode_postulator must be a RelatedEpisodePostulator"
             )
-        if not isinstance(derivation_workflows, Iterable):
-            raise TypeError("derivation_workflows must be an Iterable")
-
-        derivation_workflow_list = list(derivation_workflows)
-        if len(derivation_workflow_list) == 0:
-            raise ValueError(
-                "derivation_workflows must contain at least one DerivationWorkflow"
-            )
-
-        if not all(
-            isinstance(derivation_workflow, DerivationWorkflowSpec)
-            for derivation_workflow in derivation_workflows
-        ):
-            raise TypeError(
-                "All items in derivation_workflows must be DerivationWorkflow"
-            )
+        if not isinstance(derivative_deriver, DerivativeDeriver):
+            raise TypeError("derivative_deriver must be a DerivativeDeriver")
+        if not isinstance(derivative_mutator, DerivativeMutator):
+            raise TypeError("derivative_mutator must be a DerivativeMutator")
+        if not isinstance(embedder, Embedder):
+            raise TypeError("embedder must be an Embedder")
 
         self.related_episode_postulator = related_episode_postulator
-        self.derivation_workflows = list(derivation_workflows)
+        self.derivative_deriver = derivative_deriver
+        self.derivative_mutator = derivative_mutator
+
+
+class QueryWorkflow:
+    def __init__(
+        self,
+        derivative_deriver: DerivativeDeriver,
+        derivative_mutator: DerivativeMutator,
+        embedder: Embedder,
+    ):
+        if not isinstance(derivative_deriver, DerivativeDeriver):
+            raise TypeError("derivative_deriver must be a DerivativeDeriver")
+        if not isinstance(derivative_mutator, DerivativeMutator):
+            raise TypeError("derivative_mutator must be a DerivativeMutator")
+        if not isinstance(embedder, Embedder):
+            raise TypeError("embedder must be an Embedder")
+
+        self.derivative_deriver = derivative_deriver
+        self.derivative_mutator = derivative_mutator
+        self.embedder = embedder
 
 
 class DeclarativeMemory:
@@ -134,135 +107,55 @@ class DeclarativeMemory:
     def __init__(
         self,
         config: DeclarativeMemoryConfig,
-        embedder: Embedder,
         reranker: Reranker,
         vector_graph_store: VectorGraphStore,
-        episode_connection_related_episode_postulators: Iterable[RelatedEpisodePostulator],
-        episode_type_ingestion_workflow_specs_map: Mapping[str, Iterable[IngestionWorkflowSpec]],
-        query_workflow_specs: Iterable[DerivationWorkflowSpec],
+        ingestion_workflows_map: Mapping[str, Iterable[IngestionWorkflow]],
+        query_workflows: Iterable[QueryWorkflow],
+        adjacent_related_episode_postulators: Iterable[RelatedEpisodePostulator],
     ):
         """
-        Initialize a DeclarativeMemory with the provided config.
+        Initialize a DeclarativeMemory.
 
         Args:
             config (DeclarativeMemoryConfig):
                 Configuration for the declarative memory system.
-            embedder (Embedder):
-                Embedder for creating embeddings.
             reranker (Reranker):
                 Reranker for reranking search results.
             vector_graph_store (VectorGraphStore):
                 Vector graph store for storing and retrieving memories.
-
-
-                - related_episode_postulators:
-                  List of RelatedEpisodePostulator instances
-                  for connecting related episodes.
-                - query_derivative_deriver:
-                  DerivativeDeriver instance
-                  for deriving derivatives from queries.
-                - derivation_workflows:
-                  Dict mapping episode types
-                  to lists of workflow configs.
-                  Each config contains:
-                    - related_episode_postulator:
-                      RelatedEpisodePostulator instance
-                      used for assembling episode clusters.
-                    - derivative_derivation_workflows:
-                      List of workflow configs.
-                      Each config contains:
-                        - derivative_deriver:
-                          DerivativeDeriver instance
-                          used for deriving derivatives.
-                        - derivative_mutation_workflows:
-                          List of workflow configs.
-                          Each config contains:
-                            - derivative_mutator:
-                              DerivativeMutator instance
-                              used for mutating derivatives.
-        """
-
-        self._embedder: Embedder = embedder
-        self._reranker: Reranker = reranker
-        self._vector_graph_store: VectorGraphStore = vector_graph_store
-
-        self._episode_connection_related_episode_postulators: list[
-            RelatedEpisodePostulator
-        ] = episode_connection_related_episode_postulators
-
-        self._query_derivative_deriver: DerivativeDeriver = config[
-            "query_derivative_deriver"
-        ]
+            ingestion_workflows_map (Mapping[str, Iterable[IngestionWorkflow]]):
+                Mapping from episode types to iterables of ingestion workflows.
+            query_workflows (Iterable[QueryWorkflow]):
+                Iterable of query workflows.
+            adjacentn_related_episode_postulators (Iterable[RelatedEpisodePostulator]):
+                Iterable of related episode postulators
+                for postulating adjacent episodes.
+       """
 
         self._episode_metadata_template = Template(config.episode_metadata_template)
 
-        def build_ingestion_workflow(
-            ingestion_workflow: IngestionWorkflow,
-        ) -> Workflow:
-            return Workflow(
-                executable=functools.partial(
-                    DeclarativeMemory._assemble_episode_cluster,
-                    config["related_episode_postulator"],
-                ),
-                subworkflows=[
-                    build_ingestion_derivation_workflow(derivative_derivation_workflow)
-                    for derivative_derivation_workflow in config[
-                        "derivative_derivation_workflows"
-                    ]
-                ],
-                callback=self._process_episode_cluster_assembly,
-            )
+        self._reranker: Reranker = reranker
+        self._vector_graph_store: VectorGraphStore = vector_graph_store
+        self._ingestion_workflows_map = ingestion_workflows_map
+        self._query_workflows = query_workflows
+        self._adjacent_related_episode_postulators: list[
+            RelatedEpisodePostulator
+        ] = adjacent_related_episode_postulators
 
-        def build_ingestion_derivation_workflow(
-            derivation_workflow: DerivationWorkflow,
-        ) -> Workflow:
-            return Workflow(
-                executable=functools.partial(
-                    DeclarativeMemory._ingestion_derive_derivatives,
-                    config["derivative_deriver"],
-                ),
-                subworkflows=[
-                    build_ingestion_mutation_workflow(derivative_mutation_workflow)
-                    for derivative_mutation_workflow in config[
-                        "derivative_mutation_workflows"
-                    ]
-                ],
-                callback=self._process_ingestion_derivative_derivation,
-            )
 
-        def build_ingestion_mutation_workflow(
-            mutation_workflow: MutationWorkflow,
-        ) -> Workflow:
-            return Workflow(
-                executable=functools.partial(
-                    DeclarativeMemory._ingestion_mutate_derivatives,
-                    mutation_workflow.derivative_mutator,
-                ),
-                callback=self._process_ingestion_derivative_mutation,
-            )
 
-        def build_query_workflow(
-            query_workflow: DerivationWorkflow,
-        ) -> Workflow:
-            return Workflow(
-                executable=functools.partial(
-                    DeclarativeMemory._query_derive_derivatives,
-                    query_workflow.derivative_deriver,
-                )
-            )
 
-        self._ingestion_workflows = {
-            episode_type: [
-                build_ingestion_workflow(ingestion_workflow)
-                for ingestion_workflow in ingestion_workflows
-            ]
-            for episode_type, ingestion_workflows in ingestion_workflows.items()
-        }
 
-        self._query_workflows = [
-            build_query_workflow(query_workflow)
-            for query_workflow in query_workflows
-        ]
+
+
+    def build_ingestion_workflow_tree(ingestion_workflows: Iterable[IngestionWorkflow]):
+        pass
+
+    def build_query_workflow_tree(query_workflows: Iterable[QueryWorkflow]):
+        pass
+
+
+
 
     @staticmethod
     async def _assemble_episode_cluster(
@@ -455,6 +348,21 @@ class DeclarativeMemory:
         )
         return nodes, edges
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     async def add_episode(
         self,
         episode: Episode,
@@ -483,9 +391,11 @@ class DeclarativeMemory:
 
         await self._vector_graph_store.add_nodes([episode_node])
 
-        episode_type_derivation_workflows = self._derivation_workflows.get(
+        episode_type_ingestion_workflows = self._ingestion_workflows_map.get(
             episode.episode_type
-        ) or self._derivation_workflows.get("default", [])
+        )
+        if episode_type_ingestion_workflows is None:
+            episode_type_ingestion_workflows = self._derivation_workflows.get("_default", [])
 
         # Create nodes and edges for episode clusters and derivatives.
         derivation_workflow_tasks = [
@@ -508,33 +418,33 @@ class DeclarativeMemory:
             for edge in workflow_edges
         ]
 
-        related_episodes = [
+        adjacent_episodes = [
             postulated_related_episode
             for postulated_related_episodes in await asyncio.gather(
                 *[
                     related_episode_postulator.postulate(episode)
                     for related_episode_postulator in (
-                        self._related_episode_postulators
+                        self._adjacent_related_episode_postulators
                     )
                 ]
             )
             for postulated_related_episode in postulated_related_episodes
         ]
 
-        # Create postulated edges between episodes.
-        related_episode_edges = [
+        # Create edges between episode and postulated connected episodes.
+        adjacent_episode_edges = [
             Edge(
                 uuid=uuid4(),
                 source_uuid=episode.uuid,
-                target_uuid=related_episode.uuid,
+                target_uuid=adjacent_episode.uuid,
                 relation="RELATED_TO",
             )
-            for related_episode in related_episodes
+            for adjacent_episode in adjacent_episodes
         ]
 
         await self._vector_graph_store.add_nodes(derivation_nodes)
         await self._vector_graph_store.add_edges(
-            derivation_edges + related_episode_edges
+            derivation_edges + adjacent_episode_edges
         )
 
     async def search(
