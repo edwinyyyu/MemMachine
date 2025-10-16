@@ -3,11 +3,20 @@ from .data_types import (
     Episode,
     FilterablePropertyValue,
 )
-from .declarative_memory import DeclarativeMemory, DeclarativeMemoryConfig
+from .declarative_memory import (
+    DeclarativeMemory,
+    DeclarativeMemoryConfig,
+    IngestionWorkflow,
+    DerivationWorkflow,
+    MutationWorkflow,
+)
 
 __all__ = [
     "DeclarativeMemory",
     "DeclarativeMemoryConfig",
+    "IngestionWorkflow",
+    "DerivationWorkflow",
+    "MutationWorkflow",
     "Episode",
     "ContentType",
     "FilterablePropertyValue",

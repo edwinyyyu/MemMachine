@@ -46,7 +46,9 @@ def async_locked(func):
 
     return wrapper
 
+
 T = TypeVar("T")
+
 
 def get_nested_values(nested: Nested[T]) -> Generator[T, None, None]:
     """

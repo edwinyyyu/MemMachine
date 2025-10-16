@@ -1,51 +1,6 @@
-import functools
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any, Self
-
-def build_ingestion_workflow(
-    config: dict[str, Any],
-) -> Workflow:
-    return Workflow(
-        executable=functools.partial(
-            DeclarativeMemory._assemble_episode_cluster,
-            config["related_episode_postulator"],
-        ),
-        subworkflows=[
-            build_derivative_derivation_workflow(derivative_derivation_workflow)
-            for derivative_derivation_workflow in config[
-                "derivative_derivation_workflows"
-            ]
-        ],
-        callback=self._process_episode_cluster_assembly,
-    )
-
-def build_derivative_derivation_workflow(
-    config: dict[str, Any],
-) -> Workflow:
-    return Workflow(
-        executable=functools.partial(
-            DeclarativeMemory._derive_derivatives,
-            config["derivative_deriver"],
-        ),
-        subworkflows=[
-            build_derivative_mutation_workflow(derivative_mutation_workflow)
-            for derivative_mutation_workflow in config[
-                "derivative_mutation_workflows"
-            ]
-        ],
-        callback=self._process_derivative_derivation,
-    )
-
-def build_derivative_mutation_workflow(
-    config: dict[str, Any],
-) -> Workflow:
-    return Workflow(
-        executable=functools.partial(
-            DeclarativeMemory._mutate_derivatives,
-            config["derivative_mutator"],
-        ),
-        callback=self._process_derivative_mutation,
-    )
 
 
 class Workflow:

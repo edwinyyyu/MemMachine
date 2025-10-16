@@ -6,6 +6,7 @@ from uuid import UUID
 
 from memmachine.common.data_types import JSONValue
 
+
 class ContentType(Enum):
     """Enumeration for the type of content within an Episode."""
 

@@ -3,13 +3,14 @@ Declarative memory system for storing and retrieving
 episodic and semantic memory.
 """
 
+import functools
 import asyncio
 import json
 import logging
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 from string import Template
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
 from memmachine.common.data_types import ExternalServiceAPIError
@@ -46,6 +47,7 @@ class DeclarativeMemoryConfig(BaseModel):
             Template string supporting $-substitutions
             (default: "[$timestamp] $content").
     """
+
     episode_metadata_template: str = Field(
         "[$timestamp] $content",
         description=(
@@ -54,6 +56,75 @@ class DeclarativeMemoryConfig(BaseModel):
             "(default: '[$timestamp] $content')."
         ),
     )
+
+
+class MutationWorkflow:
+    def __init__(
+        self,
+        derivative_mutator: DerivativeMutator,
+    ):
+        if not isinstance(derivative_mutator, DerivativeMutator):
+            raise TypeError("derivative_mutator must be a DerivativeMutator")
+        self.derivative_mutator = derivative_mutator
+
+
+class DerivationWorkflow:
+    def __init__(
+        self,
+        derivative_deriver: DerivativeDeriver,
+        mutation_workflows: Iterable[MutationWorkflow],
+    ):
+        if not isinstance(derivative_deriver, DerivativeDeriver):
+            raise TypeError("derivative_deriver must be a DerivativeDeriver")
+        if not isinstance(mutation_workflows, Iterable):
+            raise TypeError("mutation_workflows must be an Iterable")
+
+        mutation_workflow_list = list(mutation_workflows)
+        if len(mutation_workflow_list) == 0:
+            raise ValueError(
+                "mutation_workflows must contain at least one MutationWorkflow"
+            )
+
+        if not all(
+            isinstance(mutation_workflow, MutationWorkflow)
+            for mutation_workflow in mutation_workflows
+        ):
+            raise TypeError("All items in mutation_workflows must be MutationWorkflow")
+
+        self.derivative_deriver = derivative_deriver
+        self.mutation_workflows = mutation_workflow_list
+
+
+class IngestionWorkflow:
+    def __init__(
+        self,
+        related_episode_postulator: RelatedEpisodePostulator,
+        derivation_workflows: Iterable[DerivationWorkflow],
+    ):
+        if not isinstance(related_episode_postulator, RelatedEpisodePostulator):
+            raise TypeError(
+                "related_episode_postulator must be a RelatedEpisodePostulator"
+            )
+        if not isinstance(derivation_workflows, Iterable):
+            raise TypeError("derivation_workflows must be an Iterable")
+
+        derivation_workflow_list = list(derivation_workflows)
+        if len(derivation_workflow_list) == 0:
+            raise ValueError(
+                "derivation_workflows must contain at least one DerivationWorkflow"
+            )
+
+        if not all(
+            isinstance(derivation_workflow, DerivationWorkflow)
+            for derivation_workflow in derivation_workflows
+        ):
+            raise TypeError(
+                "All items in derivation_workflows must be DerivationWorkflow"
+            )
+
+        self.related_episode_postulator = related_episode_postulator
+        self.derivation_workflows = list(derivation_workflows)
+
 
 class DeclarativeMemory:
     """
@@ -67,8 +138,7 @@ class DeclarativeMemory:
         reranker: Reranker,
         vector_graph_store: VectorGraphStore,
         episode_connection_postulators: Iterable[RelatedEpisodePostulator],
-        ingestion_workflows: Mapping[str, Iterable[Workflow]],
-        query_workflow: Mapping[str, Workflow],
+        ingestion_workflows: Mapping[str, Iterable[IngestionWorkflow]],
     ):
         """
         Initialize a DeclarativeMemory with the provided config.
@@ -116,15 +186,67 @@ class DeclarativeMemory:
         self._embedder: Embedder = config["embedder"]
         self._reranker: Reranker = config["reranker"]
 
-        self._episode_connection_related_episode_postulators: list[RelatedEpisodePostulator] = config[
-            "episode_connection_related_episode_postulators"
-        ]
+        self._episode_connection_related_episode_postulators: list[
+            RelatedEpisodePostulator
+        ] = config["episode_connection_related_episode_postulators"]
         self._query_derivative_deriver: DerivativeDeriver = config[
             "query_derivative_deriver"
         ]
 
-        self._ingestion_workflows = ingestion_workflows
         self._episode_metadata_template = Template(config.episode_metadata_template)
+
+        def build_ingestion_workflow(
+            config: dict[str, Any],
+        ) -> Workflow:
+            return Workflow(
+                executable=functools.partial(
+                    DeclarativeMemory._assemble_episode_cluster,
+                    config["related_episode_postulator"],
+                ),
+                subworkflows=[
+                    build_derivative_derivation_workflow(derivative_derivation_workflow)
+                    for derivative_derivation_workflow in config[
+                        "derivative_derivation_workflows"
+                    ]
+                ],
+                callback=self._process_episode_cluster_assembly,
+            )
+
+        def build_derivative_derivation_workflow(
+            config: dict[str, Any],
+        ) -> Workflow:
+            return Workflow(
+                executable=functools.partial(
+                    DeclarativeMemory._derive_derivatives,
+                    config["derivative_deriver"],
+                ),
+                subworkflows=[
+                    build_derivative_mutation_workflow(derivative_mutation_workflow)
+                    for derivative_mutation_workflow in config[
+                        "derivative_mutation_workflows"
+                    ]
+                ],
+                callback=self._process_derivative_derivation,
+            )
+
+        def build_derivative_mutation_workflow(
+            config: dict[str, Any],
+        ) -> Workflow:
+            return Workflow(
+                executable=functools.partial(
+                    DeclarativeMemory._mutate_derivatives,
+                    config["derivative_mutator"],
+                ),
+                callback=self._process_derivative_mutation,
+            )
+
+        self._ingestion_workflows = {
+            episode_type: [
+                build_ingestion_workflow(ingestion_workflow)
+                for ingestion_workflow in ingestion_workflows
+            ]
+            for episode_type, ingestion_workflows in ingestion_workflows.items()
+        }
 
     @staticmethod
     async def _assemble_episode_cluster(

@@ -73,8 +73,7 @@ class ResourceManager:
         return {
             resource_id: resource
             for resource_id in resource_ids
-            if (resource := self.get_resource(resource_id))
-            is not None
+            if (resource := self.get_resource(resource_id)) is not None
         }
 
     def create_resources(
@@ -91,7 +90,6 @@ class ResourceManager:
         for resource_id, resource_definition in resource_definitions.items():
             dependency_ids = get_nested_values(resource_definition.dependencies)
             resource_dependency_graph[resource_id] = set(dependency_ids)
-
 
         def order_resources(
             resource_dependency_graph: dict[str, set[str]],

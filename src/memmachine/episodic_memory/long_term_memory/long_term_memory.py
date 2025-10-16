@@ -1,7 +1,9 @@
 from collections.abc import Mapping
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator, field_validator
 
+from memmachine.common.data_types import Nested
 from memmachine.common.utils import get_nested_values
 from memmachine.common.factory import Factory
 from memmachine.common.embedder import Embedder
@@ -12,11 +14,27 @@ from memmachine.common.data_types import ResourceDefinition
 
 from ..data_types import ContentType, Episode
 from ..declarative_memory import ContentType as DeclarativeMemoryContentType
-from ..declarative_memory import DeclarativeMemory, DeclarativeMemoryConfig
+from ..declarative_memory import (
+    DeclarativeMemory,
+    DeclarativeMemoryConfig,
+    IngestionWorkflow,
+    DerivationWorkflow,
+    MutationWorkflow,
+    Derivation,
+)
 from ..declarative_memory import Episode as DeclarativeMemoryEpisode
-from ..declarative_memory.derivative_deriver import DerivativeDeriver, DerivativeDeriverFactory
-from ..declarative_memory.derivative_mutator import DerivativeMutator, DerivativeMutatorFactory
-from ..declarative_memory.related_episode_postulator import RelatedEpisodePostulator, RelatedEpisodePostulatorFactory
+from ..declarative_memory.derivative_deriver import (
+    DerivativeDeriver,
+    DerivativeDeriverFactory,
+)
+from ..declarative_memory.derivative_mutator import (
+    DerivativeMutator,
+    DerivativeMutatorFactory,
+)
+from ..declarative_memory.related_episode_postulator import (
+    RelatedEpisodePostulator,
+    RelatedEpisodePostulatorFactory,
+)
 
 content_type_to_declarative_memory_content_type_map = {
     ContentType.STRING: DeclarativeMemoryContentType.STRING,
@@ -32,6 +50,35 @@ declarative_memory_resource_type_factory_map: dict[str, Factory] = {
     "related_episode_postulator": RelatedEpisodePostulatorFactory,
 }
 
+
+class MutationWorkflowSpec(BaseModel):
+    derivative_mutator: str
+
+
+class DerivationWorkflowSpec(BaseModel):
+    derivative_deriver: str = Field()
+    mutation_workflows: list[MutationWorkflowSpec]
+
+    @field_validator("mutation_workflows", mode="after")
+    @classmethod
+    def check_mutation_workflows(cls, v):
+        if len(v) == 0:
+            raise ValueError("At least one mutation workflow must be specified")
+        return v
+
+
+class IngestionWorkflowSpec(BaseModel):
+    related_episode_postulator: str
+    derivation_workflows: list[DerivationWorkflowSpec]
+
+    @field_validator("derivation_workflows", mode="after")
+    @classmethod
+    def check_derivation_workflows(cls, v):
+        if len(v) == 0:
+            raise ValueError("At least one derivation workflow must be specified")
+        return v
+
+
 class LongTermMemoryConfig(BaseModel):
     metadata_prefix: str = Field(
         "[$timestamp] $producer_id: ",
@@ -39,19 +86,72 @@ class LongTermMemoryConfig(BaseModel):
             "Template prefix supporting $-substitutions "
             "to format episodes with episode metadata for the reranker "
             "(default: '[$timestamp] $producer_id: ')."
-        )
+        ),
     )
-
-    workflow_specification: None = None
-
     # TODO: Convert from config file format (type first) to this format (homogeneous) in previous layer.
-    resource_definitions: dict[str, ResourceDefinition]
+    declarative_memory_workflows_resource_definitions: dict[str, ResourceDefinition]
+    declarative_memory_ingestion_workflows_specs: dict[str, list[IngestionWorkflowSpec]]
+
+    @model_validator(mode="after")
+    def check_workflows_resource_definitions_and_specs(
+        self,
+    ):
+        resource_definition_ids = set(
+            self.declarative_memory_workflows_resource_definitions.keys()
+        )
+
+        # Check that all resource ids in ingestion workflows are defined in resource definitions
+        # and that all resource ids in resource definitions are used in ingestion workflows.
+        used_resource_ids = set()
+        for (
+            ingestion_workflow_spec
+        ) in self.declarative_memory_ingestion_workflows_specs.values():
+            related_episode_postulator_id = (
+                ingestion_workflow_spec.related_episode_postulator
+            )
+            if related_episode_postulator_id not in resource_definition_ids:
+                raise ValueError(
+                    f"Related episode postulator id '{related_episode_postulator_id}' "
+                    "in ingestion workflow not found in resource definitions"
+                )
+            used_resource_ids.add(related_episode_postulator_id)
+
+            for (
+                derivation_workflow_spec
+            ) in ingestion_workflow_spec.derivation_workflows:
+                derivative_deriver_id = derivation_workflow_spec.derivative_deriver
+                if derivative_deriver_id not in resource_definition_ids:
+                    raise ValueError(
+                        f"Derivative deriver id '{derivative_deriver_id}' "
+                        "in ingestion workflow not found in resource definitions"
+                    )
+                used_resource_ids.add(derivative_deriver_id)
+
+                for (
+                    mutation_workflow_spec
+                ) in derivation_workflow_spec.mutation_workflows:
+                    derivative_mutator_id = mutation_workflow_spec.derivative_mutator
+                    if derivative_mutator_id not in resource_definition_ids:
+                        raise ValueError(
+                            f"Derivative mutator id '{derivative_mutator_id}' "
+                            "in ingestion workflow not found in resource definitions"
+                        )
+                    used_resource_ids.add(derivative_mutator_id)
+
+        unused_resource_ids = resource_definition_ids - used_resource_ids
+        if len(unused_resource_ids) > 0:
+            raise ValueError(
+                f"Resource definitions contain unused resource ids: {unused_resource_ids}"
+            )
+
+        return self
+
 
 class LongTermMemory:
     def __init__(
         self,
         config: LongTermMemoryConfig,
-        embedder: Embedder, # TODO: make this part of workflow spec
+        embedder: Embedder,  # TODO: make this part of workflow spec
         reranker: Reranker,
         vector_graph_store: VectorGraphStore,
         resource_manager: ResourceManager,
@@ -66,12 +166,23 @@ class LongTermMemory:
         # Create all derivative derivers, mutators, related episode postulators here based on workflow spec and workflow resources.
         declarative_memory_resources = {}
 
-        for declarative_memory_resource_id, declarative_memory_resource_definition in config.resource_definitions.items():
-            declarative_memory_resource_factory = declarative_memory_resource_type_factory_map.get(declarative_memory_resource_definition.type)
+        for (
+            declarative_memory_resource_id,
+            declarative_memory_resource_definition,
+        ) in config.resource_definitions.items():
+            declarative_memory_resource_factory = (
+                declarative_memory_resource_type_factory_map.get(
+                    declarative_memory_resource_definition.type
+                )
+            )
             if declarative_memory_resource_factory is None:
-                raise ValueError(f"Unknown declarative memory resource type: {declarative_memory_resource_definition.type}")
+                raise ValueError(
+                    f"Unknown declarative memory resource type: {declarative_memory_resource_definition.type}"
+                )
 
-            dependency_ids = get_nested_values(declarative_memory_resource_definition.dependencies)
+            dependency_ids = get_nested_values(
+                declarative_memory_resource_definition.dependencies
+            )
             injections = resource_manager.resolve_resources(dependency_ids)
 
             declarative_memory_resource = declarative_memory_resource_factory.create(
@@ -81,10 +192,18 @@ class LongTermMemory:
                 injections,
             )
 
-            declarative_memory_resources[declarative_memory_resource_id] = declarative_memory_resource
+            declarative_memory_resources[declarative_memory_resource_id] = (
+                declarative_memory_resource
+            )
 
         ingestion_workflows = {
-            episode_type:
+            episode_type: [
+                LongTermMemory._build_ingestion_workflow(
+                    ingestion_workflow_spec, declarative_memory_resources
+                )
+                for ingestion_workflow_spec in ingestion_workflow_specs
+            ]
+            for episode_type, ingestion_workflow_specs in config.declarative_memory_ingestion_workflows_specs.items()
         }
 
         declarative_memory_config = DeclarativeMemoryConfig(
@@ -97,7 +216,33 @@ class LongTermMemory:
             reranker=reranker,
             vector_graph_store=vector_graph_store,
             ingestion_workflows=ingestion_workflows,
-            query_workflow=query_workflow,
+        )
+
+    @staticmethod
+    def _build_ingestion_workflow(
+        ingestion_workflow: IngestionWorkflowSpec,
+        resources: Mapping[str, Any],
+    ) -> IngestionWorkflow:
+        return IngestionWorkflow(
+            related_episode_postulator=resources[
+                ingestion_workflow.related_episode_postulator
+            ],
+            derivation_workflows=[
+                DerivationWorkflow(
+                    derivative_deriver=resources[
+                        derivation_workflow.derivative_deriver
+                    ],
+                    mutation_workflows=[
+                        MutationWorkflow(
+                            derivative_mutator=resources[
+                                mutation_workflow.derivative_mutator
+                            ],
+                        )
+                        for mutation_workflow in derivation_workflow.mutation_workflows
+                    ],
+                )
+                for derivation_workflow in ingestion_workflow.derivation_workflows
+            ],
         )
 
     async def add_episode(self, episode: Episode):

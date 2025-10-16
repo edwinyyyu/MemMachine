@@ -5,9 +5,7 @@ Factory for Embedder instances.
 from typing import Any
 
 from memmachine.common.data_types import Nested, ConfigValue
-from memmachine.common.utils import Nested, ConfigValue
 from memmachine.common.factory import Factory
-from memmachine.common.metrics_manager.metrics_manager import MetricsManager
 
 from .embedder import Embedder
 
