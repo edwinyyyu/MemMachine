@@ -38,17 +38,9 @@ class OpenAIEmbedder(Embedder):
                   Name of the OpenAI embedding model to use
                   (default: "text-embedding-3-small").
                 - dimensions (int | None, optional):
-                  Dimensionality of the embedding vectors.
-                  Required if model is not recognized
+                  Dimensionality of the embedding vectors,
+                  if different from the model's default
                   (default: None).
-                - use_dimensions_parameter (bool, optional):
-                  Whether to use the dimensions parameter
-                  in the OpenAI embedding API call.
-                  The model must support configurable dimensions
-                  if this is set to True.
-                  This must be set to True for configured dimensions
-                  to take effect.
-                  (default: False).
                 - base_url (str, optional):
                   Base URL of the OpenAI embedding model to use.
                 - metrics_factory (MetricsFactory, optional):
@@ -77,53 +69,45 @@ class OpenAIEmbedder(Embedder):
 
         self._model = model
 
+        temp_client = openai.OpenAI(api_key=api_key, base_url=config.get("base_url"))
+
         # https://platform.openai.com/docs/guides/embeddings#embedding-models
         dimensions = config.get("dimensions")
         if dimensions is None:
-            match self._model:
-                case "text-embedding-3-small":
-                    dimensions = 1536
-                case "text-embedding-3-large":
-                    dimensions = 3072
-                case "text-embedding-ada-002":
-                    dimensions = 1536
-                case _:
-                    raise ValueError(
-                        f"Unknown dimensions for model {model}."
-                        "Please specify dimensions in the configuration."
-                    )
+            # Get dimensions by embedding a dummy string.
+            response = temp_client.embeddings.create(
+                input="\n",
+                model=self._model,
+            )
+            dimensions = len(response.data[0].embedding)
+            self._use_dimensions_parameter = False
+        else:
+            if not isinstance(dimensions, int):
+                raise TypeError("Dimensions must be an integer")
+            if dimensions <= 0:
+                raise ValueError("Dimensions must be positive")
 
-        if not isinstance(dimensions, int):
-            raise TypeError("Dimensions must be an integer")
+            # Validate dimensions by embedding a dummy string.
+            try:
+                response = temp_client.embeddings.create(
+                    input="\n",
+                    model=self._model,
+                    dimensions=dimensions,
+                )
+                self._use_dimensions_parameter = True
+            except openai.OpenAIError:
+                response = temp_client.embeddings.create(
+                    input="\n",
+                    model=self._model,
+                )
+                self._use_dimensions_parameter = False
 
-        if dimensions <= 0:
-            raise ValueError("Dimensions must be positive")
-
-        match self._model:
-            case "text-embedding-3-small":
-                if dimensions > 1536:
-                    raise ValueError(
-                        "Dimensions for text-embedding-3-small "
-                        "cannot be greater than 1536"
-                    )
-            case "text-embedding-3-large":
-                if dimensions > 3072:
-                    raise ValueError(
-                        "Dimensions for text-embedding-3-large "
-                        "cannot be greater than 3072"
-                    )
-            case "text-embedding-ada-002":
-                if dimensions != 1536:
-                    raise ValueError(
-                        "Dimensions for text-embedding-ada-002 must be exactly 1536"
-                    )
+            if len(response.data[0].embedding) != dimensions:
+                raise ValueError(
+                    f"Invalid dimensions {dimensions} for model {self._model}"
+                )
 
         self._dimensions = dimensions
-        use_dimensions_parameter = config.get("use_dimensions_parameter", True)
-        if not isinstance(use_dimensions_parameter, bool):
-            raise TypeError("use_dimensions_parameter must be a boolean")
-
-        self._use_dimensions_parameter = use_dimensions_parameter
 
         self._client = openai.AsyncOpenAI(
             api_key=api_key, base_url=config.get("base_url")
