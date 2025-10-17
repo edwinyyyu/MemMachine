@@ -6,7 +6,7 @@ episodic and semantic memory.
 import asyncio
 import json
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Callable
 from datetime import datetime
 from string import Template
 from typing import cast
@@ -142,37 +142,45 @@ class DeclarativeMemory:
             adjacent_related_episode_postulators
         )
 
-    # async def run_workflow(self, workflow: Callable[[], Awaitable[]], subworkflows, callback, arguments: Any) -> Any:
-    #     """
-    #     Execute the workflow with the provided arguments.
+    @staticmethod
+    async def _build_workflow(executable: Callable, subworkflows: Iterable[Callable], callback: Callable | None = None) -> Callable:
+        """
+        Execute the workflow with the provided arguments.
 
-    #     Args:
-    #         arguments (Any): Arguments to pass to the executable.
+        Args:
+            executable (Callable):
+                The main executable function of the workflow.
+            subworkflows (Iterable[Callable]):
+                The subworkflows to execute on the result of the main executable.
+            callback (Callable | None, optional):
+                Optional callback to process the results.
+                If provided, it will be called with the result
+                of the main executable and the list of subworkflow results.
+                If not provided, the list of subworkflow results will be returned.
 
-    #     Returns:
-    #         Any:
-    #             The result of the workflow execution,
-    #             potentially processed by the callback if provided.
-    #     """
-    #     execution_result = await self._executable(arguments)
+        Returns:
+            Callable:
+                The assembled workflow function.
+        """
+        async def execute_workflow(*args, **kwargs):
+            execution_result = await executable(*args, **kwargs)
 
-    #     subworkflow_results = await asyncio.gather(
-    #         *[
-    #             subworkflow.execute(execution_result)
-    #             for subworkflow in self._subworkflows
-    #         ]
-    #     )
+            subworkflow_results = await asyncio.gather(
+                *[
+                    subworkflow(execution_result)
+                    for subworkflow in subworkflows
+                ]
+            )
 
-    #     if self._callback is not None:
-    #         if subworkflow_results:
-    #             return await self._callback(execution_result, subworkflow_results)
-    #         else:
-    #             return await self._callback(execution_result)
+            if callback is not None:
+                return await callback(execution_result, subworkflow_results)
 
-    #     return execution_result
+            return subworkflow_results
+
+        return execute_workflow
 
     @staticmethod
-    def _build_ingestion_workflow_executable(
+    def _build_ingestion_workflow(
         ingestion_workflows: Iterable[IngestionWorkflow],
     ):
         workflow_tree = {}
@@ -189,13 +197,16 @@ class DeclarativeMemory:
             )
 
     @staticmethod
-    def _build_query_workflow_executable(query_workflows: Iterable[QueryWorkflow]):
+    def _build_query_workflow(query_workflows: Iterable[QueryWorkflow]):
+        workflow_tree = {}
         for query_workflow in query_workflows:
-            query_workflow.derivative_deriver
-
-    @staticmethod
-    def _build_query_workflow():
-        pass
+            workflow_tree.setdefault(
+                id(query_workflow.derivative_deriver),
+                (query_workflow.derivative_deriver, {})
+            )[1].setdefault(
+                id(query_workflow.derivative_mutator),
+                query_workflow.derivative_mutator,
+            )
 
     @staticmethod
     async def _assemble_episode_cluster(
