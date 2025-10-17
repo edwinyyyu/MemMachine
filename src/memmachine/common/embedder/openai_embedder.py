@@ -41,6 +41,14 @@ class OpenAIEmbedder(Embedder):
                   Dimensionality of the embedding vectors.
                   Required if model is not recognized
                   (default: None).
+                - use_dimensions_parameter (bool, optional):
+                  Whether to use the dimensions parameter
+                  in the OpenAI embedding API call.
+                  The model must support configurable dimensions
+                  if this is set to True.
+                  This must be set to True for configured dimensions
+                  to take effect.
+                  (default: False).
                 - base_url (str, optional):
                   Base URL of the OpenAI embedding model to use.
                 - metrics_factory (MetricsFactory, optional):
@@ -111,6 +119,11 @@ class OpenAIEmbedder(Embedder):
                     )
 
         self._dimensions = dimensions
+        use_dimensions_parameter = config.get("use_dimensions_parameter", True)
+        if not isinstance(use_dimensions_parameter, bool):
+            raise TypeError("use_dimensions_parameter must be a boolean")
+
+        self._use_dimensions_parameter = use_dimensions_parameter
 
         self._client = openai.AsyncOpenAI(
             api_key=api_key, base_url=config.get("base_url")
@@ -198,7 +211,7 @@ class OpenAIEmbedder(Embedder):
                         model=self._model,
                         dimensions=self._dimensions,
                     )
-                    if self._model != "text-embedding-ada-002"
+                    if self._use_dimensions_parameter
                     else await self._client.embeddings.create(
                         input=inputs,
                         model=self._model,
