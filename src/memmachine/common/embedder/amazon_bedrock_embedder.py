@@ -61,10 +61,6 @@ class AmazonBedrockEmbedderConfig(BaseModel):
             "(e.g. 'amazon.titan-embed-text-v2:0')."
         ),
     )
-    dimensions: int = Field(
-        description="Dimensionality of the embedding vectors.",
-        gt=0,
-    )
     similarity_metric: SimilarityMetric = Field(
         SimilarityMetric.COSINE,
         description="Similarity metric to use for comparing embeddings.",
@@ -97,7 +93,6 @@ class AmazonBedrockEmbedder(Embedder):
         aws_access_key_id = config.aws_access_key_id
         aws_secret_access_key = config.aws_secret_access_key
         self._model_id = config.model_id
-        self._dimensions = config.dimensions
         self._similarity_metric = config.similarity_metric
         self._max_retry_interval_seconds = config.max_retry_interval_seconds
 
@@ -113,6 +108,10 @@ class AmazonBedrockEmbedder(Embedder):
                 }
             ),
         )
+
+        # Get dimensions by embedding a dummy string.
+        response = self._embeddings.embed_documents(["."])
+        self._dimensions = len(response[0])
 
     async def ingest_embed(
         self,
