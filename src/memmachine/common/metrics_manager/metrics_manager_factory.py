@@ -17,12 +17,12 @@ class MetricsManagerFactory(Factory):
 
     @staticmethod
     def create(
-        variant: str,
+        provider: str,
         config: dict[str, ConfigValue],
         dependencies: dict[str, Nested[str]],
         injections: dict[str, Any],
     ) -> MetricsManager:
-        match variant:
+        match provider:
             case "prometheus":
                 from .prometheus_metrics_manager import (
                     PrometheusMetricsManager,
@@ -30,4 +30,4 @@ class MetricsManagerFactory(Factory):
 
                 return PrometheusMetricsManager()
             case _:
-                raise ValueError(f"Unknown MetricsManager variant: {variant}")
+                raise ValueError(f"Unknown MetricsManager provider: {provider}")

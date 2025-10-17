@@ -17,12 +17,12 @@ class RerankerFactory(Factory):
 
     @staticmethod
     def create(
-        variant: str,
+        provider: str,
         config: dict[str, ConfigValue],
         dependencies: dict[str, Nested[str]],
         injections: dict[str, Any],
     ) -> Reranker:
-        match variant:
+        match provider:
             case "bm25":
                 from .bm25_reranker import BM25Reranker
 
@@ -58,4 +58,4 @@ class RerankerFactory(Factory):
                     dict(config) | Factory.inject_dependencies(dependencies, injections)
                 )
             case _:
-                raise ValueError(f"Unknown Reranker variant: {variant}")
+                raise ValueError(f"Unknown Reranker provider: {provider}")

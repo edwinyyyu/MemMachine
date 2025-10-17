@@ -18,12 +18,12 @@ class LanguageModelFactory(Factory):
 
     @staticmethod
     def create(
-        variant: str,
+        provider: str,
         config: dict[str, ConfigValue],
         dependencies: dict[str, Nested[str]],
         injections: dict[str, Any],
     ) -> LanguageModel:
-        match variant:
+        match provider:
             case "openai":
                 from .openai_language_model import OpenAILanguageModel
 
@@ -45,4 +45,4 @@ class LanguageModelFactory(Factory):
                 )
 
             case _:
-                raise ValueError(f"Unknown LanguageModel variant: {variant}")
+                raise ValueError(f"Unknown LanguageModel provider: {provider}")

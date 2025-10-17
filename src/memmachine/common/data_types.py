@@ -25,7 +25,7 @@ ConfigValue: TypeAlias = (
 
 class ResourceDefinition(BaseModel):
     type: str
-    variant: str
+    provider: str
     config: dict[str, ConfigValue]
     dependencies: dict[str, Nested[str]]  # TODO @edwinyyyu: documentation
 

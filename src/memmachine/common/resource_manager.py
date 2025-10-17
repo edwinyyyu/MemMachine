@@ -27,7 +27,7 @@ Each entry in resource_definitions should look like this:
 ```
 resource_id: {
     "type": "<TYPE>",
-    "variant": "<VARIANT>",
+    "provider": "<VARIANT>",
     "config": {
         ... <CONFIGURATION> ...
     }
@@ -163,7 +163,7 @@ class ResourceManager:
             resource_factory = resource_factory_map[resource_definition.type]
 
             initialized_resource = resource_factory.create(
-                variant=resource_definition.variant,
+                provider=resource_definition.provider,
                 config=resource_definition.config,
                 injections=self._resource_cache,
             )

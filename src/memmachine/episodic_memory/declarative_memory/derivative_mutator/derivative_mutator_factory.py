@@ -16,12 +16,12 @@ class DerivativeMutatorFactory(Factory):
 
     @staticmethod
     def create(
-        variant: str,
+        provider: str,
         config: dict[str, ConfigValue],
         dependencies: dict[str, Nested[str]],
         injections: dict[str, Any],
     ) -> DerivativeMutator:
-        match variant:
+        match provider:
             case "identity":
                 from .identity_derivative_mutator import (
                     IdentityDerivativeMutator,
@@ -44,4 +44,4 @@ class DerivativeMutatorFactory(Factory):
                     dict(config) | Factory.inject_dependencies(dependencies, injections)
                 )
             case _:
-                raise ValueError(f"Unknown DerivativeMutator variant: {variant}")
+                raise ValueError(f"Unknown DerivativeMutator provider: {provider}")

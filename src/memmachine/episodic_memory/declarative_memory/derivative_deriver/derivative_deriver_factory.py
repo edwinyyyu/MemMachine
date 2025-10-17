@@ -16,12 +16,12 @@ class DerivativeDeriverFactory(Factory):
 
     @staticmethod
     def create(
-        variant: str,
+        provider: str,
         config: dict[str, ConfigValue],
         dependencies: dict[str, Nested[str]],
         injections: dict[str, Any],
     ) -> DerivativeDeriver:
-        match variant:
+        match provider:
             case "concatenation":
                 from .concatenation_derivative_deriver import (
                     ConcatenationDerivativeDeriver,
@@ -44,4 +44,4 @@ class DerivativeDeriverFactory(Factory):
                 populated_config = config
                 return SentenceDerivativeDeriver(populated_config)
             case _:
-                raise ValueError(f"Unknown DerivativeDeriver variant: {variant}")
+                raise ValueError(f"Unknown DerivativeDeriver provider: {provider}")

@@ -17,12 +17,12 @@ class EmbedderFactory(Factory):
 
     @staticmethod
     def create(
-        variant: str,
+        provider: str,
         config: dict[str, ConfigValue],
         dependencies: dict[str, Nested[str]],
         injections: dict[str, Any],
     ) -> Embedder:
-        match variant:
+        match provider:
             case "openai":
                 from .openai_embedder import OpenAIEmbedder
 
@@ -33,4 +33,4 @@ class EmbedderFactory(Factory):
                 )
 
             case _:
-                raise ValueError(f"Unknown Embedder variant: {variant}")
+                raise ValueError(f"Unknown Embedder provider: {provider}")

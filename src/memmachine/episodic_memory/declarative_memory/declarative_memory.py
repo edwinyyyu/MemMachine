@@ -59,14 +59,14 @@ class DeclarativeMemoryConfig(BaseModel):
 class IngestionWorkflow:
     def __init__(
         self,
-        related_episode_postulator: RelatedEpisodePostulator,
+        cluster_related_episode_postulator: RelatedEpisodePostulator,
         derivative_deriver: DerivativeDeriver,
         derivative_mutator: DerivativeMutator,
         embedder: Embedder,
     ):
-        if not isinstance(related_episode_postulator, RelatedEpisodePostulator):
+        if not isinstance(cluster_related_episode_postulator, RelatedEpisodePostulator):
             raise TypeError(
-                "related_episode_postulator must be a RelatedEpisodePostulator"
+                "cluster_related_episode_postulator must be a RelatedEpisodePostulator"
             )
         if not isinstance(derivative_deriver, DerivativeDeriver):
             raise TypeError("derivative_deriver must be a DerivativeDeriver")
@@ -75,7 +75,7 @@ class IngestionWorkflow:
         if not isinstance(embedder, Embedder):
             raise TypeError("embedder must be an Embedder")
 
-        self.related_episode_postulator = related_episode_postulator
+        self.cluster_related_episode_postulator = cluster_related_episode_postulator
         self.derivative_deriver = derivative_deriver
         self.derivative_mutator = derivative_mutator
 
@@ -130,7 +130,7 @@ class DeclarativeMemory:
             adjacentn_related_episode_postulators (Iterable[RelatedEpisodePostulator]):
                 Iterable of related episode postulators
                 for postulating adjacent episodes.
-       """
+        """
 
         self._episode_metadata_template = Template(config.episode_metadata_template)
 
@@ -138,24 +138,64 @@ class DeclarativeMemory:
         self._vector_graph_store: VectorGraphStore = vector_graph_store
         self._ingestion_workflows_map = ingestion_workflows_map
         self._query_workflows = query_workflows
-        self._adjacent_related_episode_postulators: list[
-            RelatedEpisodePostulator
-        ] = adjacent_related_episode_postulators
+        self._adjacent_related_episode_postulators: list[RelatedEpisodePostulator] = (
+            adjacent_related_episode_postulators
+        )
 
+    # async def run_workflow(self, workflow: Callable[[], Awaitable[]], subworkflows, callback, arguments: Any) -> Any:
+    #     """
+    #     Execute the workflow with the provided arguments.
 
+    #     Args:
+    #         arguments (Any): Arguments to pass to the executable.
 
+    #     Returns:
+    #         Any:
+    #             The result of the workflow execution,
+    #             potentially processed by the callback if provided.
+    #     """
+    #     execution_result = await self._executable(arguments)
 
+    #     subworkflow_results = await asyncio.gather(
+    #         *[
+    #             subworkflow.execute(execution_result)
+    #             for subworkflow in self._subworkflows
+    #         ]
+    #     )
 
+    #     if self._callback is not None:
+    #         if subworkflow_results:
+    #             return await self._callback(execution_result, subworkflow_results)
+    #         else:
+    #             return await self._callback(execution_result)
 
+    #     return execution_result
 
-    def build_ingestion_workflow_tree(ingestion_workflows: Iterable[IngestionWorkflow]):
+    @staticmethod
+    def _build_ingestion_workflow_executable(
+        ingestion_workflows: Iterable[IngestionWorkflow],
+    ):
+        workflow_tree = {}
+        for ingestion_workflow in ingestion_workflows:
+            workflow_tree.setdefault(
+                id(ingestion_workflow.cluster_related_episode_postulator),
+                (ingestion_workflow.cluster_related_episode_postulator, {}),
+            )[1].setdefault(
+                id(ingestion_workflow.derivative_deriver),
+                (ingestion_workflow.derivative_deriver, {}),
+            )[1].setdefault(
+                id(ingestion_workflow.derivative_mutator),
+                ingestion_workflow.derivative_mutator,
+            )
+
+    @staticmethod
+    def _build_query_workflow_executable(query_workflows: Iterable[QueryWorkflow]):
+        for query_workflow in query_workflows:
+            query_workflow.derivative_deriver
+
+    @staticmethod
+    def _build_query_workflow():
         pass
-
-    def build_query_workflow_tree(query_workflows: Iterable[QueryWorkflow]):
-        pass
-
-
-
 
     @staticmethod
     async def _assemble_episode_cluster(
@@ -348,21 +388,6 @@ class DeclarativeMemory:
         )
         return nodes, edges
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     async def add_episode(
         self,
         episode: Episode,
@@ -395,7 +420,9 @@ class DeclarativeMemory:
             episode.episode_type
         )
         if episode_type_ingestion_workflows is None:
-            episode_type_ingestion_workflows = self._derivation_workflows.get("_default", [])
+            episode_type_ingestion_workflows = self._derivation_workflows.get(
+                "_default", []
+            )
 
         # Create nodes and edges for episode clusters and derivatives.
         derivation_workflow_tasks = [

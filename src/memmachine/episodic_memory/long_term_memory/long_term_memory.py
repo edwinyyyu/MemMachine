@@ -136,9 +136,7 @@ class LongTermMemoryConfig(BaseModel):
             used_resource_ids.add(query_workflow.derivative_mutator)
 
         # Check adjacent related episode postulators.
-        for (
-            related_episode_postulator_id
-        ) in self.adjacent_related_episode_postulators:
+        for related_episode_postulator_id in self.adjacent_related_episode_postulators:
             if related_episode_postulator_id not in workflow_resource_ids:
                 raise ValueError(
                     f"Related episode postulator id '{related_episode_postulator_id}' "
@@ -191,7 +189,7 @@ class LongTermMemory:
             injections = resource_manager.resolve_resources(dependency_ids)
 
             workflow_resource = workflow_resource_factory.create(
-                workflow_resource_definition.variant,
+                workflow_resource_definition.provider,
                 workflow_resource_definition.config,
                 workflow_resource_definition.dependencies,
                 injections,

@@ -16,12 +16,12 @@ class RelatedEpisodePostulatorFactory(Factory):
 
     @staticmethod
     def create(
-        variant: str,
+        provider: str,
         config: dict[str, ConfigValue],
         dependencies: dict[str, Nested[str]],
         injections: dict[str, Any],
     ) -> RelatedEpisodePostulator:
-        match variant:
+        match provider:
             case "null":
                 from .null_related_episode_postulator import (
                     NullRelatedEpisodePostulator,
@@ -37,4 +37,4 @@ class RelatedEpisodePostulatorFactory(Factory):
                     dict(config) | Factory.inject_dependencies(dependencies, injections)
                 )
             case _:
-                raise ValueError(f"Unknown RelatedEpisodePostulator variant: {variant}")
+                raise ValueError(f"Unknown RelatedEpisodePostulator provider: {provider}")

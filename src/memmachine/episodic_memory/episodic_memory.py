@@ -58,7 +58,9 @@ class EpisodicMemory:
     def __init__(
         self,
         config: EpisodicMemoryConfig,
-        resources: dict[str, Any],
+        manager: EpisodicMemoryManager,
+        metrics_manager: MetricsManager
+        resource_manager: ResourceManager,
     ):
         """
         Initializes a EpisodicMemory instance.
@@ -182,13 +184,6 @@ class EpisodicMemory:
                 "config": session_memory_config,
             }
         }
-
-        resources = ResourceManager.create_resources(
-            long_term_memory_resource_definitions | session_memory_resource_definitions,
-        )
-
-        self._long_term_memory = resources.get("_long_term_memory")
-        self._session_memory = resources.get("_session_memory")
 
         metrics_manager = config.get("metrics_manager")
         if metrics_manager is not None and not isinstance(

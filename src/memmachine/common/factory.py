@@ -18,20 +18,20 @@ class Factory(ABC):
     @staticmethod
     @abstractmethod
     def create(
-        variant: str,
+        provider: str,
         config: dict[str, ConfigValue],
         dependencies: dict[str, Nested[str]],
         injections: dict[str, Any],
     ) -> Any:
         """
         Create the resource
-        based on its variant,
+        based on its provider,
         configuration,
         and injected dependencies.
 
         Args:
-            variant (str):
-                The variant of the resource to create.
+            provider (str):
+                The provider of the resource to create.
             config (dict[str, ConfigValue]):
                 The configuration dictionary for the resource.
             dependencies (dict[str, Nested[str]]):

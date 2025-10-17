@@ -17,12 +17,12 @@ class VectorGraphStoreFactory(Factory):
 
     @staticmethod
     def create(
-        variant: str,
+        provider: str,
         config: dict[str, ConfigValue],
         dependencies: dict[str, Nested[str]],
         injections: dict[str, Any],
     ) -> VectorGraphStore:
-        match variant:
+        match provider:
             case "neo4j":
                 from .neo4j_vector_graph_store import (
                     Neo4jVectorGraphStore,
@@ -31,4 +31,4 @@ class VectorGraphStoreFactory(Factory):
 
                 return Neo4jVectorGraphStore(Neo4jVectorGraphStoreConfig(**config))
             case _:
-                raise ValueError(f"Unknown VectorGraphStore variant: {variant}")
+                raise ValueError(f"Unknown VectorGraphStore provider: {provider}")
