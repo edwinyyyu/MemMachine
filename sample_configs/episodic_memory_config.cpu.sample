@@ -72,8 +72,6 @@ reranker:
   bm_ranker_id:
     type: "bm25"
   aws_reranker_id:
-    type: "aws-bedrock"
-  aws_reranker_id:
     type: "amazon-bedrock"
     region: "us-west-2"
     aws_access_key_id: <AWS_ACCESS_KEY_ID>
