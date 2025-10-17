@@ -24,6 +24,12 @@ Model:
     model_vendor: openai
     model_name: "gpt-4o-mini"
     api_key: <YOUR_API_KEY>
+  another_model_id:
+    model_vendor: "amazon-bedrock"
+    region: "us-west-2"
+    aws_access_key_id: <AWS_ACCESS_KEY_ID>
+    aws_secret_access_key: <AWS_SECRET_ACCESS_KEY>
+    model_id: "openai.gpt-oss-20b-1:0"
 
 storage:
   my_storage_id:

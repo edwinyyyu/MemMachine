@@ -297,8 +297,9 @@ async def initialize_resource(
     profile_model["metrics_factory_id"] = "prometheus"
     metrics_injection = {}
     metrics_injection["prometheus"] = metrics_manager
+    model_vendor = profile_model.pop("model_vendor")
     llm_model = LanguageModelBuilder.build(
-        profile_model.get("model_vendor"), profile_model, metrics_injection
+        model_vendor, profile_model, metrics_injection
     )
 
     # create embedder
