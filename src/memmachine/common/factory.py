@@ -6,7 +6,7 @@ based on their definitions and dependencies.
 from abc import ABC, abstractmethod
 from typing import Any
 
-from .data_types import Nested, ConfigValue
+from .data_types import ConfigValue, Nested
 
 
 class Factory(ABC):

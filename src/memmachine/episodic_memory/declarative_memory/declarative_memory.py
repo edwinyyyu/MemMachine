@@ -7,18 +7,18 @@ import asyncio
 import functools
 import json
 import logging
-from collections.abc import Iterable, Mapping, Callable
+from collections.abc import Callable, Iterable, Mapping, Awaitable
 from datetime import datetime
 from string import Template
 from typing import cast
 from uuid import uuid4
 
+from pydantic import BaseModel, Field
+
 from memmachine.common.data_types import ExternalServiceAPIError
 from memmachine.common.embedder.embedder import Embedder
 from memmachine.common.reranker.reranker import Reranker
 from memmachine.common.vector_graph_store import Edge, Node, VectorGraphStore
-
-from pydantic import BaseModel, Field
 
 from .data_types import (
     ContentType,
@@ -147,7 +147,11 @@ class DeclarativeMemory:
         )
 
     @staticmethod
-    async def _build_workflow(executable: Callable, subworkflows: Iterable[Callable], callback: Callable | None = None) -> Callable:
+    async def _build_workflow(
+        executable: Callable,
+        subworkflows: Iterable[Callable],
+        callback: Callable | None = None,
+    ) -> Callable:
         """
         Execute the workflow with the provided arguments.
 
@@ -161,13 +165,11 @@ class DeclarativeMemory:
             Callable:
                 The assembled workflow function.
         """
+
         async def execute_workflow(*args, **kwargs):
             execution_result = await executable(*args, **kwargs)
             subworkflow_results = await asyncio.gather(
-                *[
-                    subworkflow(execution_result)
-                    for subworkflow in subworkflows
-                ]
+                *[subworkflow(execution_result) for subworkflow in subworkflows]
             )
 
             if callback is None:
@@ -191,7 +193,10 @@ class DeclarativeMemory:
                 (ingestion_workflow.derivative_deriver, {}),
             )[1].setdefault(
                 id(ingestion_workflow.derivative_mutator),
-                ingestion_workflow.derivative_mutator,
+                (ingestion_workflow.derivative_mutator, {}),
+            )[1].setdefault(
+                id(ingestion_workflow.embedder),
+                ingestion_workflow.embedder
             )
 
         return [
@@ -212,19 +217,35 @@ class DeclarativeMemory:
                                     DeclarativeMemory._mutate_derivatives,
                                     derivative_mutator,
                                 ),
-                                subworkflows=[],
-                                callback=self._process_ingestion_derivative_mutation
+                                subworkflows=[
+                                    DeclarativeMemory._build_workflow(
+                                        executable=functools.partial(
+                                            DeclarativeMemory._embed_derivatives,
+                                            functools.partial(
+                                                embedder.ingest_embed,
+                                                max_attempts=3,
+                                            )
+                                        ),
+                                        subworkflows=[],
+                                        callback=self._process_ingestion_embedding,
+                                    )
+                                    for embedder in derivative_mutator_workflow_tree
+                                ],
+                                callback=self._process_ingestion_derivative_mutation,
                             )
-                            for derivative_mutator in derivative_deriver_workflow_tree
+                            for (
+                                derivative_mutator,
+                                derivative_mutator_workflow_tree,
+                            ) in derivative_deriver_workflow_tree
                         ],
-                        callback=self._process_ingestion_derivative_derivation
+                        callback=self._process_ingestion_derivative_derivation,
                     )
                     for (
                         derivative_deriver,
                         derivative_deriver_workflow_tree,
                     ) in cluster_related_episode_postulator_workflow_tree.values()
                 ],
-                callback=self._process_ingestion_episode_cluster_assembly
+                callback=self._process_ingestion_episode_cluster_assembly,
             )
             for (
                 cluster_related_episode_postulator,
@@ -237,7 +258,7 @@ class DeclarativeMemory:
         for query_workflow in query_workflows:
             workflow_trees.setdefault(
                 id(query_workflow.derivative_deriver),
-                (query_workflow.derivative_deriver, {})
+                (query_workflow.derivative_deriver, {}),
             )[1].setdefault(
                 id(query_workflow.derivative_mutator),
                 query_workflow.derivative_mutator,
@@ -255,12 +276,28 @@ class DeclarativeMemory:
                             DeclarativeMemory._mutate_derivatives,
                             derivative_mutator,
                         ),
-                        subworkflows=[],
-                        callback=self._process_query_derivative_mutation
+                        subworkflows=[
+                            DeclarativeMemory._build_workflow(
+                                executable=functools.partial(
+                                    DeclarativeMemory._embed_derivatives,
+                                    functools.partial(
+                                        embedder.query_embed,
+                                        max_attempts=3,
+                                    )
+                                ),
+                                subworkflows=[],
+                                callback=self._process_query_embedding,
+                            )
+                            for embedder in derivative_mutator_workflow_tree
+                        ],
+                        callback=self._process_query_derivative_mutation,
                     )
-                    for derivative_mutator in derivative_deriver_workflow_tree
+                    for (
+                        derivative_mutator,
+                        derivative_mutator_workflow_tree,
+                    ) in derivative_deriver_workflow_tree
                 ],
-                callback=self._process_query_derivative_derivation
+                callback=self._process_query_derivative_derivation,
             )
             for (
                 derivative_deriver,
@@ -333,24 +370,68 @@ class DeclarativeMemory:
         ]
         return mutated_derivatives
 
+    @staticmethod
+    async def _create_embedded_derivative_nodes(
+        async_embed_func: Callable[[list[str]], Awaitable[list[list[float]]]],
+        mutated_derivatives: list[Derivative]
+    ) -> tuple[list[Derivative], list[list[float]]]:
+        """
+        Embed mutated derivatives.
+        """
+        try:
+            derivative_embeddings = await async_embed_func(
+                [derivative.content for derivative in mutated_derivatives]
+            )
+        except (ExternalServiceAPIError, ValueError, RuntimeError):
+            logger.error("Failed to create embeddings for mutated derivatives")
+            return [], []
+
+        return mutated_derivatives, derivative_embeddings
+
+    async def _process_ingestion_embedding(
+        self,
+        derivative_embedding_result: tuple[list[Derivative], list[list[float]]],
+        none: list[None],
+    ) -> list[Node]:
+        """
+        Process the result of derivative embedding
+        by creating nodes for the embedded derivatives.
+        """
+        embedded_derivatives, derivative_embeddings = derivative_embedding_result
+
+        embedded_derivative_nodes = [
+            Node(
+                uuid=derivative.uuid,
+                labels={"Derivative"},
+                properties={
+                    "content": derivative.content,
+                    DeclarativeMemory._embedding_property_name(
+                        self._embedder.model_id,
+                        self._embedder.dimensions,
+                    ): derivative_embedding,
+                    "timestamp": derivative.timestamp,
+                    "user_metadata": json.dumps(derivative.user_metadata),
+                }
+                | {
+                    mangle_filterable_property_key(key): value
+                    for key, value in derivative.filterable_properties.items()
+                },
+            )
+            for derivative, derivative_embedding in zip(
+                embedded_derivatives, derivative_embeddings
+            )
+        ]
+        return embedded_derivative_nodes
+
     async def _process_ingestion_derivative_mutation(
         self,
         mutated_derivatives: list[Derivative],
-        none: list[None],
+        embedded_derivative_nodes: list[list[Node]],
     ) -> list[Node]:
         """
         Process the result of derivative mutation
         by embedding and creating nodes for the mutated derivatives.
         """
-        try:
-            mutated_derivative_embeddings = await self._embedder.ingest_embed(
-                [derivative.content for derivative in mutated_derivatives],
-                max_attempts=3,
-            )
-        except (ExternalServiceAPIError, ValueError, RuntimeError):
-            logger.error("Failed to create embeddings for mutated derivatives")
-            return []
-
         mutated_derivative_nodes = [
             Node(
                 uuid=derivative.uuid,
@@ -635,9 +716,7 @@ class DeclarativeMemory:
         workflows_derivative_embeddings = await asyncio.gather(*query_workflow_tasks)
         derivative_embeddings = [
             derivative_embedding
-            for workflow_derivative_embeddings in (
-                workflows_derivative_embeddings
-            )
+            for workflow_derivative_embeddings in (workflows_derivative_embeddings)
             for derivative_embedding in workflow_derivative_embeddings
         ]
 

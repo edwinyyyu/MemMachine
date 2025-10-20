@@ -2,11 +2,9 @@
 Common data types for MemMachine.
 """
 
-from typing import Any, TypeAlias
+from typing import TypeAlias, TypeVar
 
 from pydantic import BaseModel
-
-from typing import TypeVar
 
 T = TypeVar("T")
 Nested: TypeAlias = T | list["Nested"] | dict[str, "Nested"]

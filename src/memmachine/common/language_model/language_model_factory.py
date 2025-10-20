@@ -4,9 +4,8 @@ Factory for LanguageModel instances.
 
 from typing import Any
 
-from memmachine.common.data_types import Nested, ConfigValue
+from memmachine.common.data_types import ConfigValue, Nested
 from memmachine.common.factory import Factory
-from memmachine.common.metrics_manager.metrics_manager import MetricsManager
 
 from .language_model import LanguageModel
 

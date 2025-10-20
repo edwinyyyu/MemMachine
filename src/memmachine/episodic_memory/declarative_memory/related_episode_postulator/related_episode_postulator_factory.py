@@ -4,8 +4,9 @@ Factory for RelatedEpisodePostulator instances.
 
 from typing import Any
 
-from memmachine.common.data_types import Nested, ConfigValue
+from memmachine.common.data_types import ConfigValue, Nested
 from memmachine.common.factory import Factory
+
 from .related_episode_postulator import RelatedEpisodePostulator
 
 
@@ -37,4 +38,6 @@ class RelatedEpisodePostulatorFactory(Factory):
                     dict(config) | Factory.inject_dependencies(dependencies, injections)
                 )
             case _:
-                raise ValueError(f"Unknown RelatedEpisodePostulator provider: {provider}")
+                raise ValueError(
+                    f"Unknown RelatedEpisodePostulator provider: {provider}"
+                )

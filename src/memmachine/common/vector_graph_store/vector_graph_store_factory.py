@@ -4,7 +4,7 @@ Factory for VectorGraphStore instances.
 
 from typing import Any
 
-from memmachine.common.data_types import Nested, ConfigValue
+from memmachine.common.data_types import ConfigValue, Nested
 from memmachine.common.factory import Factory
 
 from .vector_graph_store import VectorGraphStore

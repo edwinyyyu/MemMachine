@@ -4,8 +4,9 @@ Factory for DerivativeDeriver instances.
 
 from typing import Any
 
-from memmachine.common.data_types import Nested, ConfigValue
+from memmachine.common.data_types import ConfigValue, Nested
 from memmachine.common.factory import Factory
+
 from .derivative_deriver import DerivativeDeriver
 
 

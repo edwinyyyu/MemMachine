@@ -1,16 +1,13 @@
 from collections.abc import Mapping
-from typing import Any
 
-from pydantic import BaseModel, Field, model_validator, field_validator
+from pydantic import BaseModel, Field, model_validator
 
-from memmachine.common.data_types import Nested
-from memmachine.common.utils import get_nested_values
+from memmachine.common.data_types import ResourceDefinition
 from memmachine.common.factory import Factory
-from memmachine.common.embedder import Embedder
 from memmachine.common.reranker import Reranker
 from memmachine.common.resource_manager import ResourceManager
+from memmachine.common.utils import get_nested_values
 from memmachine.common.vector_graph_store import VectorGraphStore
-from memmachine.common.data_types import ResourceDefinition
 
 from ..data_types import ContentType, Episode
 from ..declarative_memory import ContentType as DeclarativeMemoryContentType

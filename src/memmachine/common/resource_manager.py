@@ -7,10 +7,9 @@ from collections import deque
 from collections.abc import Mapping
 from typing import Any, Iterable
 
-from memmachine.common.utils import get_nested_values
 from memmachine.common.data_types import ResourceDefinition
-from memmachine.common.factory import Factory
 from memmachine.common.embedder.embedder_factory import EmbedderFactory
+from memmachine.common.factory import Factory
 from memmachine.common.language_model.language_model_factory import (
     LanguageModelFactory,
 )
@@ -18,6 +17,7 @@ from memmachine.common.metrics_manager.metrics_manager_factory import (
     MetricsManagerFactory,
 )
 from memmachine.common.reranker.reranker_factory import RerankerFactory
+from memmachine.common.utils import get_nested_values
 from memmachine.common.vector_graph_store.vector_graph_store_factory import (
     VectorGraphStoreFactory,
 )
