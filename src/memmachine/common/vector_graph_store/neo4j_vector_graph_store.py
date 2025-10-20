@@ -15,7 +15,7 @@ from uuid import UUID
 from neo4j import AsyncDriver, AsyncGraphDatabase
 from neo4j.graph import Node as Neo4jNode
 from neo4j.time import DateTime as Neo4jDateTime
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, InstanceOf, SecretStr, model_validator
 
 from memmachine.common.embedder import SimilarityMetric
 from memmachine.common.utils import async_locked, async_with
@@ -26,9 +26,9 @@ from .vector_graph_store import VectorGraphStore
 logger = logging.getLogger(__name__)
 
 
-class Neo4jVectorGraphStoreConfig(BaseModel):
+class Neo4jVectorGraphStoreParams(BaseModel):
     """
-    Configuration for Neo4jVectorGraphStore.
+    Parameters for Neo4jVectorGraphStore.
 
     Attributes:
         uri (str | None):
@@ -48,8 +48,6 @@ class Neo4jVectorGraphStoreConfig(BaseModel):
             If provided: uri, username, and password are ignored.
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
     uri: str | None = Field(None, description="Neo4j connection URI")
     username: str | None = Field(None, description="Neo4j username")
     password: SecretStr | None = Field(None, description="Neo4j password")
@@ -59,7 +57,9 @@ class Neo4jVectorGraphStoreConfig(BaseModel):
     force_exact_similarity_search: bool = Field(
         False, description="Whether to force exact similarity search"
     )
-    driver: AsyncDriver | None = Field(None, description="Custom Neo4j driver instance")
+    driver: InstanceOf[AsyncDriver] | None = Field(
+        None, description="Custom Neo4j driver instance"
+    )
 
     @model_validator(mode="after")
     def check_driver_or_connection_info(self):
@@ -81,28 +81,28 @@ class Neo4jVectorGraphStore(VectorGraphStore):
     Asynchronous Neo4j-based implementation of VectorGraphStore.
     """
 
-    def __init__(self, config: Neo4jVectorGraphStoreConfig):
+    def __init__(self, params: Neo4jVectorGraphStoreParams):
         """
         Initialize a Neo4jVectorGraphStore
-        with the provided configuration.
+        with the provided parameters.
 
         Args:
-            config (Neo4jVectorGraphStoreConfig):
-                Configuration for the vector graph store.
+            params (Neo4jVectorGraphStoreParams):
+                Parameters for the vector graph store.
         """
         super().__init__()
 
-        driver = config.driver
+        driver = params.driver
         if driver is None:
-            uri = cast(str, config.uri)
-            username = cast(str, config.username)
-            password = cast(SecretStr, config.password).get_secret_value()
+            uri = cast(str, params.uri)
+            username = cast(str, params.username)
+            password = cast(SecretStr, params.password).get_secret_value()
             self._driver = AsyncGraphDatabase.driver(uri, auth=(username, password))
         else:
             self._driver = cast(AsyncDriver, driver)
 
-        self._semaphore = asyncio.Semaphore(config.max_concurrent_transactions)
-        self._force_exact_similarity_search = config.force_exact_similarity_search
+        self._semaphore = asyncio.Semaphore(params.max_concurrent_transactions)
+        self._force_exact_similarity_search = params.force_exact_similarity_search
 
         self._vector_index_name_cache: set[str] = set()
 

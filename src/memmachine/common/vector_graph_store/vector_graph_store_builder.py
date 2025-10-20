@@ -32,9 +32,9 @@ class VectorGraphStoreBuilder(Builder):
             case "neo4j":
                 from .neo4j_vector_graph_store import (
                     Neo4jVectorGraphStore,
-                    Neo4jVectorGraphStoreConfig,
+                    Neo4jVectorGraphStoreParams,
                 )
 
-                return Neo4jVectorGraphStore(Neo4jVectorGraphStoreConfig(**config))
+                return Neo4jVectorGraphStore(Neo4jVectorGraphStoreParams(**config))
             case _:
                 raise ValueError(f"Unknown VectorGraphStore name: {name}")
