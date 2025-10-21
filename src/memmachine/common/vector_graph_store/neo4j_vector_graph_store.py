@@ -323,6 +323,11 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             text_property_name=text_property_name,
         )
 
+        def escape_lucene_term(term: str) -> str:
+            # List of Lucene special characters
+            lucene_specials = r'+-!(){}[]^"~*?:\\/'
+            return re.sub(f'([{re.escape(lucene_specials)}])', r'\\\1', term)
+
         query = (
             "CALL db.index.fulltext.queryNodes(\n"
             f"    $fulltext_index_name, $query_text, {{limit: $limit}}\n"
@@ -340,7 +345,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         async with self._semaphore:
             records, _, _ = await self._driver.execute_query(
                 query,
-                query_text=query_text,
+                query_text=escape_lucene_term(query_text),
                 limit=limit,
                 required_properties={
                     Neo4jVectorGraphStore._sanitize_name(key): value

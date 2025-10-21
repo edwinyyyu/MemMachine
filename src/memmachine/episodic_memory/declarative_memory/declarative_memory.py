@@ -538,7 +538,9 @@ class DeclarativeMemory:
             return []
 
         # Search graph store for vector matches.
-        search_similar_nodes_tasks = [
+        search_nodes_tasks = []
+
+        search_nodes_tasks.extend([
             self._vector_graph_store.search_similar_nodes(
                 query_embedding=derivative_embedding,
                 embedding_property_name=(
@@ -556,9 +558,9 @@ class DeclarativeMemory:
                 include_missing_properties=True,
             )
             for derivative_embedding in derivative_embeddings
-        ]
+        ])
 
-        search_similar_nodes_tasks.extend(
+        search_nodes_tasks.extend(
             [
                 self._vector_graph_store.search_fulltext_nodes(
                     query_text=derivative.content,
@@ -576,7 +578,7 @@ class DeclarativeMemory:
 
         matched_derivative_nodes = [
             similar_node
-            for similar_nodes in await asyncio.gather(*search_similar_nodes_tasks)
+            for similar_nodes in await asyncio.gather(*search_nodes_tasks)
             for similar_node in similar_nodes
         ]
 
