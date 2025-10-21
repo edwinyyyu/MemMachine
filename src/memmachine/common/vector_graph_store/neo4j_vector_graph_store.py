@@ -105,6 +105,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         self._force_exact_similarity_search = config.force_exact_similarity_search
 
         self._vector_index_name_cache: set[str] = set()
+        self._fulltext_index_name_cache: set[str] = set()
 
     async def add_nodes(self, nodes: Collection[Node]):
         labels_nodes_map: dict[tuple[str, ...], list[Node]] = {}
@@ -184,7 +185,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         query_embedding: list[float],
         embedding_property_name: str,
         similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
-        limit: int | None = 100,
+        limit: int | None = 50,
         required_labels: Collection[str] | None = None,
         required_properties: Mapping[str, Property] = {},
         include_missing_properties: bool = False,
@@ -294,7 +295,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         self,
         query_text: str,
         text_property_name: str,
-        limit: int | None = 100,
+        limit: int | None = 50,
         required_labels: Collection[str] | None = None,
         required_properties: Mapping[str, Property] = {},
         include_missing_properties: bool = False,
@@ -304,7 +305,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         )
 
         fulltext_index_name = (
-            Neo4jVectorGraphStore._node_vector_index_name(
+            Neo4jVectorGraphStore._node_fulltext_index_name(
                 Neo4jVectorGraphStore._sanitize_name(next(iter(required_labels))),
                 sanitized_text_property_name,
             )
@@ -324,7 +325,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
         query = (
             "CALL db.index.fulltext.queryNodes(\n"
-            f"    $fulltext_index_name, $query_text\n"
+            f"    $fulltext_index_name, $query_text, {{limit: $limit}}\n"
             ")\n"
             "YIELD node AS n, score AS similarity\n"
             f"WHERE n{Neo4jVectorGraphStore._format_labels(required_labels)}\n"
@@ -604,7 +605,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
         self._vector_index_name_cache.update(requested_vector_index_names)
 
-    async def _create_node_vector_index_if_not_exist(
+    async def _create_node_fulltext_index_if_not_exist(
         self,
         labels: Collection[str],
         text_property_name: str,
@@ -618,75 +619,57 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             text_property_name (str):
                 Name of the text property.
         """
-        if not self._vector_index_name_cache:
+        if not self._fulltext_index_name_cache:
             async with self._semaphore:
                 records, _, _ = await self._driver.execute_query(
                     "SHOW FULLTEXT INDEXES YIELD name RETURN name"
                 )
 
-            self._vector_index_name_cache.update(record["name"] for record in records)
+            self._fulltext_index_name_cache.update(record["name"] for record in records)
 
         sanitized_labels = [
             Neo4jVectorGraphStore._sanitize_name(label) for label in labels
         ]
 
-        sanitized_embedding_property_name = Neo4jVectorGraphStore._sanitize_name(
-            embedding_property_name
+        sanitized_text_property_name = Neo4jVectorGraphStore._sanitize_name(
+            text_property_name
         )
 
-        requested_vector_index_names = [
-            Neo4jVectorGraphStore._node_vector_index_name(
-                sanitized_label, sanitized_embedding_property_name
+        requested_fulltext_index_names = [
+            Neo4jVectorGraphStore._node_fulltext_index_name(
+                sanitized_label, sanitized_text_property_name
             )
             for sanitized_label in sanitized_labels
         ]
 
-        info_for_vector_indexes_to_create = [
-            (sanitized_label, sanitized_embedding_property_name, vector_index_name)
-            for sanitized_label, vector_index_name in zip(
+        info_for_fulltext_indexes_to_create = [
+            (sanitized_label, sanitized_text_property_name, fulltext_index_name)
+            for sanitized_label, fulltext_index_name in zip(
                 sanitized_labels,
-                requested_vector_index_names,
+                requested_fulltext_index_names,
             )
-            if vector_index_name not in self._vector_index_name_cache
+            if fulltext_index_name not in self._fulltext_index_name_cache
         ]
 
-        if len(info_for_vector_indexes_to_create) == 0:
+        if len(info_for_fulltext_indexes_to_create) == 0:
             return
-
-        match similarity_metric:
-            case SimilarityMetric.COSINE:
-                similarity_function = "cosine"
-            case SimilarityMetric.EUCLIDEAN:
-                similarity_function = "euclidean"
-            case _:
-                similarity_function = "cosine"
 
         create_index_tasks = [
             async_with(
                 self._semaphore,
                 self._driver.execute_query(
-                    f"CREATE VECTOR INDEX {vector_index_name}\n"
+                    f"CREATE FULLTEXT INDEX {fulltext_index_name}\n"
                     "IF NOT EXISTS\n"
                     f"FOR (n:{sanitized_label})\n"
-                    f"ON n.{sanitized_embedding_property_name}\n"
-                    "OPTIONS {\n"
-                    "    indexConfig: {\n"
-                    "        `vector.dimensions`:\n"
-                    "            $dimensions,\n"
-                    "        `vector.similarity_function`:\n"
-                    "            $similarity_function\n"
-                    "    }\n"
-                    "}",
-                    dimensions=dimensions,
-                    similarity_function=similarity_function,
+                    f"ON EACH [n.{sanitized_text_property_name}]"
                 ),
             )
-            for sanitized_label, sanitized_embedding_property_name, vector_index_name in info_for_vector_indexes_to_create
+            for sanitized_label, sanitized_text_property_name, fulltext_index_name in info_for_fulltext_indexes_to_create
         ]
 
         await self._execute_create_index_if_not_exist(create_index_tasks)
 
-        self._vector_index_name_cache.update(requested_vector_index_names)
+        self._vector_index_name_cache.update(requested_fulltext_index_names)
 
     @async_locked
     async def _execute_create_index_if_not_exist(

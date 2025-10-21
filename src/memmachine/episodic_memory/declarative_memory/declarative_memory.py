@@ -558,6 +558,22 @@ class DeclarativeMemory:
             for derivative_embedding in derivative_embeddings
         ]
 
+        search_similar_nodes_tasks.extend(
+            [
+                self._vector_graph_store.search_fulltext_nodes(
+                    query_text=derivative.content,
+                    text_property_name="content",
+                    required_labels={"Derivative"},
+                    required_properties={
+                        mangle_filterable_property_key(key): value
+                        for key, value in property_filter.items()
+                    },
+                    include_missing_properties=True,
+                )
+                for derivative in derivatives
+            ]
+        )
+
         matched_derivative_nodes = [
             similar_node
             for similar_nodes in await asyncio.gather(*search_similar_nodes_tasks)

@@ -85,6 +85,46 @@ class VectorGraphStore(ABC):
         """
         raise NotImplementedError
 
+    async def search_fulltext_nodes(
+        self,
+        query_text: str,
+        text_property_name: str,
+        limit: int | None = 100,
+        required_labels: Collection[str] | None = None,
+        required_properties: Mapping[str, Property] = {},
+        include_missing_properties: bool = False,
+    ) -> list[Node]:
+        """
+        Search for nodes matching the full-text query.
+
+        Args:
+            query_text (str):
+                The full-text query string.
+            text_property_name (str):
+                The name of the property
+                that stores the text content.
+            limit (int | None, optional):
+                Maximum number of matching nodes to return.
+                If None, return as many matching nodes as possible
+                (default: 100).
+            required_labels (Collection[str] | None, optional):
+                Collection of labels that the nodes must have.
+                If None, no label filtering is applied.
+            required_properties (Mapping[str, Property], optional):
+                Mapping of property names to their required values
+                that the nodes must have.
+                If empty, no property filtering is applied.
+            include_missing_properties (bool, optional):
+                If True, nodes missing any of the required properties
+                will also be included in the results.
+
+        Returns:
+            list[Node]:
+                List of Node objects
+                that match the full-text query.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     async def search_related_nodes(
         self,
