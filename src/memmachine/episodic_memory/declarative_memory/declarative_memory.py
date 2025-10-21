@@ -7,6 +7,7 @@ import asyncio
 import functools
 import json
 import logging
+from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from string import Template
@@ -576,11 +577,19 @@ class DeclarativeMemory:
             ]
         )
 
-        matched_derivative_nodes = [
-            similar_node
-            for similar_nodes in await asyncio.gather(*search_nodes_tasks)
-            for similar_node in similar_nodes
-        ]
+        rankings = await asyncio.gather(*search_nodes_tasks)
+
+        def rrf_rerank(rankings, k=60):
+            scores = defaultdict(float)
+
+            for ranking in rankings:
+                for rank, item in enumerate(ranking, start=1):
+                    scores[item] += 1.0 / (k + rank)
+
+            reranked = sorted(scores.items(), key=lambda pair: pair[1], reverse=True)
+            return [key for key, _ in reranked]
+
+        matched_derivative_nodes = rrf_rerank(rankings)
 
         # Get source episode clusters of matched derivatives.
         search_derivatives_source_episode_cluster_nodes_tasks = [
