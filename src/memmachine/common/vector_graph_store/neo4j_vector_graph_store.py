@@ -67,7 +67,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
         Args:
             params (Neo4jVectorGraphStoreParams):
-                Parameters for the vector graph store.
+                Parameters for the Neo4jVectorGraphStore.
         """
         super().__init__()
 
