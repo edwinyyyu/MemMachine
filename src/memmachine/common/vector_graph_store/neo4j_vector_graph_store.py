@@ -41,7 +41,9 @@ class Neo4jVectorGraphStoreParams(BaseModel):
             (default: False).
     """
 
-    driver: InstanceOf[AsyncDriver] = Field(description="Async Neo4j driver instance")
+    driver: InstanceOf[AsyncDriver] = Field(
+        ..., description="Async Neo4j driver instance"
+    )
     max_concurrent_transactions: int = Field(
         100, description="Maximum number of concurrent transactions", gt=0
     )

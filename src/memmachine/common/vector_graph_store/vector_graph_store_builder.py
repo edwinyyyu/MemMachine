@@ -39,9 +39,9 @@ class VectorGraphStoreBuilder(Builder):
                 )
 
                 class Neo4jFactoryParams(BaseModel):
-                    uri: str = Field(description="Neo4j connection URI")
-                    username: str = Field(description="Neo4j username")
-                    password: SecretStr = Field(description="Neo4j password")
+                    uri: str = Field(..., description="Neo4j connection URI")
+                    username: str = Field(..., description="Neo4j username")
+                    password: SecretStr = Field(..., description="Neo4j password")
                     max_concurrent_transactions: int = Field(
                         100,
                         description="Maximum number of concurrent transactions",
