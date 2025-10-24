@@ -49,6 +49,7 @@ class CrossEncoderReranker(Reranker):
             for score in await asyncio.to_thread(
                 self._cross_encoder.predict,
                 [(query, candidate) for candidate in candidates],
+                show_progress_bar=False,
             )
         ]
         return scores
