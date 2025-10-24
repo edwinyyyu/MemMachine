@@ -23,6 +23,9 @@ class RelatedEpisodePostulatorBuilder(Builder):
                 pass
             case "previous":
                 dependency_ids.add(config["vector_graph_store_id"])
+            case "similar":
+                dependency_ids.add(config["vector_graph_store_id"])
+                dependency_ids.add(config["embedder_id"])
 
         return dependency_ids
 
@@ -43,13 +46,29 @@ class RelatedEpisodePostulatorBuilder(Builder):
                     PreviousRelatedEpisodePostulatorParams,
                 )
 
-                params = PreviousRelatedEpisodePostulatorParams(
+                previous_params = PreviousRelatedEpisodePostulatorParams(
                     vector_graph_store=injections[config["vector_graph_store_id"]],
                     search_limit=config.get("search_limit", 1),
                     filterable_property_keys=config.get(
                         "filterable_property_keys", set()
                     ),
                 )
-                return PreviousRelatedEpisodePostulator(params)
+                return PreviousRelatedEpisodePostulator(previous_params)
+            case "similar":
+                from .similar_related_episode_postulator import (
+                    SimilarRelatedEpisodePostulator,
+                    SimilarRelatedEpisodePostulatorParams,
+                )
+
+                similar_params = SimilarRelatedEpisodePostulatorParams(
+                    vector_graph_store=injections[config["vector_graph_store_id"]],
+                    embedder=injections[config["embedder_id"]],
+                    search_limit=config.get("search_limit", 2),
+                    filterable_property_keys=config.get(
+                        "filterable_property_keys", set()
+                    ),
+                )
+
+                return SimilarRelatedEpisodePostulator(similar_params)
             case _:
                 raise ValueError(f"Unknown RelatedEpisodePostulator name: {name}")

@@ -159,6 +159,18 @@ class LongTermMemory:
                     ],
                 },
             },
+            "_similar_related_episode_postulator": {
+                "type": "related_episode_postulator",
+                "name": "similar",
+                "config": {
+                    "vector_graph_store_id": vector_graph_store_id,
+                    "embedder_id": embedder_id,
+                    "filterable_property_keys": [
+                        "group_id",
+                        "session_id",
+                    ],
+                },
+            },
             "_query_derivative_deriver": {
                 "type": "derivative_deriver",
                 "name": "identity",
@@ -206,7 +218,8 @@ class LongTermMemory:
                 "reranker_id": reranker_id,
                 "query_derivative_deriver_id": "_query_derivative_deriver",
                 "related_episode_postulator_ids": [
-                    "_previous_related_episode_postulator"
+                    "_previous_related_episode_postulator",
+                    "_similar_related_episode_postulator",
                 ],
                 "derivation_workflows": {
                     "default": [derivation_workflow_definition],

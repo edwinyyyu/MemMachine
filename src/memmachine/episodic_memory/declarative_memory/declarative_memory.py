@@ -297,6 +297,8 @@ class DeclarativeMemory:
                 uuid=derivative.uuid,
                 labels={"Derivative"},
                 properties={
+                    "derivative_type": derivative.derivative_type,
+                    "content_type": derivative.content_type.value,
                     "content": derivative.content,
                     DeclarativeMemory._embedding_property_name(
                         self._embedder.model_id,
@@ -454,6 +456,9 @@ class DeclarativeMemory:
             for edge in workflow_edges
         ]
 
+        await self._vector_graph_store.add_nodes(derivation_nodes)
+        await self._vector_graph_store.add_edges(derivation_edges)
+
         related_episodes = [
             postulated_related_episode
             for postulated_related_episodes in await asyncio.gather(
@@ -478,10 +483,7 @@ class DeclarativeMemory:
             for related_episode in related_episodes
         ]
 
-        await self._vector_graph_store.add_nodes(derivation_nodes)
-        await self._vector_graph_store.add_edges(
-            derivation_edges + related_episode_edges
-        )
+        await self._vector_graph_store.add_edges(related_episode_edges)
 
     async def search(
         self,
@@ -552,6 +554,8 @@ class DeclarativeMemory:
                 required_properties={
                     mangle_filterable_property_key(key): value
                     for key, value in property_filter.items()
+                } | {
+                    "derivative_type": "sentence"
                 },
                 include_missing_properties=True,
             )

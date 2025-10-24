@@ -37,6 +37,14 @@ class DerivativeDeriverBuilder(Builder):
 
                 concatenation_params = ConcatenationDerivativeDeriverParams(**config)
                 return ConcatenationDerivativeDeriver(concatenation_params)
+            case "entity":
+                from .entity_derivative_deriver import (
+                    EntityDerivativeDeriver,
+                    EntityDerivativeDeriverParams,
+                )
+
+                entity_params = EntityDerivativeDeriverParams(**config)
+                return EntityDerivativeDeriver(entity_params)
             case "identity":
                 from .identity_derivative_deriver import (
                     IdentityDerivativeDeriver,

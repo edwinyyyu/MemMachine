@@ -3,14 +3,6 @@ A derivative deriver that splits episode content into sentences
 and creates derivatives for each sentence.
 """
 
-from uuid import uuid4
-
-from nltk import sent_tokenize
-from pydantic import BaseModel, Field
-
-from ..data_types import ContentType, Derivative, EpisodeCluster
-from .derivative_deriver import DerivativeDeriver
-
 import asyncio
 from uuid import uuid4
 
@@ -25,29 +17,36 @@ from .derivative_deriver import DerivativeDeriver
 nlp = spacy.load("en_core_web_trf")
 
 
-class SentenceDerivativeDeriverParams(BaseModel):
+class EntityDerivativeDeriverParams(BaseModel):
     """
-    Parameters for SentenceDerivativeDeriver.
+    Parameters for EntityDerivativeDeriver.
 
     Attributes:
         derivative_type (str):
             The type to assign to the derived derivatives
-            (default: "sentence").
+            (default: "entity").
+        zipf_threshold (float):
+            The Zipf frequency threshold for filtering entities
+            (default: 5.6).
     """
 
     derivative_type: str = Field(
-        "sentence",
+        "entity",
         description="The type to assign to the derived derivatives",
+    )
+    zipf_threshold: float = Field(
+        5.6,
+        description=("The Zipf frequency threshold for filtering entities"),
     )
 
 
-class SentenceDerivativeDeriver(DerivativeDeriver):
+class EntityDerivativeDeriver(DerivativeDeriver):
     """
-    Derivative deriver that splits episode content into sentences
+    Derivative deriver that extracts entitites from episode content
     and creates derivatives for each sentence.
     """
 
-    def __init__(self, params: SentenceDerivativeDeriverParams):
+    def __init__(self, params: EntityDerivativeDeriverParams):
         """
         Initialize a SentenceDerivativeDeriver
         with the provided parameters.
@@ -59,26 +58,13 @@ class SentenceDerivativeDeriver(DerivativeDeriver):
         super().__init__()
 
         self._derivative_type = params.derivative_type
-        self._zipf_threshold = 5.6
+        self._zipf_threshold = params.zipf_threshold
 
     async def derive(self, episode_cluster: EpisodeCluster) -> list[Derivative]:
         return [
             Derivative(
                 uuid=uuid4(),
                 derivative_type=self._derivative_type,
-                content_type=ContentType.STRING,
-                content=sentence,
-                timestamp=episode.timestamp,
-                filterable_properties=episode.filterable_properties,
-                user_metadata=episode.user_metadata,
-            )
-            for episode in episode_cluster.episodes
-            for line in episode.content.splitlines()
-            for sentence in sent_tokenize(line)
-        ] + [
-            Derivative(
-                uuid=uuid4(),
-                derivative_type="entity",
                 content_type=ContentType.STRING,
                 content=entity,
                 timestamp=episode.timestamp,
@@ -87,8 +73,8 @@ class SentenceDerivativeDeriver(DerivativeDeriver):
             )
             for episode in episode_cluster.episodes
             for line in episode.content.splitlines()
-            for entity in await SentenceDerivativeDeriver._extract_entities(line)
-            if zipf_frequency(entity, "en") < self._zipf_threshold
+            for entity in await EntityDerivativeDeriver._extract_entities(line)
+            if zipf_frequency(entity, "en") < 5.3#self._zipf_threshold
         ]
 
     @staticmethod
