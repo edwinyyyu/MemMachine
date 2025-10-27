@@ -18,7 +18,7 @@ from memmachine.common.embedder.embedder import Embedder
 from memmachine.common.reranker.reranker import Reranker
 from memmachine.common.vector_graph_store import Edge, Node, VectorGraphStore
 from nltk import sent_tokenize
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, InstanceOf
 
 from .data_types import (
     ContentType,
@@ -49,10 +49,14 @@ class SentenceMemoryParams(BaseModel):
             for storing and retrieving memories.
         reranker (Reranker):
             Reranker instance for reranking search results.
-        metadata_templates (dict[str, str]):
-            Template strings supporting $-substitutions
-            for different episode types
-            (default: {"default": "[$timestamp] $content"}).
+        message_metadata_template (str):
+            Template string supporting $-substitutions
+            for formatting messages with metadata
+            (default: "[$timestamp] $content").
+        message_embedder (Embedder):
+            Embedder instance for creating message embeddings.
+        text_embedder (Embedder):
+            Embedder instance for creating text embeddings.
     """
     max_sentence_length: int = Field(
         1000,
@@ -61,19 +65,25 @@ class SentenceMemoryParams(BaseModel):
             "Sentences longer than this will be split"
         ),
     )
-    vector_graph_store: VectorGraphStore = Field(
+    vector_graph_store: InstanceOf[VectorGraphStore] = Field(
         ...,
         description="VectorGraphStore instance for storing and retrieving memories",
     )
-    reranker: Reranker = Field(
+    reranker: InstanceOf[Reranker] = Field(
         ...,
         description="Reranker instance for reranking search results",
     )
-    metadata_templates: dict[str, str] = Field(
-        default_factory=lambda: {"default": "[$timestamp] $content"},
-        description=(
-            "Template strings supporting $-substitutions for different episode types"
-        ),
+    message_metadata_template: str = Field(
+        "[$timestamp] $content",
+        description="Template string supporting $-substitutions for formatting messages with metadata",
+    )
+    message_embedder: InstanceOf[Embedder] = Field(
+        ...,
+        description="Embedder instance for creating message embeddings",
+    )
+    text_embedder: InstanceOf[Embedder] = Field(
+        ...,
+        description="Embedder instance for creating text embeddings",
     )
 
 
@@ -93,10 +103,11 @@ class SentenceMemory:
 
         self._vector_graph_store = params.vector_graph_store
         self._reranker = params.reranker
-        self._episode_metadata_templates = {
-            episode_type: Template(template_string)
-            for episode_type, template_string in params.metadata_templates.items()
-        }
+        self._message_metadata_template = Template(
+            params.message_metadata_template
+        )
+        self._message_embedder = params.message_embedder
+        self._text_embedder = params.text_embedder
 
     async def add_episode(
         self,
@@ -144,7 +155,7 @@ class SentenceMemory:
             for sentence in sentences
         ]
 
-        derivatives, source_sentences = await self._derive_derivatives(sentences)
+        derivatives = await self._derive_derivatives(episode, sentences)
         derivative_nodes = [
             Node(
                 uuid=derivative.uuid,
@@ -189,12 +200,12 @@ class SentenceMemory:
             list[Sentence]: A list of sentences.
         """
         match episode.content_type:
-            case ContentType.TEXT:
+            case ContentType.MESSAGE | ContentType.TEXT:
                 return [
                     Sentence(
                         uuid=uuid4(),
                         sequence_number=index,
-                        content_type=ContentType.TEXT,
+                        content_type=episode.content_type,
                         content=sentence,
                     )
                     for index, sentence in enumerate(
@@ -215,9 +226,44 @@ class SentenceMemory:
 
     async def _derive_derivatives(
         self,
-        sentences: Iterable[Sentence],
-    ) -> tuple[list[Derivative], list[list[Sentence]]]:
-        return
+        episode: Episode,
+        sentence: Sentence,
+    ) -> list[Derivative]:
+        """
+        Derive derivatives from a sentence from an episode.
+
+        Args:
+            sentence (Sentence): The sentence from which to derive derivatives.
+        """
+        match sentence.content_type:
+            case ContentType.MESSAGE:
+                message_content = self._message_metadata_template.safe_substitute(
+                    {
+                        "content": sentence.content,
+                        "timestamp": episode.timestamp,
+                        ""
+                    }
+                )
+
+                sentence.content
+                return [
+                    Derivative(
+                        uuid=uuid4(),
+                        content_type=ContentType.MESSAGE,
+                        content=message_content,
+                    ),
+                ]
+            case ContentType.TEXT:
+                text_content = sentence.content
+                return [
+                    Derivative(
+                        uuid=uuid4(),
+                        content_type=ContentType.TEXT,
+                        content=text_content,
+                    )
+                ]
+            case _:
+
 
     async def search(
         self,
