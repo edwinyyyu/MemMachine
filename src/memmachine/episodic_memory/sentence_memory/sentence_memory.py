@@ -122,6 +122,12 @@ class SentenceMemory:
             },
         )
 
+        sentences = [
+            Sentence(
+
+            )
+        ]
+
         await self._vector_graph_store.add_nodes([episode_node])
 
         episode_type_derivation_workflows = self._derivation_workflows.get(

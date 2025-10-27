@@ -26,6 +26,23 @@ class Episode:
 
 
 @dataclass(kw_only=True)
+class Sentence:
+    uuid: UUID
+    sequence_number: int
+    content_type: ContentType
+    content: Any
+
+
+@dataclass(kw_only=True)
+class Derivative:
+    uuid: UUID
+    derivative_type: str
+    content_type: ContentType
+    content: Any
+    embedding: list[float] = field(default_factory=list)
+
+
+@dataclass(kw_only=True)
 class Chunk:
     uuid: UUID
     episode_uuid: UUID
@@ -37,26 +54,6 @@ class Chunk:
         default_factory=dict
     )
     user_metadata: JSONValue = None
-
-
-@dataclass(kw_only=True)
-class Sentence:
-    uuid: UUID
-    episode_uuid: UUID
-    timestamp: datetime
-    sequence_number: int
-    sentence_type: str
-    content_type: ContentType
-    content: Any
-    filterable_properties: dict[str, FilterablePropertyValue] = field(
-        default_factory=dict
-    )
-
-
-@dataclass(kw_only=True)
-class Embedding:
-    uuid: UUID
-    sentence_uuid: UUID
 
 
 def mangle_filterable_property_key(key: str) -> str:
