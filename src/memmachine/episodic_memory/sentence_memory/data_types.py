@@ -9,7 +9,7 @@ JSONValue = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSO
 
 
 class ContentType(Enum):
-    STRING = "string"
+    TEXT = "text"
 
 
 @dataclass(kw_only=True)

@@ -7,7 +7,7 @@ import asyncio
 import functools
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import datetime
 from string import Template
 from typing import Any, Self, cast
@@ -17,13 +17,15 @@ from memmachine.common.data_types import ExternalServiceAPIError
 from memmachine.common.embedder.embedder import Embedder
 from memmachine.common.reranker.reranker import Reranker
 from memmachine.common.vector_graph_store import Edge, Node, VectorGraphStore
+from nltk import sent_tokenize
 from pydantic import BaseModel, Field
 
 from .data_types import (
     ContentType,
     Episode,
-    Chunk,
     Sentence,
+    Derivative,
+    Chunk,
     FilterablePropertyValue,
     demangle_filterable_property_key,
     is_mangled_filterable_property_key,
@@ -108,7 +110,6 @@ class SentenceMemory:
         """
         episode_node = Node(
             uuid=episode.uuid,
-            labels={"Episode"},
             properties={
                 "episode_type": episode.episode_type,
                 "content_type": episode.content_type.value,
@@ -122,115 +123,129 @@ class SentenceMemory:
             },
         )
 
-        sentences = [
-            Sentence(
-
+        sentences = SentenceMemory._sentence_tokenize(episode)
+        sentence_nodes = [
+            Node(
+                uuid=sentence.uuid,
+                properties={
+                    "sequence_number": sentence.sequence_number,
+                    "content_type": sentence.content_type.value,
+                    "content": sentence.content,
+                },
             )
+            for sentence in sentences
         ]
-
-        await self._vector_graph_store.add_nodes([episode_node])
-
-        episode_type_derivation_workflows = self._derivation_workflows.get(
-            episode.episode_type
-        ) or self._derivation_workflows.get("default", [])
-
-        # Create nodes and edges for episode clusters and derivatives.
-        derivation_workflow_tasks = [
-            derivation_workflow.execute(episode)
-            for derivation_workflow in episode_type_derivation_workflows
-        ]
-
-        derivation_workflows_nodes, derivation_workflows_edges = zip(
-            *(await asyncio.gather(*derivation_workflow_tasks))
-        )
-
-        derivation_nodes = [
-            node
-            for workflow_nodes in derivation_workflows_nodes
-            for node in workflow_nodes
-        ]
-        derivation_edges = [
-            edge
-            for workflow_edges in derivation_workflows_edges
-            for edge in workflow_edges
-        ]
-
-        related_episodes = [
-            postulated_related_episode
-            for postulated_related_episodes in await asyncio.gather(
-                *[
-                    related_episode_postulator.postulate(episode)
-                    for related_episode_postulator in (
-                        self._related_episode_postulators
-                    )
-                ]
-            )
-            for postulated_related_episode in postulated_related_episodes
-        ]
-
-        # Create postulated edges between episodes.
-        related_episode_edges = [
+        episode_sentence_edges = [
             Edge(
                 uuid=uuid4(),
                 source_uuid=episode.uuid,
-                target_uuid=related_episode.uuid,
-                relation="RELATED_TO",
+                target_uuid=sentence.uuid,
             )
-            for related_episode in related_episodes
+            for sentence in sentences
         ]
 
-        await self._vector_graph_store.add_nodes(derivation_nodes)
-        await self._vector_graph_store.add_edges(
-            derivation_edges + related_episode_edges
-        )
+        derivatives, source_sentences = await self._derive_derivatives(sentences)
+        derivative_nodes = [
+            Node(
+                uuid=derivative.uuid,
+                properties={
+                    "derivative_type": derivative.derivative_type,
+                    "content_type": derivative.content_type.value,
+                    "content": derivative.content,
+                    SentenceMemory._embedding_property_name(
+                        self._embedder.model_id,
+                        self._embedder.dimensions,
+                    ): derivative.embedding,
+                },
+            )
+            for derivative in derivatives
+        ]
+        derivative_sentence_edges = [
+            Edge(
+                uuid=uuid4(),
+                source_uuid=derivative.uuid,
+                target_uuid=source_sentence.uuid,
+            )
+            for derivative, source_sentence in zip(
+                derivatives, source_sentences
+            )
+        ]
+
+        await self._vector_graph_store.add_nodes("Episode", [episode_node])
+        await self._vector_graph_store.add_nodes("Sentence", sentence_nodes)
+        await self._vector_graph_store.add_edges("CONTAINS", episode_sentence_edges)
+        await self._vector_graph_store.add_nodes("Derivative", derivative_nodes)
+        await self._vector_graph_store.add_edges("DERIVED_FROM", derivative_sentence_edges)
+
+    @staticmethod
+    def _sentence_tokenize(episode: Episode) -> list[Sentence]:
+        """
+        Tokenize episode content into sentences.
+
+        Args:
+            episode (Episode): The episode whose content to tokenize.
+
+        Returns:
+            list[Sentence]: A list of sentences.
+        """
+        match episode.content_type:
+            case ContentType.TEXT:
+                return [
+                    Sentence(
+                        uuid=uuid4(),
+                        sequence_number=index,
+                        content_type=ContentType.TEXT,
+                        content=sentence,
+                    )
+                    for index, sentence in enumerate(
+                        sentence
+                        for line in episode.content.strip().splitlines()
+                        for sentence in sent_tokenize(line.strip())
+                    )
+                ]
+            case _:
+                return [
+                    Sentence(
+                        uuid=uuid4(),
+                        sequence_number=0,
+                        content_type=episode.content_type,
+                        content=episode.content,
+                    )
+                ]
+
+    async def _derive_derivatives(
+        self,
+        sentences: Iterable[Sentence],
+    ) -> tuple[list[Derivative], list[list[Sentence]]]:
+        return
 
     async def search(
         self,
         query: str,
-        num_episodes_limit: int = 20,
-        property_filter: dict[str, FilterablePropertyValue] = {},
-    ) -> list[Episode]:
+        num_sentence_limit: int = 20,
+        property_filter: Mapping[str, FilterablePropertyValue] | None = None,
+    ) -> list[Chunk]:
         """
-        Search declarative memory for episodes relevant to the query.
+        Search declarative memory for chunks relevant to the query.
 
         Args:
             query (str):
                 The search query.
-            num_episodes_limit (int, optional):
+            num_episodes_limit (int):
                 The maximum number
                 of episodes to return (default: 20).
-            property_filter (
-                dict[str, FilterablePropertyValue], optional
-            ):
+            property_filter (Mapping[str, FilterablePropertyValue] | None):
                 Filterable property keys and values to use
-                for filtering episodes.
-                If not provided, no filtering is applied.
+                for filtering episodes (default: None).
 
         Returns:
-            list[Episode]:
-                A list of episodes relevant to the query,
+            list[Chunk]:
+                A list of chunks relevant to the query,
                 sorted by timestamp.
         """
 
-        # Derive derivatives from query.
-        derivatives = await self._query_derivative_deriver.derive(
-            EpisodeCluster(
-                uuid=uuid4(),
-                episodes=[
-                    Episode(
-                        uuid=uuid4(),
-                        episode_type="query",
-                        content_type=ContentType.STRING,
-                        content=query,
-                        timestamp=datetime.now(),
-                    ),
-                ],
-            )
-        )
-
-        # Embed derivatives.
         try:
-            derivative_embeddings = await self._embedder.search_embed(
+            query_embedding = await self._embedder.search_embed(
                 [derivative.content for derivative in derivatives],
                 max_attempts=3,
             )
@@ -241,9 +256,10 @@ class SentenceMemory:
         # Search graph store for vector matches.
         search_similar_nodes_tasks = [
             self._vector_graph_store.search_similar_nodes(
-                query_embedding=derivative_embedding,
+                collection="Derivative",
+                query_embedding=query_embedding,
                 embedding_property_name=(
-                    DeclarativeMemory._embedding_property_name(
+                    SentenceMemory._embedding_property_name(
                         self._embedder.model_id,
                         self._embedder.dimensions,
                     )
@@ -256,7 +272,6 @@ class SentenceMemory:
                 },
                 include_missing_properties=True,
             )
-            for derivative_embedding in derivative_embeddings
         ]
 
         matched_derivative_nodes = [
@@ -266,7 +281,7 @@ class SentenceMemory:
         ]
 
         # Get source episode clusters of matched derivatives.
-        search_derivatives_source_episode_cluster_nodes_tasks = [
+        search_derivatives_source_sentence_nodes_tasks = [
             self._vector_graph_store.search_related_nodes(
                 node_uuid=matched_derivative_node.uuid,
                 allowed_relations={"DERIVED_FROM"},
@@ -359,14 +374,14 @@ class SentenceMemory:
 
         # Unify contexts.
         unified_episode_node_context = (
-            DeclarativeMemory._unify_anchored_episode_node_contexts(
+            SentenceMemory._unify_anchored_episode_node_contexts(
                 reranked_anchored_episode_node_contexts,
                 num_episodes_limit=num_episodes_limit,
             )
         )
 
         # Return episodes sorted by timestamp.
-        episodes = DeclarativeMemory._episodes_from_episode_nodes(
+        episodes = SentenceMemory._episodes_from_episode_nodes(
             list(unified_episode_node_context)
         )
 
@@ -428,7 +443,7 @@ class SentenceMemory:
         based on their relevance to the query.
         """
         contexts_episodes = [
-            DeclarativeMemory._episodes_from_episode_nodes(list(episode_node_context))
+            SentenceMemory._episodes_from_episode_nodes(list(episode_node_context))
             for episode_node_context in episode_node_contexts
         ]
 
