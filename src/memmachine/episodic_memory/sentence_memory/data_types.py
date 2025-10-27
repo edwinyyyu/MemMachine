@@ -9,6 +9,7 @@ JSONValue = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSO
 
 
 class ContentType(Enum):
+    MESSAGE = "message"
     TEXT = "text"
 
 
@@ -16,7 +17,6 @@ class ContentType(Enum):
 class Episode:
     uuid: UUID
     timestamp: datetime
-    episode_type: str
     content_type: ContentType
     content: Any
     filterable_properties: dict[str, FilterablePropertyValue] = field(
@@ -36,7 +36,6 @@ class Sentence:
 @dataclass(kw_only=True)
 class Derivative:
     uuid: UUID
-    derivative_type: str
     content_type: ContentType
     content: Any
     embedding: list[float] = field(default_factory=list)
@@ -47,7 +46,6 @@ class Chunk:
     uuid: UUID
     episode_uuid: UUID
     timestamp: datetime
-    chunk_type: str
     content_type: ContentType
     content: Any
     filterable_properties: dict[str, FilterablePropertyValue] = field(
