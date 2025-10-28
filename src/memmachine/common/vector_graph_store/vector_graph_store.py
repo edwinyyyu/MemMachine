@@ -34,13 +34,23 @@ class VectorGraphStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def add_edges(self, relation: str, edges: Iterable[Edge]):
+    async def add_edges(
+        self,
+        relation: str,
+        source_collection: str,
+        target_collection: str,
+        edges: Iterable[Edge],
+    ):
         """
         Add edges to the graph store.
 
         Args:
             relation (str):
                 Relation that the edges represent.
+            source_collection (str):
+                Collection that the source nodes belong to.
+            target_collection (str):
+                Collection that the target nodes belong to.
             edges (Iterable[Edge]):
                 Iterable of Edge objects to add.
         """

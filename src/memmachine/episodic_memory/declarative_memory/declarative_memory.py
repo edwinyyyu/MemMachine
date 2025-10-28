@@ -492,9 +492,15 @@ class DeclarativeMemory:
         ]
 
         add_edges_tasks = [
-            self._vector_graph_store.add_edges("CONTAINS", episode_cluster_edges),
-            self._vector_graph_store.add_edges("DERIVED_FROM", derivative_edges),
-            self._vector_graph_store.add_edges("RELATED_TO", related_episode_edges),
+            self._vector_graph_store.add_edges(
+                "CONTAINS", "EpisodeCluster", "Episode", episode_cluster_edges
+            ),
+            self._vector_graph_store.add_edges(
+                "DERIVED_FROM", "Derivative", "EpisodeCluster", derivative_edges
+            ),
+            self._vector_graph_store.add_edges(
+                "RELATED_TO", "Episode", "Episode", related_episode_edges
+            ),
         ]
 
         await asyncio.gather(*add_nodes_tasks)

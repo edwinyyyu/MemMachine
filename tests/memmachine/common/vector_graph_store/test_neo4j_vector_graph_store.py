@@ -133,7 +133,7 @@ async def test_add_edges(neo4j_driver, vector_graph_store):
     assert len(records) == 0
 
     edges = []
-    await vector_graph_store.add_edges("RELATED_TO", edges)
+    await vector_graph_store.add_edges("RELATED_TO", "Entity", "Entity", edges)
 
     records, _, _ = await neo4j_driver.execute_query("MATCH ()-[r]->() RETURN r")
     assert len(records) == 0
@@ -168,8 +168,10 @@ async def test_add_edges(neo4j_driver, vector_graph_store):
         ),
     ]
 
-    await vector_graph_store.add_edges("RELATED_TO", related_to_edges)
-    await vector_graph_store.add_edges("IS", is_edges)
+    await vector_graph_store.add_edges(
+        "RELATED_TO", "Entity", "Entity", related_to_edges
+    )
+    await vector_graph_store.add_edges("IS", "Entity", "Entity", is_edges)
 
     records, _, _ = await neo4j_driver.execute_query("MATCH ()-[r]->() RETURN r")
     assert len(records) == 4
@@ -393,8 +395,10 @@ async def test_search_related_nodes(vector_graph_store):
     ]
 
     await vector_graph_store.add_nodes("Entity", nodes)
-    await vector_graph_store.add_edges("RELATED_TO", related_to_edges)
-    await vector_graph_store.add_edges("IS", is_edges)
+    await vector_graph_store.add_edges(
+        "RELATED_TO", "Entity", "Entity", related_to_edges
+    )
+    await vector_graph_store.add_edges("IS", "Entity", "Entity", is_edges)
 
     results = await vector_graph_store.search_related_nodes(
         collection="Entity",

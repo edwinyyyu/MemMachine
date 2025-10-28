@@ -9,7 +9,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Iterable, Mapping
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
 from neo4j import AsyncDriver
@@ -96,14 +96,26 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 ],
             )
 
-    async def add_edges(self, relation: str, edges: Iterable[Edge]):
+    async def add_edges(
+        self,
+        relation: str,
+        source_collection: str,
+        target_collection: str,
+        edges: Iterable[Edge],
+    ):
         sanitized_relation = Neo4jVectorGraphStore._sanitize_name(relation)
+        sanitized_source_collection = Neo4jVectorGraphStore._sanitize_name(
+            source_collection
+        )
+        sanitized_target_collection = Neo4jVectorGraphStore._sanitize_name(
+            target_collection
+        )
         async with self._semaphore:
             await self._driver.execute_query(
                 "UNWIND $edges AS edge\n"
                 "MATCH"
-                "    (source {uuid: edge.source_uuid}),"
-                "    (target {uuid: edge.target_uuid})\n"
+                f"    (source:{sanitized_source_collection} {{uuid: edge.source_uuid}}),"
+                f"    (target:{sanitized_target_collection} {{uuid: edge.target_uuid}})\n"
                 "CREATE (source)"
                 f"    -[r:{sanitized_relation} {{uuid: edge.uuid}}]->"
                 "    (target)\n"
@@ -127,7 +139,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         query_embedding: list[float],
         embedding_property_name: str,
         similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
-        limit: int | None = 100,
+        limit: int | None = 10_000,
         required_properties: Mapping[str, Property] | None = None,
         include_missing_properties: bool = False,
     ) -> list[Node]:
