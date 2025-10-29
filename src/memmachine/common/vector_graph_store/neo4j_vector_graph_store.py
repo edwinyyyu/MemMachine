@@ -860,7 +860,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         )
 
         return (
-            f"{entity_type.value}_vector_index"
+            f"{entity_type.value}_index"
             "_for_"
             f"{len(sanitized_collection_or_relation)}_"
             f"{sanitized_collection_or_relation}"
