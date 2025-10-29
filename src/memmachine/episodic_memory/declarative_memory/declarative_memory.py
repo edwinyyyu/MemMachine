@@ -79,6 +79,8 @@ class DeclarativeMemory:
                             - derivative_mutator:
                               DerivativeMutator instance
                               used for mutating derivatives.
+                - collection_or_relation_suffix:
+                    Suffix string for collection or relation names for proper isolation.
                 - episode_metadata_template:
                     Template string supporting $-substitutions
                     (default: "[$timestamp] $content").
@@ -150,6 +152,24 @@ class DeclarativeMemory:
                 "derivation_workflows"
             ].items()
         }
+
+        self._collection_or_relation_suffix = config.get(
+            "collection_or_relation_suffix", ""
+        )
+        self._episode_collection = self._prefix_collection_or_relation_name("Episode")
+        self._episode_cluster_collection = self._prefix_collection_or_relation_name(
+            "EpisodeCluster"
+        )
+        self._derivative_collection = self._prefix_collection_or_relation_name(
+            "Derivative"
+        )
+        self._contains_relation = self._prefix_collection_or_relation_name("CONTAINS")
+        self._derived_from_relation = self._prefix_collection_or_relation_name(
+            "DERIVED_FROM"
+        )
+        self._related_to_relation = self._prefix_collection_or_relation_name(
+            "RELATED_TO"
+        )
 
         self._episode_metadata_template = Template(
             config.get("episode_metadata_template", "[$timestamp] $content")
@@ -397,6 +417,13 @@ class DeclarativeMemory:
             derivatives_source_episode_cluster_edges,
         )
 
+    def _prefix_collection_or_relation_name(self, name: str) -> str:
+        return (
+            f"{name}_{self._collection_or_relation_suffix}"
+            if self._collection_or_relation_suffix
+            else name
+        )
+
     async def add_episode(
         self,
         episode: Episode,
@@ -422,7 +449,9 @@ class DeclarativeMemory:
             },
         )
 
-        await self._vector_graph_store.add_nodes("Episode", [episode_node])
+        await self._vector_graph_store.add_nodes(
+            self._episode_collection, [episode_node]
+        )
 
         episode_type_derivation_workflows = self._derivation_workflows.get(
             episode.episode_type
@@ -487,19 +516,32 @@ class DeclarativeMemory:
         ]
 
         add_nodes_tasks = [
-            self._vector_graph_store.add_nodes("EpisodeCluster", episode_cluster_nodes),
-            self._vector_graph_store.add_nodes("Derivative", derivative_nodes),
+            self._vector_graph_store.add_nodes(
+                self._episode_cluster_collection, episode_cluster_nodes
+            ),
+            self._vector_graph_store.add_nodes(
+                self._derivative_collection, derivative_nodes
+            ),
         ]
 
         add_edges_tasks = [
             self._vector_graph_store.add_edges(
-                "CONTAINS", "EpisodeCluster", "Episode", episode_cluster_edges
+                self._contains_relation,
+                self._episode_cluster_collection,
+                self._episode_collection,
+                episode_cluster_edges,
             ),
             self._vector_graph_store.add_edges(
-                "DERIVED_FROM", "Derivative", "EpisodeCluster", derivative_edges
+                self._derived_from_relation,
+                self._derivative_collection,
+                self._episode_cluster_collection,
+                derivative_edges,
             ),
             self._vector_graph_store.add_edges(
-                "RELATED_TO", "Episode", "Episode", related_episode_edges
+                self._related_to_relation,
+                self._episode_collection,
+                self._episode_collection,
+                related_episode_edges,
             ),
         ]
 
@@ -563,7 +605,7 @@ class DeclarativeMemory:
         # Search graph store for vector matches.
         search_similar_nodes_tasks = [
             self._vector_graph_store.search_similar_nodes(
-                collection="Derivative",
+                collection=self._derivative_collection,
                 query_embedding=derivative_embedding,
                 embedding_property_name=(
                     DeclarativeMemory._embedding_property_name(
@@ -590,9 +632,9 @@ class DeclarativeMemory:
         # Get source episode clusters of matched derivatives.
         search_derivatives_source_episode_cluster_nodes_tasks = [
             self._vector_graph_store.search_related_nodes(
-                collection="EpisodeCluster",
+                collection=self._episode_cluster_collection,
                 node_uuid=matched_derivative_node.uuid,
-                allowed_relations=["DERIVED_FROM"],
+                allowed_relations=[self._derived_from_relation],
                 find_sources=False,
                 find_targets=True,
                 required_properties={
@@ -620,9 +662,9 @@ class DeclarativeMemory:
         # Get source episodes of matched episode clusters.
         search_episode_clusters_source_episode_nodes_tasks = [
             self._vector_graph_store.search_related_nodes(
-                collection="Episode",
+                collection=self._episode_collection,
                 node_uuid=matched_episode_cluster_node.uuid,
-                allowed_relations=["CONTAINS"],
+                allowed_relations=[self._contains_relation],
                 find_sources=False,
                 find_targets=True,
                 required_properties={
@@ -713,7 +755,7 @@ class DeclarativeMemory:
         for _ in range(1, retrieval_depth_limit + 1):
             get_new_frontier_tasks = [
                 self._vector_graph_store.search_related_nodes(
-                    collection="Episode",
+                    collection=self._episode_collection,
                     node_uuid=frontier_node.uuid,
                     find_sources=True,
                     find_targets=True,
@@ -860,7 +902,7 @@ class DeclarativeMemory:
         and data derived from them.
         """
         matching_episode_nodes = await self._vector_graph_store.search_matching_nodes(
-            collection="Episode",
+            collection=self._episode_collection,
             required_properties={
                 mangle_filterable_property_key(key): value
                 for key, value in property_filter.items()
@@ -869,9 +911,9 @@ class DeclarativeMemory:
 
         search_related_episode_cluster_nodes_tasks = [
             self._vector_graph_store.search_related_nodes(
-                collection="EpisodeCluster",
+                collection=self._episode_cluster_collection,
                 node_uuid=episode_node.uuid,
-                allowed_relations=["CONTAINS"],
+                allowed_relations=[self._contains_relation],
                 find_sources=True,
                 find_targets=False,
             )
@@ -893,9 +935,9 @@ class DeclarativeMemory:
 
         search_related_derivative_nodes_tasks = [
             self._vector_graph_store.search_related_nodes(
-                collection="Derivative",
+                collection=self._derivative_collection,
                 node_uuid=episode_cluster_node.uuid,
-                allowed_relations=["DERIVED_FROM"],
+                allowed_relations=[self._derived_from_relation],
                 find_sources=True,
                 find_targets=False,
             )

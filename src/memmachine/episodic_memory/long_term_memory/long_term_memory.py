@@ -155,6 +155,7 @@ class LongTermMemory:
                         "group_id",
                         "session_id",
                     ],
+                    "episode_collection_suffix": memory_context.group_id,
                 },
             },
             "_query_derivative_deriver": {
@@ -210,6 +211,7 @@ class LongTermMemory:
                     "default": [derivation_workflow_definition],
                 },
                 "episode_metadata_template": episode_metadata_template,
+                "collection_or_relation_suffix": memory_context.group_id,
             },
             injections=combined_resources,
         )

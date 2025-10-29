@@ -38,6 +38,8 @@ class PreviousRelatedEpisodePostulatorParams(BaseModel):
         filterable_property_keys (list[str]):
             A list of property keys
             to use for filtering episodes (default: []).
+        episode_collection_suffix (str):
+            Suffix for the episode collection name (default: "").
     """
 
     vector_graph_store: InstanceOf[VectorGraphStore] = Field(
@@ -51,6 +53,10 @@ class PreviousRelatedEpisodePostulatorParams(BaseModel):
     filterable_property_keys: list[str] = Field(
         default_factory=list,
         description="A list of property keys to use for filtering episodes",
+    )
+    episode_collection_suffix: str = Field(
+        "",
+        description="Suffix for the episode collection name",
     )
 
     @field_validator("filterable_property_keys", mode="after")
@@ -79,11 +85,12 @@ class PreviousRelatedEpisodePostulator(RelatedEpisodePostulator):
         self._vector_graph_store = params.vector_graph_store
         self._search_limit = params.search_limit
         self._filterable_property_keys = params.filterable_property_keys
+        self._episode_collection = f"Episode_{params.episode_collection_suffix}"
 
     async def postulate(self, episode: Episode) -> list[Episode]:
         previous_episode_nodes = (
             await self._vector_graph_store.search_directional_nodes(
-                collection="Episode",
+                collection=self._episode_collection,
                 by_property="timestamp",
                 start_at_value=episode.timestamp,
                 order_ascending=False,
