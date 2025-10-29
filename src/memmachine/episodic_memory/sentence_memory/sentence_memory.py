@@ -159,6 +159,9 @@ class SentenceMemory:
             self._derive_derivatives(episode, sentence)
             for sentence in sentences
         ]
+
+        sentences_derivatives = await asyncio.gather(*derive_derivatives_tasks)
+
         derivative_nodes = [
             Node(
                 uuid=derivative.uuid,
@@ -172,16 +175,17 @@ class SentenceMemory:
                     ): derivative.embedding,
                 },
             )
-            for derivative in derivatives
+            for sentence_derivatives in sentences_derivatives
+            for derivative in sentence_derivatives
         ]
         derivative_sentence_edges = [
             Edge(
                 uuid=uuid4(),
-                source_uuid=derivative.uuid,
-                target_uuid=source_sentence.uuid,
+                source_uuid=sentence_derivatives.uuid,
+                target_uuid=sentences.uuid,
             )
-            for derivative, source_sentence in zip(
-                derivatives, source_sentences
+            for sentences, sentence_derivatives in zip(
+                sentences, sentences_derivatives
             )
         ]
 
