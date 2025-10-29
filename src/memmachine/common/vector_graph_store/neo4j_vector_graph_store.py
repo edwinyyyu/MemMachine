@@ -101,10 +101,10 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         self._index_name_cache: set[str] = set()
 
     async def add_nodes(self, collection: str, nodes: Iterable[Node]):
-        await self._create_initial_indexes_if_not_exist(
-            EntityType.NODE,
-            [collection],
-        )
+        # await self._create_initial_indexes_if_not_exist(
+        #     EntityType.NODE,
+        #     [collection],
+        # )
 
         sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
 
@@ -134,10 +134,10 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         target_collection: str,
         edges: Iterable[Edge],
     ):
-        await self._create_initial_indexes_if_not_exist(
-            EntityType.EDGE,
-            [relation],
-        )
+        # await self._create_initial_indexes_if_not_exist(
+        #     EntityType.EDGE,
+        #     [relation],
+        # )
 
         sanitized_relation = Neo4jVectorGraphStore._sanitize_name(relation)
         sanitized_source_collection = Neo4jVectorGraphStore._sanitize_name(
