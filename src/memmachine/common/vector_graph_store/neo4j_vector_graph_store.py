@@ -102,7 +102,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
     async def add_nodes(self, collection: str, nodes: Iterable[Node]):
         await self._create_initial_indexes_if_not_exist(
-            EntityType.EDGE,
+            EntityType.NODE,
             [collection],
         )
 
