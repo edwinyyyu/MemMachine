@@ -238,8 +238,12 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
             await self._create_vector_index_if_not_exists(
                 entity_type=EntityType.NODE,
-                collection_or_relation=collection,
-                embedding_property_name=embedding_property_name,
+                sanitized_collection_or_relation=Neo4jVectorGraphStore._sanitize_name(
+                    collection
+                ),
+                sanitized_embedding_property_name=Neo4jVectorGraphStore._sanitize_name(
+                    mangle_property_name(embedding_property_name)
+                ),
                 dimensions=len(query_embedding),
                 similarity_metric=similarity_metric,
             )
@@ -490,17 +494,26 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         """
         tasks = [
             self._create_unique_constraint_if_not_exists(
-                entity_type,
-                collection_or_relation,
-                "uuid",
+                entity_type=entity_type,
+                sanitized_collection_or_relation=Neo4jVectorGraphStore._sanitize_name(
+                    collection_or_relation
+                ),
+                sanitized_property_name=Neo4jVectorGraphStore._sanitize_name("uuid"),
             )
             for collection_or_relation in collections_or_relations
         ]
         tasks += [
             self._create_range_index_if_not_exists(
-                entity_type,
-                collection_or_relation,
-                property_name_hierarchy,
+                entity_type=entity_type,
+                sanitized_collection_or_relation=Neo4jVectorGraphStore._sanitize_name(
+                    collection_or_relation
+                ),
+                sanitized_property_names=[
+                    Neo4jVectorGraphStore._sanitize_name(
+                        mangle_property_name(property_name)
+                    )
+                    for property_name in property_name_hierarchy
+                ],
             )
             for collection_or_relation in collections_or_relations
             for range_index_hierarchy in self._range_index_hierarchies
@@ -514,8 +527,8 @@ class Neo4jVectorGraphStore(VectorGraphStore):
     async def _create_unique_constraint_if_not_exists(
         self,
         entity_type: EntityType,
-        collection_or_relation: str,
-        property_name: str,
+        sanitized_collection_or_relation: str,
+        sanitized_property_name: str,
     ):
         """
         Create unique constraint if not exists.
@@ -523,20 +536,13 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         Args:
             entity_type (EntityType):
                 The type of entity the constraint is for.
-            collection_or_relation (str):
+            sanitized_collection_or_relation (str):
                 Collection of nodes or relation type of edges
                 to create unique constraint for.
-            property_name (str):
+            sanitized_property_name (str):
                 Name of the property to create unique constraint on.
         """
         await self._populate_index_name_cache()
-
-        sanitized_collection_or_relation = Neo4jVectorGraphStore._sanitize_name(
-            collection_or_relation
-        )
-        sanitized_property_name = Neo4jVectorGraphStore._sanitize_name(
-            mangle_property_name(property_name)
-        )
 
         unique_constraint_name = Neo4jVectorGraphStore._index_name(
             entity_type,
@@ -573,8 +579,8 @@ class Neo4jVectorGraphStore(VectorGraphStore):
     async def _create_range_index_if_not_exists(
         self,
         entity_type: EntityType,
-        collection_or_relation: str,
-        property_name_hierarchy: Iterable[str],
+        sanitized_collection_or_relation: str,
+        sanitized_property_names: Iterable[str],
     ):
         """
         Create range index if not exists.
@@ -582,22 +588,14 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         Args:
             entity_type (EntityType):
                 The type of entity the index is for.
-            collection_or_relation (str):
+            sanitized_collection_or_relation (str):
                 Collection of nodes or relation type of edges
                 to create range index for.
-            property_name_hierarchy (list[str]):
+            sanitized_property_names (list[str]):
                 List of property names representing
                 the hierarchy for the range index.
         """
         await self._populate_index_name_cache()
-
-        sanitized_collection_or_relation = Neo4jVectorGraphStore._sanitize_name(
-            collection_or_relation
-        )
-        sanitized_property_names = [
-            Neo4jVectorGraphStore._sanitize_name(mangle_property_name(property_name))
-            for property_name in property_name_hierarchy
-        ]
 
         range_index_name = Neo4jVectorGraphStore._index_name(
             entity_type, sanitized_collection_or_relation, sanitized_property_names
@@ -635,8 +633,8 @@ class Neo4jVectorGraphStore(VectorGraphStore):
     async def _create_vector_index_if_not_exists(
         self,
         entity_type: EntityType,
-        collection_or_relation: str,
-        embedding_property_name: str,
+        sanitized_collection_or_relation: str,
+        sanitized_embedding_property_name: str,
         dimensions: int,
         similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
     ):
@@ -659,15 +657,10 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         """
         await self._populate_index_name_cache()
 
-        sanitized_collection_or_relation = Neo4jVectorGraphStore._sanitize_name(
-            collection_or_relation
-        )
-        sanitized_property_name = Neo4jVectorGraphStore._sanitize_name(
-            mangle_property_name(embedding_property_name)
-        )
-
         vector_index_name = Neo4jVectorGraphStore._index_name(
-            entity_type, sanitized_collection_or_relation, sanitized_property_name
+            entity_type,
+            sanitized_collection_or_relation,
+            sanitized_embedding_property_name,
         )
 
         if vector_index_name in self._index_name_cache:
@@ -695,7 +688,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 f"CREATE VECTOR INDEX {vector_index_name}\n"
                 "IF NOT EXISTS\n"
                 f"FOR {query_index_for_expression}\n"
-                f"ON e.{sanitized_property_name}\n"
+                f"ON e.{sanitized_embedding_property_name}\n"
                 "OPTIONS {\n"
                 "    indexConfig: {\n"
                 "        `vector.dimensions`:\n"
