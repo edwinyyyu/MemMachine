@@ -41,11 +41,14 @@ class Neo4jVectorGraphStoreParams(BaseModel):
     Attributes:
         driver (neo4j.AsyncDriver):
             Async Neo4j driver instance.
+        indexed_properties_hierarchy (list[str]):
+            List of properties to be indexed hierarchically for search performance.
+            (default: []).
         max_concurrent_transactions (int):
             Maximum number of concurrent transactions
             (default: 100).
         exact_similarity_search (bool):
-            Whether to use exact similarity search.
+            Whether to use exact similarity search
             (default: False).
         range_index_hierarchies (list[list[str]]):
             List of property name hierarchies (lists)
@@ -56,6 +59,12 @@ class Neo4jVectorGraphStoreParams(BaseModel):
 
     driver: InstanceOf[AsyncDriver] = Field(
         ..., description="Async Neo4j driver instance"
+    )
+    indexed_properties_hierarchy: list[str] = Field(
+        default_factory=list,
+        description=(
+            "List of properties to be indexed hierarchically for search performance",
+        ),
     )
     max_concurrent_transactions: int = Field(
         100, description="Maximum number of concurrent transactions", gt=0
@@ -286,11 +295,11 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         self,
         collection: str,
         node_uuid: UUID,
-        allowed_relations: Iterable[str] | None = None,
         find_sources: bool = True,
         find_targets: bool = True,
         limit: int | None = None,
-        required_properties: Mapping[str, Property] | None = None,
+        required_edge_properties: Mapping[str, Property] | None = None,
+        required_node_properties: Mapping[str, Property] | None = None,
         include_missing_properties: bool = False,
     ) -> list[Node]:
         if not (find_sources or find_targets):
@@ -300,48 +309,33 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             required_properties = {}
 
         sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
-        query_typed_relations = (
-            [
-                f"[:{Neo4jVectorGraphStore._sanitize_name(relation)}]"
-                for relation in allowed_relations
-            ]
-            if allowed_relations is not None
-            else ["[]"]
-        )
 
-        search_related_nodes_tasks = [
-            async_with(
-                self._semaphore,
-                self._driver.execute_query(
-                    "MATCH\n"
-                    "    (m {uuid: $node_uuid})"
-                    f"    {'-' if find_targets else '<-'}"
-                    f"    {query_typed_relation}"
-                    f"    {'-' if find_sources else '->'}"
-                    f"    (n:{sanitized_collection})"
-                    f"WHERE {
-                        Neo4jVectorGraphStore._format_required_properties(
-                            'n',
-                            required_properties,
-                            include_missing_properties,
-                        )
-                    }\n"
-                    "RETURN n\n"
-                    f"{'LIMIT $limit' if limit is not None else ''}",
-                    node_uuid=str(node_uuid),
-                    limit=limit,
-                    required_properties=Neo4jVectorGraphStore._sanitize_properties(
-                        {
-                            mangle_property_name(key): value
-                            for key, value in required_properties.items()
-                        }
-                    ),
+        async with self._semaphore:
+            results = await self._driver.execute_query(
+                "MATCH\n"
+                f"    (m:{sanitized_collection} {{uuid: $node_uuid}})"
+                f"    {'-' if find_targets else '<-'}"
+                f"    [:{sanitized_collection}]"
+                f"    {'-' if find_sources else '->'}"
+                f"    (n:{sanitized_collection})"
+                f"WHERE {
+                    Neo4jVectorGraphStore._format_required_properties(
+                        'n',
+                        required_node_properties,
+                        include_missing_properties,
+                    )
+                }\n"
+                "RETURN n\n"
+                f"{'LIMIT $limit' if limit is not None else ''}",
+                node_uuid=str(node_uuid),
+                limit=limit,
+                required_node_properties=Neo4jVectorGraphStore._sanitize_properties(
+                    {
+                        mangle_property_name(key): value
+                        for key, value in required_node_properties.items()
+                    }
                 ),
             )
-            for query_typed_relation in query_typed_relations
-        ]
-
-        results = await asyncio.gather(*search_related_nodes_tasks)
 
         related_nodes: set[Node] = set()
         for records, _, _ in results:
