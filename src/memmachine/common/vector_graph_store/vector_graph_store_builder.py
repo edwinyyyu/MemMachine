@@ -65,6 +65,7 @@ class VectorGraphStoreBuilder(Builder):
                         driver=driver,
                         max_concurrent_transactions=factory_params.max_concurrent_transactions,
                         force_exact_similarity_search=factory_params.force_exact_similarity_search,
+                        range_index_hierarchies=[["group_id", "session_id"]],
                     )
                 )
             case _:
