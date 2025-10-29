@@ -25,7 +25,6 @@ async def test_previous_related_episode_postulator():
         nodes = [
             Node(
                 uuid=uuid4(),
-                labels={"Episode"},
                 properties={
                     "episode_type": "test",
                     "content_type": ContentType.STRING,
@@ -37,7 +36,6 @@ async def test_previous_related_episode_postulator():
             ),
             Node(
                 uuid=uuid4(),
-                labels={"Episode"},
                 properties={
                     "episode_type": "test",
                     "content_type": ContentType.STRING,
