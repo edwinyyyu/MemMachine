@@ -214,7 +214,7 @@ class VectorGraphStore(ABC):
         include_missing_properties: bool = False,
     ) -> list[Node]:
         """
-        Search for nodes matching the specified labels and properties.
+        Search for nodes matching the specified properties.
 
         Args:
             limit (int | None, optional):
