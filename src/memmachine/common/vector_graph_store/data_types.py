@@ -8,7 +8,7 @@ from enum import Enum
 from uuid import UUID
 
 # Types that can be used as property values in nodes and edges.
-Property = (
+PropertyValue = (
     bool
     | int
     | float
@@ -31,7 +31,8 @@ class EntityType(Enum):
 @dataclass(kw_only=True)
 class Node:
     uuid: UUID
-    properties: dict[str, Property] = field(default_factory=dict)
+    data_properties: dict[str, PropertyValue] = field(default_factory=dict)
+    embedding_properties: dict[str, list[float]] = field(default_factory=dict)
 
     def __eq__(self, other):
         if not isinstance(other, Node):
@@ -47,7 +48,8 @@ class Edge:
     uuid: UUID
     source_uuid: UUID
     target_uuid: UUID
-    properties: dict[str, Property] = field(default_factory=dict)
+    data_properties: dict[str, PropertyValue] = field(default_factory=dict)
+    embedding_properties: dict[str, list[float]] = field(default_factory=dict)
 
     def __eq__(self, other):
         if not isinstance(other, Edge):

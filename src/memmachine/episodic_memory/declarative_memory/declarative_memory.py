@@ -295,12 +295,14 @@ class DeclarativeMemory:
         mutated_derivative_nodes = [
             Node(
                 uuid=derivative.uuid,
-                properties={
-                    "content": derivative.content,
+                embedding_properties={
                     DeclarativeMemory._embedding_property_name(
                         self._embedder.model_id,
                         self._embedder.dimensions,
                     ): derivative_embedding,
+                }
+                properties={
+                    "content": derivative.content,
                     "timestamp": derivative.timestamp,
                     "user_metadata": json.dumps(derivative.user_metadata),
                 }
@@ -577,6 +579,7 @@ class DeclarativeMemory:
                     for key, value in property_filter.items()
                 },
                 include_missing_properties=True,
+                limit=10_000,
             )
             for derivative_embedding in derivative_embeddings
         ]
