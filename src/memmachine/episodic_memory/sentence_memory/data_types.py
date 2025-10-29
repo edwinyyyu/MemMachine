@@ -28,7 +28,6 @@ class Episode:
 @dataclass(kw_only=True)
 class Sentence:
     uuid: UUID
-    sequence_number: int
     content_type: ContentType
     content: Any
 

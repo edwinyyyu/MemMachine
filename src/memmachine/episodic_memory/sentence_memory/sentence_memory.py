@@ -155,7 +155,10 @@ class SentenceMemory:
             for sentence in sentences
         ]
 
-        derivatives = await self._derive_derivatives(episode, sentences)
+        derive_derivatives_tasks = [
+            self._derive_derivatives(episode, sentence)
+            for sentence in sentences
+        ]
         derivative_nodes = [
             Node(
                 uuid=derivative.uuid,
@@ -188,8 +191,7 @@ class SentenceMemory:
         await self._vector_graph_store.add_nodes("Derivative", derivative_nodes)
         await self._vector_graph_store.add_edges("DERIVED_FROM", derivative_sentence_edges)
 
-    @staticmethod
-    def _sentence_tokenize(episode: Episode) -> list[Sentence]:
+    def _sentence_tokenize(self, episode: Episode) -> list[Sentence]:
         """
         Tokenize episode content into sentences.
 
@@ -201,6 +203,16 @@ class SentenceMemory:
         """
         match episode.content_type:
             case ContentType.MESSAGE | ContentType.TEXT:
+                sentences = []
+
+                for line in episode.content.strip().splitlines():
+                    for sentence in sent_tokenize(line.strip()):
+                        if len(sentence) > self._max_sentence_length:
+                            sentence_splits = self._split_sentence(sentence)
+                            sentences.extend(sentence_splits)
+                        else:
+                            sentences.append(sentence)
+
                 return [
                     Sentence(
                         uuid=uuid4(),
@@ -208,11 +220,7 @@ class SentenceMemory:
                         content_type=episode.content_type,
                         content=sentence,
                     )
-                    for index, sentence in enumerate(
-                        sentence
-                        for line in episode.content.strip().splitlines()
-                        for sentence in sent_tokenize(line.strip())
-                    )
+                    for index, sentence in enumerate(sentences)
                 ]
             case _:
                 return [
@@ -224,6 +232,18 @@ class SentenceMemory:
                     )
                 ]
 
+    def _split_sentence(self, sentence: str) -> list[str]:
+        """
+        Split a long sentence into smaller chunks.
+
+        Args:
+            sentence (str): The sentence to split.
+
+        Returns:
+            list[str]: A list of sentence chunks.
+        """
+        return [] # TODO @edwinyyyu: Implement sentence splitting logic here.
+
     async def _derive_derivatives(
         self,
         episode: Episode,
@@ -234,6 +254,9 @@ class SentenceMemory:
 
         Args:
             sentence (Sentence): The sentence from which to derive derivatives.
+
+        Returns:
+            list[Derivative]: A list of derived derivatives.
         """
         match sentence.content_type:
             case ContentType.MESSAGE:
@@ -241,11 +264,20 @@ class SentenceMemory:
                     {
                         "content": sentence.content,
                         "timestamp": episode.timestamp,
-                        ""
+                    },
+                    **{
+                        key: value
+                        for key, value in {
+                            **episode.filterable_properties,
+                            **(
+                                episode.user_metadata
+                                if isinstance(episode.user_metadata, dict)
+                                else {}
+                            ),
+                        }.items()
                     }
                 )
 
-                sentence.content
                 return [
                     Derivative(
                         uuid=uuid4(),
@@ -263,6 +295,7 @@ class SentenceMemory:
                     )
                 ]
             case _:
+                return []
 
 
     async def search(
