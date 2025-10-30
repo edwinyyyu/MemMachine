@@ -178,7 +178,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         query_embedding: list[float],
         embedding_property_name: str,
         similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
-        limit: int | None = 10_000,
+        limit: int | None = 100,
         required_properties: Mapping[str, Property] | None = None,
         include_missing_properties: bool = False,
     ) -> list[Node]:
