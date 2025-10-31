@@ -284,7 +284,8 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
     async def search_related_nodes(
         self,
-        collection: str,
+        root_collection: str,
+        query_collection: str,
         node_uuid: UUID,
         allowed_relations: Iterable[str] | None = None,
         find_sources: bool = True,
@@ -299,7 +300,8 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         if required_properties is None:
             required_properties = {}
 
-        sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
+        sanitized_root_collection = Neo4jVectorGraphStore._sanitize_name(root_collection)
+        sanitized_query_collection = Neo4jVectorGraphStore._sanitize_name(query_collection)
         query_typed_relations = (
             [
                 f"[:{Neo4jVectorGraphStore._sanitize_name(relation)}]"
@@ -314,11 +316,11 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 self._semaphore,
                 self._driver.execute_query(
                     "MATCH\n"
-                    "    (m {uuid: $node_uuid})"
+                    f"    (m:{sanitized_root_collection} {{uuid: $node_uuid}})"
                     f"    {'-' if find_targets else '<-'}"
                     f"    {query_typed_relation}"
                     f"    {'-' if find_sources else '->'}"
-                    f"    (n:{sanitized_collection})"
+                    f"    (n:{sanitized_query_collection})"
                     f"WHERE {
                         Neo4jVectorGraphStore._format_required_properties(
                             'n',

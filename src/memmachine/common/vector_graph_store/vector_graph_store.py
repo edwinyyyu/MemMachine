@@ -105,7 +105,8 @@ class VectorGraphStore(ABC):
     @abstractmethod
     async def search_related_nodes(
         self,
-        collection: str,
+        root_collection: str,
+        query_collection: str,
         node_uuid: UUID,
         allowed_relations: Iterable[str] | None = None,
         find_sources: bool = True,
