@@ -184,8 +184,8 @@ class Neo4jVectorGraphStore(VectorGraphStore):
     async def search_similar_nodes(
         self,
         collection: str,
-        query_embedding: list[float],
         embedding_property_name: str,
+        query_embedding: list[float],
         similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
         limit: int | None = 10_000,
         required_properties: Mapping[str, Property] | None = None,
