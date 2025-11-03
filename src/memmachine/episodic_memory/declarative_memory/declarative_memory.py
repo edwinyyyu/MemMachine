@@ -7,7 +7,8 @@ import asyncio
 import functools
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections import deque
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import datetime
 from string import Template
 from typing import Any, Self, cast
@@ -17,587 +18,413 @@ from memmachine.common.data_types import ExternalServiceAPIError
 from memmachine.common.embedder.embedder import Embedder
 from memmachine.common.reranker.reranker import Reranker
 from memmachine.common.vector_graph_store import Edge, Node, VectorGraphStore
+from nltk import sent_tokenize
+from pydantic import BaseModel, Field, InstanceOf
 
 from .data_types import (
     ContentType,
-    Derivative,
     Episode,
-    EpisodeCluster,
+    Chunk,
+    Derivative,
     FilterablePropertyValue,
     demangle_filterable_property_key,
     is_mangled_filterable_property_key,
     mangle_filterable_property_key,
 )
-from .derivative_deriver import DerivativeDeriver
-from .derivative_mutator import DerivativeMutator
-from .related_episode_postulator import RelatedEpisodePostulator
 
 logger = logging.getLogger(__name__)
 
 
+class DeclarativeMemoryParams(BaseModel):
+    """
+    Parameters for DeclarativeMemory.
+
+    Attributes:
+        max_chunk_length (int):
+            Maximum length of a chunk in characters
+            (default: 1000).
+        vector_graph_store (VectorGraphStore):
+            VectorGraphStore instance
+            for storing and retrieving memories.
+        embedder (Embedder):
+            Embedder instance for creating embeddings.
+        reranker (Reranker):
+            Reranker instance for reranking search results.
+    """
+
+    max_chunk_length: int = Field(
+        1000,
+        description="Maximum length of a chunk in characters.",
+    )
+    vector_graph_store: InstanceOf[VectorGraphStore] = Field(
+        ...,
+        description="VectorGraphStore instance for storing and retrieving memories",
+    )
+    embedder: InstanceOf[Embedder] = Field(
+        ...,
+        description="Embedder instance for creating embeddings",
+    )
+    reranker: InstanceOf[Reranker] = Field(
+        ...,
+        description="Reranker instance for reranking search results",
+    )
+
+
 class DeclarativeMemory:
     """
-    Memory system for episodic and semantic memory.
+    Declarative memory system.
     """
 
-    def __init__(self, config: dict[str, Any]):
+    def __init__(self, params: DeclarativeMemoryParams):
         """
-        Initialize a DeclarativeMemory with the provided config.
+        Initialize a DeclarativeMemory with the provided parameters.
 
         Args:
-            config (dict[str, Any]):
-                Configuration dictionary containing:
-                - vector_graph_store:
-                  VectorGraphStore instance
-                  for storing and retrieving memories.
-                - embedder:
-                  Embedder instance for similarity checks.
-                - reranker:
-                  Reranker instance for reranking search results.
-                - related_episode_postulators:
-                  List of RelatedEpisodePostulator instances
-                  for connecting related episodes.
-                - query_derivative_deriver:
-                  DerivativeDeriver instance
-                  for deriving derivatives from queries.
-                - derivation_workflows:
-                  Dict mapping episode types
-                  to lists of workflow configs.
-                  Each config contains:
-                    - related_episode_postulator:
-                      RelatedEpisodePostulator instance
-                      used for assembling episode clusters.
-                    - derivative_derivation_workflows:
-                      List of workflow configs.
-                      Each config contains:
-                        - derivative_deriver:
-                          DerivativeDeriver instance
-                          used for deriving derivatives.
-                        - derivative_mutation_workflows:
-                          List of workflow configs.
-                          Each config contains:
-                            - derivative_mutator:
-                              DerivativeMutator instance
-                              used for mutating derivatives.
-                - episode_metadata_template:
-                    Template string supporting $-substitutions
-                    (default: "[$timestamp] $content").
+            params (DeclarativeMemoryParams):
+                Parameters for the DeclarativeMemory.
         """
 
-        self._vector_graph_store: VectorGraphStore = config["vector_graph_store"]
+        self._max_chunk_length = params.max_chunk_length
+        self._vector_graph_store = params.vector_graph_store
+        self._embedder = params.embedder
+        self._reranker = params.reranker
 
-        self._embedder: Embedder = config["embedder"]
-        self._reranker: Reranker = config["reranker"]
+        self._episode_collection = "Episode"
+        self._chunk_collection = "Chunk"
+        self._derivative_collection = "Derivative"
 
-        self._related_episode_postulators: list[RelatedEpisodePostulator] = config[
-            "related_episode_postulators"
-        ]
-        self._query_derivative_deriver: DerivativeDeriver = config[
-            "query_derivative_deriver"
-        ]
+        self._contains_relation = "CONTAINS"
+        self._derived_from_relation = "DERIVED_FROM"
 
-        def build_episode_cluster_assembly_workflow(
-            config: dict[str, Any],
-        ) -> DeclarativeMemory.Workflow:
-            return DeclarativeMemory.Workflow(
-                executable=functools.partial(
-                    DeclarativeMemory._assemble_episode_cluster,
-                    config["related_episode_postulator"],
-                ),
-                subworkflows=[
-                    build_derivative_derivation_workflow(derivative_derivation_workflow)
-                    for derivative_derivation_workflow in config[
-                        "derivative_derivation_workflows"
-                    ]
-                ],
-                callback=self._process_episode_cluster_assembly,
-            )
+        self._message_metadata_template = Template("[$timestamp] $source: $content")
+        self._temporal_context: deque[Chunk] | None = None
 
-        def build_derivative_derivation_workflow(
-            config: dict[str, Any],
-        ) -> DeclarativeMemory.Workflow:
-            return DeclarativeMemory.Workflow(
-                executable=functools.partial(
-                    DeclarativeMemory._derive_derivatives,
-                    config["derivative_deriver"],
-                ),
-                subworkflows=[
-                    build_derivative_mutation_workflow(derivative_mutation_workflow)
-                    for derivative_mutation_workflow in config[
-                        "derivative_mutation_workflows"
-                    ]
-                ],
-                callback=self._process_derivative_derivation,
-            )
 
-        def build_derivative_mutation_workflow(
-            config: dict[str, Any],
-        ) -> DeclarativeMemory.Workflow:
-            return DeclarativeMemory.Workflow(
-                executable=functools.partial(
-                    DeclarativeMemory._mutate_derivatives,
-                    config["derivative_mutator"],
-                ),
-                callback=self._process_derivative_mutation,
-            )
-
-        self._derivation_workflows = {
-            episode_type: [
-                build_episode_cluster_assembly_workflow(workflow_config)
-                for workflow_config in derivation_workflows
-            ]
-            for episode_type, derivation_workflows in config[
-                "derivation_workflows"
-            ].items()
-        }
-
-        self._episode_metadata_template = Template(
-            config.get("episode_metadata_template", "[$timestamp] $content")
-        )
-
-    class Workflow:
-        def __init__(
-            self,
-            executable: Callable[..., Awaitable],
-            subworkflows: list[Self] = [],
-            callback: Callable[..., Awaitable] | None = None,
-        ):
-            """
-            Initialize a Workflow.
-
-            Args:
-                executable (Callable[..., Awaitable]):
-                    An asynchronous callable
-                    that performs the main operation of the workflow.
-                subworkflows (list[Workflow], optional):
-                    A list of subworkflows to execute
-                    on the result of the main operation (default: []).
-                callback (Callable[..., Awaitable], optional):
-                    An asynchronous callable that processes
-                    the results of the main operation
-                    and subworkflows (default: None).
-            """
-            self._executable = executable
-            self._subworkflows = subworkflows
-            self._callback = callback
-
-        async def execute(self, arguments: Any) -> Any:
-            """
-            Execute the workflow with the provided arguments.
-
-            Args:
-                arguments (Any): Arguments to pass to the executable.
-
-            Returns:
-                Any:
-                    The result of the workflow execution,
-                    potentially processed by the callback if provided.
-            """
-            execution_result = await self._executable(arguments)
-
-            subworkflow_results = await asyncio.gather(
-                *[
-                    subworkflow.execute(execution_result)
-                    for subworkflow in self._subworkflows
-                ]
-            )
-
-            if self._callback is not None:
-                if subworkflow_results:
-                    return await self._callback(execution_result, subworkflow_results)
-                else:
-                    return await self._callback(execution_result)
-
-            return execution_result
-
-    @staticmethod
-    async def _assemble_episode_cluster(
-        related_episode_postulator: RelatedEpisodePostulator,
-        episode: Episode,
-    ) -> EpisodeCluster:
-        """
-        Assemble an episode cluster given an episode.
-        """
-        related_episodes = await related_episode_postulator.postulate(episode)
-        cluster_episodes = sorted(
-            [episode] + related_episodes,
-            key=lambda episode: episode.timestamp,
-        )
-        episode_cluster = EpisodeCluster(
-            uuid=uuid4(),
-            episodes=cluster_episodes,
-            timestamp=cluster_episodes[-1].timestamp,
-            filterable_properties=dict(
-                set.intersection(
-                    *(
-                        set(cluster_episode.filterable_properties.items())
-                        for cluster_episode in cluster_episodes
-                    )
-                )
-            ),
-            user_metadata=episode.user_metadata,
-        )
-
-        return episode_cluster
-
-    @staticmethod
-    async def _derive_derivatives(
-        derivative_deriver: DerivativeDeriver,
-        episode_cluster: EpisodeCluster,
-    ) -> tuple[list[Derivative], EpisodeCluster]:
-        """
-        Derive derivatives from an episode cluster.
-        """
-        derivatives = await derivative_deriver.derive(episode_cluster)
-        return derivatives, episode_cluster
-
-    @staticmethod
-    async def _mutate_derivatives(
-        derivative_mutator: DerivativeMutator,
-        derivative_derivation_result: tuple[list[Derivative], EpisodeCluster],
-    ) -> list[Derivative]:
-        """
-        Mutate derived derivatives.
-        """
-        derivatives, episode_cluster = derivative_derivation_result
-
-        mutate_derivative_tasks = [
-            derivative_mutator.mutate(derivative, episode_cluster)
-            for derivative in derivatives
-        ]
-        derivatives_mutated_derivatives = await asyncio.gather(*mutate_derivative_tasks)
-
-        # Flatten into a single list of mutated derivatives.
-        mutated_derivatives = [
-            derivative
-            for derivative_mutated_derivatives in (derivatives_mutated_derivatives)
-            for derivative in derivative_mutated_derivatives
-        ]
-        return mutated_derivatives
-
-    async def _process_derivative_mutation(
+    async def add_episodes(
         self,
-        mutated_derivatives: list[Derivative],
-    ) -> list[Node]:
+        episodes: Iterable[Episode],
+    ):
         """
-        Process the result of derivative mutation
-        by embedding and creating nodes for the mutated derivatives.
-        """
-        try:
-            mutated_derivative_embeddings = await self._embedder.ingest_embed(
-                [derivative.content for derivative in mutated_derivatives],
-                max_attempts=3,
-            )
-        except (ExternalServiceAPIError, ValueError, RuntimeError):
-            logger.error("Failed to create embeddings for mutated derivatives")
-            return []
+        Add episodes.
 
-        mutated_derivative_nodes = [
+        Args:
+            episodes (Iterable[Episode]): The episodes to add.
+        """
+
+        # TODO @edwinyyyu: lock this
+        # The memory is server-side so it can be stateful.
+        # Remember previous episodes for context.
+        # This is like coming back to work on a Monday.
+        # if self._temporal_context is None:
+        # task = self._vector_graph_store.get_last_episodes
+
+        episodes = list(episodes)
+        episode_nodes = [
+            Node(
+                uuid=episode.uuid,
+                data_properties={
+                    "timestamp": episode.timestamp,
+                    "source": episode.source,
+                    "content_type": episode.content_type.value,
+                    "content": episode.content,
+                    "user_metadata": json.dumps(episode.user_metadata),
+                }
+                | {
+                    mangle_filterable_property_key(key): value
+                    for key, value in episode.filterable_properties.items()
+                },
+            )
+            for episode in episodes
+        ]
+
+        chunk_episode_tasks = [
+            DeclarativeMemory._chunk_episode(episode) for episode in episodes
+        ]
+        episodes_chunks = await asyncio.gather(*chunk_episode_tasks)
+
+        chunks = [
+            chunk for episode_chunks in episodes_chunks for chunk in episode_chunks
+        ]
+
+        chunk_nodes = [
+            Node(
+                uuid=chunk.uuid,
+                data_properties={
+                    "sequence_number": chunk.sequence_number,
+                    "timestamp": chunk.timestamp,
+                    "source": chunk.source,
+                    "content_type": chunk.content_type.value,
+                    "content": chunk.content,
+                    "user_metadata": json.dumps(chunk.user_metadata),
+                }
+                | {
+                    mangle_filterable_property_key(key): value
+                    for key, value in chunk.filterable_properties.items()
+                },
+            )
+            for chunk in chunks
+        ]
+
+        episode_chunk_edges = [
+            Edge(
+                uuid=uuid4(),
+                source_uuid=episode.uuid,
+                target_uuid=chunk.uuid,
+            )
+            for episode, episode_chunks in zip(episodes, episodes_chunks)
+            for chunk in episode_chunks
+        ]
+
+        derive_derivatives_tasks = []
+        for chunk in chunks:
+            derive_derivatives_tasks.append(
+                self._derive_derivatives(
+                    chunk,
+                    list(self._temporal_context),
+                )
+            )
+            self._temporal_context.append(chunk)
+
+        chunks_derivatives = await asyncio.gather(*derive_derivatives_tasks)
+
+        derivatives = [
+            derivative
+            for chunk_derivatives in chunks_derivatives
+            for derivative in chunk_derivatives
+        ]
+
+        derivative_embeddings = await self._embedder.ingest_embed(
+            [derivative.content for derivative in derivatives],
+        )
+
+        derivative_nodes = [
             Node(
                 uuid=derivative.uuid,
+                data_properties={
+                    "content_type": derivative.content_type.value,
+                    "content": derivative.content,
+                },
                 embedding_properties={
                     DeclarativeMemory._embedding_property_name(
                         self._embedder.model_id,
                         self._embedder.dimensions,
-                    ): derivative_embedding,
-                }
-                properties={
-                    "content": derivative.content,
-                    "timestamp": derivative.timestamp,
-                    "user_metadata": json.dumps(derivative.user_metadata),
-                }
-                | {
-                    mangle_filterable_property_key(key): value
-                    for key, value in derivative.filterable_properties.items()
+                    ): embedding,
                 },
             )
-            for derivative, derivative_embedding in zip(
-                mutated_derivatives, mutated_derivative_embeddings
-            )
+            for derivative, embedding in zip(derivatives, derivative_embeddings)
         ]
-        return mutated_derivative_nodes
 
-    async def _process_derivative_derivation(
-        self,
-        derived_derivatives: list[Derivative],
-        mutation_workflows_derivative_nodes: list[list[Node]],
-    ) -> list[Node]:
-        """
-        Process the result of derivative derivation
-        by flattening the list of mutated derivative nodes.
-        Do nothing with the unprocessed derived derivatives.
-        """
-        derivative_nodes = [
-            derivative_node
-            for mutation_workflow_derivative_nodes in (
-                mutation_workflows_derivative_nodes
-            )
-            for derivative_node in mutation_workflow_derivative_nodes
-        ]
-        return derivative_nodes
-
-    async def _process_episode_cluster_assembly(
-        self,
-        episode_cluster: EpisodeCluster,
-        derivation_workflows_derivative_nodes: list[list[Node]],
-    ) -> tuple[list[Node], list[Node], list[Edge], list[Edge]]:
-        """
-        Process the result of episode cluster assembly
-        by creating nodes and edges
-        for the episode cluster and its derivatives.
-        """
-
-        # Create episode cluster nodes.
-        episode_cluster_node = Node(
-            uuid=episode_cluster.uuid,
-            properties=dict(
-                {
-                    "timestamp": episode_cluster.timestamp,
-                    "user_metadata": json.dumps(episode_cluster.user_metadata),
-                }
-                | {
-                    mangle_filterable_property_key(key): value
-                    for key, value in (episode_cluster.filterable_properties.items())
-                }
-            ),
-        )
-
-        # Create edges from episode cluster nodes
-        # to source episode nodes.
-        episode_cluster_source_episodes_edges = [
+        derivative_chunk_edges = [
             Edge(
                 uuid=uuid4(),
-                source_uuid=episode_cluster.uuid,
-                target_uuid=episode.uuid,
+                source_uuid=derivative.uuid,
+                target_uuid=chunk.uuid,
             )
-            for episode in episode_cluster.episodes
+            for chunk, chunk_derivatives in zip(chunks, chunks_derivatives)
+            for derivative in chunk_derivatives
         ]
 
-        # Flatten into a single list of derivative nodes.
-        derivative_nodes = [
-            derivative_node
-            for derivation_workflow_derivative_nodes in (
-                derivation_workflows_derivative_nodes
-            )
-            for derivative_node in derivation_workflow_derivative_nodes
-        ]
-
-        # Create edges from derivative nodes to episode cluster node.
-        derivatives_source_episode_cluster_edges = [
-            Edge(
-                uuid=uuid4(),
-                source_uuid=derivative_node.uuid,
-                target_uuid=episode_cluster_node.uuid,
-            )
-            for derivative_node in derivative_nodes
-        ]
-
-        return (
-            [episode_cluster_node],
-            derivative_nodes,
-            episode_cluster_source_episodes_edges,
-            derivatives_source_episode_cluster_edges,
+        await self._vector_graph_store.add_nodes(
+            colleciton=self._episode_collection,
+            nodes=episode_nodes,
+        )
+        await self._vector_graph_store.add_nodes(
+            collection=self._chunk_collection,
+            nodes=chunk_nodes,
+        )
+        await self._vector_graph_store.add_edges(
+            relation=self._contains_relation,
+            source_collection=self._episode_collection,
+            target_collection=self._chunk_collection,
+            edges=episode_chunk_edges,
+        )
+        await self._vector_graph_store.add_nodes(
+            collection=self._derivative_collection,
+            nodes=derivative_nodes,
+        )
+        await self._vector_graph_store.add_edges(
+            relation=self._derived_from_relation,
+            source_collection=self._derivative_collection,
+            target_collection=self._chunk_collection,
+            edges=derivative_chunk_edges,
         )
 
-    async def add_episode(
-        self,
-        episode: Episode,
-    ):
+    def _chunk_episode(self, episode: Episode) -> list[Chunk]:
         """
-        Add an episode to declarative memory.
+        Partition episode into chunks.
 
         Args:
-            episode (Episode): The episode to add.
+            episode (Episode): The episode whose content to partition.
+
+        Returns:
+            list[Chunk]: A list of chunks.
         """
-        episode_node = Node(
-            uuid=episode.uuid,
-            properties={
-                "episode_type": episode.episode_type,
-                "content_type": episode.content_type.value,
-                "content": episode.content,
-                "timestamp": episode.timestamp,
-                "user_metadata": json.dumps(episode.user_metadata),
-            }
-            | {
-                mangle_filterable_property_key(key): value
-                for key, value in episode.filterable_properties.items()
-            },
-        )
+        match episode.content_type:
+            case ContentType.MESSAGE | ContentType.TEXT:
+                sentences = []
 
-        await self._vector_graph_store.add_nodes("Episode", [episode_node])
+                for line in episode.content.strip().splitlines():
+                    for sentence in sent_tokenize(line.strip()):
+                        if len(sentence) > self._max_sentence_length:
+                            sentence_splits = self._split_sentence(sentence)
+                            sentences.extend(sentence_splits)
+                        else:
+                            sentences.append(sentence)
 
-        episode_type_derivation_workflows = self._derivation_workflows.get(
-            episode.episode_type
-        ) or self._derivation_workflows.get("default", [])
-
-        # Create nodes and edges for episode clusters and derivatives.
-        derivation_workflow_tasks = [
-            derivation_workflow.execute(episode)
-            for derivation_workflow in episode_type_derivation_workflows
-        ]
-
-        (
-            workflows_episode_cluster_nodes,
-            workflows_derivative_nodes,
-            workflows_episode_cluster_edges,
-            workflows_derivative_edges,
-        ) = zip(*(await asyncio.gather(*derivation_workflow_tasks)))
-
-        episode_cluster_nodes = [
-            node
-            for workflow_nodes in workflows_episode_cluster_nodes
-            for node in workflow_nodes
-        ]
-        derivative_nodes = [
-            node
-            for workflow_nodes in workflows_derivative_nodes
-            for node in workflow_nodes
-        ]
-
-        episode_cluster_edges = [
-            edge
-            for workflow_edges in workflows_episode_cluster_edges
-            for edge in workflow_edges
-        ]
-        derivative_edges = [
-            edge
-            for workflow_edges in workflows_derivative_edges
-            for edge in workflow_edges
-        ]
-
-        related_episodes = [
-            postulated_related_episode
-            for postulated_related_episodes in await asyncio.gather(
-                *[
-                    related_episode_postulator.postulate(episode)
-                    for related_episode_postulator in (
-                        self._related_episode_postulators
+                return [
+                    Chunk(
+                        uuid=uuid4(),
+                        episode_uuid=episode.uuid,
+                        sequence_number=index,
+                        timestamp=episode.timestamp,
+                        source=episode.source,
+                        content_type=episode.content_type,
+                        content=sentence,
+                        filterable_properties=episode.filterable_properties,
+                        user_metadata=episode.user_metadata,
+                    )
+                    for index, sentence in enumerate(sentences)
+                ]
+            case _:
+                return [
+                    Chunk(
+                        uuid=uuid4(),
+                        episode_uuid=episode.uuid,
+                        sequence_number=0,
+                        timestamp=episode.timestamp,
+                        source=episode.source,
+                        content_type=episode.content_type,
+                        content=episode.content,
+                        filterable_properties=episode.filterable_properties,
+                        user_metadata=episode.user_metadata,
                     )
                 ]
-            )
-            for postulated_related_episode in postulated_related_episodes
-        ]
 
-        # Create postulated edges between episodes.
-        related_episode_edges = [
-            Edge(
-                uuid=uuid4(),
-                source_uuid=episode.uuid,
-                target_uuid=related_episode.uuid,
-            )
-            for related_episode in related_episodes
-        ]
+    def _split_sentence(self, sentence: str) -> list[str]:
+        """
+        Split a long sentence into smaller chunks.
 
-        add_nodes_tasks = [
-            self._vector_graph_store.add_nodes("EpisodeCluster", episode_cluster_nodes),
-            self._vector_graph_store.add_nodes("Derivative", derivative_nodes),
-        ]
+        Args:
+            sentence (str): The sentence to split.
 
-        add_edges_tasks = [
-            self._vector_graph_store.add_edges(
-                "CONTAINS", "EpisodeCluster", "Episode", episode_cluster_edges
-            ),
-            self._vector_graph_store.add_edges(
-                "DERIVED_FROM", "Derivative", "EpisodeCluster", derivative_edges
-            ),
-            self._vector_graph_store.add_edges(
-                "RELATED_TO", "Episode", "Episode", related_episode_edges
-            ),
-        ]
+        Returns:
+            list[str]: A list of sentence chunks.
+        """
+        return []  # TODO @edwinyyyu: Implement sentence splitting logic here.
 
-        await asyncio.gather(*add_nodes_tasks)
-        await asyncio.gather(*add_edges_tasks)
+    async def _derive_derivatives(
+        self,
+        chunk: Chunk,
+        temporal_context: Iterable[Chunk],
+    ) -> list[Derivative]:
+        """
+        Derive derivatives from a chunk from the temporal context.
+
+        Args:
+            chunk (Chunk):
+                The chunk from which to derive derivatives.
+            temporal_context (Iterable[Chunk]):
+                The temporal context containing previous chunks.
+
+        Returns:
+            list[Derivative]: A list of derived derivatives.
+        """
+        match chunk.content_type:
+            case ContentType.MESSAGE:
+                message_content = self._message_metadata_template.safe_substitute(
+                    {
+                        "timestamp": chunk.timestamp,
+                        "source": chunk.source,
+                        "content": chunk.content,
+                    },
+                    **{
+                        key: value
+                        for key, value in {
+                            **chunk.filterable_properties,
+                            **(
+                                chunk.user_metadata
+                                if isinstance(chunk.user_metadata, dict)
+                                else {}
+                            ),
+                        }.items()
+                    },
+                )
+
+                return [
+                    Derivative(
+                        uuid=uuid4(),
+                        content_type=ContentType.MESSAGE,
+                        content=message_content,
+                    ),
+                ]
+            case ContentType.TEXT:
+                text_content = chunk.content
+                return [
+                    Derivative(
+                        uuid=uuid4(),
+                        content_type=ContentType.TEXT,
+                        content=text_content,
+                    )
+                ]
+            case _:
+                return []
 
     async def search(
         self,
         query: str,
-        num_episodes_limit: int = 20,
-        property_filter: dict[str, FilterablePropertyValue] = {},
-    ) -> list[Episode]:
+        num_chunks_limit: int = 20,
+        property_filter: Mapping[str, FilterablePropertyValue] | None = None,
+    ) -> list[Chunk]:
         """
-        Search declarative memory for episodes relevant to the query.
+        Search declarative memory for chunks relevant to the query.
 
         Args:
             query (str):
                 The search query.
-            num_episodes_limit (int, optional):
-                The maximum number
-                of episodes to return (default: 20).
-            property_filter (
-                dict[str, FilterablePropertyValue], optional
-            ):
-                Filterable property keys and values to use
-                for filtering episodes.
-                If not provided, no filtering is applied.
+            num_chunks_limit (int):
+                The maximum number of chunks to return
+                (default: 20).
+            property_filter (Mapping[str, FilterablePropertyValue] | None):
+                Filterable property keys and values
+                to use for filtering episodes
+                (default: None).
 
         Returns:
-            list[Episode]:
-                A list of episodes relevant to the query,
-                sorted by timestamp.
+            list[Chunk]:
+                A list of chunks relevant to the query, sorted by time.
         """
 
-        # Derive derivatives from query.
-        derivatives = await self._query_derivative_deriver.derive(
-            EpisodeCluster(
-                uuid=uuid4(),
-                episodes=[
-                    Episode(
-                        uuid=uuid4(),
-                        episode_type="query",
-                        content_type=ContentType.STRING,
-                        content=query,
-                        timestamp=datetime.now(),
-                    ),
-                ],
-            )
+        query_embedding = await self._embedder.search_embed(
+            [query],
         )
 
-        # Embed derivatives.
-        try:
-            derivative_embeddings = await self._embedder.search_embed(
-                [derivative.content for derivative in derivatives],
-                max_attempts=3,
-            )
-        except (ExternalServiceAPIError, ValueError, RuntimeError):
-            logger.error("Failed to create embeddings for query derivatives")
-            return []
-
         # Search graph store for vector matches.
-        search_similar_nodes_tasks = [
-            self._vector_graph_store.search_similar_nodes(
-                collection="Derivative",
-                query_embedding=derivative_embedding,
-                embedding_property_name=(
-                    DeclarativeMemory._embedding_property_name(
-                        self._embedder.model_id,
-                        self._embedder.dimensions,
-                    )
-                ),
-                similarity_metric=self._embedder.similarity_metric,
-                required_properties={
-                    mangle_filterable_property_key(key): value
-                    for key, value in property_filter.items()
-                },
-                include_missing_properties=True,
-                limit=10_000,
-            )
-            for derivative_embedding in derivative_embeddings
-        ]
+        matched_derivative_nodes = await self._vector_graph_store.search_similar_nodes(
+            collection=self._derivative_collection,
+            embedding_property_name=(
+                DeclarativeMemory._embedding_property_name(
+                    self._embedder.model_id,
+                    self._embedder.dimensions,
+                )
+            ),
+            query_embedding=query_embedding,
+            similarity_metric=self._embedder.similarity_metric,
+            limit=100,
+            required_properties={
+                mangle_filterable_property_key(key): value
+                for key, value in property_filter.items()
+            },
+            include_missing_properties=True,
+        )
 
-        matched_derivative_nodes = [
-            similar_node
-            for similar_nodes in await asyncio.gather(*search_similar_nodes_tasks)
-            for similar_node in similar_nodes
-        ]
-
-        # Get source episode clusters of matched derivatives.
-        search_derivatives_source_episode_cluster_nodes_tasks = [
+        # Get source chunks of matched derivatives.
+        search_derivatives_source_chunk_tasks = [
             self._vector_graph_store.search_related_nodes(
-                collection="EpisodeCluster",
                 node_uuid=matched_derivative_node.uuid,
-                allowed_relations=["DERIVED_FROM"],
+                allowed_relations={"DERIVED_FROM"},
                 find_sources=False,
                 find_targets=True,
+                required_labels={"EpisodeCluster"},
                 required_properties={
                     mangle_filterable_property_key(key): value
                     for key, value in property_filter.items()
@@ -623,11 +450,11 @@ class DeclarativeMemory:
         # Get source episodes of matched episode clusters.
         search_episode_clusters_source_episode_nodes_tasks = [
             self._vector_graph_store.search_related_nodes(
-                collection="Episode",
                 node_uuid=matched_episode_cluster_node.uuid,
-                allowed_relations=["CONTAINS"],
+                allowed_relations={"CONTAINS"},
                 find_sources=False,
                 find_targets=True,
+                required_labels={"Episode"},
                 required_properties={
                     mangle_filterable_property_key(key): value
                     for key, value in property_filter.items()
@@ -655,6 +482,7 @@ class DeclarativeMemory:
             self._expand_episode_node_context(
                 nuclear_episode_node,
                 property_filter=property_filter,
+                retrieval_depth_limit=4,
             )
             for nuclear_episode_node in nuclear_episode_nodes
         ]
@@ -676,7 +504,7 @@ class DeclarativeMemory:
                     nuclear_episode_nodes,
                     episode_node_contexts,
                 ),
-                key=lambda triple: triple[0],
+                key=lambda pair: pair[0],
                 reverse=True,
             )
         ]
@@ -716,11 +544,11 @@ class DeclarativeMemory:
         for _ in range(1, retrieval_depth_limit + 1):
             get_new_frontier_tasks = [
                 self._vector_graph_store.search_related_nodes(
-                    collection="Episode",
                     node_uuid=frontier_node.uuid,
                     find_sources=True,
                     find_targets=True,
                     limit=10,
+                    required_labels={"Episode"},
                     required_properties={
                         mangle_filterable_property_key(key): value
                         for key, value in property_filter.items()
@@ -863,7 +691,7 @@ class DeclarativeMemory:
         and data derived from them.
         """
         matching_episode_nodes = await self._vector_graph_store.search_matching_nodes(
-            collection="Episode",
+            required_labels={"Episode"},
             required_properties={
                 mangle_filterable_property_key(key): value
                 for key, value in property_filter.items()
@@ -872,9 +700,9 @@ class DeclarativeMemory:
 
         search_related_episode_cluster_nodes_tasks = [
             self._vector_graph_store.search_related_nodes(
-                collection="EpisodeCluster",
                 node_uuid=episode_node.uuid,
-                allowed_relations=["CONTAINS"],
+                allowed_relations={"CONTAINS"},
+                required_labels={"EpisodeCluster"},
                 find_sources=True,
                 find_targets=False,
             )
@@ -896,9 +724,9 @@ class DeclarativeMemory:
 
         search_related_derivative_nodes_tasks = [
             self._vector_graph_store.search_related_nodes(
-                collection="Derivative",
                 node_uuid=episode_cluster_node.uuid,
-                allowed_relations=["DERIVED_FROM"],
+                allowed_relations={"DERIVED_FROM"},
+                required_labels={"Derivative"},
                 find_sources=True,
                 find_targets=False,
             )

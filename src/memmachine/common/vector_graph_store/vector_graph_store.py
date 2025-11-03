@@ -60,8 +60,8 @@ class VectorGraphStore(ABC):
     async def search_similar_nodes(
         self,
         collection: str,
-        query_embedding: list[float],
         embedding_property_name: str,
+        query_embedding: list[float],
         similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
         limit: int | None = 100,
         required_properties: Mapping[str, Property] | None = None,
@@ -73,11 +73,11 @@ class VectorGraphStore(ABC):
         Args:
             collection (str):
                 Collection that the nodes belong to.
-            query_embedding (list[float]):
-                The embedding vector to compare against.
             embedding_property_name (str):
                 The name of the property
                 that stores the embedding vector.
+            query_embedding (list[float]):
+                The embedding vector to compare against.
             similarity_metric (SimilarityMetric, optional):
                 The similarity metric to use
                 (default: SimilarityMetric.COSINE).
