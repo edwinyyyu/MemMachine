@@ -65,7 +65,7 @@ class Edge:
 def mangle_property_name(property_name: str) -> str:
     """
     Mangle the property name
-    to avoid conflicts with field names.
+    to avoid conflicts with other names.
 
     Args:
         property_name (str):
@@ -99,10 +99,56 @@ def is_mangled_property_name(candidate_name: str) -> bool:
 
     Args:
         candidate_name (str):
-            The candidate property name.
+            The candidate name.
 
     Returns:
         bool:
             Whether the candidate name is a mangled property name.
     """
     return candidate_name.startswith("property_")
+
+
+def mangle_embedding_name(embedding_name: str) -> str:
+    """
+    Mangle the embedding name
+    to avoid conflicts with other names.
+
+    Args:
+        embedding_name (str):
+            The original embedding name.
+
+    Returns:
+        str: The mangled embedding name.
+    """
+    return f"embedding_{embedding_name}"
+
+
+def demangle_embedding_name(mangled_embedding_name: str) -> str:
+    """
+    Demangle the embedding name
+    to retrieve the original embedding name.
+
+    Args:
+        mangled_embedding_name (str):
+            The mangled embedding name.
+
+    Returns:
+        str: The original embedding name.
+    """
+    return mangled_embedding_name.removeprefix("embedding_")
+
+
+def is_mangled_embedding_name(candidate_name: str) -> bool:
+    """
+    Check if the candidate name
+    is a mangled embedding name.
+
+    Args:
+        candidate_name (str):
+            The candidate name.
+
+    Returns:
+        bool:
+            Whether the candidate name is a mangled embedding name.
+    """
+    return candidate_name.startswith("embedding_")

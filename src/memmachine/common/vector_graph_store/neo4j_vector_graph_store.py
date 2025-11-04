@@ -26,8 +26,11 @@ from .data_types import (
     Node,
     OrderedPropertyValue,
     PropertyValue,
+    demangle_embedding_name,
     demangle_property_name,
+    is_mangled_embedding_name,
     is_mangled_property_name,
+    mangle_embedding_name,
     mangle_property_name,
 )
 from .vector_graph_store import VectorGraphStore
@@ -45,14 +48,34 @@ class Neo4jVectorGraphStoreParams(BaseModel):
         max_concurrent_transactions (int):
             Maximum number of concurrent transactions
             (default: 100).
-        exact_similarity_search (bool):
-            Whether to use exact similarity search
+        force_exact_similarity_search (bool):
+            Whether to force exact similarity search
             (default: False).
+        filtered_similarity_search_fudge_factor (int):
+            Fudge factor for filtered similarity search
+            because Neo4j vector index search does not
+            support pre-filtering or filtered search.
+            (default: 4).
+        exact_similarity_search_fallback_threshold (float):
+            Threshold ratio of ANN search results to the search limit
+            below which to fall back to exact similarity search
+            when performing filtered similarity search
+            (default: 0.5).
         range_index_hierarchies (list[list[str]]):
             List of property name hierarchies (lists)
             for which to create range indexes
             applied to all nodes and edges
             (default: []).
+        range_index_creation_threshold (int):
+            Threshold number of entities
+            in a collection or having a relation
+            at which range indexes may be created
+            (default: 10,000).
+        vector_index_creation_threshold (int):
+            Threshold number of entities
+            in a collection or having a relation
+            at which vector indexes may be created
+            (default: 10,000).
     """
 
     driver: InstanceOf[AsyncDriver] = Field(
@@ -61,8 +84,26 @@ class Neo4jVectorGraphStoreParams(BaseModel):
     max_concurrent_transactions: int = Field(
         100, description="Maximum number of concurrent transactions", gt=0
     )
-    exact_similarity_search: bool = Field(
-        False, description="Whether to use exact similarity search"
+    force_exact_similarity_search: bool = Field(
+        False, description="Whether to force exact similarity search"
+    )
+    filtered_similarity_search_fudge_factor: int = Field(
+        4,
+        description=(
+            "Fudge factor for filtered similarity search "
+            "because Neo4j vector index search does not "
+            "support pre-filtering or filtered search"
+        ),
+        gt=0,
+    )
+    exact_similarity_search_fallback_threshold: float = Field(
+        0.5,
+        description=(
+            "Threshold ratio of ANN search results to the search limit "
+            "below which to fall back to exact similarity search "
+            "when performing filtered similarity search"
+        ),
+        gt=0.0,
     )
     range_index_hierarchies: list[list[str]] = Field(
         default_factory=list,
@@ -70,6 +111,22 @@ class Neo4jVectorGraphStoreParams(BaseModel):
             "List of property name hierarchies "
             "for which to create range indexes "
             "applied to all nodes and edges"
+        ),
+    )
+    range_index_creation_threshold: int = Field(
+        10_000,
+        description=(
+            "Threshold number of entities "
+            "in a collection or having a relation "
+            "at which range indexes may be created"
+        ),
+    )
+    vector_index_creation_threshold: int = Field(
+        10_000,
+        description=(
+            "Threshold number of entities "
+            "in a collection or having a relation "
+            "at which vector indexes may be created"
         ),
     )
 
@@ -96,25 +153,32 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         self._driver = params.driver
 
         self._semaphore = asyncio.Semaphore(params.max_concurrent_transactions)
-        self._exact_similarity_search = params.exact_similarity_search
+        self._force_exact_similarity_search = params.force_exact_similarity_search
+        self._filtered_similarity_search_fudge_factor = (
+            params.filtered_similarity_search_fudge_factor
+        )
+        self._exact_similarity_search_fallback_threshold = (
+            params.exact_similarity_search_fallback_threshold
+        )
         self._range_index_hierarchies = params.range_index_hierarchies
+        self._range_index_creation_threshold = params.range_index_creation_threshold
 
         self._index_name_cache: set[str] = set()
         self._collection_node_counts: dict[str, int] = {}
         self._relation_edge_counts: dict[str, int] = {}
-        self._initial_index_creation_threshold = 10_000
 
     async def add_nodes(self, collection: str, nodes: Iterable[Node]):
         nodes = list(nodes)
 
         if collection not in self._collection_node_counts.keys():
+            # Not async-safe but it's not crucial if the count is off.
             self._collection_node_counts[collection] = await self._count_nodes(
                 collection
             )
 
         if (
             self._collection_node_counts[collection]
-            >= self._initial_index_creation_threshold
+            >= self._range_index_creation_threshold
         ):
             await self._create_initial_indexes_if_not_exist(
                 EntityType.NODE,
@@ -136,6 +200,10 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                                 mangle_property_name(key): value
                                 for key, value in node.properties.items()
                             }
+                            | {
+                                mangle_embedding_name(key): value
+                                for key, value in node.embeddings.items()
+                            }
                         ),
                     }
                     for node in nodes
@@ -154,11 +222,12 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         edges = list(edges)
 
         if relation not in self._relation_edge_counts.keys():
+            # Not async-safe but it's not crucial if the count is off.
             self._relation_edge_counts[relation] = await self._count_edges(relation)
 
         if (
             self._relation_edge_counts[relation]
-            >= self._initial_index_creation_threshold
+            >= self._range_index_creation_threshold
         ):
             await self._create_initial_indexes_if_not_exist(
                 EntityType.EDGE,
@@ -192,6 +261,10 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                                 mangle_property_name(key): value
                                 for key, value in edge.properties.items()
                             }
+                            | {
+                                mangle_embedding_name(key): value
+                                for key, value in edge.embeddings.items()
+                            }
                         ),
                     }
                     for edge in edges
@@ -216,7 +289,72 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             mangle_property_name(embedding_property_name)
         )
 
-        if self._exact_similarity_search:
+        do_exact_similarity_search = self._force_exact_similarity_search
+
+        if not do_exact_similarity_search:
+            if collection not in self._collection_node_counts.keys():
+                # Not async-safe but it's not crucial if the count is off.
+                self._collection_node_counts[collection] = await self._count_nodes(
+                    collection
+                )
+
+            if (
+                self._collection_node_counts[collection]
+                >= self._vector_index_creation_threshold
+            ):
+                await self._create_vector_index_if_not_exists(
+                    entity_type=EntityType.NODE,
+                    sanitized_collection_or_relation=Neo4jVectorGraphStore._sanitize_name(
+                        collection
+                    ),
+                    sanitized_embedding_property_name=Neo4jVectorGraphStore._sanitize_name(
+                        mangle_property_name(embedding_property_name)
+                    ),
+                    dimensions=len(query_embedding),
+                    similarity_metric=similarity_metric,
+                )
+
+            vector_index_name = Neo4jVectorGraphStore._index_name(
+                EntityType.NODE,
+                sanitized_collection,
+                sanitized_embedding_property_name,
+            )
+
+            # ANN search requires a finite limit.
+            if limit is None:
+                limit = 1000
+
+            query = (
+                "CALL db.index.vector.queryNodes(\n"
+                f"    $vector_index_name, $limit, $query_embedding\n"
+                ")\n"
+                "YIELD node AS n, score AS similarity\n"
+                f"WHERE {
+                    Neo4jVectorGraphStore._format_required_properties(
+                        'n', required_properties, include_missing_properties
+                    )
+                }\n"
+                "RETURN n"
+            )
+
+            async with self._semaphore:
+                records, _, _ = await self._driver.execute_query(
+                    query,
+                    query_embedding=query_embedding,
+                    limit=limit if not required_properties else limit * self._filtered_similarity_search_fudge_factor,
+                    required_properties=Neo4jVectorGraphStore._sanitize_properties(
+                        {
+                            mangle_property_name(key): value
+                            for key, value in required_properties.items()
+                        }
+                    ),
+                    vector_index_name=vector_index_name,
+                )
+
+            if required_properties and len(records) < limit * self._exact_similarity_search_fallback_threshold:
+                do_exact_similarity_search = True
+
+        if do_exact_similarity_search:
             match similarity_metric:
                 case SimilarityMetric.COSINE:
                     vector_similarity_function = "vector.similarity.cosine"
@@ -255,57 +393,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                     ),
                 )
 
-        else:
-            vector_index_name = Neo4jVectorGraphStore._index_name(
-                EntityType.NODE,
-                sanitized_collection,
-                sanitized_embedding_property_name,
-            )
-
-            await self._create_vector_index_if_not_exists(
-                entity_type=EntityType.NODE,
-                sanitized_collection_or_relation=Neo4jVectorGraphStore._sanitize_name(
-                    collection
-                ),
-                sanitized_embedding_property_name=Neo4jVectorGraphStore._sanitize_name(
-                    mangle_property_name(embedding_property_name)
-                ),
-                dimensions=len(query_embedding),
-                similarity_metric=similarity_metric,
-            )
-
-            # ANN search requires a finite limit.
-            if limit is None:
-                limit = 100_000
-
-            query = (
-                "CALL db.index.vector.queryNodes(\n"
-                f"    $vector_index_name, $limit, $query_embedding\n"
-                ")\n"
-                "YIELD node AS n, score AS similarity\n"
-                f"WHERE {
-                    Neo4jVectorGraphStore._format_required_properties(
-                        'n', required_properties, include_missing_properties
-                    )
-                }\n"
-                "RETURN n"
-            )
-
-            async with self._semaphore:
-                records, _, _ = await self._driver.execute_query(
-                    query,
-                    query_embedding=query_embedding,
-                    limit=limit,
-                    required_properties=Neo4jVectorGraphStore._sanitize_properties(
-                        {
-                            mangle_property_name(key): value
-                            for key, value in required_properties.items()
-                        }
-                    ),
-                    vector_index_name=vector_index_name,
-                )
-
-        similar_neo4j_nodes = [record["n"] for record in records]
+        similar_neo4j_nodes = [record["n"] for record in records[:limit]]
         return Neo4jVectorGraphStore._nodes_from_neo4j_nodes(similar_neo4j_nodes)
 
     async def search_related_nodes(
@@ -956,6 +1044,13 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                     ): Neo4jVectorGraphStore._python_value_from_neo4j_value(value)
                     for key, value in neo4j_node.items()
                     if is_mangled_property_name(key)
+                },
+                embeddings={
+                    demangle_embedding_name(
+                        Neo4jVectorGraphStore._desanitize_name(key)
+                    ): Neo4jVectorGraphStore._python_value_from_neo4j_value(value)
+                    for key, value in neo4j_node.items()
+                    if is_mangled_embedding_name(key)
                 },
             )
             for neo4j_node in neo4j_nodes
