@@ -42,9 +42,6 @@ class Neo4jVectorGraphStoreParams(BaseModel):
     Attributes:
         driver (neo4j.AsyncDriver):
             Async Neo4j driver instance.
-        indexed_properties_hierarchy (list[str]):
-            List of properties to be indexed hierarchically for search performance.
-            (default: []).
         max_concurrent_transactions (int):
             Maximum number of concurrent transactions
             (default: 100).
@@ -60,12 +57,6 @@ class Neo4jVectorGraphStoreParams(BaseModel):
 
     driver: InstanceOf[AsyncDriver] = Field(
         ..., description="Async Neo4j driver instance"
-    )
-    indexed_properties_hierarchy: list[str] = Field(
-        default_factory=list,
-        description=(
-            "List of properties to be indexed hierarchically for search performance",
-        ),
     )
     max_concurrent_transactions: int = Field(
         100, description="Maximum number of concurrent transactions", gt=0
