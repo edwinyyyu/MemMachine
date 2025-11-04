@@ -11,7 +11,7 @@ from uuid import UUID
 
 from memmachine.common.embedder import SimilarityMetric
 
-from .data_types import Edge, Node, PropertyValue, OrderedPropertyValue
+from .data_types import Edge, Node, OrderedPropertyValue, PropertyValue
 
 
 class VectorGraphStore(ABC):

@@ -1,4 +1,4 @@
-from .data_types import Edge, Node, PropertyValue, OrderedPropertyValue
+from .data_types import Edge, Node, OrderedPropertyValue, PropertyValue
 from .vector_graph_store import VectorGraphStore
 from .vector_graph_store_builder import VectorGraphStoreBuilder
 

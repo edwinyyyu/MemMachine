@@ -11,7 +11,7 @@ from collections.abc import Iterable, Mapping
 from datetime import datetime
 from string import Template
 from typing import cast
-from uuid import uuid4, uuid7, UUID
+from uuid import UUID, uuid4, uuid7
 
 from nltk import sent_tokenize
 from pydantic import BaseModel, Field, InstanceOf
@@ -333,10 +333,14 @@ class DeclarativeMemory:
         """
         match chunk.content_type:
             case ContentType.MESSAGE:
-                message_content = DeclarativeMemory._apply_string_template(
-                    self._message_prefix_template, chunk
-                ) + chunk.content + DeclarativeMemory._apply_string_template(
-                    self._message_suffix_template, chunk
+                message_content = (
+                    DeclarativeMemory._apply_string_template(
+                        self._message_prefix_template, chunk
+                    )
+                    + chunk.content
+                    + DeclarativeMemory._apply_string_template(
+                        self._message_suffix_template, chunk
+                    )
                 )
 
                 return [
@@ -513,13 +517,17 @@ class DeclarativeMemory:
             },
         )
 
-        context = [
-            DeclarativeMemory._chunk_from_chunk_node(chunk_node)
-            for chunk_node in reversed(previous_chunk_nodes)
-        ] + [nuclear_chunk] + [
-            DeclarativeMemory._chunk_from_chunk_node(chunk_node)
-            for chunk_node in next_chunk_nodes
-        ]
+        context = (
+            [
+                DeclarativeMemory._chunk_from_chunk_node(chunk_node)
+                for chunk_node in reversed(previous_chunk_nodes)
+            ]
+            + [nuclear_chunk]
+            + [
+                DeclarativeMemory._chunk_from_chunk_node(chunk_node)
+                for chunk_node in next_chunk_nodes
+            ]
+        )
 
         return context
 
@@ -543,9 +551,12 @@ class DeclarativeMemory:
                                 self._message_prefix_template, chunk
                             )
                         elif chunk.episode_uuid != previous_chunk.episode_uuid:
-                            context_content += DeclarativeMemory._apply_string_template(
-                                self._message_suffix_template, previous_chunk
-                            ) + "\n"
+                            context_content += (
+                                DeclarativeMemory._apply_string_template(
+                                    self._message_suffix_template, previous_chunk
+                                )
+                                + "\n"
+                            )
                             context_content += DeclarativeMemory._apply_string_template(
                                 self._message_prefix_template, chunk
                             )
@@ -569,9 +580,7 @@ class DeclarativeMemory:
 
             context_contents.append(context_content)
 
-        chunk_context_scores = await self._reranker.score(
-            query, context_contents
-        )
+        chunk_context_scores = await self._reranker.score(query, context_contents)
 
         return chunk_context_scores
 
