@@ -100,12 +100,21 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         self._range_index_hierarchies = params.range_index_hierarchies
 
         self._index_name_cache: set[str] = set()
+        self._collection_node_counts: dict[str, int] = {}
+        self._relation_edge_counts: dict[str, int] = {}
+        self._initial_index_creation_threshold = 10_000
 
     async def add_nodes(self, collection: str, nodes: Iterable[Node]):
-        await self._create_initial_indexes_if_not_exist(
-            EntityType.NODE,
-            [collection],
-        )
+        nodes = list(nodes)
+
+        if collection not in self._collection_node_counts.keys():
+            self._collection_node_counts[collection] = await self._count_nodes(collection)
+
+        if self._collection_node_counts[collection] >= self._initial_index_creation_threshold:
+            await self._create_initial_indexes_if_not_exist(
+                EntityType.NODE,
+                [collection],
+            )
 
         sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
 
@@ -128,6 +137,8 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 ],
             )
 
+        self._collection_node_counts[collection] += len(nodes)
+
     async def add_edges(
         self,
         relation: str,
@@ -135,10 +146,16 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         target_collection: str,
         edges: Iterable[Edge],
     ):
-        await self._create_initial_indexes_if_not_exist(
-            EntityType.EDGE,
-            [relation],
-        )
+        edges = list(edges)
+
+        if relation not in self._relation_edge_counts.keys():
+            self._relation_edge_counts[relation] = await self._count_edges(relation)
+
+        if self._relation_edge_counts[relation] >= self._initial_index_creation_threshold:
+            await self._create_initial_indexes_if_not_exist(
+                EntityType.EDGE,
+                [relation],
+            )
 
         sanitized_relation = Neo4jVectorGraphStore._sanitize_name(relation)
         sanitized_source_collection = Neo4jVectorGraphStore._sanitize_name(
@@ -485,6 +502,33 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
     async def close(self):
         await self._driver.close()
+
+    async def _count_nodes(self, collection: str) -> int:
+        """
+        Count the number of nodes in a collection.
+        """
+        sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
+
+        async with self._semaphore:
+            records, _, _ = await self._driver.execute_query(
+                f"MATCH (n:{sanitized_collection})\nRETURN count(n) AS node_count"
+            )
+
+        return records[0]["node_count"]
+
+    async def _count_edges(self, relation: str) -> int:
+        """
+        Count the number of edges having a relation type.
+        """
+        sanitized_relation = Neo4jVectorGraphStore._sanitize_name(relation)
+
+        async with self._semaphore:
+            records, _, _ = await self._driver.execute_query(
+                f"MATCH ()-[r:{sanitized_relation}]->()\n"
+                "RETURN count(r) AS relationship_count"
+            )
+
+        return records[0]["relationship_count"]
 
     async def _populate_index_name_cache(self):
         """
