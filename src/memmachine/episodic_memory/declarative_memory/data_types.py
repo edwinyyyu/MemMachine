@@ -61,6 +61,9 @@ class Derivative:
     uuid: UUID
     content_type: ContentType
     content: Any
+    filterable_properties: dict[str, FilterablePropertyValue] = field(
+        default_factory=dict
+    )
 
     def __eq__(self, other):
         if not isinstance(other, Derivative):

@@ -7,7 +7,6 @@ and deleting nodes and edges.
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
-from typing import Any
 from uuid import UUID
 
 from memmachine.common.embedder import SimilarityMetric

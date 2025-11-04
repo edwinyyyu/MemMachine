@@ -96,7 +96,8 @@ class DeclarativeMemory:
         self._contains_relation = "CONTAINS"
         self._derived_from_relation = "DERIVED_FROM"
 
-        self._message_metadata_template = Template("[$timestamp] $source: $content")
+        self._message_prefix_template = Template("[$timestamp] $source:\n")
+        self._message_suffix_template = Template("")
         self._temporal_context: deque[Chunk] | None = None
 
     async def add_episodes(
@@ -332,23 +333,10 @@ class DeclarativeMemory:
         """
         match chunk.content_type:
             case ContentType.MESSAGE:
-                message_content = self._message_metadata_template.safe_substitute(
-                    {
-                        "timestamp": chunk.timestamp,
-                        "source": chunk.source,
-                        "content": chunk.content,
-                    },
-                    **{
-                        key: value
-                        for key, value in {
-                            **chunk.filterable_properties,
-                            **(
-                                chunk.user_metadata
-                                if isinstance(chunk.user_metadata, dict)
-                                else {}
-                            ),
-                        }.items()
-                    },
+                message_content = DeclarativeMemory._apply_string_template(
+                    self._message_prefix_template, chunk
+                ) + chunk.content + DeclarativeMemory._apply_string_template(
+                    self._message_suffix_template, chunk
                 )
 
                 return [
@@ -356,6 +344,7 @@ class DeclarativeMemory:
                         uuid=uuid4(),
                         content_type=ContentType.MESSAGE,
                         content=message_content,
+                        filterable_properties=chunk.filterable_properties,
                     ),
                 ]
             case ContentType.TEXT:
@@ -365,6 +354,7 @@ class DeclarativeMemory:
                         uuid=uuid4(),
                         content_type=ContentType.TEXT,
                         content=text_content,
+                        filterable_properties=chunk.filterable_properties,
                     )
                 ]
             case _:
@@ -459,7 +449,7 @@ class DeclarativeMemory:
 
         chunk_contexts = await asyncio.gather(*contextualize_chunk_tasks)
 
-        # Rerank expanded contexts.
+        # Rerank chunk contexts.
         chunk_context_scores = await self._score_chunk_contexts(query, chunk_contexts)
 
         reranked_anchored_chunk_contexts = [
@@ -475,21 +465,12 @@ class DeclarativeMemory:
             )
         ]
 
-        # Unify contexts.
+        # Unify chunk contexts.
         unified_chunk_context = DeclarativeMemory._unify_anchored_chunk_contexts(
             reranked_anchored_chunk_contexts,
             max_num_chunks=max_num_chunks,
         )
-
-        # Return chunks in chronological order.
-        return sorted(
-            unified_chunk_context,
-            key=lambda chunk: (
-                chunk.timestamp,
-                chunk.episode_uuid,
-                chunk.uuid,
-            ),
-        )
+        return unified_chunk_context
 
     async def _contextualize_chunk(
         self,
@@ -497,9 +478,7 @@ class DeclarativeMemory:
         max_backward_chunks: int = 1,
         max_forward_chunks: int = 2,
         property_filter: dict[str, FilterablePropertyValue] = {},
-    ) -> set[Chunk]:
-        context = {nuclear_chunk}
-
+    ) -> list[Chunk]:
         previous_chunk_nodes = await self._vector_graph_store.search_directional_nodes(
             collection=self._chunk_collection,
             by_properties=("timestamp", "episode_uuid", "uuid"),
@@ -508,6 +487,7 @@ class DeclarativeMemory:
                 nuclear_chunk.episode_uuid,
                 nuclear_chunk.uuid,
             ),
+            order_ascending=(False, False, False),
             include_equal_start=False,
             limit=max_backward_chunks,
             order_ascending=False,
@@ -525,6 +505,7 @@ class DeclarativeMemory:
                 nuclear_chunk.episode_uuid,
                 nuclear_chunk.uuid,
             ),
+            order_ascending=(True, True, True),
             include_equal_start_at_value=False,
             limit=max_forward_chunks,
             order_ascending=True,
@@ -534,121 +515,124 @@ class DeclarativeMemory:
             },
         )
 
-        context.update(
+        context = [
             DeclarativeMemory._chunk_from_chunk_node(chunk_node)
-            for chunk_node in previous_chunk_nodes + next_chunk_nodes
-        )
+            for chunk_node in reversed(previous_chunk_nodes)
+        ] + [nuclear_chunk] + [
+            DeclarativeMemory._chunk_from_chunk_node(chunk_node)
+            for chunk_node in next_chunk_nodes
+        ]
+
         return context
 
     async def _score_chunk_contexts(
-        self, query: str, chunk_contexts: Iterable[set[Chunk]]
+        self, query: str, chunk_contexts: Iterable[Iterable[Chunk]]
     ) -> list[float]:
         """
         Score chunk node contexts
         based on their relevance to the query.
         """
-        contexts_episodes = [
-            DeclarativeMemory._episodes_from_episode_nodes(list(episode_node_context))
-            for episode_node_context in episode_node_contexts
-        ]
+        context_contents = []
+        for chunk_context in chunk_contexts:
+            context_content = ""
 
-        def get_formatted_episode_content(episode: Episode) -> str:
-            # Format episode content for reranker using metadata.
-            return self._episode_metadata_template.safe_substitute(
-                {
-                    "episode_type": episode.episode_type,
-                    "content_type": episode.content_type.value,
-                    "content": episode.content,
-                    "timestamp": episode.timestamp,
-                    "filterable_properties": (episode.filterable_properties),
-                    "user_metadata": episode.user_metadata,
-                },
-                **{
-                    key: value
-                    for key, value in {
-                        **episode.filterable_properties,
-                        **(
-                            episode.user_metadata
-                            if isinstance(episode.user_metadata, dict)
-                            else {}
-                        ),
-                    }.items()
-                },
-            )
+            previous_chunk = None
+            for chunk in chunk_context:
+                match chunk.content_type:
+                    case ContentType.MESSAGE:
+                        if previous_chunk is None:
+                            context_content += DeclarativeMemory._apply_string_template(
+                                self._message_prefix_template, chunk
+                            )
+                        elif chunk.episode_uuid != previous_chunk.episode_uuid:
+                            context_content += DeclarativeMemory._apply_string_template(
+                                self._message_suffix_template, previous_chunk
+                            ) + "\n"
+                            context_content += DeclarativeMemory._apply_string_template(
+                                self._message_prefix_template, chunk
+                            )
 
-        contexts_content = [
-            "\n".join(
-                [
-                    get_formatted_episode_content(context_episode)
-                    for context_episode in sorted(
-                        context_episodes,
-                        key=lambda episode: episode.timestamp,
-                    )
-                    if context_episode.content_type == ContentType.STRING
-                ]
-            )
-            for context_episodes in contexts_episodes
-        ]
+                        context_content += chunk.content + "\n"
+                    case ContentType.TEXT:
+                        context_content += chunk.content + "\n"
+                    case _:
+                        pass
 
-        episode_node_context_scores = await self._reranker.score(
-            query, contexts_content
+                previous_chunk = chunk
+
+            if previous_chunk is not None:
+                match previous_chunk.content_type:
+                    case ContentType.MESSAGE:
+                        context_content += DeclarativeMemory._apply_string_template(
+                            self._message_suffix_template, previous_chunk
+                        )
+                    case _:
+                        pass
+
+            context_contents.append(context_content)
+
+        chunk_context_scores = await self._reranker.score(
+            query, context_contents
         )
 
-        return episode_node_context_scores
+        return chunk_context_scores
 
     @staticmethod
-    def _unify_anchored_episode_node_contexts(
-        anchored_episode_node_contexts: list[tuple[Node, set[Node]]],
-        num_episodes_limit: int,
-    ) -> set[Node]:
+    def _unify_anchored_chunk_contexts(
+        anchored_chunk_contexts: Iterable[tuple[Node, Iterable[Chunk]]],
+        max_num_chunks: int,
+    ) -> list[Node]:
         """
-        Unify episode node contexts
-        anchored on their nuclear episode nodes
-        into a single set of episode nodes,
-        respecting the episode limit.
+        Unify chunk contexts
+        anchored on their nuclear chunks
+        into a single list of chunks,
+        respecting the chunk limit.
         """
-        unified_episode_node_context: set[Node] = set()
+        chunk_set: set[Node] = set()
 
-        for nucleus, context in anchored_episode_node_contexts:
-            if (len(unified_episode_node_context) + len(context)) <= num_episodes_limit:
+        for nuclear_chunk, context in anchored_chunk_contexts:
+            if len(chunk_set) >= max_num_chunks:
+                break
+            elif (len(chunk_set) + len(context)) <= max_num_chunks:
                 # It is impossible that the context exceeds the limit.
-                unified_episode_node_context.update(context)
+                chunk_set.update(context)
             else:
                 # It is possible that the context exceeds the limit.
-                # Prioritize episodes near the nucleus.
+                # Prioritize chunks near the nuclear chunk.
+                context = list(context)
 
-                # Sort context episodes by timestamp.
-                chronological_context = sorted(
-                    context,
-                    key=lambda node: cast(
-                        datetime,
-                        node.properties.get("timestamp", datetime.min),
-                    ),
-                )
+                # Sort chronological chunks by weighted index-proximity to the nuclear chunk.
+                nuclear_index = context.index(nuclear_chunk)
 
-                # Sort chronological episodes by index-proximity to nucleus.
-                nucleus_index = chronological_context.index(nucleus)
+                def weighted_index_proximity(chunk: Chunk) -> float:
+                    proximity = context.index(chunk) - nuclear_index
+                    if proximity >= 0:
+                        return proximity / 2
+                    else:
+                        return -proximity
+
                 nuclear_context = sorted(
-                    chronological_context,
-                    key=lambda node: abs(
-                        chronological_context.index(node) - nucleus_index
-                    ),
+                    context,
+                    key=weighted_index_proximity,
                 )
 
-                # Add episodes to unified context until limit is reached,
+                # Add chunks to unified context until limit is reached,
                 # or until the context is exhausted.
-                for episode_node in nuclear_context:
-                    if len(unified_episode_node_context) >= num_episodes_limit:
-                        return unified_episode_node_context
-                    unified_episode_node_context.add(episode_node)
+                for chunk in nuclear_context:
+                    if len(chunk_set) >= max_num_chunks:
+                        break
+                    chunk_set.add(chunk)
 
-        return unified_episode_node_context
+        unified_chunk_context = sorted(
+            chunk_set,
+            key=lambda chunk: (
+                chunk.timestamp,
+                chunk.episode_uuid,
+                chunk.uuid,
+            ),
+        )
 
-    async def forget_all(self):
-        """
-        Forget all episodes and data derived from them.
-        """
-        await self._vector_graph_store.clear_data()
+        return unified_chunk_context
 
     async def forget_filtered_episodes(
         self,
@@ -720,6 +704,30 @@ class DeclarativeMemory:
 
         node_uuids_to_delete = episode_uuids + episode_cluster_uuids + derivative_uuids
         await self._vector_graph_store.delete_nodes(node_uuids_to_delete)
+
+    @staticmethod
+    def _apply_string_template(template: Template, data: Episode | Chunk) -> str:
+        if isinstance(data, Episode) or isinstance(data, Chunk):
+            return template.safe_substitute(
+                {
+                    "timestamp": data.timestamp,
+                    "source": data.source,
+                    "content": data.content,
+                },
+                **{
+                    key: value
+                    for key, value in {
+                        **data.filterable_properties,
+                        **(
+                            data.user_metadata
+                            if isinstance(data.user_metadata, dict)
+                            else {}
+                        ),
+                    }.items()
+                },
+            )
+        else:
+            raise TypeError("Data must be an Episode or Chunk")
 
     @staticmethod
     def _chunk_from_chunk_node(chunk_node: Node) -> Chunk:
