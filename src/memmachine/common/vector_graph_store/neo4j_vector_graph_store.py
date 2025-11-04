@@ -108,9 +108,14 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         nodes = list(nodes)
 
         if collection not in self._collection_node_counts.keys():
-            self._collection_node_counts[collection] = await self._count_nodes(collection)
+            self._collection_node_counts[collection] = await self._count_nodes(
+                collection
+            )
 
-        if self._collection_node_counts[collection] >= self._initial_index_creation_threshold:
+        if (
+            self._collection_node_counts[collection]
+            >= self._initial_index_creation_threshold
+        ):
             await self._create_initial_indexes_if_not_exist(
                 EntityType.NODE,
                 [collection],
@@ -151,7 +156,10 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         if relation not in self._relation_edge_counts.keys():
             self._relation_edge_counts[relation] = await self._count_edges(relation)
 
-        if self._relation_edge_counts[relation] >= self._initial_index_creation_threshold:
+        if (
+            self._relation_edge_counts[relation]
+            >= self._initial_index_creation_threshold
+        ):
             await self._create_initial_indexes_if_not_exist(
                 EntityType.EDGE,
                 [relation],
