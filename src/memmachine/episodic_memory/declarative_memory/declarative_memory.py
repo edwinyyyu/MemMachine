@@ -490,7 +490,6 @@ class DeclarativeMemory:
             order_ascending=(False, False, False),
             include_equal_start=False,
             limit=max_backward_chunks,
-            order_ascending=False,
             required_properties={
                 mangle_filterable_property_key(key): value
                 for key, value in property_filter.items()
@@ -508,7 +507,6 @@ class DeclarativeMemory:
             order_ascending=(True, True, True),
             include_equal_start_at_value=False,
             limit=max_forward_chunks,
-            order_ascending=True,
             required_properties={
                 mangle_filterable_property_key(key): value
                 for key, value in property_filter.items()
