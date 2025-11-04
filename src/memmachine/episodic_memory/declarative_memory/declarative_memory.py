@@ -494,7 +494,8 @@ class DeclarativeMemory:
     async def _contextualize_chunk(
         self,
         nuclear_chunk: Chunk,
-        max_num_chunks: int = 1,
+        max_backward_chunks: int = 1,
+        max_forward_chunks: int = 2,
         property_filter: dict[str, FilterablePropertyValue] = {},
     ) -> set[Chunk]:
         context = {nuclear_chunk}
@@ -508,6 +509,7 @@ class DeclarativeMemory:
                 nuclear_chunk.uuid,
             ),
             include_equal_start=False,
+            limit=max_backward_chunks,
             order_ascending=False,
             required_properties={
                 mangle_filterable_property_key(key): value
@@ -524,6 +526,7 @@ class DeclarativeMemory:
                 nuclear_chunk.uuid,
             ),
             include_equal_start_at_value=False,
+            limit=max_forward_chunks,
             order_ascending=True,
             required_properties={
                 mangle_filterable_property_key(key): value
@@ -531,6 +534,10 @@ class DeclarativeMemory:
             },
         )
 
+        context.update(
+            DeclarativeMemory._chunk_from_chunk_node(chunk_node)
+            for chunk_node in previous_chunk_nodes + next_chunk_nodes
+        )
         return context
 
     async def _score_chunk_contexts(
