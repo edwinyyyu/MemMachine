@@ -22,6 +22,8 @@ PropertyValue = (
     | None
 )
 
+OrderedPropertyValue = int | float | str | datetime
+
 
 class EntityType(Enum):
     NODE = "node"
@@ -31,8 +33,8 @@ class EntityType(Enum):
 @dataclass(kw_only=True)
 class Node:
     uuid: UUID
-    data_properties: dict[str, PropertyValue] = field(default_factory=dict)
-    embedding_properties: dict[str, list[float]] = field(default_factory=dict)
+    properties: dict[str, PropertyValue] = field(default_factory=dict)
+    embeddings: dict[str, list[float]] = field(default_factory=dict)
 
     def __eq__(self, other):
         if not isinstance(other, Node):
@@ -48,8 +50,8 @@ class Edge:
     uuid: UUID
     source_uuid: UUID
     target_uuid: UUID
-    data_properties: dict[str, PropertyValue] = field(default_factory=dict)
-    embedding_properties: dict[str, list[float]] = field(default_factory=dict)
+    properties: dict[str, PropertyValue] = field(default_factory=dict)
+    embeddings: dict[str, list[float]] = field(default_factory=dict)
 
     def __eq__(self, other):
         if not isinstance(other, Edge):

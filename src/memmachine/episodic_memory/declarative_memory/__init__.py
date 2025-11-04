@@ -1,8 +1,7 @@
 from .data_types import (
+    Chunk,
     ContentType,
     Episode,
-    Chunk,
-    Sentence,
     FilterablePropertyValue,
     JSONValue,
 )
@@ -13,7 +12,6 @@ __all__ = [
     "ContentType",
     "Episode",
     "Chunk",
-    "Sentence",
     "FilterablePropertyValue",
     "JSONValue",
 ]

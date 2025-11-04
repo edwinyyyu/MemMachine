@@ -24,7 +24,8 @@ from .data_types import (
     Edge,
     EntityType,
     Node,
-    Property,
+    PropertyValue,
+    OrderedPropertyValue,
     demangle_property_name,
     is_mangled_property_name,
     mangle_property_name,
@@ -188,16 +189,16 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         query_embedding: list[float],
         similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
         limit: int | None = 100,
-        required_properties: Mapping[str, Property] | None = None,
+        required_properties: Mapping[str, PropertyValue] | None = None,
         include_missing_properties: bool = False,
     ) -> list[Node]:
+        if required_properties is None:
+            required_properties = {}
+
         sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
         sanitized_embedding_property_name = Neo4jVectorGraphStore._sanitize_name(
             mangle_property_name(embedding_property_name)
         )
-
-        if required_properties is None:
-            required_properties = {}
 
         if self._exact_similarity_search:
             match similarity_metric:
@@ -298,15 +299,15 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         find_sources: bool = True,
         find_targets: bool = True,
         limit: int | None = None,
-        required_edge_properties: Mapping[str, Property] | None = None,
-        required_node_properties: Mapping[str, Property] | None = None,
+        required_edge_properties: Mapping[str, PropertyValue] | None = None,
+        required_node_properties: Mapping[str, PropertyValue] | None = None,
         include_missing_properties: bool = False,
     ) -> list[Node]:
-        if not (find_sources or find_targets):
-            return []
-
         if required_properties is None:
             required_properties = {}
+
+        if not (find_sources or find_targets):
+            return []
 
         sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
 
@@ -349,47 +350,82 @@ class Neo4jVectorGraphStore(VectorGraphStore):
     async def search_directional_nodes(
         self,
         collection: str,
-        by_property: str,
-        start_at_value: Any | None = None,
-        include_equal_start_at_value: bool = False,
-        order_ascending: bool = True,
+        by_properties: Iterable[str],
+        starting_at: Iterable[OrderedPropertyValue | None],
+        order_ascending: Iterable[bool],
+        include_equal_start: bool = False,
         limit: int | None = 1,
-        required_properties: Mapping[str, Property] | None = None,
+        required_properties: Mapping[str, PropertyValue] | None = None,
         include_missing_properties: bool = False,
     ) -> list[Node]:
-        sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
-        sanitized_by_property = Neo4jVectorGraphStore._sanitize_name(
-            mangle_property_name(by_property)
-        )
-
         if required_properties is None:
             required_properties = {}
+
+        by_properties = list(by_properties)
+        starting_at = list(starting_at)
+        order_ascending = list(order_ascending)
+
+        if not (len(by_properties) == len(starting_at) == len(order_ascending)):
+            raise ValueError(
+                "Lengths of "
+                "by_properties, starting_at, and order_ascending "
+                "must be equal."
+            )
+
+        sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
+        sanitized_by_properties = [
+            Neo4jVectorGraphStore._sanitize_name(mangle_property_name(by_property))
+            for by_property in by_properties
+        ]
+
+        query_relational_requirements = " AND ".join(
+            (
+                f"(n.{sanitized_by_property}"
+                + (">=" if order_ascending[index] else "<=")
+                + f"$starting_at[{index}]"
+            )
+            if starting_at[index] is not None
+            else f"(n.{sanitized_by_property} IS NOT NULL)"
+            for index, sanitized_by_property in enumerate(sanitized_by_properties)
+        ) + (
+            (
+                " AND ("
+                + " OR ".join(
+                    f"(n.{sanitized_by_property} <> $starting_at[{index}])"
+                    for index, sanitized_by_property in enumerate(
+                        sanitized_by_properties
+                    )
+                )
+                + ")"
+            )
+            if not include_equal_start
+            else ""
+        )
+
+        query_order_by = (
+            "ORDER BY "
+            + ", ".join(
+                f"n.{sanitized_by_property} {
+                    'ASC' if order_ascending[index] else 'DESC'
+                }"
+                for index, sanitized_by_property in enumerate(sanitized_by_properties)
+            )
+            + "\n"
+        )
 
         async with self._semaphore:
             records, _, _ = await self._driver.execute_query(
                 f"MATCH (n:{sanitized_collection})\n"
-                f"WHERE n.{sanitized_by_property} IS NOT NULL\n"
-                f"{
-                    (
-                        f'AND n.{sanitized_by_property}'
-                        + ('>' if order_ascending else '<')
-                        + ('=' if include_equal_start_at_value else '')
-                        + '$start_at_value'
-                    )
-                    if start_at_value is not None
-                    else ''
-                }\n"
+                f"WHERE {query_relational_requirements}\n"
                 f"AND {
                     Neo4jVectorGraphStore._format_required_properties(
                         'n', required_properties, include_missing_properties
                     )
                 }\n"
                 "RETURN n\n"
-                f"ORDER BY n.{sanitized_by_property} {
-                    'ASC' if order_ascending else 'DESC'
-                }\n"
+                f"{query_order_by}"
                 f"{'LIMIT $limit' if limit is not None else ''}",
-                start_at_value=start_at_value,
+                starting_at=starting_at,
                 limit=limit,
                 required_properties=Neo4jVectorGraphStore._sanitize_properties(
                     {
@@ -408,13 +444,13 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         self,
         collection: str,
         limit: int | None = None,
-        required_properties: Mapping[str, Property] | None = None,
+        required_properties: Mapping[str, PropertyValue] | None = None,
         include_missing_properties: bool = False,
     ) -> list[Node]:
-        sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
-
         if required_properties is None:
             required_properties = {}
+
+        sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
 
         async with self._semaphore:
             records, _, _ = await self._driver.execute_query(
@@ -748,17 +784,17 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
     @staticmethod
     def _sanitize_properties(
-        properties: Mapping[str, Property] | None,
-    ) -> dict[str, Property]:
+        properties: Mapping[str, PropertyValue] | None,
+    ) -> dict[str, PropertyValue]:
         """
         Sanitize property names in a properties mapping for Neo4j.
 
         Args:
-            properties (Mapping[str, Property] | None):
+            properties (Mapping[str, PropertyValue] | None):
                 Mapping of properties or None.
 
         Returns:
-            dict[str, Property]:
+            dict[str, PropertyValue]:
                 Mapping with sanitized property names.
         """
         return (
@@ -773,7 +809,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
     @staticmethod
     def _format_required_properties(
         entity_query_alias: str,
-        required_properties: Mapping[str, Property] | None,
+        required_properties: Mapping[str, PropertyValue] | None,
         include_missing_properties: bool,
     ) -> str:
         """
@@ -783,7 +819,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             entity_query_alias (str):
                 Alias of the node or relationship in the query
                 (e.g., "n", "r").
-            required_properties (Mapping[str, Property] | None):
+            required_properties (Mapping[str, PropertyValue] | None):
                 Mapping of required properties or None.
             include_missing_properties (bool):
                 Whether to include results

@@ -18,6 +18,7 @@ from memmachine.common.reranker.reranker_builder import RerankerBuilder
 from memmachine.common.vector_graph_store.vector_graph_store_builder import (
     VectorGraphStoreBuilder,
 )
+
 """
 Each entry in resource_definitions should look like this:
 ```

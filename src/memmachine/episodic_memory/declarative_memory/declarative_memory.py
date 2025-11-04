@@ -4,28 +4,27 @@ episodic and semantic memory.
 """
 
 import asyncio
-import functools
 import json
 import logging
 from collections import deque
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from string import Template
-from typing import Any, Self, cast
-from uuid import uuid4
+from typing import cast
+from uuid import uuid4, uuid7, UUID
 
-from memmachine.common.data_types import ExternalServiceAPIError
-from memmachine.common.embedder.embedder import Embedder
-from memmachine.common.reranker.reranker import Reranker
-from memmachine.common.vector_graph_store import Edge, Node, VectorGraphStore
 from nltk import sent_tokenize
 from pydantic import BaseModel, Field, InstanceOf
 
+from memmachine.common.embedder.embedder import Embedder
+from memmachine.common.reranker.reranker import Reranker
+from memmachine.common.vector_graph_store import Edge, Node, VectorGraphStore
+
 from .data_types import (
-    ContentType,
-    Episode,
     Chunk,
+    ContentType,
     Derivative,
+    Episode,
     FilterablePropertyValue,
     demangle_filterable_property_key,
     is_mangled_filterable_property_key,
@@ -55,6 +54,7 @@ class DeclarativeMemoryParams(BaseModel):
     max_chunk_length: int = Field(
         1000,
         description="Maximum length of a chunk in characters.",
+        gt=0,
     )
     vector_graph_store: InstanceOf[VectorGraphStore] = Field(
         ...,
@@ -99,13 +99,14 @@ class DeclarativeMemory:
         self._message_metadata_template = Template("[$timestamp] $source: $content")
         self._temporal_context: deque[Chunk] | None = None
 
-
     async def add_episodes(
         self,
         episodes: Iterable[Episode],
     ):
         """
         Add episodes.
+
+        Episodes with the same timestamp are ordered by the uuid field.
 
         Args:
             episodes (Iterable[Episode]): The episodes to add.
@@ -122,7 +123,8 @@ class DeclarativeMemory:
         episode_nodes = [
             Node(
                 uuid=episode.uuid,
-                data_properties={
+                properties={
+                    "uuid": str(episode.uuid),
                     "timestamp": episode.timestamp,
                     "source": episode.source,
                     "content_type": episode.content_type.value,
@@ -137,9 +139,7 @@ class DeclarativeMemory:
             for episode in episodes
         ]
 
-        chunk_episode_tasks = [
-            DeclarativeMemory._chunk_episode(episode) for episode in episodes
-        ]
+        chunk_episode_tasks = [self._chunk_episode(episode) for episode in episodes]
         episodes_chunks = await asyncio.gather(*chunk_episode_tasks)
 
         chunks = [
@@ -149,8 +149,9 @@ class DeclarativeMemory:
         chunk_nodes = [
             Node(
                 uuid=chunk.uuid,
-                data_properties={
-                    "sequence_number": chunk.sequence_number,
+                properties={
+                    "uuid": str(chunk.uuid),
+                    "episode_uuid": str(chunk.episode_uuid),
                     "timestamp": chunk.timestamp,
                     "source": chunk.source,
                     "content_type": chunk.content_type.value,
@@ -200,11 +201,12 @@ class DeclarativeMemory:
         derivative_nodes = [
             Node(
                 uuid=derivative.uuid,
-                data_properties={
+                properties={
+                    "uuid": str(derivative.uuid),
                     "content_type": derivative.content_type.value,
                     "content": derivative.content,
                 },
-                embedding_properties={
+                embeddings={
                     DeclarativeMemory._embedding_property_name(
                         self._embedder.model_id,
                         self._embedder.dimensions,
@@ -249,7 +251,7 @@ class DeclarativeMemory:
             edges=derivative_chunk_edges,
         )
 
-    def _chunk_episode(self, episode: Episode) -> list[Chunk]:
+    async def _chunk_episode(self, episode: Episode) -> list[Chunk]:
         """
         Partition episode into chunks.
 
@@ -257,7 +259,7 @@ class DeclarativeMemory:
             episode (Episode): The episode whose content to partition.
 
         Returns:
-            list[Chunk]: A list of chunks.
+            list[Chunk]: A list of non-overlapping chunks.
         """
         match episode.content_type:
             case ContentType.MESSAGE | ContentType.TEXT:
@@ -271,11 +273,11 @@ class DeclarativeMemory:
                         else:
                             sentences.append(sentence)
 
+                # Uses UUIDv7 for time-sortable chunk UUIDs.
                 return [
                     Chunk(
-                        uuid=uuid4(),
+                        uuid=uuid7(),
                         episode_uuid=episode.uuid,
-                        sequence_number=index,
                         timestamp=episode.timestamp,
                         source=episode.source,
                         content_type=episode.content_type,
@@ -290,7 +292,6 @@ class DeclarativeMemory:
                     Chunk(
                         uuid=uuid4(),
                         episode_uuid=episode.uuid,
-                        sequence_number=0,
                         timestamp=episode.timestamp,
                         source=episode.source,
                         content_type=episode.content_type,
@@ -372,7 +373,7 @@ class DeclarativeMemory:
     async def search(
         self,
         query: str,
-        num_chunks_limit: int = 20,
+        max_num_chunks: int = 20,
         property_filter: Mapping[str, FilterablePropertyValue] | None = None,
     ) -> list[Chunk]:
         """
@@ -381,7 +382,7 @@ class DeclarativeMemory:
         Args:
             query (str):
                 The search query.
-            num_chunks_limit (int):
+            max_num_chunks (int):
                 The maximum number of chunks to return
                 (default: 20).
             property_filter (Mapping[str, FilterablePropertyValue] | None):
@@ -391,7 +392,7 @@ class DeclarativeMemory:
 
         Returns:
             list[Chunk]:
-                A list of chunks relevant to the query, sorted by time.
+                A list of chunks relevant to the query, ordered chronologically.
         """
 
         query_embedding = await self._embedder.search_embed(
@@ -418,13 +419,13 @@ class DeclarativeMemory:
         )
 
         # Get source chunks of matched derivatives.
-        search_derivatives_source_chunk_tasks = [
+        search_derivatives_source_chunk_nodes_tasks = [
             self._vector_graph_store.search_related_nodes(
                 node_uuid=matched_derivative_node.uuid,
-                allowed_relations={"DERIVED_FROM"},
+                collection=self._chunk_collection,
+                allowed_relations=["DERIVED_FROM"],
                 find_sources=False,
                 find_targets=True,
-                required_labels={"EpisodeCluster"},
                 required_properties={
                     mangle_filterable_property_key(key): value
                     for key, value in property_filter.items()
@@ -434,149 +435,109 @@ class DeclarativeMemory:
             for matched_derivative_node in matched_derivative_nodes
         ]
 
-        derivatives_source_episode_cluster_nodes = await asyncio.gather(
-            *search_derivatives_source_episode_cluster_nodes_tasks
-        )
-
-        # Flatten into a single list of episode cluster nodes.
-        matched_episode_cluster_nodes = [
-            episode_cluster_node
-            for derivative_source_episode_cluster_nodes in (
-                derivatives_source_episode_cluster_nodes
+        source_chunk_nodes = [
+            chunk_node
+            for chunk_nodes in await asyncio.gather(
+                *search_derivatives_source_chunk_nodes_tasks
             )
-            for episode_cluster_node in derivative_source_episode_cluster_nodes
+            for chunk_node in chunk_nodes
         ]
 
-        # Get source episodes of matched episode clusters.
-        search_episode_clusters_source_episode_nodes_tasks = [
-            self._vector_graph_store.search_related_nodes(
-                node_uuid=matched_episode_cluster_node.uuid,
-                allowed_relations={"CONTAINS"},
-                find_sources=False,
-                find_targets=True,
-                required_labels={"Episode"},
-                required_properties={
-                    mangle_filterable_property_key(key): value
-                    for key, value in property_filter.items()
-                },
-            )
-            for matched_episode_cluster_node in matched_episode_cluster_nodes
+        nuclear_chunks = [
+            DeclarativeMemory._chunk_from_chunk_node(source_chunk_node)
+            for source_chunk_node in source_chunk_nodes
         ]
 
-        episode_clusters_source_episode_nodes = await asyncio.gather(
-            *search_episode_clusters_source_episode_nodes_tasks
-        )
-
-        # Flatten into a single list of episode nodes.
-        # Use source episode nodes as nuclei for context expansion.
-        nuclear_episode_nodes = [
-            source_episode_node
-            for episode_cluster_source_episode_nodes in (
-                episode_clusters_source_episode_nodes
-            )
-            for source_episode_node in episode_cluster_source_episode_nodes
-        ]
-
-        # Get contexts for nuclear episode nodes.
-        expand_episode_node_contexts_tasks = [
-            self._expand_episode_node_context(
-                nuclear_episode_node,
+        # Use source chunks as nuclei for contextualization.
+        contextualize_chunk_tasks = [
+            self._contextualize_chunk(
+                nuclear_chunk,
                 property_filter=property_filter,
-                retrieval_depth_limit=4,
             )
-            for nuclear_episode_node in nuclear_episode_nodes
+            for nuclear_chunk in nuclear_chunks
         ]
 
-        episode_node_contexts = await asyncio.gather(
-            *expand_episode_node_contexts_tasks
-        )
+        chunk_contexts = await asyncio.gather(*contextualize_chunk_tasks)
 
-        # Rerank contexts.
-        episode_node_context_scores = await self._score_episode_node_contexts(
-            query, episode_node_contexts
-        )
+        # Rerank expanded contexts.
+        chunk_context_scores = await self._score_chunk_contexts(query, chunk_contexts)
 
-        reranked_anchored_episode_node_contexts = [
-            (nuclear_episode_node, episode_node_context)
-            for _, nuclear_episode_node, episode_node_context in sorted(
+        reranked_anchored_chunk_contexts = [
+            (nuclear_chunk, chunk_context)
+            for _, nuclear_chunk, chunk_context in sorted(
                 zip(
-                    episode_node_context_scores,
-                    nuclear_episode_nodes,
-                    episode_node_contexts,
+                    chunk_context_scores,
+                    nuclear_chunks,
+                    chunk_contexts,
                 ),
-                key=lambda pair: pair[0],
+                key=lambda triple: triple[0],
                 reverse=True,
             )
         ]
 
         # Unify contexts.
-        unified_episode_node_context = (
-            DeclarativeMemory._unify_anchored_episode_node_contexts(
-                reranked_anchored_episode_node_contexts,
-                num_episodes_limit=num_episodes_limit,
-            )
+        unified_chunk_context = DeclarativeMemory._unify_anchored_chunk_contexts(
+            reranked_anchored_chunk_contexts,
+            max_num_chunks=max_num_chunks,
         )
 
-        # Return episodes sorted by timestamp.
-        episodes = DeclarativeMemory._episodes_from_episode_nodes(
-            list(unified_episode_node_context)
-        )
-
+        # Return chunks in chronological order.
         return sorted(
-            episodes,
-            key=lambda episode: episode.timestamp,
+            unified_chunk_context,
+            key=lambda chunk: (
+                chunk.timestamp,
+                chunk.episode_uuid,
+                chunk.uuid,
+            ),
         )
 
-    async def _expand_episode_node_context(
+    async def _contextualize_chunk(
         self,
-        nucleus_episode_node: Node,
-        retrieval_depth_limit: int = 1,
+        nuclear_chunk: Chunk,
+        max_num_chunks: int = 1,
         property_filter: dict[str, FilterablePropertyValue] = {},
-    ) -> set[Node]:
-        """
-        Expand the context of a nucleus episode node
-        by retrieving related episode nodes
-        up to a specified depth limit.
-        """
-        retrieved_context = {nucleus_episode_node}
-        frontier = [nucleus_episode_node]
+    ) -> set[Chunk]:
+        context = {nuclear_chunk}
 
-        for _ in range(1, retrieval_depth_limit + 1):
-            get_new_frontier_tasks = [
-                self._vector_graph_store.search_related_nodes(
-                    node_uuid=frontier_node.uuid,
-                    find_sources=True,
-                    find_targets=True,
-                    limit=10,
-                    required_labels={"Episode"},
-                    required_properties={
-                        mangle_filterable_property_key(key): value
-                        for key, value in property_filter.items()
-                    },
-                )
-                for frontier_node in frontier
-            ]
+        previous_chunk_nodes = await self._vector_graph_store.search_directional_nodes(
+            collection=self._chunk_collection,
+            by_properties=("timestamp", "episode_uuid", "uuid"),
+            starting_at=(
+                nuclear_chunk.timestamp,
+                nuclear_chunk.episode_uuid,
+                nuclear_chunk.uuid,
+            ),
+            include_equal_start=False,
+            order_ascending=False,
+            required_properties={
+                mangle_filterable_property_key(key): value
+                for key, value in property_filter.items()
+            },
+        )
 
-            node_neighborhoods = await asyncio.gather(*get_new_frontier_tasks)
-            frontier = [
-                neighbor_node
-                for node_neighborhood in node_neighborhoods
-                for neighbor_node in node_neighborhood
-                if neighbor_node not in retrieved_context
-            ]
+        next_chunk_nodes = await self._vector_graph_store.search_directional_nodes(
+            collection=self._chunk_collection,
+            by_properties=("timestamp", "episode_uuid", "uuid"),
+            starting_at=(
+                nuclear_chunk.timestamp,
+                nuclear_chunk.episode_uuid,
+                nuclear_chunk.uuid,
+            ),
+            include_equal_start_at_value=False,
+            order_ascending=True,
+            required_properties={
+                mangle_filterable_property_key(key): value
+                for key, value in property_filter.items()
+            },
+        )
 
-            if not frontier:
-                break
+        return context
 
-            retrieved_context.update(frontier)
-
-        return retrieved_context
-
-    async def _score_episode_node_contexts(
-        self, query: str, episode_node_contexts: list[set[Node]]
+    async def _score_chunk_contexts(
+        self, query: str, chunk_contexts: Iterable[set[Chunk]]
     ) -> list[float]:
         """
-        Score episode node contexts
+        Score chunk node contexts
         based on their relevance to the query.
         """
         contexts_episodes = [
@@ -754,41 +715,23 @@ class DeclarativeMemory:
         await self._vector_graph_store.delete_nodes(node_uuids_to_delete)
 
     @staticmethod
-    def _episodes_from_episode_nodes(
-        episode_nodes: list[Node],
-    ) -> list[Episode]:
-        """
-        Convert a list of episode Nodes to a list of Episodes.
-
-        Args:
-            episode_nodes (list[Node]):
-                A list of Nodes representing episodes.
-
-        Returns:
-            list[Episode]:
-                A list of Episodes constructed from the episode Nodes.
-        """
-        return [
-            Episode(
-                uuid=node.uuid,
-                episode_type=cast(str, node.properties["episode_type"]),
-                content_type=ContentType(node.properties["content_type"]),
-                content=node.properties["content"],
-                timestamp=cast(
-                    datetime,
-                    node.properties.get("timestamp", datetime.min),
-                ),
-                filterable_properties={
-                    demangle_filterable_property_key(key): cast(
-                        FilterablePropertyValue, value
-                    )
-                    for key, value in node.properties.items()
-                    if is_mangled_filterable_property_key(key)
-                },
-                user_metadata=json.loads(cast(str, node.properties["user_metadata"])),
-            )
-            for node in episode_nodes
-        ]
+    def _chunk_from_chunk_node(chunk_node: Node) -> Chunk:
+        return Chunk(
+            uuid=UUID(chunk_node.properties["uuid"]),
+            episode_uuid=UUID(chunk_node.properties["episode_uuid"]),
+            timestamp=cast(datetime, chunk_node.properties["timestamp"]),
+            source=cast(str, chunk_node.properties["source"]),
+            content_type=ContentType(chunk_node.properties["content_type"]),
+            content=chunk_node.properties["content"],
+            filterable_properties={
+                demangle_filterable_property_key(key): cast(
+                    FilterablePropertyValue, value
+                )
+                for key, value in chunk_node.properties.items()
+                if is_mangled_filterable_property_key(key)
+            },
+            user_metadata=json.loads(cast(str, chunk_node.properties["user_metadata"])),
+        )
 
     @staticmethod
     def _embedding_property_name(model_id: str, dimensions: int) -> str:

@@ -12,7 +12,7 @@ from uuid import UUID
 
 from memmachine.common.embedder import SimilarityMetric
 
-from .data_types import Edge, Node, Property
+from .data_types import Edge, Node, PropertyValue, OrderedPropertyValue
 
 
 class VectorGraphStore(ABC):
@@ -64,7 +64,7 @@ class VectorGraphStore(ABC):
         query_embedding: list[float],
         similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
         limit: int | None = 100,
-        required_properties: Mapping[str, Property] | None = None,
+        required_properties: Mapping[str, PropertyValue] | None = None,
         include_missing_properties: bool = False,
     ) -> list[Node]:
         """
@@ -78,19 +78,19 @@ class VectorGraphStore(ABC):
                 that stores the embedding vector.
             query_embedding (list[float]):
                 The embedding vector to compare against.
-            similarity_metric (SimilarityMetric, optional):
+            similarity_metric (SimilarityMetric):
                 The similarity metric to use
                 (default: SimilarityMetric.COSINE).
-            limit (int | None, optional):
+            limit (int | None):
                 Maximum number of similar nodes to return.
                 If None, return as many similar nodes as possible
                 (default: 100).
-            required_properties (Mapping[str, Property] | None, optional):
+            required_properties (Mapping[str, PropertyValue] | None):
                 Mapping of property names to their required values
                 that the nodes must have.
                 If None or empty, no property filtering is applied
                 (default: None).
-            include_missing_properties (bool, optional):
+            include_missing_properties (bool):
                 If True, nodes missing any of the required properties
                 will also be included in the results
                 (default: False).
@@ -111,7 +111,7 @@ class VectorGraphStore(ABC):
         find_sources: bool = True,
         find_targets: bool = True,
         limit: int | None = None,
-        required_properties: Mapping[str, Property] | None = None,
+        required_properties: Mapping[str, PropertyValue] | None = None,
         include_missing_properties: bool = False,
     ) -> list[Node]:
         """
@@ -122,27 +122,27 @@ class VectorGraphStore(ABC):
                 Collection that the nodes belong to.
             node_uuid (UUID):
                 UUID of the node to find related nodes for.
-            allowed_relations(Iterable[str] | None, optional):
+            allowed_relations(Iterable[str] | None):
                 Iterable of relations to consider.
                 If None, all relations are considered.
-            find_sources (bool, optional):
+            find_sources (bool):
                 If True, search for nodes
                 that are sources of edges
                 pointing to the specified node.
-            find_targets (bool, optional):
+            find_targets (bool):
                 If True, search for nodes
                 that are targets of edges
                 originating from the specified node.
-            limit (int | None, optional):
+            limit (int | None):
                 Maximum number of related nodes to return.
                 If None, return as many related nodes as possible
                 (default: None).
-            required_properties (Mapping[str, Property] | None, optional):
+            required_properties (Mapping[str, PropertyValue] | None):
                 Mapping of property names to their required values
                 that the nodes must have.
                 If None or empty, no property filtering is applied
                 (default: None).
-            include_missing_properties (bool, optional):
+            include_missing_properties (bool):
                 If True, nodes missing any of the required properties
                 will also be included in the results
                 (default: False).
@@ -158,12 +158,12 @@ class VectorGraphStore(ABC):
     async def search_directional_nodes(
         self,
         collection: str,
-        by_property: str,
-        start_at_value: Any | None = None,
-        include_equal_start_at_value: bool = False,
-        order_ascending: bool = True,
+        by_properties: Iterable[str],
+        starting_at: Iterable[OrderedPropertyValue | None],
+        order_ascending: Iterable[bool],
+        include_equal_start: bool = False,
         limit: int | None = 1,
-        required_properties: Mapping[str, Property] | None = None,
+        required_properties: Mapping[str, PropertyValue] | None = None,
         include_missing_properties: bool = False,
     ) -> list[Node]:
         """
@@ -172,32 +172,30 @@ class VectorGraphStore(ABC):
         Args:
             collection (str):
                 Collection that the nodes belong to.
-            by_property (str):
-                The property name to order the nodes by.
-            start_at_value (Any | None, optional):
-                The value to start the search from.
-                If None, start from the beginning or end
+            by_properties (Iterable[str]):
+                Hierarchy of property names to order the nodes by.
+            starting_at (Iterable[OrderedPropertyValue]):
+                Values for each property to start the search from.
+                If a value is None, start from the minimum or maximum
                 based on order_ascending.
-            include_equal_start_at_value (bool, optional):
-                If True, include nodes with property value
-                equal to start_at_value.
-            order_ascending (bool, optional):
-                If True, order nodes in ascending order.
-                If False, order in descending order.
-            limit (int | None, optional):
+            order_ascending (Iterable[bool]):
+                Whether to order each property ascending (True) or descending (False).
+            include_equal_start (bool):
+                Whether to include nodes with all property values
+                equal to the starting_at values.
+            limit (int | None):
                 Maximum number of nodes to return.
                 If None, return as many matching nodes as possible
                 (default: 1).
-            required_properties (Mapping[str, Property] | None, optional):
+            required_properties (Mapping[str, PropertyValue] | None):
                 Mapping of property names to their required values
                 that the nodes must have.
                 If None or empty, no property filtering is applied
                 (default: None).
-            include_missing_properties (bool, optional):
+            include_missing_properties (bool):
                 If True, nodes missing any of the required properties
                 will also be included in the results
                 (default: False).
-                will also be included in the results.
 
         Returns:
             list[Node]:
@@ -210,23 +208,23 @@ class VectorGraphStore(ABC):
         self,
         collection: str,
         limit: int | None = None,
-        required_properties: Mapping[str, Property] | None = None,
+        required_properties: Mapping[str, PropertyValue] | None = None,
         include_missing_properties: bool = False,
     ) -> list[Node]:
         """
         Search for nodes matching the specified properties.
 
         Args:
-            limit (int | None, optional):
+            limit (int | None):
                 Maximum number of nodes to return.
                 If None, return as many matching nodes as possible
                 (default: None).
-            required_properties (Mapping[str, Property] | None, optional):
+            required_properties (Mapping[str, PropertyValue] | None):
                 Mapping of property names to their required values
                 that the nodes must have.
                 If None or empty, no property filtering is applied
                 (default: None).
-            include_missing_properties (bool, optional):
+            include_missing_properties (bool):
                 If True, nodes missing any of the required properties
                 will also be included in the results
                 (default: False).
