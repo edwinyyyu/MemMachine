@@ -178,28 +178,16 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             self._collection_node_counts[collection]
             >= self._range_index_creation_threshold
         ):
-            await self._create_initial_indexes_if_not_exist(
-                EntityType.NODE,
-                [collection],
+            asyncio.create_task(
+                self._create_initial_indexes_if_not_exist(
+                    EntityType.NODE,
+                    [collection],
+                )
             )
 
-        sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
-
-        if (
-            self._collection_node_counts[collection]
-            >= self._vector_index_creation_threshold
-        ):
-            vector_index_creation_tasks = [
-                self._create_vector_index_if_not_exists(
-                    entity_type=EntityType.NODE,
-                    sanitized_collection_or_relation=sanitized_collection,
-                    sanitized_embedding_name=Neo4jVectorGraphStore._sanitize_name(
-                        mangle_embedding_name(embedding_name)
-                    ),
-                    dimensions=len(embedding),
-                    similarity_metric=similarity_metric,
-                )
-            ]
+        # Only create vector indexes
+        # if there is evidence that the collection has embeddings.
+        exist_embeddings = False
 
         query_nodes = []
         for node in nodes:
@@ -213,6 +201,8 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 ),
             }
 
+            if node.embeddings:
+                exist_embeddings = True
             for embedding_name, (
                 embedding,
                 similarity_metric,
@@ -232,6 +222,21 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 )
 
             query_nodes.append(query_node)
+
+        sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
+
+        if exist_embeddings and self._collection_node_counts[collection] >= self._vector_index_creation_threshold:
+            asyncio.create_task(
+                self._create_vector_index_if_not_exists(
+                    entity_type=EntityType.NODE,
+                    sanitized_collection_or_relation=sanitized_collection,
+                    sanitized_embedding_name=Neo4jVectorGraphStore._sanitize_name(
+                        mangle_embedding_name(embedding_name)
+                    ),
+                    dimensions=len(embedding),
+                    similarity_metric=similarity_metric,
+                )
+            )
 
         async with self._semaphore:
             await self._driver.execute_query(
@@ -255,10 +260,16 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             self._relation_edge_counts[relation] = await self._count_edges(relation)
 
         if self._relation_edge_counts[relation] >= self._range_index_creation_threshold:
-            await self._create_initial_indexes_if_not_exist(
-                EntityType.EDGE,
-                [relation],
+            asyncio.create_task(
+                self._create_initial_indexes_if_not_exist(
+                    EntityType.EDGE,
+                    [relation],
+                )
             )
+
+        # Only create vector indexes
+        # if there is evidence that the relation has embeddings.
+        exist_embeddings = False
 
         query_edges = []
         for edge in edges:
@@ -274,6 +285,8 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 ),
             }
 
+            if edge.embeddings:
+                exist_embeddings = True
             for embedding_name, (
                 embedding,
                 similarity_metric,
@@ -295,6 +308,20 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             query_edges.append(query_edge)
 
         sanitized_relation = Neo4jVectorGraphStore._sanitize_name(relation)
+
+        if exist_embeddings and self._relation_edge_counts[relation] >= self._vector_index_creation_threshold:
+            asyncio.create_task(
+                self._create_vector_index_if_not_exists(
+                    entity_type=EntityType.EDGE,
+                    sanitized_collection_or_relation=sanitized_relation,
+                    sanitized_embedding_name=Neo4jVectorGraphStore._sanitize_name(
+                        mangle_embedding_name(embedding_name)
+                    ),
+                    dimensions=len(embedding),
+                    similarity_metric=similarity_metric,
+                )
+            )
+
         sanitized_source_collection = Neo4jVectorGraphStore._sanitize_name(
             source_collection
         )
