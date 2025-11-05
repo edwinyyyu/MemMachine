@@ -225,7 +225,11 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
         sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
 
-        if exist_embeddings and self._collection_node_counts[collection] >= self._vector_index_creation_threshold:
+        if (
+            exist_embeddings
+            and self._collection_node_counts[collection]
+            >= self._vector_index_creation_threshold
+        ):
             asyncio.create_task(
                 self._create_vector_index_if_not_exists(
                     entity_type=EntityType.NODE,
@@ -309,7 +313,11 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
         sanitized_relation = Neo4jVectorGraphStore._sanitize_name(relation)
 
-        if exist_embeddings and self._relation_edge_counts[relation] >= self._vector_index_creation_threshold:
+        if (
+            exist_embeddings
+            and self._relation_edge_counts[relation]
+            >= self._vector_index_creation_threshold
+        ):
             asyncio.create_task(
                 self._create_vector_index_if_not_exists(
                     entity_type=EntityType.EDGE,
