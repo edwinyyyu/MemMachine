@@ -11,7 +11,7 @@ from collections.abc import Iterable, Mapping
 from datetime import datetime
 from string import Template
 from typing import cast
-from uuid import UUID, uuid4, uuid7
+from uuid import UUID, uuid4
 
 from nltk import sent_tokenize
 from pydantic import BaseModel, Field, InstanceOf
@@ -107,7 +107,8 @@ class DeclarativeMemory:
         """
         Add episodes.
 
-        Episodes with the same timestamp are ordered by the uuid field.
+        Episodes are sorted by timestamp.
+        Episodes with the same timestamp are sorted by UUID.
 
         Args:
             episodes (Iterable[Episode]): The episodes to add.
@@ -121,7 +122,7 @@ class DeclarativeMemory:
             self._temporal_context = deque(maxlen=20)
         # task = self._vector_graph_store.get_last_episodes
 
-        episodes = list(episodes)
+        episodes = sorted(episodes, key=lambda episode: (episode.timestamp, episode.uuid))
         episode_nodes = [
             Node(
                 uuid=episode.uuid,
@@ -154,6 +155,7 @@ class DeclarativeMemory:
                 properties={
                     "uuid": str(chunk.uuid),
                     "episode_uuid": str(chunk.episode_uuid),
+                    "sequence_number": chunk.sequence_number,
                     "timestamp": chunk.timestamp,
                     "source": chunk.source,
                     "content_type": chunk.content_type.value,
@@ -275,11 +277,11 @@ class DeclarativeMemory:
                         else:
                             sentences.append(sentence)
 
-                # Uses UUIDv7 for time-sortable chunk UUIDs.
                 return [
                     Chunk(
-                        uuid=uuid7(),
+                        uuid=uuid4(),
                         episode_uuid=episode.uuid,
+                        sequence_number=index,
                         timestamp=episode.timestamp,
                         source=episode.source,
                         content_type=episode.content_type,
@@ -294,6 +296,7 @@ class DeclarativeMemory:
                     Chunk(
                         uuid=uuid4(),
                         episode_uuid=episode.uuid,
+                        sequence_number=0,
                         timestamp=episode.timestamp,
                         source=episode.source,
                         content_type=episode.content_type,
@@ -417,6 +420,7 @@ class DeclarativeMemory:
             include_missing_properties=True,
         )
 
+        # TODO @edwinyyyu: update this
         # Get source chunks of matched derivatives.
         search_derivatives_source_chunk_nodes_tasks = [
             self._vector_graph_store.search_related_nodes(
@@ -493,11 +497,11 @@ class DeclarativeMemory:
 
         previous_chunk_nodes = await self._vector_graph_store.search_directional_nodes(
             collection=self._chunk_collection,
-            by_properties=("timestamp", "episode_uuid", "uuid"),
+            by_properties=("timestamp", "episode_uuid", "sequence_number"),
             starting_at=(
                 nuclear_chunk.timestamp,
                 str(nuclear_chunk.episode_uuid),
-                str(nuclear_chunk.uuid),
+                str(nuclear_chunk.sequence_number),
             ),
             order_ascending=(False, False, False),
             include_equal_start=False,
@@ -510,11 +514,11 @@ class DeclarativeMemory:
 
         next_chunk_nodes = await self._vector_graph_store.search_directional_nodes(
             collection=self._chunk_collection,
-            by_properties=("timestamp", "episode_uuid", "uuid"),
+            by_properties=("timestamp", "episode_uuid", "sequence_number"),
             starting_at=(
                 nuclear_chunk.timestamp,
                 str(nuclear_chunk.episode_uuid),
-                str(nuclear_chunk.uuid),
+                str(nuclear_chunk.sequence_number),
             ),
             order_ascending=(True, True, True),
             include_equal_start=False,
@@ -645,7 +649,7 @@ class DeclarativeMemory:
             key=lambda chunk: (
                 chunk.timestamp,
                 chunk.episode_uuid,
-                chunk.uuid,
+                chunk.sequence_number,
             ),
         )
 
@@ -680,6 +684,7 @@ class DeclarativeMemory:
         return Chunk(
             uuid=UUID(cast(str, chunk_node.properties["uuid"])),
             episode_uuid=UUID(cast(str, chunk_node.properties["episode_uuid"])),
+            sequence_number=cast(int, chunk_node.properties["sequence_number"]),
             timestamp=cast(datetime, chunk_node.properties["timestamp"]),
             source=cast(str, chunk_node.properties["source"]),
             content_type=ContentType(chunk_node.properties["content_type"]),

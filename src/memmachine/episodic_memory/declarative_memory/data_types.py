@@ -38,6 +38,7 @@ class Episode:
 class Chunk:
     uuid: UUID
     episode_uuid: UUID
+    sequence_number: int
     timestamp: datetime
     source: str
     content_type: ContentType
