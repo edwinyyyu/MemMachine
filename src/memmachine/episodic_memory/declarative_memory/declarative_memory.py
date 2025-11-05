@@ -117,7 +117,8 @@ class DeclarativeMemory:
         # The memory is server-side so it can be stateful.
         # Remember previous episodes for context.
         # This is like coming back to work on a Monday.
-        # if self._temporal_context is None:
+        if self._temporal_context is None:
+            self._temporal_context = deque(maxlen=20)
         # task = self._vector_graph_store.get_last_episodes
 
         episodes = list(episodes)
@@ -228,7 +229,7 @@ class DeclarativeMemory:
         ]
 
         await self._vector_graph_store.add_nodes(
-            colleciton=self._episode_collection,
+            collection=self._episode_collection,
             nodes=episode_nodes,
         )
         await self._vector_graph_store.add_nodes(
@@ -268,7 +269,7 @@ class DeclarativeMemory:
 
                 for line in episode.content.strip().splitlines():
                     for sentence in sent_tokenize(line.strip()):
-                        if len(sentence) > self._max_sentence_length:
+                        if len(sentence) > self._max_chunk_length:
                             sentence_splits = self._split_sentence(sentence)
                             sentences.extend(sentence_splits)
                         else:
@@ -388,10 +389,14 @@ class DeclarativeMemory:
             list[Chunk]:
                 A list of chunks relevant to the query, ordered chronologically.
         """
+        if property_filter is None:
+            property_filter = {}
 
-        query_embedding = await self._embedder.search_embed(
-            [query],
-        )
+        query_embedding = (
+            await self._embedder.search_embed(
+                [query],
+            )
+        )[0]
 
         # Search graph store for vector matches.
         matched_derivative_nodes = await self._vector_graph_store.search_similar_nodes(
@@ -481,15 +486,18 @@ class DeclarativeMemory:
         nuclear_chunk: Chunk,
         max_backward_chunks: int = 1,
         max_forward_chunks: int = 2,
-        property_filter: dict[str, FilterablePropertyValue] = {},
+        property_filter: Mapping[str, FilterablePropertyValue] | None = None,
     ) -> list[Chunk]:
+        if property_filter is None:
+            property_filter = {}
+
         previous_chunk_nodes = await self._vector_graph_store.search_directional_nodes(
             collection=self._chunk_collection,
             by_properties=("timestamp", "episode_uuid", "uuid"),
             starting_at=(
                 nuclear_chunk.timestamp,
-                nuclear_chunk.episode_uuid,
-                nuclear_chunk.uuid,
+                str(nuclear_chunk.episode_uuid),
+                str(nuclear_chunk.uuid),
             ),
             order_ascending=(False, False, False),
             include_equal_start=False,
@@ -505,11 +513,11 @@ class DeclarativeMemory:
             by_properties=("timestamp", "episode_uuid", "uuid"),
             starting_at=(
                 nuclear_chunk.timestamp,
-                nuclear_chunk.episode_uuid,
-                nuclear_chunk.uuid,
+                str(nuclear_chunk.episode_uuid),
+                str(nuclear_chunk.uuid),
             ),
             order_ascending=(True, True, True),
-            include_equal_start_at_value=False,
+            include_equal_start=False,
             limit=max_forward_chunks,
             required_properties={
                 mangle_filterable_property_key(key): value
@@ -586,18 +594,20 @@ class DeclarativeMemory:
 
     @staticmethod
     def _unify_anchored_chunk_contexts(
-        anchored_chunk_contexts: Iterable[tuple[Node, Iterable[Chunk]]],
+        anchored_chunk_contexts: Iterable[tuple[Chunk, Iterable[Chunk]]],
         max_num_chunks: int,
-    ) -> list[Node]:
+    ) -> list[Chunk]:
         """
         Unify chunk contexts
         anchored on their nuclear chunks
         into a single list of chunks,
         respecting the chunk limit.
         """
-        chunk_set: set[Node] = set()
+        chunk_set: set[Chunk] = set()
 
         for nuclear_chunk, context in anchored_chunk_contexts:
+            context = list(context)
+
             if len(chunk_set) >= max_num_chunks:
                 break
             elif (len(chunk_set) + len(context)) <= max_num_chunks:
@@ -641,77 +651,6 @@ class DeclarativeMemory:
 
         return unified_chunk_context
 
-    async def forget_filtered_episodes(
-        self,
-        property_filter: dict[str, FilterablePropertyValue] = {},
-    ):
-        """
-        Forget all episodes matching the given filterable properties
-        and data derived from them.
-        """
-        matching_episode_nodes = await self._vector_graph_store.search_matching_nodes(
-            required_labels={"Episode"},
-            required_properties={
-                mangle_filterable_property_key(key): value
-                for key, value in property_filter.items()
-            },
-        )
-
-        search_related_episode_cluster_nodes_tasks = [
-            self._vector_graph_store.search_related_nodes(
-                node_uuid=episode_node.uuid,
-                allowed_relations={"CONTAINS"},
-                required_labels={"EpisodeCluster"},
-                find_sources=True,
-                find_targets=False,
-            )
-            for episode_node in matching_episode_nodes
-        ]
-
-        episode_nodes_related_episode_cluster_nodes = await asyncio.gather(
-            *search_related_episode_cluster_nodes_tasks
-        )
-
-        # Flatten into a single list of episode cluster nodes.
-        matching_episode_cluster_nodes = [
-            episode_cluster_node
-            for episode_node_related_episode_cluster_nodes in (
-                episode_nodes_related_episode_cluster_nodes
-            )
-            for episode_cluster_node in (episode_node_related_episode_cluster_nodes)
-        ]
-
-        search_related_derivative_nodes_tasks = [
-            self._vector_graph_store.search_related_nodes(
-                node_uuid=episode_cluster_node.uuid,
-                allowed_relations={"DERIVED_FROM"},
-                required_labels={"Derivative"},
-                find_sources=True,
-                find_targets=False,
-            )
-            for episode_cluster_node in matching_episode_cluster_nodes
-        ]
-
-        episode_cluster_nodes_related_derivative_nodes = await asyncio.gather(
-            *search_related_derivative_nodes_tasks
-        )
-
-        # Flatten into a single list of derivative nodes.
-        matching_derivative_nodes = [
-            derivative_node
-            for episode_cluster_node_related_derivative_nodes in (
-                episode_cluster_nodes_related_derivative_nodes
-            )
-            for derivative_node in (episode_cluster_node_related_derivative_nodes)
-        ]
-
-        episode_uuids = [node.uuid for node in matching_episode_nodes]
-        episode_cluster_uuids = [node.uuid for node in matching_episode_cluster_nodes]
-        derivative_uuids = [node.uuid for node in matching_derivative_nodes]
-
-        node_uuids_to_delete = episode_uuids + episode_cluster_uuids + derivative_uuids
-        await self._vector_graph_store.delete_nodes(node_uuids_to_delete)
-
     @staticmethod
     def _apply_string_template(template: Template, data: Episode | Chunk) -> str:
         if isinstance(data, Episode) or isinstance(data, Chunk):
@@ -739,8 +678,8 @@ class DeclarativeMemory:
     @staticmethod
     def _chunk_from_chunk_node(chunk_node: Node) -> Chunk:
         return Chunk(
-            uuid=UUID(chunk_node.properties["uuid"]),
-            episode_uuid=UUID(chunk_node.properties["episode_uuid"]),
+            uuid=UUID(cast(str, chunk_node.properties["uuid"])),
+            episode_uuid=UUID(cast(str, chunk_node.properties["episode_uuid"])),
             timestamp=cast(datetime, chunk_node.properties["timestamp"]),
             source=cast(str, chunk_node.properties["source"]),
             content_type=ContentType(chunk_node.properties["content_type"]),

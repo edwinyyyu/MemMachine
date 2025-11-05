@@ -9,6 +9,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Iterable, Mapping
+from enum import Enum
 from typing import Any
 from uuid import UUID
 
@@ -139,6 +140,15 @@ class Neo4jVectorGraphStore(VectorGraphStore):
     Asynchronous Neo4j-based implementation of VectorGraphStore.
     """
 
+    class CacheIndexState(Enum):
+        """
+        Enumeration for index state in the cache.
+        May not correspond to actual index state in Neo4j.
+        """
+
+        CREATING = 0
+        ONLINE = 1
+
     def __init__(self, params: Neo4jVectorGraphStoreParams):
         """
         Initialize a Neo4jVectorGraphStore
@@ -163,7 +173,9 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         self._range_index_hierarchies = params.range_index_hierarchies
         self._range_index_creation_threshold = params.range_index_creation_threshold
 
-        self._index_name_cache: set[str] = set()
+        self._index_state_cache: dict[str, Neo4jVectorGraphStore.CacheIndexState] = {}
+        self._populate_index_state_cache_lock = asyncio.Lock()
+
         self._collection_node_counts: dict[str, int] = {}
         self._relation_edge_counts: dict[str, int] = {}
 
@@ -181,13 +193,11 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             asyncio.create_task(
                 self._create_initial_indexes_if_not_exist(
                     EntityType.NODE,
-                    [collection],
+                    collection,
                 )
             )
 
-        # Only create vector indexes
-        # if there is evidence that the collection has embeddings.
-        exist_embeddings = False
+        sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
 
         query_nodes = []
         for node in nodes:
@@ -201,8 +211,6 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 ),
             }
 
-            if node.embeddings:
-                exist_embeddings = True
             for embedding_name, (
                 embedding,
                 similarity_metric,
@@ -221,26 +229,21 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                     similarity_metric.value
                 )
 
+                if (
+                    self._collection_node_counts[collection]
+                    >= self._vector_index_creation_threshold
+                ):
+                    asyncio.create_task(
+                        self._create_vector_index_if_not_exists(
+                            entity_type=EntityType.NODE,
+                            sanitized_collection_or_relation=sanitized_collection,
+                            sanitized_embedding_name=sanitized_embedding_name,
+                            dimensions=len(embedding),
+                            similarity_metric=similarity_metric,
+                        )
+                    )
+
             query_nodes.append(query_node)
-
-        sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
-
-        if (
-            exist_embeddings
-            and self._collection_node_counts[collection]
-            >= self._vector_index_creation_threshold
-        ):
-            asyncio.create_task(
-                self._create_vector_index_if_not_exists(
-                    entity_type=EntityType.NODE,
-                    sanitized_collection_or_relation=sanitized_collection,
-                    sanitized_embedding_name=Neo4jVectorGraphStore._sanitize_name(
-                        mangle_embedding_name(embedding_name)
-                    ),
-                    dimensions=len(embedding),
-                    similarity_metric=similarity_metric,
-                )
-            )
 
         async with self._semaphore:
             await self._driver.execute_query(
@@ -267,13 +270,11 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             asyncio.create_task(
                 self._create_initial_indexes_if_not_exist(
                     EntityType.EDGE,
-                    [relation],
+                    relation,
                 )
             )
 
-        # Only create vector indexes
-        # if there is evidence that the relation has embeddings.
-        exist_embeddings = False
+        sanitized_relation = Neo4jVectorGraphStore._sanitize_name(relation)
 
         query_edges = []
         for edge in edges:
@@ -289,8 +290,6 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 ),
             }
 
-            if edge.embeddings:
-                exist_embeddings = True
             for embedding_name, (
                 embedding,
                 similarity_metric,
@@ -309,26 +308,21 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                     similarity_metric.value
                 )
 
+                if (
+                    self._relation_edge_counts[relation]
+                    >= self._vector_index_creation_threshold
+                ):
+                    asyncio.create_task(
+                        self._create_vector_index_if_not_exists(
+                            entity_type=EntityType.EDGE,
+                            sanitized_collection_or_relation=sanitized_relation,
+                            sanitized_embedding_name=sanitized_embedding_name,
+                            dimensions=len(embedding),
+                            similarity_metric=similarity_metric,
+                        )
+                    )
+
             query_edges.append(query_edge)
-
-        sanitized_relation = Neo4jVectorGraphStore._sanitize_name(relation)
-
-        if (
-            exist_embeddings
-            and self._relation_edge_counts[relation]
-            >= self._vector_index_creation_threshold
-        ):
-            asyncio.create_task(
-                self._create_vector_index_if_not_exists(
-                    entity_type=EntityType.EDGE,
-                    sanitized_collection_or_relation=sanitized_relation,
-                    sanitized_embedding_name=Neo4jVectorGraphStore._sanitize_name(
-                        mangle_embedding_name(embedding_name)
-                    ),
-                    dimensions=len(embedding),
-                    similarity_metric=similarity_metric,
-                )
-            )
 
         sanitized_source_collection = Neo4jVectorGraphStore._sanitize_name(
             source_collection
@@ -370,12 +364,22 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         do_exact_similarity_search = self._force_exact_similarity_search
 
         if not do_exact_similarity_search:
+            await self._populate_index_state_cache()
+
             vector_index_name = Neo4jVectorGraphStore._index_name(
                 EntityType.NODE,
                 sanitized_collection,
                 sanitized_embedding_name,
             )
 
+            if (
+                vector_index_name not in self._index_state_cache
+                or self._index_state_cache[vector_index_name]
+                != Neo4jVectorGraphStore.CacheIndexState.ONLINE
+            ):
+                do_exact_similarity_search = True
+
+        if not do_exact_similarity_search:
             # ANN search requires a finite limit.
             if limit is None:
                 limit = 1000
@@ -706,22 +710,36 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
         return records[0]["relationship_count"]
 
-    async def _populate_index_name_cache(self):
+    async def _populate_index_state_cache(self):
         """
-        Populate the index name cache.
+        Populate the index state cache.
         """
-        if not self._index_name_cache:
-            async with self._semaphore:
-                records, _, _ = await self._driver.execute_query(
-                    "SHOW INDEXES YIELD name RETURN name"
-                )
+        if self._index_state_cache:
+            return
 
-            self._index_name_cache.update(record["name"] for record in records)
+        async with self._populate_index_state_cache_lock:
+            if not self._index_state_cache:
+                async with self._semaphore:
+                    records, _, _ = await self._driver.execute_query(
+                        "SHOW INDEXES YIELD name RETURN name"
+                    )
+
+                    # This ensures that all the indexes in records are online.
+                    await self._driver.execute_query("CALL db.awaitIndexes()")
+
+                # Synchronous code is atomic in asynchronous framework
+                # so double-checked locking works here.
+                self._index_state_cache.update(
+                    {
+                        record["name"]: Neo4jVectorGraphStore.CacheIndexState.ONLINE
+                        for record in records
+                    }
+                )
 
     async def _create_initial_indexes_if_not_exist(
         self,
         entity_type: EntityType,
-        collections_or_relations: Iterable[str],
+        collection_or_relation: str,
     ):
         """
         Create initial indexes if not exist.
@@ -739,9 +757,8 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 sanitized_collection_or_relation=Neo4jVectorGraphStore._sanitize_name(
                     collection_or_relation
                 ),
-                sanitized_property_name=Neo4jVectorGraphStore._sanitize_name("uuid"),
+                sanitized_property_name="uuid",
             )
-            for collection_or_relation in collections_or_relations
         ]
         tasks += [
             self._create_range_index_if_not_exists(
@@ -756,7 +773,6 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                     for property_name in property_name_hierarchy
                 ],
             )
-            for collection_or_relation in collections_or_relations
             for range_index_hierarchy in self._range_index_hierarchies
             for property_name_hierarchy in [
                 range_index_hierarchy[: i + 1]
@@ -783,7 +799,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             sanitized_property_name (str):
                 Name of the property to create unique constraint on.
         """
-        await self._populate_index_name_cache()
+        await self._populate_index_state_cache()
 
         unique_constraint_name = Neo4jVectorGraphStore._index_name(
             entity_type,
@@ -791,8 +807,12 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             sanitized_property_name,
         )
 
-        if unique_constraint_name in self._index_name_cache:
+        if unique_constraint_name in self._index_state_cache:
             return
+
+        self._index_state_cache[unique_constraint_name] = (
+            Neo4jVectorGraphStore.CacheIndexState.CREATING
+        )
 
         match entity_type:
             case EntityType.NODE:
@@ -815,7 +835,9 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         )
 
         await self._execute_create_index_if_not_exists(create_constraint_task)
-        self._index_name_cache.add(unique_constraint_name)
+        self._index_state_cache[unique_constraint_name] = (
+            Neo4jVectorGraphStore.CacheIndexState.ONLINE
+        )
 
     async def _create_range_index_if_not_exists(
         self,
@@ -836,14 +858,18 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 List of property names representing
                 the hierarchy for the range index.
         """
-        await self._populate_index_name_cache()
+        await self._populate_index_state_cache()
 
         range_index_name = Neo4jVectorGraphStore._index_name(
             entity_type, sanitized_collection_or_relation, sanitized_property_names
         )
 
-        if range_index_name in self._index_name_cache:
+        if range_index_name in self._index_state_cache:
             return
+
+        self._index_state_cache[range_index_name] = (
+            Neo4jVectorGraphStore.CacheIndexState.CREATING
+        )
 
         match entity_type:
             case EntityType.NODE:
@@ -869,7 +895,9 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         )
 
         await self._execute_create_index_if_not_exists(create_index_task)
-        self._index_name_cache.add(range_index_name)
+        self._index_state_cache[range_index_name] = (
+            Neo4jVectorGraphStore.CacheIndexState.ONLINE
+        )
 
     async def _create_vector_index_if_not_exists(
         self,
@@ -896,7 +924,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 Similarity metric to use for the vector index
                 (default: SimilarityMetric.COSINE).
         """
-        await self._populate_index_name_cache()
+        await self._populate_index_state_cache()
 
         vector_index_name = Neo4jVectorGraphStore._index_name(
             entity_type,
@@ -904,8 +932,12 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             sanitized_embedding_name,
         )
 
-        if vector_index_name in self._index_name_cache:
+        if vector_index_name in self._index_state_cache:
             return
+
+        self._index_state_cache[vector_index_name] = (
+            Neo4jVectorGraphStore.CacheIndexState.CREATING
+        )
 
         match similarity_metric:
             case SimilarityMetric.COSINE:
@@ -944,7 +976,9 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         )
 
         await self._execute_create_index_if_not_exists(create_index_task)
-        self._index_name_cache.add(vector_index_name)
+        self._index_state_cache[vector_index_name] = (
+            Neo4jVectorGraphStore.CacheIndexState.ONLINE
+        )
 
     @async_locked
     async def _execute_create_index_if_not_exists(self, create_index_task: Awaitable):
