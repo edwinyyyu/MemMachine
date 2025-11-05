@@ -248,6 +248,25 @@ class VectorGraphStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_nodes(
+        self,
+        collection: str,
+        node_uuids: Iterable[UUID],
+    ) -> list[Node]:
+        """
+        Get nodes from the collection.
+
+        Args:
+            node_uuids (Iterable[UUID]):
+                Iterable of UUIDs of the nodes to retrieve.
+
+        Returns:
+            list[Node]:
+                List of Node objects with the specified UUIDs.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def delete_nodes(
         self,
         collection: str,

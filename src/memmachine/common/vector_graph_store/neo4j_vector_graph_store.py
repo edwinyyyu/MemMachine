@@ -670,6 +670,24 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         matching_neo4j_nodes = [record["n"] for record in records]
         return Neo4jVectorGraphStore._nodes_from_neo4j_nodes(matching_neo4j_nodes)
 
+    async def get_nodes(
+        self,
+        collection: str,
+        node_uuids: Iterable[UUID],
+    ) -> list[Node]:
+        sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
+
+        async with self._semaphore:
+            records, _, _ = await self._driver.execute_query(
+                "UNWIND $node_uuids AS node_uuid\n"
+                f"MATCH (n:{sanitized_collection} {{uuid: node_uuid}})\n"
+                "RETURN n",
+                node_uuids=[str(node_uuid) for node_uuid in node_uuids],
+            )
+
+        neo4j_nodes = [record["n"] for record in records]
+        return Neo4jVectorGraphStore._nodes_from_neo4j_nodes(neo4j_nodes)
+
     async def delete_nodes(
         self,
         collection: str,

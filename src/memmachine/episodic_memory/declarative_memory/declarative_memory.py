@@ -122,7 +122,9 @@ class DeclarativeMemory:
             self._temporal_context = deque(maxlen=20)
         # task = self._vector_graph_store.get_last_episodes
 
-        episodes = sorted(episodes, key=lambda episode: (episode.timestamp, episode.uuid))
+        episodes = sorted(
+            episodes, key=lambda episode: (episode.timestamp, episode.uuid)
+        )
         episode_nodes = [
             Node(
                 uuid=episode.uuid,
@@ -594,6 +596,31 @@ class DeclarativeMemory:
 
         return chunk_context_scores
 
+    async def get_episodes(self, uuids: Iterable[UUID]) -> list[Episode]:
+        """
+        Get episodes by their UUIDs.
+        """
+        episode_nodes = await self._vector_graph_store.get_nodes(
+            collection=self._episode_collection,
+            node_uuids=uuids,
+        )
+
+        episodes = [
+            DeclarativeMemory._episode_from_episode_node(episode_node)
+            for episode_node in episode_nodes
+        ]
+
+        return episodes
+
+    async def delete_episodes(self, uuids: Iterable[UUID]):
+        """
+        Delete episodes by their UUIDs.
+        """
+        await self._vector_graph_store.delete_nodes(
+            collection=self._episode_collection,
+            node_uuids=uuids,
+        )
+
     @staticmethod
     def _unify_anchored_chunk_contexts(
         anchored_chunk_contexts: Iterable[tuple[Chunk, Iterable[Chunk]]],
@@ -676,6 +703,26 @@ class DeclarativeMemory:
             )
         else:
             raise TypeError("Data must be an Episode or Chunk")
+
+    @staticmethod
+    def _episode_from_episode_node(episode_node: Node) -> Episode:
+        return Episode(
+            uuid=UUID(cast(str, episode_node.properties["uuid"])),
+            timestamp=cast(datetime, episode_node.properties["timestamp"]),
+            source=cast(str, episode_node.properties["source"]),
+            content_type=ContentType(episode_node.properties["content_type"]),
+            content=episode_node.properties["content"],
+            filterable_properties={
+                demangle_filterable_property_key(key): cast(
+                    FilterablePropertyValue, value
+                )
+                for key, value in episode_node.properties.items()
+                if is_mangled_filterable_property_key(key)
+            },
+            user_metadata=json.loads(
+                cast(str, episode_node.properties["user_metadata"])
+            ),
+        )
 
     @staticmethod
     def _chunk_from_chunk_node(chunk_node: Node) -> Chunk:
