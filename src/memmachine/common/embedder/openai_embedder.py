@@ -31,7 +31,7 @@ class OpenAIEmbedderParams(BaseModel):
             (e.g. 'text-embedding-3-small').
         dimensions (int):
             Dimensionality of the embedding vectors
-            produced by the OpenAI embedding model
+            produced by the OpenAI embedding model.
         max_retry_interval_seconds (int):
             Maximal retry interval in seconds when retrying API calls
             (default: 120).
