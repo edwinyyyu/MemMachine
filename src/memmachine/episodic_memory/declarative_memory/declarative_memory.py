@@ -211,7 +211,7 @@ class DeclarativeMemory:
                     "content": derivative.content,
                 },
                 embeddings={
-                    DeclarativeMemory._embedding_property_name(
+                    DeclarativeMemory._embedding_name(
                         self._embedder.model_id,
                         self._embedder.dimensions,
                     ): (embedding, self._embedder.similarity_metric),
@@ -404,8 +404,8 @@ class DeclarativeMemory:
         # Search graph store for vector matches.
         matched_derivative_nodes = await self._vector_graph_store.search_similar_nodes(
             collection=self._derivative_collection,
-            embedding_property_name=(
-                DeclarativeMemory._embedding_property_name(
+            embedding_name=(
+                DeclarativeMemory._embedding_name(
                     self._embedder.model_id,
                     self._embedder.dimensions,
                 )
@@ -417,23 +417,21 @@ class DeclarativeMemory:
                 mangle_filterable_property_key(key): value
                 for key, value in property_filter.items()
             },
-            include_missing_properties=True,
         )
 
-        # TODO @edwinyyyu: update this
         # Get source chunks of matched derivatives.
         search_derivatives_source_chunk_nodes_tasks = [
             self._vector_graph_store.search_related_nodes(
-                node_uuid=matched_derivative_node.uuid,
-                collection=self._chunk_collection,
-                allowed_relations=["DERIVED_FROM"],
+                relation=self._derived_from_relation,
+                other_collection=self._chunk_collection,
+                this_collection=self._derivative_collection,
+                this_node_uuid=matched_derivative_node.uuid,
                 find_sources=False,
                 find_targets=True,
-                required_properties={
+                required_node_properties={
                     mangle_filterable_property_key(key): value
                     for key, value in property_filter.items()
                 },
-                include_missing_properties=True,
             )
             for matched_derivative_node in matched_derivative_nodes
         ]
@@ -700,7 +698,7 @@ class DeclarativeMemory:
         )
 
     @staticmethod
-    def _embedding_property_name(model_id: str, dimensions: int) -> str:
+    def _embedding_name(model_id: str, dimensions: int) -> str:
         """
         Generate a standardized property name for embeddings
         based on the model ID and embedding dimensions.

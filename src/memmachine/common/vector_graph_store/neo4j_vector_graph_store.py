@@ -173,13 +173,19 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         self._range_index_hierarchies = params.range_index_hierarchies
         self._range_index_creation_threshold = params.range_index_creation_threshold
 
+        self._vector_index_creation_threshold = params.vector_index_creation_threshold
+
         self._index_state_cache: dict[str, Neo4jVectorGraphStore.CacheIndexState] = {}
         self._populate_index_state_cache_lock = asyncio.Lock()
 
         self._collection_node_counts: dict[str, int] = {}
         self._relation_edge_counts: dict[str, int] = {}
 
-    async def add_nodes(self, collection: str, nodes: Iterable[Node]):
+    async def add_nodes(
+        self,
+        collection: str,
+        nodes: Iterable[Node],
+    ):
         if collection not in self._collection_node_counts.keys():
             # Not async-safe but it's not crucial if the count is off.
             self._collection_node_counts[collection] = await self._count_nodes(
@@ -201,15 +207,12 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
         query_nodes = []
         for node in nodes:
-            query_node = {
-                "uuid": str(node.uuid),
-                "properties": Neo4jVectorGraphStore._sanitize_properties(
-                    {
-                        mangle_property_name(key): value
-                        for key, value in node.properties.items()
-                    }
-                ),
-            }
+            query_node_properties = Neo4jVectorGraphStore._sanitize_properties(
+                {
+                    mangle_property_name(key): value
+                    for key, value in node.properties.items()
+                }
+            )
 
             for embedding_name, (
                 embedding,
@@ -224,8 +227,8 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                     )
                 )
 
-                query_node["properties"][sanitized_embedding_name] = embedding
-                query_node["properties"][sanitized_similarity_metric_name] = (
+                query_node_properties[sanitized_embedding_name] = embedding
+                query_node_properties[sanitized_similarity_metric_name] = (
                     similarity_metric.value
                 )
 
@@ -243,6 +246,10 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                         )
                     )
 
+            query_node: dict[str, PropertyValue | dict[str, PropertyValue]] = {
+                "uuid": str(node.uuid),
+                "properties": query_node_properties,
+            }
             query_nodes.append(query_node)
 
         async with self._semaphore:
@@ -278,17 +285,12 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
         query_edges = []
         for edge in edges:
-            query_edge = {
-                "uuid": str(edge.uuid),
-                "source_uuid": str(edge.source_uuid),
-                "target_uuid": str(edge.target_uuid),
-                "properties": Neo4jVectorGraphStore._sanitize_properties(
-                    {
-                        mangle_property_name(key): value
-                        for key, value in edge.properties.items()
-                    }
-                ),
-            }
+            query_edge_properties = Neo4jVectorGraphStore._sanitize_properties(
+                {
+                    mangle_property_name(key): value
+                    for key, value in edge.properties.items()
+                }
+            )
 
             for embedding_name, (
                 embedding,
@@ -303,8 +305,8 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                     )
                 )
 
-                query_edge["properties"][sanitized_embedding_name] = embedding
-                query_edge["properties"][sanitized_similarity_metric_name] = (
+                query_edge_properties[sanitized_embedding_name] = embedding
+                query_edge_properties[sanitized_similarity_metric_name] = (
                     similarity_metric.value
                 )
 
@@ -322,6 +324,12 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                         )
                     )
 
+            query_edge = {
+                "uuid": str(edge.uuid),
+                "source_uuid": str(edge.source_uuid),
+                "target_uuid": str(edge.target_uuid),
+                "properties": query_edge_properties,
+            }
             query_edges.append(query_edge)
 
         sanitized_source_collection = Neo4jVectorGraphStore._sanitize_name(
@@ -664,19 +672,20 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
     async def delete_nodes(
         self,
+        collection: str,
         node_uuids: Iterable[UUID],
     ):
+        sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
+
         async with self._semaphore:
             await self._driver.execute_query(
-                """
-                UNWIND $node_uuids AS node_uuid
-                MATCH (n {uuid: node_uuid})
-                DETACH DELETE n
-                """,
+                "UNWIND $node_uuids AS node_uuid\n"
+                f"MATCH (n:{sanitized_collection} {{uuid: node_uuid}})\n"
+                "DETACH DELETE n",
                 node_uuids=[str(node_uuid) for node_uuid in node_uuids],
             )
 
-    async def clear_data(self):
+    async def delete_all_data(self):
         async with self._semaphore:
             await self._driver.execute_query("MATCH (n) DETACH DELETE n")
 

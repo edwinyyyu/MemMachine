@@ -20,9 +20,13 @@ class VectorGraphStore(ABC):
     """
 
     @abstractmethod
-    async def add_nodes(self, collection: str, nodes: Iterable[Node]):
+    async def add_nodes(
+        self,
+        collection: str,
+        nodes: Iterable[Node],
+    ):
         """
-        Add nodes to the graph store.
+        Add nodes to the vector graph store.
 
         Args:
             collection (str):
@@ -41,7 +45,7 @@ class VectorGraphStore(ABC):
         edges: Iterable[Edge],
     ):
         """
-        Add edges to the graph store.
+        Add edges to the vector graph store.
 
         Args:
             relation (str):
@@ -59,7 +63,7 @@ class VectorGraphStore(ABC):
     async def search_similar_nodes(
         self,
         collection: str,
-        embedding_property_name: str,
+        embedding_name: str,
         query_embedding: list[float],
         similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
         limit: int | None = 100,
@@ -72,9 +76,8 @@ class VectorGraphStore(ABC):
         Args:
             collection (str):
                 Collection that the nodes belong to.
-            embedding_property_name (str):
-                The name of the property
-                that stores the embedding vector.
+            embedding_name (str):
+                The name of the embedding vector property.
             query_embedding (list[float]):
                 The embedding vector to compare against.
             similarity_metric (SimilarityMetric):
@@ -90,8 +93,7 @@ class VectorGraphStore(ABC):
                 If None or empty, no property filtering is applied
                 (default: None).
             include_missing_properties (bool):
-                If True, nodes missing any of the required properties
-                will also be included in the results
+                Whether to return nodes missing any of the required properties
                 (default: False).
 
         Returns:
@@ -104,46 +106,59 @@ class VectorGraphStore(ABC):
     @abstractmethod
     async def search_related_nodes(
         self,
-        collection: str,
-        node_uuid: UUID,
-        allowed_relations: Iterable[str] | None = None,
+        relation: str,
+        other_collection: str,
+        this_collection: str,
+        this_node_uuid: UUID,
         find_sources: bool = True,
         find_targets: bool = True,
         limit: int | None = None,
-        required_properties: Mapping[str, PropertyValue] | None = None,
-        include_missing_properties: bool = False,
+        required_edge_properties: Mapping[str, PropertyValue] | None = None,
+        required_node_properties: Mapping[str, PropertyValue] | None = None,
+        include_missing_edge_properties: bool = False,
+        include_missing_node_properties: bool = False,
     ) -> list[Node]:
         """
         Search for nodes related to the specified node via edges.
 
         Args:
-            collection (str):
-                Collection that the nodes belong to.
-            node_uuid (UUID):
+            relation (str):
+                Relation that the edges represent.
+            other_collection (str):
+                Collection that the related nodes belong to.
+            this_collection (str):
+                Collection that the specified node belongs to.
+            this_node_uuid (UUID):
                 UUID of the node to find related nodes for.
-            allowed_relations(Iterable[str] | None):
-                Iterable of relations to consider.
-                If None, all relations are considered.
             find_sources (bool):
-                If True, search for nodes
+                Whether to return nodes
                 that are sources of edges
-                pointing to the specified node.
+                pointing to the specified node
+                (default: True).
             find_targets (bool):
-                If True, search for nodes
+                Whether to return nodes
                 that are targets of edges
-                originating from the specified node.
+                originating from the specified node
+                (default: True).
             limit (int | None):
                 Maximum number of related nodes to return.
                 If None, return as many related nodes as possible
                 (default: None).
-            required_properties (Mapping[str, PropertyValue] | None):
+            required_edge_properties (Mapping[str, PropertyValue] | None):
+                Mapping of property names to their required values
+                that the edges must have.
+                If None or empty, no property filtering is applied
+                (default: None).
+            required_node_properties (Mapping[str, PropertyValue] | None):
                 Mapping of property names to their required values
                 that the nodes must have.
                 If None or empty, no property filtering is applied
                 (default: None).
-            include_missing_properties (bool):
-                If True, nodes missing any of the required properties
-                will also be included in the results
+            include_missing_edge_properties (bool):
+                Whether to traverse edges missing any of the required properties
+                (default: False).
+            include_missing_node_properties (bool):
+                Whether to return nodes missing any of the required properties
                 (default: False).
 
         Returns:
@@ -192,8 +207,7 @@ class VectorGraphStore(ABC):
                 If None or empty, no property filtering is applied
                 (default: None).
             include_missing_properties (bool):
-                If True, nodes missing any of the required properties
-                will also be included in the results
+                Whether to return nodes missing any of the required properties
                 (default: False).
 
         Returns:
@@ -224,8 +238,7 @@ class VectorGraphStore(ABC):
                 If None or empty, no property filtering is applied
                 (default: None).
             include_missing_properties (bool):
-                If True, nodes missing any of the required properties
-                will also be included in the results
+                Whether to return nodes missing any of the required properties
                 (default: False).
 
         Returns:
@@ -237,10 +250,11 @@ class VectorGraphStore(ABC):
     @abstractmethod
     async def delete_nodes(
         self,
+        collection: str,
         node_uuids: Iterable[UUID],
     ):
         """
-        Delete nodes from the graph store.
+        Delete nodes from the collection.
 
         Args:
             node_uuids (Iterable[UUID]):
@@ -249,9 +263,9 @@ class VectorGraphStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def clear_data(self):
+    async def delete_all_data(self):
         """
-        Clear all data from the graph store.
+        Delete all data from the vector graph store.
         """
         raise NotImplementedError
 
