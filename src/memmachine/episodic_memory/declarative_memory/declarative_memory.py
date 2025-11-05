@@ -211,7 +211,7 @@ class DeclarativeMemory:
                     DeclarativeMemory._embedding_property_name(
                         self._embedder.model_id,
                         self._embedder.dimensions,
-                    ): embedding,
+                    ): (embedding, self._embedder.similarity_metric),
                 },
             )
             for derivative, embedding in zip(derivatives, derivative_embeddings)

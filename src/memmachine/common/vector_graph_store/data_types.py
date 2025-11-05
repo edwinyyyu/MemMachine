@@ -7,6 +7,8 @@ from datetime import datetime
 from enum import Enum
 from uuid import UUID
 
+from memmachine.common.data_types import SimilarityMetric
+
 # Types that can be used as property values in nodes and edges.
 PropertyValue = (
     bool
@@ -34,7 +36,9 @@ class EntityType(Enum):
 class Node:
     uuid: UUID
     properties: dict[str, PropertyValue] = field(default_factory=dict)
-    embeddings: dict[str, list[float]] = field(default_factory=dict)
+    embeddings: dict[str, tuple[list[float], SimilarityMetric]] = field(
+        default_factory=dict
+    )
 
     def __eq__(self, other):
         if not isinstance(other, Node):

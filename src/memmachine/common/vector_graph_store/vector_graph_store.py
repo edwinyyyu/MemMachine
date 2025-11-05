@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
 from uuid import UUID
 
-from memmachine.common.embedder import SimilarityMetric
+from memmachine.common.data_types import SimilarityMetric
 
 from .data_types import Edge, Node, OrderedPropertyValue, PropertyValue
 
