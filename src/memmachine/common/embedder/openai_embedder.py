@@ -61,8 +61,6 @@ class OpenAIEmbedder(Embedder):
         super().__init__()
 
         api_key = config.get("api_key")
-        if not isinstance(api_key, str):
-            raise TypeError("Embedder API key must be a string")
 
         model = config.get("model", "text-embedding-3-small")
         if not isinstance(model, str):

@@ -70,7 +70,7 @@ class EmbedderBuilder(Builder):
                 return OpenAIEmbedder(
                     {
                         "model": config.get("model", "text-embedding-3-small"),
-                        "api_key": config["api_key"],
+                        "api_key": config.get("api_key"),
                         "dimensions": config.get("dimensions"),
                         "metrics_factory": injected_metrics_factory,
                         "max_retry_interval_seconds": config.get(
