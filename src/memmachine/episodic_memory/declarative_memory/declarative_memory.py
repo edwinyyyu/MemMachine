@@ -39,6 +39,8 @@ class DeclarativeMemoryParams(BaseModel):
     Parameters for DeclarativeMemory.
 
     Attributes:
+        session_id (str):
+            Session identifier.
         max_chunk_length (int):
             Maximum length of a chunk in characters
             (default: 1000).
@@ -51,6 +53,10 @@ class DeclarativeMemoryParams(BaseModel):
             Reranker instance for reranking search results.
     """
 
+    session_id: str = Field(
+        ...,
+        description="Session identifier",
+    )
     max_chunk_length: int = Field(
         1000,
         description="Maximum length of a chunk in characters.",
@@ -83,18 +89,19 @@ class DeclarativeMemory:
             params (DeclarativeMemoryParams):
                 Parameters for the DeclarativeMemory.
         """
+        session_id = params.session_id
 
         self._max_chunk_length = params.max_chunk_length
         self._vector_graph_store = params.vector_graph_store
         self._embedder = params.embedder
         self._reranker = params.reranker
 
-        self._episode_collection = "Episode"
-        self._chunk_collection = "Chunk"
-        self._derivative_collection = "Derivative"
+        self._episode_collection = f"Episode_{session_id}"
+        self._chunk_collection = f"Chunk_{session_id}"
+        self._derivative_collection = f"Derivative_{session_id}"
 
-        self._contains_relation = "CONTAINS"
-        self._derived_from_relation = "DERIVED_FROM"
+        self._contains_relation = f"CONTAINS_{session_id}"
+        self._derived_from_relation = f"DERIVED_FROM_{session_id}"
 
         self._message_prefix_template = Template("[$timestamp] $source:\n")
         self._message_suffix_template = Template("")
