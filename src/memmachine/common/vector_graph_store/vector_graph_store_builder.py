@@ -64,7 +64,7 @@ class VectorGraphStoreBuilder(Builder):
                     Neo4jVectorGraphStoreParams(
                         driver=driver,
                         max_concurrent_transactions=factory_params.max_concurrent_transactions,
-                        exact_similarity_search=factory_params.exact_similarity_search,
+                        force_exact_similarity_search=factory_params.exact_similarity_search,
                         range_index_hierarchies=[
                             [
                                 "filterable_group_id",
