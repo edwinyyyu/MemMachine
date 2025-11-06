@@ -610,7 +610,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         async with self._semaphore:
             records, _, _ = await self._driver.execute_query(
                 f"MATCH (n:{sanitized_collection})\n"
-                f"WHERE {query_relational_requirements}\n"
+                f"WHERE ({query_relational_requirements})\n"
                 f"AND {
                     Neo4jVectorGraphStore._format_required_properties(
                         'n', required_properties, include_missing_properties
