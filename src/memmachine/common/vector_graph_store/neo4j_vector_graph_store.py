@@ -564,11 +564,11 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         starting_at = list(starting_at)
         order_ascending = list(order_ascending)
 
-        if not (len(by_properties) == len(starting_at) == len(order_ascending)):
+        if not (len(by_properties) == len(starting_at) == len(order_ascending) > 0):
             raise ValueError(
                 "Lengths of "
                 "by_properties, starting_at, and order_ascending "
-                "must be equal."
+                "must be equal and greater than 0."
             )
 
         sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
@@ -577,15 +577,10 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             for by_property in by_properties
         ]
 
-        query_relational_requirements = " AND ".join(
-            (
-                f"(n.{sanitized_by_property}"
-                + (">=" if order_ascending[index] else "<=")
-                + f"$starting_at[{index}])"
-            )
-            if starting_at[index] is not None
-            else f"(n.{sanitized_by_property} IS NOT NULL)"
-            for index, sanitized_by_property in enumerate(sanitized_by_properties)
+        query_relational_requirements = Neo4jVectorGraphStore._query_lexicographic_relational_requirements(
+            sanitized_by_properties,
+            starting_at,
+            order_ascending,
         ) + (
             (
                 " AND ("
@@ -638,6 +633,59 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         return Neo4jVectorGraphStore._nodes_from_neo4j_nodes(
             directional_proximal_neo4j_nodes
         )
+
+    @staticmethod
+    def _query_lexicographic_relational_requirements(
+        sanitized_by_properties: Iterable[str],
+        starting_at: Iterable[OrderedPropertyValue | None],
+        order_ascending: Iterable[bool],
+    ):
+
+        lexicographic_relational_requirements = []
+        for index, sanitized_by_property in enumerate(sanitized_by_properties):
+            sanitized_equal_properties = sanitized_by_properties[:index]
+
+            relational_requirements = [
+                (
+                    f"(n.{sanitized_by_property}"
+                    + (" >= " if order_ascending[index] else " <= ")
+                    + f"$starting_at[{index}])"
+                )
+                if starting_at[index] is not None
+                else f"(n.{sanitized_by_property} IS NOT NULL)"
+            ]
+
+            relational_requirements += [
+                f"(n.{sanitized_equal_property} = $starting_at[{equal_index}])"
+                if starting_at[equal_index] is not None
+                else f"(n.{sanitized_equal_property} IS NOT NULL)"
+                for equal_index, sanitized_equal_property in enumerate(
+                    sanitized_equal_properties
+                )
+            ]
+
+            lexicographic_relational_requirement = (
+                f"({
+                    ' AND '.join(
+                        relational_requirements
+                    )
+                })"
+            )
+
+            lexicographic_relational_requirements.append(
+                lexicographic_relational_requirement
+            )
+
+        query_lexicographic_relational_requirements = (
+            f"({
+                ' OR '.join(
+                    lexicographic_relational_requirements
+                )
+            })"
+        )
+
+        return query_lexicographic_relational_requirements
+
 
     async def search_matching_nodes(
         self,
