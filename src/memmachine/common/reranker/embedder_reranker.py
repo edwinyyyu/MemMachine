@@ -5,9 +5,9 @@ Embedder-based reranker implementation.
 import numpy as np
 from pydantic import BaseModel, Field, InstanceOf
 
+from memmachine.common.data_types import SimilarityMetric
 from memmachine.common.embedder import Embedder
 
-from ..data_types import SimilarityMetric
 from .reranker import Reranker
 
 
