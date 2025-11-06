@@ -525,7 +525,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                         include_missing_node_properties,
                     )
                 }\n"
-                "RETURN n\n"
+                "RETURN DISTINCT n\n"
                 f"{'LIMIT $limit' if limit is not None else ''}",
                 node_uuid=str(this_node_uuid),
                 limit=limit,
