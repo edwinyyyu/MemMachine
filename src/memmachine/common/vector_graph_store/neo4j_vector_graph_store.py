@@ -583,16 +583,16 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             order_ascending,
         ) + (
             (
-                " AND ("
-                + " OR ".join(
-                    f"(n.{sanitized_by_property} <> $starting_at[{index}])"
+                " OR ("
+                + " AND ".join(
+                    f"(n.{sanitized_by_property} = $starting_at[{index}])"
                     for index, sanitized_by_property in enumerate(
                         sanitized_by_properties
                     )
                 )
                 + ")"
             )
-            if not include_equal_start
+            if include_equal_start
             else ""
         )
 
@@ -640,6 +640,9 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         starting_at: Iterable[OrderedPropertyValue | None],
         order_ascending: Iterable[bool],
     ):
+        sanitized_by_properties = list(sanitized_by_properties)
+        starting_at = list(starting_at)
+        order_ascending = list(order_ascending)
 
         lexicographic_relational_requirements = []
         for index, sanitized_by_property in enumerate(sanitized_by_properties):
@@ -648,7 +651,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             relational_requirements = [
                 (
                     f"(n.{sanitized_by_property}"
-                    + (" >= " if order_ascending[index] else " <= ")
+                    + (" > " if order_ascending[index] else " < ")
                     + f"$starting_at[{index}])"
                 )
                 if starting_at[index] is not None
