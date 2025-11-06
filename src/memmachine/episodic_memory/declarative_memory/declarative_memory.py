@@ -557,49 +557,12 @@ class DeclarativeMemory:
         Score chunk node contexts
         based on their relevance to the query.
         """
-        context_contents = []
+        context_strings = []
         for chunk_context in chunk_contexts:
-            context_content = ""
+            context_string = self.string_from_chunk_context(chunk_context)
+            context_strings.append(context_string)
 
-            previous_chunk = None
-            for chunk in chunk_context:
-                match chunk.content_type:
-                    case ContentType.MESSAGE:
-                        if previous_chunk is None:
-                            context_content += DeclarativeMemory._apply_string_template(
-                                self._message_prefix_template, chunk
-                            )
-                        elif chunk.episode_uuid != previous_chunk.episode_uuid:
-                            context_content += (
-                                DeclarativeMemory._apply_string_template(
-                                    self._message_suffix_template, previous_chunk
-                                )
-                                + "\n"
-                            )
-                            context_content += DeclarativeMemory._apply_string_template(
-                                self._message_prefix_template, chunk
-                            )
-
-                        context_content += chunk.content + "\n"
-                    case ContentType.TEXT:
-                        context_content += chunk.content + "\n"
-                    case _:
-                        pass
-
-                previous_chunk = chunk
-
-            if previous_chunk is not None:
-                match previous_chunk.content_type:
-                    case ContentType.MESSAGE:
-                        context_content += DeclarativeMemory._apply_string_template(
-                            self._message_suffix_template, previous_chunk
-                        )
-                    case _:
-                        pass
-
-            context_contents.append(context_content)
-
-        chunk_context_scores = await self._reranker.score(query, context_contents)
+        chunk_context_scores = await self._reranker.score(query, context_strings)
 
         return chunk_context_scores
 
@@ -627,6 +590,50 @@ class DeclarativeMemory:
             collection=self._episode_collection,
             node_uuids=uuids,
         )
+
+    def string_from_chunk_context(self, chunk_context: Iterable[Chunk]) -> str:
+        """
+        Format chunk context as a string.
+        """
+        context_string = ""
+
+        previous_chunk = None
+        for chunk in chunk_context:
+            match chunk.content_type:
+                case ContentType.MESSAGE:
+                    if previous_chunk is None:
+                        context_string += DeclarativeMemory._apply_string_template(
+                            self._message_prefix_template, chunk
+                        )
+                    elif chunk.episode_uuid != previous_chunk.episode_uuid:
+                        context_string += (
+                            DeclarativeMemory._apply_string_template(
+                                self._message_suffix_template, previous_chunk
+                            )
+                            + "\n"
+                        )
+                        context_string += DeclarativeMemory._apply_string_template(
+                            self._message_prefix_template, chunk
+                        )
+
+                    context_string += chunk.content + "\n"
+                case ContentType.TEXT:
+                    context_string += chunk.content + "\n"
+                case _:
+                    pass
+
+            previous_chunk = chunk
+
+        if previous_chunk is not None:
+            match previous_chunk.content_type:
+                case ContentType.MESSAGE:
+                    context_string += DeclarativeMemory._apply_string_template(
+                        self._message_suffix_template, previous_chunk
+                    )
+                case _:
+                    pass
+
+        return context_string
 
     @staticmethod
     def _unify_anchored_chunk_contexts(

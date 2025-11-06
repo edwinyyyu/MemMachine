@@ -7,7 +7,7 @@ from typing import Any
 from memmachine.common.builder import Builder
 from memmachine.common.metrics_factory.metrics_factory import MetricsFactory
 
-from .data_types import SimilarityMetric
+from memmachine.common.data_types import SimilarityMetric
 from .embedder import Embedder
 
 
