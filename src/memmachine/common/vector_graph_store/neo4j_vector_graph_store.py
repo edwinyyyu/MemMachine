@@ -104,7 +104,8 @@ class Neo4jVectorGraphStoreParams(BaseModel):
             "below which to fall back to exact similarity search "
             "when performing filtered similarity search"
         ),
-        gt=0.0,
+        ge=0.0,
+        le=1.0,
     )
     range_index_hierarchies: list[list[str]] = Field(
         default_factory=list,
@@ -421,6 +422,8 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                     vector_index_name=vector_index_name,
                 )
 
+            records = records[:limit]
+
             if (
                 required_properties
                 and len(records)
@@ -467,7 +470,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                     ),
                 )
 
-        similar_neo4j_nodes = [record["n"] for record in records[:limit]]
+        similar_neo4j_nodes = [record["n"] for record in records]
         return Neo4jVectorGraphStore._nodes_from_neo4j_nodes(similar_neo4j_nodes)
 
     async def search_related_nodes(
@@ -540,7 +543,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 ),
             )
 
-        related_neo4j_nodes = [record["n"] for record in records[:limit]]
+        related_neo4j_nodes = [record["n"] for record in records]
         return Neo4jVectorGraphStore._nodes_from_neo4j_nodes(related_neo4j_nodes)
 
     async def search_directional_nodes(
