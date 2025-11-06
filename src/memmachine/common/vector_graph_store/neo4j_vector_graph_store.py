@@ -1194,13 +1194,13 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         """
         nodes = []
         for neo4j_node in neo4j_nodes:
+            node_properties = {}
+            node_embeddings = {}
+
             for neo4j_property_name, neo4j_property_value in neo4j_node.items():
                 desanitized_property_name = Neo4jVectorGraphStore._desanitize_name(
                     neo4j_property_name
                 )
-
-                node_properties = {}
-                node_embeddings = {}
 
                 if is_mangled_property_name(desanitized_property_name):
                     property_name = demangle_property_name(desanitized_property_name)
