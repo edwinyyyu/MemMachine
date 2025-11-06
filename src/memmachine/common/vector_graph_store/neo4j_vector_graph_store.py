@@ -581,7 +581,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             (
                 f"(n.{sanitized_by_property}"
                 + (">=" if order_ascending[index] else "<=")
-                + f"$starting_at[{index}]"
+                + f"$starting_at[{index}])"
             )
             if starting_at[index] is not None
             else f"(n.{sanitized_by_property} IS NOT NULL)"
