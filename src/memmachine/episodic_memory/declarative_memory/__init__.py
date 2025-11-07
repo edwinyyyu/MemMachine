@@ -1,4 +1,5 @@
 from .data_types import (
+    Chunk,
     ContentType,
     Episode,
     FilterablePropertyValue,
@@ -9,8 +10,9 @@ from .declarative_memory import DeclarativeMemory, DeclarativeMemoryParams
 __all__ = [
     "DeclarativeMemory",
     "DeclarativeMemoryParams",
-    "Episode",
     "ContentType",
+    "Episode",
+    "Chunk",
     "FilterablePropertyValue",
     "JSONValue",
 ]
