@@ -7,9 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from memmachine.episodic_memory.episodic_memory_manager import (
-    EpisodicMemoryManager,
-)
+from memmachine.episodic_memory_manager import EpisodicMemoryManager
 from memmachine.profile_memory.profile_memory import ProfileMemory
 from memmachine.server.app import initialize_resource
 

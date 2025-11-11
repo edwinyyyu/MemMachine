@@ -1,4 +1,3 @@
-import functools
 import json
 import logging
 from collections.abc import Iterator, Mapping
@@ -6,11 +5,19 @@ from typing import Any
 
 import asyncpg
 import numpy as np
-from pgvector.asyncpg import register_vector
+from asyncpg import Pool
+from pydantic import BaseModel, InstanceOf, Field
 
 from memmachine.profile_memory.storage.storage_base import ProfileStorageBase
 
 logger = logging.getLogger(__name__)
+
+
+class AsyncPgProfileStorageParams(BaseModel):
+    pool: InstanceOf[Pool] = Field(
+        ...,
+        description="The asyncpg Pool instance of pgvector database")
+
 
 
 class RecordMapping(Mapping):
@@ -46,22 +53,12 @@ class AsyncPgProfileStorage(ProfileStorageBase):
     """
 
     @staticmethod
-    def build_config(config: dict[str, Any]) -> ProfileStorageBase:
-        return AsyncPgProfileStorage(config)
+    def build_config(params: AsyncPgProfileStorageParams) -> ProfileStorageBase:
+        return AsyncPgProfileStorage(params)
 
-    def __init__(self, config: dict[str, Any]):
-        self._pool = None
-        if config["host"] is None:
-            raise ValueError("DB host is not in config")
-        if config["port"] is None:
-            raise ValueError("DB port is not in config")
-        if config["user"] is None:
-            raise ValueError("DB user is not in config")
-        if config["password"] is None:
-            raise ValueError("DB password is not in config")
-        if config["database"] is None:
-            raise ValueError("DB database is not in config")
-        self._config = config
+    def __init__(self, params: AsyncPgProfileStorageParams):
+        self._pool = params.pool
+        self._config = params
 
         self.main_table = "prof"
         self.junction_table = "citations"
@@ -77,22 +74,7 @@ class AsyncPgProfileStorage(ProfileStorageBase):
         """
         initializes connection pool
         """
-        if self._pool is None:
-            kwargs = {}
-            # if using supabase transaction pooler, it does not support prepared statements
-            if "statement_cache_size" in self._config:
-                kwargs["statement_cache_size"] = self._config["statement_cache_size"]
-            self._pool = await asyncpg.create_pool(
-                host=self._config["host"],
-                port=self._config["port"],
-                user=self._config["user"],
-                password=self._config["password"],
-                database=self._config["database"],
-                init=functools.partial(
-                    register_vector, schema=self._config.get("vector_schema", "public")
-                ),
-                **kwargs,
-            )
+        pass
 
     async def delete_all(self):
         assert self._pool is not None
@@ -535,4 +517,4 @@ class AsyncPgProfileStorage(ProfileStorageBase):
             await conn.execute(query, user_id, start_time, json.dumps(isolations))
 
     async def cleanup(self):
-        await self._pool.close()
+        pass

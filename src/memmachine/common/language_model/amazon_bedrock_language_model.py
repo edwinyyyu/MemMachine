@@ -10,165 +10,13 @@ from uuid import uuid4
 
 import boto3
 import botocore
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from memmachine.common.data_types import ExternalServiceAPIError
-from memmachine.common.metrics_factory import MetricsFactory
 
+from ..configuration.model_conf import AwsBedrockModelConf
 from .language_model import LanguageModel
 
 logger = logging.getLogger(__name__)
-
-
-class AmazonBedrockConverseInferenceConfig(BaseModel):
-    """
-    Inference configuration for Amazon Bedrock Converse API.
-
-    Attributes:
-        max_tokens (int | None, optional):
-            The maximum number of tokens to allow in the generated response.
-            The default value is the maximum allowed value
-            for the model that you are using.
-        stop_sequences (list[str] | None, optional):
-            A list of stop sequences that will stop response generation
-            (default: None).
-        temperature (float | None, optional):
-            What sampling temperature to use, between 0 and 1.
-            The default value is the default value
-            for the model that you are using, applied when None
-            (default: None).
-        top_p (float | None, optional):
-            The percentage of probability mass to consider for the next token
-            (default: None).
-    """
-
-    max_tokens: int | None = Field(
-        None,
-        description=(
-            "The maximum number of tokens to allow in the generated response. "
-            "The default value is the maximum allowed value "
-            "for the model that you are using, applied when None"
-            "(default: None)."
-        ),
-        gt=0,
-    )
-    stop_sequences: list[str] | None = Field(
-        None,
-        description=(
-            "A list of stop sequences that will stop response generation "
-            "(default: None)."
-        ),
-    )
-    temperature: float | None = Field(
-        None,
-        description=(
-            "What sampling temperature to use, between 0 and 1. "
-            "The default value is the default value "
-            "for the model that you are using, applied when None "
-            "(default: None)."
-        ),
-        ge=0.0,
-        le=1.0,
-    )
-    top_p: float | None = Field(
-        None,
-        description=(
-            "The percentage of probability mass to consider for the next token "
-            "(default: None)."
-        ),
-        ge=0.0,
-        le=1.0,
-    )
-
-
-class AmazonBedrockLanguageModelConfig(BaseModel):
-    """
-    Configuration for AmazonBedrockLanguageModel.
-
-    Attributes:
-        region (str):
-            AWS region where Bedrock is hosted.
-        aws_access_key_id (SecretStr):
-            AWS access key ID for authentication.
-        aws_secret_access_key (SecretStr):
-            AWS secret access key for authentication.
-        model_id (str):
-            ID of the Bedrock model to use for generation
-            (e.g. 'openai.gpt-oss-20b-1:0').
-        inference_config (AmazonBedrockConverseInferenceConfig | None, optional):
-            Inference configuration for the Bedrock Converse API
-            (default: None).
-        additional_model_request_fields (dict[str, Any] | None, optional):
-            Keys are request fields for the model
-            and values are values for those fields
-            (default: None).
-        max_retry_interval_seconds (int, optional):
-            Maximal retry interval in seconds when retrying API calls
-            (default: 120).
-        metrics_factory (MetricsFactory | None, optional):
-            An instance of MetricsFactory
-            for collecting usage metrics
-            (default: None).
-        user_metrics_labels (dict[str, str], optional):
-            Labels to attach to the collected metrics
-            (default: None).
-    """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    region: str = Field(
-        "us-west-2",
-        description="AWS region where Bedrock is hosted.",
-    )
-    aws_access_key_id: SecretStr = Field(
-        description=("AWS access key ID for authentication."),
-    )
-    aws_secret_access_key: SecretStr = Field(
-        description=("AWS secret access key for authentication."),
-    )
-    aws_session_token: SecretStr | None = Field(
-        None,
-        description=("AWS session token for authentication."),
-    )
-    model_id: str = Field(
-        description=(
-            "ID of the Bedrock model to use for generation "
-            "(e.g. 'openai.gpt-oss-20b-1:0')."
-        ),
-    )
-    inference_config: AmazonBedrockConverseInferenceConfig | None = Field(
-        None,
-        description=(
-            "Inference configuration for the Bedrock Converse API (default: None)."
-        ),
-    )
-    additional_model_request_fields: dict[str, Any] | None = Field(
-        None,
-        description=(
-            "Keys are request fields for the model "
-            "and values are values for those fields "
-            "(default: None)."
-        ),
-    )
-    max_retry_interval_seconds: int = Field(
-        120,
-        description=(
-            "Maximal retry interval in seconds when retrying API calls (default: 120)."
-        ),
-        gt=0,
-    )
-    metrics_factory: MetricsFactory | None = Field(
-        None,
-        description=(
-            "An instance of MetricsFactory "
-            "for collecting usage metrics "
-            "(default: None)."
-        ),
-    )
-    user_metrics_labels: dict[str, str] | None = Field(
-        None,
-        description="Labels to attach to the collected metrics (default: None).",
-    )
 
 
 class AmazonBedrockLanguageModel(LanguageModel):
@@ -177,7 +25,7 @@ class AmazonBedrockLanguageModel(LanguageModel):
     to generate responses based on prompts and tools.
     """
 
-    def __init__(self, config: AmazonBedrockLanguageModelConfig):
+    def __init__(self, config: AwsBedrockModelConf) -> None:
         """
         Initialize an AmazonBedrockLanguageModel
         with the provided configuration.
@@ -231,9 +79,8 @@ class AmazonBedrockLanguageModel(LanguageModel):
 
         self._max_retry_interval_seconds = config.max_retry_interval_seconds
 
-        metrics_factory = config.metrics_factory
-
         self._collect_metrics = False
+        metrics_factory = config.get_metrics_factory()
         if metrics_factory is not None:
             self._collect_metrics = True
             self._user_metrics_labels = config.user_metrics_labels or {}

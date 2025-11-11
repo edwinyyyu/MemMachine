@@ -7,14 +7,13 @@ import json
 import logging
 import time
 from typing import Any
-from urllib.parse import urlparse
 from uuid import uuid4
 
 import openai
 
 from memmachine.common.data_types import ExternalServiceAPIError
-from memmachine.common.metrics_factory.metrics_factory import MetricsFactory
 
+from ..configuration.model_conf import OpenAICompatibleModelConf
 from .language_model import LanguageModel
 
 logger = logging.getLogger(__name__)
@@ -26,7 +25,7 @@ class OpenAICompatibleLanguageModel(LanguageModel):
     to generate responses based on prompts and tools.
     """
 
-    def __init__(self, config: dict[str, Any]):
+    def __init__(self, config: OpenAICompatibleModelConf) -> None:
         """
         Initialize an OpenAICompatibleLanguageModel
         with the provided configuration.
@@ -56,44 +55,19 @@ class OpenAICompatibleLanguageModel(LanguageModel):
         """
         super().__init__()
 
-        self._model = config.get("model")
-        if self._model is None:
-            raise ValueError("The model name must be configured")
+        self._model = config.model
+        api_key = config.api_key
+        base_url = config.base_url
+        self._client = openai.AsyncOpenAI(
+            api_key=api_key.get_secret_value(), base_url=base_url
+        )
+        self._max_retry_interval_seconds = config.max_retry_interval_seconds
 
-        if not isinstance(self._model, str):
-            raise TypeError("The model name must be a string")
-
-        api_key = config.get("api_key")
-        if api_key is None:
-            raise ValueError("Language API key must be provided")
-
-        base_url = config.get("base_url")
-        if base_url is not None:
-            try:
-                parsed_url = urlparse(base_url)
-                if not parsed_url.scheme or not parsed_url.netloc:
-                    raise ValueError(f"Invalid base URL: {base_url}")
-            except ValueError as e:
-                raise ValueError(f"Invalid base URL: {base_url}") from e
-
-        self._client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
-
-        self._max_retry_interval_seconds = config.get("max_retry_interval_seconds", 120)
-        if not isinstance(self._max_retry_interval_seconds, int):
-            raise TypeError("max_retry_interval_seconds must be an integer")
-        if self._max_retry_interval_seconds <= 0:
-            raise ValueError("max_retry_interval_seconds must be a positive integer")
-
-        metrics_factory = config.get("metrics_factory")
-        if metrics_factory is not None and not isinstance(
-            metrics_factory, MetricsFactory
-        ):
-            raise TypeError("Metrics factory must be an instance of MetricsFactory")
-
+        metrics_factory = config.get_metrics_factory()
         self._collect_metrics = False
         if metrics_factory is not None:
             self._collect_metrics = True
-            self._user_metrics_labels = config.get("user_metrics_labels", {})
+            self._user_metrics_labels = config.user_metrics_labels
             if not isinstance(self._user_metrics_labels, dict):
                 raise TypeError("user_metrics_labels must be a dictionary")
             label_names = self._user_metrics_labels.keys()

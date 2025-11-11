@@ -34,9 +34,11 @@ from pydantic import BaseModel, Field, model_validator
 from starlette.applications import Starlette
 from starlette.types import Lifespan, Receive, Scope, Send
 
+from memmachine.common.configuration import load_config_yml_file
 from memmachine.common.embedder import EmbedderBuilder
 from memmachine.common.language_model import LanguageModelBuilder
 from memmachine.common.metrics_factory import MetricsFactoryBuilder
+from memmachine.common.resource_mgr import ResourceMgr
 from memmachine.episodic_memory.data_types import ContentType
 from memmachine.episodic_memory.episodic_memory import (
     AsyncEpisodicMemory,
@@ -480,16 +482,13 @@ class DeleteDataRequest(RequestWithSession):
 
 # === Globals ===
 # Global instances for memory managers, initialized during app startup.
-profile_memory: ProfileMemory | None = None
-episodic_memory: EpisodicMemoryManager | None = None
+resource_mgr: ResourceMgr | None = None
 
 
 # === Lifespan Management ===
 
 
-async def initialize_resource(
-    config_file: str,
-) -> tuple[EpisodicMemoryManager, ProfileMemory]:
+async def initialize_resource(config_file: str) -> ResourceMgr:
     """
     This is a temporary solution to unify the ProfileMemory and Episodic Memory
     configuration.
@@ -502,120 +501,21 @@ async def initialize_resource(
         A tuple containing the EpisodicMemoryManager and ProfileMemory instances.
     """
 
-    try:
-        yaml_config = yaml.safe_load(open(config_file, encoding="utf-8"))
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Config file {config_file} not found")
-    except yaml.YAMLError:
-        raise ValueError(f"Config file {config_file} is not valid YAML")
-    except Exception as e:
-        raise e
-
-    def config_to_lowercase(data: Any) -> Any:
-        """Recursively converts all dictionary keys in a nested structure
-        to lowercase."""
-        if isinstance(data, dict):
-            return {k.lower(): config_to_lowercase(v) for k, v in data.items()}
-        if isinstance(data, list):
-            return [config_to_lowercase(i) for i in data]
-        return data
-
-    yaml_config = config_to_lowercase(yaml_config)
-
-    # if the model is defined in the config, use it.
-    profile_config = yaml_config.get("profile_memory", {})
-
-    # create LLM model from the configuration
-    model_config = yaml_config.get("model", {})
-
-    model_name = profile_config.get("llm_model")
-    if model_name is None:
-        raise ValueError("Model not configured in config file for profile memory")
-
-    model_def = model_config.get(model_name)
-    if model_def is None:
-        raise ValueError(f"Can not find definition of model{model_name}")
-
-    profile_model = copy.deepcopy(model_def)
-    metrics_manager = MetricsFactoryBuilder.build("prometheus", {}, {})
-    profile_model["metrics_factory_id"] = "prometheus"
-    metrics_injection = {}
-    metrics_injection["prometheus"] = metrics_manager
-    model_vendor = profile_model.pop("model_vendor")
-    llm_model = LanguageModelBuilder.build(
-        model_vendor, profile_model, metrics_injection
-    )
-
-    # create embedder
-    embedders = yaml_config.get("embedder", {})
-    embedder_id = profile_config.get("embedding_model")
-    if embedder_id is None:
-        raise ValueError(
-            "Embedding model not configured in config file for profile memory"
-        )
-
-    embedder_def = embedders.get(embedder_id)
-    if embedder_def is None:
-        raise ValueError(f"Can not find definition of embedder {embedder_id}")
-
-    embedder_config = copy.deepcopy(embedder_def["config"])
-    if embedder_def["provider"] == "openai":
-        embedder_config["metrics_factory_id"] = "prometheus"
-
-    embeddings = EmbedderBuilder.build(
-        embedder_def["provider"], embedder_config, metrics_injection
-    )
-
-    # Get the database configuration
-    # get DB config from configuration file is available
-    db_config_name = profile_config.get("database")
-    if db_config_name is None:
-        raise ValueError("Profile database not configured in config file")
-    db_config = yaml_config.get("storage", {})
-    db_config = db_config.get(db_config_name)
-    if db_config is None:
-        raise ValueError(f"Can not find configuration for database {db_config_name}")
-
-    prompt_file = profile_config.get("prompt", "profile_prompt")
-    prompt_module = import_module(f".prompt.{prompt_file}", __package__)
-    profile_prompt = ProfilePrompt.load_from_module(prompt_module)
-
-    profile_storage = AsyncPgProfileStorage.build_config(
-        {
-            "host": db_config.get("host", "localhost"),
-            "port": db_config.get("port", 0),
-            "user": db_config.get("user", ""),
-            "password": db_config.get("password", ""),
-            "database": db_config.get("database", ""),
-        }
-    )
-
-    profile_memory = ProfileMemory(
-        model=llm_model,
-        embeddings=embeddings,
-        profile_storage=profile_storage,
-        prompt=profile_prompt,
-    )
-    episodic_memory = EpisodicMemoryManager.create_episodic_memory_manager(config_file)
-    return episodic_memory, profile_memory
+    config = load_config_yml_file(config_file)
+    ret = ResourceMgr(config)
+    await resource_mgr.profile_memory.startup()
+    return ret
 
 
 async def init_global_memory():
     config_file = os.getenv("MEMORY_CONFIG", "cfg.yml")
-
-    global episodic_memory
-    global profile_memory
-    episodic_memory, profile_memory = await initialize_resource(config_file)
-    await profile_memory.startup()
+    global resource_mgr
+    resource_mgr = await initialize_resource(config_file)
 
 
 async def shutdown_global_memory():
-    global episodic_memory
-    global profile_memory
-    if profile_memory is not None:
-        await profile_memory.cleanup()
-    if episodic_memory is not None:
-        await episodic_memory.shut_down()
+    global resource_mgr
+    resource_mgr.close()
 
 
 @asynccontextmanager
@@ -1435,15 +1335,12 @@ def main():
 
         async def run_mcp_server():
             """Initialize resources and run MCP server in the same event loop."""
-            global episodic_memory, profile_memory
+            global resource_mgr
             try:
-                episodic_memory, profile_memory = await initialize_resource(config_file)
-                await profile_memory.startup()
+                resource_mgr = await initialize_resource(config_file)
                 await mcp.run_stdio_async()
             finally:
-                # Clean up resources when server stops
-                if profile_memory:
-                    await profile_memory.cleanup()
+                resource_mgr.close()
 
         asyncio.run(run_mcp_server())
     else:
