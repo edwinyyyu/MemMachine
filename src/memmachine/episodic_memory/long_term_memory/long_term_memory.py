@@ -1,5 +1,6 @@
 from collections.abc import Iterable, Mapping
 from typing import Any, cast
+from uuid import UUID
 
 from ...common.configuration.episodic_config import LongTermMemoryParams
 from ..data_types import ContentType, Episode
@@ -114,17 +115,10 @@ class LongTermMemory:
             for declarative_memory_episode in declarative_memory_episodes
         ]
 
-    async def clear(self):
-        self._declarative_memory.forget_all()
-
-    async def forget_session(self):
-        await self._declarative_memory.delete_episodes(
+    async def delete_session_episodes(self):
+        self._declarative_memory.delete_episodes(
             episode.uuid
-            for episode in await self._declarative_memory.get_matching_episodes(
-                property_filter={
-                    "session_id": self._memory_context.session_id,
-                }
-            )
+            for episode in await self._declarative_memory.get_matching_episodes()
         )
 
     async def delete_episodes(self, uuids: Iterable[UUID]):
