@@ -78,11 +78,6 @@ class LongTermMemoryParams(BaseModel):
         ...,
         description="Session identifier",
     )
-    max_chunk_length: int = Field(
-        1000,
-        description="Maximum length of a chunk in characters.",
-        gt=0,
-    )
     vector_graph_store: InstanceOf[VectorGraphStore] = Field(
         ...,
         description="VectorGraphStore instance for storing and retrieving memories",
