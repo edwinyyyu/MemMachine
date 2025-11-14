@@ -41,6 +41,8 @@ class EpisodicMemoryParams(BaseModel):
         metrics_factory (MetricsFactory): The metrics factory.
         short_term_memory (ShortTermMemoryParams): The short-term memory parameters.
         long_term_memory (LongTermMemoryParams): The long-term memory parameters.
+        short_term_memory_enabled (bool): Whether the short-term memory is enabled.
+        long_term_memory_enabled (bool): Whether the long-term memory is enabled.
         enabled (bool): Whether the episodic memory is enabled.
     """
 
@@ -55,6 +57,12 @@ class EpisodicMemoryParams(BaseModel):
     )
     long_term_memory: LongTermMemoryParams | None = Field(
         default=None, description="The long-term memory parameters"
+    )
+    long_term_memory_enabled: bool = Field(
+        default=True, description="Whether the long-term memory is enabled"
+    )
+    short_term_memory_enabled: bool = Field(
+        default=True, description="Whether the short-term memory is enabled"
     )
     enabled: bool = Field(
         default=True, description="Whether the episodic memory is enabled"
@@ -87,7 +95,7 @@ class EpisodicMemory:
     def __init__(
         self,
         param: EpisodicMemoryConf,
-        session_memory: ShortTermMemory | None = None,
+        short_term_memory: ShortTermMemory | None = None,
         long_term_memory: LongTermMemory | None = None,
     ):
         # pylint: disable=too-many-instance-attributes
@@ -98,9 +106,11 @@ class EpisodicMemory:
             manager: The EpisodicMemoryManager that created this instance.
             param: The paraters required to initialize the episodic memory
         """
-        self._session_key = param.session_key
         self._closed = False
-        self._short_term_memory: ShortTermMemory | None = session_memory
+
+        self._session_key = param.session_key
+
+        self._short_term_memory: ShortTermMemory | None = short_term_memory
         self._long_term_memory: LongTermMemory | None = long_term_memory
         metrics_manager = param.get_metrics_factory()
         self._enabled = param.enabled
@@ -124,16 +134,20 @@ class EpisodicMemory:
         )
 
     @classmethod
-    async def create(cls,
-                     resource_mgr: ResourceMgrProto,
-                     param: EpisodicMemoryConf) -> Self:
-        session_memory: ShortTermMemory | None = None
+    async def create(
+        cls,
+        resource_mgr: ResourceMgrProto,
+        param: EpisodicMemoryConf
+    ) -> Self:
+        short_term_memory: ShortTermMemory | None = None
         if param.short_term_memory and param.short_term_memory.enabled:
-            session_memory = await ShortTermMemory.create(resource_mgr, param.short_term_memory)
+            short_term_memory = await ShortTermMemory.create(resource_mgr, param.short_term_memory)
+
         long_term_memory: LongTermMemory | None = None
         if param.long_term_memory and param.long_term_memory.enabled:
             long_term_memory = LongTermMemory(resource_mgr, param.long_term_memory)
-        return EpisodicMemory(param, session_memory, long_term_memory)
+
+        return EpisodicMemory(param, short_term_memory, long_term_memory)
 
     @property
     def short_term_memory(self) -> ShortTermMemory | None:
@@ -313,7 +327,7 @@ class EpisodicMemory:
                 property_filter,
             )
         elif self._long_term_memory is None:
-            session_result = await self._short_term_memory.get_session_memory_context(
+            session_result = await self._short_term_memory.get_short_term_memory_context(
                 query, limit=search_limit, filter=property_filter
             )
             long_episode = []
@@ -321,7 +335,7 @@ class EpisodicMemory:
         else:
             # Concurrently search both memory stores
             session_result, long_episode = await asyncio.gather(
-                self._short_term_memory.get_session_memory_context(
+                self._short_term_memory.get_short_term_memory_context(
                     query, limit=search_limit
                 ),
                 self._long_term_memory.search(query, search_limit, property_filter),

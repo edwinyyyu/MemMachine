@@ -36,7 +36,6 @@ class ShortTermMemoryParams(BaseModel):
         summary_prompt_system (str): The system prompt for the summarization.
         summary_prompt_user (str): The user prompt for the summarization.
         message_capacity (int): The maximum number of messages to summarize.
-        enabled (bool): Whether the short-term memory is enabled.
     """
 
     session_key: str = Field(..., description="Session identifier", min_length=1)
@@ -55,7 +54,6 @@ class ShortTermMemoryParams(BaseModel):
     message_capacity: int = Field(
         default=64000, gt=0, description="The maximum length of short-term memory"
     )
-    enabled: bool = True
 
     @field_validator("summary_prompt_user")
     def validate_summary_user_prompt(cls, v):
