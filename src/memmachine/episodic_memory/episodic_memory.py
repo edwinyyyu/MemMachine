@@ -20,7 +20,7 @@ import asyncio
 import logging
 import time
 import uuid
-from typing import cast, Self
+from typing import Self, cast
 
 from pydantic import BaseModel, Field, InstanceOf, model_validator
 
@@ -251,7 +251,7 @@ class EpisodicMemory:
         if self._short_term_memory:
             tasks.append(self._short_term_memory.delete_episode(uuid))
         if self._long_term_memory:
-            tasks.append(self._long_term_memory.delete_episode(uuid))
+            tasks.append(self._long_term_memory.delete_episodes([uuid]))
         await asyncio.gather(*tasks)
         return
 
@@ -267,7 +267,7 @@ class EpisodicMemory:
         if self._short_term_memory:
             tasks.append(self._short_term_memory.clear_memory())
         if self._long_term_memory:
-            tasks.append(self._long_term_memory.forget_session())
+            tasks.append(self._long_term_memory.delete_matching_episodes())
         await asyncio.gather(*tasks)
         return
 

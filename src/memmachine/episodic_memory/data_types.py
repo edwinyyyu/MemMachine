@@ -37,75 +37,7 @@ class EpisodeType(Enum):
     """Enumeration for the type of an Episode."""
 
     MESSAGE = "message"
-    THOUGHT = "thought"
-    ACTION = "action"
-
-
-@dataclass
-class SessionInfo:
-    """
-    Represents the information about a single conversation session.
-    This is typically retrieved from or stored in a session management
-    database.
-    """
-
-    group_id: str
-    """The identifier for a group conversation."""
-    session_id: str
-    """
-    A unique string identifier for the session.
-    """
-    agent_ids: list[str]
-    """A list of agent identifiers participating in the session."""
-    user_ids: list[str]
-    """A list of user identifiers participating in the session."""
-    configuration: dict
-    """A dictionary containing any custom configuration for this session."""
-
-
-@dataclass
-class GroupConfiguration:
-    """
-    Represents the configuration for a group of conversations.
-    """
-
-    group_id: str
-    """The identifier for the group."""
-    agent_list: list[str]
-    """A list of agent identifiers in the group."""
-    user_list: list[str]
-    """A list of user identifiers in the group."""
-    configuration: dict
-    """A dictionary containing any custom configuration for the group."""
-
-
-@dataclass
-class MemoryContext:
-    """
-    Defines the unique context for a memory instance.
-    It's used to isolate memories for different conversations, users,
-    and agents.
-    """
-
-    group_id: str
-    """The identifier for the group context."""
-    agent_id: set[str]
-    """A set of agent identifiers for the context."""
-    user_id: set[str]
-    """A set of user identifiers for the context."""
-    session_id: str
-    """The identifier for the session context."""
-
-    def __eq__(self, other):
-        if not isinstance(other, MemoryContext):
-            return False
-        return self.group_id == other.group_id and self.session_id == other.session_id
-
-    def __hash__(self):
-        return hash(
-            f"""{len(self.group_id)}#{self.group_id}_
-            {len(self.session_id)}#{self.session_id}"""
-        )
+    # Other episode types like 'thought', 'action' could be added here.
 
 
 @dataclass(kw_only=True)

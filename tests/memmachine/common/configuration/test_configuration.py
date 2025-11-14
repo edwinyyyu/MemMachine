@@ -36,7 +36,6 @@ def test_update_long_term_memory_conf(long_term_memory_conf: LongTermMemoryConfP
     updated = specific.merge(long_term_memory_conf)
     assert updated.session_id == "session_123"
     assert updated.embedder == "embedder_v2"
-    assert updated.max_chunk_length == 1000
     assert updated.reranker == "reranker_v1"
     assert updated.vector_graph_store == "store_v1"
     assert updated.enabled is True

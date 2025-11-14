@@ -102,11 +102,6 @@ class LongTermMemoryConf(BaseModel):
         ...,
         description="Session identifier",
     )
-    max_chunk_length: int = Field(
-        1000,
-        description="Maximum length of a chunk in characters.",
-        gt=0,
-    )
     vector_graph_store: str = Field(
         ...,
         description="ID of the VectorGraphStore instance for storing and retrieving memories",
@@ -129,11 +124,6 @@ class LongTermMemoryConfPartial(BaseModel):
     session_id: str | None = Field(
         default=None,
         description="Session identifier",
-    )
-    max_chunk_length: int | None = Field(
-        default=None,
-        description="Maximum length of a chunk in characters.",
-        gt=0,
     )
     vector_graph_store: str | None = Field(
         default=None,

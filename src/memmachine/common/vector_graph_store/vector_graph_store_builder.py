@@ -112,8 +112,6 @@ class VectorGraphStoreBuilder(Builder):
                         exact_similarity_search_fallback_threshold=factory_params.exact_similarity_search_fallback_threshold,
                         range_index_hierarchies=[
                             [
-                                "filterable_group_id",
-                                "filterable_session_id",
                                 "timestamp",
                             ],
                         ],
