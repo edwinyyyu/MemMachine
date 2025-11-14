@@ -4,8 +4,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
-FilterablePropertyValue = bool | int | str
-JSONValue = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
+from memmachine.common.data_types import FilterablePropertyValue, JSONValue
 
 
 class ContentType(Enum):

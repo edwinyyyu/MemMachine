@@ -4,6 +4,9 @@ Common data types for MemMachine.
 
 from enum import Enum
 
+FilterablePropertyValue = bool | int | str
+JSONValue = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
+
 
 class SimilarityMetric(Enum):
     COSINE = "cosine"
