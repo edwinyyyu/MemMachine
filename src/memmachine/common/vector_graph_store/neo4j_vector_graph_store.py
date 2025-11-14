@@ -193,18 +193,8 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 collection
             )
 
-        if (
-            self._collection_node_counts[collection]
-            >= self._range_index_creation_threshold
-        ):
-            asyncio.create_task(
-                self._create_initial_indexes_if_not_exist(
-                    EntityType.NODE,
-                    collection,
-                )
-            )
-
         sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
+        sanitized_embedding_names = set()
 
         query_nodes = []
         for node in nodes:
@@ -228,30 +218,12 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                     )
                 )
 
+                sanitized_embedding_names.add(sanitized_embedding_name)
+
                 query_node_properties[sanitized_embedding_name] = embedding
                 query_node_properties[sanitized_similarity_metric_name] = (
                     similarity_metric.value
                 )
-
-                if (
-                    self._collection_node_counts[collection]
-                    >= self._vector_index_creation_threshold
-                    and Neo4jVectorGraphStore._index_name(
-                        EntityType.NODE,
-                        sanitized_collection,
-                        sanitized_embedding_name,
-                    )
-                    not in self._index_state_cache
-                ):
-                    asyncio.create_task(
-                        self._create_vector_index_if_not_exists(
-                            entity_type=EntityType.NODE,
-                            sanitized_collection_or_relation=sanitized_collection,
-                            sanitized_embedding_name=sanitized_embedding_name,
-                            dimensions=len(embedding),
-                            similarity_metric=similarity_metric,
-                        )
-                    )
 
             query_node: dict[str, PropertyValue | dict[str, PropertyValue]] = {
                 "uuid": str(node.uuid),
@@ -269,6 +241,40 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
         self._collection_node_counts[collection] += len(query_nodes)
 
+        if (
+            self._collection_node_counts[collection]
+            >= self._range_index_creation_threshold
+        ):
+            asyncio.create_task(
+                self._create_initial_indexes_if_not_exist(
+                    EntityType.NODE,
+                    sanitized_collection,
+                )
+            )
+
+        if (
+            self._collection_node_counts[collection]
+            >= self._vector_index_creation_threshold
+        ):
+            for sanitized_embedding_name in sanitized_embedding_names:
+                if (
+                    Neo4jVectorGraphStore._index_name(
+                        EntityType.NODE,
+                        sanitized_collection,
+                        sanitized_embedding_name,
+                    )
+                    not in self._index_state_cache
+                ):
+                    asyncio.create_task(
+                        self._create_vector_index_if_not_exists(
+                            entity_type=EntityType.NODE,
+                            sanitized_collection_or_relation=sanitized_collection,
+                            sanitized_embedding_name=sanitized_embedding_name,
+                            dimensions=len(embedding),
+                            similarity_metric=similarity_metric,
+                        )
+                    )
+
     async def add_edges(
         self,
         relation: str,
@@ -280,15 +286,8 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             # Not async-safe but it's not crucial if the count is off.
             self._relation_edge_counts[relation] = await self._count_edges(relation)
 
-        if self._relation_edge_counts[relation] >= self._range_index_creation_threshold:
-            asyncio.create_task(
-                self._create_initial_indexes_if_not_exist(
-                    EntityType.EDGE,
-                    relation,
-                )
-            )
-
         sanitized_relation = Neo4jVectorGraphStore._sanitize_name(relation)
+        sanitized_embedding_names = set()
 
         query_edges = []
         for edge in edges:
@@ -312,30 +311,12 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                     )
                 )
 
+                sanitized_embedding_names.add(sanitized_embedding_name)
+
                 query_edge_properties[sanitized_embedding_name] = embedding
                 query_edge_properties[sanitized_similarity_metric_name] = (
                     similarity_metric.value
                 )
-
-                if (
-                    self._relation_edge_counts[relation]
-                    >= self._vector_index_creation_threshold
-                    and Neo4jVectorGraphStore._index_name(
-                        EntityType.EDGE,
-                        sanitized_relation,
-                        sanitized_embedding_name,
-                    )
-                    not in self._index_state_cache
-                ):
-                    asyncio.create_task(
-                        self._create_vector_index_if_not_exists(
-                            entity_type=EntityType.EDGE,
-                            sanitized_collection_or_relation=sanitized_relation,
-                            sanitized_embedding_name=sanitized_embedding_name,
-                            dimensions=len(embedding),
-                            similarity_metric=similarity_metric,
-                        )
-                    )
 
             query_edge = {
                 "uuid": str(edge.uuid),
@@ -365,6 +346,37 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             )
 
         self._relation_edge_counts[relation] += len(query_edges)
+
+        if self._relation_edge_counts[relation] >= self._range_index_creation_threshold:
+            asyncio.create_task(
+                self._create_initial_indexes_if_not_exist(
+                    EntityType.EDGE,
+                    sanitized_relation,
+                )
+            )
+
+        if (
+            self._relation_edge_counts[relation]
+            >= self._vector_index_creation_threshold
+        ):
+            for sanitized_embedding_name in sanitized_embedding_names:
+                if (
+                    Neo4jVectorGraphStore._index_name(
+                        EntityType.EDGE,
+                        sanitized_relation,
+                        sanitized_embedding_name,
+                    )
+                    not in self._index_state_cache
+                ):
+                    asyncio.create_task(
+                        self._create_vector_index_if_not_exists(
+                            entity_type=EntityType.EDGE,
+                            sanitized_collection_or_relation=sanitized_relation,
+                            sanitized_embedding_name=sanitized_embedding_name,
+                            dimensions=len(embedding),
+                            similarity_metric=similarity_metric,
+                        )
+                    )
 
     async def search_similar_nodes(
         self,
@@ -848,7 +860,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
     async def _create_initial_indexes_if_not_exist(
         self,
         entity_type: EntityType,
-        collection_or_relation: str,
+        sanitized_collection_or_relation: str,
     ):
         """
         Create initial indexes if not exist.
@@ -857,25 +869,21 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         Args:
             entity_type (EntityType):
                 The type of entity the indexes are for.
-            collections_or_relations (Iterable[str]):
-                Collections of nodes or relation types of edges
+            sanitized_collections_or_relations (str):
+                Sanitized collection of nodes or relation type of edges
                 to create initial indexes for.
         """
         tasks = [
             self._create_unique_constraint_if_not_exists(
                 entity_type=entity_type,
-                sanitized_collection_or_relation=Neo4jVectorGraphStore._sanitize_name(
-                    collection_or_relation
-                ),
+                sanitized_collection_or_relation=sanitized_collection_or_relation,
                 sanitized_property_name="uuid",
             )
         ]
         tasks += [
             self._create_range_index_if_not_exists(
                 entity_type=entity_type,
-                sanitized_collection_or_relation=Neo4jVectorGraphStore._sanitize_name(
-                    collection_or_relation
-                ),
+                sanitized_collection_or_relation=sanitized_collection_or_relation,
                 sanitized_property_names=[
                     Neo4jVectorGraphStore._sanitize_name(
                         mangle_property_name(property_name)
