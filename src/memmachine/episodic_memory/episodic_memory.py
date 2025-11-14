@@ -12,8 +12,7 @@ Key responsibilities include:
   memory.
 - Retrieving relevant context for a query by searching both memory types.
 - Interacting with a language model for memory-related tasks.
-- Each instance is uniquely identified by a `MemoryContext` and managed by the
-  `EpisodicMemoryManager`.
+- Each instance is managed by the `EpisodicMemoryManager`.
 """
 
 import asyncio
