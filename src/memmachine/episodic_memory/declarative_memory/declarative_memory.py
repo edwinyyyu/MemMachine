@@ -440,14 +440,17 @@ class DeclarativeMemory:
         """Score episode node contexts based on their relevance to the query."""
         context_strings = []
         for episode_context in episode_contexts:
-            context_string = self.string_from_episode_context(episode_context)
+            context_string = DeclarativeMemory.string_from_episode_context(
+                episode_context
+            )
             context_strings.append(context_string)
 
         episode_context_scores = await self._reranker.score(query, context_strings)
 
         return episode_context_scores
 
-    def string_from_episode_context(self, episode_context: Iterable[Episode]) -> str:
+    @staticmethod
+    def string_from_episode_context(episode_context: Iterable[Episode]) -> str:
         """Format episode context as a string."""
         context_string = ""
 
