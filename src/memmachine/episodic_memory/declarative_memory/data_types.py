@@ -35,7 +35,15 @@ class Episode:
         """Compare episodes by UID."""
         if not isinstance(other, Episode):
             return False
-        return self.uid == other.uid
+        return (
+            self.uid == other.uid
+            and self.timestamp == other.timestamp
+            and self.source == other.source
+            and self.content_type == other.content_type
+            and self.content == other.content
+            and self.filterable_properties == other.filterable_properties
+            and self.user_metadata == other.user_metadata
+        )
 
     def __hash__(self) -> int:
         """Hash an episode by its UID."""
@@ -59,7 +67,14 @@ class Derivative:
         """Compare derivatives by UID."""
         if not isinstance(other, Derivative):
             return False
-        return self.uid == other.uid
+        return (
+            self.uid == other.uid
+            and self.timestamp == other.timestamp
+            and self.source == other.source
+            and self.content_type == other.content_type
+            and self.content == other.content
+            and self.filterable_properties == other.filterable_properties
+        )
 
     def __hash__(self) -> int:
         """Hash a derivative by its UID."""
