@@ -61,8 +61,8 @@ class EmbedderRerankerConf(BaseModel):
     """Parameters for EmbedderReranker."""
 
     embedder_id: str = Field(
-        default="sentence-transformers/all-MiniLM-L6-v2",
-        description="The embedder model name to use for reranking",
+        ...,
+        description="The embedder model resource id to use for reranking",
     )
 
 
