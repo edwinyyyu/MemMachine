@@ -21,7 +21,7 @@ class EmbedderManager:
 
     async def build_all(self) -> dict[str, Embedder]:
         """Trigger lazy initialization of all embedders concurrently."""
-        names = set()
+        names: set[str] = set()
         names.update(self.conf.amazon_bedrock)
         names.update(self.conf.openai)
         names.update(self.conf.sentence_transformer)
@@ -104,16 +104,13 @@ class EmbedderManager:
             OpenAIEmbedderParams,
         )
 
-        dimensions = conf.dimensions or 1536
-
         params = OpenAIEmbedderParams(
             client=openai.AsyncOpenAI(
                 api_key=conf.api_key.get_secret_value(),
                 base_url=conf.base_url,
             ),
             model=conf.model,
-            dimensions=dimensions,
-            max_retry_interval_seconds=conf.max_retry_interval_seconds,
+            dimensions=conf.dimensions,
             metrics_factory=conf.get_metrics_factory(),
             user_metrics_labels=conf.user_metrics_labels,
         )
