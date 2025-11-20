@@ -105,6 +105,13 @@ def declarative_memory(embedder, reranker, vector_graph_store):
     )
 
 
+@pytest.fixture(autouse=True)
+def setup_nltk_data():
+    import nltk
+
+    nltk.download("punkt_tab")
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def clear_declarative_memory(declarative_memory):
     all_episodes = await declarative_memory.get_matching_episodes()
