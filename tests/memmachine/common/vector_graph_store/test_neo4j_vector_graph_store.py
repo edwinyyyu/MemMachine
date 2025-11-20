@@ -8,6 +8,9 @@ from neo4j import AsyncGraphDatabase
 from testcontainers.neo4j import Neo4jContainer
 
 from memmachine.common.data_types import SimilarityMetric
+from memmachine.common.metrics_factory.prometheus_metrics_factory import (
+    PrometheusMetricsFactory,
+)
 from memmachine.common.vector_graph_store.data_types import Edge, EntityType, Node
 from memmachine.common.vector_graph_store.neo4j_vector_graph_store import (
     Neo4jVectorGraphStore,
@@ -15,6 +18,11 @@ from memmachine.common.vector_graph_store.neo4j_vector_graph_store import (
 )
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(scope="module")
+def metrics_factory():
+    return PrometheusMetricsFactory()
 
 
 @pytest.fixture(scope="module")
@@ -48,11 +56,12 @@ async def neo4j_driver(neo4j_connection_info):
 
 
 @pytest.fixture(scope="module")
-def vector_graph_store(neo4j_driver):
+def vector_graph_store(neo4j_driver, metrics_factory):
     return Neo4jVectorGraphStore(
         Neo4jVectorGraphStoreParams(
             driver=neo4j_driver,
             force_exact_similarity_search=True,
+            metrics_factory=metrics_factory,
         ),
     )
 
