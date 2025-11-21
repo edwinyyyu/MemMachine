@@ -61,6 +61,8 @@ class LongTermMemoryParams(BaseModel):
 class LongTermMemory:
     """High-level facade around the declarative memory store."""
 
+    _FILTERABLE_METADATA_NONE_FLAG = "_filterable_metadata_none"
+
     def __init__(self, params: LongTermMemoryParams) -> None:
         """Wire up the declarative memory backing store."""
         self._declarative_memory = DeclarativeMemory(
@@ -87,20 +89,27 @@ class LongTermMemory:
                     {
                         key: value
                         for key, value in {
-                            "sequence_num": episode.sequence_num,
+                            "created_at": episode.created_at,
                             "session_key": episode.session_key,
-                            "episode_type": episode.episode_type.value,
-                            "content_type": episode.content_type.value,
                             "producer_id": episode.producer_id,
                             "producer_role": episode.producer_role,
                             "produced_for_id": episode.produced_for_id,
+                            "sequence_num": episode.sequence_num,
+                            "episode_type": episode.episode_type.value,
+                            "content_type": episode.content_type.value,
                         }.items()
                         if value is not None
                     }
-                    | {
-                        LongTermMemory._mangle_filterable_metadata_key(key): value
-                        for key, value in (episode.filterable_metadata or {}).items()
-                    },
+                    | (
+                        {
+                            LongTermMemory._mangle_filterable_metadata_key(key): value
+                            for key, value in (
+                                episode.filterable_metadata or {}
+                            ).items()
+                        }
+                        if episode.filterable_metadata is not None
+                        else {LongTermMemory._FILTERABLE_METADATA_NONE_FLAG: True}
+                    ),
                 ),
                 user_metadata=episode.metadata,
             )
@@ -112,12 +121,12 @@ class LongTermMemory:
         self,
         query: str,
         num_episodes_limit: int,
-        property_filter: Mapping[str, FilterablePropertyValue] | None = None,
+        property_filter: Mapping[str, FilterablePropertyValue | None] | None = None,
     ) -> list[Episode]:
         declarative_memory_episodes = await self._declarative_memory.search(
             query,
             max_num_episodes=num_episodes_limit,
-            property_filter=property_filter,
+            property_filter=LongTermMemory._sanitize_property_filter(property_filter),
         )
         return [
             LongTermMemory._episode_from_declarative_memory_episode(
@@ -137,11 +146,13 @@ class LongTermMemory:
 
     async def get_matching_episodes(
         self,
-        property_filter: Mapping[str, FilterablePropertyValue] | None = None,
+        property_filter: Mapping[str, FilterablePropertyValue | None] | None = None,
     ) -> list[Episode]:
         declarative_memory_episodes = (
             await self._declarative_memory.get_matching_episodes(
-                property_filter=property_filter,
+                property_filter=LongTermMemory._sanitize_property_filter(
+                    property_filter
+                ),
             )
         )
         return [
@@ -156,12 +167,14 @@ class LongTermMemory:
 
     async def delete_matching_episodes(
         self,
-        property_filter: Mapping[str, FilterablePropertyValue] | None = None,
+        property_filter: Mapping[str, FilterablePropertyValue | None] | None = None,
     ) -> None:
         await self._declarative_memory.delete_episodes(
             episode.uid
             for episode in await self._declarative_memory.get_matching_episodes(
-                property_filter=property_filter,
+                property_filter=LongTermMemory._sanitize_property_filter(
+                    property_filter
+                ),
             )
         )
 
@@ -240,11 +253,14 @@ class LongTermMemory:
                 LongTermMemory._demangle_filterable_metadata_key(key): value
                 for key, value in declarative_memory_episode.filterable_properties.items()
                 if LongTermMemory._is_mangled_filterable_metadata_key(key)
-            },
+            }
+            if LongTermMemory._FILTERABLE_METADATA_NONE_FLAG
+            not in declarative_memory_episode.filterable_properties
+            else None,
             metadata=declarative_memory_episode.user_metadata,
         )
 
-    _MANGLE_FILTERABLE_METADATA_KEY_PREFIX = "filterable_"
+    _MANGLE_FILTERABLE_METADATA_KEY_PREFIX = "metadata."
 
     @staticmethod
     def _mangle_filterable_metadata_key(key: str) -> str:
@@ -261,3 +277,21 @@ class LongTermMemory:
         return candidate_key.startswith(
             LongTermMemory._MANGLE_FILTERABLE_METADATA_KEY_PREFIX
         )
+
+    @staticmethod
+    def _sanitize_property_filter(
+        property_filter: Mapping[str, FilterablePropertyValue | None] | None,
+    ) -> dict[str, FilterablePropertyValue | None] | None:
+        if property_filter is None:
+            return None
+
+        sanitized_filter: dict[str, FilterablePropertyValue | None] = {}
+        for key, value in property_filter.items():
+            if key.startswith("m."):
+                sanitized_key = LongTermMemory._mangle_filterable_metadata_key(
+                    key.removeprefix("m.")
+                )
+            else:
+                sanitized_key = key
+            sanitized_filter[sanitized_key] = value
+        return sanitized_filter

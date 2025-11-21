@@ -258,7 +258,7 @@ class DeclarativeMemory:
         self,
         query: str,
         max_num_episodes: int = 20,
-        property_filter: Mapping[str, FilterablePropertyValue] | None = None,
+        property_filter: Mapping[str, FilterablePropertyValue | None] | None = None,
     ) -> list[Episode]:
         """
         Search declarative memory for episodes relevant to the query.
@@ -269,7 +269,7 @@ class DeclarativeMemory:
             max_num_episodes (int):
                 The maximum number of episodes to return
                 (default: 20).
-            property_filter (Mapping[str, FilterablePropertyValue] | None):
+            property_filter (Mapping[str, FilterablePropertyValue | None] | None):
                 Filterable property keys and values
                 to use for filtering episodes
                 (default: None).
@@ -379,7 +379,7 @@ class DeclarativeMemory:
         nuclear_episode: Episode,
         max_backward_episodes: int = 1,
         max_forward_episodes: int = 2,
-        property_filter: Mapping[str, FilterablePropertyValue] | None = None,
+        property_filter: Mapping[str, FilterablePropertyValue | None] | None = None,
     ) -> list[Episode]:
         if property_filter is None:
             property_filter = {}
@@ -495,7 +495,7 @@ class DeclarativeMemory:
 
     async def get_matching_episodes(
         self,
-        property_filter: Mapping[str, FilterablePropertyValue] | None = None,
+        property_filter: Mapping[str, FilterablePropertyValue | None] | None = None,
     ) -> list[Episode]:
         """Filter episodes by their properties."""
         if property_filter is None:
@@ -518,6 +518,8 @@ class DeclarativeMemory:
 
     async def delete_episodes(self, uids: Iterable[str]) -> None:
         """Delete episodes by their UIDs."""
+        uids = list(uids)
+
         search_derived_derivative_nodes_tasks = [
             self._vector_graph_store.search_related_nodes(
                 relation=self._derived_from_relation,

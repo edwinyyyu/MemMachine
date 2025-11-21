@@ -272,7 +272,7 @@ class EpisodicMemory:
         self,
         query: str,
         limit: int | None = None,
-        property_filter: Mapping[str, FilterablePropertyValue] | None = None,
+        property_filter: Mapping[str, FilterablePropertyValue | None] | None = None,
     ) -> tuple[list[Episode], list[Episode], list[str]]:
         """
         Retrieve relevant context for a given query from all memory stores.
@@ -350,7 +350,7 @@ class EpisodicMemory:
         self,
         query: str,
         limit: int | None = None,
-        property_filter: Mapping[str, FilterablePropertyValue] | None = None,
+        property_filter: Mapping[str, FilterablePropertyValue | None] | None = None,
     ) -> str:
         """
         Construct a finalized query string that includes context from memory.

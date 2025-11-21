@@ -424,7 +424,14 @@ async def test_get_episodes(declarative_memory):
     await declarative_memory.add_episodes(episodes)
 
     results = await declarative_memory.get_episodes(
-        ["episode1", "episode2", "episode3", "episode4", "episode5"],
+        [
+            "episode1",
+            "episode2",
+            "episode3",
+            "episode4",
+            "episode5",
+            "nonexistent_episode",
+        ],
     )
     assert len(results) == 5
     assert set(results) == set(special_episodes)
@@ -543,6 +550,11 @@ async def test_get_matching_episodes(declarative_memory):
         property_filter={"project": "memmachine"},
     )
     assert len(results) == 22
+
+    results = await declarative_memory.get_matching_episodes(
+        property_filter={"project": "memmachine", "length": None},
+    )
+    assert len(results) == 1
 
     results = await declarative_memory.get_matching_episodes(
         property_filter={"length": "short"},
@@ -676,6 +688,7 @@ async def test_delete_episodes(declarative_memory):
 
     all_episodes = await declarative_memory.get_matching_episodes()
     assert len(all_episodes) == 40
+    assert all(episode not in all_episodes for episode in special_episodes)
 
 
 def test_string_from_episode_context():

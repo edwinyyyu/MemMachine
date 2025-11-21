@@ -1590,18 +1590,22 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             " AND ".join(
                 [
                     f"({entity_query_alias}.{sanitized_property_name}"
-                    f"    = ${requirements_query_parameter}.{sanitized_property_name}"
+                    f"{
+                        f' = ${requirements_query_parameter}.{sanitized_property_name}'
+                        if property_value is not None
+                        else ' IS NULL'
+                    }"
                     f"{
                         f' OR {entity_query_alias}.{sanitized_property_name} IS NULL'
                         if include_missing_properties
                         else ''
                     })"
-                    for sanitized_property_name in Neo4jVectorGraphStore._sanitize_properties(
+                    for sanitized_property_name, property_value in Neo4jVectorGraphStore._sanitize_properties(
                         {
                             mangle_property_name(key): value
                             for key, value in required_properties.items()
                         },
-                    )
+                    ).items()
                 ],
             )
             or "TRUE"

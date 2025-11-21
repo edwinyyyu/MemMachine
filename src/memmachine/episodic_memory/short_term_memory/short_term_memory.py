@@ -303,7 +303,7 @@ class ShortTermMemory:
         query: str,
         limit: int = 0,
         max_message_length: int = 0,
-        filters: Mapping[str, FilterablePropertyValue] | None = None,
+        filters: Mapping[str, FilterablePropertyValue | None] | None = None,
     ) -> tuple[list[Episode], str]:
         """
         Retrieve context from short-term memory for a given query.

@@ -140,7 +140,11 @@ async def test_add_nodes(neo4j_driver, vector_graph_store):
         ),
         Node(
             uid=str(uuid4()),
-            properties={"name": "Node3", "time": datetime.now(tz=UTC)},
+            properties={
+                "name": "Node3",
+                "time": datetime.now(tz=UTC),
+                "none_value": None,
+            },
             embeddings={
                 "embedding_name": (
                     [0.1, 0.2, 0.3],
@@ -173,7 +177,11 @@ async def test_add_edges(neo4j_driver, vector_graph_store):
         ),
         Node(
             uid=node3_uid,
-            properties={"name": "Node3", "time": datetime.now(tz=UTC)},
+            properties={
+                "name": "Node3",
+                "time": datetime.now(tz=UTC),
+                "none_value": None,
+            },
             embeddings={
                 "embedding_name": (
                     [0.1, 0.2, 0.3],
@@ -1013,6 +1021,7 @@ async def test_search_matching_nodes(vector_graph_store):
                 "name": "David",
                 "age!with$pecialchars": 30,
                 "city": "New York",
+                "none_value": None,
             },
         ),
     ]
@@ -1036,6 +1045,22 @@ async def test_search_matching_nodes(vector_graph_store):
         collection="Robot",
     )
     assert len(results) == 1
+
+    results = await vector_graph_store.search_matching_nodes(
+        collection="Robot",
+        required_properties={
+            "none_value": None,
+        },
+    )
+    assert len(results) == 1
+
+    results = await vector_graph_store.search_matching_nodes(
+        collection="Robot",
+        required_properties={
+            "none_value": "something",
+        },
+    )
+    assert len(results) == 0
 
     results = await vector_graph_store.search_matching_nodes(
         collection="Person",

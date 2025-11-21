@@ -3,7 +3,7 @@
 from memmachine.common.data_types import FilterablePropertyValue
 
 
-def parse_filter(filter_str: str) -> dict[str, FilterablePropertyValue]:
+def parse_filter(filter_str: str) -> dict[str, FilterablePropertyValue | None]:
     """
     Parse a filter string into a dictionary.
 
@@ -14,7 +14,7 @@ def parse_filter(filter_str: str) -> dict[str, FilterablePropertyValue]:
         dict: A dictionary representation of the filter.
 
     """
-    filter_dict: dict[str, FilterablePropertyValue] = {}
+    filter_dict: dict[str, FilterablePropertyValue | None] = {}
     if not filter_str:
         return filter_dict
 

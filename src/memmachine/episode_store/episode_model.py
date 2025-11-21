@@ -42,3 +42,7 @@ class Episode(BaseModel):
     content_type: ContentType = ContentType.STRING
     filterable_metadata: dict[str, FilterablePropertyValue] | None = None
     metadata: dict[str, JsonValue] | None = None
+
+    def __hash__(self) -> int:
+        """Hash an episode by its UID."""
+        return hash(self.uid)
