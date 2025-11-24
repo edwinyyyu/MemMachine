@@ -1,6 +1,4 @@
-"""
-Declarative memory system for storing and retrieving episodic memory.
-"""
+"""Declarative memory system for storing and retrieving episodic memory."""
 
 import asyncio
 import datetime
@@ -8,7 +6,7 @@ import json
 import logging
 from collections.abc import Iterable, Mapping
 from typing import cast
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from nltk import sent_tokenize
 from pydantic import BaseModel, Field, InstanceOf
@@ -44,6 +42,7 @@ class DeclarativeMemoryParams(BaseModel):
             Embedder instance for creating embeddings.
         reranker (Reranker):
             Reranker instance for reranking search results.
+
     """
 
     session_id: str = Field(
@@ -65,17 +64,16 @@ class DeclarativeMemoryParams(BaseModel):
 
 
 class DeclarativeMemory:
-    """
-    Declarative memory system.
-    """
+    """Declarative memory system."""
 
-    def __init__(self, params: DeclarativeMemoryParams):
+    def __init__(self, params: DeclarativeMemoryParams) -> None:
         """
         Initialize a DeclarativeMemory with the provided parameters.
 
         Args:
             params (DeclarativeMemoryParams):
                 Parameters for the DeclarativeMemory.
+
         """
         session_id = params.session_id
 
@@ -91,25 +89,26 @@ class DeclarativeMemory:
     async def add_episodes(
         self,
         episodes: Iterable[Episode],
-    ):
+    ) -> None:
         """
         Add episodes.
 
         Episodes are sorted by timestamp.
-        Episodes with the same timestamp are sorted by UUID.
+        Episodes with the same timestamp are sorted by UID.
 
         Args:
             episodes (Iterable[Episode]): The episodes to add.
-        """
 
+        """
         episodes = sorted(
-            episodes, key=lambda episode: (episode.timestamp, episode.uuid)
+            episodes,
+            key=lambda episode: (episode.timestamp, episode.uid),
         )
         episode_nodes = [
             Node(
-                uuid=episode.uuid,
+                uid=episode.uid,
                 properties={
-                    "uuid": str(episode.uuid),
+                    "uid": str(episode.uid),
                     "timestamp": episode.timestamp,
                     "source": episode.source,
                     "content_type": episode.content_type.value,
@@ -142,9 +141,9 @@ class DeclarativeMemory:
 
         derivative_nodes = [
             Node(
-                uuid=derivative.uuid,
+                uid=derivative.uid,
                 properties={
-                    "uuid": str(derivative.uuid),
+                    "uid": derivative.uid,
                     "timestamp": derivative.timestamp,
                     "source": derivative.source,
                     "content_type": derivative.content_type.value,
@@ -161,16 +160,24 @@ class DeclarativeMemory:
                     ): (embedding, self._embedder.similarity_metric),
                 },
             )
-            for derivative, embedding in zip(derivatives, derivative_embeddings)
+            for derivative, embedding in zip(
+                derivatives,
+                derivative_embeddings,
+                strict=False,
+            )
         ]
 
         derivative_episode_edges = [
             Edge(
-                uuid=uuid4(),
-                source_uuid=derivative.uuid,
-                target_uuid=episode.uuid,
+                uid=str(uuid4()),
+                source_uid=derivative.uid,
+                target_uid=episode.uid,
             )
-            for episode, episode_derivatives in zip(episodes, episodes_derivatives)
+            for episode, episode_derivatives in zip(
+                episodes,
+                episodes_derivatives,
+                strict=False,
+            )
             for derivative in episode_derivatives
         ]
 
@@ -206,6 +213,7 @@ class DeclarativeMemory:
 
         Returns:
             list[Derivative]: A list of derived derivatives.
+
         """
         match episode.content_type:
             case ContentType.MESSAGE:
@@ -214,11 +222,11 @@ class DeclarativeMemory:
                     sentences.extend(sent_tokenize(line.strip()))
 
                 message_timestamp = episode.timestamp.strftime(
-                    "%A, %B %d, %Y at %I:%M %p"
+                    "%A, %B %d, %Y at %I:%M %p",
                 )
                 return [
                     Derivative(
-                        uuid=uuid4(),
+                        uid=str(uuid4()),
                         timestamp=episode.timestamp,
                         source=episode.source,
                         content_type=ContentType.MESSAGE,
@@ -231,17 +239,18 @@ class DeclarativeMemory:
                 text_content = episode.content
                 return [
                     Derivative(
-                        uuid=uuid4(),
+                        uid=str(uuid4()),
                         timestamp=episode.timestamp,
                         source=episode.source,
                         content_type=ContentType.TEXT,
                         content=text_content,
                         filterable_properties=episode.filterable_properties,
-                    )
+                    ),
                 ]
             case _:
                 logger.warning(
-                    f"Unsupported content type for derivative derivation: {episode.content_type}"
+                    "Unsupported content type for derivative derivation: %s",
+                    episode.content_type,
                 )
                 return []
 
@@ -249,7 +258,7 @@ class DeclarativeMemory:
         self,
         query: str,
         max_num_episodes: int = 20,
-        property_filter: Mapping[str, FilterablePropertyValue] | None = None,
+        property_filter: Mapping[str, FilterablePropertyValue | None] | None = None,
     ) -> list[Episode]:
         """
         Search declarative memory for episodes relevant to the query.
@@ -260,7 +269,7 @@ class DeclarativeMemory:
             max_num_episodes (int):
                 The maximum number of episodes to return
                 (default: 20).
-            property_filter (Mapping[str, FilterablePropertyValue] | None):
+            property_filter (Mapping[str, FilterablePropertyValue | None] | None):
                 Filterable property keys and values
                 to use for filtering episodes
                 (default: None).
@@ -268,6 +277,7 @@ class DeclarativeMemory:
         Returns:
             list[Episode]:
                 A list of episodes relevant to the query, ordered chronologically.
+
         """
         if property_filter is None:
             property_filter = {}
@@ -302,7 +312,7 @@ class DeclarativeMemory:
                 relation=self._derived_from_relation,
                 other_collection=self._episode_collection,
                 this_collection=self._derivative_collection,
-                this_node_uuid=matched_derivative_node.uuid,
+                this_node_uid=matched_derivative_node.uid,
                 find_sources=False,
                 find_targets=True,
                 required_node_properties={
@@ -316,7 +326,7 @@ class DeclarativeMemory:
         source_episode_nodes = [
             episode_node
             for episode_nodes in await asyncio.gather(
-                *search_derivatives_source_episode_nodes_tasks
+                *search_derivatives_source_episode_nodes_tasks,
             )
             for episode_node in episode_nodes
         ]
@@ -339,7 +349,8 @@ class DeclarativeMemory:
 
         # Rerank episode contexts.
         episode_context_scores = await self._score_episode_contexts(
-            query, episode_contexts
+            query,
+            episode_contexts,
         )
 
         reranked_anchored_episode_contexts = [
@@ -349,6 +360,7 @@ class DeclarativeMemory:
                     episode_context_scores,
                     nuclear_episodes,
                     episode_contexts,
+                    strict=False,
                 ),
                 key=lambda triple: triple[0],
                 reverse=True,
@@ -367,7 +379,7 @@ class DeclarativeMemory:
         nuclear_episode: Episode,
         max_backward_episodes: int = 1,
         max_forward_episodes: int = 2,
-        property_filter: Mapping[str, FilterablePropertyValue] | None = None,
+        property_filter: Mapping[str, FilterablePropertyValue | None] | None = None,
     ) -> list[Episode]:
         if property_filter is None:
             property_filter = {}
@@ -375,10 +387,10 @@ class DeclarativeMemory:
         previous_episode_nodes = (
             await self._vector_graph_store.search_directional_nodes(
                 collection=self._episode_collection,
-                by_properties=("timestamp", "uuid"),
+                by_properties=("timestamp", "uid"),
                 starting_at=(
                     nuclear_episode.timestamp,
-                    str(nuclear_episode.uuid),
+                    str(nuclear_episode.uid),
                 ),
                 order_ascending=(False, False),
                 include_equal_start=False,
@@ -392,10 +404,10 @@ class DeclarativeMemory:
 
         next_episode_nodes = await self._vector_graph_store.search_directional_nodes(
             collection=self._episode_collection,
-            by_properties=("timestamp", "uuid"),
+            by_properties=("timestamp", "uid"),
             starting_at=(
                 nuclear_episode.timestamp,
-                str(nuclear_episode.uuid),
+                str(nuclear_episode.uid),
             ),
             order_ascending=(True, True),
             include_equal_start=False,
@@ -421,35 +433,35 @@ class DeclarativeMemory:
         return context
 
     async def _score_episode_contexts(
-        self, query: str, episode_contexts: Iterable[Iterable[Episode]]
+        self,
+        query: str,
+        episode_contexts: Iterable[Iterable[Episode]],
     ) -> list[float]:
-        """
-        Score episode node contexts
-        based on their relevance to the query.
-        """
+        """Score episode node contexts based on their relevance to the query."""
         context_strings = []
         for episode_context in episode_contexts:
-            context_string = self.string_from_episode_context(episode_context)
+            context_string = DeclarativeMemory.string_from_episode_context(
+                episode_context
+            )
             context_strings.append(context_string)
 
         episode_context_scores = await self._reranker.score(query, context_strings)
 
         return episode_context_scores
 
-    def string_from_episode_context(self, episode_context: Iterable[Episode]) -> str:
-        """
-        Format episode context as a string.
-        """
+    @staticmethod
+    def string_from_episode_context(episode_context: Iterable[Episode]) -> str:
+        """Format episode context as a string."""
         context_string = ""
 
         for episode in episode_context:
             match episode.content_type:
                 case ContentType.MESSAGE:
                     context_date = DeclarativeMemory._format_date(
-                        episode.timestamp.date()
+                        episode.timestamp.date(),
                     )
                     context_time = DeclarativeMemory._format_time(
-                        episode.timestamp.time()
+                        episode.timestamp.time(),
                     )
                     context_string += f"[{context_date} at {context_time}] {episode.source}: {episode.content}\n"
                 case ContentType.TEXT:
@@ -459,25 +471,19 @@ class DeclarativeMemory:
 
     @staticmethod
     def _format_date(date: datetime.date) -> str:
-        """
-        Format the date as a string.
-        """
+        """Format the date as a string."""
         return date.strftime("%A, %B %d, %Y")
 
     @staticmethod
     def _format_time(time: datetime.time) -> str:
-        """
-        Format the time as a string.
-        """
+        """Format the time as a string."""
         return time.strftime("%I:%M %p")
 
-    async def get_episodes(self, uuids: Iterable[UUID]) -> list[Episode]:
-        """
-        Get episodes by their UUIDs.
-        """
+    async def get_episodes(self, uids: Iterable[str]) -> list[Episode]:
+        """Get episodes by their UIDs."""
         episode_nodes = await self._vector_graph_store.get_nodes(
             collection=self._episode_collection,
-            node_uuids=uuids,
+            node_uids=uids,
         )
 
         episodes = [
@@ -489,11 +495,9 @@ class DeclarativeMemory:
 
     async def get_matching_episodes(
         self,
-        property_filter: Mapping[str, FilterablePropertyValue] | None = None,
+        property_filter: Mapping[str, FilterablePropertyValue | None] | None = None,
     ) -> list[Episode]:
-        """
-        Filter episodes by their properties.
-        """
+        """Filter episodes by their properties."""
         if property_filter is None:
             property_filter = {}
 
@@ -512,26 +516,26 @@ class DeclarativeMemory:
 
         return matching_episodes
 
-    async def delete_episodes(self, uuids: Iterable[UUID]):
-        """
-        Delete episodes by their UUIDs.
-        """
+    async def delete_episodes(self, uids: Iterable[str]) -> None:
+        """Delete episodes by their UIDs."""
+        uids = list(uids)
+
         search_derived_derivative_nodes_tasks = [
             self._vector_graph_store.search_related_nodes(
                 relation=self._derived_from_relation,
                 other_collection=self._derivative_collection,
                 this_collection=self._episode_collection,
-                this_node_uuid=episode_uuid,
+                this_node_uid=episode_uid,
                 find_sources=True,
                 find_targets=False,
             )
-            for episode_uuid in uuids
+            for episode_uid in uids
         ]
 
         derived_derivative_nodes = [
             derivative_node
             for derivative_nodes in await asyncio.gather(
-                *search_derived_derivative_nodes_tasks
+                *search_derived_derivative_nodes_tasks,
             )
             for derivative_node in derivative_nodes
         ]
@@ -539,12 +543,12 @@ class DeclarativeMemory:
         delete_nodes_tasks = [
             self._vector_graph_store.delete_nodes(
                 collection=self._episode_collection,
-                node_uuids=uuids,
+                node_uids=uids,
             ),
             self._vector_graph_store.delete_nodes(
                 collection=self._derivative_collection,
-                node_uuids=[
-                    derivative_node.uuid for derivative_node in derived_derivative_nodes
+                node_uids=[
+                    derivative_node.uid for derivative_node in derived_derivative_nodes
                 ],
             ),
         ]
@@ -556,12 +560,7 @@ class DeclarativeMemory:
         anchored_episode_contexts: Iterable[tuple[Episode, Iterable[Episode]]],
         max_num_episodes: int,
     ) -> list[Episode]:
-        """
-        Unify episode contexts
-        anchored on their nuclear episodes
-        into a single list of episodes,
-        respecting the episode limit.
-        """
+        """Unify anchored episode contexts into a single list within the limit."""
         episode_set: set[Episode] = set()
 
         for nuclear_episode, context in anchored_episode_contexts:
@@ -569,28 +568,23 @@ class DeclarativeMemory:
 
             if len(episode_set) >= max_num_episodes:
                 break
-            elif (len(episode_set) + len(context)) <= max_num_episodes:
+            if (len(episode_set) + len(context)) <= max_num_episodes:
                 # It is impossible that the context exceeds the limit.
                 episode_set.update(context)
             else:
                 # It is possible that the context exceeds the limit.
                 # Prioritize episodes near the nuclear episode.
-                context = list(context)
 
                 # Sort chronological episodes by weighted index-proximity to the nuclear episode.
                 nuclear_index = context.index(nuclear_episode)
 
-                def weighted_index_proximity(episode: Episode) -> float:
-                    proximity = context.index(episode) - nuclear_index
-                    if proximity >= 0:
-                        # Forward recall is better than backward recall.
-                        return (proximity - 0.5) / 2
-                    else:
-                        return -proximity
-
                 nuclear_context = sorted(
                     context,
-                    key=weighted_index_proximity,
+                    key=lambda episode: DeclarativeMemory._weighted_index_proximity(
+                        episode=episode,
+                        context=context,
+                        nuclear_index=nuclear_index,
+                    ),
                 )
 
                 # Add episodes to unified context until limit is reached,
@@ -604,37 +598,49 @@ class DeclarativeMemory:
             episode_set,
             key=lambda episode: (
                 episode.timestamp,
-                episode.uuid,
+                episode.uid,
             ),
         )
 
         return unified_episode_context
 
     @staticmethod
+    def _weighted_index_proximity(
+        episode: Episode,
+        context: list[Episode],
+        nuclear_index: int,
+    ) -> float:
+        proximity = context.index(episode) - nuclear_index
+        if proximity >= 0:
+            # Forward recall is better than backward recall.
+            return (proximity - 0.5) / 2
+        return -proximity
+
+    @staticmethod
     def _episode_from_episode_node(episode_node: Node) -> Episode:
         return Episode(
-            uuid=UUID(cast(str, episode_node.properties["uuid"])),
-            timestamp=cast(datetime.datetime, episode_node.properties["timestamp"]),
-            source=cast(str, episode_node.properties["source"]),
+            uid=cast("str", episode_node.properties["uid"]),
+            timestamp=cast("datetime.datetime", episode_node.properties["timestamp"]),
+            source=cast("str", episode_node.properties["source"]),
             content_type=ContentType(episode_node.properties["content_type"]),
             content=episode_node.properties["content"],
             filterable_properties={
                 demangle_filterable_property_key(key): cast(
-                    FilterablePropertyValue, value
+                    "FilterablePropertyValue",
+                    value,
                 )
                 for key, value in episode_node.properties.items()
                 if is_mangled_filterable_property_key(key)
             },
             user_metadata=json.loads(
-                cast(str, episode_node.properties["user_metadata"])
+                cast("str", episode_node.properties["user_metadata"]),
             ),
         )
 
     @staticmethod
     def _embedding_name(model_id: str, dimensions: int) -> str:
         """
-        Generate a standardized property name for embeddings
-        based on the model ID and embedding dimensions.
+        Generate a standardized property name for embeddings based on the model ID and embedding dimensions.
 
         Args:
             model_id (str): The identifier of the embedding model.
@@ -642,5 +648,6 @@ class DeclarativeMemory:
 
         Returns:
             str: A standardized property name for the embedding.
+
         """
         return f"embedding_{model_id}_{dimensions}d"

@@ -1,5 +1,6 @@
 from collections.abc import Iterable, Mapping
 from typing import Any, cast
+from uuid import UUID
 
 from pydantic import BaseModel, Field, InstanceOf
 
@@ -85,7 +86,7 @@ class LongTermMemory:
     async def add_episodes(self, episodes: Iterable[Episode]):
         declarative_memory_episodes = [
             DeclarativeMemoryEpisode(
-                uuid=episode.uuid,
+                uid=str(episode.uuid),
                 timestamp=episode.timestamp,
                 source=episode.producer_id,
                 content_type=content_type_to_declarative_memory_content_type_map[
@@ -127,7 +128,7 @@ class LongTermMemory:
         )
         return [
             Episode(
-                uuid=declarative_memory_episode.uuid,
+                uuid=UUID(declarative_memory_episode.uid),
                 timestamp=declarative_memory_episode.timestamp,
                 episode_type="",
                 content_type=(
@@ -162,13 +163,13 @@ class LongTermMemory:
 
     async def clear(self):
         self._declarative_memory.delete_episodes(
-            episode.uuid
+            str(episode.uuid)
             for episode in await self._declarative_memory.get_matching_episodes()
         )
 
     async def forget_session(self):
         await self._declarative_memory.delete_episodes(
-            episode.uuid
+            str(episode.uuid)
             for episode in await self._declarative_memory.get_matching_episodes(
                 property_filter={
                     "session_id": self._memory_context.session_id,

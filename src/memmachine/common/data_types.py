@@ -2,7 +2,10 @@
 Common data types for MemMachine.
 """
 
+from datetime import datetime
 from enum import Enum
+
+FilterablePropertyValue = bool | int | float | str | datetime | None
 
 
 class SimilarityMetric(Enum):
