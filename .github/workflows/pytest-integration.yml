@@ -46,7 +46,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            uv run --frozen --all-extras pytest ${{ matrix.test-paths }} -m integration --integration
+            uv run --frozen --all-extras pytest ${{ matrix.test-paths }} -s -m integration --integration
           else
-            uv run --frozen --all-extras pytest ${{ matrix.test-paths }} -m "integration and not slow" --integration
+            uv run --frozen --all-extras pytest ${{ matrix.test-paths }} -s -m "integration and not slow" --integration
           fi

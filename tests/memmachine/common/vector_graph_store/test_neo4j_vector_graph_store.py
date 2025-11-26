@@ -50,6 +50,13 @@ def neo4j_connection_info():
             "password": neo4j_password,
         }
 
+        neo4j_stdout, neo4j_stderr = neo4j.get_logs()
+        print()
+        print("Neo4j Container STDOUT:")
+        print(neo4j_stdout.decode("utf-8"))
+        print("Neo4j Container STDERR:")
+        print(neo4j_stderr.decode("utf-8"))
+
 
 @pytest_asyncio.fixture(scope="module")
 async def neo4j_driver(neo4j_connection_info):
@@ -1405,7 +1412,7 @@ async def test__create_unique_constraint_if_not_exists(
                 Neo4jVectorGraphStore._sanitize_name(other_property_name),
             ),
         ]
-        for _ in range(10000)
+        for _ in range(30000)
     ]
 
     create_unique_constraint_tasks = [
@@ -1513,7 +1520,7 @@ async def test__create_range_index_if_not_exists(
                 ],
             ),
         ]
-        for _ in range(10000)
+        for _ in range(30000)
     ]
 
     create_range_index_tasks = [
