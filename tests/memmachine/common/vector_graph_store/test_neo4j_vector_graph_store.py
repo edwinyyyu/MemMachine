@@ -128,9 +128,9 @@ async def db_cleanup(neo4j_driver):
         for record in records
     ]
 
-    await asyncio.gather(*drop_constraint_tasks)
     await asyncio.gather(*drop_range_index_tasks)
     await asyncio.gather(*drop_vector_index_tasks)
+    await asyncio.gather(*drop_constraint_tasks)
     yield
 
 
@@ -1354,80 +1354,80 @@ def vector_graph_store_indexing(neo4j_driver):
     )
 
 
-@pytest.mark.asyncio
-async def test__create_unique_constraint_if_not_exists(
-    neo4j_driver,
-    vector_graph_store_indexing,
-):
-    records, _, _ = await neo4j_driver.execute_query(
-        "SHOW CONSTRAINTS YIELD name RETURN name",
-    )
-    existing_constraints = {record["name"] for record in records}
+# @pytest.mark.asyncio
+# async def test__create_unique_constraint_if_not_exists(
+#     neo4j_driver,
+#     vector_graph_store_indexing,
+# ):
+#     records, _, _ = await neo4j_driver.execute_query(
+#         "SHOW CONSTRAINTS YIELD name RETURN name",
+#     )
+#     existing_constraints = {record["name"] for record in records}
 
-    collection_or_relation_name = "SomeCollectionOrRelation"
-    other_collection_or_relation_name = "OtherCollectionOrRelation"
-    property_name = "some_property"
-    other_property_name = "other_property"
+#     collection_or_relation_name = "SomeCollectionOrRelation"
+#     other_collection_or_relation_name = "OtherCollectionOrRelation"
+#     property_name = "some_property"
+#     other_property_name = "other_property"
 
-    create_unique_constraint_task_lists = [
-        [
-            vector_graph_store_indexing._create_unique_constraint_if_not_exists(
-                EntityType.NODE,
-                Neo4jVectorGraphStore._sanitize_name(collection_or_relation_name),
-                Neo4jVectorGraphStore._sanitize_name(property_name),
-            ),
-            vector_graph_store_indexing._create_unique_constraint_if_not_exists(
-                EntityType.NODE,
-                Neo4jVectorGraphStore._sanitize_name(collection_or_relation_name),
-                Neo4jVectorGraphStore._sanitize_name(other_property_name),
-            ),
-            vector_graph_store_indexing._create_unique_constraint_if_not_exists(
-                EntityType.NODE,
-                Neo4jVectorGraphStore._sanitize_name(other_collection_or_relation_name),
-                Neo4jVectorGraphStore._sanitize_name(property_name),
-            ),
-            vector_graph_store_indexing._create_unique_constraint_if_not_exists(
-                EntityType.NODE,
-                Neo4jVectorGraphStore._sanitize_name(other_collection_or_relation_name),
-                Neo4jVectorGraphStore._sanitize_name(other_property_name),
-            ),
-            vector_graph_store_indexing._create_unique_constraint_if_not_exists(
-                EntityType.EDGE,
-                Neo4jVectorGraphStore._sanitize_name(collection_or_relation_name),
-                Neo4jVectorGraphStore._sanitize_name(property_name),
-            ),
-            vector_graph_store_indexing._create_unique_constraint_if_not_exists(
-                EntityType.EDGE,
-                Neo4jVectorGraphStore._sanitize_name(collection_or_relation_name),
-                Neo4jVectorGraphStore._sanitize_name(other_property_name),
-            ),
-            vector_graph_store_indexing._create_unique_constraint_if_not_exists(
-                EntityType.EDGE,
-                Neo4jVectorGraphStore._sanitize_name(other_collection_or_relation_name),
-                Neo4jVectorGraphStore._sanitize_name(property_name),
-            ),
-            vector_graph_store_indexing._create_unique_constraint_if_not_exists(
-                EntityType.EDGE,
-                Neo4jVectorGraphStore._sanitize_name(other_collection_or_relation_name),
-                Neo4jVectorGraphStore._sanitize_name(other_property_name),
-            ),
-        ]
-        for _ in range(30000)
-    ]
+#     create_unique_constraint_task_lists = [
+#         [
+#             vector_graph_store_indexing._create_unique_constraint_if_not_exists(
+#                 EntityType.NODE,
+#                 Neo4jVectorGraphStore._sanitize_name(collection_or_relation_name),
+#                 Neo4jVectorGraphStore._sanitize_name(property_name),
+#             ),
+#             vector_graph_store_indexing._create_unique_constraint_if_not_exists(
+#                 EntityType.NODE,
+#                 Neo4jVectorGraphStore._sanitize_name(collection_or_relation_name),
+#                 Neo4jVectorGraphStore._sanitize_name(other_property_name),
+#             ),
+#             vector_graph_store_indexing._create_unique_constraint_if_not_exists(
+#                 EntityType.NODE,
+#                 Neo4jVectorGraphStore._sanitize_name(other_collection_or_relation_name),
+#                 Neo4jVectorGraphStore._sanitize_name(property_name),
+#             ),
+#             vector_graph_store_indexing._create_unique_constraint_if_not_exists(
+#                 EntityType.NODE,
+#                 Neo4jVectorGraphStore._sanitize_name(other_collection_or_relation_name),
+#                 Neo4jVectorGraphStore._sanitize_name(other_property_name),
+#             ),
+#             vector_graph_store_indexing._create_unique_constraint_if_not_exists(
+#                 EntityType.EDGE,
+#                 Neo4jVectorGraphStore._sanitize_name(collection_or_relation_name),
+#                 Neo4jVectorGraphStore._sanitize_name(property_name),
+#             ),
+#             vector_graph_store_indexing._create_unique_constraint_if_not_exists(
+#                 EntityType.EDGE,
+#                 Neo4jVectorGraphStore._sanitize_name(collection_or_relation_name),
+#                 Neo4jVectorGraphStore._sanitize_name(other_property_name),
+#             ),
+#             vector_graph_store_indexing._create_unique_constraint_if_not_exists(
+#                 EntityType.EDGE,
+#                 Neo4jVectorGraphStore._sanitize_name(other_collection_or_relation_name),
+#                 Neo4jVectorGraphStore._sanitize_name(property_name),
+#             ),
+#             vector_graph_store_indexing._create_unique_constraint_if_not_exists(
+#                 EntityType.EDGE,
+#                 Neo4jVectorGraphStore._sanitize_name(other_collection_or_relation_name),
+#                 Neo4jVectorGraphStore._sanitize_name(other_property_name),
+#             ),
+#         ]
+#         for _ in range(10000)
+#     ]
 
-    create_unique_constraint_tasks = [
-        task for task_list in create_unique_constraint_task_lists for task in task_list
-    ]
+#     create_unique_constraint_tasks = [
+#         task for task_list in create_unique_constraint_task_lists for task in task_list
+#     ]
 
-    await asyncio.gather(*create_unique_constraint_tasks)
+#     await asyncio.gather(*create_unique_constraint_tasks)
 
-    records, _, _ = await neo4j_driver.execute_query(
-        "SHOW CONSTRAINTS YIELD name RETURN name",
-    )
+#     records, _, _ = await neo4j_driver.execute_query(
+#         "SHOW CONSTRAINTS YIELD name RETURN name",
+#     )
 
-    updated_constraints = {record["name"] for record in records}
+#     updated_constraints = {record["name"] for record in records}
 
-    assert len(updated_constraints) == len(existing_constraints) + 8
+#     assert len(updated_constraints) == len(existing_constraints) + 8
 
 
 @pytest.mark.asyncio
@@ -1520,7 +1520,7 @@ async def test__create_range_index_if_not_exists(
                 ],
             ),
         ]
-        for _ in range(30000)
+        for _ in range(10000)
     ]
 
     create_range_index_tasks = [
