@@ -99,7 +99,7 @@ class DeclarativeMemory:
 
         self._derived_from_relation = f"DERIVED_FROM_{session_id}"
 
-        self._episode_context_content_length_quota = 400
+        self._episode_context_content_length_quota_factor = 10
 
     async def add_episodes(
         self,
@@ -351,6 +351,8 @@ class DeclarativeMemory:
         contextualize_episode_tasks = [
             self._contextualize_episode(
                 nuclear_episode,
+                episode_context_content_length_quota=self._episode_context_content_length_quota_factor
+                * max_num_episodes,
                 mangled_property_filter=mangled_property_filter,
             )
             for nuclear_episode in nuclear_episodes
@@ -388,6 +390,7 @@ class DeclarativeMemory:
     async def _contextualize_episode(
         self,
         nuclear_episode: Episode,
+        episode_context_content_length_quota: int,
         max_backward_episodes: int = 4,
         max_forward_episodes: int = 8,
         mangled_property_filter: FilterExpr | None = None,
@@ -395,7 +398,7 @@ class DeclarativeMemory:
         episode_context = deque([nuclear_episode])
         episode_context_content_length = len(nuclear_episode.content)
 
-        if episode_context_content_length >= self._episode_context_content_length_quota:
+        if episode_context_content_length >= episode_context_content_length_quota:
             return list(episode_context)
 
         previous_episode_nodes = (
@@ -451,7 +454,7 @@ class DeclarativeMemory:
                     episode_context_content_length += len(next_episode.content)
                     if (
                         episode_context_content_length
-                        >= self._episode_context_content_length_quota
+                        >= episode_context_content_length_quota
                     ):
                         return list(episode_context)
 
@@ -463,7 +466,7 @@ class DeclarativeMemory:
                 episode_context_content_length += len(previous_episode.content)
                 if (
                     episode_context_content_length
-                    >= self._episode_context_content_length_quota
+                    >= episode_context_content_length_quota
                 ):
                     return list(episode_context)
 
