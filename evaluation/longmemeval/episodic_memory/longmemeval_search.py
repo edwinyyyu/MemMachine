@@ -9,6 +9,7 @@ import neo4j
 from dotenv import load_dotenv
 from longmemeval_models import (
     LongMemEvalItem,
+    get_datetime_from_timestamp,
     load_longmemeval_dataset,
 )
 from openai import AsyncOpenAI
@@ -32,16 +33,17 @@ from memmachine.episodic_memory.declarative_memory import (
 )
 
 ANSWER_PROMPT = """
-You are asked to answer a question based on your memories of a conversation.
+You are asked to answer a question from a user based on your memories of a conversation between the user and an assistant.
 
 <instructions>
 1. Prioritize memories that answer the question directly. Be meticulous about recalling details.
 2. When there may be multiple answers to the question, think hard to remember and list all possible answers. Do not become satisfied with just the first few answers you remember.
-3. When asked about time intervals or to count items, do not rush to answer immediately. Instead, carefully enumerate the items or subtract the times using numbers.
-4. Your memories are episodic, meaning that they consist of only your raw observations of what was said. You may need to reason about or guess what the memories imply in order to answer the question.
-5. The question may contain typos or be based on the asker's own unreliable memories. Do your best to answer the question using the most relevant information in your memories.
-6. Your memories may include small or large jumps in time or context. You are not confused by this. You just did not bother to remember everything in between.
-7. Your memories are ordered from earliest to latest.
+3. When asked to count items, carefully enumerate the items using numbers.
+4. When asked about time intervals, the duration between events is computed by subtracting the start date from the end date in the chosen unit.
+5. When asked for advice or suggestions, synthesize your memories of the user's interests, preferences, possessions, and problems to provide tailored recommendations.
+6. Your memories are episodic, meaning that they consist of only your raw observations of what was said. You may need to reason about or guess what the memories imply in order to answer the question.
+7. Your memories may include small or large jumps in time or context. You are not confused by this. You just did not bother to remember everything in between.
+8. Your memories are ordered from earliest to latest. Prioritize the latest memories if anything has changed over time. Consider the question datetime when determining whether an event has actually occurred.
 </instructions>
 
 <memories>
@@ -172,7 +174,11 @@ async def main():
         formatted_context = memory.string_from_episode_context(chunks)
 
         response = await qa_eval(
-            formatted_context, question.question_date, question.question
+            formatted_context,
+            get_datetime_from_timestamp(question.question_date).strftime(
+                "%A, %B %d, %Y at %I:%M %p"
+            ),
+            question.question,
         )
         total_end = time.monotonic()
         total_latency = total_end - total_start
