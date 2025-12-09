@@ -99,7 +99,7 @@ class DeclarativeMemory:
 
         self._derived_from_relation = f"DERIVED_FROM_{session_id}"
 
-        self._episode_context_content_length_quota_factor = 10
+        self._episode_context_content_length_quota_factor = 20
 
     async def add_episodes(
         self,
