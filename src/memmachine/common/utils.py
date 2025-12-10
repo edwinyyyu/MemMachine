@@ -49,6 +49,21 @@ def async_locked[**P, T](func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitab
     return wrapper
 
 
+def chunk_text(text: str, max_length: int) -> list[str]:
+    """
+    Chunk text into partitions not exceeding max_length.
+
+    Args:
+        text (str): The input text to chunk.
+        max_length (int): The maximum length of each chunk.
+
+    Returns:
+        list[str]: A list of text chunks.
+
+    """
+    return [text[i : i + max_length] for i in range(0, len(text), max_length)]
+
+
 def chunk_text_balanced(text: str, max_length: int) -> list[str]:
     """
     Chunk text into balanced partitions not exceeding max_length.

@@ -71,6 +71,10 @@ class CrossEncoderRerankerConf(YamlSerializableMixin):
         description="The cross-encoder model name to use for reranking",
         min_length=1,
     )
+    max_input_length: int | None = Field(
+        default=None,
+        description="Maximum input length for the model (in Unicode code points)",
+    )
 
 
 class EmbedderRerankerConf(YamlSerializableMixin):
