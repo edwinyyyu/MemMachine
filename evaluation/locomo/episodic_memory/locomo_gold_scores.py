@@ -4,7 +4,6 @@ import json
 import os
 import re
 import time
-from contextlib import suppress
 from typing import Any
 
 import boto3
@@ -57,31 +56,8 @@ def default_tokenize(text: str) -> list[str]:
     return tokens
 
 
-ANSWER_PROMPT = """
-You are asked to answer a question based on your memories of a conversation.
-
-<instructions>
-1. Prioritize memories that answer the question directly. Be meticulous about recalling details.
-2. When there may be multiple answers to the question, think hard to remember and list all possible answers. Do not become satisfied with just the first few answers you remember.
-3. When asked about time intervals or to count items, do not rush to answer immediately. Instead, carefully enumerate the items or subtract the times using numbers.
-4. Your memories are episodic, meaning that they consist of only your raw observations of what was said. You may need to reason about or guess what the memories imply in order to answer the question.
-5. The question may contain typos or be based on the asker's own unreliable memories. Do your best to answer the question using the most relevant information in your memories.
-6. Your memories may include small or large jumps in time or context. You are not confused by this. You just did not bother to remember everything in between.
-7. Your memories are ordered from earliest to latest.
-</instructions>
-
-<memories>
-{memories}
-</memories>
-
-Question: {question}
-Your short response to the question without fluff (no more than a couple of sentences):
-"""
-
-
 async def process_question(
     memory: DeclarativeMemory,
-    model: openai.AsyncOpenAI,
     question,
     answer,
     category,
@@ -89,46 +65,43 @@ async def process_question(
     adversarial_answer,
 ):
     memory_start = time.time()
-    chunks = await memory.search(
+    episodes, em_scores, rr_scores = await memory.search(
         query=question,
-        max_num_episodes=20,
+        max_num_episodes=200,
     )
     memory_end = time.time()
 
-    formatted_context = memory.string_from_episode_context(chunks)
-    prompt = ANSWER_PROMPT.format(memories=formatted_context, question=question)
+    gold_em_ranks = []
+    gold_rr_ranks = []
+    for idx, episode in enumerate(episodes):
+        if episode.user_metadata.get("dia_id") in evidence:
+            gold_rr_ranks.append(idx)
+            gold_em_ranks.append(sorted(em_scores, reverse=True).index(em_scores[idx]))
 
-    llm_start = time.time()
-    rsp = None
-    while rsp is None:
-        with suppress(openai.APIError):
-            rsp = await model.responses.create(
-                model="gpt-4.1-mini",
-                max_output_tokens=4096,
-                temperature=0.0,
-                top_p=1,
-                input=[{"role": "user", "content": prompt}],
-            )
-    llm_end = time.time()
-
-    rsp_text = rsp.output_text
-
+    formatted_context = memory.string_from_episode_context(
+        sorted(
+            episodes,
+            key=lambda episode: (episode.timestamp, episode.uid),
+        )
+    )
     print(
         f"Question: {question}\n"
         f"Answer: {answer}\n"
-        f"Response: {rsp_text}\n"
         f"Memory retrieval time: {memory_end - memory_start:.2f} seconds\n"
-        f"LLM response time: {llm_end - llm_start:.2f} seconds\n"
         f"MEMORIES START\n{formatted_context}MEMORIES END\n"
     )
     return {
         "question": question,
         "locomo_answer": answer,
-        "model_answer": rsp_text,
         "category": category,
         "evidence": evidence,
         "adversarial_answer": adversarial_answer,
         "conversation_memories": formatted_context,
+        "episodes": [memory.string_from_episode_context([episode]) for episode in episodes],
+        "em_scores": em_scores,
+        "rr_scores": rr_scores,
+        "gold_em_ranks": gold_em_ranks,
+        "gold_rr_ranks": gold_rr_ranks,
     }
 
 
@@ -193,10 +166,6 @@ async def main():
         )
     )
 
-    model = openai.AsyncOpenAI(
-        api_key=os.getenv("OPENAI_API_KEY"),
-    )
-
     results: dict[str, Any] = {}
     for idx, item in enumerate(locomo_data):
         if "conversation" not in item:
@@ -227,7 +196,6 @@ async def main():
 
             question_response = await process_question(
                 memory,
-                model,
                 question,
                 answer,
                 category,
@@ -239,7 +207,7 @@ async def main():
                 question_response,
             )
 
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(5)
         response_tasks = [
             async_with(
                 semaphore,

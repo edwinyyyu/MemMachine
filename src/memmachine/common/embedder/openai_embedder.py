@@ -70,6 +70,8 @@ class OpenAIEmbedder(Embedder):
 
         self._max_retry_interval_seconds = params.max_retry_interval_seconds
 
+        self._max_length = 20000  # Length in characters.
+
         metrics_factory = params.metrics_factory
 
         self._collect_metrics = False
@@ -121,7 +123,10 @@ class OpenAIEmbedder(Embedder):
         if max_attempts <= 0:
             raise ValueError("max_attempts must be a positive integer")
 
-        inputs = [item.replace("\n", " ") if item else "\n" for item in inputs]
+        inputs = [
+            item.replace("\n", " ")[: self._max_length] if item else "\n"
+            for item in inputs
+        ]
 
         embed_call_uuid = uuid4()
 
