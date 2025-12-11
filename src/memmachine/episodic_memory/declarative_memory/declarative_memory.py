@@ -100,6 +100,7 @@ class DeclarativeMemory:
         self._derived_from_relation = f"DERIVED_FROM_{session_id}"
 
         self._episode_context_content_length_quota_factor = 20
+        self._episode_context_content_length_max_quota = 400
 
     async def add_episodes(
         self,
@@ -351,8 +352,11 @@ class DeclarativeMemory:
         contextualize_episode_tasks = [
             self._contextualize_episode(
                 nuclear_episode,
-                episode_context_content_length_quota=self._episode_context_content_length_quota_factor
-                * max_num_episodes,
+                episode_context_content_length_quota=min(
+                    self._episode_context_content_length_max_quota,
+                    self._episode_context_content_length_quota_factor
+                    * max_num_episodes,
+                ),
                 mangled_property_filter=mangled_property_filter,
             )
             for nuclear_episode in nuclear_episodes
