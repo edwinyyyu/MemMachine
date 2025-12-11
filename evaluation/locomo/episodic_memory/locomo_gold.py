@@ -2,60 +2,21 @@ import argparse
 import asyncio
 import json
 import os
-import re
 import time
 from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
-import boto3
-import neo4j
 import openai
 from dotenv import load_dotenv
-from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
 
-from memmachine.common.embedder.openai_embedder import (
-    OpenAIEmbedder,
-    OpenAIEmbedderParams,
-)
-from memmachine.common.reranker.amazon_bedrock_reranker import (
-    AmazonBedrockReranker,
-    AmazonBedrockRerankerParams,
-)
 from memmachine.common.utils import async_with
-from memmachine.common.vector_graph_store.neo4j_vector_graph_store import (
-    Neo4jVectorGraphStore,
-    Neo4jVectorGraphStoreParams,
-)
 from memmachine.episodic_memory.declarative_memory import (
+    ContentType,
     DeclarativeMemory,
-    DeclarativeMemoryParams,
+    Episode,
 )
-
-language = "english"
-stop_words = stopwords.words(language)
-
-
-def default_tokenize(text: str) -> list[str]:
-    """
-    Preprocess the input text
-    by removing non-alphanumeric characters,
-    converting to lowercase,
-    word-tokenizing,
-    and removing stop words.
-
-    Args:
-        text (str): The input text to preprocess.
-
-    Returns:
-        list[str]: A list of tokens for use in BM25 scoring.
-    """
-    alphanumeric_text = re.sub(r"\W+", " ", text)
-    lower_text = alphanumeric_text.lower()
-    words = word_tokenize(lower_text, language)
-    tokens = [word for word in words if word and word not in stop_words]
-    return tokens
-
 
 ANSWER_PROMPT = """
 You are asked to answer a question based on your memories of a conversation.
@@ -79,8 +40,14 @@ Your short response to the question without fluff (no more than a couple of sent
 """
 
 
+def datetime_from_locomo_time(locomo_time_str: str) -> datetime:
+    return datetime.strptime(locomo_time_str, "%I:%M %p on %d %B, %Y").replace(
+        tzinfo=UTC
+    )
+
+
 async def process_question(
-    memory: DeclarativeMemory,
+    locomo_item,
     model: openai.AsyncOpenAI,
     question,
     answer,
@@ -89,13 +56,58 @@ async def process_question(
     adversarial_answer,
 ):
     memory_start = time.time()
-    chunks = await memory.search(
-        query=question,
-        max_num_episodes=20,
-    )
+    conversation = locomo_item["conversation"]
+
+    episodes = []
+    session_idx = 0
+    while True:
+        session_idx += 1
+        session_id = f"session_{session_idx}"
+
+        if session_id not in conversation:
+            break
+
+        session = conversation[session_id]
+        session_datetime = datetime_from_locomo_time(
+            conversation[f"{session_id}_date_time"]
+        )
+
+        episodes += [
+            Episode(
+                uid=str(uuid4()),
+                timestamp=session_datetime + message_index * timedelta(seconds=1),
+                source=message["speaker"],
+                content_type=ContentType.MESSAGE,
+                content=message["text"]
+                + (
+                    f" [Attached {blip_caption}: {image_query}]"
+                    if (
+                        (
+                            ((blip_caption := message.get("blip_caption")) or True)
+                            and ((image_query := message.get("query")) or True)
+                        )
+                        and blip_caption
+                        and image_query
+                    )
+                    else (
+                        f" [Attached {blip_caption}]"
+                        if blip_caption
+                        else (
+                            f" [Attached a photo: {image_query}]" if image_query else ""
+                        )
+                    )
+                ),
+                user_metadata={
+                    "locomo_session_id": session_id,
+                },
+            )
+            for message_index, message in enumerate(session)
+            if message.get("dia_id") in evidence
+        ]
+
     memory_end = time.time()
 
-    formatted_context = memory.string_from_episode_context(chunks)
+    formatted_context = DeclarativeMemory.string_from_episode_context(episodes)
     prompt = ANSWER_PROMPT.format(memories=formatted_context, question=question)
 
     llm_start = time.time()
@@ -150,49 +162,6 @@ async def main():
     with open(data_path, "r") as f:
         locomo_data = json.load(f)
 
-    neo4j_driver = neo4j.AsyncGraphDatabase.driver(
-        uri=os.getenv("NEO4J_URI"),
-        auth=(
-            os.getenv("NEO4J_USERNAME"),
-            os.getenv("NEO4J_PASSWORD"),
-        ),
-    )
-
-    vector_graph_store = Neo4jVectorGraphStore(
-        Neo4jVectorGraphStoreParams(
-            driver=neo4j_driver,
-            max_concurrent_transactions=1000,
-        )
-    )
-
-    openai_client = openai.AsyncOpenAI(
-        api_key=os.getenv("OPENAI_API_KEY"),
-    )
-
-    embedder = OpenAIEmbedder(
-        OpenAIEmbedderParams(
-            client=openai_client,
-            model="text-embedding-3-small",
-            dimensions=1536,
-        )
-    )
-
-    region = "us-west-2"
-    aws_client = boto3.client(
-        "bedrock-agent-runtime",
-        region_name=region,
-        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-    )
-
-    reranker = AmazonBedrockReranker(
-        AmazonBedrockRerankerParams(
-            client=aws_client,
-            region=region,
-            model_id="cohere.rerank-v3-5:0",
-        )
-    )
-
     model = openai.AsyncOpenAI(
         api_key=os.getenv("OPENAI_API_KEY"),
     )
@@ -206,17 +175,6 @@ async def main():
 
         print(f"Processing questions for group {idx}...")
 
-        group_id = f"group_{idx}"
-
-        memory = DeclarativeMemory(
-            DeclarativeMemoryParams(
-                session_id=group_id,
-                vector_graph_store=vector_graph_store,
-                embedder=embedder,
-                reranker=reranker,
-            )
-        )
-
         async def respond_question(qa):
             question = qa["question"]
             answer = qa.get("answer", "")
@@ -226,7 +184,7 @@ async def main():
             adversarial_answer = qa.get("adversarial_answer", "")
 
             question_response = await process_question(
-                memory,
+                item,
                 model,
                 question,
                 answer,
@@ -239,7 +197,7 @@ async def main():
                 question_response,
             )
 
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(30)
         response_tasks = [
             async_with(
                 semaphore,

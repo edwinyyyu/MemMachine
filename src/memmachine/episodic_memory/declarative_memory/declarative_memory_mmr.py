@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from typing import cast
 from uuid import uuid4
 
+import numpy as np
 from nltk import sent_tokenize
 from pydantic import BaseModel, Field, InstanceOf
 
@@ -26,6 +27,7 @@ from memmachine.common.filter.filter_parser import (
     Or as FilterOr,
 )
 from memmachine.common.reranker.reranker import Reranker
+from memmachine.common.utils import rank_by_mmr, unflatten_like
 from memmachine.common.vector_graph_store import Edge, Node, VectorGraphStore
 
 from .data_types import (
@@ -100,6 +102,7 @@ class DeclarativeMemory:
         self._derived_from_relation = f"DERIVED_FROM_{session_id}"
 
         self._episode_context_content_length_quota_factor = 20
+        self._max_num_derivatives_per_episode = 10
 
     async def add_episodes(
         self,
@@ -154,6 +157,77 @@ class DeclarativeMemory:
             [derivative.content for derivative in derivatives],
         )
 
+        episodes_derivative_embeddings = unflatten_like(
+            derivative_embeddings,
+            episodes_derivatives,
+        )
+
+        average_embeddings = [
+            np.average(
+                episode_derivative_embeddings,
+                axis=0,
+                weights=[len(derivative.content) for derivative in episode_derivatives],
+            )
+            .astype(float)
+            .tolist()
+            for episode_derivatives, episode_derivative_embeddings in zip(
+                episodes_derivatives,
+                episodes_derivative_embeddings,
+                strict=True,
+            )
+        ]
+
+        episodes_ranked_derivative_indexes = [
+            rank_by_mmr(
+                average_embedding,
+                episode_derivative_embeddings,
+                self._embedder.similarity_metric,
+            )
+            for average_embedding, episode_derivative_embeddings in zip(
+                average_embeddings,
+                episodes_derivative_embeddings,
+                strict=True,
+            )
+        ]
+
+        pruned_episodes_derivatives = []
+        pruned_episodes_derivative_embeddings = []
+        for (
+            episode_ranked_derivative_indexes,
+            episode_derivatives,
+            episode_derivative_embeddings,
+        ) in zip(
+            episodes_ranked_derivative_indexes,
+            episodes_derivatives,
+            episodes_derivative_embeddings,
+            strict=True,
+        ):
+            pruned_episode_derivatives = []
+            pruned_episode_derivative_embeddings = []
+            for index in episode_ranked_derivative_indexes[
+                : self._max_num_derivatives_per_episode
+            ]:
+                pruned_episode_derivatives.append(episode_derivatives[index])
+                pruned_episode_derivative_embeddings.append(
+                    episode_derivative_embeddings[index]
+                )
+
+            pruned_episodes_derivatives.append(pruned_episode_derivatives)
+            pruned_episodes_derivative_embeddings.append(
+                pruned_episode_derivative_embeddings
+            )
+
+        pruned_derivatives = [
+            derivative
+            for pruned_episode_derivatives in pruned_episodes_derivatives
+            for derivative in pruned_episode_derivatives
+        ]
+        pruned_derivative_embeddings = [
+            embedding
+            for pruned_episode_derivative_embeddings in pruned_episodes_derivative_embeddings
+            for embedding in pruned_episode_derivative_embeddings
+        ]
+
         derivative_nodes = [
             Node(
                 uid=derivative.uid,
@@ -176,8 +250,8 @@ class DeclarativeMemory:
                 },
             )
             for derivative, embedding in zip(
-                derivatives,
-                derivative_embeddings,
+                pruned_derivatives,
+                pruned_derivative_embeddings,
                 strict=True,
             )
         ]
@@ -188,12 +262,12 @@ class DeclarativeMemory:
                 source_uid=derivative.uid,
                 target_uid=episode.uid,
             )
-            for episode, episode_derivatives in zip(
+            for episode, pruned_episode_derivatives in zip(
                 episodes,
-                episodes_derivatives,
+                pruned_episodes_derivatives,
                 strict=True,
             )
-            for derivative in episode_derivatives
+            for derivative in pruned_episode_derivatives
         ]
 
         add_nodes_tasks = [
@@ -232,23 +306,26 @@ class DeclarativeMemory:
         """
         match episode.content_type:
             case ContentType.MESSAGE:
-                # sentences = []
-                # for line in episode.content.strip().splitlines():
-                #     sentences.extend(sent_tokenize(line.strip()))
-
                 message_timestamp = episode.timestamp.strftime(
                     "%A, %B %d, %Y at %I:%M %p",
                 )
+
+                derived_contents = {
+                    f"[{message_timestamp}] {episode.source}: {episode.content}"
+                }
+                for line in episode.content.strip().splitlines():
+                    derived_contents.update(sent_tokenize(line.strip()))
+
                 return [
                     Derivative(
                         uid=str(uuid4()),
                         timestamp=episode.timestamp,
                         source=episode.source,
                         content_type=ContentType.MESSAGE,
-                        content=f"[{message_timestamp}] {episode.source}: {episode.content}",
+                        content=f"[{message_timestamp}] {episode.source}: {derived_content}",
                         filterable_properties=episode.filterable_properties,
                     )
-                    # for sentence in sentences
+                    for derived_content in derived_contents
                 ]
             case ContentType.TEXT:
                 text_content = episode.content
@@ -306,7 +383,7 @@ class DeclarativeMemory:
         )[0]
 
         # Search graph store for vector matches.
-        matched_derivative_nodes, em_scores = await self._vector_graph_store.search_similar_nodes(
+        matched_derivative_nodes = await self._vector_graph_store.search_similar_nodes(
             collection=self._derivative_collection,
             embedding_name=(
                 DeclarativeMemory._embedding_name(
@@ -316,7 +393,7 @@ class DeclarativeMemory:
             ),
             query_embedding=query_embedding,
             similarity_metric=self._embedder.similarity_metric,
-            limit=200,
+            limit=100,
             property_filter=mangled_property_filter,
         )
 
@@ -334,19 +411,13 @@ class DeclarativeMemory:
             for matched_derivative_node in matched_derivative_nodes
         ]
 
-        source_episode_nodes = {}
-        for idx, episode_nodes in enumerate(await asyncio.gather(
-            *search_derivatives_source_episode_nodes_tasks,
-        )):
-            for episode_node in episode_nodes:
-                if episode_node not in source_episode_nodes:
-                    source_episode_nodes[episode_node] = em_scores[idx]
-                else:
-                    # Keep the highest EM score for the episode.
-                    source_episode_nodes[episode_node] = max(
-                        source_episode_nodes[episode_node],
-                        em_scores[idx],
-                    )
+        source_episode_nodes = {
+            episode_node: None
+            for episode_nodes in await asyncio.gather(
+                *search_derivatives_source_episode_nodes_tasks,
+            )
+            for episode_node in episode_nodes
+        }
 
         # Use source episodes as nuclei for contextualization.
         nuclear_episodes = [
@@ -366,54 +437,117 @@ class DeclarativeMemory:
 
         episode_contexts = await asyncio.gather(*contextualize_episode_tasks)
 
-        all_episodes = {
-            episode: None
-            for episode_context in episode_contexts
-            for episode in episode_context
-        }
-
-        single_episode_contexts = [[episode] for episode in all_episodes]
-
         # Rerank episode contexts.
         episode_context_scores = await self._score_episode_contexts(
             query,
-            single_episode_contexts,
+            episode_contexts,
         )
 
-        reranked_episodes = [
-            (episode, emb_score, episode_context_score)
-            for episode_context_score, episode, emb_score, _ in sorted(
+        reranked_anchored_episode_contexts = [
+            (nuclear_episode, episode_context)
+            for _, nuclear_episode, episode_context in sorted(
                 zip(
                     episode_context_scores,
-                    all_episodes.keys(),
-                    source_episode_nodes.values(),
-                    single_episode_contexts,
+                    nuclear_episodes,
+                    episode_contexts,
                     strict=True,
                 ),
                 key=lambda triple: triple[0],
                 reverse=True,
             )
         ]
-        return [
-            episode
-            for episode, _, _ in reranked_episodes[:max_num_episodes]
-        ], [
-            score
-            for _, score, _ in reranked_episodes[:max_num_episodes]
-        ], [
-            score
-            for _, _, score in reranked_episodes[:max_num_episodes]
-        ]
+
+        # Unify episode contexts.
+        unified_episode_context = DeclarativeMemory._unify_anchored_episode_contexts(
+            reranked_anchored_episode_contexts,
+            max_num_episodes=max_num_episodes,
+        )
+        return unified_episode_context
 
     async def _contextualize_episode(
         self,
         nuclear_episode: Episode,
         episode_context_content_length_quota: int,
-        max_backward_episodes: int = 0,
-        max_forward_episodes: int = 0,
+        max_backward_episodes: int = 4,
+        max_forward_episodes: int = 8,
         mangled_property_filter: FilterExpr | None = None,
     ) -> list[Episode]:
-        return [nuclear_episode]
+        episode_context = deque([nuclear_episode])
+        episode_context_content_length = len(nuclear_episode.content)
+
+        if episode_context_content_length >= episode_context_content_length_quota:
+            return list(episode_context)
+
+        previous_episode_nodes = (
+            await self._vector_graph_store.search_directional_nodes(
+                collection=self._episode_collection,
+                by_properties=("timestamp", "uid"),
+                starting_at=(
+                    nuclear_episode.timestamp,
+                    str(nuclear_episode.uid),
+                ),
+                order_ascending=(False, False),
+                include_equal_start=False,
+                limit=max_backward_episodes,
+                property_filter=mangled_property_filter,
+            )
+        )
+
+        next_episode_nodes = await self._vector_graph_store.search_directional_nodes(
+            collection=self._episode_collection,
+            by_properties=("timestamp", "uid"),
+            starting_at=(
+                nuclear_episode.timestamp,
+                str(nuclear_episode.uid),
+            ),
+            order_ascending=(True, True),
+            include_equal_start=False,
+            limit=max_forward_episodes,
+            property_filter=mangled_property_filter,
+        )
+
+        previous_episodes = [
+            DeclarativeMemory._episode_from_episode_node(episode_node)
+            for episode_node in previous_episode_nodes
+        ]
+        next_episodes = [
+            DeclarativeMemory._episode_from_episode_node(episode_node)
+            for episode_node in next_episode_nodes
+        ]
+
+        previous_episode_index = 0
+        next_episode_index = 0
+        while previous_episode_index < len(
+            previous_episodes
+        ) or next_episode_index < len(
+            next_episodes,
+        ):
+            for _ in range(2):
+                if next_episode_index < len(next_episodes):
+                    next_episode = next_episodes[next_episode_index]
+                    next_episode_index += 1
+
+                    episode_context.append(next_episode)
+                    episode_context_content_length += len(next_episode.content)
+                    if (
+                        episode_context_content_length
+                        >= episode_context_content_length_quota
+                    ):
+                        return list(episode_context)
+
+            if previous_episode_index < len(previous_episodes):
+                previous_episode = previous_episodes[previous_episode_index]
+                previous_episode_index += 1
+
+                episode_context.appendleft(previous_episode)
+                episode_context_content_length += len(previous_episode.content)
+                if (
+                    episode_context_content_length
+                    >= episode_context_content_length_quota
+                ):
+                    return list(episode_context)
+
+        return list(episode_context)
 
     async def _score_episode_contexts(
         self,

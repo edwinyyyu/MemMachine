@@ -232,9 +232,9 @@ class DeclarativeMemory:
         """
         match episode.content_type:
             case ContentType.MESSAGE:
-                # sentences = []
-                # for line in episode.content.strip().splitlines():
-                #     sentences.extend(sent_tokenize(line.strip()))
+                sentences = []
+                for line in episode.content.strip().splitlines():
+                    sentences.extend(sent_tokenize(line.strip()))
 
                 message_timestamp = episode.timestamp.strftime(
                     "%A, %B %d, %Y at %I:%M %p",
@@ -245,10 +245,10 @@ class DeclarativeMemory:
                         timestamp=episode.timestamp,
                         source=episode.source,
                         content_type=ContentType.MESSAGE,
-                        content=f"[{message_timestamp}] {episode.source}: {episode.content}",
+                        content=f"[{message_timestamp}] {episode.source}: {sentence}",
                         filterable_properties=episode.filterable_properties,
                     )
-                    # for sentence in sentences
+                    for sentence in sentences
                 ]
             case ContentType.TEXT:
                 text_content = episode.content

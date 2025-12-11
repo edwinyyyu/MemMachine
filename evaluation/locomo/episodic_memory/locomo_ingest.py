@@ -161,6 +161,7 @@ async def main():
                         ),
                         user_metadata={
                             "locomo_session_id": session_id,
+                            "dia_id": message.get("dia_id", ""),
                         },
                     )
                     for message_index, message in enumerate(session)
