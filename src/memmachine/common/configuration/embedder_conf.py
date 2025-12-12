@@ -39,6 +39,7 @@ class AmazonBedrockEmbedderConf(YamlSerializableMixin):
     max_input_length: int | None = Field(
         default=None,
         description="Maximum input length for the model (in Unicode code points).",
+        gt=0,
     )
     similarity_metric: SimilarityMetric = Field(
         default=SimilarityMetric.COSINE,
@@ -75,6 +76,7 @@ class OpenAIEmbedderConf(MetricsFactoryIdMixin, YamlSerializableMixin):
     max_input_length: int | None = Field(
         default=None,
         description="Maximum input length for the model (in Unicode code points).",
+        gt=0,
     )
     max_retry_interval_seconds: int = Field(
         default=120,
@@ -104,6 +106,7 @@ class SentenceTransformerEmbedderConf(MetricsFactoryIdMixin, YamlSerializableMix
     max_input_length: int | None = Field(
         default=None,
         description="Maximum input length for the model (in Unicode code points).",
+        gt=0,
     )
 
 

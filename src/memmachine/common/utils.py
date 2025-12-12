@@ -61,6 +61,9 @@ def chunk_text(text: str, max_length: int) -> list[str]:
         list[str]: A list of text chunks.
 
     """
+    if max_length <= 0:
+        raise ValueError("max_length must be greater than 0")
+
     return [text[i : i + max_length] for i in range(0, len(text), max_length)]
 
 
@@ -76,6 +79,12 @@ def chunk_text_balanced(text: str, max_length: int) -> list[str]:
         list[str]: A list of text chunks.
 
     """
+    if max_length <= 0:
+        raise ValueError("max_length must be greater than 0")
+
+    if len(text) == 0:
+        return []
+
     num_chunks = math.ceil(len(text) / max_length)
     chunk_size = math.ceil(len(text) / num_chunks)
 
@@ -97,6 +106,9 @@ def unflatten_like[T](
         list: The unflattened nested list.
 
     """
+    if not all(isinstance(template, list) for template in template_list):
+        raise TypeError("All elements in template_list must be lists.")
+
     unflattened_list = []
     current_index = 0
 
@@ -105,5 +117,8 @@ def unflatten_like[T](
             flat_list[current_index : current_index + len(template)]
         )
         current_index += len(template)
+
+    if current_index != len(flat_list):
+        raise ValueError("flat_list cannot be unflattened to match template_list.")
 
     return unflattened_list

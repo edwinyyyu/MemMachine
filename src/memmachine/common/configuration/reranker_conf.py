@@ -74,6 +74,7 @@ class CrossEncoderRerankerConf(YamlSerializableMixin):
     max_input_length: int | None = Field(
         default=None,
         description="Maximum input length for the model (in Unicode code points)",
+        gt=0,
     )
 
 

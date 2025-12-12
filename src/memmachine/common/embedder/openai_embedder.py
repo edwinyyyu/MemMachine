@@ -43,6 +43,7 @@ class OpenAIEmbedderParams(BaseModel):
     max_input_length: int | None = Field(
         default=None,
         description="Maximum input length for the model (in Unicode code points).",
+        gt=0,
     )
     max_retry_interval_seconds: int = Field(
         default=120,
@@ -128,6 +129,8 @@ class OpenAIEmbedder(Embedder):
             return []
         if max_attempts <= 0:
             raise ValueError("max_attempts must be a positive integer")
+
+        inputs = [input_text or "." for input_text in inputs]
 
         inputs_chunks = [
             chunk_text_balanced(input_text, self._max_input_length)
