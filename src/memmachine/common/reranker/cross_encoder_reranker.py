@@ -20,6 +20,7 @@ class CrossEncoderRerankerParams(BaseModel):
     max_input_length: int | None = Field(
         default=None,
         description="Maximum input length for the model (in Unicode code points)",
+        gt=0,
     )
 
 
@@ -39,7 +40,7 @@ class CrossEncoderReranker(Reranker):
 
         candidates_chunks = [
             chunk_text(candidate, self._max_input_length)
-            if self._max_input_length
+            if self._max_input_length and candidate
             else [candidate]
             for candidate in candidates
         ]

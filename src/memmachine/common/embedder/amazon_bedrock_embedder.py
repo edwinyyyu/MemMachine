@@ -37,6 +37,7 @@ class AmazonBedrockEmbedderParams(BaseModel):
     max_input_length: int | None = Field(
         default=None,
         description="Maximum input length for the model (in Unicode code points).",
+        gt=0,
     )
     similarity_metric: SimilarityMetric = Field(
         default=SimilarityMetric.COSINE,
@@ -124,6 +125,8 @@ class AmazonBedrockEmbedder(Embedder):
             return []
         if max_attempts <= 0:
             raise ValueError("max_attempts must be a positive integer")
+
+        inputs = [input_text or "." for input_text in inputs]
 
         inputs_chunks = [
             chunk_text_balanced(input_text, self._max_input_length)

@@ -32,6 +32,7 @@ class SentenceTransformerEmbedderParams(BaseModel):
     max_input_length: int | None = Field(
         default=None,
         description="Maximum input length for the model (in Unicode code points).",
+        gt=0,
     )
 
 
@@ -97,7 +98,7 @@ class SentenceTransformerEmbedder(Embedder):
 
         inputs_chunks = [
             chunk_text_balanced(input_text, self._max_input_length)
-            if self._max_input_length is not None
+            if self._max_input_length is not None and input_text
             else [input_text]
             for input_text in inputs
         ]
