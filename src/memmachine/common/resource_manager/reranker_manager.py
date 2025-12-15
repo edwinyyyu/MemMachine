@@ -192,6 +192,8 @@ class RerankerManager:
             region=conf.region,
             model_id=conf.model_id,
             additional_model_request_fields=conf.additional_model_request_fields,
+            metrics_factory=conf.get_metrics_factory(),
+            user_metrics_labels=conf.user_metrics_labels,
         )
         self.rerankers[name] = AmazonBedrockReranker(params)
         return self.rerankers[name]
