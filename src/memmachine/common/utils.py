@@ -81,7 +81,9 @@ def compute_similarity(
             magnitude_products[magnitude_products == 0] = float("inf")
 
             scores = (
-                1 + np.dot(candidate_embeddings_np, query_embedding_np) / magnitude_products
+                1
+                + np.dot(candidate_embeddings_np, query_embedding_np)
+                / magnitude_products
             ) / 2
         case SimilarityMetric.DOT:
             scores = np.dot(candidate_embeddings_np, query_embedding_np)
@@ -198,6 +200,7 @@ def unflatten_like[T](
 
     return unflattened_list
 
+
 def max_logit_gap(
     scores: Iterable[float],
 ) -> int:
@@ -209,6 +212,7 @@ def max_logit_gap(
     logit_gaps = np.abs(np.diff(logits))
     return int(np.argmax(logit_gaps)) + 1
 
+
 def second_max_logit_gap(
     scores: Iterable[float],
 ) -> int:
@@ -219,4 +223,8 @@ def second_max_logit_gap(
     logits = np.log(scores_np / (1 - scores_np + 1e-16) + 1e-16)
     logit_gaps = np.abs(np.diff(logits))
     first_max_logit_gap = int(np.argmax(logit_gaps)) + 1
-    return int(np.argmax(logit_gaps[first_max_logit_gap:])) + first_max_logit_gap + 1 if len(logit_gaps) > first_max_logit_gap else first_max_logit_gap
+    return (
+        int(np.argmax(logit_gaps[first_max_logit_gap:])) + first_max_logit_gap + 1
+        if len(logit_gaps) > first_max_logit_gap
+        else first_max_logit_gap
+    )

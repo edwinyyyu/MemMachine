@@ -6,6 +6,7 @@ of a vector graph store using Neo4j as the backend database.
 """
 
 import asyncio
+import datetime
 import logging
 import re
 import time
@@ -13,6 +14,7 @@ from collections.abc import Awaitable, Iterable, Mapping
 from enum import Enum
 from typing import cast
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from neo4j import AsyncDriver
 from neo4j.graph import Node as Neo4jNode
@@ -890,7 +892,6 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                 property_filter,
             )
         )
-
         records, _, _ = await self._driver.execute_query(
             f"MATCH (n:{sanitized_collection})\n"
             f"WHERE ({query_relational_requirements})\n"
@@ -934,24 +935,66 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         for index, sanitized_by_property in enumerate(sanitized_by_properties):
             sanitized_equal_properties = sanitized_by_properties[:index]
 
-            relational_requirements = [
-                (
-                    f"({entity_query_alias}.{sanitized_by_property}"
-                    + (" > " if order_ascending[index] else " < ")
-                    + f"${starting_at_query_parameter}[{index}])"
-                )
-                if starting_at[index] is not None
-                else f"({entity_query_alias}.{sanitized_by_property} IS NOT NULL)",
-            ]
+            if starting_at[index] is None:
+                relational_requirements = [
+                    f"{entity_query_alias}.{sanitized_by_property} IS NOT NULL",
+                ]
+            elif isinstance(starting_at[index], datetime.datetime):
+                relational_requirements = [
+                    (
+                        "("
+                        + f"{entity_query_alias}.{sanitized_by_property}.epochSeconds"
+                        + (" > " if order_ascending[index] else " < ")
+                        + f"${starting_at_query_parameter}[{index}].epochSeconds"
+                        + " OR "
+                        + f"({entity_query_alias}.{sanitized_by_property}.epochSeconds"
+                        + " = "
+                        + f"${starting_at_query_parameter}[{index}].epochSeconds"
+                        + " AND "
+                        + f"{entity_query_alias}.{sanitized_by_property}.nanosecond"
+                        + (" > " if order_ascending[index] else " < ")
+                        + f"${starting_at_query_parameter}[{index}].nanosecond)"
+                        + ")"
+                    )
+                ]
+            else:
+                relational_requirements = [
+                    (
+                        f"{entity_query_alias}.{sanitized_by_property}"
+                        + (" > " if order_ascending[index] else " < ")
+                        + f"${starting_at_query_parameter}[{index}]"
+                    )
+                ]
 
-            relational_requirements += [
-                f"({entity_query_alias}.{sanitized_equal_property} = ${starting_at_query_parameter}[{equal_index}])"
-                if starting_at[equal_index] is not None
-                else f"({entity_query_alias}.{sanitized_equal_property} IS NOT NULL)"
-                for equal_index, sanitized_equal_property in enumerate(
-                    sanitized_equal_properties,
-                )
-            ]
+            for equal_index, sanitized_equal_property in enumerate(
+                sanitized_equal_properties,
+            ):
+                if starting_at[equal_index] is None:
+                    relational_requirements += [
+                        f"{entity_query_alias}.{sanitized_equal_property} IS NOT NULL"
+                    ]
+                elif isinstance(starting_at[equal_index], datetime.datetime):
+                    relational_requirements += [
+                        (
+                            "("
+                            + f"{entity_query_alias}.{sanitized_equal_property}.epochSeconds"
+                            + " = "
+                            + f"${starting_at_query_parameter}[{equal_index}].epochSeconds"
+                            + " AND "
+                            + f"{entity_query_alias}.{sanitized_equal_property}.nanosecond"
+                            + " = "
+                            + f"${starting_at_query_parameter}[{equal_index}].nanosecond"
+                            + ")"
+                        )
+                    ]
+                else:
+                    relational_requirements += [
+                        (
+                            f"{entity_query_alias}.{sanitized_equal_property}"
+                            + " = "
+                            + f"${starting_at_query_parameter}[{equal_index}]"
+                        )
+                    ]
 
             lexicographic_relational_requirement = (
                 f"({' AND '.join(relational_requirements)})"
