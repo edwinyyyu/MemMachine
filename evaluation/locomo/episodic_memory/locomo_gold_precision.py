@@ -13,28 +13,23 @@ MAX_NUM_EPISODES = 200
 with open(data_path, "r") as f:
     locomo_data = json.load(f)
 
-total_good = {}
+total_recall_at_num = {i: 0 for i in range(1, MAX_NUM_EPISODES + 1)}
 for category, question_items in locomo_data.items():
     if int(category) == 5:
         continue
 
     for item in question_items:
-        good = {i: True for i in range(1, MAX_NUM_EPISODES + 1)}
         gold_rr_ranks = item["gold_rr_ranks"]
-
         evidence = item["evidence"]
-        if not gold_rr_ranks and evidence:
-            for i in range(1, MAX_NUM_EPISODES + 1):
-                good[i] = False
+
+        len(gold_rr_ranks)
 
         for rank in gold_rr_ranks:
             for i in range(1, MAX_NUM_EPISODES + 1):
-                if rank + 1 > i:
-                    good[i] = False
+                if rank < i:
+                    total_recall_at_num[i] += 1
 
-        for i in range(1, MAX_NUM_EPISODES + 1):
-            if good[i]:
-                total_good.setdefault(i, 0)
-                total_good[i] += 1
-
-print([0] + list(total_good.values()))
+total_recalled = list(total_recall_at_num.values())
+total_retrieved = [1540 * i for i in range(1, MAX_NUM_EPISODES + 1)]
+precisions = [recalled / retrieved if retrieved > 0 else 0.0 for recalled, retrieved in zip(total_recalled, total_retrieved)]
+print([0.0] + precisions)

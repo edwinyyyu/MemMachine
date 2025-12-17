@@ -65,30 +65,22 @@ async def process_question(
     adversarial_answer,
 ):
     memory_start = time.time()
-    episodes, em_scores, rr_scores = await memory.search(
+    results = await memory.search(
         query=question,
         max_num_episodes=200,
     )
     memory_end = time.time()
 
-    gold_em_ranks = []
     gold_rr_ranks = []
-    for idx, episode in enumerate(episodes):
-        if episode.user_metadata.get("dia_id") in evidence:
-            gold_rr_ranks.append(idx)
-            gold_em_ranks.append(sorted(em_scores, reverse=True).index(em_scores[idx]))
+    for idx, (_, _, episode_context) in enumerate(results):
+        for episode in episode_context:
+            if episode.user_metadata.get("dia_id") in evidence:
+                gold_rr_ranks.append(idx)
 
-    formatted_context = memory.string_from_episode_context(
-        sorted(
-            episodes,
-            key=lambda episode: (episode.timestamp, episode.uid),
-        )
-    )
     print(
         f"Question: {question}\n"
         f"Answer: {answer}\n"
         f"Memory retrieval time: {memory_end - memory_start:.2f} seconds\n"
-        f"MEMORIES START\n{formatted_context}MEMORIES END\n"
     )
     return {
         "question": question,
@@ -96,13 +88,25 @@ async def process_question(
         "category": category,
         "evidence": evidence,
         "adversarial_answer": adversarial_answer,
-        "conversation_memories": formatted_context,
-        "episodes": [
-            memory.string_from_episode_context([episode]) for episode in episodes
+        "episode_contexts": [
+            {
+                "score": score,
+                "nuclear_episode": nuclear_episode.uid,
+                "episodes": [
+                    {
+                        "uid": episode.uid,
+                        "timestamp": episode.timestamp.isoformat(),
+                        "source": episode.source,
+                        "content_type": episode.content_type.value,
+                        "content": episode.content,
+                        "filterable_properties": episode.filterable_properties,
+                        "user_metadata": episode.user_metadata,
+                    }
+                    for episode in episode_context
+                ],
+            }
+            for score, nuclear_episode, episode_context in results
         ],
-        "em_scores": em_scores,
-        "rr_scores": rr_scores,
-        "gold_em_ranks": gold_em_ranks,
         "gold_rr_ranks": gold_rr_ranks,
     }
 
