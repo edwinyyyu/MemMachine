@@ -107,6 +107,7 @@ async def process_question(
                 max_output_tokens=4096,
                 temperature=0.0,
                 top_p=1,
+                timeout=10,
                 input=[{"role": "user", "content": prompt}],
             )
     llm_end = time.time()
