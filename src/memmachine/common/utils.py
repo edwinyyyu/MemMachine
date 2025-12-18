@@ -3,7 +3,7 @@
 import asyncio
 import functools
 import math
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager
 from typing import Any, ParamSpec, TypeVar
 
@@ -122,3 +122,54 @@ def unflatten_like[T](
         raise ValueError("flat_list cannot be unflattened to match template_list.")
 
     return unflattened_list
+
+
+def cluster_texts(
+    texts: Iterable[str],
+    max_num_texts_per_cluster: int,
+    max_total_length_per_cluster: int,
+) -> list[list[str]]:
+    """
+    Cluster texts based on maximum number of texts and total length of texts per cluster.
+
+    Args:
+        texts (Iterable[str]): The input texts to cluster.
+        max_num_texts_per_cluster (int): The maximum number of texts per cluster.
+        max_total_length_per_cluster (int): The maximum total length of texts per cluster.
+
+    Returns:
+        list[list[str]]: A list of text clusters.
+
+    """
+    if max_num_texts_per_cluster <= 0:
+        raise ValueError("max_num_texts_per_cluster must be greater than 0")
+    if max_total_length_per_cluster <= 0:
+        raise ValueError("max_total_length_per_cluster must be greater than 0")
+
+    clusters: list[list[str]] = []
+    current_cluster: list[str] = []
+    current_length = 0
+
+    for text in texts:
+        text_length = len(text)
+        if text_length > max_total_length_per_cluster:
+            raise ValueError(
+                f"Text length {text_length} exceeds max_total_length_per_cluster {max_total_length_per_cluster}"
+            )
+
+        if (
+            len(current_cluster) >= max_num_texts_per_cluster
+            or current_length + text_length > max_total_length_per_cluster
+        ):
+            if current_cluster:
+                clusters.append(current_cluster)
+            current_cluster = [text]
+            current_length = text_length
+        else:
+            current_cluster.append(text)
+            current_length += text_length
+
+    if current_cluster:
+        clusters.append(current_cluster)
+
+    return clusters

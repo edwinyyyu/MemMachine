@@ -1,6 +1,11 @@
 import pytest
 
-from memmachine.common.utils import chunk_text, chunk_text_balanced, unflatten_like
+from memmachine.common.utils import (
+    chunk_text,
+    chunk_text_balanced,
+    cluster_texts,
+    unflatten_like,
+)
 
 
 def test_chunk_text():
@@ -89,3 +94,76 @@ def test_unflatten_like():
         ValueError, match=r"flat_list cannot be unflattened to match template_list."
     ):
         result = unflatten_like(flat_list, template)
+
+
+def test_cluster_texts():
+    result = cluster_texts(
+        texts=[],
+        max_num_texts_per_cluster=1,
+        max_total_length_per_cluster=1,
+    )
+    assert result == []
+
+    with pytest.raises(
+        ValueError, match=r"Text length 7 exceeds max_total_length_per_cluster 2"
+    ):
+        result = cluster_texts(
+            texts=["abcdefg"],
+            max_num_texts_per_cluster=1,
+            max_total_length_per_cluster=2,
+        )
+
+    with pytest.raises(
+        ValueError, match=r"max_num_texts_per_cluster must be greater than 0"
+    ):
+        cluster_texts(
+            texts=["a", "b"],
+            max_num_texts_per_cluster=0,
+            max_total_length_per_cluster=2,
+        )
+
+    with pytest.raises(
+        ValueError, match=r"max_total_length_per_cluster must be greater than 0"
+    ):
+        cluster_texts(
+            texts=["a", "b"],
+            max_num_texts_per_cluster=2,
+            max_total_length_per_cluster=0,
+        )
+
+    result = cluster_texts(
+        texts=["abcdefg", "hijklmnop", "qrs", "tuv", "wx", "yz"],
+        max_num_texts_per_cluster=1,
+        max_total_length_per_cluster=26,
+    )
+    assert result == [
+        ["abcdefg"],
+        ["hijklmnop"],
+        ["qrs"],
+        ["tuv"],
+        ["wx"],
+        ["yz"],
+    ]
+
+    result = cluster_texts(
+        texts=["abcdefg", "hijklmnop", "qrs", "tuv", "wx", "yz"],
+        max_num_texts_per_cluster=2,
+        max_total_length_per_cluster=10,
+    )
+    assert result == [
+        ["abcdefg"],
+        ["hijklmnop"],
+        ["qrs", "tuv"],
+        ["wx", "yz"],
+    ]
+
+    result = cluster_texts(
+        texts=["abcdefg", "hijklmnop", "qrs", "tuv", "wx", "yz"],
+        max_num_texts_per_cluster=26,
+        max_total_length_per_cluster=10,
+    )
+    assert result == [
+        ["abcdefg"],
+        ["hijklmnop"],
+        ["qrs", "tuv", "wx", "yz"],
+    ]

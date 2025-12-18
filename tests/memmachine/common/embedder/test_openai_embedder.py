@@ -37,5 +37,12 @@ async def test_search_embed(openai_embedder, inputs):
 async def test_large_input(openai_embedder):
     input_text = "👩‍💻" * 10000
 
-    await openai_embedder.ingest_embed([input_text])
-    await openai_embedder.search_embed([input_text])
+    assert len(await openai_embedder.ingest_embed([input_text])) == 1
+    assert len(await openai_embedder.search_embed([input_text])) == 1
+
+
+@pytest.mark.asyncio
+async def test_many_inputs(openai_embedder):
+    input_texts = ["Hello, world!"] * 10000
+    assert len(await openai_embedder.ingest_embed(input_texts)) == 10000
+    assert len(await openai_embedder.search_embed(input_texts)) == 10000
