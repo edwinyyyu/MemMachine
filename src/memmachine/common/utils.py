@@ -228,3 +228,14 @@ def second_max_logit_gap(
         if len(logit_gaps) > first_max_logit_gap
         else first_max_logit_gap
     )
+
+def std_dev_cutoff(
+    scores: Iterable[float],
+) -> int:
+    """
+    Return the number of scores above one standard deviation above the mean.
+    """
+    scores_np = np.array(scores)
+    mean = np.mean(scores)
+    std_dev = np.std(scores, ddof=1)
+    return int(np.sum(scores_np > mean + std_dev))
