@@ -4,7 +4,7 @@ import asyncio
 import datetime
 import json
 import logging
-from collections import defaultdict, deque
+from collections import deque
 from collections.abc import Iterable
 from typing import cast
 from uuid import uuid4
@@ -26,6 +26,7 @@ from memmachine.common.filter.filter_parser import (
     Or as FilterOr,
 )
 from memmachine.common.reranker.reranker import Reranker
+from memmachine.common.utils import std_dev_cutoff
 from memmachine.common.vector_graph_store import Edge, Node, VectorGraphStore
 
 from .data_types import (
@@ -100,6 +101,7 @@ class DeclarativeMemory:
         self._derived_from_relation = f"DERIVED_FROM_{session_id}"
 
         self._episode_context_content_length_quota_factor = 20
+        self._episode_context_content_length_max_quota = 400
 
     async def add_episodes(
         self,
@@ -306,7 +308,10 @@ class DeclarativeMemory:
         )[0]
 
         # Search graph store for vector matches.
-        matched_derivative_nodes = await self._vector_graph_store.search_similar_nodes(
+        (
+            matched_derivative_nodes,
+            _,
+        ) = await self._vector_graph_store.search_similar_nodes(
             collection=self._derivative_collection,
             embedding_name=(
                 DeclarativeMemory._embedding_name(
@@ -351,8 +356,11 @@ class DeclarativeMemory:
         contextualize_episode_tasks = [
             self._contextualize_episode(
                 nuclear_episode,
-                episode_context_content_length_quota=self._episode_context_content_length_quota_factor
-                * max_num_episodes,
+                episode_context_content_length_quota=min(
+                    self._episode_context_content_length_max_quota,
+                    self._episode_context_content_length_quota_factor
+                    * max_num_episodes,
+                ),
                 mangled_property_filter=mangled_property_filter,
             )
             for nuclear_episode in nuclear_episodes
@@ -360,18 +368,31 @@ class DeclarativeMemory:
 
         episode_contexts = await asyncio.gather(*contextualize_episode_tasks)
 
-        accumulated_anchored_episode_contexts = (
-            await self._accumulate_anchored_episode_contexts(
-                query,
-                nuclear_episodes,
-                episode_contexts,
-                limit=max_num_episodes,
-            )
+        # Rerank episode contexts.
+        episode_context_scores = await self._score_episode_contexts(
+            query,
+            episode_contexts,
         )
+
+        num_to_keep = std_dev_cutoff(sorted(episode_context_scores, reverse=True))
+
+        reranked_anchored_episode_contexts = [
+            (nuclear_episode, episode_context)
+            for _, nuclear_episode, episode_context in sorted(
+                zip(
+                    episode_context_scores,
+                    nuclear_episodes,
+                    episode_contexts,
+                    strict=True,
+                ),
+                key=lambda triple: triple[0],
+                reverse=True,
+            )
+        ][:num_to_keep]
 
         # Unify episode contexts.
         unified_episode_context = DeclarativeMemory._unify_anchored_episode_contexts(
-            accumulated_anchored_episode_contexts,
+            reranked_anchored_episode_contexts,
             max_num_episodes=max_num_episodes,
         )
         return unified_episode_context
@@ -461,122 +482,22 @@ class DeclarativeMemory:
 
         return list(episode_context)
 
-    async def _accumulate_anchored_episode_contexts(
+    async def _score_episode_contexts(
         self,
         query: str,
-        nuclear_episodes: Iterable[Episode],
         episode_contexts: Iterable[Iterable[Episode]],
-        limit: int,
-        beam_size: int = 5,
-    ) -> set[tuple[Episode, list[Episode]]]:
-        """Accumulate evidence from episodes up to a specified limit."""
-        available_episode_contexts = dict.fromkeys(episode_contexts)
-
-        accumulated_episode_contexts: set[list[Episode]] = set()
-        while (
-            len(accumulated_episode_contexts) < limit
-            and len(available_episode_contexts) > 0
-        ):
-            candidates = [
-                DeclarativeMemory.string_from_episode_context(
-                    sorted(
-                        [*accumulated_episode_context, episode],
-                        key=lambda episode: (
-                            episode.timestamp,
-                            episode.uid,
-                        ),
-                    )
-                )
-                for episode in available_episodes
-            ]
-
-            scores = await self._reranker.score(query, candidates)
-            best_episode_indexes = sorted(
-                range(len(scores)), key=lambda i: scores[i], reverse=True
-            )[: max(beam_size, limit - len(accumulated_episode_context))]
-
-            available_episodes_keys = list(available_episodes.keys())
-            best_episodes = [
-                available_episodes_keys[best_episode_index]
-                for best_episode_index in best_episode_indexes
-            ]
-
-            for best_episode in best_episodes:
-                available_episodes.pop(best_episode)
-                accumulated_episode_context.add(best_episode)
-
-            available_episodes.update(
-                (neighbor, None)
-                for best_episode in best_episodes
-                for neighbor in episode_neighbors[best_episode]
-                if neighbor not in accumulated_episode_context
+    ) -> list[float]:
+        """Score episode contexts based on their relevance to the query."""
+        context_strings = []
+        for episode_context in episode_contexts:
+            context_string = DeclarativeMemory.string_from_episode_context(
+                episode_context
             )
+            context_strings.append(context_string)
 
-        return sorted(
-            accumulated_episode_context,
-            key=lambda episode: (episode.timestamp, episode.uid),
-        )
+        episode_context_scores = await self._reranker.score(query, context_strings)
 
-    @staticmethod
-    def _unify_anchored_episode_contexts(
-        anchored_episode_contexts: Iterable[tuple[Episode, Iterable[Episode]]],
-        max_num_episodes: int,
-    ) -> list[Episode]:
-        """Unify anchored episode contexts into a single list within the limit."""
-        episode_set: set[Episode] = set()
-
-        for nuclear_episode, context in anchored_episode_contexts:
-            context = list(context)
-
-            if len(episode_set) >= max_num_episodes:
-                break
-            if (len(episode_set) + len(context)) <= max_num_episodes:
-                # It is impossible that the context exceeds the limit.
-                episode_set.update(context)
-            else:
-                # It is possible that the context exceeds the limit.
-                # Prioritize episodes near the nuclear episode.
-
-                # Sort chronological episodes by weighted index-proximity to the nuclear episode.
-                nuclear_index = context.index(nuclear_episode)
-
-                nuclear_context = sorted(
-                    context,
-                    key=lambda episode: DeclarativeMemory._weighted_index_proximity(
-                        episode=episode,
-                        context=context,
-                        nuclear_index=nuclear_index,
-                    ),
-                )
-
-                # Add episodes to unified context until limit is reached,
-                # or until the context is exhausted.
-                for episode in nuclear_context:
-                    if len(episode_set) >= max_num_episodes:
-                        break
-                    episode_set.add(episode)
-
-        unified_episode_context = sorted(
-            episode_set,
-            key=lambda episode: (
-                episode.timestamp,
-                episode.uid,
-            ),
-        )
-
-        return unified_episode_context
-
-    @staticmethod
-    def _weighted_index_proximity(
-        episode: Episode,
-        context: list[Episode],
-        nuclear_index: int,
-    ) -> float:
-        proximity = context.index(episode) - nuclear_index
-        if proximity >= 0:
-            # Forward recall is better than backward recall.
-            return (proximity - 0.5) / 2
-        return -proximity
+        return episode_context_scores
 
     @staticmethod
     def string_from_episode_context(episode_context: Iterable[Episode]) -> str:

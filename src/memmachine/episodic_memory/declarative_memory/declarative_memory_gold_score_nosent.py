@@ -306,7 +306,10 @@ class DeclarativeMemory:
         )[0]
 
         # Search graph store for vector matches.
-        matched_derivative_nodes, em_scores = await self._vector_graph_store.search_similar_nodes(
+        (
+            matched_derivative_nodes,
+            em_scores,
+        ) = await self._vector_graph_store.search_similar_nodes(
             collection=self._derivative_collection,
             embedding_name=(
                 DeclarativeMemory._embedding_name(
@@ -335,9 +338,11 @@ class DeclarativeMemory:
         ]
 
         source_episode_nodes = {}
-        for idx, episode_nodes in enumerate(await asyncio.gather(
-            *search_derivatives_source_episode_nodes_tasks,
-        )):
+        for idx, episode_nodes in enumerate(
+            await asyncio.gather(
+                *search_derivatives_source_episode_nodes_tasks,
+            )
+        ):
             for episode_node in episode_nodes:
                 if episode_node not in source_episode_nodes:
                     source_episode_nodes[episode_node] = em_scores[idx]
@@ -394,16 +399,11 @@ class DeclarativeMemory:
                 reverse=True,
             )
         ]
-        return [
-            episode
-            for episode, _, _ in reranked_episodes[:max_num_episodes]
-        ], [
-            score
-            for _, score, _ in reranked_episodes[:max_num_episodes]
-        ], [
-            score
-            for _, _, score in reranked_episodes[:max_num_episodes]
-        ]
+        return (
+            [episode for episode, _, _ in reranked_episodes[:max_num_episodes]],
+            [score for _, score, _ in reranked_episodes[:max_num_episodes]],
+            [score for _, _, score in reranked_episodes[:max_num_episodes]],
+        )
 
     async def _contextualize_episode(
         self,

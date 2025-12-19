@@ -4,9 +4,11 @@ import asyncio
 import functools
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager
-from typing import Any, ParamSpec, TypeVar
+from typing import Any, ParamSpec, TypeVar, Literal
 
+import cvxpy as cp
 import numpy as np
+from kneed import KneeLocator
 
 from .data_types import SimilarityMetric
 
@@ -239,3 +241,85 @@ def std_dev_cutoff(
     mean = np.mean(scores)
     std_dev = np.std(scores, ddof=1)
     return int(np.sum(scores_np > mean + std_dev))
+
+def kneedle_cutoff(
+    scores: Iterable[float],
+    concavity: Literal["convex", "concave"] = "convex",
+    direction: Literal["decreasing", "increasing"] = "decreasing",
+) -> int:
+    """
+    Return the number of scores above the kneedle cutoff.
+
+    Args:
+        scores (Iterable[float]): The scores to evaluate.
+        concavity (Literal["convex", "concave"]): The concavity of the curve (default: "convex").
+        direction (Literal["increasing", "decreasing"]): The direction of the curve (default: "decreasing").
+
+    Returns:
+        int: The number of scores above the kneedle cutoff.
+
+    """
+    scores_np = np.array(scores)
+    x = np.arange(1, len(scores_np) + 1)
+    knee_locator = KneeLocator(
+        x,
+        scores_np,
+        S=1.0,
+        curve=concavity,
+        direction=direction,
+    )
+    if knee_locator.knee is None:
+        return len(scores_np)
+    return int(knee_locator.knee)
+
+def kneedle_cutoff_fit(
+    scores: Iterable[float],
+    concavity: Literal["convex", "concave"] = "convex",
+    direction: Literal["decreasing", "increasing"] = "decreasing",
+) -> int:
+    """
+    Return the number of scores above the kneedle cutoff.
+
+    Args:
+        scores (Iterable[float]): The scores to evaluate.
+        concavity (Literal["convex", "concave"]): The concavity of the curve (default: "convex").
+        direction (Literal["increasing", "decreasing"]): The direction of the curve (default: "decreasing").
+
+    Returns:
+        int: The number of scores above the kneedle cutoff.
+
+    """
+    scores_np = np.array(scores)
+    n = len(scores_np)
+    x = np.arange(1, n + 1)
+
+    f = cp.Variable(n)
+
+    constraints = []
+    for i in range(n - 1):
+        if direction == "decreasing":
+            constraints.append(f[i] >= f[i + 1])
+        else:
+            constraints.append(f[i] <= f[i + 1])
+
+    for i in range(n - 2):
+        if concavity == "convex":
+            constraints.append(f[i] + f[i + 2] >= 2 * f[i + 1])
+        else:
+            constraints.append(f[i] + f[i + 2] <= 2 * f[i + 1])
+
+    objective = cp.Minimize(cp.sum_squares(f - scores_np))
+    problem = cp.Problem(objective, constraints)
+    problem.solve()
+
+    fitted_scores = f.value
+    knee_locator = KneeLocator(
+        x,
+        fitted_scores,
+        S=1.0,
+        curve=concavity,
+        direction=direction,
+    )
+    if knee_locator.knee is None:
+        return len(scores_np)
+    return int(knee_locator.knee)

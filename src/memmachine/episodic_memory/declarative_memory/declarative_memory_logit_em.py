@@ -307,7 +307,10 @@ class DeclarativeMemory:
         )[0]
 
         # Search graph store for vector matches.
-        matched_derivative_nodes, similarities = await self._vector_graph_store.search_similar_nodes(
+        (
+            matched_derivative_nodes,
+            similarities,
+        ) = await self._vector_graph_store.search_similar_nodes(
             collection=self._derivative_collection,
             embedding_name=(
                 DeclarativeMemory._embedding_name(
