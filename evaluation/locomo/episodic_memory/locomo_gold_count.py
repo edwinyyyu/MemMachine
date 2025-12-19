@@ -19,7 +19,7 @@ for category, question_items in locomo_data.items():
         continue
 
     for item in question_items:
-        good = {i: True for i in range(1, MAX_NUM_EPISODES + 1)}
+        good = dict.fromkeys(range(1, MAX_NUM_EPISODES + 1), True)
         gold_rr_ranks = item["gold_rr_ranks"]
 
         evidence = item["evidence"]

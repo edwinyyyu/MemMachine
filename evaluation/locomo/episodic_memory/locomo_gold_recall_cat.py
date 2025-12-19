@@ -14,8 +14,9 @@ with open(data_path, "r") as f:
     locomo_data = json.load(f)
 
 total_recall_at_num = dict.fromkeys(range(1, MAX_NUM_EPISODES + 1), 0)
+total_gold = 0
 for category, question_items in locomo_data.items():
-    if int(category) == 5:
+    if int(category) != 2:
         continue
 
     for item in question_items:
@@ -23,16 +24,12 @@ for category, question_items in locomo_data.items():
         evidence = item["evidence"]
 
         len(gold_rr_ranks)
+        total_gold += len(evidence)
 
         for rank in gold_rr_ranks:
             for i in range(1, MAX_NUM_EPISODES + 1):
                 if rank < i:
                     total_recall_at_num[i] += 1
 
-total_recalled = list(total_recall_at_num.values())
-total_retrieved = [1540 * i for i in range(1, MAX_NUM_EPISODES + 1)]
-precisions = [
-    recalled / retrieved if retrieved > 0 else 0.0
-    for recalled, retrieved in zip(total_recalled, total_retrieved)
-]
-print([0.0] + precisions)
+print([0] + list(total_recall_at_num.values()))
+print(total_gold)

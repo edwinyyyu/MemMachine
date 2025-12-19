@@ -20,7 +20,7 @@ MAX_NUM_EPISODES = 200
 with open(data_path, "r") as f:
     locomo_data = json.load(f)
 
-total_recall_at_num = {i: 0 for i in range(1, MAX_NUM_EPISODES + 1)}
+total_recall_at_num = dict.fromkeys(range(1, MAX_NUM_EPISODES + 1), 0)
 for category, question_items in locomo_data.items():
     if int(category) == 5:
         continue

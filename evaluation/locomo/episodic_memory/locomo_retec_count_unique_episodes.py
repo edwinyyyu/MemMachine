@@ -4,7 +4,6 @@ from datetime import datetime
 
 from memmachine.episodic_memory.declarative_memory import (
     ContentType,
-    DeclarativeMemory,
     Episode,
 )
 

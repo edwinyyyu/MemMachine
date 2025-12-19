@@ -20,8 +20,8 @@ MAX_NUM_EPISODES = 200
 with open(data_path, "r") as f:
     locomo_data = json.load(f)
 
-total_recall_at_num = dict.fromkeys(range(1, MAX_NUM_EPISODES + 1), 0)
 for category, question_items in locomo_data.items():
+    total_recall_at_num = dict.fromkeys(range(1, MAX_NUM_EPISODES + 1), 0)
     if int(category) == 5:
         continue
 
@@ -72,10 +72,4 @@ for category, question_items in locomo_data.items():
                 elif episode_context_dia_id in item["evidence"]:
                     total_recall_at_num[i] += 1
 
-total_recalled = list(total_recall_at_num.values())
-total_retrieved = [1540 * i for i in range(1, MAX_NUM_EPISODES + 1)]
-precisions = [
-    recalled / retrieved if retrieved > 0 else 0.0
-    for recalled, retrieved in zip(total_recalled, total_retrieved)
-]
-print([0.0] + precisions)
+    print([0] + list(total_recall_at_num.values()))
