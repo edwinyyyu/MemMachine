@@ -357,6 +357,8 @@ def merge_intersecting_sets[T](
         s = list(s)
         for i in range(1, len(s)):
             union(s[0], s[i])
+        if len(s) == 1:
+            find(s[0])
 
     clusters = defaultdict(set)
     for item in parent:

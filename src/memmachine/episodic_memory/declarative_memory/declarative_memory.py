@@ -272,7 +272,7 @@ class DeclarativeMemory:
         self,
         query: str,
         *,
-        limit: int = 100,
+        limit: int = 5,
         property_filter: FilterExpr | None = None,
     ) -> list[list[Episode]]:
         """
@@ -283,7 +283,7 @@ class DeclarativeMemory:
                 The search query.
             limit (int):
                 The maximum number of episode contexts to return
-                (default: 100).
+                (default: 5).
             property_filter (FilterExpr | None):
                 Filterable property keys and values
                 to use for filtering episodes
@@ -318,7 +318,7 @@ class DeclarativeMemory:
             ),
             query_embedding=query_embedding,
             similarity_metric=self._embedder.similarity_metric,
-            limit=limit,
+            limit=100,
             property_filter=mangled_property_filter,
         )
 
@@ -361,9 +361,7 @@ class DeclarativeMemory:
             for nuclear_episode in nuclear_episodes
         ]
 
-        episode_context_sets = [set(episode_context) for episode_context in await asyncio.gather(*contextualize_episode_tasks)]
-        episode_context_sets = merge_intersecting_sets(episode_context_sets)
-        episode_contexts = [sorted(episode_context_set, key=lambda episode: (episode.timestamp, episode.uid)) for episode_context_set in episode_context_sets]
+        episode_contexts = await asyncio.gather(*contextualize_episode_tasks)
 
         # Rerank episode contexts.
         episode_context_scores = await self._score_episode_contexts(
@@ -384,7 +382,11 @@ class DeclarativeMemory:
             )
         ]
 
-        return reranked_episode_contexts[:limit]
+        episode_context_sets = [set(episode_context) for episode_context in reranked_episode_contexts[:2 * limit]]
+        merged_episode_context_sets = merge_intersecting_sets(episode_context_sets)
+        merged_episode_contexts = [sorted(episode_context_set, key=lambda episode: (episode.timestamp, episode.uid)) for episode_context_set in merged_episode_context_sets]
+
+        return merged_episode_contexts[:limit]
 
     async def _contextualize_episode(
         self,
@@ -544,6 +546,73 @@ class DeclarativeMemory:
                 break
 
         return list(episode_context)
+
+    async def cued_recall(
+        self,
+        cue: str,
+        *,
+        exclude: Iterable[Episode] | None = None,
+        limit: int = 3,
+    ) -> list[Episode]:
+        cue_embedding = (
+            await self._embedder.search_embed(
+                [cue],
+            )
+        )[0]
+
+        # Search graph store for vector matches.
+        (
+            matched_derivative_nodes,
+            _,
+        ) = await self._vector_graph_store.search_similar_nodes(
+            collection=self._derivative_collection,
+            embedding_name=(
+                DeclarativeMemory._embedding_name(
+                    self._embedder.model_id,
+                    self._embedder.dimensions,
+                )
+            ),
+            query_embedding=cue_embedding,
+            similarity_metric=self._embedder.similarity_metric,
+            limit=100,
+        )
+
+        # Get source episodes of matched derivatives.
+        search_derivatives_source_episode_nodes_tasks = [
+            self._vector_graph_store.search_related_nodes(
+                relation=self._derived_from_relation,
+                other_collection=self._episode_collection,
+                this_collection=self._derivative_collection,
+                this_node_uid=matched_derivative_node.uid,
+                find_sources=False,
+                find_targets=True,
+            )
+            for matched_derivative_node in matched_derivative_nodes
+        ]
+
+        source_episode_nodes = {
+            episode_node: None
+            for episode_nodes in await asyncio.gather(
+                *search_derivatives_source_episode_nodes_tasks,
+            )
+            for episode_node in episode_nodes
+        }
+
+        # Use source episodes as nuclei for contextualization.
+        nuclear_episodes = [
+            DeclarativeMemory._episode_from_episode_node(source_episode_node)
+            for source_episode_node in source_episode_nodes
+        ]
+
+        if exclude is not None:
+            exclude_uids = {episode.uid for episode in exclude}
+            nuclear_episodes = [
+                episode
+                for episode in nuclear_episodes
+                if episode.uid not in exclude_uids
+            ]
+
+        return nuclear_episodes[:limit]
 
     async def _score_episode_contexts(
         self,
