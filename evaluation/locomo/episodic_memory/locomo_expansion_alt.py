@@ -65,6 +65,26 @@ Question: {question}
 Your response for this turn:
 """
 
+FINAL_ANSWER_PROMPT = """
+You are asked to answer a question based on your memories of a conversation.
+
+<instructions>
+1. Prioritize memories that answer the question directly. Be meticulous about recalling details.
+2. When there may be multiple answers to the question, think hard to remember and list all possible answers. Do not become satisfied with just the first few answers you remember.
+3. When asked about time intervals or to count items, do not rush to answer immediately. Instead, carefully enumerate the items or subtract the times using numbers.
+4. Your memories are episodic, meaning that they consist of only your raw observations of what was said. You may need to reason about or guess what the memories imply in order to answer the question.
+5. The question may contain typos or be based on the asker's own unreliable memories. Do your best to answer the question using the most relevant information in your memories.
+6. Your memories may include small or large jumps in time or context. You are not confused by this. You just did not bother to remember everything in between.
+7. Your memories are ordered from earliest to latest.
+</instructions>
+
+<memories>
+{memories}
+</memories>
+
+Question: {question}
+Your short response to the question without fluff (no more than a couple of sentences):
+"""
 
 async def process_question(
     memory: DeclarativeMemory,
@@ -79,7 +99,7 @@ async def process_question(
     episode_contexts = (
         await memory.search(
             query=question,
-            limit=3,
+            limit=5,
         )
     )
 
@@ -87,7 +107,7 @@ async def process_question(
 
     answer_text = "No answer."
     num_turns = 0
-    for _ in range(10):
+    for _ in range(20):
         ided_contexts = {
             f"id{index}": episode_context
             for index, episode_context in enumerate(episode_contexts)
@@ -98,9 +118,14 @@ async def process_question(
             for memory_id, episode_context in ided_contexts.items()
         }
 
-        prompt = ANSWER_PROMPT.format(
-            memories=json.dumps(formatted_contexts), question=question
-        )
+        if num_turns < 10:
+            prompt = ANSWER_PROMPT.format(
+                memories=json.dumps(formatted_contexts), question=question
+            )
+        else:
+            prompt = FINAL_ANSWER_PROMPT.format(
+                memories=json.dumps(formatted_contexts), question=question
+            )
 
         response_text = ""
 
@@ -167,6 +192,11 @@ async def process_question(
             episode_context_sets = [set(episode_context) for episode_context in episode_contexts]
             episode_context_sets = merge_intersecting_sets(episode_context_sets)
             episode_contexts = [sorted(episode_context_set, key=lambda episode: (episode.timestamp, episode.uid)) for episode_context_set in episode_context_sets]
+            episode_contexts = sorted(episode_contexts, key=lambda episode_context: episode_context[0].timestamp)
+            continue
+
+        answer_text = response_text
+        break
 
     end = time.monotonic()
 

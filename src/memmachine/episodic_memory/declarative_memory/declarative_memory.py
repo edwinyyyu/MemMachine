@@ -552,7 +552,7 @@ class DeclarativeMemory:
         cue: str,
         *,
         exclude: Iterable[Episode] | None = None,
-        limit: int = 3,
+        limit: int = 2,
     ) -> list[Episode]:
         cue_embedding = (
             await self._embedder.search_embed(
@@ -574,7 +574,7 @@ class DeclarativeMemory:
             ),
             query_embedding=cue_embedding,
             similarity_metric=self._embedder.similarity_metric,
-            limit=100,
+            limit=20,
         )
 
         # Get source episodes of matched derivatives.
