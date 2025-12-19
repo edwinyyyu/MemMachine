@@ -26,6 +26,7 @@ from memmachine.common.filter.filter_parser import (
     Or as FilterOr,
 )
 from memmachine.common.reranker.reranker import Reranker
+from memmachine.common.utils import merge_intersecting_sets
 from memmachine.common.vector_graph_store import Edge, Node, VectorGraphStore
 
 from .data_types import (
@@ -349,7 +350,20 @@ class DeclarativeMemory:
             for source_episode_node in source_episode_nodes
         ]
 
-        episode_contexts = [[nuclear_episode] for nuclear_episode in nuclear_episodes]
+        contextualize_episode_tasks = [
+            self._contextualize_episode(
+                nuclear_episode,
+                episode_context_content_length_quota=400,
+                max_backward_episodes=2,
+                max_forward_episodes=4,
+                mangled_property_filter=mangled_property_filter,
+            )
+            for nuclear_episode in nuclear_episodes
+        ]
+
+        episode_context_sets = [set(episode_context) for episode_context in await asyncio.gather(*contextualize_episode_tasks)]
+        episode_context_sets = merge_intersecting_sets(episode_context_sets)
+        episode_contexts = [sorted(episode_context_set, key=lambda episode: (episode.timestamp, episode.uid)) for episode_context_set in episode_context_sets]
 
         # Rerank episode contexts.
         episode_context_scores = await self._score_episode_contexts(

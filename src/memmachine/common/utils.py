@@ -2,6 +2,7 @@
 
 import asyncio
 import functools
+from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager
 from typing import Any, ParamSpec, TypeVar, Literal
@@ -323,3 +324,43 @@ def kneedle_cutoff_fit(
     if knee_locator.knee is None:
         return len(scores_np)
     return int(knee_locator.knee)
+
+def merge_intersecting_sets[T](
+    sets: Iterable[set[T]],
+) -> list[set[T]]:
+    """
+    Merge intersecting sets from an iterable of sets.
+
+    Args:
+        sets (Iterable[set]): An iterable of sets to merge.
+
+    Returns:
+        list[set]: A list of merged sets.
+
+    """
+    parent = {}
+
+    def find(item: T) -> T:
+        parent.setdefault(item, item)
+        while parent[item] != item:
+            parent[item] = parent[parent[item]]
+            item = parent[item]
+        return item
+
+    def union(item1: T, item2: T) -> None:
+        root1 = find(item1)
+        root2 = find(item2)
+        if root1 != root2:
+            parent[root1] = root2
+
+    for s in sets:
+        s = list(s)
+        for i in range(1, len(s)):
+            union(s[0], s[i])
+
+    clusters = defaultdict(set)
+    for item in parent:
+        root = find(item)
+        clusters[root].add(item)
+
+    return list(clusters.values())

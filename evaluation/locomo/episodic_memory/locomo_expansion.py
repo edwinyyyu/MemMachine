@@ -3,7 +3,6 @@ import asyncio
 import json
 import os
 import time
-from contextlib import suppress
 from typing import Any
 
 import boto3
@@ -28,6 +27,7 @@ from memmachine.episodic_memory.declarative_memory import (
     DeclarativeMemory,
     DeclarativeMemoryParams,
 )
+from memmachine.common.utils import merge_intersecting_sets
 
 ANSWER_PROMPT = """
 You are asked to answer a question based on your episodic memories of a conversation at different points in time.
@@ -42,7 +42,7 @@ You are asked to answer a question based on your episodic memories of a conversa
     a. To submit your final answer, output it in between <answer></answer> tags at the end of your response for this turn (e.g. <answer>The first president of the United States is George Washington.</answer>).
     b. Your final answer to the question should be without fluff (no more than a couple of sentences).
 4. You may not recall information and write a final answer in the same turn.
-5. You may explain your reasoning process in each turn before the <recall> or <answer> tags.
+5. You may explain your reasoning process in each turn before the <recall> or <answer> tags in at most 50 words.
 </instructions>
 
 <guidelines>
@@ -79,52 +79,62 @@ async def process_question(
     episode_contexts = (
         await memory.search(
             query=question,
-            limit=100,
+            limit=20,
         )
-    )[:5]
+    )[:3]
 
-    formatted_contexts = {
-        f"id{index}": memory.string_from_episode_context(episode_context)
+    ided_contexts = {
+        f"id{index}": episode_context
         for index, episode_context in enumerate(episode_contexts)
     }
 
     all_reasoning = []
 
-    response_text = ""
-    while "<answer>" not in response_text:
+    answer_text = "No answer."
+    num_turns = 0
+    for _ in range(10):
+        formatted_contexts = {
+            memory_id: memory.string_from_episode_context(episode_context)
+            for memory_id, episode_context in ided_contexts.items()
+        }
+
         prompt = ANSWER_PROMPT.format(
             memories=json.dumps(formatted_contexts), question=question
         )
 
-        response = None
-        while response is None:
-            with suppress(openai.APIError):
+        response_text = ""
+
+        num_attempts = 0
+        while num_attempts < 3:
+            try:
                 response = await model.responses.create(
                     model="gpt-4.1-mini",
                     max_output_tokens=4096,
-                    temperature=0.0,
-                    top_p=1,
                     timeout=10,
                     input=[{"role": "user", "content": prompt}],
                 )
-
-        response_text = response.output_text.strip()
+                response_text = response.output_text.strip()
+                break
+            except Exception as e:
+                num_attempts += 1
 
         if "<answer>" in response_text and response_text.endswith("</answer>"):
-            reasoning, _, response_text = response_text.removesuffix(
+            num_turns += 1
+            reasoning, _, answer_text = response_text.removesuffix(
                 "</answer>"
             ).rpartition("<answer>")
             all_reasoning.append(reasoning)
             break
 
         if "<recall>" in response_text and response_text.endswith("</recall>"):
-            reasoning, _, response_text = response_text.removesuffix(
+            num_turns += 1
+            reasoning, _, recall_text = response_text.removesuffix(
                 "</recall>"
             ).rpartition("<recall>")
             all_reasoning.append(reasoning)
 
             try:
-                recall_ids = json.loads(response_text.strip())
+                recall_ids = json.loads(recall_text.strip())
             except json.JSONDecodeError:
                 recall_ids = []
 
@@ -145,32 +155,43 @@ async def process_question(
 
             expanded_contexts = await asyncio.gather(*expand_context_awaitables)
 
-            formatted_contexts.update(
+            ided_contexts.update(
                 {
-                    f"id{index}": memory.string_from_episode_context(expanded_context)
+                    f"id{index}": expanded_context
                     for index, expanded_context in zip(recall_ids, expanded_contexts)
                 }
             )
+
+            episode_contexts = list(ided_contexts.values())
+            episode_context_sets = [set(episode_context) for episode_context in episode_contexts]
+            episode_context_sets = merge_intersecting_sets(episode_context_sets)
+            episode_contexts = [sorted(episode_context_set, key=lambda episode: (episode.timestamp, episode.uid)) for episode_context_set in episode_context_sets]
 
     end = time.monotonic()
 
     print(
         f"Question: {question}\n"
         f"Answer: {answer}\n"
-        f"Response: {response_text}\n"
+        f"Response: {answer_text}\n"
         f"Response time: {end - start:.2f} seconds\n"
-        f"MEMORIES START\n{"\n".join(
-            f"{memory_id}:\n{memory_content}" for memory_id, memory_content in formatted_contexts.items()
-        )}\nMEMORIES END\n"
-        f"Reasoning steps:\n{"\n".join(all_reasoning)}\n"
+        f"Number of turns: {num_turns}\n"
+        f"MEMORIES START\n{
+            '\n'.join(
+                f'{memory_id}:\n{memory_content}'
+                for memory_id, memory_content in formatted_contexts.items()
+            )
+        }\nMEMORIES END\n"
+        f"Reasoning steps:\n{'\n'.join(all_reasoning)}\n",
+        flush=True,
     )
     return {
         "question": question,
         "locomo_answer": answer,
-        "model_answer": response_text,
+        "model_answer": answer_text,
         "category": category,
         "evidence": evidence,
         "adversarial_answer": adversarial_answer,
+        "num_turns": num_turns,
         "conversation_memories": formatted_contexts,
         "reasoning_steps": all_reasoning,
     }
@@ -283,7 +304,7 @@ async def main():
                 question_response,
             )
 
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(5)
         response_tasks = [
             async_with(
                 semaphore,
