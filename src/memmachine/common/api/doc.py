@@ -91,7 +91,12 @@ class SpecDoc:
 
     MEMORY_TIMESTAMP = """
     The timestamp when the message was created, in ISO 8601 format.
+    The formats supported are:
+    - ISO 8601 string (e.g., '2023-10-01T12:00:00Z' or '2023-10-01T08:00:00-04:00')
+    - Unix epoch time in seconds (e.g., 1633072800)
+    - Unix epoch time in milliseconds (e.g., 1633072800000)
     If not provided, the server assigns the current time.
+    If the format is unrecognized, an error is returned.
     """
 
     MEMORY_ROLE = """
@@ -104,6 +109,10 @@ class SpecDoc:
     pairs. Optional; defaults to an empty object.
     Retrieval operations may utilize this metadata for filtering.
     Use 'metadata.{key}' to filter based on specific metadata keys.
+    """
+
+    MEMORY_EPISODIC_TYPE = """
+    The type of an episode (e.g., 'message').
     """
 
     MEMORY_MESSAGES = """
@@ -132,7 +141,7 @@ class SpecDoc:
     """
 
     MEMORY_TYPES = """
-    A list of memory types to include in the search (e.g., Episodic, Semantic).
+    A list of memory types to include in the search (e.g., episodic, semantic).
     If empty, all available types are searched.
     """
 
@@ -145,7 +154,7 @@ class SpecDoc:
     """
 
     MEMORY_TYPE_SINGLE = """
-    The specific memory type to list (e.g., Episodic or Semantic).
+    The specific memory type to list (e.g., episodic or semantic).
     """
 
     EPISODIC_ID = """
@@ -299,7 +308,7 @@ class RouterDoc:
     Add memory messages to a project.
 
     The `types` field in the request specifies which memory types to add to:
-    - If `types` is empty or not provided, memories are added to all types (Episodic and Semantic)
+    - If `types` is empty or not provided, memories are added to all types (episodic and semantic)
     - If `types` only contains `"episodic"`, memories are added only to Episodic memory
     - If `types` only contains `"semantic"`, memories are added only to Semantic memory
     - If `types` contains both, memories are added to both types

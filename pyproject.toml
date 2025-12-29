@@ -80,6 +80,8 @@ dev = [
     "ruff>=0.13.2",
     "testcontainers[neo4j,postgres]>=4.13.1",
     "ty>=0.0.1a26",
+    "pytest-cov>=7.0.0",
+    "pytest-xdist>=3.8.0",
 ]
 
 [tool.mypy]
@@ -144,7 +146,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["ANN", "D", "SLF", "ARG"]
 "tools/**/*.py" = ["SIM", "DTZ", "C9", "ANN", "T201", "PT", "INP", "PTH", "D"]
-"examples/**/*.py" = [
+"examples/**" = [
     "ANN",
     "ASYNC210",
     "T201",

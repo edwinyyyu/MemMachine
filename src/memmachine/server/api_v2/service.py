@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from fastapi import Request
 
 from memmachine import MemMachine
+from memmachine.common.api import MemoryType as MemoryTypeE
 from memmachine.common.api.spec import (
     AddMemoriesSpec,
     AddMemoryResult,
@@ -12,7 +13,6 @@ from memmachine.common.api.spec import (
     SearchResult,
 )
 from memmachine.common.episode_store.episode_model import EpisodeEntry
-from memmachine.main.memmachine import MemoryType as MemoryTypeE
 
 
 # Placeholder dependency injection function
@@ -56,6 +56,7 @@ async def _add_messages_to(
             producer_role=message.role,
             created_at=message.timestamp,
             metadata=message.metadata,
+            episode_type=message.episode_type,
         )
         for message in spec.messages
     ]
@@ -86,14 +87,12 @@ async def _search_target_memories(
         search_filter=spec.filter,
         limit=spec.top_k,
     )
+    content = {}
+    if results.episodic_memory:
+        content["episodic_memory"] = results.episodic_memory.model_dump()
+    if results.semantic_memory is not None:
+        content["semantic_memory"] = results.semantic_memory
     return SearchResult(
         status=0,
-        content={
-            "episodic_memory": results.episodic_memory.model_dump()
-            if results.episodic_memory
-            else [],
-            "semantic_memory": results.semantic_memory
-            if results.semantic_memory
-            else [],
-        },
+        content=content,
     )

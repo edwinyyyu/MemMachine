@@ -1,16 +1,14 @@
 """API v2 specification models for request and response structures."""
 
 import logging
-import traceback
 from datetime import UTC, datetime
 from typing import Annotated, Any, Self
 
 import regex
-from fastapi import HTTPException
-from pydantic import AfterValidator, BaseModel, Field, model_validator
+from pydantic import AfterValidator, BaseModel, Field, field_validator, model_validator
 
+from memmachine.common.api import EpisodeType, MemoryType
 from memmachine.common.api.doc import Examples, SpecDoc
-from memmachine.main.memmachine import MemoryType
 
 DEFAULT_ORG_AND_PROJECT_ID = "universal"
 
@@ -20,6 +18,10 @@ logger = logging.getLogger(__name__)
 
 class InvalidNameError(ValueError):
     """Custom error for invalid names."""
+
+
+class InvalidTimestampError(ValueError):
+    """Custom error for invalid timestamps."""
 
 
 def _is_valid_name(v: str) -> str:
@@ -238,6 +240,9 @@ class DeleteProjectSpec(BaseModel):
     ]
 
 
+TimestampInput = datetime | int | float | str | None
+
+
 class MemoryMessage(BaseModel):
     """Model representing a memory message."""
 
@@ -280,6 +285,39 @@ class MemoryMessage(BaseModel):
             description=SpecDoc.MEMORY_METADATA,
         ),
     ]
+    episode_type: Annotated[
+        EpisodeType | None,
+        Field(
+            default=None,
+            description=SpecDoc.MEMORY_EPISODIC_TYPE,
+        ),
+    ]
+
+    @field_validator("timestamp", mode="before")
+    @classmethod
+    def parse_timestamp(cls, v: TimestampInput) -> datetime:
+        if v is None:
+            return datetime.now(UTC)
+
+        # Already a datetime
+        if isinstance(v, datetime):
+            return v if v.tzinfo else v.replace(tzinfo=UTC)
+
+        # Unix timestamp (seconds or milliseconds)
+        if isinstance(v, (int, float)):
+            # Heuristic: > 10^12 is probably milliseconds
+            if v > 1_000_000_000_000:
+                v = v / 1000
+            return datetime.fromtimestamp(v, tz=UTC)
+
+        # String date
+        if isinstance(v, str):
+            try:
+                return datetime.fromisoformat(v)
+            except ValueError:
+                pass
+
+        raise InvalidTimestampError(f"Unsupported timestamp: {v}")
 
 
 class AddMemoriesSpec(_WithOrgAndProj):
@@ -392,9 +430,9 @@ class ListMemoriesSpec(_WithOrgAndProj):
         ),
     ]
     type: Annotated[
-        MemoryType,
+        MemoryType | None,
         Field(
-            default=MemoryType.Episodic,
+            default=None,
             description=SpecDoc.MEMORY_TYPE_SINGLE,
             examples=Examples.MEMORY_TYPE_SINGLE,
         ),
@@ -535,46 +573,3 @@ class RestErrorModel(BaseModel):
             description=SpecDoc.ERROR_TRACE,
         ),
     ]
-
-
-class RestError(HTTPException):
-    """HTTPException with a structured RestErrorModel as the 'detail'."""
-
-    def __init__(
-        self,
-        code: int,
-        message: str,
-        ex: Exception | None = None,
-    ) -> None:
-        """Initialize HTTPException and RestErrorModel."""
-        self.payload: RestErrorModel | None = None
-        if ex is not None:
-            # Extract traceback safely
-            trace = "".join(
-                traceback.format_exception(
-                    type(ex),
-                    ex,
-                    ex.__traceback__,
-                )
-            ).strip()
-
-            self.payload = RestErrorModel(
-                code=code,
-                message=message,
-                exception=type(ex).__name__,
-                internal_error=str(ex),
-                trace=trace,
-            )
-
-        # Call HTTPException with structured detail
-        if self.payload is not None:
-            logger.warning(
-                "exception handling request, code %d, message: %s, payload: %s",
-                code,
-                message,
-                self.payload,
-            )
-            super().__init__(status_code=code, detail=self.payload.model_dump())
-        else:
-            logger.info("error handling request, code %d, message: %s", code, message)
-            super().__init__(status_code=code, detail=message)
