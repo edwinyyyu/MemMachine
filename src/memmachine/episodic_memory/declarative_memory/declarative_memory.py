@@ -73,6 +73,10 @@ class DeclarativeMemoryParams(BaseModel):
         ...,
         description="Reranker instance for reranking search results",
     )
+    message_sentence_chunking: bool = Field(
+        False,
+        description="Whether to chunk message episodes into sentences for embedding",
+    )
 
 
 class DeclarativeMemory:
@@ -92,6 +96,8 @@ class DeclarativeMemory:
         self._vector_graph_store = params.vector_graph_store
         self._embedder = params.embedder
         self._reranker = params.reranker
+
+        self._message_sentence_chunking = params.message_sentence_chunking
 
         self._episode_collection = f"Episode_{session_id}"
         self._derivative_collection = f"Derivative_{session_id}"
@@ -229,20 +235,29 @@ class DeclarativeMemory:
         """
         match episode.content_type:
             case ContentType.MESSAGE:
+                if not self._message_sentence_chunking:
+                    return [
+                        Derivative(
+                            uid=str(uuid4()),
+                            timestamp=episode.timestamp,
+                            source=episode.source,
+                            content_type=ContentType.MESSAGE,
+                            content=f"{episode.source}: {episode.content}",
+                            filterable_properties=episode.filterable_properties,
+                        ),
+                    ]
+
                 sentences = []
                 for line in episode.content.strip().splitlines():
                     sentences.extend(sent_tokenize(line.strip()))
 
-                message_timestamp = episode.timestamp.strftime(
-                    "%A, %B %d, %Y at %I:%M %p",
-                )
                 return [
                     Derivative(
                         uid=str(uuid4()),
                         timestamp=episode.timestamp,
                         source=episode.source,
                         content_type=ContentType.MESSAGE,
-                        content=f"[{message_timestamp}] {episode.source}: {sentence}",
+                        content=f"{episode.source}: {sentence}",
                         filterable_properties=episode.filterable_properties,
                     )
                     for sentence in sentences

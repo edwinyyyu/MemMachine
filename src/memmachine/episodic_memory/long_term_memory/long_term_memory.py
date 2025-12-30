@@ -68,6 +68,10 @@ class LongTermMemoryParams(BaseModel):
         ...,
         description="Reranker instance for reranking search results",
     )
+    message_sentence_chunking: bool = Field(
+        False,
+        description="Whether to chunk message episodes into sentences for embedding",
+    )
 
 
 class LongTermMemory:
@@ -83,6 +87,7 @@ class LongTermMemory:
                 vector_graph_store=params.vector_graph_store,
                 embedder=params.embedder,
                 reranker=params.reranker,
+                message_sentence_chunking=params.message_sentence_chunking,
             ),
         )
 
