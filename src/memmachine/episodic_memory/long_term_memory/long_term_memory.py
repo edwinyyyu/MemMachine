@@ -31,7 +31,7 @@ from memmachine.episodic_memory.declarative_memory.data_types import (
     ContentType as DeclarativeMemoryContentType,
 )
 from memmachine.episodic_memory.declarative_memory.data_types import (
-    Episode as DeclarativeMemoryEpisode,
+    Episode as DeclarativeEpisode,
 )
 
 
@@ -88,7 +88,7 @@ class LongTermMemory:
 
     async def add_episodes(self, episodes: Iterable[Episode]) -> None:
         declarative_memory_episodes = [
-            DeclarativeMemoryEpisode(
+            DeclarativeEpisode(
                 uid=episode.uid or str(uuid4()),
                 timestamp=episode.created_at,
                 source=episode.producer_id,
@@ -215,7 +215,7 @@ class LongTermMemory:
 
     @staticmethod
     def _episode_from_declarative_memory_episode(
-        declarative_memory_episode: DeclarativeMemoryEpisode,
+        declarative_memory_episode: DeclarativeEpisode,
     ) -> Episode:
         return Episode(
             uid=declarative_memory_episode.uid,

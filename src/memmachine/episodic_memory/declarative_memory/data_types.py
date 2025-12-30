@@ -55,6 +55,7 @@ class Derivative:
     """A derived episodic memory linked to a source episode."""
 
     uid: str
+    origin_episode_uid: str
     timestamp: datetime
     source: str
     content_type: ContentType
