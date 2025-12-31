@@ -198,13 +198,8 @@ class AmazonBedrockEmbedder(Embedder):
 
         # Average chunk embeddings to get input embeddings.
         return [
-            np.mean(
-                np.array(input_chunk_embeddings),
-                axis=0,
-            )
-            .astype(float)
-            .tolist()
-            for input_chunk_embeddings in inputs_chunk_embeddings
+            np.mean(chunk_embeddings, axis=0).astype(float).tolist()
+            for chunk_embeddings in inputs_chunk_embeddings
         ]
 
     @property

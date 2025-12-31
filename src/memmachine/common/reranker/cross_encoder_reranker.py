@@ -38,16 +38,16 @@ class CrossEncoderReranker(Reranker):
         """Score candidates for a query using the cross-encoder."""
         query = query[: self._max_input_length] if self._max_input_length else query
 
-        candidates_chunks = [
-            chunk_text(candidate, self._max_input_length)
-            if self._max_input_length and candidate
-            else [candidate]
-            for candidate in candidates
+        chunked_candidates = [
+            chunk_text(candidate_text, self._max_input_length)
+            if self._max_input_length and candidate_text
+            else [candidate_text]
+            for candidate_text in candidates
         ]
 
         chunks = [
             chunk
-            for candidate_chunks in candidates_chunks
+            for candidate_chunks in chunked_candidates
             for chunk in candidate_chunks
         ]
 
@@ -60,10 +60,7 @@ class CrossEncoderReranker(Reranker):
             )
         ]
 
-        candidates_chunk_scores = unflatten_like(chunk_scores, candidates_chunks)
+        chunked_candidate_scores = unflatten_like(chunk_scores, chunked_candidates)
 
         # Take the maximum score among chunks for each candidate.
-        return [
-            max(candidate_chunk_scores)
-            for candidate_chunk_scores in candidates_chunk_scores
-        ]
+        return [max(chunk_scores) for chunk_scores in chunked_candidate_scores]
