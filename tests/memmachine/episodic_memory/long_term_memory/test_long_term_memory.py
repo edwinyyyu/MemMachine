@@ -303,11 +303,20 @@ async def test_search(long_term_memory):
     results = await long_term_memory.search(
         query="Who wrote the test?",
         num_episodes_limit=4,
+        score_threshold=-float("inf"),
     )
 
     assert len(results) == 4
     # Most relevant.
     assert "episode1" in [result.uid for result in results]
+
+    results = await long_term_memory.search(
+        query="Who wrote the test?",
+        num_episodes_limit=4,
+        score_threshold=float("inf"),
+    )
+
+    assert len(results) == 0
 
     results = await long_term_memory.search(
         query="Who wrote the test?",
