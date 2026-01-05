@@ -279,7 +279,7 @@ class DeclarativeMemory:
         ]
         new_close_embeddings = next_similarities(embeddings)
         all_close_embeddings = [
-            existing + new[:20]
+            existing + new
             for existing, new in zip(
                 existing_close_embeddings,
                 new_close_embeddings,

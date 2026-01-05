@@ -72,6 +72,9 @@ def compute_similarity(
         list[float]: A list of similarity scores for each candidate embedding.
 
     """
+    if not candidate_embeddings:
+        return []
+
     query_embedding_np = np.array(query_embedding)
     candidate_embeddings_np = np.array(candidate_embeddings)
 
@@ -366,3 +369,161 @@ def merge_intersecting_sets[T](
         clusters[root].add(item)
 
     return list(clusters.values())
+
+def chunk_text(text: str, max_length: int) -> list[str]:
+    """
+    Chunk text into partitions not exceeding max_length.
+
+    Args:
+        text (str): The input text to chunk.
+        max_length (int): The maximum length of each chunk.
+
+    Returns:
+        list[str]: A list of text chunks.
+
+    """
+    if max_length <= 0:
+        raise ValueError("max_length must be greater than 0")
+
+    return [text[i : i + max_length] for i in range(0, len(text), max_length)]
+
+
+def chunk_text_balanced(text: str, max_length: int) -> list[str]:
+    """
+    Chunk text into balanced partitions not exceeding max_length.
+
+    Args:
+        text (str): The input text to chunk.
+        max_length (int): The maximum length of each chunk.
+
+    Returns:
+        list[str]: A list of text chunks.
+
+    """
+    if max_length <= 0:
+        raise ValueError("max_length must be greater than 0")
+
+    if len(text) == 0:
+        return []
+
+    num_chunks = math.ceil(len(text) / max_length)
+    chunk_size = math.ceil(len(text) / num_chunks)
+
+    return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
+
+
+def unflatten_like[T](
+    flat_list: list[T],
+    template_list: list[list[Any]],
+) -> list[list[T]]:
+    """
+    Unflatten a flat list into a nested list structure based on a template.
+
+    Args:
+        flat_list (list): The flat list to unflatten.
+        template_list (list): The template nested list structure.
+
+    Returns:
+        list: The unflattened nested list.
+
+    """
+    if not all(isinstance(template, list) for template in template_list):
+        raise TypeError("All elements in template_list must be lists.")
+
+    unflattened_list = []
+    current_index = 0
+
+    for template in template_list:
+        unflattened_list.append(
+            flat_list[current_index : current_index + len(template)]
+        )
+        current_index += len(template)
+
+    if current_index != len(flat_list):
+        raise ValueError("flat_list cannot be unflattened to match template_list.")
+
+    return unflattened_list
+
+
+def cluster_texts(
+    texts: Iterable[str],
+    max_num_texts_per_cluster: int,
+    max_total_length_per_cluster: int,
+) -> list[list[str]]:
+    """
+    Cluster texts based on maximum number of texts and total length of texts per cluster.
+
+    Args:
+        texts (Iterable[str]): The input texts to cluster.
+        max_num_texts_per_cluster (int): The maximum number of texts per cluster.
+        max_total_length_per_cluster (int): The maximum total length of texts per cluster.
+
+    Returns:
+        list[list[str]]: A list of text clusters.
+
+    """
+    if max_num_texts_per_cluster <= 0:
+        raise ValueError("max_num_texts_per_cluster must be greater than 0")
+    if max_total_length_per_cluster <= 0:
+        raise ValueError("max_total_length_per_cluster must be greater than 0")
+
+    clusters: list[list[str]] = []
+    current_cluster: list[str] = []
+    current_length = 0
+
+    for text in texts:
+        text_length = len(text)
+        if text_length > max_total_length_per_cluster:
+            raise ValueError(
+                f"Text length {text_length} exceeds max_total_length_per_cluster {max_total_length_per_cluster}"
+            )
+
+        if (
+            len(current_cluster) >= max_num_texts_per_cluster
+            or current_length + text_length > max_total_length_per_cluster
+        ):
+            if current_cluster:
+                clusters.append(current_cluster)
+            current_cluster = [text]
+            current_length = text_length
+        else:
+            current_cluster.append(text)
+            current_length += text_length
+
+    if current_cluster:
+        clusters.append(current_cluster)
+
+    return clusters
+
+def next_similarities(vectors: list[list[float]]) -> list[list[tuple[float, list[float]]]]:
+    """
+    For each vector in the input list, compute and return a list of vectors
+    that are most similar to it among the subsequent vectors in the list.
+
+    Args:
+        vectors (list[list[float]]): The input vectors.
+
+    Returns:
+        list[list[tuple[float, list[float]]]]:
+            A list where each element corresponds to an input vector and contains
+            a list of tuples of similarity scores and the corresponding similar vectors.
+    """
+    next_similarities: list[list[tuple[float, list[float]]]] = []
+    for i, vector in enumerate(vectors):
+        similarities = compute_similarity(
+            vector,
+            vectors[i + 1 :],
+            similarity_metric=SimilarityMetric.COSINE,
+        )
+        similar_vectors = [
+            (similarity, vectors[i + j + 1])
+            for j, similarity in enumerate(similarities)
+        ]
+        sorted_similar_vectors = sorted(
+            similar_vectors,
+            key=lambda pair: pair[0],
+            reverse=True,
+        )
+        next_similarities.append(sorted_similar_vectors)
+
+    return next_similarities

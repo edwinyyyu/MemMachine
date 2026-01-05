@@ -27,7 +27,7 @@ from memmachine.common.filter.filter_parser import (
 )
 from memmachine.common.reranker.reranker import Reranker
 from memmachine.common.rotary import datetime_rotary_decay
-from memmachine.common.utils import next_similarities
+from memmachine.common.utils import closest_vectors
 from memmachine.common.vector_graph_store import Edge, Node, VectorGraphStore
 
 from .data_types import (
@@ -245,7 +245,7 @@ class DeclarativeMemory:
                 The pattern-separated embeddings.
 
         """
-        existing_close_nodes_tasks = [
+        existing_closest_single_tasks = [
             self._vector_graph_store.search_similar_nodes(
                 collection=self._derivative_collection,
                 embedding_name=(
@@ -256,65 +256,72 @@ class DeclarativeMemory:
                 ),
                 query_embedding=embedding,
                 similarity_metric=self._embedder.similarity_metric,
-                limit=20,
+                limit=1,
             )
             for embedding in embeddings
         ]
 
-        existing_close_nodes = await asyncio.gather(*existing_close_nodes_tasks)
-        existing_close_embeddings = [
-            [
-                (score, close_node.embeddings[
-                    DeclarativeMemory._embedding_name(
-                        self._embedder.model_id,
-                        self._embedder.dimensions,
-                    )
-                ][0])
-                for score, close_node in zip(
-                    scores,
-                    close_nodes,
+        existing_closest_single = await asyncio.gather(*existing_closest_single_tasks)
+        existing_closest_embeddings: list[list[float] | None] = [
+            closest_nodes[0].embeddings[
+                DeclarativeMemory._embedding_name(
+                    self._embedder.model_id,
+                    self._embedder.dimensions,
                 )
-            ]
-            for close_nodes, scores in existing_close_nodes
+            ][0] if closest_nodes else None
+            for closest_nodes, _ in existing_closest_single
         ]
-        new_close_embeddings = next_similarities(embeddings)
-        all_close_embeddings = [
-            existing + new[:20]
-            for existing, new in zip(
-                existing_close_embeddings,
-                new_close_embeddings,
+        new_closest_embeddings = closest_vectors(embeddings)
+
+        true_closest_embeddings_with_similarity = []
+        for i, embedding in enumerate(embeddings):
+            # find the closer of the two closest embeddings (cosine similarity)
+            existing_closest_embedding = existing_closest_embeddings[i]
+            new_closest_embedding = new_closest_embeddings[i]
+
+            if existing_closest_embedding is not None:
+                existing_similarity = np.dot(
+                    np.array(embedding),
+                    np.array(existing_closest_embedding),
+                ) / (
+                    np.linalg.norm(embedding)
+                    * np.linalg.norm(existing_closest_embedding)
+                )
+            else:
+                existing_similarity = -float("inf")
+
+            if new_closest_embedding is not None:
+                new_similarity = np.dot(
+                    np.array(embedding),
+                    np.array(new_closest_embedding),
+                ) / (np.linalg.norm(embedding) * np.linalg.norm(new_closest_embedding))
+            else:
+                new_similarity = -float("inf")
+
+            if existing_similarity > new_similarity:
+                true_closest_embeddings_with_similarity.append((existing_closest_embedding, existing_similarity))
+            elif new_similarity > existing_similarity:
+                true_closest_embeddings_with_similarity.append((new_closest_embedding, new_similarity))
+            else:
+                true_closest_embeddings_with_similarity.append((None, None))
+
+        # Adjust embeddings away from their closest embeddings.
+        adjusted_embeddings = [
+            (
+                np.array(embedding) + 0.2 * similarity * (
+                    np.array(embedding) - np.array(closest_embedding)
+                )
+            ).astype(float).tolist() if similarity is not None and closest_embedding is not None else embedding
+            for embedding, (closest_embedding, similarity) in zip(
+                embeddings,
+                true_closest_embeddings_with_similarity,
                 strict=True,
             )
         ]
 
-        for i in range(len(embeddings)):
-            # Sort close embeddings by similarity.
-            all_close_embeddings[i].sort(
-                key=lambda pair: pair[0],
-                reverse=True,
-            )
-
-        # Adjust embeddings away from their closest embeddings.
-        weight = lambda similarity: max(0.0, similarity - 0.4) ** 2
-
-        adjusted_embeddings = []
-        for embedding, close_embeddings in zip(
-            embeddings,
-            all_close_embeddings,
-        ):
-            embedding_np = np.array(embedding)
-            adjustment = np.zeros_like(embedding_np)
-            for similarity, close_embedding in close_embeddings:
-                close_embedding_np = np.array(close_embedding)
-                adjustment += weight(similarity) * (
-                    embedding_np - np.dot(embedding_np, close_embedding_np) * close_embedding_np
-                )
-            adjusted_embedding = embedding_np + adjustment
-            adjusted_embeddings.append(adjusted_embedding)
-
         # Normalize adjusted embeddings.
         adjusted_embeddings = [
-            (embedding / np.linalg.norm(embedding)).astype(float).tolist()
+            (np.array(embedding) / np.linalg.norm(embedding)).astype(float).tolist()
             for embedding in adjusted_embeddings
         ]
 
