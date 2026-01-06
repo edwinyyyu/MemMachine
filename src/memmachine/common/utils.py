@@ -2,6 +2,7 @@
 
 import asyncio
 import functools
+import math
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager
@@ -235,6 +236,7 @@ def second_max_logit_gap(
         else first_max_logit_gap
     )
 
+
 def std_dev_cutoff(
     scores: Iterable[float],
 ) -> int:
@@ -245,6 +247,7 @@ def std_dev_cutoff(
     mean = np.mean(scores)
     std_dev = np.std(scores, ddof=1)
     return int(np.sum(scores_np > mean + std_dev))
+
 
 def kneedle_cutoff(
     scores: Iterable[float],
@@ -275,6 +278,7 @@ def kneedle_cutoff(
     if knee_locator.knee is None:
         return len(scores_np)
     return int(knee_locator.knee)
+
 
 def kneedle_cutoff_fit(
     scores: Iterable[float],
@@ -328,6 +332,7 @@ def kneedle_cutoff_fit(
         return len(scores_np)
     return int(knee_locator.knee)
 
+
 def merge_intersecting_sets[T](
     sets: Iterable[set[T]],
 ) -> list[set[T]]:
@@ -369,6 +374,7 @@ def merge_intersecting_sets[T](
         clusters[root].add(item)
 
     return list(clusters.values())
+
 
 def chunk_text(text: str, max_length: int) -> list[str]:
     """
@@ -495,7 +501,10 @@ def cluster_texts(
 
     return clusters
 
-def next_similarities(vectors: list[list[float]]) -> list[list[tuple[float, list[float]]]]:
+
+def next_similarities(
+    vectors: list[list[float]],
+) -> list[list[tuple[float, list[float]]]]:
     """
     For each vector in the input list, compute and return a list of vectors
     that are most similar to it among the subsequent vectors in the list.
@@ -527,3 +536,25 @@ def next_similarities(vectors: list[list[float]]) -> list[list[tuple[float, list
         next_similarities.append(sorted_similar_vectors)
 
     return next_similarities
+
+
+def zero_random_n_entries(vector: list[float], n: int) -> list[float]:
+    """
+    Zero out n random entries in the input vector.
+
+    Args:
+        vector (list[float]): The input vector.
+        n (int): The number of entries to zero out.
+
+    Returns:
+        list[float]: The modified vector with n entries set to zero.
+
+    """
+    if n < 0 or n > len(vector):
+        raise ValueError("n must be between 0 and the length of the vector.")
+
+    vector_np = np.array(vector)
+    indexes_to_zero = np.random.choice(len(vector), size=n, replace=False)
+    vector_np[indexes_to_zero] = 0.0
+
+    return vector_np.astype(float).tolist()
