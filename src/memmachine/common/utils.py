@@ -7,6 +7,10 @@ from collections.abc import Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager
 from typing import Any, ParamSpec, TypeVar
 
+import numpy as np
+
+from .data_types import SimilarityMetric
+
 T = TypeVar("T")
 P = ParamSpec("P")
 
@@ -173,3 +177,55 @@ def cluster_texts(
         clusters.append(current_cluster)
 
     return clusters
+
+
+def compute_similarity(
+    query_embedding: list[float],
+    candidate_embeddings: list[list[float]],
+    similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
+) -> list[float]:
+    """
+    Compute similarity scores between a query embedding and candidate embeddings.
+
+    Args:
+        query_embedding (list[float]): The embedding of the query.
+        candidate_embeddings (list[list[float]]): A list of candidate embeddings to compare against.
+        similarity_metric (SimilarityMetric | None): The similarity metric to use (default: None).
+
+    Returns:
+        list[float]: A list of similarity scores for each candidate embedding.
+
+    """
+    if not candidate_embeddings:
+        return []
+
+    query_embedding_np = np.array(query_embedding)
+    candidate_embeddings_np = np.array(candidate_embeddings)
+
+    match similarity_metric:
+        case SimilarityMetric.COSINE:
+            magnitude_products = np.linalg.norm(
+                candidate_embeddings_np,
+                axis=-1,
+            ) * np.linalg.norm(query_embedding_np)
+            magnitude_products[magnitude_products == 0] = float("inf")
+
+            scores = (
+                np.dot(candidate_embeddings_np, query_embedding_np) / magnitude_products
+            )
+        case SimilarityMetric.DOT:
+            scores = np.dot(candidate_embeddings_np, query_embedding_np)
+        case SimilarityMetric.EUCLIDEAN:
+            scores = -np.linalg.norm(
+                candidate_embeddings_np - query_embedding_np,
+                axis=-1,
+            )
+        case SimilarityMetric.MANHATTAN:
+            scores = -np.sum(
+                np.abs(candidate_embeddings_np - query_embedding_np),
+                axis=-1,
+            )
+        case _:
+            raise ValueError(f"Unsupported similarity metric: {similarity_metric}")
+
+    return scores.astype(float).tolist()
