@@ -1587,7 +1587,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             # Other tzinfo types can lead to issues,
             # so we convert to datetime.timezone.
             utc_offset = value.utcoffset()
-            tz = datetime.timezone(utc_offset) if utc_offset else None
+            tz = datetime.timezone(utc_offset) if utc_offset is not None else None
             return value.astimezone(tz=tz)
         if isinstance(value, list):
             return cast(
