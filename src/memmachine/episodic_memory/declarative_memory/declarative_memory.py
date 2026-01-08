@@ -247,9 +247,11 @@ class DeclarativeMemory:
                         ),
                     ]
 
-                sentences = []
-                for line in episode.content.strip().splitlines():
-                    sentences.extend(sent_tokenize(line.strip()))
+                sentences = {
+                    sentence
+                    for line in episode.content.strip().splitlines()
+                    for sentence in sent_tokenize(line.strip())
+                }
 
                 return [
                     Derivative(
