@@ -17,6 +17,10 @@ from memmachine.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
 )
+from memmachine.common.language_model.openai_responses_language_model import (
+    OpenAIResponsesLanguageModel,
+    OpenAIResponsesLanguageModelParams,
+)
 from memmachine.common.reranker.amazon_bedrock_reranker import (
     AmazonBedrockReranker,
     AmazonBedrockRerankerParams,
@@ -72,6 +76,14 @@ async def main():
             client=openai_client,
             model="text-embedding-3-small",
             dimensions=1536,
+            max_input_length=2048,
+        )
+    )
+
+    language_model = OpenAIResponsesLanguageModel(
+        OpenAIResponsesLanguageModelParams(
+            client=openai_client,
+            model="gpt-4.1-nano",
         )
     )
 
@@ -101,6 +113,7 @@ async def main():
                 vector_graph_store=vector_graph_store,
                 embedder=embedder,
                 reranker=reranker,
+                language_model=language_model,
             )
         )
 
@@ -120,6 +133,8 @@ async def main():
                         content=turn.content.strip(),
                         user_metadata={
                             "longmemeval_session_id": session_id,
+                            "has_answer": turn.has_answer,
+                            "turn_id": turn.index,
                         },
                     )
                 )

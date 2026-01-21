@@ -18,6 +18,8 @@ from uuid import uuid4
 from neo4j import AsyncDriver
 from neo4j.graph import Node as Neo4jNode
 from neo4j.time import DateTime as Neo4jDateTime
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
 from pydantic import BaseModel, Field, InstanceOf
 
 from memmachine.common.data_types import FilterablePropertyValue, SimilarityMetric
@@ -53,6 +55,8 @@ from .vector_graph_store import VectorGraphStore
 
 logger = logging.getLogger(__name__)
 
+language = "english"
+stop_words = stopwords.words(language)
 
 class Neo4jVectorGraphStoreParams(BaseModel):
     """
@@ -179,6 +183,9 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
         self._force_exact_similarity_search = params.force_exact_similarity_search
         self._filtered_similarity_search_fudge_factor = (
+            params.filtered_similarity_search_fudge_factor
+        )
+        self._filtered_fulltext_search_fudge_factor = (
             params.filtered_similarity_search_fudge_factor
         )
         self._exact_similarity_search_fallback_threshold = (
@@ -622,7 +629,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
         limit: int | None = 100,
         property_filter: FilterExpr | None = None,
-    ) -> list[Node]:
+    ) -> tuple[list[Node], list[float]]:
         """Search nodes by vector similarity with optional property filters."""
         start_time = time.monotonic()
 
@@ -737,6 +744,95 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
         return similar_nodes, similarities
 
+    async def search_fulltext_nodes(
+        self,
+        *,
+        collection: str,
+        property_name: str,
+        query_text: str,
+        limit: int | None = 100,
+        property_filter: FilterExpr | None = None,
+    ) -> tuple[list[Node], list[float]]:
+        sanitized_collection = Neo4jVectorGraphStore._sanitize_name(collection)
+        sanitized_property_name = Neo4jVectorGraphStore._sanitize_name(property_name)
+
+        query_filter_string, query_filter_params = (
+            Neo4jVectorGraphStore._build_query_filter(
+                "n",
+                "query_filter_params",
+                property_filter,
+            )
+        )
+
+        fulltext_index_name = Neo4jVectorGraphStore._index_name(
+            EntityType.NODE,
+            sanitized_collection,
+            sanitized_property_name,
+        )
+
+        await self._create_fulltext_index_if_not_exists(
+            entity_type=EntityType.NODE,
+            sanitized_collection_or_relation=sanitized_collection,
+            sanitized_property_name=sanitized_property_name,
+        )
+
+        def default_tokenize(text: str) -> list[str]:
+            """
+            Preprocess the input text
+            by removing non-alphanumeric characters,
+            converting to lowercase,
+            word-tokenizing,
+            and removing stop words.
+
+            Args:
+                text (str): The input text to preprocess.
+
+            Returns:
+                list[str]: A list of tokens for use in BM25 scoring.
+            """
+            alphanumeric_text = re.sub(r"\W+", " ", text)
+            lower_text = alphanumeric_text.lower()
+            words = word_tokenize(lower_text, language)
+            tokens = [word for word in words if word and word not in stop_words]
+            return tokens
+
+        def escape_lucene_term(term: str) -> str:
+            # List of Lucene special characters
+            lucene_specials = r'+-!(){}[]^"~*?:\\/'
+            return re.sub(f'([{re.escape(lucene_specials)}])', r'\\\1', term)
+
+        query = (
+            "CALL db.index.fulltext.queryNodes(\n"
+            f"    $fulltext_index_name, $query_text{', {limit: $query_limit}' if limit is not None else ''}\n"
+            ")\n"
+            "YIELD node AS n, score AS similarity\n"
+            f"WHERE {query_filter_string}\n"
+            "RETURN n, similarity\n"
+            "ORDER BY similarity DESC\n"
+            f"{'LIMIT $limit' if limit is not None else ''}"
+        )
+
+        records, _, _ = await self._driver.execute_query(
+            query,
+            fulltext_index_name=fulltext_index_name,
+            query_text=escape_lucene_term(" ".join(default_tokenize(query_text))),
+            query_limit=(
+                limit
+                if property_filter is None
+                else limit * self._filtered_fulltext_search_fudge_factor
+            ),
+            limit=limit,
+            query_filter_params=query_filter_params,
+        )
+
+        fulltext_neo4j_nodes = [record["n"] for record in records]
+        similarities = [record["similarity"] for record in records]
+        fulltext_nodes = Neo4jVectorGraphStore._nodes_from_neo4j_nodes(
+            fulltext_neo4j_nodes
+        )
+
+        return fulltext_nodes, similarities
+
     async def search_related_nodes(
         self,
         *,
@@ -749,7 +845,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         limit: int | None = None,
         edge_property_filter: FilterExpr | None = None,
         node_property_filter: FilterExpr | None = None,
-    ) -> list[Node]:
+    ) -> tuple[list[Node], list[float]]:
         """Search nodes connected by a relation with optional property filters."""
         start_time = time.monotonic()
 
@@ -1099,6 +1195,8 @@ class Neo4jVectorGraphStore(VectorGraphStore):
 
     async def close(self) -> None:
         """Close the underlying Neo4j driver."""
+        while self._background_tasks:
+            await asyncio.sleep(1)
         await self._driver.close()
 
     async def _count_nodes(self, collection: str) -> int:
@@ -1414,6 +1512,65 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             end_time,
         )
 
+    async def _create_fulltext_index_if_not_exists(
+        self,
+        entity_type: EntityType,
+        sanitized_collection_or_relation: str,
+        sanitized_property_name: str,
+    ) -> None:
+        """Create a vector index if missing and wait for it to be online."""
+        start_time = time.monotonic()
+
+        await self._populate_index_state_cache()
+
+        vector_index_name = Neo4jVectorGraphStore._index_name(
+            entity_type,
+            sanitized_collection_or_relation,
+            sanitized_property_name,
+        )
+
+        cached_index_state = self._index_state_cache.get(vector_index_name)
+        match cached_index_state:
+            case Neo4jVectorGraphStore.CacheIndexState.CREATING:
+                # Wait for the index to be online.
+                await self._await_create_index_if_not_exists(
+                    vector_index_name,
+                    asyncio.sleep(0),  # Use as a no-op.
+                )
+                end_time = time.monotonic()
+                return
+            case Neo4jVectorGraphStore.CacheIndexState.ONLINE:
+                end_time = time.monotonic()
+                return
+
+        # Code is synchronous between the cache read and this write,
+        # so it is effectively atomic in the asynchronous framework.
+        self._index_state_cache[vector_index_name] = (
+            Neo4jVectorGraphStore.CacheIndexState.CREATING
+        )
+
+        match entity_type:
+            case EntityType.NODE:
+                query_index_for_expression = f"(e:{sanitized_collection_or_relation})"
+            case EntityType.EDGE:
+                query_index_for_expression = (
+                    f"()-[e:{sanitized_collection_or_relation}]-()"
+                )
+
+        create_index_awaitable = self._driver.execute_query(
+            f"CREATE FULLTEXT INDEX {vector_index_name}\n"
+            "IF NOT EXISTS\n"
+            f"FOR {query_index_for_expression}\n"
+            f"ON EACH [e.{sanitized_property_name}]"
+        )
+
+        await self._await_create_index_if_not_exists(
+            vector_index_name,
+            create_index_awaitable,
+        )
+
+        end_time = time.monotonic()
+
     @async_locked
     async def _await_create_index_if_not_exists(
         self,
@@ -1588,7 +1745,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             # Other tzinfo types can lead to issues,
             # so we convert to datetime.timezone.
             utc_offset = value.utcoffset()
-            tz = datetime.timezone(utc_offset) if utc_offset else None
+            tz = datetime.timezone(utc_offset) if utc_offset is not None else None
             return value.astimezone(tz=tz)
         if isinstance(value, list):
             return cast(
@@ -1671,7 +1828,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             params: dict[
                 str, FilterablePropertyValue | list[FilterablePropertyValue]
             ] = {}
-            if expr.op in (">", "<", ">=", "<=", "="):
+            if expr.op in (">", "<", ">=", "<=", "=", "!=", "<>"):
                 condition = Neo4jVectorGraphStore._render_comparison(
                     left=field_ref,
                     op=expr.op,

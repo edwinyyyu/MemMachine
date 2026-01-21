@@ -26,6 +26,7 @@ class Episode:
     source: str
     content_type: ContentType
     content: Any
+    additional: Any = None
     filterable_properties: dict[str, FilterablePropertyValue] = field(
         default_factory=dict,
     )
@@ -59,6 +60,7 @@ class Derivative:
     source: str
     content_type: ContentType
     content: Any
+    additional: Any = None
     filterable_properties: dict[str, FilterablePropertyValue] = field(
         default_factory=dict,
     )

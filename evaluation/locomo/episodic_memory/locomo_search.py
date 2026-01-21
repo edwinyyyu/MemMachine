@@ -107,7 +107,7 @@ async def process_question(
                 max_output_tokens=4096,
                 temperature=0.0,
                 top_p=1,
-                timeout=10,
+                timeout=40,
                 input=[{"role": "user", "content": prompt}],
             )
     llm_end = time.time()
@@ -240,7 +240,7 @@ async def main():
                 question_response,
             )
 
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(5)
         response_tasks = [
             async_with(
                 semaphore,

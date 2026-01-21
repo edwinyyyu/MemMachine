@@ -120,45 +120,28 @@ def compute_similarity(
 
 
 def rank_by_mmr(
-    query_embedding: list[float],
-    candidate_embeddings: list[list[float]],
-    similarity_metric: SimilarityMetric | None = None,
+    candidate_relevances: list[float],
+    pairwise_candidate_similarities: list[list[float]],
     lambda_param: float = 0.5,
 ) -> list[int]:
     """
-    Rank candidate embeddings using Maximal Marginal Relevance (MMR).
+    Rank candidates using Maximal Marginal Relevance (MMR).
 
     Args:
-        query_embedding (list[float]): The embedding of the query.
-        candidate_embeddings (list[list[float]]): A list of candidate embeddings to rank.
-        similarity_metric (SimilarityMetric | None): The similarity metric to use (default: None).
+        candidate_relevances (list[float]): A list of relevance scores for each candidate.
+        pairwise_candidate_similarities (list[list[float]]): A matrix of pairwise similarities between candidates.
         lambda_param (float): The trade-off parameter between relevance and diversity (default: 0.5).
 
     """
-    query_similarities = compute_similarity(
-        query_embedding,
-        candidate_embeddings,
-        similarity_metric,
-    )
-
-    pairwise_candidate_similarities = [
-        compute_similarity(
-            candidate_embedding,
-            candidate_embeddings,
-            similarity_metric,
-        )
-        for candidate_embedding in candidate_embeddings
-    ]
-
     selected_indexes: list[int] = []
-    remaining_indexes = set(range(len(candidate_embeddings)))
+    remaining_indexes = set(range(len(candidate_relevances)))
 
     while remaining_indexes:
         if not selected_indexes:
-            # Select the candidate with the highest similarity to the query.
+            # Select the candidate with the highest relevance to the query.
             best_index = max(
                 remaining_indexes,
-                key=lambda index: query_similarities[index],
+                key=lambda index: candidate_relevances[index],
             )
 
         else:
@@ -166,7 +149,7 @@ def rank_by_mmr(
             best_index = max(
                 remaining_indexes,
                 key=lambda index: (
-                    lambda_param * query_similarities[index]
+                    lambda_param * candidate_relevances[index]
                     - (1 - lambda_param)
                     * max(
                         pairwise_candidate_similarities[index][selected_index]

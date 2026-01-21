@@ -29,15 +29,20 @@ def datetime_rope(embedding: list[float], dt: datetime) -> list[float]:
     embedding_odd = embedding[1:dimensions:2]
 
     embedding_rot_even = embedding_even.copy()
-    embedding_rot_odd  = embedding_odd.copy()
+    embedding_rot_odd = embedding_odd.copy()
 
-    embedding_rot_even[:total_pairs] = embedding_even[:total_pairs] * np.cos(angles) - embedding_odd[:total_pairs] * np.sin(angles)
-    embedding_rot_odd[:total_pairs]  = embedding_even[:total_pairs] * np.sin(angles) + embedding_odd[:total_pairs] * np.cos(angles)
+    embedding_rot_even[:total_pairs] = embedding_even[:total_pairs] * np.cos(
+        angles
+    ) - embedding_odd[:total_pairs] * np.sin(angles)
+    embedding_rot_odd[:total_pairs] = embedding_even[:total_pairs] * np.sin(
+        angles
+    ) + embedding_odd[:total_pairs] * np.cos(angles)
 
     embedding_rot = np.empty_like(embedding)
     embedding_rot[0:dimensions:2] = embedding_rot_even
     embedding_rot[1:dimensions:2] = embedding_rot_odd
     return embedding_rot.astype(float).tolist()
+
 
 def datetime_rotary_decay(embedding: list[float], dt: datetime) -> list[float]:
     dimensions = len(embedding)
@@ -57,10 +62,14 @@ def datetime_rotary_decay(embedding: list[float], dt: datetime) -> list[float]:
     embedding_odd = embedding[1:dimensions:2]
 
     embedding_rot_even = embedding_even.copy()
-    embedding_rot_odd  = embedding_odd.copy()
+    embedding_rot_odd = embedding_odd.copy()
 
-    embedding_rot_even[:total_pairs] = embedding_even[:total_pairs] * np.cos(angles) - embedding_odd[:total_pairs] * np.sin(angles)
-    embedding_rot_odd[:total_pairs]  = embedding_even[:total_pairs] * np.sin(angles) + embedding_odd[:total_pairs] * np.cos(angles)
+    embedding_rot_even[:total_pairs] = embedding_even[:total_pairs] * np.cos(
+        angles
+    ) - embedding_odd[:total_pairs] * np.sin(angles)
+    embedding_rot_odd[:total_pairs] = embedding_even[:total_pairs] * np.sin(
+        angles
+    ) + embedding_odd[:total_pairs] * np.cos(angles)
 
     embedding_rot = np.empty_like(embedding)
     embedding_rot[0:dimensions:2] = embedding_rot_even

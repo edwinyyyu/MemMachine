@@ -14,6 +14,10 @@ from memmachine.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
 )
+from memmachine.common.language_model.openai_responses_language_model import (
+    OpenAIResponsesLanguageModel,
+    OpenAIResponsesLanguageModelParams,
+)
 from memmachine.common.reranker.amazon_bedrock_reranker import (
     AmazonBedrockReranker,
     AmazonBedrockRerankerParams,
@@ -59,6 +63,7 @@ async def main():
     vector_graph_store = Neo4jVectorGraphStore(
         Neo4jVectorGraphStoreParams(
             driver=neo4j_driver,
+            vector_index_creation_threshold=1,
         )
     )
 
@@ -71,6 +76,13 @@ async def main():
             client=openai_client,
             model="text-embedding-3-small",
             dimensions=1536,
+        )
+    )
+
+    language_model = OpenAIResponsesLanguageModel(
+        OpenAIResponsesLanguageModelParams(
+            client=openai_client,
+            model="gpt-4.1-nano",
         )
     )
 
@@ -110,6 +122,7 @@ async def main():
                 vector_graph_store=vector_graph_store,
                 embedder=embedder,
                 reranker=reranker,
+                language_model=language_model,
             )
         )
 

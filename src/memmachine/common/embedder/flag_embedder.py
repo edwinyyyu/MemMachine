@@ -73,10 +73,12 @@ class FlagEmbedder(Embedder):
                 "Attempting to create embeddings using BAAI/bge-m3 FlagEmbedding model",
                 embed_call_uuid,
             )
-            response = (await asyncio.to_thread(
-                self._flag_model.encode,
-                inputs,
-            ))["dense_vecs"]
+            response = (
+                await asyncio.to_thread(
+                    self._flag_model.encode,
+                    inputs,
+                )
+            )["dense_vecs"]
         except Exception as e:
             # Exception may not be retried.
             error_message = (

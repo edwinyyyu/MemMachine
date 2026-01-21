@@ -264,12 +264,15 @@ class DeclarativeMemory:
         existing_close_nodes = await asyncio.gather(*existing_close_nodes_tasks)
         existing_close_embeddings = [
             [
-                (score, close_node.embeddings[
-                    DeclarativeMemory._embedding_name(
-                        self._embedder.model_id,
-                        self._embedder.dimensions,
-                    )
-                ][0])
+                (
+                    score,
+                    close_node.embeddings[
+                        DeclarativeMemory._embedding_name(
+                            self._embedder.model_id,
+                            self._embedder.dimensions,
+                        )
+                    ][0],
+                )
                 for score, close_node in zip(
                     scores,
                     close_nodes,
@@ -307,7 +310,8 @@ class DeclarativeMemory:
             for similarity, close_embedding in close_embeddings:
                 close_embedding_np = np.array(close_embedding)
                 adjustment += weight(similarity) * (
-                    embedding_np - np.dot(embedding_np, close_embedding_np) * close_embedding_np
+                    embedding_np
+                    - np.dot(embedding_np, close_embedding_np) * close_embedding_np
                 )
             adjusted_embedding = embedding_np + adjustment
             adjusted_embeddings.append(adjusted_embedding)
@@ -396,10 +400,8 @@ class DeclarativeMemory:
             property_filter,
         )
 
-        query_embeddings = (
-            await self._embedder.search_embed(
-                [query],
-            )
+        query_embeddings = await self._embedder.search_embed(
+            [query],
         )
 
         query_embeddings = await self._pattern_separation(query_embeddings)

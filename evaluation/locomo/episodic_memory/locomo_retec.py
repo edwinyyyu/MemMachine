@@ -213,7 +213,7 @@ async def main():
                 question_response,
             )
 
-        semaphore = asyncio.Semaphore(2)
+        semaphore = asyncio.Semaphore(5)
         response_tasks = [
             async_with(
                 semaphore,

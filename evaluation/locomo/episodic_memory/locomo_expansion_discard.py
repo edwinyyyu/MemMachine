@@ -87,6 +87,7 @@ Question: {question}
 Your short response to the question without fluff (no more than a couple of sentences):
 """
 
+
 async def process_question(
     memory: DeclarativeMemory,
     model: openai.AsyncOpenAI,
@@ -97,11 +98,9 @@ async def process_question(
     adversarial_answer,
 ):
     start = time.monotonic()
-    episode_contexts = (
-        await memory.search(
-            query=question,
-            limit=5,
-        )
+    episode_contexts = await memory.search(
+        query=question,
+        limit=5,
     )
 
     all_reasoning = []
@@ -189,11 +188,26 @@ async def process_question(
             expanded_contexts = await asyncio.gather(*expand_context_awaitables)
             memories_cued_episodes = await asyncio.gather(*cued_recall_awaitables)
 
-            episode_contexts = expanded_contexts + [[episode] for memory_cued_episodes in memories_cued_episodes for episode in memory_cued_episodes]
-            episode_context_sets = [set(episode_context) for episode_context in episode_contexts]
+            episode_contexts = expanded_contexts + [
+                [episode]
+                for memory_cued_episodes in memories_cued_episodes
+                for episode in memory_cued_episodes
+            ]
+            episode_context_sets = [
+                set(episode_context) for episode_context in episode_contexts
+            ]
             episode_context_sets = merge_intersecting_sets(episode_context_sets)
-            episode_contexts = [sorted(episode_context_set, key=lambda episode: (episode.timestamp, episode.uid)) for episode_context_set in episode_context_sets]
-            episode_contexts = sorted(episode_contexts, key=lambda episode_context: episode_context[0].timestamp)
+            episode_contexts = [
+                sorted(
+                    episode_context_set,
+                    key=lambda episode: (episode.timestamp, episode.uid),
+                )
+                for episode_context_set in episode_context_sets
+            ]
+            episode_contexts = sorted(
+                episode_contexts,
+                key=lambda episode_context: episode_context[0].timestamp,
+            )
             continue
 
         answer_text = response_text

@@ -268,7 +268,9 @@ class DeclarativeMemory:
                     self._embedder.model_id,
                     self._embedder.dimensions,
                 )
-            ][0] if closest_nodes else None
+            ][0]
+            if closest_nodes
+            else None
             for closest_nodes, _ in existing_closest_single
         ]
         new_closest_embeddings = closest_vectors(embeddings)
@@ -299,19 +301,26 @@ class DeclarativeMemory:
                 new_similarity = -float("inf")
 
             if existing_similarity > new_similarity:
-                true_closest_embeddings_with_similarity.append((existing_closest_embedding, existing_similarity))
+                true_closest_embeddings_with_similarity.append(
+                    (existing_closest_embedding, existing_similarity)
+                )
             elif new_similarity > existing_similarity:
-                true_closest_embeddings_with_similarity.append((new_closest_embedding, new_similarity))
+                true_closest_embeddings_with_similarity.append(
+                    (new_closest_embedding, new_similarity)
+                )
             else:
                 true_closest_embeddings_with_similarity.append((None, None))
 
         # Adjust embeddings away from their closest embeddings.
         adjusted_embeddings = [
             (
-                np.array(embedding) + similarity * (
-                    np.array(embedding) - np.array(closest_embedding)
-                )
-            ).astype(float).tolist() if similarity is not None and closest_embedding is not None else embedding
+                np.array(embedding)
+                + similarity * (np.array(embedding) - np.array(closest_embedding))
+            )
+            .astype(float)
+            .tolist()
+            if similarity is not None and closest_embedding is not None
+            else embedding
             for embedding, (closest_embedding, similarity) in zip(
                 embeddings,
                 true_closest_embeddings_with_similarity,
@@ -409,7 +418,8 @@ class DeclarativeMemory:
             )
         )[0]
         query_embedding = datetime_rotary_decay(
-            query_embedding, datetime.datetime.now(),
+            query_embedding,
+            datetime.datetime.now(),
         )
 
         # Search graph store for vector matches.
