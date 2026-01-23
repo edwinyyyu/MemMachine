@@ -6,7 +6,7 @@ and deleting records.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 
 from memmachine.common.data_types import SimilarityMetric
 from memmachine.common.filter.filter_parser import (
@@ -74,7 +74,7 @@ class VectorStore(ABC):
         self,
         *,
         collection: str,
-        query_vector: list[float],
+        query_vector: Sequence[float],
         similarity_threshold: float | None = None,
         limit: int | None = None,
         property_filter: FilterExpr | None = None,
@@ -85,7 +85,7 @@ class VectorStore(ABC):
         Args:
             collection (str):
                 Collection that the records belong to.
-            query_vector (list[float] | None):
+            query_vector (Sequence[float] | None):
                 The vector to compare against.
             similarity_threshold (float | None):
                 Minimum similarity score to consider a match
