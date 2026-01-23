@@ -15,7 +15,6 @@ PropertyValue = (
     | list[float]
     | list[str]
     | list[datetime]
-    | None
 )
 
 
