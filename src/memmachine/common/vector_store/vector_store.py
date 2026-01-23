@@ -78,7 +78,7 @@ class VectorStore(ABC):
         similarity_threshold: float | None = None,
         limit: int | None = None,
         property_filter: FilterExpr | None = None,
-    ) -> list[str]:
+    ) -> Iterable[str]:
         """
         Query for records matching the criteria by vector similarity.
 
@@ -100,7 +100,7 @@ class VectorStore(ABC):
                 (default: None).
 
         Returns:
-            list[str]:
+            Iterable[str]:
                 List of UIDs of search results matching the search criteria,
                 ordered by similarity score descending.
 
@@ -113,7 +113,7 @@ class VectorStore(ABC):
         *,
         collection: str,
         record_uids: Iterable[str],
-    ) -> list[Record]:
+    ) -> Iterable[Record]:
         """
         Get records from the collection by their UIDs.
 
@@ -124,7 +124,7 @@ class VectorStore(ABC):
                 Iterable of UIDs of the records to retrieve.
 
         Returns:
-            list[Record]:
+            Iterable[Record]:
                 List of records with the specified UIDs,
                 ordered as in the input iterable.
 
