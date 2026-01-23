@@ -27,7 +27,6 @@ class VectorStore(ABC):
         vector_dimensions: int,
         similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
         properties_schema: Mapping[str, type[PropertyValue]] | None = None,
-        range_index_hierarchies: Iterable[Iterable[str]] | None = None,
     ) -> None:
         """
         Create a collection in the vector store.
@@ -42,9 +41,6 @@ class VectorStore(ABC):
                 (default: SimilarityMetric.COSINE).
             properties_schema (Mapping[str, type] | None):
                 Mapping of property names to their types
-                (default: None).
-            range_index_hierarchies (Iterable[Iterable[str]] | None):
-                Iterable of property hierarchies to create range indexes on
                 (default: None).
 
         """
