@@ -4,18 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 # Types that can be used as property values.
-PropertyValue = (
-    bool
-    | int
-    | float
-    | str
-    | datetime
-    | list[bool]
-    | list[int]
-    | list[float]
-    | list[str]
-    | list[datetime]
-)
+PropertyValue = bool | int | float | str | datetime
 
 
 @dataclass(kw_only=True)
