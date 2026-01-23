@@ -13,7 +13,7 @@ from memmachine.common.filter.filter_parser import (
     FilterExpr,
 )
 
-from .data_types import Record
+from .data_types import PropertyValue, Record
 
 
 class VectorStore(ABC):
@@ -26,7 +26,7 @@ class VectorStore(ABC):
         *,
         vector_dimensions: int,
         similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
-        properties_schema: Mapping[str, type] | None = None,
+        properties_schema: Mapping[str, type[PropertyValue]] | None = None,
         range_index_hierarchies: Iterable[Iterable[str]] | None = None,
     ) -> None:
         """
