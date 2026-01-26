@@ -1,6 +1,6 @@
 """Data types for vector store."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
@@ -13,8 +13,8 @@ class Record:
     """A record in the vector store."""
 
     uuid: UUID
-    vector: list[float]
-    properties: dict[str, PropertyValue] = field(default_factory=dict)
+    vector: list[float] | None = None
+    properties: dict[str, PropertyValue] | None = None
 
     def __eq__(self, other: object) -> bool:
         """Compare nodes by UID, vector, and properties."""
