@@ -7,6 +7,7 @@ and deleting records.
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
+from uuid import UUID
 
 from memmachine.common.data_types import SimilarityMetric
 from memmachine.common.filter.filter_parser import (
@@ -74,7 +75,7 @@ class VectorStore(ABC):
         similarity_threshold: float | None = None,
         limit: int | None = None,
         property_filter: FilterExpr | None = None,
-    ) -> Iterable[str]:
+    ) -> Iterable[UUID]:
         """
         Query for records matching the criteria by vector similarity.
 
@@ -96,8 +97,8 @@ class VectorStore(ABC):
                 (default: None).
 
         Returns:
-            Iterable[str]:
-                List of UIDs of search results matching the search criteria,
+            Iterable[UUID]:
+                List of UUIDs of search results matching the search criteria,
                 ordered by similarity score descending.
 
         """
@@ -108,20 +109,20 @@ class VectorStore(ABC):
         self,
         *,
         collection: str,
-        record_uids: Iterable[str],
+        record_uuids: Iterable[UUID],
     ) -> Iterable[Record]:
         """
-        Get records from the collection by their UIDs.
+        Get records from the collection by their UUIDs.
 
         Args:
             collection (str):
                 Name of the collection containing the records.
-            record_uids (Iterable[str]):
-                Iterable of UIDs of the records to retrieve.
+            record_uuids (Iterable[UUID]):
+                Iterable of UUIDs of the records to retrieve.
 
         Returns:
             Iterable[Record]:
-                List of records with the specified UIDs,
+                List of records with the specified UUIDs,
                 ordered as in the input iterable.
 
         """
@@ -132,7 +133,7 @@ class VectorStore(ABC):
         self,
         *,
         collection: str,
-        record_uids: Iterable[str],
+        record_uuids: Iterable[UUID],
     ) -> None:
         """
         Delete records from the collection.
@@ -140,8 +141,8 @@ class VectorStore(ABC):
         Args:
             collection (str):
                 Name of the collection containing the records.
-            record_uids (Iterable[str]):
-                Iterable of UIDs of the records to delete.
+            record_uuids (Iterable[UUID]):
+                Iterable of UUIDs of the records to delete.
 
         """
         raise NotImplementedError
