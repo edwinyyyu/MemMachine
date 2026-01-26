@@ -9,12 +9,21 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
 from uuid import UUID
 
+from pydantic import BaseModel
+
 from memmachine.common.data_types import SimilarityMetric
 from memmachine.common.filter.filter_parser import (
     FilterExpr,
 )
 
 from .data_types import PropertyValue, Record
+
+
+class QueryResult(BaseModel):
+    """Result of a vector store query."""
+
+    score: float
+    record: Record
 
 
 class VectorStore(ABC):
@@ -75,7 +84,9 @@ class VectorStore(ABC):
         similarity_threshold: float | None = None,
         limit: int | None = None,
         property_filter: FilterExpr | None = None,
-    ) -> Iterable[Record]:
+        return_vector: bool = True,
+        return_properties: bool = True,
+    ) -> Iterable[QueryResult]:
         """
         Query for records matching the criteria by vector similarity.
 
@@ -95,10 +106,16 @@ class VectorStore(ABC):
                 Filter expression tree.
                 If None or empty, no property filtering is applied
                 (default: None).
+            return_vector (bool):
+                Whether to include the vector in the returned records
+                (default: False).
+            return_properties (bool):
+                Whether to include the properties in the returned records
+                (default: True).
 
         Returns:
-            Iterable[Record]:
-                List of records matching the search criteria,
+            Iterable[QueryResult]:
+                Iterable of search results matching the criteria,
                 ordered by similarity score descending.
 
         """
@@ -110,6 +127,8 @@ class VectorStore(ABC):
         *,
         collection: str,
         record_uuids: Iterable[UUID],
+        return_vector: bool = True,
+        return_properties: bool = True,
     ) -> Iterable[Record]:
         """
         Get records from the collection by their UUIDs.
@@ -119,10 +138,16 @@ class VectorStore(ABC):
                 Name of the collection containing the records.
             record_uuids (Iterable[UUID]):
                 Iterable of UUIDs of the records to retrieve.
+            return_vector (bool):
+                Whether to include the vector in the returned records
+                (default: False).
+            return_properties (bool):
+                Whether to include the properties in the returned records
+                (default: True).
 
         Returns:
             Iterable[Record]:
-                List of records with the specified UUIDs,
+                Iterable of records with the specified UUIDs,
                 ordered as in the input iterable.
 
         """
@@ -136,7 +161,7 @@ class VectorStore(ABC):
         record_uuids: Iterable[UUID],
     ) -> None:
         """
-        Delete records from the collection.
+        Delete records from the collection by their UUIDs.
 
         Args:
             collection (str):
