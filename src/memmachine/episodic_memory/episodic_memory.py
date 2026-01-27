@@ -17,7 +17,6 @@ Key responsibilities include:
 
 import asyncio
 import datetime
-import json
 import logging
 import time
 from collections.abc import Coroutine, Iterable
@@ -29,8 +28,8 @@ from memmachine.common.data_types import FilterablePropertyValue
 from memmachine.common.episode_store import (
     Episode,
     EpisodeResponse,
-    EpisodeType,
 )
+from memmachine.common.episode_store.episode_model import episodes_to_string
 from memmachine.common.filter.filter_parser import (
     FilterExpr,
 )
@@ -307,6 +306,7 @@ class EpisodicMemory:
         query: str,
         *,
         limit: int | None = None,
+        expand_context: int = 0,
         score_threshold: float = -float("inf"),
         property_filter: FilterExpr | None = None,
     ) -> QueryResponse | None:
@@ -322,6 +322,8 @@ class EpisodicMemory:
             limit: The maximum number of episodes to return. The limit is
                    applied to both short and long term memories. The default
                    value is 20.
+            expand_context: The number of additional episodes to include
+                            around each matched episode from long term memory.
             score_threshold: Minimum score to consider a match.
             property_filter: Properties to filter declarative memory searches.
 
@@ -344,6 +346,7 @@ class EpisodicMemory:
             ).search_scored(
                 query,
                 num_episodes_limit=search_limit,
+                expand_context=expand_context,
                 score_threshold=score_threshold,
                 property_filter=property_filter,
             )
@@ -368,6 +371,7 @@ class EpisodicMemory:
                 self._long_term_memory.search_scored(
                     query,
                     num_episodes_limit=search_limit,
+                    expand_context=expand_context,
                     score_threshold=score_threshold,
                     property_filter=property_filter,
                 ),
@@ -408,6 +412,7 @@ class EpisodicMemory:
         self,
         query: str,
         limit: int | None = None,
+        expand_context: int = 0,
         score_threshold: float = -float("inf"),
         property_filter: FilterExpr | None = None,
     ) -> str:
@@ -420,6 +425,8 @@ class EpisodicMemory:
         Args:
             query: The original query string.
             limit: The maximum number of episodes to include in the context.
+            expand_context: The number of additional episodes to include
+                            around each matched episode from long term memory.
             score_threshold: Minimum score to include in the context.
             property_filter: Properties to filter the search.
 
@@ -430,6 +437,7 @@ class EpisodicMemory:
         query_result = await self.query_memory(
             query,
             limit=limit,
+            expand_context=expand_context,
             score_threshold=score_threshold,
             property_filter=property_filter,
         )
@@ -464,7 +472,7 @@ class EpisodicMemory:
         # Add episodes if they exist
         if episodes and len(episodes) > 0:
             finalized_query += "<Episodes>\n"
-            finalized_query += EpisodicMemory.string_from_episode_response_context(
+            finalized_query += episodes_to_string(
                 episodes,
             )
             finalized_query += "</Episodes>\n"
@@ -473,43 +481,3 @@ class EpisodicMemory:
         finalized_query += f"<Query>\n{query}\n</Query>"
 
         return finalized_query
-
-    @staticmethod
-    def string_from_episode_response_context(
-        episode_response_context: Iterable[EpisodeResponse],
-    ) -> str:
-        """Format episode response context as a string."""
-        context_string = ""
-
-        for episode_response in episode_response_context:
-            match episode_response.episode_type:
-                case EpisodeType.MESSAGE:
-                    context_date = (
-                        EpisodicMemory._format_date(
-                            episode_response.created_at.date(),
-                        )
-                        if episode_response.created_at
-                        else "Unknown Date"
-                    )
-                    context_time = (
-                        EpisodicMemory._format_time(
-                            episode_response.created_at.time(),
-                        )
-                        if episode_response.created_at
-                        else "Unknown Time"
-                    )
-                    context_string += f"[{context_date} at {context_time}] {episode_response.producer_id}: {json.dumps(episode_response.content)}\n"
-                case _:
-                    context_string += json.dumps(episode_response.content) + "\n"
-
-        return context_string
-
-    @staticmethod
-    def _format_date(date: datetime.date) -> str:
-        """Format the date as a string."""
-        return date.strftime("%A, %B %d, %Y")
-
-    @staticmethod
-    def _format_time(time: datetime.time) -> str:
-        """Format the time as a string."""
-        return time.strftime("%I:%M %p")
