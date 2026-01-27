@@ -9,66 +9,27 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
 from uuid import UUID
 
-from pydantic import BaseModel
-
 from memmachine.common.data_types import SimilarityMetric
 from memmachine.common.filter.filter_parser import (
     FilterExpr,
 )
 
-from .data_types import PropertyValue, Record
+from .data_types import PropertyValue, QueryResult, Record
 
 
-class QueryResult(BaseModel):
-    """Result of a vector store query."""
-
-    score: float
-    record: Record
-
-
-class VectorStore(ABC):
-    """Abstract base class for a vector store."""
-
-    @abstractmethod
-    async def create_collection(
-        self,
-        name: str,
-        *,
-        vector_dimensions: int,
-        similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
-        properties_schema: Mapping[str, type[PropertyValue]] | None = None,
-    ) -> None:
-        """
-        Create a collection in the vector store.
-
-        Args:
-            name (str):
-                Name of the collection to create.
-            vector_dimensions (int):
-                Number of dimensions for the vectors.
-            similarity_metric (SimilarityMetric):
-                Similarity metric to use for vector comparisons
-                (default: SimilarityMetric.COSINE).
-            properties_schema (Mapping[str, type] | None):
-                Mapping of property names to their types
-                (default: None).
-
-        """
-        raise NotImplementedError
+class Collection(ABC):
+    """Collection in a vector store."""
 
     @abstractmethod
     async def add(
         self,
         *,
-        collection: str,
         records: Iterable[Record],
     ) -> None:
         """
-        Add records to the vector store.
+        Add records to the collection.
 
         Args:
-            collection (str):
-                Collection that the records belong to.
             records (Iterable[Record]):
                 Iterable of records to add.
 
@@ -79,7 +40,6 @@ class VectorStore(ABC):
     async def query(
         self,
         *,
-        collection: str,
         query_vector: Sequence[float],
         similarity_threshold: float | None = None,
         limit: int | None = None,
@@ -91,8 +51,6 @@ class VectorStore(ABC):
         Query for records matching the criteria by vector similarity.
 
         Args:
-            collection (str):
-                Collection that the records belong to.
             query_vector (Sequence[float] | None):
                 The vector to compare against.
             similarity_threshold (float | None):
@@ -125,7 +83,6 @@ class VectorStore(ABC):
     async def get(
         self,
         *,
-        collection: str,
         record_uuids: Iterable[UUID],
         return_vector: bool = True,
         return_properties: bool = True,
@@ -134,8 +91,6 @@ class VectorStore(ABC):
         Get records from the collection by their UUIDs.
 
         Args:
-            collection (str):
-                Name of the collection containing the records.
             record_uuids (Iterable[UUID]):
                 Iterable of UUIDs of the records to retrieve.
             return_vector (bool):
@@ -157,25 +112,21 @@ class VectorStore(ABC):
     async def delete(
         self,
         *,
-        collection: str,
         record_uuids: Iterable[UUID],
     ) -> None:
         """
         Delete records from the collection by their UUIDs.
 
         Args:
-            collection (str):
-                Name of the collection containing the records.
             record_uuids (Iterable[UUID]):
                 Iterable of UUIDs of the records to delete.
 
         """
         raise NotImplementedError
 
-    @abstractmethod
-    async def drop_collection(self, collection: str) -> None:
-        """Drop everything from the collection."""
-        raise NotImplementedError
+
+class VectorStore(ABC):
+    """Abstract base class for a vector store."""
 
     @abstractmethod
     async def startup(self) -> None:
@@ -185,4 +136,94 @@ class VectorStore(ABC):
     @abstractmethod
     async def shutdown(self) -> None:
         """Shutdown."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def create_collection(
+        self,
+        collection_name: str,
+        *,
+        vector_dimensions: int,
+        similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
+        properties_schema: Mapping[str, type[PropertyValue]] | None = None,
+    ) -> Collection:
+        """
+        Create a collection from the vector store.
+
+        Args:
+            collection_name (str):
+                Name of the collection to create.
+            vector_dimensions (int):
+                Number of dimensions for the vectors.
+            similarity_metric (SimilarityMetric):
+                Similarity metric to use for vector comparisons
+                (default: SimilarityMetric.COSINE).
+            properties_schema (Mapping[str, type] | None):
+                Mapping of property names to their types
+                (default: None).
+
+        Returns:
+            Collection:
+                The created collection.
+
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_or_create_collection(
+        self,
+        collection_name: str,
+        *,
+        vector_dimensions: int,
+        similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
+        properties_schema: Mapping[str, type[PropertyValue]] | None = None,
+    ) -> Collection:
+        """
+        Get a collection from the vector store, or create it if it does not exist.
+
+        Args:
+            collection_name (str):
+                Name of the collection to get or create.
+            vector_dimensions (int):
+                Number of dimensions for the vectors.
+            similarity_metric (SimilarityMetric):
+                Similarity metric to use for vector comparisons
+                (default: SimilarityMetric.COSINE).
+            properties_schema (Mapping[str, type] | None):
+                Mapping of property names to their types
+                (default: None).
+
+        Returns:
+            Collection:
+                The requested or created collection.
+
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_collection(self, collection_name: str) -> Collection:
+        """
+        Get a collection from the vector store.
+
+        Args:
+            collection_name (str):
+                Name of the collection to get.
+
+        Returns:
+            Collection:
+                The requested collection.
+
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_collection(self, collection_name: str) -> None:
+        """
+        Delete a collection from the vector store.
+
+        Args:
+            collection_name (str):
+                Name of the collection to delete.
+
+        """
         raise NotImplementedError
