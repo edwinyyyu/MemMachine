@@ -41,6 +41,7 @@ dependencies = [
     "psutil>=7.1.0",
     "memmachine-server",
     "memmachine-client",
+    "qdrant-client>=1.16.2",
 ]
 requires-python = ">= 3.12"
 authors = [
