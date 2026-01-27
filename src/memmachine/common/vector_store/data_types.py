@@ -29,3 +29,11 @@ class Record:
     def __hash__(self) -> int:
         """Hash a record by its UID."""
         return hash(self.uuid)
+
+
+@dataclass(kw_only=True)
+class QueryResult:
+    """Result of a vector store query."""
+
+    score: float
+    record: Record
