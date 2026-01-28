@@ -21,17 +21,17 @@ class Collection(ABC):
     """Collection in a vector store."""
 
     @abstractmethod
-    async def add(
+    async def upsert(
         self,
         *,
         records: Iterable[Record],
     ) -> None:
         """
-        Add records to the collection.
+        Upsert records in the collection.
 
         Args:
             records (Iterable[Record]):
-                Iterable of records to add.
+                Iterable of records to upsert.
 
         """
         raise NotImplementedError
@@ -148,7 +148,7 @@ class VectorStore(ABC):
         properties_schema: Mapping[str, type[PropertyValue]] | None = None,
     ) -> Collection:
         """
-        Create a collection from the vector store.
+        Create a collection in the vector store.
 
         Args:
             collection_name (str):
