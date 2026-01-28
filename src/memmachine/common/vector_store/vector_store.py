@@ -146,7 +146,7 @@ class VectorStore(ABC):
         vector_dimensions: int,
         similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
         properties_schema: Mapping[str, type[PropertyValue]] | None = None,
-    ) -> Collection:
+    ) -> None:
         """
         Create a collection in the vector store.
 
@@ -161,41 +161,6 @@ class VectorStore(ABC):
             properties_schema (Mapping[str, type] | None):
                 Mapping of property names to their types
                 (default: None).
-
-        Returns:
-            Collection:
-                The created collection.
-
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    async def get_or_create_collection(
-        self,
-        collection_name: str,
-        *,
-        vector_dimensions: int,
-        similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
-        properties_schema: Mapping[str, type[PropertyValue]] | None = None,
-    ) -> Collection:
-        """
-        Get a collection from the vector store, or create it if it does not exist.
-
-        Args:
-            collection_name (str):
-                Name of the collection to get or create.
-            vector_dimensions (int):
-                Number of dimensions for the vectors.
-            similarity_metric (SimilarityMetric):
-                Similarity metric to use for vector comparisons
-                (default: SimilarityMetric.COSINE).
-            properties_schema (Mapping[str, type] | None):
-                Mapping of property names to their types
-                (default: None).
-
-        Returns:
-            Collection:
-                The requested or created collection.
 
         """
         raise NotImplementedError
