@@ -168,7 +168,7 @@ class VectorStore(ABC):
     @abstractmethod
     async def get_collection(self, collection_name: str) -> Collection:
         """
-        Get a collection from the vector store.
+        Get a collection from the vector store. Handle persists across deletion and creation.
 
         Args:
             collection_name (str):
