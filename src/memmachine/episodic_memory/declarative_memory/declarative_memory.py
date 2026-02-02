@@ -10,18 +10,11 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, InstanceOf
 
+from memmachine.common.data_types import AttributeValue
 from memmachine.common.embedder.embedder import Embedder
 from memmachine.common.filter.filter_parser import (
-    And as FilterAnd,
-)
-from memmachine.common.filter.filter_parser import (
-    Comparison as FilterComparison,
-)
-from memmachine.common.filter.filter_parser import (
     FilterExpr,
-)
-from memmachine.common.filter.filter_parser import (
-    Or as FilterOr,
+    map_filter_fields,
 )
 from memmachine.common.reranker.reranker import Reranker
 from memmachine.common.utils import extract_sentences
@@ -31,7 +24,6 @@ from .data_types import (
     ContentType,
     Derivative,
     Episode,
-    FilterablePropertyValue,
     demangle_filterable_property_key,
     is_mangled_filterable_property_key,
     mangle_filterable_property_key,
@@ -700,7 +692,7 @@ class DeclarativeMemory:
             content=episode_node.properties["content"],
             filterable_properties={
                 demangle_filterable_property_key(key): cast(
-                    "FilterablePropertyValue",
+                    AttributeValue,
                     value,
                 )
                 for key, value in episode_node.properties.items()
@@ -733,27 +725,4 @@ class DeclarativeMemory:
         if property_filter is None:
             return None
 
-        return DeclarativeMemory._mangle_filter_expr(property_filter)
-
-    @staticmethod
-    def _mangle_filter_expr(expr: FilterExpr | None) -> FilterExpr | None:
-        if expr is None:
-            return None
-
-        if isinstance(expr, FilterComparison):
-            return FilterComparison(
-                field=mangle_filterable_property_key(expr.field),
-                op=expr.op,
-                value=expr.value,
-            )
-        if isinstance(expr, FilterAnd):
-            return FilterAnd(
-                left=DeclarativeMemory._mangle_filter_expr(expr.left),
-                right=DeclarativeMemory._mangle_filter_expr(expr.right),
-            )
-        if isinstance(expr, FilterOr):
-            return FilterOr(
-                left=DeclarativeMemory._mangle_filter_expr(expr.left),
-                right=DeclarativeMemory._mangle_filter_expr(expr.right),
-            )
-        raise TypeError(f"Unsupported filter expression type: {type(expr)!r}")
+        return map_filter_fields(property_filter, mangle_filterable_property_key)
