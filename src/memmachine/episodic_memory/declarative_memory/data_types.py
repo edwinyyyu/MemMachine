@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import JsonValue
 
-from memmachine.common.data_types import FilterablePropertyValue
+from memmachine.common.data_types import AttributeValue
 
 
 class ContentType(Enum):
@@ -26,7 +26,7 @@ class Episode:
     source: str
     content_type: ContentType
     content: Any
-    filterable_properties: dict[str, FilterablePropertyValue] = field(
+    filterable_properties: dict[str, AttributeValue] = field(
         default_factory=dict,
     )
     user_metadata: JsonValue = None
@@ -59,7 +59,7 @@ class Derivative:
     source: str
     content_type: ContentType
     content: Any
-    filterable_properties: dict[str, FilterablePropertyValue] = field(
+    filterable_properties: dict[str, AttributeValue] = field(
         default_factory=dict,
     )
 
