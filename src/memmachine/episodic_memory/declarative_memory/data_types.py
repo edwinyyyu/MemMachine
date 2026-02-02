@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, JsonValue
 
-from memmachine.common.data_types import FilterablePropertyValue
+from memmachine.common.data_types import AttributeValue
 
 
 class ContentType(Enum):
@@ -22,7 +22,7 @@ class Episode(BaseModel):
     context: str
     content_type: ContentType
     content: Any
-    attributes: dict[str, FilterablePropertyValue] | None = None
+    attributes: dict[str, AttributeValue] | None = None
     payload: dict[str, JsonValue] | None = None
 
     def __hash__(self) -> int:
@@ -38,7 +38,7 @@ class Snapshot(BaseModel):
     context: str
     content_type: ContentType
     content: Any
-    attributes: dict[str, FilterablePropertyValue] | None = None
+    attributes: dict[str, AttributeValue] | None = None
 
     def __hash__(self) -> int:
         """Hash a snapshot by its UUID."""
@@ -53,7 +53,7 @@ class Derivative(BaseModel):
     context: str
     content_type: ContentType
     content: Any
-    attributes: dict[str, FilterablePropertyValue] | None = None
+    attributes: dict[str, AttributeValue] | None = None
 
     def __hash__(self) -> int:
         """Hash a derivative by its UUID."""
