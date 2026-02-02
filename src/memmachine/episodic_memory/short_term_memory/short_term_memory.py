@@ -20,8 +20,9 @@ from pydantic import BaseModel, Field, InstanceOf, field_validator
 
 from memmachine.common import rw_locks
 from memmachine.common.data_types import (
+    AttributeValue,
     ExternalServiceAPIError,
-    FilterablePropertyValue,
+    FilterValue,
 )
 from memmachine.common.episode_store import Episode
 from memmachine.common.episode_store.episode_model import episodes_to_string
@@ -266,8 +267,8 @@ class ShortTermMemory:
 
     @staticmethod
     def _safe_compare(
-        a: FilterablePropertyValue,
-        b: FilterablePropertyValue | list[FilterablePropertyValue],
+        a: AttributeValue | None,
+        b: FilterValue | None,
         op: str,
     ) -> bool:
         """Safely compare two filterable property values."""
@@ -305,9 +306,7 @@ class ShortTermMemory:
                 logger.warning("Unsupported operator: %s", op)
                 return False
 
-    def _do_comparison(
-        self, comp: Comparison, value: FilterablePropertyValue | None
-    ) -> bool:
+    def _do_comparison(self, comp: Comparison, value: AttributeValue | None) -> bool:
         """Do comparison for a single comparison expression."""
         match comp.op:
             case "==" | "=":
@@ -343,6 +342,24 @@ class ShortTermMemory:
         logger.warning("Unsupported logical filter: %s", type(filters).__name__)
         return False
 
+    def _check_metadata_filter(self, episode: Episode, filters: Comparison) -> bool:
+        """Check if an episode's metadata matches the given comparison."""
+        key = (
+            filters.field[9:]
+            if filters.field.startswith("metadata.")
+            else filters.field[2:]
+        )
+        if episode.metadata is None or not isinstance(episode.metadata, dict):
+            return False
+        if key not in episode.metadata:
+            return False
+        metadata_value = episode.metadata[key]
+        if metadata_value is None:
+            return self._do_comparison(filters, None)
+        if not isinstance(metadata_value, get_args(AttributeValue)):
+            return False
+        return self._do_comparison(filters, cast("AttributeValue", metadata_value))
+
     def _check_filter(self, episode: Episode, filters: FilterExpr | None) -> bool:
         """Check if an episode matches the given filters."""
         if filters is None:
@@ -357,22 +374,7 @@ class ShortTermMemory:
                 case "producer_role":
                     return self._do_comparison(filters, episode.producer_role)
             if filters.field.startswith(("m.", "metadata.")):
-                key = (
-                    filters.field[9:]
-                    if filters.field.startswith("metadata.")
-                    else filters.field[2:]
-                )
-                if episode.metadata is None or not isinstance(episode.metadata, dict):
-                    return False
-                if key not in episode.metadata:
-                    return False
-                if not isinstance(
-                    episode.metadata[key], get_args(FilterablePropertyValue)
-                ):
-                    return False
-                return self._do_comparison(
-                    filters, cast(FilterablePropertyValue, episode.metadata[key])
-                )
+                return self._check_metadata_filter(episode, filters)
             logger.warning("Unsupported filter field: %s", filters.field)
             return False
 

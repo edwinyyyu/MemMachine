@@ -28,10 +28,10 @@ from memmachine.common.reranker.reranker import Reranker
 from memmachine.common.vector_graph_store import Edge, Node, VectorGraphStore
 
 from .data_types import (
+    AttributeValue,
     ContentType,
     Derivative,
     Episode,
-    FilterablePropertyValue,
     demangle_filterable_property_key,
     is_mangled_filterable_property_key,
     mangle_filterable_property_key,
@@ -704,7 +704,7 @@ class DeclarativeMemory:
             content=episode_node.properties["content"],
             filterable_properties={
                 demangle_filterable_property_key(key): cast(
-                    "FilterablePropertyValue",
+                    "AttributeValue",
                     value,
                 )
                 for key, value in episode_node.properties.items()
