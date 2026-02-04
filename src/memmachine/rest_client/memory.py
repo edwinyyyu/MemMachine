@@ -63,6 +63,7 @@ from memmachine.common.api.spec import (
     SemanticSetTypeEntry,
     UpdateFeatureSpec,
 )
+from memmachine.common.data_types import AttributeValue
 
 if TYPE_CHECKING:
     from .client import MemMachineClient
@@ -119,7 +120,7 @@ class Memory:
         client: MemMachineClient,
         org_id: str,
         project_id: str,
-        metadata: dict[str, str] | None = None,
+        metadata: dict[str, AttributeValue] | None = None,
         **kwargs: dict[str, Any],
     ) -> None:
         """
@@ -132,6 +133,7 @@ class Memory:
             metadata: Metadata dictionary that will be merged with metadata
                      in add() and search() operations. Common keys include:
                      user_id, agent_id, group_id, session_id, etc.
+                     Values must be bool, int, float, str, or datetime.
             **kwargs: Additional configuration options
 
         """
@@ -174,7 +176,7 @@ class Memory:
         return self.__project_id
 
     @property
-    def metadata(self) -> dict[str, str]:
+    def metadata(self) -> dict[str, AttributeValue]:
         """
         Get the metadata dictionary (read-only).
 
@@ -185,8 +187,8 @@ class Memory:
         return self.__metadata.copy()
 
     def _build_metadata(
-        self, additional_metadata: dict[str, str] | None = None
-    ) -> dict[str, str]:
+        self, additional_metadata: dict[str, AttributeValue] | None = None
+    ) -> dict[str, AttributeValue]:
         """
         Build metadata dictionary by merging instance metadata with additional metadata.
 
@@ -223,7 +225,7 @@ class Memory:
         producer: str | None,
         produced_for: str | None,
         episode_type: EpisodeType | None,
-        metadata: dict[str, str] | None,
+        metadata: dict[str, AttributeValue] | None,
         timestamp: datetime | None,
     ) -> MemoryMessage:
         """Build a MemoryMessage object from parameters."""
@@ -259,7 +261,7 @@ class Memory:
         produced_for: str | None = None,
         episode_type: EpisodeType | None = None,
         memory_types: builtins.list[MemoryType] | None = None,
-        metadata: dict[str, str] | None = None,
+        metadata: dict[str, AttributeValue] | None = None,
         timestamp: datetime | None = None,
         timeout: int | None = None,
     ) -> builtins.list[AddMemoryResult]:

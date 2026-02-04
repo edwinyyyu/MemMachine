@@ -94,7 +94,7 @@ class MockShortTermMemoryDataManager(SessionDataManager):
         return SessionDataManager.SessionInfo(
             description="",
             configuration={},
-            user_metadata={},
+            metadata={},
             episode_memory_conf=EpisodicMemoryConf(
                 metrics_factory_id="prometheus", session_key=session_key
             ),

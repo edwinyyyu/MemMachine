@@ -366,7 +366,6 @@ class TestMemory:
                         "sequence_num": 0,
                         "episode_type": "message",
                         "content_type": "string",
-                        "filterable_metadata": None,
                         "metadata": None,
                     }
                 ],
