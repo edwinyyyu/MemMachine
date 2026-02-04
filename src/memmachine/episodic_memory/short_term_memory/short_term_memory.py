@@ -27,7 +27,6 @@ from memmachine.common.episode_store import Episode
 from memmachine.common.episode_store.episode_model import episodes_to_string
 from memmachine.common.errors import ShortTermMemoryClosedError
 from memmachine.common.filter.filter_parser import (
-    USER_METADATA_STORAGE_PREFIX,
     And,
     Comparison,
     FilterExpr,
@@ -35,6 +34,7 @@ from memmachine.common.filter.filter_parser import (
     IsNull,
     Not,
     Or,
+    demangle_user_metadata_key,
     normalize_filter_field,
 )
 from memmachine.common.language_model import LanguageModel
@@ -341,8 +341,7 @@ class ShortTermMemory:
         """Resolve a field name to its value from an episode."""
         internal_name, is_user_metadata = normalize_filter_field(field)
         if is_user_metadata:
-            # Strip the m_ prefix to get the actual metadata key
-            key = internal_name[len(USER_METADATA_STORAGE_PREFIX) :]
+            key = demangle_user_metadata_key(internal_name)
             if episode.metadata and isinstance(episode.metadata, dict):
                 return episode.metadata.get(key)
             return None
