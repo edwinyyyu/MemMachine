@@ -6,8 +6,9 @@ to enable AI agents with persistent memory capabilities.
 """
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+from memmachine.common.data_types import AttributeValue
 from memmachine.rest_client.client import MemMachineClient
 
 if TYPE_CHECKING:
@@ -128,7 +129,7 @@ class MemMachineTools:
             session_id=session_id,
         )
 
-        return project.memory(metadata=metadata)
+        return project.memory(metadata=cast(dict[str, AttributeValue], metadata))
 
     def add_memory(
         self,
@@ -140,7 +141,7 @@ class MemMachineTools:
         agent_id: str | None = None,
         group_id: str | None = None,
         session_id: str | None = None,
-        metadata: dict[str, str] | None = None,
+        metadata: dict[str, AttributeValue] | None = None,
     ) -> dict[str, Any]:
         """
         Add a memory to MemMachine.
@@ -158,7 +159,7 @@ class MemMachineTools:
             agent_id: Agent ID (overrides default, stored in metadata)
             group_id: Group ID (overrides default, stored in metadata)
             session_id: Session ID (overrides default, stored in metadata)
-            metadata: Additional metadata for the episode
+            metadata: Additional metadata for the episode (values must be bool, int, float, str, or datetime)
 
         Returns:
             Dictionary with success status and message
