@@ -43,8 +43,8 @@ from sqlalchemy.sql import Delete, Select, func
 from memmachine.common.episode_store.episode_model import EpisodeIdT
 from memmachine.common.errors import InvalidArgumentError, ResourceNotFoundError
 from memmachine.common.filter.filter_parser import (
-    USER_METADATA_STORAGE_PREFIX,
     FilterExpr,
+    demangle_user_metadata_key,
     normalize_filter_field,
 )
 from memmachine.common.filter.sql_filter_util import compile_sql_filter
@@ -641,8 +641,7 @@ class SqlAlchemyPgVectorSemanticStorage(SemanticStorage):
     ):
         internal_name, is_user_metadata = normalize_filter_field(field)
         if is_user_metadata:
-            # Strip the m_ prefix to get the actual metadata key
-            key = internal_name[len(USER_METADATA_STORAGE_PREFIX) :]
+            key = demangle_user_metadata_key(internal_name)
             return table.json_metadata[key], True
 
         field_mapping = {
