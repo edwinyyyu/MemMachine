@@ -11,6 +11,9 @@ from memmachine.common.embedder import Embedder
 from memmachine.common.episode_store import ContentType, Episode, EpisodeType
 from memmachine.common.filter.filter_parser import (
     FilterExpr,
+    demangle_user_metadata_key,
+    is_user_metadata_key,
+    mangle_user_metadata_key,
     map_filter_fields,
     normalize_filter_field,
 )
@@ -112,7 +115,7 @@ class LongTermMemory:
                     }
                     | (
                         {
-                            LongTermMemory._mangle_metadata_key(key): value
+                            mangle_user_metadata_key(key): value
                             for key, value in (episode.metadata or {}).items()
                         }
                         if episode.metadata is not None
@@ -289,28 +292,14 @@ class LongTermMemory:
                 declarative_memory_episode.metadata.get("produced_for_id"),
             ),
             metadata={
-                LongTermMemory._demangle_metadata_key(key): value
+                demangle_user_metadata_key(key): value
                 for key, value in declarative_memory_episode.metadata.items()
-                if LongTermMemory._is_mangled_metadata_key(key)
+                if is_user_metadata_key(key)
             }
             if LongTermMemory._METADATA_NONE_FLAG
             not in declarative_memory_episode.metadata
             else None,
         )
-
-    _MANGLE_METADATA_KEY_PREFIX = "metadata."
-
-    @staticmethod
-    def _mangle_metadata_key(key: str) -> str:
-        return LongTermMemory._MANGLE_METADATA_KEY_PREFIX + key
-
-    @staticmethod
-    def _demangle_metadata_key(mangled_key: str) -> str:
-        return mangled_key.removeprefix(LongTermMemory._MANGLE_METADATA_KEY_PREFIX)
-
-    @staticmethod
-    def _is_mangled_metadata_key(candidate_key: str) -> bool:
-        return candidate_key.startswith(LongTermMemory._MANGLE_METADATA_KEY_PREFIX)
 
     @staticmethod
     def _sanitize_property_filter(
