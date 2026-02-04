@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from typing import cast
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, InstanceOf, JsonValue
+from pydantic import BaseModel, Field, InstanceOf
 
 from memmachine.common.data_types import AttributeValue
 from memmachine.common.embedder import Embedder
@@ -70,7 +70,7 @@ class LongTermMemoryParams(BaseModel):
 class LongTermMemory:
     """High-level facade around the declarative memory store."""
 
-    _FILTERABLE_METADATA_NONE_FLAG = "_filterable_metadata_none"
+    _METADATA_NONE_FLAG = "_metadata_none"
 
     def __init__(self, params: LongTermMemoryParams) -> None:
         """Wire up the declarative memory backing store."""
@@ -94,7 +94,7 @@ class LongTermMemory:
                     episode,
                 ),
                 content=episode.content,
-                filterable_properties=cast(
+                metadata=cast(
                     dict[str, AttributeValue],
                     {
                         key: value
@@ -112,16 +112,13 @@ class LongTermMemory:
                     }
                     | (
                         {
-                            LongTermMemory._mangle_filterable_metadata_key(key): value
-                            for key, value in (
-                                episode.filterable_metadata or {}
-                            ).items()
+                            LongTermMemory._mangle_metadata_key(key): value
+                            for key, value in (episode.metadata or {}).items()
                         }
-                        if episode.filterable_metadata is not None
-                        else {LongTermMemory._FILTERABLE_METADATA_NONE_FLAG: True}
+                        if episode.metadata is not None
+                        else {LongTermMemory._METADATA_NONE_FLAG: True}
                     ),
                 ),
-                user_metadata=episode.metadata,
             )
             for episode in episodes
         ]
@@ -250,16 +247,16 @@ class LongTermMemory:
             uid=declarative_memory_episode.uid,
             sequence_num=cast(
                 "int",
-                declarative_memory_episode.filterable_properties.get("sequence_num", 0),
+                declarative_memory_episode.metadata.get("sequence_num", 0),
             ),
             session_key=cast(
                 "str",
-                declarative_memory_episode.filterable_properties.get("session_key", ""),
+                declarative_memory_episode.metadata.get("session_key", ""),
             ),
             episode_type=EpisodeType(
                 cast(
                     "str",
-                    declarative_memory_episode.filterable_properties.get(
+                    declarative_memory_episode.metadata.get(
                         "episode_type",
                         "",
                     ),
@@ -268,7 +265,7 @@ class LongTermMemory:
             content_type=ContentType(
                 cast(
                     "str",
-                    declarative_memory_episode.filterable_properties.get(
+                    declarative_memory_episode.metadata.get(
                         "content_type",
                         "",
                     ),
@@ -278,50 +275,42 @@ class LongTermMemory:
             created_at=declarative_memory_episode.timestamp,
             producer_id=cast(
                 "str",
-                declarative_memory_episode.filterable_properties.get("producer_id", ""),
+                declarative_memory_episode.metadata.get("producer_id", ""),
             ),
             producer_role=cast(
                 "str",
-                declarative_memory_episode.filterable_properties.get(
+                declarative_memory_episode.metadata.get(
                     "producer_role",
                     "",
                 ),
             ),
             produced_for_id=cast(
                 "str | None",
-                declarative_memory_episode.filterable_properties.get("produced_for_id"),
+                declarative_memory_episode.metadata.get("produced_for_id"),
             ),
-            filterable_metadata={
-                LongTermMemory._demangle_filterable_metadata_key(key): value
-                for key, value in declarative_memory_episode.filterable_properties.items()
-                if LongTermMemory._is_mangled_filterable_metadata_key(key)
+            metadata={
+                LongTermMemory._demangle_metadata_key(key): value
+                for key, value in declarative_memory_episode.metadata.items()
+                if LongTermMemory._is_mangled_metadata_key(key)
             }
-            if LongTermMemory._FILTERABLE_METADATA_NONE_FLAG
-            not in declarative_memory_episode.filterable_properties
+            if LongTermMemory._METADATA_NONE_FLAG
+            not in declarative_memory_episode.metadata
             else None,
-            metadata=cast(
-                "dict[str, JsonValue] | None",
-                declarative_memory_episode.user_metadata,
-            ),
         )
 
-    _MANGLE_FILTERABLE_METADATA_KEY_PREFIX = "metadata."
+    _MANGLE_METADATA_KEY_PREFIX = "metadata."
 
     @staticmethod
-    def _mangle_filterable_metadata_key(key: str) -> str:
-        return LongTermMemory._MANGLE_FILTERABLE_METADATA_KEY_PREFIX + key
+    def _mangle_metadata_key(key: str) -> str:
+        return LongTermMemory._MANGLE_METADATA_KEY_PREFIX + key
 
     @staticmethod
-    def _demangle_filterable_metadata_key(mangled_key: str) -> str:
-        return mangled_key.removeprefix(
-            LongTermMemory._MANGLE_FILTERABLE_METADATA_KEY_PREFIX
-        )
+    def _demangle_metadata_key(mangled_key: str) -> str:
+        return mangled_key.removeprefix(LongTermMemory._MANGLE_METADATA_KEY_PREFIX)
 
     @staticmethod
-    def _is_mangled_filterable_metadata_key(candidate_key: str) -> bool:
-        return candidate_key.startswith(
-            LongTermMemory._MANGLE_FILTERABLE_METADATA_KEY_PREFIX
-        )
+    def _is_mangled_metadata_key(candidate_key: str) -> bool:
+        return candidate_key.startswith(LongTermMemory._MANGLE_METADATA_KEY_PREFIX)
 
     @staticmethod
     def _sanitize_property_filter(

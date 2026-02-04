@@ -5,8 +5,6 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import JsonValue
-
 from memmachine.common.data_types import AttributeValue
 
 
@@ -26,10 +24,9 @@ class Episode:
     source: str
     content_type: ContentType
     content: Any
-    filterable_properties: dict[str, AttributeValue] = field(
+    metadata: dict[str, AttributeValue] = field(
         default_factory=dict,
     )
-    user_metadata: JsonValue = None
 
     def __eq__(self, other: object) -> bool:
         """Compare episodes by UID."""
@@ -41,8 +38,7 @@ class Episode:
             and self.source == other.source
             and self.content_type == other.content_type
             and self.content == other.content
-            and self.filterable_properties == other.filterable_properties
-            and self.user_metadata == other.user_metadata
+            and self.metadata == other.metadata
         )
 
     def __hash__(self) -> int:
@@ -59,7 +55,7 @@ class Derivative:
     source: str
     content_type: ContentType
     content: Any
-    filterable_properties: dict[str, AttributeValue] = field(
+    metadata: dict[str, AttributeValue] = field(
         default_factory=dict,
     )
 
@@ -73,7 +69,7 @@ class Derivative:
             and self.source == other.source
             and self.content_type == other.content_type
             and self.content == other.content
-            and self.filterable_properties == other.filterable_properties
+            and self.metadata == other.metadata
         )
 
     def __hash__(self) -> int:
