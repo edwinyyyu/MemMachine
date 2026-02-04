@@ -123,11 +123,10 @@ class DeclarativeMemory:
                     "source": episode.source,
                     "content_type": episode.content_type.value,
                     "content": episode.content,
-                    "user_metadata": json.dumps(episode.user_metadata),
                 }
                 | {
                     mangle_filterable_property_key(key): value
-                    for key, value in episode.filterable_properties.items()
+                    for key, value in episode.metadata.items()
                 },
             )
             for episode in episodes
@@ -161,7 +160,7 @@ class DeclarativeMemory:
                 }
                 | {
                     mangle_filterable_property_key(key): value
-                    for key, value in derivative.filterable_properties.items()
+                    for key, value in derivative.metadata.items()
                 },
                 embeddings={
                     DeclarativeMemory._embedding_name(
@@ -235,7 +234,7 @@ class DeclarativeMemory:
                             source=episode.source,
                             content_type=ContentType.MESSAGE,
                             content=f"{episode.source}: {episode.content}",
-                            filterable_properties=episode.filterable_properties,
+                            metadata=episode.metadata,
                         ),
                     ]
 
@@ -248,7 +247,7 @@ class DeclarativeMemory:
                         source=episode.source,
                         content_type=ContentType.MESSAGE,
                         content=f"{episode.source}: {sentence}",
-                        filterable_properties=episode.filterable_properties,
+                        metadata=episode.metadata,
                     )
                     for sentence in sentences
                 ]
@@ -261,7 +260,7 @@ class DeclarativeMemory:
                         source=episode.source,
                         content_type=ContentType.TEXT,
                         content=text_content,
-                        filterable_properties=episode.filterable_properties,
+                        metadata=episode.metadata,
                     ),
                 ]
             case _:
@@ -690,7 +689,7 @@ class DeclarativeMemory:
             source=cast("str", episode_node.properties["source"]),
             content_type=ContentType(episode_node.properties["content_type"]),
             content=episode_node.properties["content"],
-            filterable_properties={
+            metadata={
                 demangle_filterable_property_key(key): cast(
                     AttributeValue,
                     value,
@@ -698,9 +697,6 @@ class DeclarativeMemory:
                 for key, value in episode_node.properties.items()
                 if is_mangled_filterable_property_key(key)
             },
-            user_metadata=json.loads(
-                cast("str", episode_node.properties["user_metadata"]),
-            ),
         )
 
     @staticmethod

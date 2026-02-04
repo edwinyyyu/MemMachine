@@ -343,10 +343,8 @@ class ShortTermMemory:
         if is_user_metadata:
             # Strip the m_ prefix to get the actual metadata key
             key = internal_name[len(USER_METADATA_STORAGE_PREFIX) :]
-            if episode.filterable_metadata and isinstance(
-                episode.filterable_metadata, dict
-            ):
-                return episode.filterable_metadata.get(key)
+            if episode.metadata and isinstance(episode.metadata, dict):
+                return episode.metadata.get(key)
             return None
         match internal_name:
             case "producer_id":

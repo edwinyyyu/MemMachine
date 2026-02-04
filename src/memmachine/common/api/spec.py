@@ -25,10 +25,11 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    JsonValue,
     field_validator,
     model_validator,
 )
+
+from memmachine.common.data_types import AttributeValue
 
 from . import EpisodeType, MemoryType
 from .doc import Examples, SpecDoc
@@ -79,7 +80,7 @@ class EpisodeEntry(BaseModel):
         Field(default=None, description=SpecDoc.EPISODE_TYPE),
     ]
     metadata: Annotated[
-        dict[str, JsonValue] | None,
+        dict[str, AttributeValue] | None,
         Field(default=None, description=SpecDoc.EPISODE_METADATA),
     ]
     created_at: Annotated[
@@ -147,12 +148,8 @@ class Episode(BaseModel):
         ContentType,
         Field(default=ContentType.STRING, description=SpecDoc.EPISODE_CONTENT_TYPE),
     ]
-    filterable_metadata: Annotated[
-        dict[str, Any] | None,
-        Field(default=None, description=SpecDoc.EPISODE_FILTERABLE_METADATA),
-    ]
     metadata: Annotated[
-        dict[str, JsonValue] | None,
+        dict[str, AttributeValue] | None,
         Field(default=None, description=SpecDoc.EPISODE_METADATA),
     ]
 
@@ -473,7 +470,7 @@ class MemoryMessage(BaseModel):
         ),
     ]
     metadata: Annotated[
-        dict[str, str],
+        dict[str, AttributeValue],
         Field(
             default_factory=dict,
             description=SpecDoc.MEMORY_METADATA,

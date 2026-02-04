@@ -19,6 +19,7 @@ from memmachine.common.api.spec import (
     ProjectConfig,
     ProjectResponse,
 )
+from memmachine.common.data_types import AttributeValue
 
 if TYPE_CHECKING:
     from .client import MemMachineClient
@@ -96,7 +97,7 @@ class Project:
 
     def memory(
         self,
-        metadata: dict[str, str] | None = None,
+        metadata: dict[str, AttributeValue] | None = None,
         **kwargs: dict[str, Any],
     ) -> Memory:
         """
@@ -106,6 +107,7 @@ class Project:
             metadata: Metadata dictionary that will be merged with metadata
                      in add() and search() operations. Common keys include:
                      user_id, agent_id, group_id, session_id, etc.
+                     Values must be bool, int, float, str, or datetime.
             **kwargs: Additional configuration options
 
         Returns:
