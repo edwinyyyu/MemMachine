@@ -44,13 +44,13 @@ jobs:
       - name: Build server package
         run: |
           uv build --project packages/server
-          ls -lh dist/memmachine_server-*
+          ls -lh dist/memmachine-*
 
       - name: Install server package
         shell: bash
         run: |
           set -eo pipefail
-          whl_name=$(ls dist/memmachine_server-*.whl | head -1)
+          whl_name=$(ls dist/memmachine-*.whl | head -1)
           pip install "$whl_name"
 
       - name: Test server package imports

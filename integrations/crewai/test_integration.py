@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ruff: noqa: T201, E402
+# ruff: noqa: E402
 """
 Quick test script for CrewAI + MemMachine integration.
 

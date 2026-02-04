@@ -6,7 +6,19 @@ requires-python = ">=3.12"
 members = [
     "memmachine",
     "memmachine-client",
-    "memmachine-server",
+]
+
+[manifest.dependency-groups]
+dev = [
+    { name = "complexipy", specifier = ">=4.2.0" },
+    { name = "mypy", specifier = ">=1.18.2" },
+    { name = "pytest", specifier = ">=8.4.2" },
+    { name = "pytest-asyncio", specifier = ">=1.2.0" },
+    { name = "pytest-cov", specifier = ">=7.0.0" },
+    { name = "pytest-xdist", specifier = ">=3.8.0" },
+    { name = "ruff", specifier = "~=0.15.0" },
+    { name = "testcontainers", extras = ["neo4j", "postgres"], specifier = ">=4.13.1" },
+    { name = "ty", specifier = "~=0.0.14" },
 ]
 
 [[package]]
@@ -457,7 +469,7 @@ wheels = [
 
 [[package]]
 name = "cohere"
-version = "5.20.1"
+version = "5.20.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastavro" },
@@ -469,9 +481,9 @@ dependencies = [
     { name = "types-requests" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4b/ed/bb02083654bdc089ae4ef1cd7691fd2233f1fd9f32bcbfacc80ff57d9775/cohere-5.20.1.tar.gz", hash = "sha256:50973f63d2c6138ff52ce37d8d6f78ccc539af4e8c43865e960d68e0bf835b6f", size = 180820, upload-time = "2025-12-18T16:39:50.975Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/dd/52/08564d1820970010d30421cd6e36f2e4ca552646504d3fe532eef282c88d/cohere-5.20.2.tar.gz", hash = "sha256:0aa9f3735626b70eedf15c231c61f3a58e7f8bbe5f0509fe7b2e6606c5d420f1", size = 180820, upload-time = "2026-01-23T13:42:51.308Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/e3/94eb11ac3ebaaa3a6afb5d2ff23db95d58bc468ae538c388edf49f2f20b5/cohere-5.20.1-py3-none-any.whl", hash = "sha256:d230fd13d95ba92ae927fce3dd497599b169883afc7954fe29b39fb8d5df5fc7", size = 318973, upload-time = "2025-12-18T16:39:49.504Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/10/d76f045eefe42fb3f4e271d17ab41b5e73a3b6de69c98e15ab1cb0c8e6f6/cohere-5.20.2-py3-none-any.whl", hash = "sha256:26156d83bf3e3e4475e4caa1d8c4148475c5b0a253aee6066d83c643e9045be6", size = 318986, upload-time = "2026-01-23T13:42:50.151Z" },
 ]
 
 [[package]]
@@ -1708,7 +1720,7 @@ wheels = [
 [[package]]
 name = "memmachine"
 version = "0.0.0"
-source = { editable = "." }
+source = { editable = "packages/server" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "alembic" },
@@ -1716,7 +1728,6 @@ dependencies = [
     { name = "boto3" },
     { name = "boto3-stubs" },
     { name = "cohere" },
-    { name = "coverage" },
     { name = "dotenv" },
     { name = "fastapi" },
     { name = "fastmcp" },
@@ -1724,8 +1735,6 @@ dependencies = [
     { name = "instructor", extra = ["bedrock"] },
     { name = "json-repair" },
     { name = "langchain-aws" },
-    { name = "memmachine-client" },
-    { name = "memmachine-server" },
     { name = "neo4j" },
     { name = "nltk" },
     { name = "openai" },
@@ -1735,6 +1744,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "rank-bm25" },
+    { name = "regex" },
     { name = "sqlalchemy" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
     { name = "uvicorn" },
@@ -1745,19 +1755,6 @@ gpu = [
     { name = "sentence-transformers" },
 ]
 
-[package.dev-dependencies]
-dev = [
-    { name = "complexipy" },
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-xdist" },
-    { name = "ruff" },
-    { name = "testcontainers", extra = ["neo4j"] },
-    { name = "ty" },
-]
-
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
@@ -1766,7 +1763,6 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.40.40" },
     { name = "boto3-stubs", specifier = "==1.40.64" },
     { name = "cohere", specifier = ">=5.20.0" },
-    { name = "coverage", specifier = ">=7.11.0" },
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "fastapi", specifier = ">=0.116.1" },
     { name = "fastmcp", specifier = ">=2.14.0" },
@@ -1774,8 +1770,6 @@ requires-dist = [
     { name = "instructor", extras = ["bedrock"], specifier = ">=1.12.0" },
     { name = "json-repair", specifier = ">=0.54" },
     { name = "langchain-aws", specifier = ">=0.2.33" },
-    { name = "memmachine-client", editable = "packages/client" },
-    { name = "memmachine-server", editable = "packages/server" },
     { name = "neo4j", specifier = ">=5.28.2" },
     { name = "nltk", specifier = ">=3.9.1" },
     { name = "openai", specifier = ">=1.104.2" },
@@ -1785,6 +1779,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.11.7" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "rank-bm25", specifier = ">=0.2.2" },
+    { name = "regex", specifier = ">=2023.0.0" },
     { name = "sentence-transformers", marker = "extra == 'gpu'", specifier = ">=5.1.0" },
     { name = "sqlalchemy", specifier = ">=2.0.43" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2024.1" },
@@ -1792,21 +1787,9 @@ requires-dist = [
 ]
 provides-extras = ["gpu"]
 
-[package.metadata.requires-dev]
-dev = [
-    { name = "complexipy", specifier = ">=4.2.0" },
-    { name = "mypy", specifier = ">=1.18.2" },
-    { name = "pytest", specifier = ">=8.4.2" },
-    { name = "pytest-asyncio", specifier = ">=1.2.0" },
-    { name = "pytest-cov", specifier = ">=7.0.0" },
-    { name = "pytest-xdist", specifier = ">=3.8.0" },
-    { name = "ruff", specifier = "~=0.15.0" },
-    { name = "testcontainers", extras = ["neo4j", "postgres"], specifier = ">=4.13.1" },
-    { name = "ty", specifier = "~=0.0.14" },
-]
-
 [[package]]
 name = "memmachine-client"
+version = "0.0.0"
 source = { editable = "packages/client" }
 dependencies = [
     { name = "pydantic" },
@@ -1824,71 +1807,6 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.0.0" },
     { name = "urllib3", specifier = ">=2.6.3" },
 ]
-
-[[package]]
-name = "memmachine-server"
-source = { editable = "packages/server" }
-dependencies = [
-    { name = "aiosqlite" },
-    { name = "alembic" },
-    { name = "asyncpg" },
-    { name = "boto3" },
-    { name = "boto3-stubs" },
-    { name = "dotenv" },
-    { name = "fastapi" },
-    { name = "fastmcp" },
-    { name = "greenlet" },
-    { name = "instructor", extra = ["bedrock"] },
-    { name = "json-repair" },
-    { name = "langchain-aws" },
-    { name = "neo4j" },
-    { name = "nltk" },
-    { name = "openai" },
-    { name = "pgvector" },
-    { name = "prometheus-client" },
-    { name = "psutil" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "rank-bm25" },
-    { name = "sqlalchemy" },
-    { name = "tzdata", marker = "sys_platform == 'win32'" },
-    { name = "uvicorn" },
-]
-
-[package.optional-dependencies]
-gpu = [
-    { name = "sentence-transformers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiosqlite", specifier = ">=0.20.0" },
-    { name = "alembic", specifier = ">=1.17.1" },
-    { name = "asyncpg", specifier = ">=0.31.0" },
-    { name = "boto3", specifier = ">=1.40.40" },
-    { name = "boto3-stubs", specifier = "==1.40.64" },
-    { name = "dotenv", specifier = ">=0.9.9" },
-    { name = "fastapi", specifier = ">=0.116.1" },
-    { name = "fastmcp", specifier = ">=2.14.0" },
-    { name = "greenlet", specifier = ">=3.2.4" },
-    { name = "instructor", extras = ["bedrock"], specifier = ">=1.12.0" },
-    { name = "json-repair", specifier = ">=0.54" },
-    { name = "langchain-aws", specifier = ">=0.2.33" },
-    { name = "neo4j", specifier = ">=5.28.2" },
-    { name = "nltk", specifier = ">=3.9.1" },
-    { name = "openai", specifier = ">=1.104.2" },
-    { name = "pgvector", specifier = ">=0.4.1" },
-    { name = "prometheus-client", specifier = ">=0.22.1" },
-    { name = "psutil", specifier = ">=7.1.0" },
-    { name = "pydantic", specifier = ">=2.11.7" },
-    { name = "pyyaml", specifier = ">=6.0.2" },
-    { name = "rank-bm25", specifier = ">=0.2.2" },
-    { name = "sentence-transformers", marker = "extra == 'gpu'", specifier = ">=5.1.0" },
-    { name = "sqlalchemy", specifier = ">=2.0.43" },
-    { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2024.1" },
-    { name = "uvicorn", specifier = ">=0.35.0" },
-]
-provides-extras = ["gpu"]
 
 [[package]]
 name = "more-itertools"
@@ -3825,14 +3743,14 @@ wheels = [
 
 [[package]]
 name = "types-requests"
-version = "2.32.4.20250913"
+version = "2.32.4.20260107"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/36/27/489922f4505975b11de2b5ad07b4fe1dca0bca9be81a703f26c5f3acfce5/types_requests-2.32.4.20250913.tar.gz", hash = "sha256:abd6d4f9ce3a9383f269775a9835a4c24e5cd6b9f647d64f88aa4613c33def5d", size = 23113, upload-time = "2025-09-13T02:40:02.309Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0f/f3/a0663907082280664d745929205a89d41dffb29e89a50f753af7d57d0a96/types_requests-2.32.4.20260107.tar.gz", hash = "sha256:018a11ac158f801bfa84857ddec1650750e393df8a004a8a9ae2a9bec6fcb24f", size = 23165, upload-time = "2026-01-07T03:20:54.091Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2a/20/9a227ea57c1285986c4cf78400d0a91615d25b24e257fd9e2969606bdfae/types_requests-2.32.4.20250913-py3-none-any.whl", hash = "sha256:78c9c1fffebbe0fa487a418e0fa5252017e9c60d1a2da394077f1780f655d7e1", size = 20658, upload-time = "2025-09-13T02:40:01.115Z" },
+    { url = "https://files.pythonhosted.org/packages/1c/12/709ea261f2bf91ef0a26a9eed20f2623227a8ed85610c1e54c5805692ecb/types_requests-2.32.4.20260107-py3-none-any.whl", hash = "sha256:b703fe72f8ce5b31ef031264fe9395cac8f46a04661a79f7ed31a80fb308730d", size = 20676, upload-time = "2026-01-07T03:20:52.929Z" },
 ]
 
 [[package]]

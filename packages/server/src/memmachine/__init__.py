@@ -1,0 +1,37 @@
+"""Public package exports and utilities for MemMachine server."""
+
+from memmachine.common import api  # noqa: F401
+
+try:
+    from memmachine.main.memmachine import MemMachine
+except ImportError:
+    # MemMachine is not available in minimal installations
+    MemMachine = None  # type: ignore
+
+
+def setup_nltk() -> None:
+    """Check for and download required NLTK data packages."""
+    import logging
+
+    import nltk
+
+    logger = logging.getLogger(__name__)
+
+    logger.info("Checking for required NLTK data...")
+    packages = [
+        ("tokenizers/punkt", "punkt"),
+        ("tokenizers/punkt_tab", "punkt_tab"),
+        ("corpora/stopwords", "stopwords"),
+    ]
+    for path, pkg_id in packages:
+        try:
+            nltk.data.find(path)
+            logger.info("NLTK package '%s' is already installed.", pkg_id)
+        except LookupError:
+            logger.warning("NLTK package '%s' not found. Downloading...", pkg_id)
+            nltk.download(pkg_id)
+    logger.info("NLTK data setup is complete.")
+
+
+# Only export MemMachine if it's available
+__all__ = ["MemMachine", "setup_nltk"] if MemMachine is not None else ["setup_nltk"]
