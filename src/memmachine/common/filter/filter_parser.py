@@ -288,6 +288,21 @@ def normalize_filter_field(field: str) -> tuple[str, bool]:
     return field, False
 
 
+def mangle_user_metadata_key(key: str) -> str:
+    """Add user metadata prefix to a key for storage."""
+    return USER_METADATA_STORAGE_PREFIX + key
+
+
+def demangle_user_metadata_key(mangled_key: str) -> str:
+    """Remove user metadata prefix from a storage key."""
+    return mangled_key.removeprefix(USER_METADATA_STORAGE_PREFIX)
+
+
+def is_user_metadata_key(candidate_key: str) -> bool:
+    """Check if a key has the user metadata prefix."""
+    return candidate_key.startswith(USER_METADATA_STORAGE_PREFIX)
+
+
 def map_filter_fields(
     expr: FilterExpr,
     transform: Callable[[str], str],
