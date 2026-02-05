@@ -122,10 +122,7 @@ def test_embedder_to_yaml(embedder_conf):
 
 
 def test_open_ai_embeder_without_key():
-    conf_dict = {
-        "model": "text-embedding-ada-002",
-    }
-    conf = OpenAIEmbedderConf(**conf_dict)
+    conf = OpenAIEmbedderConf(model="text-embedding-ada-002")
     assert conf.api_key.get_secret_value() == ""
 
 
@@ -140,7 +137,15 @@ def test_read_aws_keys_from_env(monkeypatch, aws_embedder_conf):
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "access-key")
     aws_embedder_conf["config"]["aws_access_key_id"] = "${MY_KEY_ID}"
     aws_embedder_conf["config"]["aws_secret_access_key"] = ""
-    conf = AmazonBedrockEmbedderConf(**aws_embedder_conf["config"])
+    conf = AmazonBedrockEmbedderConf(
+        region=aws_embedder_conf["config"]["region"],
+        aws_access_key_id=aws_embedder_conf["config"]["aws_access_key_id"],
+        aws_secret_access_key=aws_embedder_conf["config"]["aws_secret_access_key"],
+        model_id=aws_embedder_conf["config"]["model_id"],
+        similarity_metric=aws_embedder_conf["config"]["similarity_metric"],
+    )
+    assert conf.aws_access_key_id is not None
     assert conf.aws_access_key_id.get_secret_value() == "my-key-id"
+    assert conf.aws_secret_access_key is not None
     assert conf.aws_secret_access_key.get_secret_value() == "access-key"
     assert conf.aws_session_token is None

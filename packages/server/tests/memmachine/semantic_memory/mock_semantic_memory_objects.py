@@ -3,14 +3,17 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import numpy as np
+from pydantic import InstanceOf
 
 from memmachine.common.data_types import SimilarityMetric
 from memmachine.common.embedder import Embedder
-from memmachine.common.episode_store import Episode
+from memmachine.common.episode_store import EpisodeIdT
 from memmachine.common.filter.filter_parser import FilterExpr
 from memmachine.semantic_memory.semantic_model import (
+    FeatureIdT,
     Resources,
     SemanticFeature,
+    SetIdT,
 )
 from memmachine.semantic_memory.storage.storage_base import SemanticStorage
 
@@ -25,29 +28,36 @@ class MockSemanticStorage(SemanticStorage):
         self.mark_messages_ingested_mock = AsyncMock()
         self.delete_features_mock = AsyncMock()
 
-    async def startup(self):
+    async def startup(self) -> None:
         raise NotImplementedError
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         raise NotImplementedError
 
-    async def delete_all(self):
+    async def delete_all(self) -> None:
         raise NotImplementedError
 
-    async def get_feature(self, feature_id: int, load_citations: bool = False):
+    async def reset_set_ids(self, set_ids: list[SetIdT]) -> None:
+        raise NotImplementedError
+
+    async def get_feature(
+        self,
+        feature_id: FeatureIdT,
+        load_citations: bool = False,
+    ) -> SemanticFeature | None:
         raise NotImplementedError
 
     async def add_feature(
         self,
         *,
-        set_id: str,
+        set_id: SetIdT,
         category_name: str,
         feature: str,
         value: str,
         tag: str,
-        embedding: np.ndarray,
+        embedding: InstanceOf[np.ndarray],
         metadata: dict[str, Any] | None = None,
-    ) -> int:
+    ) -> FeatureIdT:
         return await self.add_feature_mock(
             set_id=set_id,
             type_name=category_name,
@@ -60,19 +70,19 @@ class MockSemanticStorage(SemanticStorage):
 
     async def update_feature(
         self,
-        feature_id: int,
+        feature_id: FeatureIdT,
         *,
-        set_id: str | None = None,
+        set_id: SetIdT | None = None,
         category_name: str | None = None,
         feature: str | None = None,
         value: str | None = None,
         tag: str | None = None,
-        embedding: np.ndarray | None = None,
+        embedding: InstanceOf[np.ndarray] | None = None,
         metadata: dict[str, Any] | None = None,
-    ):
+    ) -> None:
         raise NotImplementedError
 
-    async def delete_features(self, feature_ids: list[int]):
+    async def delete_features(self, feature_ids: list[FeatureIdT]) -> None:
         await self.delete_features_mock(feature_ids)
 
     async def get_feature_set(
@@ -80,6 +90,7 @@ class MockSemanticStorage(SemanticStorage):
         *,
         filter_expr: FilterExpr | None = None,
         page_size: int | None = None,
+        page_num: int | None = None,
         vector_search_opts: SemanticStorage.VectorSearchOpts | None = None,
         tag_threshold: int | None = None,
         load_citations: bool = False,
@@ -96,74 +107,66 @@ class MockSemanticStorage(SemanticStorage):
         self,
         *,
         filter_expr: FilterExpr | None = None,
-    ):
+    ) -> None:
         await self.delete_feature_set_mock(
             filter_expr=filter_expr,
         )
 
-    async def add_citations(self, feature_id: int, history_ids: list[int]):
+    async def add_citations(
+        self,
+        feature_id: FeatureIdT,
+        history_ids: list[EpisodeIdT],
+    ) -> None:
         await self.add_citations_mock(feature_id, history_ids)
-
-    async def add_history(
-        self,
-        content: str,
-        metadata: dict[str, str] | None = None,
-        created_at: datetime | None = None,
-    ) -> int:
-        raise NotImplementedError
-
-    async def get_history(self, history_id: int):
-        raise NotImplementedError
-
-    async def delete_history(self, history_ids: list[int]):
-        raise NotImplementedError
-
-    async def delete_history_messages(
-        self,
-        *,
-        start_time: datetime | None = None,
-        end_time: datetime | None = None,
-    ):
-        raise NotImplementedError
 
     async def get_history_messages(
         self,
         *,
-        set_ids: list[str] | None = None,
+        set_ids: list[SetIdT] | None = None,
         limit: int | None = None,
-        start_time: datetime | None = None,
-        end_time: datetime | None = None,
         is_ingested: bool | None = None,
-    ) -> list[Episode]:
+    ) -> list[EpisodeIdT]:
         return await self.get_history_messages_mock(
             set_ids=set_ids,
             k=limit,
-            start_time=start_time,
-            end_time=end_time,
             is_ingested=is_ingested,
         )
 
     async def get_history_messages_count(
         self,
         *,
-        set_ids: list[str] | None = None,
-        limit: int | None = None,
-        start_time: datetime | None = None,
-        end_time: datetime | None = None,
+        set_ids: list[SetIdT] | None = None,
         is_ingested: bool | None = None,
     ) -> int:
         raise NotImplementedError
 
-    async def add_history_to_set(self, set_id: str, history_id: int):
+    async def add_history_to_set(self, set_id: SetIdT, history_id: EpisodeIdT) -> None:
+        raise NotImplementedError
+
+    async def delete_history(self, history_ids: list[EpisodeIdT]) -> None:
+        raise NotImplementedError
+
+    async def delete_history_set(self, set_ids: list[SetIdT]) -> None:
         raise NotImplementedError
 
     async def mark_messages_ingested(
         self,
         *,
-        set_id: str,
-        history_ids: list[int],
+        set_id: SetIdT,
+        history_ids: list[EpisodeIdT],
     ) -> None:
         await self.mark_messages_ingested_mock(set_id=set_id, ids=history_ids)
+
+    async def get_history_set_ids(
+        self,
+        *,
+        min_uningested_messages: int | None = None,
+        older_than: datetime | None = None,
+    ) -> list[SetIdT]:
+        raise NotImplementedError
+
+    async def get_set_ids_starts_with(self, prefix: str) -> list[SetIdT]:
+        raise NotImplementedError
 
 
 class MockEmbedder(Embedder):

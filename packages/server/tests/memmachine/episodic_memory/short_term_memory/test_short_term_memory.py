@@ -26,23 +26,21 @@ from memmachine.episodic_memory.short_term_memory.short_term_memory import (
 )
 
 
-def create_test_episode(**kwargs):
+def create_test_episode(**kwargs) -> Episode:
     """Helper function to create a valid Episode for testing."""
-    defaults = {
-        "uid": str(uuid.uuid4()),
-        "sequence_num": 1,
-        "session_key": "session1",
-        "episode_type": "message",
-        "content_type": ContentType.STRING,
-        "content": "default content",
-        "created_at": datetime.now(tz=UTC),
-        "producer_id": "user1",
-        "producer_role": "user",
-        "produced_for_id": None,
-        "user_metadata": None,
-    }
-    defaults.update(kwargs)
-    return Episode(**defaults)
+    return Episode(
+        uid=kwargs.get("uid", str(uuid.uuid4())),
+        sequence_num=kwargs.get("sequence_num", 1),
+        session_key=kwargs.get("session_key", "session1"),
+        episode_type=kwargs.get("episode_type", "message"),
+        content_type=kwargs.get("content_type", ContentType.STRING),
+        content=kwargs.get("content", "default content"),
+        created_at=kwargs.get("created_at", datetime.now(tz=UTC)),
+        producer_id=kwargs.get("producer_id", "user1"),
+        producer_role=kwargs.get("producer_role", "user"),
+        produced_for_id=kwargs.get("produced_for_id"),
+        metadata=kwargs.get("metadata"),
+    )
 
 
 class MockShortTermMemoryDataManager(SessionDataManager):
@@ -127,6 +125,8 @@ class MockLanguageModel(LanguageModel):
         tool_choice: str | dict[str, str] | None = None,
         max_attempts: int = 1,
     ) -> tuple[str, Any]:
+        if user_prompt is None:
+            user_prompt = ""
         if len(user_prompt) > 10000:
             raise ValueError("User prompt exceeds context window")
         if "model error" in user_prompt:
@@ -141,8 +141,8 @@ class MockLanguageModel(LanguageModel):
         system_prompt: str | None = None,
         user_prompt: str | None = None,
         max_attempts: int = 1,
-    ) -> T:
-        return "summary"
+    ) -> T | None:
+        return None  # type: ignore[return-value]  # Mock implementation
 
 
 @pytest.fixture

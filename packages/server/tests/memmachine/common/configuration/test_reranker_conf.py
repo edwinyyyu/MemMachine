@@ -170,16 +170,12 @@ def test_serialize_deserialize_reranker_conf(full_reranker_input):
 
 
 def test_missing_required_field_in_bedrock_reranker():
-    conf_dict = {
-        "provider": "amazon-bedrock",
-        "config": {
-            "region": "us-west-2",
-            "aws_access_key_id": "key-id",
-            # Missing aws_secret_access_key
-            "model_id": "amazon.rerank-v1:0",
-        },
-    }
     with pytest.raises(ValidationError) as exc_info:
-        AmazonBedrockRerankerConf(**conf_dict["config"])
+        AmazonBedrockRerankerConf(  # type: ignore[call-arg]  # Testing missing required field
+            region="us-west-2",
+            aws_access_key_id="key-id",
+            # Missing aws_secret_access_key
+            model_id="amazon.rerank-v1:0",
+        )
     assert "missing" in str(exc_info.value)
     assert "aws_secret_access_key" in str(exc_info.value)

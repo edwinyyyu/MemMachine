@@ -124,20 +124,18 @@ def test_serialize_deserialize_language_model_conf(full_model_conf):
 
 
 def test_missing_required_field_openai_model():
-    conf_dict = {"model": "gpt-4o-mini"}
     with pytest.raises(ValidationError) as exc_info:
-        OpenAIResponsesLanguageModelConf(**conf_dict)
+        OpenAIResponsesLanguageModelConf(model="gpt-4o-mini")  # type: ignore[call-arg]  # Testing missing required field
     assert "field required" in str(exc_info.value).lower()
 
 
 def test_invalid_base_url_in_openai_chat_completions_model():
-    conf_dict = {
-        "model": "llama3",
-        "api_key": "EMPTY",
-        "base_url": "invalid-url",
-    }
     with pytest.raises(ValidationError) as exc_info:
-        OpenAIChatCompletionsLanguageModelConf(**conf_dict)
+        OpenAIChatCompletionsLanguageModelConf(
+            model="llama3",
+            api_key="EMPTY",
+            base_url="invalid-url",
+        )
     assert "invalid base url" in str(exc_info.value).lower()
 
 
@@ -165,7 +163,14 @@ def test_read_aws_keys_from_env(monkeypatch, aws_model_conf):
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "access-key")
     aws_model_conf["config"]["aws_access_key_id"] = "${MY_KEY_ID}"
     aws_model_conf["config"]["aws_secret_access_key"] = ""
-    conf = AmazonBedrockLanguageModelConf(**aws_model_conf["config"])
+    conf = AmazonBedrockLanguageModelConf(
+        region=aws_model_conf["config"]["region"],
+        aws_access_key_id=aws_model_conf["config"]["aws_access_key_id"],
+        aws_secret_access_key=aws_model_conf["config"]["aws_secret_access_key"],
+        model_id=aws_model_conf["config"]["model_id"],
+    )
+    assert conf.aws_access_key_id is not None
     assert conf.aws_access_key_id.get_secret_value() == "my-key-id"
+    assert conf.aws_secret_access_key is not None
     assert conf.aws_secret_access_key.get_secret_value() == "access-key"
     assert conf.aws_session_token is None

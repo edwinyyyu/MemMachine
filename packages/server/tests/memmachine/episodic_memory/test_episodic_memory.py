@@ -20,19 +20,17 @@ from memmachine.episodic_memory.short_term_memory.short_term_memory import (
 )
 
 
-def create_test_episode(**kwargs):
+def create_test_episode(**kwargs) -> Episode:
     """Helper function to create a valid Episode for testing."""
-    defaults = {
-        "uid": str(uuid4()),
-        "session_key": "test_session",
-        "sequence_num": 1,
-        "content": "test content",
-        "created_at": datetime.now(tz=UTC),
-        "producer_id": "test_producer",
-        "producer_role": "user",
-    }
-    defaults.update(kwargs)
-    return Episode(**defaults)
+    return Episode(
+        uid=kwargs.get("uid", str(uuid4())),
+        session_key=kwargs.get("session_key", "test_session"),
+        sequence_num=kwargs.get("sequence_num", 1),
+        content=kwargs.get("content", "test content"),
+        created_at=kwargs.get("created_at", datetime.now(tz=UTC)),
+        producer_id=kwargs.get("producer_id", "test_producer"),
+        producer_role=kwargs.get("producer_role", "user"),
+    )
 
 
 @pytest.fixture
