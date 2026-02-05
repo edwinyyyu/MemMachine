@@ -1,6 +1,6 @@
 """Configuration API specification models for request and response structures."""
 
-from enum import StrEnum
+from enum import Enum
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from memmachine.common.api.doc import SpecDoc
 
 
-class ResourceStatus(StrEnum):
+class ResourceStatus(str, Enum):
     """Status of a resource."""
 
     READY = "ready"
