@@ -60,7 +60,6 @@ def reranker():
 
     return CrossEncoderReranker(
         CrossEncoderRerankerParams(
-            model_name="cross-encoder/ms-marco-MiniLM-L6-v2",
             cross_encoder=CrossEncoder(
                 "cross-encoder/ms-marco-MiniLM-L6-v2",
             ),

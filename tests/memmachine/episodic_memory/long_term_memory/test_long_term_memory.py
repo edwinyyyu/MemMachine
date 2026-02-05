@@ -62,7 +62,6 @@ def reranker():
 
     return CrossEncoderReranker(
         CrossEncoderRerankerParams(
-            model_name="cross-encoder/ms-marco-MiniLM-L6-v2",
             cross_encoder=CrossEncoder(
                 "cross-encoder/ms-marco-MiniLM-L6-v2",
             ),
@@ -233,7 +232,7 @@ async def test_search(long_term_memory):
             producer_id="Alice",
             producer_role="user",
             filterable_metadata={"project": "memmachine", "length": "short"},
-            user_metadata={"some_key": "some_value"},
+            metadata={"some_key": "some_value"},
         ),
         Episode(
             uid="episode2",
@@ -243,7 +242,7 @@ async def test_search(long_term_memory):
             producer_id="Bob",
             producer_role="user",
             filterable_metadata={"project": "other", "length": "short"},
-            user_metadata={"some_other_key": "some_other_value"},
+            metadata={"some_other_key": "some_other_value"},
         ),
         Episode(
             uid="episode3",
@@ -434,7 +433,7 @@ async def test_get_episodes(long_term_memory):
             producer_id="LLM",
             producer_role="assistant",
             produced_for_id="Alice",
-            filterable_properties={"project": "history", "length": "short"},
+            filterable_metadata={"project": "history", "length": "short"},
         ),
     ]
 
