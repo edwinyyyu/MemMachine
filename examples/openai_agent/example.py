@@ -8,9 +8,8 @@ from agents import (
     function_tool,
     set_tracing_disabled,
 )
-from openai import AsyncOpenAI
-
 from memmachine import MemMachineClient
+from openai import AsyncOpenAI
 
 _MEMMACHINE_CLIENT = None
 _MEMMACHINE_PROJECT = None
