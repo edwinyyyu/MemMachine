@@ -56,11 +56,11 @@ gpu = [
 ]
 
 [project.scripts]
-memmachine-server = "memmachine.server.app:main"
-memmachine-nltk-setup = "memmachine:setup_nltk"
-memmachine-mcp-stdio = "memmachine.server.mcp_stdio:main"
-memmachine-mcp-http = "memmachine.server.mcp_http:main"
-memmachine-configure = "memmachine.installation.memmachine_configure:main"
+memmachine-server = "memmachine_server.server.app:main"
+memmachine-nltk-setup = "memmachine_server:setup_nltk"
+memmachine-mcp-stdio = "memmachine_server.server.mcp_stdio:main"
+memmachine-mcp-http = "memmachine_server.server.mcp_http:main"
+memmachine-configure = "memmachine_server.installation.memmachine_configure:main"
 
 [project.urls]
 Homepage = "https://github.com/MemMachine/MemMachine"

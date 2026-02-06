@@ -133,7 +133,7 @@ def start_http() -> None:
 
     # Use uvicorn.run() to correctly handle multiprocessing with workers
     uvicorn.run(
-        "memmachine.server.app:app",
+        "memmachine_server.server.app:app",
         host=config.server.host,
         port=config.server.port,
         workers=workers,

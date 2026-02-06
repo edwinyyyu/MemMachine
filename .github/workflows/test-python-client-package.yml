@@ -47,10 +47,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install uv build
 
-      - name: Build Python client package
+      - name: Build Python packages
         shell: bash
         run: |
-          uv build --project packages/client
+          uv build --project packages/common -o dist/
+          uv build --project packages/client -o dist/
+          python -c "import pathlib, sys; d=sorted(pathlib.Path('dist').glob('memmachine_common-*.whl')); [print(p.name) for p in d]; sys.exit(1 if not d else 0)"
           python -c "import pathlib, sys; d=sorted(pathlib.Path('dist').glob('memmachine_client-*.whl')); [print(p.name) for p in d]; sys.exit(1 if not d else 0)"
 
       - name: Install Python client package
@@ -62,7 +64,7 @@ jobs:
             echo "No client wheel found" >&2
             exit 1
           fi
-          python -m pip install "$whl_name"
+          python -m pip install --find-links dist/ "$whl_name"
 
       - name: Test Python client package imports
         shell: bash

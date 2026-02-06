@@ -569,7 +569,7 @@ except requests.HTTPError as e:
 ### Memory.search() (Python SDK)
 - `limit`: Defaults to `10` (used as `top_k` in API)
 - `filter_dict`: Defaults to `None`, but context filters from `user_id`, `agent_id`, and `session_id` are automatically applied
-- `types`: Defaults to both `[MemoryType.Episodic, MemoryType.Semantic]`
+- `types`: Defaults to both `[MemoryType.EPISODIC, MemoryType.SEMANTIC]`
 
 ### REST API v2 Defaults
 - **Add Memories**: `producer` defaults to `"user"`, `produced_for` defaults to `""`, `role` defaults to `""`, `timestamp` defaults to current time, `metadata` defaults to `{}`, `types` defaults to `[]` (all memory types)
