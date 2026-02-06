@@ -1,10 +1,10 @@
 [build-system]
-requires = ["uv_build>=0.7.4,<0.8"]
-build-backend = "uv_build"
+requires = ["setuptools>=68.0", "wheel", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "memmachine-server"
-version = "0.0.0"
+dynamic = ["version"]
 dependencies = [
     "memmachine-common",
     "alembic>=1.17.1",
@@ -65,6 +65,12 @@ memmachine-configure = "memmachine_server.installation.memmachine_configure:main
 [project.urls]
 Homepage = "https://github.com/MemMachine/MemMachine"
 Issues = "https://github.com/MemMachine/MemMachine/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools_scm]
+root = "../.."
 
 [tool.uv]
 package = true
