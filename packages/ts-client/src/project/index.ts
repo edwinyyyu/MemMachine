@@ -4,10 +4,6 @@
  * @packageDocumentation
  * @module memmachine-project
  */
-export { MemMachineProject } from "./memmachine-project";
+export { MemMachineProject } from './memmachine-project'
 
-export type {
-  Project,
-  ProjectContext,
-  CreateProjectOptions,
-} from "./memmachine-project.types";
+export type { Project, ProjectContext, CreateProjectOptions } from './memmachine-project.types'

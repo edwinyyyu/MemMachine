@@ -8,7 +8,7 @@
  */
 export class MemMachineAPIError extends Error {
   constructor(message: string) {
-    super(message);
-    this.name = "MemMachineAPIError";
+    super(message)
+    this.name = 'MemMachineAPIError'
   }
 }

@@ -1,14 +1,10 @@
-import axios, { type AxiosInstance } from "axios";
-import axiosRetry from "axios-retry";
+import axios, { type AxiosInstance } from 'axios'
+import axiosRetry from 'axios-retry'
 
-import { handleAPIError } from "@/errors";
-import {
-  MemMachineProject,
-  type Project,
-  type ProjectContext,
-} from "@/project";
-import { VERSION } from "@/version";
-import type { ClientOptions, HealthStatus } from "./memmachine-client.types";
+import { handleAPIError } from '@/errors'
+import { MemMachineProject, type Project, type ProjectContext } from '@/project'
+import { VERSION } from '@/version'
+import type { ClientOptions, HealthStatus } from './memmachine-client.types'
 
 /**
  * Main API client for interacting with the MemMachine RESTful service.
@@ -54,39 +50,33 @@ import type { ClientOptions, HealthStatus } from "./memmachine-client.types";
  * @param options - Configuration options for the client, see {@link ClientOptions}.
  */
 export class MemMachineClient {
-  client: AxiosInstance;
+  client: AxiosInstance
 
   constructor(options?: ClientOptions) {
-    const {
-      base_url = "https://api.memmachine.ai/v2",
-      api_key,
-      timeout,
-      max_retries,
-    } = options ?? {};
+    const { base_url = 'https://api.memmachine.ai/v2', api_key, timeout, max_retries } = options ?? {}
 
     const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      "user-agent": `memmachine-ts-client/${VERSION}`,
-    };
+      'Content-Type': 'application/json',
+      'user-agent': `memmachine-ts-client/${VERSION}`
+    }
     if (api_key) {
-      headers["Authorization"] = `Bearer ${api_key}`;
+      headers['Authorization'] = `Bearer ${api_key}`
     }
 
     this.client = axios.create({
       baseURL: base_url,
       headers,
-      timeout: timeout ?? 60000,
-    });
+      timeout: timeout ?? 60000
+    })
 
     axiosRetry(this.client, {
       retries: max_retries ?? 3,
-      retryDelay: (retryCount, error) =>
-        axiosRetry.exponentialDelay(retryCount, error, 1000),
-      retryCondition: (error) =>
+      retryDelay: (retryCount, error) => axiosRetry.exponentialDelay(retryCount, error, 1000),
+      retryCondition: error =>
         axiosRetry.isNetworkOrIdempotentRequestError(error) ||
-        (typeof error?.response?.status === "number" &&
-          [429, 500, 502, 503, 504].includes(error.response.status)),
-    });
+        (typeof error?.response?.status === 'number' &&
+          [429, 500, 502, 503, 504].includes(error.response.status))
+    })
   }
 
   /**
@@ -96,7 +86,7 @@ export class MemMachineClient {
    * @returns A MemMachineProject instance.
    */
   project(projectContext: ProjectContext): MemMachineProject {
-    return new MemMachineProject(this.client, projectContext);
+    return new MemMachineProject(this.client, projectContext)
   }
 
   /**
@@ -107,10 +97,10 @@ export class MemMachineClient {
    */
   async getProjects(): Promise<Project[]> {
     try {
-      const response = await this.client.post("/projects/list");
-      return response.data;
+      const response = await this.client.post('/projects/list')
+      return response.data
     } catch (error: unknown) {
-      handleAPIError(error, "Failed to get projects");
+      handleAPIError(error, 'Failed to get projects')
     }
   }
 
@@ -122,10 +112,10 @@ export class MemMachineClient {
    */
   async getMetrics(): Promise<string> {
     try {
-      const response = await this.client.get("/metrics");
-      return response.data;
+      const response = await this.client.get('/metrics')
+      return response.data
     } catch (error: unknown) {
-      handleAPIError(error, "Failed to get metrics");
+      handleAPIError(error, 'Failed to get metrics')
     }
   }
 
@@ -137,10 +127,10 @@ export class MemMachineClient {
    */
   async healthCheck(): Promise<HealthStatus> {
     try {
-      const response = await this.client.get("/health");
-      return response.data;
+      const response = await this.client.get('/health')
+      return response.data
     } catch (error: unknown) {
-      handleAPIError(error, "Failed to check health status");
+      handleAPIError(error, 'Failed to check health status')
     }
   }
 }

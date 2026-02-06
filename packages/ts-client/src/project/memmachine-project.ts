@@ -1,12 +1,8 @@
-import type { AxiosInstance } from "axios";
+import type { AxiosInstance } from 'axios'
 
-import { handleAPIError, MemMachineAPIError } from "@/errors";
-import { MemMachineMemory, type MemoryContext } from "@/memory";
-import type {
-  CreateProjectOptions,
-  Project,
-  ProjectContext,
-} from "./memmachine-project.types";
+import { handleAPIError, MemMachineAPIError } from '@/errors'
+import { MemMachineMemory, type MemoryContext } from '@/memory'
+import type { CreateProjectOptions, Project, ProjectContext } from './memmachine-project.types'
 
 /**
  * Provides methods to manage and interact with projects in MemMachine.
@@ -58,23 +54,21 @@ import type {
  * @param projectContext - Options to configure the project context, see {@link ProjectContext}.
  */
 export class MemMachineProject {
-  client: AxiosInstance;
-  projectContext: ProjectContext;
+  client: AxiosInstance
+  projectContext: ProjectContext
 
   constructor(client: AxiosInstance, projectContext: ProjectContext) {
-    this.client = client;
+    this.client = client
 
-    const { org_id, project_id } = projectContext;
-    if (typeof org_id !== "string" || !org_id.trim()) {
-      throw new MemMachineAPIError(
-        "Organization ID must be a non-empty string",
-      );
+    const { org_id, project_id } = projectContext
+    if (typeof org_id !== 'string' || !org_id.trim()) {
+      throw new MemMachineAPIError('Organization ID must be a non-empty string')
     }
-    if (typeof project_id !== "string" || !project_id.trim()) {
-      throw new MemMachineAPIError("Project ID must be a non-empty string");
+    if (typeof project_id !== 'string' || !project_id.trim()) {
+      throw new MemMachineAPIError('Project ID must be a non-empty string')
     }
 
-    this.projectContext = projectContext;
+    this.projectContext = projectContext
   }
 
   /**
@@ -84,11 +78,7 @@ export class MemMachineProject {
    * @returns A MemMachineMemory instance.
    */
   memory(memoryContext?: MemoryContext): MemMachineMemory {
-    return new MemMachineMemory(
-      this.client,
-      this.projectContext,
-      memoryContext,
-    );
+    return new MemMachineMemory(this.client, this.projectContext, memoryContext)
   }
 
   /**
@@ -99,25 +89,22 @@ export class MemMachineProject {
    * @throws {@link MemMachineAPIError} if the API request fails.
    */
   async create(options?: CreateProjectOptions): Promise<Project> {
-    const { description = "", reranker = "", embedder = "" } = options ?? {};
+    const { description = '', reranker = '', embedder = '' } = options ?? {}
 
     const payload = {
       ...this.projectContext,
       description,
       config: {
         reranker,
-        embedder,
-      },
-    };
+        embedder
+      }
+    }
 
     try {
-      const response = await this.client.post("/projects", payload);
-      return response.data;
+      const response = await this.client.post('/projects', payload)
+      return response.data
     } catch (error: unknown) {
-      handleAPIError(
-        error,
-        `Failed to create project with payload: ${JSON.stringify(payload)}`,
-      );
+      handleAPIError(error, `Failed to create project with payload: ${JSON.stringify(payload)}`)
     }
   }
 
@@ -129,17 +116,14 @@ export class MemMachineProject {
    */
   async get(): Promise<Project> {
     const payload = {
-      ...this.projectContext,
-    };
+      ...this.projectContext
+    }
 
     try {
-      const response = await this.client.post("/projects/get", payload);
-      return response.data;
+      const response = await this.client.post('/projects/get', payload)
+      return response.data
     } catch (error: unknown) {
-      handleAPIError(
-        error,
-        `Failed to get project with payload: ${JSON.stringify(payload)}`,
-      );
+      handleAPIError(error, `Failed to get project with payload: ${JSON.stringify(payload)}`)
     }
   }
 
@@ -151,20 +135,14 @@ export class MemMachineProject {
    */
   async getEpisodicCount(): Promise<number> {
     const payload = {
-      ...this.projectContext,
-    };
+      ...this.projectContext
+    }
 
     try {
-      const response = await this.client.post(
-        "/projects/episode_count/get",
-        payload,
-      );
-      return response.data?.count ?? 0;
+      const response = await this.client.post('/projects/episode_count/get', payload)
+      return response.data?.count ?? 0
     } catch (error: unknown) {
-      handleAPIError(
-        error,
-        `Failed to get episodic memory count with payload: ${JSON.stringify(payload)}`,
-      );
+      handleAPIError(error, `Failed to get episodic memory count with payload: ${JSON.stringify(payload)}`)
     }
   }
 
@@ -176,17 +154,14 @@ export class MemMachineProject {
    */
   async delete(): Promise<null> {
     const payload = {
-      ...this.projectContext,
-    };
+      ...this.projectContext
+    }
 
     try {
-      const response = await this.client.post("/projects/delete", payload);
-      return response.data;
+      const response = await this.client.post('/projects/delete', payload)
+      return response.data
     } catch (error: unknown) {
-      handleAPIError(
-        error,
-        `Failed to delete project with payload: ${JSON.stringify(payload)}`,
-      );
+      handleAPIError(error, `Failed to delete project with payload: ${JSON.stringify(payload)}`)
     }
   }
 }

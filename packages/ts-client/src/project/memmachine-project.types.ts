@@ -7,13 +7,13 @@
  * @property config - Project configuration, including reranker and embedder models.
  */
 export interface Project {
-  org_id: string;
-  project_id: string;
-  description?: string;
+  org_id: string
+  project_id: string
+  description?: string
   config?: {
-    reranker: string;
-    embedder: string;
-  };
+    reranker: string
+    embedder: string
+  }
 }
 
 /**
@@ -23,8 +23,8 @@ export interface Project {
  * @property project_id - The unique identifier for the project.
  */
 export interface ProjectContext {
-  org_id: string;
-  project_id: string;
+  org_id: string
+  project_id: string
 }
 
 /**
@@ -35,7 +35,7 @@ export interface ProjectContext {
  * @property embedder - The embedder model to use.
  */
 export interface CreateProjectOptions {
-  description?: string;
-  reranker?: string;
-  embedder?: string;
+  description?: string
+  reranker?: string
+  embedder?: string
 }

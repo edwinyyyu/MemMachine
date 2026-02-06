@@ -1,7 +1,7 @@
-import type { AxiosInstance } from "axios";
+import type { AxiosInstance } from 'axios'
 
-import { handleAPIError, MemMachineAPIError } from "@/errors";
-import type { ProjectContext } from "@/project";
+import { handleAPIError, MemMachineAPIError } from '@/errors'
+import type { ProjectContext } from '@/project'
 import type {
   MemoryContext,
   AddMemoryOptions,
@@ -9,8 +9,8 @@ import type {
   SearchMemoriesOptions,
   SearchMemoriesResult,
   AddMemoryResult,
-  ListMemoriesOptions,
-} from "./memmachine-memory.types";
+  ListMemoriesOptions
+} from './memmachine-memory.types'
 
 /**
  * Provides methods to manage and interact with the memory in MemMachine.
@@ -61,18 +61,14 @@ import type {
  * @param memoryContext - Options to configure the memory context, see {@link MemoryContext}.
  */
 export class MemMachineMemory {
-  client: AxiosInstance;
-  projectContext: ProjectContext;
-  memoryContext: MemoryContext;
+  client: AxiosInstance
+  projectContext: ProjectContext
+  memoryContext: MemoryContext
 
-  constructor(
-    client: AxiosInstance,
-    projectContext: ProjectContext,
-    memoryContext?: MemoryContext,
-  ) {
-    this.client = client;
-    this.projectContext = projectContext;
-    this.memoryContext = memoryContext ?? {};
+  constructor(client: AxiosInstance, projectContext: ProjectContext, memoryContext?: MemoryContext) {
+    this.client = client
+    this.projectContext = projectContext
+    this.memoryContext = memoryContext ?? {}
   }
 
   /**
@@ -84,7 +80,7 @@ export class MemMachineMemory {
    * @throws {@link MemMachineAPIError} if the API request fails.
    */
   add(content: string, options?: AddMemoryOptions): Promise<AddMemoryResult> {
-    return this._addMemory(content, options);
+    return this._addMemory(content, options)
   }
 
   /**
@@ -95,11 +91,8 @@ export class MemMachineMemory {
    * @returns A promise that resolves to the search results.
    * @throws {@link MemMachineAPIError} if the API request fails.
    */
-  search(
-    query: string,
-    options?: SearchMemoriesOptions,
-  ): Promise<SearchMemoriesResult> {
-    return this._searchMemories(query, options);
+  search(query: string, options?: SearchMemoriesOptions): Promise<SearchMemoriesResult> {
+    return this._searchMemories(query, options)
   }
 
   /**
@@ -110,7 +103,7 @@ export class MemMachineMemory {
    * @throws {@link MemMachineAPIError} if the API request fails.
    */
   list(options?: ListMemoriesOptions): Promise<SearchMemoriesResult> {
-    return this._listMemories(options);
+    return this._listMemories(options)
   }
 
   /**
@@ -122,7 +115,7 @@ export class MemMachineMemory {
    * @throws {@link MemMachineAPIError} if the API request fails.
    */
   delete(id: string, type: MemoryType): Promise<void> {
-    return this._deleteMemory(id, type);
+    return this._deleteMemory(id, type)
   }
 
   /**
@@ -133,8 +126,8 @@ export class MemMachineMemory {
   getContext(): ProjectContext & MemoryContext {
     return {
       ...this.projectContext,
-      ...this.memoryContext,
-    };
+      ...this.memoryContext
+    }
   }
 
   /**
@@ -145,23 +138,20 @@ export class MemMachineMemory {
    * @returns A promise that resolves when the memory is successfully added.
    * @throws {@link MemMachineAPIError} if the API request fails.
    */
-  private async _addMemory(
-    content: string,
-    options?: AddMemoryOptions,
-  ): Promise<AddMemoryResult> {
+  private async _addMemory(content: string, options?: AddMemoryOptions): Promise<AddMemoryResult> {
     const {
       producer,
-      role = "user",
+      role = 'user',
       produced_for,
       episode_type,
       timestamp,
       metadata = {},
-      types = ["episodic", "semantic"],
-    } = options ?? {};
+      types = ['episodic', 'semantic']
+    } = options ?? {}
 
-    this._validateMemoryRole(role);
+    this._validateMemoryRole(role)
 
-    const isoTimestamp = this._parseToIsoTimestamp(timestamp);
+    const isoTimestamp = this._parseToIsoTimestamp(timestamp)
 
     const payload = {
       ...this.projectContext,
@@ -176,20 +166,17 @@ export class MemMachineMemory {
           timestamp: isoTimestamp,
           metadata: {
             ...this.memoryContext,
-            ...metadata,
-          },
-        },
-      ],
-    };
+            ...metadata
+          }
+        }
+      ]
+    }
 
     try {
-      const response = await this.client.post("/memories", payload);
-      return response.data;
+      const response = await this.client.post('/memories', payload)
+      return response.data
     } catch (error: unknown) {
-      handleAPIError(
-        error,
-        `Failed to add memory with payload: ${JSON.stringify(payload)}`,
-      );
+      handleAPIError(error, `Failed to add memory with payload: ${JSON.stringify(payload)}`)
     }
   }
 
@@ -203,19 +190,19 @@ export class MemMachineMemory {
    */
   private async _searchMemories(
     query: string,
-    options?: SearchMemoriesOptions,
+    options?: SearchMemoriesOptions
   ): Promise<SearchMemoriesResult> {
     if (!query || !query.trim()) {
-      throw new MemMachineAPIError("Search query must be a non-empty string");
+      throw new MemMachineAPIError('Search query must be a non-empty string')
     }
 
     const {
       top_k = 10,
-      filter = "",
+      filter = '',
       expand_context = 0,
       score_threshold,
-      types = ["episodic", "semantic"],
-    } = options ?? {};
+      types = ['episodic', 'semantic']
+    } = options ?? {}
 
     const payload = {
       ...this.projectContext,
@@ -224,17 +211,14 @@ export class MemMachineMemory {
       filter,
       expand_context,
       ...(score_threshold != null ? { score_threshold } : {}),
-      types,
-    };
+      types
+    }
 
     try {
-      const response = await this.client.post("/memories/search", payload);
-      return response.data;
+      const response = await this.client.post('/memories/search', payload)
+      return response.data
     } catch (error: unknown) {
-      handleAPIError(
-        error,
-        `Failed to search memories with payload: ${JSON.stringify(payload)}`,
-      );
+      handleAPIError(error, `Failed to search memories with payload: ${JSON.stringify(payload)}`)
     }
   }
 
@@ -245,32 +229,22 @@ export class MemMachineMemory {
    * @returns A promise that resolves to the search results.
    * @throws {@link MemMachineAPIError} if the API request fails.
    */
-  private async _listMemories(
-    options?: ListMemoriesOptions,
-  ): Promise<SearchMemoriesResult> {
-    const {
-      page_size = 10,
-      page_num = 0,
-      filter = "",
-      type = "episodic",
-    } = options ?? {};
+  private async _listMemories(options?: ListMemoriesOptions): Promise<SearchMemoriesResult> {
+    const { page_size = 10, page_num = 0, filter = '', type = 'episodic' } = options ?? {}
 
     const payload = {
       ...this.projectContext,
       page_size,
       page_num,
       filter,
-      type,
-    };
+      type
+    }
 
     try {
-      const response = await this.client.post("/memories/list", payload);
-      return response.data;
+      const response = await this.client.post('/memories/list', payload)
+      return response.data
     } catch (error: unknown) {
-      handleAPIError(
-        error,
-        `Failed to list memories with payload: ${JSON.stringify(payload)}`,
-      );
+      handleAPIError(error, `Failed to list memories with payload: ${JSON.stringify(payload)}`)
     }
   }
 
@@ -282,34 +256,28 @@ export class MemMachineMemory {
    * @returns A promise that resolves when the memory is successfully deleted.
    * @throws {@link MemMachineAPIError} if the API request fails.
    */
-  private async _deleteMemory(
-    id: string,
-    memoryType: MemoryType,
-  ): Promise<void> {
+  private async _deleteMemory(id: string, memoryType: MemoryType): Promise<void> {
     if (!id || !id.trim()) {
-      throw new MemMachineAPIError("Memory ID must be a non-empty string");
+      throw new MemMachineAPIError('Memory ID must be a non-empty string')
     }
 
-    this._validateMemoryType(memoryType);
+    this._validateMemoryType(memoryType)
 
     const urlMap: Record<MemoryType, string> = {
-      episodic: "/memories/episodic/delete",
-      semantic: "/memories/semantic/delete",
-    };
+      episodic: '/memories/episodic/delete',
+      semantic: '/memories/semantic/delete'
+    }
 
     const payload = {
       ...this.projectContext,
-      ...(memoryType === "episodic" ? { episodic_id: id } : {}),
-      ...(memoryType === "semantic" ? { semantic_id: id } : {}),
-    };
+      ...(memoryType === 'episodic' ? { episodic_id: id } : {}),
+      ...(memoryType === 'semantic' ? { semantic_id: id } : {})
+    }
 
     try {
-      await this.client.post(urlMap[memoryType], payload);
+      await this.client.post(urlMap[memoryType], payload)
     } catch (error: unknown) {
-      handleAPIError(
-        error,
-        `Failed to delete ${memoryType} memory with payload: ${JSON.stringify(payload)}`,
-      );
+      handleAPIError(error, `Failed to delete ${memoryType} memory with payload: ${JSON.stringify(payload)}`)
     }
   }
 
@@ -320,11 +288,9 @@ export class MemMachineMemory {
    * @throws {MemMachineAPIError} If the memory type is invalid.
    */
   private _validateMemoryType(type: MemoryType): void {
-    const validTypes: MemoryType[] = ["episodic", "semantic"];
+    const validTypes: MemoryType[] = ['episodic', 'semantic']
     if (!validTypes.includes(type)) {
-      throw new MemMachineAPIError(
-        `Invalid memory type: ${type}. Valid types are: ${validTypes.join(", ")}`,
-      );
+      throw new MemMachineAPIError(`Invalid memory type: ${type}. Valid types are: ${validTypes.join(', ')}`)
     }
   }
 
@@ -335,11 +301,9 @@ export class MemMachineMemory {
    * @throws {MemMachineAPIError} If the role is invalid.
    */
   private _validateMemoryRole(role: string): void {
-    const validRoles = ["user", "system", "assistant"];
+    const validRoles = ['user', 'system', 'assistant']
     if (!validRoles.includes(role)) {
-      throw new MemMachineAPIError(
-        `Invalid memory role: ${role}. Valid roles are: ${validRoles.join(", ")}`,
-      );
+      throw new MemMachineAPIError(`Invalid memory role: ${role}. Valid roles are: ${validRoles.join(', ')}`)
     }
   }
 
@@ -351,11 +315,9 @@ export class MemMachineMemory {
    */
   private _parseToIsoTimestamp(timestamp?: string): string {
     if (timestamp) {
-      const parsed = Date.parse(timestamp);
-      return !isNaN(parsed)
-        ? new Date(parsed).toISOString()
-        : new Date().toISOString();
+      const parsed = Date.parse(timestamp)
+      return !isNaN(parsed) ? new Date(parsed).toISOString() : new Date().toISOString()
     }
-    return new Date().toISOString();
+    return new Date().toISOString()
   }
 }

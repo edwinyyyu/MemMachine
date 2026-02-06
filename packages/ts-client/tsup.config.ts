@@ -1,14 +1,14 @@
-import { defineConfig } from "tsup";
+import { defineConfig } from 'tsup'
 
-import pkg from "./package.json";
+import pkg from './package.json'
 
 export default defineConfig({
-  entry: ["src/index.ts"],
-  format: ["cjs", "esm"],
+  entry: ['src/index.ts'],
+  format: ['cjs', 'esm'],
   dts: true,
   sourcemap: true,
   external: [],
   define: {
-    __VERSION__: JSON.stringify(pkg.version),
-  },
-});
+    __VERSION__: JSON.stringify(pkg.version)
+  }
+})

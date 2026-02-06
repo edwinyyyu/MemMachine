@@ -4,6 +4,6 @@
  *  @packageDocumentation
  *  @module memmachine-client
  */
-export { MemMachineClient } from "./memmachine-client";
+export { MemMachineClient } from './memmachine-client'
 
-export type { ClientOptions, HealthStatus } from "./memmachine-client.types";
+export type { ClientOptions, HealthStatus } from './memmachine-client.types'

@@ -5,7 +5,7 @@
  * - 'episodic' - Episodic memory type
  * - 'semantic' - Semantic memory type
  */
-export type MemoryType = "episodic" | "semantic";
+export type MemoryType = 'episodic' | 'semantic'
 
 /**
  * Roles that can produce memory entries.
@@ -15,7 +15,7 @@ export type MemoryType = "episodic" | "semantic";
  * - 'assistant' - Assistant role
  * - 'system' - System role
  */
-export type MemoryProducerRole = "user" | "assistant" | "system";
+export type MemoryProducerRole = 'user' | 'assistant' | 'system'
 
 /**
  * Represents an episodic memory entry in MemMachine.
@@ -34,21 +34,21 @@ export type MemoryProducerRole = "user" | "assistant" | "system";
  * @property metadata - Additional metadata associated with the memory entry.
  */
 export interface EpisodicMemory {
-  uid: string;
-  content: string;
-  session_key: string;
-  created_at: string;
+  uid: string
+  content: string
+  session_key: string
+  created_at: string
 
-  producer_id: string;
-  producer_role: string;
-  produced_for_id?: string;
+  producer_id: string
+  producer_role: string
+  produced_for_id?: string
 
-  sequence_num: number;
+  sequence_num: number
 
-  episode_type: string;
-  content_type: string;
-  filterable_metadata?: Record<string, unknown>;
-  metadata?: Record<string, unknown>;
+  episode_type: string
+  content_type: string
+  filterable_metadata?: Record<string, unknown>
+  metadata?: Record<string, unknown>
 }
 
 /**
@@ -62,16 +62,16 @@ export interface EpisodicMemory {
  * @property metadata - Metadata associated with the memory entry, including citations, ID, and other information.
  */
 export interface SemanticMemory {
-  set_id: string;
-  category: string;
-  tag: string;
-  feature_name: string;
-  value: string;
+  set_id: string
+  category: string
+  tag: string
+  feature_name: string
+  value: string
   metadata: {
-    citations?: string[];
-    id?: string;
-    other?: Record<string, unknown>;
-  };
+    citations?: string[]
+    id?: string
+    other?: Record<string, unknown>
+  }
 }
 
 /**
@@ -83,10 +83,10 @@ export interface SemanticMemory {
  * @property agent_id - Agent ID (optional).
  */
 export interface MemoryContext {
-  session_id?: string;
-  user_id?: string;
-  group_id?: string;
-  agent_id?: string;
+  session_id?: string
+  user_id?: string
+  group_id?: string
+  agent_id?: string
 }
 
 /**
@@ -101,13 +101,13 @@ export interface MemoryContext {
  * @property types - Types of memory to create (optional).
  */
 export interface AddMemoryOptions {
-  producer?: string;
-  role?: MemoryProducerRole;
-  produced_for?: string;
-  episode_type?: string;
-  timestamp?: string;
-  metadata?: Record<string, string>;
-  types?: MemoryType[];
+  producer?: string
+  role?: MemoryProducerRole
+  produced_for?: string
+  episode_type?: string
+  timestamp?: string
+  metadata?: Record<string, string>
+  types?: MemoryType[]
 }
 
 /**
@@ -116,7 +116,7 @@ export interface AddMemoryOptions {
  * @property results - Array of results, each containing the unique identifier (uid) of the added memory entry.
  */
 export interface AddMemoryResult {
-  results: { uid: string }[];
+  results: { uid: string }[]
 }
 
 /**
@@ -129,11 +129,11 @@ export interface AddMemoryResult {
  * @property types - Types of memory to search (optional).
  */
 export interface SearchMemoriesOptions {
-  top_k?: number;
-  filter?: string;
-  expand_context?: number;
-  score_threshold?: number;
-  types?: MemoryType[];
+  top_k?: number
+  filter?: string
+  expand_context?: number
+  score_threshold?: number
+  types?: MemoryType[]
 }
 
 /**
@@ -143,15 +143,15 @@ export interface SearchMemoriesOptions {
  * @property content - Content of the search result, including episodic and semantic memories.
  */
 export interface SearchMemoriesResult {
-  status: number;
+  status: number
   content: {
     episodic_memory: {
-      long_term_memory: EpisodicMemory[];
-      short_term_memory: EpisodicMemory[];
-      episode_summary: string[];
-    };
-    semantic_memory: SemanticMemory[];
-  };
+      long_term_memory: EpisodicMemory[]
+      short_term_memory: EpisodicMemory[]
+      episode_summary: string[]
+    }
+    semantic_memory: SemanticMemory[]
+  }
 }
 
 /**
@@ -163,8 +163,8 @@ export interface SearchMemoriesResult {
  * @property type - Type of memory to list (optional).
  */
 export interface ListMemoriesOptions {
-  page_size?: number;
-  page_num?: number;
-  filter?: string;
-  type?: MemoryType;
+  page_size?: number
+  page_num?: number
+  filter?: string
+  type?: MemoryType
 }

@@ -4,7 +4,7 @@
  * @packageDocumentation
  * @module memmachine-memory
  */
-export { MemMachineMemory } from "./memmachine-memory";
+export { MemMachineMemory } from './memmachine-memory'
 
 export type {
   MemoryType,
@@ -16,5 +16,5 @@ export type {
   AddMemoryResult,
   SearchMemoriesOptions,
   SearchMemoriesResult,
-  ListMemoriesOptions,
-} from "./memmachine-memory.types";
+  ListMemoriesOptions
+} from './memmachine-memory.types'

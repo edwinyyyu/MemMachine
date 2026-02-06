@@ -7,10 +7,10 @@
  * @property max_retries - Maximum number of retry attempts for failed requests (optional).
  */
 export interface ClientOptions {
-  base_url?: string;
-  api_key?: string;
-  timeout?: number;
-  max_retries?: number;
+  base_url?: string
+  api_key?: string
+  timeout?: number
+  max_retries?: number
 }
 
 /**
@@ -24,11 +24,11 @@ export interface ClientOptions {
  *   - episodic_memory: Whether the episodic memory manager is healthy.
  */
 export interface HealthStatus {
-  status: string;
-  service: string;
-  version: string;
+  status: string
+  service: string
+  version: string
   memory_managers: {
-    profile_memory: boolean;
-    episodic_memory: boolean;
-  };
+    profile_memory: boolean
+    episodic_memory: boolean
+  }
 }
