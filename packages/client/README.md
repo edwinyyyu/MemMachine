@@ -25,7 +25,7 @@ pip install requests urllib3
 ### Basic Usage
 
 ```python
-from memmachine import MemMachineClient
+from memmachine_client import MemMachineClient
 
 # Initialize client
 client = MemMachineClient(
@@ -88,7 +88,7 @@ Interface for managing episodic and profile memory.
 ### Basic Memory Operations
 
 ```python
-from memmachine import MemMachineClient
+from memmachine_client import MemMachineClient
 
 client = MemMachineClient(base_url="http://localhost:8080")
 
@@ -117,7 +117,7 @@ print(f"Work results: {work_results}")
 ### Multiple Users
 
 ```python
-from memmachine import MemMachineClient
+from memmachine_client import MemMachineClient
 
 client = MemMachineClient(base_url="http://localhost:8080")
 
@@ -146,25 +146,25 @@ for user, memory in memories.items():
 ### Error Handling
 
 ```python
-from memmachine import MemMachineClient
+from memmachine_client import MemMachineClient
 
 try:
     client = MemMachineClient(base_url="http://localhost:8080")
-    
+
     # Check server health
     health = client.health_check()
     print(f"Server health: {health}")
-    
+
     # Create memory instance
     memory = client.memory(
         group_id="demo_group",
         agent_id="demo_agent",
         user_id="user123"
     )
-    
+
     # Add memory
     memory.add("Test memory")
-    
+
 except Exception as e:
     print(f"Error: {e}")
 ```
@@ -172,7 +172,7 @@ except Exception as e:
 ### Context Manager Usage
 
 ```python
-from memmachine import MemMachineClient
+from memmachine_client import MemMachineClient
 
 # Use client as context manager
 with MemMachineClient(base_url="http://localhost:8080") as client:
@@ -181,7 +181,7 @@ with MemMachineClient(base_url="http://localhost:8080") as client:
         agent_id="demo_agent",
         user_id="user123"
     )
-    
+
     memory.add("This is a test memory")
     results = memory.search("test")
     print(f"Results: {results}")

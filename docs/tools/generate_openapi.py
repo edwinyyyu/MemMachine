@@ -3,8 +3,8 @@ import json
 import sys
 import os
 
-# Add src to sys.path so we can import memmachine
-sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+# Add packages to sys.path so we can import memmachine packages
+sys.path.insert(0, os.path.join(os.getcwd(), "packages"))
 
 from fastapi import FastAPI
 from memmachine_server.server.api_v2.router import load_v2_api_router

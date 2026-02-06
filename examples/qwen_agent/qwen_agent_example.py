@@ -1,7 +1,7 @@
 import os
 from typing import ClassVar
 
-from memmachine import MemMachineClient
+from memmachine_client import MemMachineClient
 from qwen_agent.agents import Assistant
 from qwen_agent.tools.base import BaseTool, register_tool
 from qwen_agent.utils.output_beautify import typewriter_print
