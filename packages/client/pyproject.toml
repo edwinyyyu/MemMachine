@@ -7,7 +7,6 @@ name = "memmachine-client"
 dynamic = ["version"]
 dependencies = [
     "pydantic>=2.0.0",
-    "regex>=2023.0.0",
     "requests>=2.31.0",
     "typing-extensions>=4.0.0",
     "urllib3>=2.6.3",

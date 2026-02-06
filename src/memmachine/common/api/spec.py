@@ -18,7 +18,7 @@ try:
 except ImportError:
     from typing_extensions import Self
 
-import regex
+import re
 from pydantic import (
     AfterValidator,
     AwareDatetime,
@@ -219,7 +219,7 @@ class InvalidTimestampError(ValueError):
 
 
 def _is_valid_name(v: str) -> str:
-    if not regex.fullmatch(r"^[\p{L}\p{N}_:-]+$", v):
+    if not re.fullmatch(r"[\w:-]+", v):
         raise InvalidNameError(
             "ID can only contain letters, numbers, underscore, hyphen, "
             f"colon, or Unicode characters, found: '{v}'",
