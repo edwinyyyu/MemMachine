@@ -16,7 +16,7 @@ from neo4j import AsyncDriver, Query
 from neo4j.graph import Node as Neo4jNode
 from pydantic import InstanceOf
 
-from memmachine.common.data_types import AttributeValue, FilterValue
+from memmachine.common.data_types import FilterValue, PropertyValue
 from memmachine.common.episode_store import EpisodeIdT
 from memmachine.common.errors import InvalidArgumentError
 from memmachine.common.filter.filter_parser import (
@@ -809,14 +809,14 @@ class Neo4jSemanticStorage(SemanticStorage):
             if raw_value is None:
                 continue
             prop_name = self._metadata_property_name(raw_key)
-            metadata_props[prop_name] = self._normalize_metadata_property_value(
+            metadata_props[prop_name] = self._normalize_property_value(
                 raw_value,
             )
         return metadata_json, metadata_props
 
     @staticmethod
-    def _normalize_metadata_property_value(
-        value: AttributeValue,
+    def _normalize_property_value(
+        value: PropertyValue,
     ) -> bool | int | float | str:
         if isinstance(value, bool):
             return value
@@ -1088,7 +1088,7 @@ class Neo4jSemanticStorage(SemanticStorage):
             return f"{alias}.created_at_ts", coerce_datetime_to_timestamp
         if field in {"updated_at", "updated_at_ts"}:
             return f"{alias}.updated_at_ts", coerce_datetime_to_timestamp
-        if field.startswith(("m.", "metadata.")):
+        if field.startswith(("p.", "properties.")):
             key = field.split(".", 1)[1]
             prop_name = self._metadata_property_name(key)
             return f"{alias}.{prop_name}", None

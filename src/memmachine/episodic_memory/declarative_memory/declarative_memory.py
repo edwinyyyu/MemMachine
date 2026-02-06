@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, InstanceOf
 
-from memmachine.common.data_types import AttributeValue
+from memmachine.common.data_types import PropertyValue
 from memmachine.common.embedder.embedder import Embedder
 from memmachine.common.filter.filter_parser import (
     FilterExpr,
@@ -24,9 +24,9 @@ from .data_types import (
     ContentType,
     Derivative,
     Episode,
-    demangle_filterable_property_key,
-    is_mangled_filterable_property_key,
-    mangle_filterable_property_key,
+    demangle_property_key,
+    is_mangled_property_key,
+    mangle_property_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -125,8 +125,8 @@ class DeclarativeMemory:
                     "content": episode.content,
                 }
                 | {
-                    mangle_filterable_property_key(key): value
-                    for key, value in episode.metadata.items()
+                    mangle_property_key(key): value
+                    for key, value in episode.properties.items()
                 },
             )
             for episode in episodes
@@ -159,8 +159,8 @@ class DeclarativeMemory:
                     "content": derivative.content,
                 }
                 | {
-                    mangle_filterable_property_key(key): value
-                    for key, value in derivative.metadata.items()
+                    mangle_property_key(key): value
+                    for key, value in derivative.properties.items()
                 },
                 embeddings={
                     DeclarativeMemory._embedding_name(
@@ -234,7 +234,7 @@ class DeclarativeMemory:
                             source=episode.source,
                             content_type=ContentType.MESSAGE,
                             content=f"{episode.source}: {episode.content}",
-                            metadata=episode.metadata,
+                            properties=episode.properties,
                         ),
                     ]
 
@@ -247,7 +247,7 @@ class DeclarativeMemory:
                         source=episode.source,
                         content_type=ContentType.MESSAGE,
                         content=f"{episode.source}: {sentence}",
-                        metadata=episode.metadata,
+                        properties=episode.properties,
                     )
                     for sentence in sentences
                 ]
@@ -260,7 +260,7 @@ class DeclarativeMemory:
                         source=episode.source,
                         content_type=ContentType.TEXT,
                         content=text_content,
-                        metadata=episode.metadata,
+                        properties=episode.properties,
                     ),
                 ]
             case _:
@@ -689,13 +689,13 @@ class DeclarativeMemory:
             source=cast("str", episode_node.properties["source"]),
             content_type=ContentType(episode_node.properties["content_type"]),
             content=episode_node.properties["content"],
-            metadata={
-                demangle_filterable_property_key(key): cast(
-                    AttributeValue,
+            properties={
+                demangle_property_key(key): cast(
+                    PropertyValue,
                     value,
                 )
                 for key, value in episode_node.properties.items()
-                if is_mangled_filterable_property_key(key)
+                if is_mangled_property_key(key)
             },
         )
 
@@ -721,4 +721,4 @@ class DeclarativeMemory:
         if property_filter is None:
             return None
 
-        return map_filter_fields(property_filter, mangle_filterable_property_key)
+        return map_filter_fields(property_filter, mangle_property_key)

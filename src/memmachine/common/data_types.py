@@ -3,8 +3,8 @@
 from datetime import datetime
 from enum import Enum
 
-AttributeValue = bool | int | float | str | datetime
-"""Type for stored attribute/property values."""
+PropertyValue = bool | int | float | str | datetime
+"""Type for stored property values."""
 
 FilterValue = bool | int | float | str | datetime | list[int] | list[str]
 """Type for filter expression values (includes list types for IN clauses)."""

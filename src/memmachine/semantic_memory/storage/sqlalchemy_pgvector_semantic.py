@@ -44,7 +44,7 @@ from memmachine.common.episode_store.episode_model import EpisodeIdT
 from memmachine.common.errors import InvalidArgumentError, ResourceNotFoundError
 from memmachine.common.filter.filter_parser import (
     FilterExpr,
-    demangle_user_metadata_key,
+    demangle_user_property_key,
     normalize_filter_field,
 )
 from memmachine.common.filter.sql_filter_util import compile_sql_filter
@@ -639,9 +639,9 @@ class SqlAlchemyPgVectorSemanticStorage(SemanticStorage):
         tuple[MappedColumn[Any] | InstrumentedAttribute[Any] | ColumnElement[Any], bool]
         | tuple[None, bool]
     ):
-        internal_name, is_user_metadata = normalize_filter_field(field)
-        if is_user_metadata:
-            key = demangle_user_metadata_key(internal_name)
+        internal_name, is_user_property = normalize_filter_field(field)
+        if is_user_property:
+            key = demangle_user_property_key(internal_name)
             return table.json_metadata[key], True
 
         field_mapping = {
