@@ -6,8 +6,8 @@ from enum import Enum
 class MemoryType(Enum):
     """Memory type."""
 
-    SEMANTIC = "semantic"
-    EPISODIC = "episodic"
+    Semantic = "semantic"
+    Episodic = "episodic"
 
 
 class EpisodeType(Enum):

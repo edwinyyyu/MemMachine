@@ -70,7 +70,7 @@ class TestMemMachineLongMemEval:
         for _ in range(timeout_seconds):
             list_result = await memmachine.list_search(
                 session_data,
-                target_memories=[MemoryType.SEMANTIC],
+                target_memories=[MemoryType.Semantic],
                 page_size=1,
             )
             if list_result.semantic_memory:
@@ -105,7 +105,7 @@ class TestMemMachineLongMemEval:
 
             result = await memmachine.query_search(
                 session_data,
-                target_memories=[MemoryType.SEMANTIC, MemoryType.EPISODIC],
+                target_memories=[MemoryType.Semantic, MemoryType.Episodic],
                 query=long_mem_question,
             )
             assert result.semantic_memory, "Semantic memory returned no features"
@@ -177,7 +177,7 @@ class TestMemMachineLongMemEval:
 
         list_result = await memmachine.list_search(
             session_data,
-            target_memories=[MemoryType.SEMANTIC, MemoryType.EPISODIC],
+            target_memories=[MemoryType.Semantic, MemoryType.Episodic],
         )
 
         assert list_result.semantic_memory, "Semantic memory returned no features"

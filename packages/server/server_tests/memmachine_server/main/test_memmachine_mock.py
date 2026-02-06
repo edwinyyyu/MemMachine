@@ -292,7 +292,7 @@ async def test_query_search_runs_targeted_memory_tasks(
 
     result = await memmachine.query_search(
         dummy_session,
-        target_memories=[MemoryType.EPISODIC, MemoryType.SEMANTIC],
+        target_memories=[MemoryType.Episodic, MemoryType.Semantic],
         query="hello world",
     )
 
@@ -341,7 +341,7 @@ async def test_query_search_skips_unrequested_memories(
 
     result = await memmachine.query_search(
         dummy_session,
-        target_memories=[MemoryType.SEMANTIC],
+        target_memories=[MemoryType.Semantic],
         query="find",
     )
 
@@ -439,7 +439,7 @@ async def test_add_episodes_skips_memories_not_requested(
     await memmachine.add_episodes(
         session,
         entries,
-        target_memories=[MemoryType.SEMANTIC],
+        target_memories=[MemoryType.Semantic],
     )
 
     episodic_manager.open_episodic_memory.assert_not_called()
@@ -462,7 +462,7 @@ async def test_list_search_fetches_episode_history(
 
     result = await memmachine.list_search(
         session,
-        target_memories=[MemoryType.EPISODIC],
+        target_memories=[MemoryType.Episodic],
         search_filter="meta_key = value",
     )
 

@@ -381,7 +381,7 @@ class TestMemory:
             client, "request", return_value=mock_response
         ) as mock_request:
             result = memory.list(
-                memory_type=MemoryType.EPISODIC,
+                memory_type=MemoryType.Episodic,
                 page_size=10,
                 page_num=0,
             )
@@ -394,7 +394,7 @@ class TestMemory:
             assert sent["project_id"] == "proj1"
             assert sent["page_size"] == 10
             assert sent["page_num"] == 0
-            assert sent["type"] in (MemoryType.EPISODIC.value, "episodic")
+            assert sent["type"] in (MemoryType.Episodic.value, "episodic")
             # Built-in filters should include user_id when present
             assert "metadata.user_id='u1'" in sent.get("filter", "")
 
