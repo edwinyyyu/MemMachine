@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import NamedTuple, Protocol
 
-from memmachine.common.data_types import AttributeValue
+from memmachine.common.data_types import PropertyValue
 
 
 class FilterParseError(ValueError):
@@ -23,7 +23,7 @@ class Comparison(FilterExpr):
 
     field: str
     op: str  # "=", "!=", ">", "<", ">=", "<="
-    value: AttributeValue
+    value: PropertyValue
 
 
 @dataclass(frozen=True)
@@ -228,7 +228,7 @@ class _Parser:
         self._expect("RPAREN")
         return values
 
-    def _parse_value(self) -> AttributeValue:
+    def _parse_value(self) -> PropertyValue:
         tok = self._expect("IDENT", "STRING")
         raw = tok.value
         # If it's a string literal, return it as-is
@@ -267,40 +267,40 @@ def _looks_like_float(value: str) -> bool:
 # Centralized field name normalization utilities
 # ---------------------------------------------------------------------------
 
-# Query language prefixes for user-defined metadata
-USER_METADATA_QUERY_PREFIXES = ("m.", "metadata.")
+# Query language prefixes for user-defined properties
+USER_PROPERTY_QUERY_PREFIXES = ("p.", "properties.")
 
-# Internal storage prefix for user metadata (database-safe)
-USER_METADATA_STORAGE_PREFIX = "m_"
+# Internal storage prefix for user properties (database-safe)
+USER_PROPERTY_STORAGE_PREFIX = "p_"
 
 
 def normalize_filter_field(field: str) -> tuple[str, bool]:
     """Normalize a query field name to internal storage name.
 
-    Returns (internal_name, is_user_metadata).
-    - User metadata (m.foo, metadata.foo): returns ("m_foo", True)
+    Returns (internal_name, is_user_property).
+    - User property (p.foo, properties.foo): returns ("p_foo", True)
     - System field (producer_id): returns ("producer_id", False)
     """
-    for prefix in USER_METADATA_QUERY_PREFIXES:
+    for prefix in USER_PROPERTY_QUERY_PREFIXES:
         if field.startswith(prefix):
             key = field[len(prefix) :]
-            return f"{USER_METADATA_STORAGE_PREFIX}{key}", True
+            return f"{USER_PROPERTY_STORAGE_PREFIX}{key}", True
     return field, False
 
 
-def mangle_user_metadata_key(key: str) -> str:
-    """Add user metadata prefix to a key for storage."""
-    return USER_METADATA_STORAGE_PREFIX + key
+def mangle_user_property_key(key: str) -> str:
+    """Add user property prefix to a key for storage."""
+    return USER_PROPERTY_STORAGE_PREFIX + key
 
 
-def demangle_user_metadata_key(mangled_key: str) -> str:
-    """Remove user metadata prefix from a storage key."""
-    return mangled_key.removeprefix(USER_METADATA_STORAGE_PREFIX)
+def demangle_user_property_key(mangled_key: str) -> str:
+    """Remove user property prefix from a storage key."""
+    return mangled_key.removeprefix(USER_PROPERTY_STORAGE_PREFIX)
 
 
-def is_user_metadata_key(candidate_key: str) -> bool:
-    """Check if a key has the user metadata prefix."""
-    return candidate_key.startswith(USER_METADATA_STORAGE_PREFIX)
+def is_user_property_key(candidate_key: str) -> bool:
+    """Check if a key has the user property prefix."""
+    return candidate_key.startswith(USER_PROPERTY_STORAGE_PREFIX)
 
 
 def map_filter_fields(
@@ -342,7 +342,7 @@ def parse_filter(spec: str | None) -> FilterExpr | None:
 
 def to_property_filter(
     expr: FilterExpr | None,
-) -> dict[str, AttributeValue | None] | None:
+) -> dict[str, PropertyValue | None] | None:
     """Convert a filter expression into a legacy equality mapping."""
     if expr is None:
         return None
@@ -351,7 +351,7 @@ def to_property_filter(
     if not comparisons:
         return None
 
-    property_filter: dict[str, AttributeValue | None] = {}
+    property_filter: dict[str, PropertyValue | None] = {}
     for comp in comparisons:
         if comp.op != "=":
             raise TypeError(

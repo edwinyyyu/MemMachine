@@ -110,8 +110,8 @@ class SemanticSessionManager:
         self, episode: Episode, session_data: SessionData
     ) -> None:
         episode_metadata: dict[str, JsonValue] = (
-            cast(dict[str, JsonValue], dict(episode.metadata))
-            if episode.metadata is not None
+            cast(dict[str, JsonValue], dict(episode.properties))
+            if episode.properties is not None
             else {}
         )
 

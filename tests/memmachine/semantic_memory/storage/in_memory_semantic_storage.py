@@ -13,7 +13,7 @@ from pydantic import InstanceOf
 from memmachine.common.episode_store import EpisodeIdT
 from memmachine.common.errors import InvalidArgumentError
 from memmachine.common.filter.filter_parser import (
-    USER_METADATA_STORAGE_PREFIX,
+    USER_PROPERTY_STORAGE_PREFIX,
     FilterExpr,
     normalize_filter_field,
 )
@@ -665,7 +665,7 @@ class InMemorySemanticStorage(SemanticStorage):
     ) -> tuple[Any, bool]:
         internal_name, is_user_metadata = normalize_filter_field(field)
         if is_user_metadata:
-            key = internal_name[len(USER_METADATA_STORAGE_PREFIX) :]
+            key = internal_name[len(USER_PROPERTY_STORAGE_PREFIX) :]
             metadata = entry.metadata or {}
             return metadata.get(key), True
 

@@ -6,14 +6,14 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, InstanceOf
 
-from memmachine.common.data_types import AttributeValue
+from memmachine.common.data_types import PropertyValue
 from memmachine.common.embedder import Embedder
 from memmachine.common.episode_store import ContentType, Episode, EpisodeType
 from memmachine.common.filter.filter_parser import (
     FilterExpr,
-    demangle_user_metadata_key,
-    is_user_metadata_key,
-    mangle_user_metadata_key,
+    demangle_user_property_key,
+    is_user_property_key,
+    mangle_user_property_key,
     map_filter_fields,
     normalize_filter_field,
 )
@@ -73,7 +73,7 @@ class LongTermMemoryParams(BaseModel):
 class LongTermMemory:
     """High-level facade around the declarative memory store."""
 
-    _METADATA_NONE_FLAG = "_metadata_none"
+    _PROPERTIES_NONE_FLAG = "_properties_none"
 
     def __init__(self, params: LongTermMemoryParams) -> None:
         """Wire up the declarative memory backing store."""
@@ -97,8 +97,8 @@ class LongTermMemory:
                     episode,
                 ),
                 content=episode.content,
-                metadata=cast(
-                    dict[str, AttributeValue],
+                properties=cast(
+                    dict[str, PropertyValue],
                     {
                         key: value
                         for key, value in {
@@ -115,11 +115,11 @@ class LongTermMemory:
                     }
                     | (
                         {
-                            mangle_user_metadata_key(key): value
-                            for key, value in (episode.metadata or {}).items()
+                            mangle_user_property_key(key): value
+                            for key, value in (episode.properties or {}).items()
                         }
-                        if episode.metadata is not None
-                        else {LongTermMemory._METADATA_NONE_FLAG: True}
+                        if episode.properties is not None
+                        else {LongTermMemory._PROPERTIES_NONE_FLAG: True}
                     ),
                 ),
             )
@@ -250,16 +250,16 @@ class LongTermMemory:
             uid=declarative_memory_episode.uid,
             sequence_num=cast(
                 "int",
-                declarative_memory_episode.metadata.get("sequence_num", 0),
+                declarative_memory_episode.properties.get("sequence_num", 0),
             ),
             session_key=cast(
                 "str",
-                declarative_memory_episode.metadata.get("session_key", ""),
+                declarative_memory_episode.properties.get("session_key", ""),
             ),
             episode_type=EpisodeType(
                 cast(
                     "str",
-                    declarative_memory_episode.metadata.get(
+                    declarative_memory_episode.properties.get(
                         "episode_type",
                         "",
                     ),
@@ -268,7 +268,7 @@ class LongTermMemory:
             content_type=ContentType(
                 cast(
                     "str",
-                    declarative_memory_episode.metadata.get(
+                    declarative_memory_episode.properties.get(
                         "content_type",
                         "",
                     ),
@@ -278,26 +278,26 @@ class LongTermMemory:
             created_at=declarative_memory_episode.timestamp,
             producer_id=cast(
                 "str",
-                declarative_memory_episode.metadata.get("producer_id", ""),
+                declarative_memory_episode.properties.get("producer_id", ""),
             ),
             producer_role=cast(
                 "str",
-                declarative_memory_episode.metadata.get(
+                declarative_memory_episode.properties.get(
                     "producer_role",
                     "",
                 ),
             ),
             produced_for_id=cast(
                 "str | None",
-                declarative_memory_episode.metadata.get("produced_for_id"),
+                declarative_memory_episode.properties.get("produced_for_id"),
             ),
-            metadata={
-                demangle_user_metadata_key(key): value
-                for key, value in declarative_memory_episode.metadata.items()
-                if is_user_metadata_key(key)
+            properties={
+                demangle_user_property_key(key): value
+                for key, value in declarative_memory_episode.properties.items()
+                if is_user_property_key(key)
             }
-            if LongTermMemory._METADATA_NONE_FLAG
-            not in declarative_memory_episode.metadata
+            if LongTermMemory._PROPERTIES_NONE_FLAG
+            not in declarative_memory_episode.properties
             else None,
         )
 
