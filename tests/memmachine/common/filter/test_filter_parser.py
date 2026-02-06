@@ -136,17 +136,17 @@ def test_parse_filter_deeply_nested_groups() -> None:
 
 
 def test_parse_filter_is_null_operator() -> None:
-    expr = parse_filter("metadata.note IS NULL")
-    assert expr == IsNull(field="metadata.note")
+    expr = parse_filter("properties.note IS NULL")
+    assert expr == IsNull(field="properties.note")
 
 
 def test_parse_filter_is_not_null_and_or_combination() -> None:
     expr = parse_filter(
-        "(metadata.note IS NOT NULL AND status = 'OPEN') OR owner IS NULL"
+        "(properties.note IS NOT NULL AND status = 'OPEN') OR owner IS NULL"
     )
     assert isinstance(expr, Or)
     assert isinstance(expr.left, And)
-    assert expr.left.left == Not(expr=IsNull(field="metadata.note"))
+    assert expr.left.left == Not(expr=IsNull(field="properties.note"))
     assert expr.left.right == Comparison(field="status", op="=", value="OPEN")
     assert expr.right == IsNull(field="owner")
 
@@ -428,56 +428,56 @@ def test_parse_filter_not_without_in_raises() -> None:
 # --- normalize_filter_field tests ---
 
 
-def test_normalize_filter_field_user_metadata_m_prefix() -> None:
-    internal_name, is_user_metadata = normalize_filter_field("m.foo")
-    assert internal_name == "m_foo"
-    assert is_user_metadata is True
+def test_normalize_filter_field_user_property_p_prefix() -> None:
+    internal_name, is_user_property = normalize_filter_field("p.foo")
+    assert internal_name == "p_foo"
+    assert is_user_property is True
 
 
-def test_normalize_filter_field_user_metadata_metadata_prefix() -> None:
-    internal_name, is_user_metadata = normalize_filter_field("metadata.bar")
-    assert internal_name == "m_bar"
-    assert is_user_metadata is True
+def test_normalize_filter_field_user_property_properties_prefix() -> None:
+    internal_name, is_user_property = normalize_filter_field("properties.bar")
+    assert internal_name == "p_bar"
+    assert is_user_property is True
 
 
 def test_normalize_filter_field_system_field() -> None:
-    internal_name, is_user_metadata = normalize_filter_field("producer_id")
+    internal_name, is_user_property = normalize_filter_field("producer_id")
     assert internal_name == "producer_id"
-    assert is_user_metadata is False
+    assert is_user_property is False
 
 
 def test_normalize_filter_field_system_field_with_underscore() -> None:
-    internal_name, is_user_metadata = normalize_filter_field("producer_role")
+    internal_name, is_user_property = normalize_filter_field("producer_role")
     assert internal_name == "producer_role"
-    assert is_user_metadata is False
+    assert is_user_property is False
 
 
 def test_normalize_filter_field_preserves_case() -> None:
-    # User metadata keys should preserve their original case
-    internal_name, is_user_metadata = normalize_filter_field("m.MyKey")
-    assert internal_name == "m_MyKey"
-    assert is_user_metadata is True
+    # User property keys should preserve their original case
+    internal_name, is_user_property = normalize_filter_field("p.MyKey")
+    assert internal_name == "p_MyKey"
+    assert is_user_property is True
 
 
 # --- map_filter_fields tests ---
 
 
 def test_map_filter_fields_comparison() -> None:
-    expr = Comparison(field="m.foo", op="=", value="bar")
+    expr = Comparison(field="p.foo", op="=", value="bar")
     result = map_filter_fields(expr, lambda f: f.upper())
-    assert result == Comparison(field="M.FOO", op="=", value="bar")
+    assert result == Comparison(field="P.FOO", op="=", value="bar")
 
 
 def test_map_filter_fields_in() -> None:
-    expr = In(field="m.tag", values=["a", "b"])
+    expr = In(field="p.tag", values=["a", "b"])
     result = map_filter_fields(expr, lambda f: f.upper())
-    assert result == In(field="M.TAG", values=["a", "b"])
+    assert result == In(field="P.TAG", values=["a", "b"])
 
 
 def test_map_filter_fields_is_null() -> None:
-    expr = IsNull(field="m.note")
+    expr = IsNull(field="p.note")
     result = map_filter_fields(expr, lambda f: f.upper())
-    assert result == IsNull(field="M.NOTE")
+    assert result == IsNull(field="P.NOTE")
 
 
 def test_map_filter_fields_and() -> None:
@@ -527,10 +527,10 @@ def test_map_filter_fields_nested() -> None:
 def test_map_filter_fields_with_normalize() -> None:
     """Test map_filter_fields combined with normalize_filter_field."""
     expr = And(
-        left=Comparison(field="m.foo", op="=", value="bar"),
+        left=Comparison(field="p.foo", op="=", value="bar"),
         right=Comparison(field="producer_id", op="=", value="alice"),
     )
     result = map_filter_fields(expr, lambda f: normalize_filter_field(f)[0])
     assert isinstance(result, And)
-    assert result.left == Comparison(field="m_foo", op="=", value="bar")
+    assert result.left == Comparison(field="p_foo", op="=", value="bar")
     assert result.right == Comparison(field="producer_id", op="=", value="alice")
