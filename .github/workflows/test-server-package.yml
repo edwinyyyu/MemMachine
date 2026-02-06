@@ -63,8 +63,8 @@ jobs:
           from memmachine.main.memmachine import MemMachine, ALL_MEMORY_TYPES
 
           print('All imports successful')
-          print(f'MemoryType.Semantic = {MemoryType.Semantic.value}')
-          print(f'MemoryType.Episodic = {MemoryType.Episodic.value}')
+          print(f'MemoryType.SEMANTIC = {MemoryType.SEMANTIC.value}')
+          print(f'MemoryType.EPISODIC = {MemoryType.EPISODIC.value}')
           print(f'ALL_MEMORY_TYPES count: {len(ALL_MEMORY_TYPES)}')
           print(f'MemMachine class: {MemMachine}')
           "
@@ -78,14 +78,14 @@ jobs:
           from memmachine.main.memmachine import ALL_MEMORY_TYPES
 
           # Test MemoryType enum
-          assert MemoryType.Semantic.value == 'semantic'
-          assert MemoryType.Episodic.value == 'episodic'
+          assert MemoryType.SEMANTIC.value == 'semantic'
+          assert MemoryType.EPISODIC.value == 'episodic'
           print('MemoryType enum values correct')
 
           # Test ALL_MEMORY_TYPES
           assert len(ALL_MEMORY_TYPES) == 2
-          assert MemoryType.Semantic in ALL_MEMORY_TYPES
-          assert MemoryType.Episodic in ALL_MEMORY_TYPES
+          assert MemoryType.SEMANTIC in ALL_MEMORY_TYPES
+          assert MemoryType.EPISODIC in ALL_MEMORY_TYPES
           print('ALL_MEMORY_TYPES correct')
           "
 

@@ -43,19 +43,19 @@ async def test_memmachine_list_search_paginates_episodic(
     try:
         first_page = await memmachine.list_search(
             session_data=session_data,
-            target_memories=[MemoryType.Episodic],
+            target_memories=[MemoryType.EPISODIC],
             page_size=2,
             page_num=0,
         )
         second_page = await memmachine.list_search(
             session_data=session_data,
-            target_memories=[MemoryType.Episodic],
+            target_memories=[MemoryType.EPISODIC],
             page_size=2,
             page_num=1,
         )
         final_page = await memmachine.list_search(
             session_data=session_data,
-            target_memories=[MemoryType.Episodic],
+            target_memories=[MemoryType.EPISODIC],
             page_size=2,
             page_num=2,
         )
@@ -126,19 +126,19 @@ async def test_memmachine_list_search_paginates_semantic(memmachine: MemMachine)
     try:
         first_page = await memmachine.list_search(
             session_data=session_info,
-            target_memories=[MemoryType.Semantic],
+            target_memories=[MemoryType.SEMANTIC],
             page_size=2,
             page_num=0,
         )
         second_page = await memmachine.list_search(
             session_data=session_info,
-            target_memories=[MemoryType.Semantic],
+            target_memories=[MemoryType.SEMANTIC],
             page_size=2,
             page_num=1,
         )
         final_page = await memmachine.list_search(
             session_data=session_info,
-            target_memories=[MemoryType.Semantic],
+            target_memories=[MemoryType.SEMANTIC],
             page_size=2,
             page_num=2,
         )
@@ -291,7 +291,7 @@ async def test_memmachine_list_search_filters_metadata(
     try:
         filtered = await memmachine.list_search(
             session_data=session_data,
-            target_memories=[MemoryType.Episodic],
+            target_memories=[MemoryType.EPISODIC],
             search_filter="metadata.topic = 'greeting'",
         )
 
@@ -371,7 +371,7 @@ async def test_memmachine_delete_episodes_removes_history(
     try:
         before_delete = await memmachine.list_search(
             session_data=session_data,
-            target_memories=[MemoryType.Episodic],
+            target_memories=[MemoryType.EPISODIC],
         )
         assert before_delete.episodic_memory is not None
         assert len(before_delete.episodic_memory) == 2
@@ -381,7 +381,7 @@ async def test_memmachine_delete_episodes_removes_history(
 
         after_delete = await memmachine.list_search(
             session_data=session_data,
-            target_memories=[MemoryType.Episodic],
+            target_memories=[MemoryType.EPISODIC],
         )
         assert after_delete.episodic_memory == []
     finally:
@@ -608,7 +608,7 @@ async def test_custom_semantic_set_type_ingestion(memmachine: MemMachine, sessio
         while True:
             search_response = await memmachine.list_search(
                 session_data=session_data,
-                target_memories=[MemoryType.Semantic],
+                target_memories=[MemoryType.SEMANTIC],
                 set_metadata=set_metadata,
             )
             semantic_memory = search_response.semantic_memory or []

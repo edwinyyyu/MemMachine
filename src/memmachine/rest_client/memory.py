@@ -423,7 +423,7 @@ class Memory:
             expand_context=expand_context,
             score_threshold=score_threshold,
             filter=filter_str,
-            types=[MemoryType.Episodic, MemoryType.Semantic],  # Search both types
+            types=[MemoryType.EPISODIC, MemoryType.SEMANTIC],  # Search both types
         )
         v2_search_data = spec.model_dump(mode="json", exclude_none=True)
 
@@ -447,7 +447,7 @@ class Memory:
 
     def list(
         self,
-        memory_type: MemoryType = MemoryType.Episodic,
+        memory_type: MemoryType = MemoryType.EPISODIC,
         page_size: int = 100,
         page_num: int = 0,
         filter_dict: dict[str, str] | None = None,

@@ -470,7 +470,7 @@ class MemMachine:
 
         tasks = []
 
-        if MemoryType.Episodic in target_memories:
+        if MemoryType.EPISODIC in target_memories:
             episodic_memory_manager = (
                 await self._resources.get_episodic_memory_manager()
             )
@@ -484,7 +484,7 @@ class MemMachine:
             ) as episodic_session:
                 tasks.append(episodic_session.add_memory_episodes(episodes))
 
-        if MemoryType.Semantic in target_memories:
+        if MemoryType.SEMANTIC in target_memories:
             semantic_session_manager = (
                 await self._resources.get_semantic_session_manager()
             )
@@ -583,7 +583,7 @@ class MemMachine:
         semantic_task: Task | None = None
 
         property_filter = parse_filter(search_filter) if search_filter else None
-        if MemoryType.Episodic in target_memories:
+        if MemoryType.EPISODIC in target_memories:
             episodic_task = asyncio.create_task(
                 self._search_episodic_memory(
                     session_data=session_data,
@@ -595,7 +595,7 @@ class MemMachine:
                 )
             )
 
-        if MemoryType.Semantic in target_memories:
+        if MemoryType.SEMANTIC in target_memories:
             semantic_session = await self._resources.get_semantic_session_manager()
             semantic_task = asyncio.create_task(
                 semantic_session.search(
@@ -648,7 +648,7 @@ class MemMachine:
         episodic_task: Task | None = None
         semantic_task: Task | None = None
 
-        if MemoryType.Episodic in target_memories:
+        if MemoryType.EPISODIC in target_memories:
             episode_storage = await self._resources.get_episode_storage()
             session_filter = FilterComparison(
                 field="session_key",
@@ -667,7 +667,7 @@ class MemMachine:
                 )
             )
 
-        if MemoryType.Semantic in target_memories:
+        if MemoryType.SEMANTIC in target_memories:
             semantic_session = await self._resources.get_semantic_session_manager()
             semantic_task = asyncio.create_task(
                 semantic_session.get_set_features(
