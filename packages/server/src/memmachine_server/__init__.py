@@ -1,12 +1,6 @@
 """Public package exports and utilities for MemMachine server."""
 
-from memmachine_server.common import api  # noqa: F401
-
-try:
-    from memmachine_server.main.memmachine import MemMachine
-except ImportError:
-    # MemMachine is not available in minimal installations
-    MemMachine = None  # type: ignore
+from memmachine_server.main.memmachine import MemMachine
 
 
 def setup_nltk() -> None:
@@ -33,5 +27,4 @@ def setup_nltk() -> None:
     logger.info("NLTK data setup is complete.")
 
 
-# Only export MemMachine if it's available
-__all__ = ["MemMachine", "setup_nltk"] if MemMachine is not None else ["setup_nltk"]
+__all__ = ["MemMachine", "setup_nltk"]

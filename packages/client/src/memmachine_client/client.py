@@ -8,9 +8,6 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, NoReturn, TypedDict
 
 import requests
-
-if TYPE_CHECKING:
-    from .config import Config
 from memmachine_common.api.spec import (
     CreateProjectSpec,
     GetProjectSpec,
@@ -24,6 +21,9 @@ from typing_extensions import Self, Unpack
 from urllib3.util.retry import Retry
 
 from .project import Project
+
+if TYPE_CHECKING:
+    from .config import Config
 
 logger = logging.getLogger(__name__)
 

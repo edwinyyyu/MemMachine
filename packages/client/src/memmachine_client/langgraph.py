@@ -6,10 +6,12 @@ to enable AI agents with persistent memory capabilities.
 """
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .client import MemMachineClient
-from .memory import Memory
+
+if TYPE_CHECKING:
+    from .memory import Memory
 
 
 class MemMachineTools:

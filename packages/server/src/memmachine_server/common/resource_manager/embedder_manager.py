@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
-from memmachine_server.common.configuration.embedder_conf import (
-    AmazonBedrockEmbedderConf,
-    EmbeddersConf,
-    OpenAIEmbedderConf,
-    SentenceTransformerEmbedderConf,
-)
 from memmachine_server.common.embedder import Embedder
 from memmachine_server.common.errors import InvalidEmbedderError
 from memmachine_server.common.resource_manager.base_manager import BaseResourceManager
+
+if TYPE_CHECKING:
+    from memmachine_server.common.configuration.embedder_conf import (
+        AmazonBedrockEmbedderConf,
+        EmbeddersConf,
+        OpenAIEmbedderConf,
+        SentenceTransformerEmbedderConf,
+    )
 
 logger = logging.getLogger(__name__)
 

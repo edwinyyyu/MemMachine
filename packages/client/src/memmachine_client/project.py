@@ -11,10 +11,6 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 import requests
-
-if TYPE_CHECKING:
-    from .client import MemMachineClient
-
 from memmachine_common.api.spec import (
     DeleteProjectSpec,
     EpisodeCountResponse,
@@ -23,7 +19,10 @@ from memmachine_common.api.spec import (
     ProjectResponse,
 )
 
-from .memory import Memory
+if TYPE_CHECKING:
+    from .client import MemMachineClient
+    from .memory import Memory
+
 
 logger = logging.getLogger(__name__)
 
