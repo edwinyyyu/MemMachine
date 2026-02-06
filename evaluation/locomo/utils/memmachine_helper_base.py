@@ -2,22 +2,12 @@
 # There are 2 copies of this file, please keep them both the same
 # 1. memmachine-test/benchmark/mem0_locomo/tests/memmachine
 # 2. memmachine-test/benchmark/mem0_locomo/tests/mods/MemMachine/evaluation/locomo/utils
-# ruff: noqa: PTH118, C901, RUF059, SIM108
+# ruff: noqa: C901, RUF059, SIM108
 
 import logging
-import os
-import sys
 from datetime import datetime
 
-if True:
-    # find path to other scripts and modules
-    my_dir = os.path.dirname(os.path.abspath(__file__))
-    test_dir = os.path.abspath(os.path.join(my_dir, ".."))
-    top_dir = os.path.abspath(os.path.join(test_dir, ".."))
-    utils_dir = os.path.join(top_dir, "utils")
-    sys.path.insert(1, test_dir)
-    sys.path.insert(1, top_dir)
-    from utils.atf_helper import get_logger
+from .atf_helper import get_logger
 
 
 class MemmachineHelperBase:

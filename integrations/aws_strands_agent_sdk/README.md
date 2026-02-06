@@ -89,9 +89,7 @@ search_result = tools.search_memory(
 ```python
 from strands import Agent
 from tool import get_memmachine_tools, create_tool_handler
-from strands_tools import set_tools_instance
-import sys
-import os
+from strands_tools import set_tools_instance, add_memory, search_memory, get_context
 
 # Initialize MemMachine tools
 tools, tool_schemas = get_memmachine_tools(
@@ -101,12 +99,6 @@ tools, tool_schemas = get_memmachine_tools(
     user_id="user123",
 )
 
-# Set up tools for Strands SDK
-script_dir = os.path.dirname(os.path.abspath(__file__))
-if script_dir not in sys.path:
-    sys.path.insert(0, script_dir)
-
-from strands_tools import add_memory, search_memory, get_context
 set_tools_instance(tools)
 
 # Create tool handler for manual execution

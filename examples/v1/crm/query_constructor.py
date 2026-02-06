@@ -4,12 +4,9 @@ Optimized for text rendering in Slack with structured prompt templates
 
 import json
 import logging
-import os
-import sys
 from datetime import UTC, datetime
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from base_query_constructor import BaseQueryConstructor
+from examples.v1.base_query_constructor import BaseQueryConstructor
 
 logger = logging.getLogger(__name__)
 

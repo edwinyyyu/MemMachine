@@ -1,12 +1,11 @@
 # based on Edwin PR#651 on Dec 4
 # modified to use restapiv2
-# ruff: noqa: PTH118, RUF059, TRY400, G004, C901, PERF403, UP031
+# ruff: noqa: RUF059, TRY400, G004, C901, PERF403, UP031
 
 import argparse
 import asyncio
 import json
 import os
-import sys
 import time
 import traceback
 from dataclasses import dataclass
@@ -24,14 +23,7 @@ from agents import (
 from dotenv import load_dotenv
 from tqdm.asyncio import tqdm_asyncio
 
-if True:
-    # find path to other scripts and modules
-    my_dir = os.path.dirname(os.path.abspath(__file__))
-    top_dir = os.path.abspath(os.path.join(my_dir, ".."))
-    utils_dir = os.path.join(top_dir, "utils")
-    sys.path.insert(1, utils_dir)
-    sys.path.insert(1, top_dir)
-    from memmachine_helper import MemmachineHelper
+from evaluation.locomo.utils.memmachine_helper import MemmachineHelper
 
 
 def convert_for_json(obj):

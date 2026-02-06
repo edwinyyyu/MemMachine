@@ -171,13 +171,14 @@ convention = "google"
     "T201",
     "D",
     "ARG",
-    "T201",
     "TRY401",
     "C901",
     "TRY300",
     "PTH",
 ]
+"integrations/**/*.py" = ["D", "T201"]
 "evaluation/**/*.py" = [
+    "ASYNC109",
     "D",
     "ARG",
     "T201",
@@ -204,6 +205,9 @@ markers = [
     "integration: mark the test as an integration test",
     "slow: mark the test as slow"
 ]
+
+[tool.ty.src]
+include = ["src", "tests"]
 
 [tool.complexipy]
 paths = ["src", "tests"]

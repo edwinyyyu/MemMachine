@@ -7,19 +7,11 @@ from various sources (OpenAI, Locomo, etc.).
 
 import argparse
 import json
-import os
 import sys
 from typing import Any, Optional
 
-# Handle imports for both script execution and module import
-try:
-    from . import get_parser
-    from ..utils import parse_time
-except ImportError:
-    # When run as a script, add parent directory to path
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from parsers import get_parser
-    from utils import parse_time
+from . import get_parser
+from tools.chatgpt2memmachine.utils import parse_time
 
 
 def get_args():

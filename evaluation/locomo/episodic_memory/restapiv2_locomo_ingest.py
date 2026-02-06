@@ -1,21 +1,13 @@
-# ruff: noqa: PTH118, DTZ007, C901, DTZ005, G004, PERF403, UP031
+# ruff: noqa: DTZ007, C901, DTZ005, G004, PERF403, UP031
 import argparse
 import json
 import os
-import sys
 import traceback
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 
-if True:
-    # find path to other scripts and modules
-    my_dir = os.path.dirname(os.path.abspath(__file__))
-    top_dir = os.path.abspath(os.path.join(my_dir, ".."))
-    utils_dir = os.path.join(top_dir, "utils")
-    sys.path.insert(1, utils_dir)
-    sys.path.insert(1, top_dir)
-    from memmachine_helper import MemmachineHelper
+from evaluation.locomo.utils.memmachine_helper import MemmachineHelper
 
 
 def datetime_from_locomo_time(locomo_time_str: str) -> datetime:

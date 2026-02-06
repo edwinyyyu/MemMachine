@@ -4,16 +4,16 @@ Integration tests for LangChain with MemMachine.
 This test suite verifies the complete integration of MemMachine memory with LangChain,
 including memory operations, persistence, and BaseMemory interface compliance.
 """
-# ruff: noqa: T201,SLF001
+# ruff: noqa: SLF001
 
 import os
-import sys
 import time
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
 import requests
+
+from .memory import MemMachineMemory
 
 # Test configuration
 TEST_BASE_URL = os.getenv("MEMORY_BACKEND_URL", "http://localhost:8080")
@@ -55,21 +55,6 @@ def unique_test_ids() -> dict[str, str]:
 @pytest.fixture
 def memmachine_memory(unique_test_ids: dict[str, str]) -> "MemMachineMemory":
     """Create MemMachineMemory instance for testing."""
-    try:
-        # Try importing from package path first
-        try:
-            from integrations.langchain.memory import MemMachineMemory
-        except ImportError:
-            # Fallback: try relative import
-            # Add parent directory to path
-            current_dir = Path(__file__).resolve().parent
-            parent_dir = current_dir.parent.parent
-            if str(parent_dir) not in sys.path:
-                sys.path.insert(0, str(parent_dir))
-            from integrations.langchain.memory import MemMachineMemory
-    except ImportError as e:
-        pytest.skip(f"LangChain integration not available: {e}")
-
     return MemMachineMemory(
         base_url=TEST_BASE_URL,
         org_id=unique_test_ids["org_id"],
@@ -220,20 +205,6 @@ class TestMemMachineMemory:
         self, unique_test_ids: dict[str, str]
     ) -> None:
         """Test loading memory variables with return_messages=True."""
-        try:
-            # Try importing from package path first
-            try:
-                from integrations.langchain.memory import MemMachineMemory
-            except ImportError:
-                # Fallback: try relative import
-                current_dir = Path(__file__).resolve().parent
-                parent_dir = current_dir.parent.parent
-                if str(parent_dir) not in sys.path:
-                    sys.path.insert(0, str(parent_dir))
-                from integrations.langchain.memory import MemMachineMemory
-        except ImportError as e:
-            pytest.skip(f"LangChain integration not available: {e}")
-
         memory = MemMachineMemory(
             base_url=TEST_BASE_URL,
             org_id=unique_test_ids["org_id"],
@@ -285,20 +256,6 @@ class TestMemMachineMemory:
 
     def test_context_isolation(self, unique_test_ids: dict[str, str]) -> None:
         """Test that different contexts (user_id) have isolated memories."""
-        try:
-            # Try importing from package path first
-            try:
-                from integrations.langchain.memory import MemMachineMemory
-            except ImportError:
-                # Fallback: try relative import
-                current_dir = Path(__file__).resolve().parent
-                parent_dir = current_dir.parent.parent
-                if str(parent_dir) not in sys.path:
-                    sys.path.insert(0, str(parent_dir))
-                from integrations.langchain.memory import MemMachineMemory
-        except ImportError as e:
-            pytest.skip(f"LangChain integration not available: {e}")
-
         # Create two memory instances with different user_ids
         memory1 = MemMachineMemory(
             base_url=TEST_BASE_URL,
@@ -362,20 +319,6 @@ class TestMemMachineMemory:
 )
 def test_basic_workflow(unique_test_ids: dict[str, str]) -> None:
     """Test a complete workflow: save context, load memory, verify persistence."""
-    try:
-        # Try importing from package path first
-        try:
-            from integrations.langchain.memory import MemMachineMemory
-        except ImportError:
-            # Fallback: try relative import
-            current_dir = Path(__file__).resolve().parent
-            parent_dir = current_dir.parent.parent
-            if str(parent_dir) not in sys.path:
-                sys.path.insert(0, str(parent_dir))
-            from integrations.langchain.memory import MemMachineMemory
-    except ImportError as e:
-        pytest.skip(f"LangChain integration not available: {e}")
-
     memory = MemMachineMemory(
         base_url=TEST_BASE_URL,
         org_id=unique_test_ids["org_id"],
@@ -486,18 +429,9 @@ if __name__ == "__main__":
 
     # Check if langchain is available
     try:
-        # Try importing from package path first
-        try:
-            from integrations.langchain.memory import MemMachineMemory
-        except ImportError:
-            # Fallback: add parent directory to path
-            current_dir = Path(__file__).resolve().parent
-            parent_dir = current_dir.parent.parent
-            if str(parent_dir) not in sys.path:
-                sys.path.insert(0, str(parent_dir))
-            from integrations.langchain.memory import MemMachineMemory
+        MemMachineMemory  # noqa: B018  # verify class is importable
         print("✓ LangChain integration is available")
-    except ImportError as e:
+    except NameError as e:
         print(f"❌ LangChain integration not available: {e}")
         print("   Please install: pip install langchain")
         print("   Or run from project root directory")

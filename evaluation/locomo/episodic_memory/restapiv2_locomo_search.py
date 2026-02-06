@@ -1,8 +1,7 @@
-# ruff: noqa: PTH118, C901, G004, PERF403, RUF059, UP031
+# ruff: noqa: C901, G004, PERF403, RUF059, UP031
 import argparse
 import json
 import os
-import sys
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,15 +11,7 @@ from dotenv import load_dotenv
 from nltk.corpus import stopwords
 from tqdm import tqdm
 
-if True:
-    # find path to other scripts and modules
-    my_dir = os.path.dirname(os.path.abspath(__file__))
-    top_dir = os.path.abspath(os.path.join(my_dir, ".."))
-    utils_dir = os.path.join(top_dir, "utils")
-    sys.path.insert(1, utils_dir)
-    sys.path.insert(1, top_dir)
-    from memmachine_helper import MemmachineHelper
-
+from evaluation.locomo.utils.memmachine_helper import MemmachineHelper
 
 language = "english"
 stop_words = stopwords.words(language)
