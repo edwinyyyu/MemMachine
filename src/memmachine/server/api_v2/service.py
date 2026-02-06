@@ -52,7 +52,7 @@ async def _add_messages_to(
             produced_for_id=message.produced_for,
             producer_role=message.role,
             created_at=message.timestamp,
-            metadata=message.metadata,
+            properties=message.properties,
             episode_type=message.episode_type,
         )
         for message in spec.messages

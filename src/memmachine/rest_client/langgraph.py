@@ -8,7 +8,7 @@ to enable AI agents with persistent memory capabilities.
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
-from memmachine.common.data_types import AttributeValue
+from memmachine.common.data_types import PropertyValue
 from memmachine.rest_client.client import MemMachineClient
 
 if TYPE_CHECKING:
@@ -41,10 +41,10 @@ class MemMachineTools:
             base_url: Base URL for MemMachine server
             org_id: Organization ID for v2 API (required)
             project_id: Project ID for v2 API (required)
-            group_id: Optional group ID (stored in metadata)
-            agent_id: Optional agent ID (stored in metadata)
-            user_id: Optional user ID (stored in metadata)
-            session_id: Optional session ID (stored in metadata)
+            group_id: Optional group ID (stored in properties)
+            agent_id: Optional agent ID (stored in properties)
+            user_id: Optional user ID (stored in properties)
+            session_id: Optional session ID (stored in properties)
 
         """
         self.client = client or MemMachineClient(base_url=base_url)
@@ -107,10 +107,10 @@ class MemMachineTools:
         Args:
             org_id: Organization ID (overrides default)
             project_id: Project ID (overrides default)
-            user_id: User ID (overrides default, stored in metadata)
-            agent_id: Agent ID (overrides default, stored in metadata)
-            group_id: Group ID (overrides default, stored in metadata)
-            session_id: Session ID (overrides default, stored in metadata)
+            user_id: User ID (overrides default, stored in properties)
+            agent_id: Agent ID (overrides default, stored in properties)
+            group_id: Group ID (overrides default, stored in properties)
+            session_id: Session ID (overrides default, stored in properties)
 
         Returns:
             Memory instance
@@ -129,7 +129,7 @@ class MemMachineTools:
             session_id=session_id,
         )
 
-        return project.memory(metadata=cast(dict[str, AttributeValue], metadata))
+        return project.memory(properties=cast(dict[str, PropertyValue], metadata))
 
     def add_memory(
         self,
@@ -141,7 +141,7 @@ class MemMachineTools:
         agent_id: str | None = None,
         group_id: str | None = None,
         session_id: str | None = None,
-        metadata: dict[str, AttributeValue] | None = None,
+        properties: dict[str, PropertyValue] | None = None,
     ) -> dict[str, Any]:
         """
         Add a memory to MemMachine.
@@ -155,11 +155,11 @@ class MemMachineTools:
             role: Message role - "user", "assistant", or "system" (default: "user")
             org_id: Organization ID (overrides default)
             project_id: Project ID (overrides default)
-            user_id: User ID (overrides default, stored in metadata)
-            agent_id: Agent ID (overrides default, stored in metadata)
-            group_id: Group ID (overrides default, stored in metadata)
-            session_id: Session ID (overrides default, stored in metadata)
-            metadata: Additional metadata for the episode (values must be bool, int, float, str, or datetime)
+            user_id: User ID (overrides default, stored in properties)
+            agent_id: Agent ID (overrides default, stored in properties)
+            group_id: Group ID (overrides default, stored in properties)
+            session_id: Session ID (overrides default, stored in properties)
+            properties: Additional properties for the episode (values must be bool, int, float, str, or datetime)
 
         Returns:
             Dictionary with success status and message
@@ -172,7 +172,7 @@ class MemMachineTools:
             results = memory.add(
                 content=content,
                 role=role,
-                metadata=metadata or {},
+                properties=properties or {},
             )
             if results:
                 return {
@@ -218,10 +218,10 @@ class MemMachineTools:
             query: Search query string
             org_id: Organization ID (overrides default)
             project_id: Project ID (overrides default)
-            user_id: User ID (overrides default, stored in metadata)
-            agent_id: Agent ID (overrides default, stored in metadata)
-            group_id: Group ID (overrides default, stored in metadata)
-            session_id: Session ID (overrides default, stored in metadata)
+            user_id: User ID (overrides default, stored in properties)
+            agent_id: Agent ID (overrides default, stored in properties)
+            group_id: Group ID (overrides default, stored in properties)
+            session_id: Session ID (overrides default, stored in properties)
             limit: Maximum number of results to return (default: 20)
             score_threshold: Minimum score to include in results
             filter_dict: Additional filters for the search
@@ -389,7 +389,7 @@ def create_add_memory_tool(
         return tools.add_memory(
             content=content,
             user_id=user_id,
-            metadata=metadata,
+            properties=metadata,
         )
 
     return add_memory_tool

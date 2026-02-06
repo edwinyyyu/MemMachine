@@ -104,7 +104,7 @@ class TestGetMemory:
         mock_client.get_or_create_project.assert_called_once_with(
             org_id="org", project_id="proj"
         )
-        mock_project.memory.assert_called_once_with(metadata={"user_id": "u1"})
+        mock_project.memory.assert_called_once_with(properties={"user_id": "u1"})
         assert result is mock_memory
 
     def test_overrides(self):
@@ -118,7 +118,7 @@ class TestGetMemory:
         mock_client.get_or_create_project.assert_called_once_with(
             org_id="o2", project_id="p2"
         )
-        mock_project.memory.assert_called_once_with(metadata={"user_id": "u2"})
+        mock_project.memory.assert_called_once_with(properties={"user_id": "u2"})
 
 
 class TestAddMemory:
@@ -145,7 +145,7 @@ class TestAddMemory:
         assert result["uids"] == ["uid-123"]
         assert result["content"] == "Hello world"
         mock_memory.add.assert_called_once_with(
-            content="Hello world", role="user", metadata={}
+            content="Hello world", role="user", properties={}
         )
 
     def test_error_path(self):
@@ -282,14 +282,14 @@ class TestGetContext:
         mock_memory.get_context.return_value = {
             "org_id": "o",
             "project_id": "p",
-            "metadata": {},
+            "properties": {},
         }
 
         tools = MemMachineTools(client=mock_client)
         result = tools.get_context()
 
         mock_memory.get_context.assert_called_once()
-        assert result == {"org_id": "o", "project_id": "p", "metadata": {}}
+        assert result == {"org_id": "o", "project_id": "p", "properties": {}}
 
 
 class TestClose:
