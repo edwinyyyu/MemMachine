@@ -4,7 +4,6 @@ import time
 from datetime import datetime
 
 import requests
-
 from utils import get_filename_safe_timestamp
 
 
@@ -48,7 +47,7 @@ class MemMachineRestClient:
             return
 
         trace_lines = []
-        trace_lines.append(f"\n🔍 API TRACE")
+        trace_lines.append("\n🔍 API TRACE")
         trace_lines.append(f"   {method} {url}")
         if payload:
             trace_lines.append(
@@ -78,11 +77,9 @@ class MemMachineRestClient:
                     )
                     trace_lines.append(f"   Error: {error_text}")
             except Exception as e:
-                trace_lines.append(
-                    f"   Response Code: <error reading response: {str(e)}>"
-                )
+                trace_lines.append(f"   Response Code: <error reading response: {e!s}>")
         else:
-            trace_lines.append(f"   Response Code: <no response object>")
+            trace_lines.append("   Response Code: <no response object>")
 
         if latency_ms is not None:
             trace_lines.append(f"   Latency: {latency_ms}ms")
@@ -111,6 +108,35 @@ class MemMachineRestClient:
       "types": ["episodic", "semantic"]
     }'
     """
+
+    def ensure_project(self, org_id, project_id):
+        """Ensure a project exists, creating it if necessary.
+
+        Args:
+            org_id: Organization ID
+            project_id: Project ID
+        """
+        url = self._get_url("projects")
+        payload = {"org_id": org_id, "project_id": project_id}
+        start_time = time.time()
+        response = requests.post(url, json=payload, timeout=300)
+        end_time = time.time()
+
+        latency_ms = round((end_time - start_time) * 1000, 2)
+
+        if self.verbose:
+            self._trace_request("POST", url, payload, response, latency_ms)
+            response_code = response.status_code if response is not None else ""
+            self.api_requests_fp.write(
+                f"{datetime.now().isoformat()},POST,{url},{latency_ms},{response_code}\n",
+            )
+            self.api_requests_fp.flush()
+
+        # 201 = created, 409 = already exists (both are fine)
+        if response.status_code not in (201, 409):
+            raise Exception(
+                f"Failed to ensure project exists: {response.text}"
+            )
 
     def add_memory(
         self, org_id="", project_id="", messages=None, memory_types=None
@@ -163,6 +189,39 @@ class MemMachineRestClient:
       "types": ["episodic", "semantic"]
     }'
     """
+
+    def configure_short_term_memory(self, org_id, project_id, enabled: bool):
+        """Configure short-term memory summarization for a project.
+
+        Args:
+            org_id: Organization ID
+            project_id: Project ID
+            enabled: Whether short-term memory summarization is enabled
+        """
+        url = self._get_url("memory/episodic/short_term/config")
+        payload = {
+            "org_id": org_id,
+            "project_id": project_id,
+            "enabled": enabled,
+        }
+        start_time = time.time()
+        response = requests.post(url, json=payload, timeout=300)
+        end_time = time.time()
+
+        latency_ms = round((end_time - start_time) * 1000, 2)
+
+        if self.verbose:
+            self._trace_request("POST", url, payload, response, latency_ms)
+            response_code = response.status_code if response is not None else ""
+            self.api_requests_fp.write(
+                f"{datetime.now().isoformat()},POST,{url},{latency_ms},{response_code}\n",
+            )
+            self.api_requests_fp.flush()
+
+        if response.status_code != 204:
+            raise Exception(
+                f"Failed to configure short-term memory: {response.text}"
+            )
 
     def search_memory(self, org_id, project_id, query_str, limit=5):
         search_memory_endpoint = self._get_url("memories/search")
