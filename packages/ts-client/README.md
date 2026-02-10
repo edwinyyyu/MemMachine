@@ -23,39 +23,36 @@ For the cloud service, sign in to [MemMachine Platform](https://console.memmachi
 ## Usage Example
 
 ```typescript
-import MemMachineClient, { MemMachineAPIError } from "@memmachine/client";
+import MemMachineClient, { MemMachineAPIError } from '@memmachine/client'
 
 async function run() {
-  const client = new MemMachineClient({ api_key: "your_api_key" });
+  const client = new MemMachineClient({ api_key: 'your_api_key' })
 
   // Create a MemMachineProject instance
-  const project = client.project({
-    org_id: "demo_org",
-    project_id: "demo_project",
-  });
+  const project = client.project({ org_id: 'demo_org', project_id: 'demo_project' })
 
   // Create the project with config options on the MemMachine server if it does not exist
   // await project.create({ description: 'Demo Project' })
 
   // Create a MemMachineMemory instance for the project
-  const memory = project.memory();
+  const memory = project.memory()
 
   try {
     // Add a memory
-    await memory.add("I like pizza and pasta");
+    await memory.add('I like pizza and pasta')
 
     // Search memories
-    const result = await memory.search("What do I like to eat?");
-    console.dir(result, { depth: null });
+    const result = await memory.search('What do I like to eat?')
+    console.dir(result, { depth: null })
   } catch (err) {
     if (err instanceof MemMachineAPIError) {
       // Handle error
-      console.error(err.message);
+      console.error(err.message)
     }
   }
 }
 
-run();
+run()
 ```
 
 ## API Reference
