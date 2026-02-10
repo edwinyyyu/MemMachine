@@ -34,7 +34,7 @@ from memmachine.common.filter.filter_parser import (
     IsNull,
     Not,
     Or,
-    demangle_user_property_key,
+    demangle_user_metadata_key,
     normalize_filter_field,
 )
 from memmachine.common.language_model import LanguageModel
@@ -339,11 +339,11 @@ class ShortTermMemory:
 
     def _resolve_field(self, episode: Episode, field: str) -> PropertyValue | None:
         """Resolve a field name to its value from an episode."""
-        internal_name, is_user_property = normalize_filter_field(field)
-        if is_user_property:
-            key = demangle_user_property_key(internal_name)
-            if episode.properties and isinstance(episode.properties, dict):
-                return episode.properties.get(key)
+        internal_name, is_user_metadata = normalize_filter_field(field)
+        if is_user_metadata:
+            key = demangle_user_metadata_key(internal_name)
+            if episode.filterable_metadata and isinstance(episode.filterable_metadata, dict):
+                return episode.filterable_metadata.get(key)
             return None
         match internal_name:
             case "producer_id":
@@ -437,12 +437,12 @@ class ShortTermMemory:
             result += len(episode.content)
         else:
             result += len(repr(episode.content))
-        if episode.properties is None:
+        if episode.metadata is None:
             return result
-        if isinstance(episode.properties, str):
-            result += len(episode.properties)
-        elif isinstance(episode.properties, dict):
-            for v in episode.properties.values():
+        if isinstance(episode.metadata, str):
+            result += len(episode.metadata)
+        elif isinstance(episode.metadata, dict):
+            for v in episode.metadata.values():
                 if isinstance(v, str):
                     result += len(v)
                 else:

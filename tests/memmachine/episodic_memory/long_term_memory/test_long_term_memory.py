@@ -14,9 +14,6 @@ from memmachine.common.filter.filter_parser import (
     Comparison as FilterComparison,
 )
 from memmachine.common.filter.filter_parser import (
-    IsNull as FilterIsNull,
-)
-from memmachine.common.filter.filter_parser import (
     Or as FilterOr,
 )
 from memmachine.common.vector_graph_store.neo4j_vector_graph_store import (
@@ -158,7 +155,8 @@ async def test_add_episodes(long_term_memory):
             producer_id="biology textbook",
             producer_role="document",
             sequence_num=123,
-            properties={"project": "science", "length": "short"},
+            filterable_metadata={"project": "science", "length": "short"},
+            metadata={"chapter": 5, "page": 42},
         ),
         Episode(
             uid="episode2",
@@ -168,7 +166,7 @@ async def test_add_episodes(long_term_memory):
             producer_id="Alice",
             producer_role="user",
             sequence_num=0,
-            properties={"project": "history", "category": "question"},
+            filterable_metadata={"project": "history", "category": "question"},
         ),
         Episode(
             uid="episode3",
@@ -178,7 +176,7 @@ async def test_add_episodes(long_term_memory):
             producer_id="LLM",
             producer_role="assistant",
             produced_for_id="Alice",
-            properties={"project": "history", "length": "short"},
+            filterable_metadata={"project": "history", "length": "short"},
         ),
     ]
 
@@ -205,7 +203,7 @@ async def test_search(long_term_memory):
             created_at=now - i * timedelta(seconds=1),
             producer_id="filler",
             producer_role="more_filler",
-            properties={"project": "testing", "length": "medium"},
+            filterable_metadata={"project": "testing", "length": "medium"},
         )
         for i in range(1, 11)
     ]
@@ -221,7 +219,7 @@ async def test_search(long_term_memory):
             created_at=now - i * timedelta(seconds=1),
             producer_id="filler",
             producer_role="more_filler",
-            properties={"project": "memmachine", "length": "medium"},
+            filterable_metadata={"project": "memmachine", "length": "medium"},
         )
         for i in range(1, 11)
     ]
@@ -233,7 +231,8 @@ async def test_search(long_term_memory):
             created_at=now,
             producer_id="Alice",
             producer_role="user",
-            properties={"project": "memmachine", "length": "short"},
+            filterable_metadata={"project": "memmachine", "length": "short"},
+            metadata={"some_key": "some_value"},
         ),
         Episode(
             uid="episode2",
@@ -242,7 +241,8 @@ async def test_search(long_term_memory):
             created_at=now + timedelta(seconds=10),
             producer_id="Bob",
             producer_role="user",
-            properties={"project": "other", "length": "short"},
+            filterable_metadata={"project": "other", "length": "short"},
+            metadata={"some_other_key": "some_other_value"},
         ),
         Episode(
             uid="episode3",
@@ -267,7 +267,7 @@ async def test_search(long_term_memory):
             created_at=now + timedelta(seconds=40),
             producer_id="Charlie",
             producer_role="user",
-            properties={"project": "memmachine"},
+            filterable_metadata={"project": "memmachine"},
         ),
         Episode(
             uid="episode6",
@@ -276,7 +276,7 @@ async def test_search(long_term_memory):
             created_at=now + timedelta(seconds=50),
             producer_id="Edwin",
             producer_role="user",
-            properties={"project": "memmachine", "length": "short"},
+            filterable_metadata={"project": "memmachine", "length": "short"},
         ),
     ]
     episodes += [
@@ -291,7 +291,7 @@ async def test_search(long_term_memory):
             created_at=now + i * timedelta(seconds=1),
             producer_id="filler",
             producer_role="more_filler",
-            properties={"project": "testing", "length": "medium"},
+            filterable_metadata={"project": "testing", "length": "medium"},
         )
         for i in range(1, 11)
     ]
@@ -307,7 +307,7 @@ async def test_search(long_term_memory):
             created_at=now + i * timedelta(seconds=100),
             producer_id="filler",
             producer_role="more_filler",
-            properties={"project": "memmachine", "length": "medium"},
+            filterable_metadata={"project": "memmachine", "length": "medium"},
         )
         for i in range(1, 11)
     ]
@@ -374,7 +374,7 @@ async def test_search(long_term_memory):
         query="Who wrote the test?",
         num_episodes_limit=10,
         property_filter=FilterComparison(
-            field="p.project",
+            field="m.project",
             op="=",
             value="memmachine",
         ),
@@ -387,7 +387,7 @@ async def test_search(long_term_memory):
         query="Who wrote the test?",
         num_episodes_limit=4,
         property_filter=FilterComparison(
-            field="properties.length",
+            field="metadata.length",
             op="=",
             value="short",
         ),
@@ -412,7 +412,8 @@ async def test_get_episodes(long_term_memory):
             producer_id="biology textbook",
             producer_role="document",
             sequence_num=123,
-            properties={"project": "science", "length": "short"},
+            filterable_metadata={"project": "science", "length": "short"},
+            metadata={"chapter": 5, "page": 42},
         ),
         Episode(
             uid="episode2",
@@ -422,7 +423,7 @@ async def test_get_episodes(long_term_memory):
             producer_id="Alice",
             producer_role="user",
             sequence_num=0,
-            properties={"project": "history", "category": "question"},
+            filterable_metadata={"project": "history", "category": "question"},
         ),
         Episode(
             uid="episode3",
@@ -432,7 +433,7 @@ async def test_get_episodes(long_term_memory):
             producer_id="LLM",
             producer_role="assistant",
             produced_for_id="Alice",
-            properties={"project": "history", "length": "short"},
+            filterable_metadata={"project": "history", "length": "short"},
         ),
     ]
 
@@ -456,7 +457,8 @@ async def test_get_matching_episodes(long_term_memory):
             producer_id="biology textbook",
             producer_role="document",
             sequence_num=123,
-            properties={"project": "science", "length": "short"},
+            filterable_metadata={"project": "science", "length": "short"},
+            metadata={"chapter": 5, "page": 42},
         ),
         Episode(
             uid="episode2",
@@ -466,7 +468,7 @@ async def test_get_matching_episodes(long_term_memory):
             producer_id="Alice",
             producer_role="user",
             sequence_num=0,
-            properties={"project": "history", "category": "question"},
+            filterable_metadata={"project": "history", "category": "question"},
         ),
         Episode(
             uid="episode3",
@@ -476,7 +478,7 @@ async def test_get_matching_episodes(long_term_memory):
             producer_id="LLM",
             producer_role="assistant",
             produced_for_id="Alice",
-            properties={"project": "history", "length": "short"},
+            filterable_metadata={"project": "history", "length": "short"},
         ),
     ]
 
@@ -514,7 +516,7 @@ async def test_get_matching_episodes(long_term_memory):
 
     results = await long_term_memory.get_matching_episodes(
         property_filter=FilterComparison(
-            field="p.length",
+            field="m.length",
             op="=",
             value="short",
         ),
@@ -523,8 +525,10 @@ async def test_get_matching_episodes(long_term_memory):
     assert set(results) == {episodes[0], episodes[2]}
 
     results = await long_term_memory.get_matching_episodes(
-        property_filter=FilterIsNull(
-            field="p.length",
+        property_filter=FilterComparison(
+            field="m.length",
+            op="is_null",
+            value=None,
         )
     )
     assert len(results) == 1
@@ -533,12 +537,12 @@ async def test_get_matching_episodes(long_term_memory):
     results = await long_term_memory.get_matching_episodes(
         property_filter=FilterAnd(
             left=FilterComparison(
-                field="p.project",
+                field="m.project",
                 op="=",
                 value="science",
             ),
             right=FilterComparison(
-                field="properties.length",
+                field="metadata.length",
                 op="=",
                 value="short",
             ),
@@ -550,12 +554,12 @@ async def test_get_matching_episodes(long_term_memory):
     results = await long_term_memory.get_matching_episodes(
         property_filter=FilterOr(
             left=FilterComparison(
-                field="p.project",
+                field="m.project",
                 op="=",
                 value="history",
             ),
             right=FilterComparison(
-                field="properties.project",
+                field="metadata.project",
                 op="=",
                 value="science",
             ),
@@ -565,8 +569,10 @@ async def test_get_matching_episodes(long_term_memory):
     assert set(results) == {episodes[0], episodes[1], episodes[2]}
 
     results = await long_term_memory.get_matching_episodes(
-        property_filter=FilterIsNull(
-            field="p.project",
+        property_filter=FilterComparison(
+            field="m.project",
+            op="is_null",
+            value=None,
         )
     )
     assert len(results) == 0
@@ -595,7 +601,8 @@ async def test_delete_episodes(long_term_memory):
             producer_id="biology textbook",
             producer_role="document",
             sequence_num=123,
-            properties={"project": "science", "length": "short"},
+            filterable_metadata={"project": "science", "length": "short"},
+            metadata={"chapter": 5, "page": 42},
         ),
         Episode(
             uid="episode2",
@@ -605,7 +612,7 @@ async def test_delete_episodes(long_term_memory):
             producer_id="Alice",
             producer_role="user",
             sequence_num=0,
-            properties={"project": "history", "category": "question"},
+            filterable_metadata={"project": "history", "category": "question"},
         ),
         Episode(
             uid="episode3",
@@ -615,7 +622,7 @@ async def test_delete_episodes(long_term_memory):
             producer_id="LLM",
             producer_role="assistant",
             produced_for_id="Alice",
-            properties={"project": "history", "length": "short"},
+            filterable_metadata={"project": "history", "length": "short"},
         ),
     ]
 
@@ -642,7 +649,8 @@ async def test_delete_matching_episodes(long_term_memory):
             producer_id="biology textbook",
             producer_role="document",
             sequence_num=123,
-            properties={"project": "science", "length": "short"},
+            filterable_metadata={"project": "science", "length": "short"},
+            metadata={"chapter": 5, "page": 42},
         ),
         Episode(
             uid="episode2",
@@ -652,7 +660,7 @@ async def test_delete_matching_episodes(long_term_memory):
             producer_id="Alice",
             producer_role="user",
             sequence_num=0,
-            properties={"project": "history", "category": "question"},
+            filterable_metadata={"project": "history", "category": "question"},
         ),
         Episode(
             uid="episode3",
@@ -662,15 +670,17 @@ async def test_delete_matching_episodes(long_term_memory):
             producer_id="LLM",
             producer_role="assistant",
             produced_for_id="Alice",
-            properties={"project": "history", "length": "short"},
+            filterable_metadata={"project": "history", "length": "short"},
         ),
     ]
 
     await long_term_memory.add_episodes(episodes)
 
     await long_term_memory.delete_matching_episodes(
-        property_filter=FilterIsNull(
-            field="p.length",
+        property_filter=FilterComparison(
+            field="m.length",
+            op="is_null",
+            value=None,
         )
     )
     all_episodes = await long_term_memory.get_matching_episodes()
@@ -679,7 +689,7 @@ async def test_delete_matching_episodes(long_term_memory):
 
     await long_term_memory.delete_matching_episodes(
         property_filter=FilterComparison(
-            field="properties.length",
+            field="metadata.length",
             op="=",
             value="medium",
         )
@@ -690,7 +700,7 @@ async def test_delete_matching_episodes(long_term_memory):
 
     await long_term_memory.delete_matching_episodes(
         property_filter=FilterComparison(
-            field="p.project",
+            field="m.project",
             op="=",
             value="history",
         )

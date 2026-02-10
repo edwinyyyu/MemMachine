@@ -80,9 +80,9 @@ class EpisodeEntry(BaseModel):
         EpisodeType | None,
         Field(default=None, description=SpecDoc.EPISODE_TYPE),
     ]
-    properties: Annotated[
-        dict[str, PropertyValue] | None,
-        Field(default=None, description=SpecDoc.EPISODE_PROPERTIES),
+    metadata: Annotated[
+        dict[str, JsonValue] | None,
+        Field(default=None, description=SpecDoc.EPISODE_METADATA),
     ]
     created_at: Annotated[
         AwareDatetime | None,
@@ -149,9 +149,13 @@ class Episode(BaseModel):
         ContentType,
         Field(default=ContentType.STRING, description=SpecDoc.EPISODE_CONTENT_TYPE),
     ]
-    properties: Annotated[
+    filterable_metadata: Annotated[
         dict[str, PropertyValue] | None,
-        Field(default=None, description=SpecDoc.EPISODE_PROPERTIES),
+        Field(default=None, description=SpecDoc.EPISODE_FILTERABLE_METADATA),
+    ]
+    metadata: Annotated[
+        dict[str, JsonValue] | None,
+        Field(default=None, description=SpecDoc.EPISODE_METADATA),
     ]
 
     def __hash__(self) -> int:
@@ -470,11 +474,11 @@ class MemoryMessage(BaseModel):
             description=SpecDoc.MEMORY_ROLE,
         ),
     ]
-    properties: Annotated[
-        dict[str, PropertyValue],
+    metadata: Annotated[
+        dict[str, str],
         Field(
             default_factory=dict,
-            description=SpecDoc.MEMORY_PROPERTIES,
+            description=SpecDoc.MEMORY_METADATA,
         ),
     ]
     episode_type: Annotated[

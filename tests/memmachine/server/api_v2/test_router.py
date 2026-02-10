@@ -361,7 +361,8 @@ def test_list_memories(client, mock_memmachine):
             sequence_num=0,
             episode_type=EpisodeType.MESSAGE,
             content_type=ContentType.STRING,
-            properties=None,
+            filterable_metadata=None,
+            metadata=None,
         )
     ]
     mock_results.semantic_memory = None

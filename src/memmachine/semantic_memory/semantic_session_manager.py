@@ -6,7 +6,7 @@ import logging
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol, cast, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, JsonValue
 
@@ -110,9 +110,7 @@ class SemanticSessionManager:
         self, episode: Episode, session_data: SessionData
     ) -> None:
         episode_metadata: dict[str, JsonValue] = (
-            cast(dict[str, JsonValue], dict(episode.properties))
-            if episode.properties is not None
-            else {}
+            dict(episode.metadata) if episode.metadata is not None else {}
         )
 
         episode_metadata.setdefault("producer_id", episode.producer_id)

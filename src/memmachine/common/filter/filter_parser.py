@@ -267,40 +267,40 @@ def _looks_like_float(value: str) -> bool:
 # Centralized field name normalization utilities
 # ---------------------------------------------------------------------------
 
-# Query language prefixes for user-defined properties
-USER_PROPERTY_QUERY_PREFIXES = ("p.", "properties.")
+# Query language prefixes for user-defined metadata
+USER_METADATA_QUERY_PREFIXES = ("m.", "metadata.")
 
-# Internal storage prefix for user properties (database-safe)
-USER_PROPERTY_STORAGE_PREFIX = "p_"
+# Internal storage prefix for user metadata
+USER_METADATA_STORAGE_PREFIX = "metadata."
 
 
 def normalize_filter_field(field: str) -> tuple[str, bool]:
     """Normalize a query field name to internal storage name.
 
-    Returns (internal_name, is_user_property).
-    - User property (p.foo, properties.foo): returns ("p_foo", True)
+    Returns (internal_name, is_user_metadata).
+    - User metadata (m.foo, metadata.foo): returns ("metadata.foo", True)
     - System field (producer_id): returns ("producer_id", False)
     """
-    for prefix in USER_PROPERTY_QUERY_PREFIXES:
+    for prefix in USER_METADATA_QUERY_PREFIXES:
         if field.startswith(prefix):
             key = field[len(prefix) :]
-            return f"{USER_PROPERTY_STORAGE_PREFIX}{key}", True
+            return f"{USER_METADATA_STORAGE_PREFIX}{key}", True
     return field, False
 
 
-def mangle_user_property_key(key: str) -> str:
-    """Add user property prefix to a key for storage."""
-    return USER_PROPERTY_STORAGE_PREFIX + key
+def mangle_user_metadata_key(key: str) -> str:
+    """Add user metadata prefix to a key for storage."""
+    return USER_METADATA_STORAGE_PREFIX + key
 
 
-def demangle_user_property_key(mangled_key: str) -> str:
-    """Remove user property prefix from a storage key."""
-    return mangled_key.removeprefix(USER_PROPERTY_STORAGE_PREFIX)
+def demangle_user_metadata_key(mangled_key: str) -> str:
+    """Remove user metadata prefix from a storage key."""
+    return mangled_key.removeprefix(USER_METADATA_STORAGE_PREFIX)
 
 
-def is_user_property_key(candidate_key: str) -> bool:
-    """Check if a key has the user property prefix."""
-    return candidate_key.startswith(USER_PROPERTY_STORAGE_PREFIX)
+def is_user_metadata_key(candidate_key: str) -> bool:
+    """Check if a key has the user metadata prefix."""
+    return candidate_key.startswith(USER_METADATA_STORAGE_PREFIX)
 
 
 def map_filter_fields(
