@@ -4,7 +4,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import NamedTuple, Protocol
+from typing import Literal, NamedTuple, Protocol
 
 from memmachine.common.data_types import PropertyValue
 
@@ -17,12 +17,15 @@ class FilterExpr(Protocol):
     """Marker protocol for filter expression nodes."""
 
 
+ComparisonOp = Literal["=", "!=", ">", "<", ">=", "<="]
+
+
 @dataclass(frozen=True)
 class Comparison(FilterExpr):
     """Scalar comparison of a field against a value."""
 
     field: str
-    op: str  # "=", "!=", ">", "<", ">=", "<="
+    op: ComparisonOp
     value: PropertyValue
 
 
@@ -120,7 +123,14 @@ def _tokenize(s: str) -> list[Token]:
     return tokens
 
 
-_SCALAR_OPS = {"EQ": "=", "NE": "!=", "GE": ">=", "LE": "<=", "GT": ">", "LT": "<"}
+_SCALAR_OPS: dict[str, ComparisonOp] = {
+    "EQ": "=",
+    "NE": "!=",
+    "GE": ">=",
+    "LE": "<=",
+    "GT": ">",
+    "LT": "<",
+}
 
 
 class _Parser:
