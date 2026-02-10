@@ -1324,7 +1324,7 @@ class Neo4jSemanticStorage(SemanticStorage):
     def _set_id_from_label(self, label: str) -> str | None:
         if not label or not label.startswith(self._SET_LABEL_PREFIX):
             return None
-        suffix = label[len(self._SET_LABEL_PREFIX) :]
+        suffix = label.removeprefix(self._SET_LABEL_PREFIX)
         return _desanitize_identifier(suffix)
 
     @staticmethod

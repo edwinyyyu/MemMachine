@@ -665,7 +665,7 @@ class InMemorySemanticStorage(SemanticStorage):
     ) -> tuple[Any, bool]:
         internal_name, is_user_metadata = normalize_filter_field(field)
         if is_user_metadata:
-            key = internal_name[len(USER_METADATA_STORAGE_PREFIX) :]
+            key = internal_name.removeprefix(USER_METADATA_STORAGE_PREFIX)
             metadata = entry.metadata or {}
             return metadata.get(key), True
 
