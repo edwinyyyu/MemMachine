@@ -20,8 +20,8 @@ class SimilarityMetric(Enum):
     """
     DOT
     with dot_product as the raw dot product in (-inf, inf):
-    score formula: S = (1 + dot_product / sqrt(1 + dot_product^2)) / 2
-    inverse formula: dot_product = (2 * S - 1) / sqrt(1 - (2 * S - 1)^2)
+    score formula: S = 1 / (1 + exp(-2 * arcsinh(dot_product)))
+    inverse formula: dot_product = (2 * S - 1) / (2 * sqrt(S * (1 - S)))
     """
     DOT = "dot"
 
