@@ -40,7 +40,7 @@ from memmachine.common.errors import (
 )
 from memmachine.common.filter.filter_parser import (
     FilterExpr,
-    demangle_user_property_key,
+    demangle_user_metadata_key,
     normalize_filter_field,
 )
 from memmachine.common.filter.sql_filter_util import compile_sql_filter
@@ -114,7 +114,7 @@ class Episode(BaseEpisodeStore):
             produced_for_id=self.produced_for_id,
             episode_type=self.episode_type,
             created_at=created_at,
-            properties=self.json_metadata or None,
+            metadata=self.json_metadata or None,
         )
 
 
@@ -170,8 +170,8 @@ class SqlAlchemyEpisodeStore(EpisodeStorage):
             if entry.episode_type is not None:
                 entry_values["episode_type"] = entry.episode_type
 
-            if entry.properties is not None:
-                entry_values["json_metadata"] = entry.properties
+            if entry.metadata is not None:
+                entry_values["json_metadata"] = entry.metadata
 
             if entry.created_at is not None:
                 entry_values["created_at"] = entry.created_at
@@ -263,9 +263,9 @@ class SqlAlchemyEpisodeStore(EpisodeStorage):
     def _resolve_episode_field(
         field: str,
     ) -> tuple[Any, bool] | tuple[None, bool]:
-        internal_name, is_user_property = normalize_filter_field(field)
-        if is_user_property:
-            key = demangle_user_property_key(internal_name)
+        internal_name, is_user_metadata = normalize_filter_field(field)
+        if is_user_metadata:
+            key = demangle_user_metadata_key(internal_name)
             return Episode.json_metadata[key], True
 
         # Check for system field mappings (case-insensitive)

@@ -1088,7 +1088,7 @@ class Neo4jSemanticStorage(SemanticStorage):
             return f"{alias}.created_at_ts", coerce_datetime_to_timestamp
         if field in {"updated_at", "updated_at_ts"}:
             return f"{alias}.updated_at_ts", coerce_datetime_to_timestamp
-        if field.startswith(("p.", "properties.")):
+        if field.startswith(("m.", "metadata.")):
             key = field.split(".", 1)[1]
             prop_name = self._metadata_property_name(key)
             return f"{alias}.{prop_name}", None

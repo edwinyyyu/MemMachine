@@ -35,7 +35,7 @@ def _resolve_field(field: str):
     if normalized in field_mapping:
         return field_mapping[normalized], False
 
-    if normalized.startswith(("p.", "properties.")):
+    if normalized.startswith(("m.", "metadata.")):
         key = normalized.split(".", 1)[1]
         return Item.json_metadata[key], True
 
@@ -105,22 +105,22 @@ def _query_names(session: Session, filter_str: str) -> set[str]:
 
 
 def test_int_greater_than(session):
-    result = _query_names(session, "p.count > 10")
+    result = _query_names(session, "m.count > 10")
     assert result == {"gamma", "delta"}
 
 
 def test_int_greater_equal(session):
-    result = _query_names(session, "p.count >= 10")
+    result = _query_names(session, "m.count >= 10")
     assert result == {"beta", "gamma", "delta"}
 
 
 def test_int_less_than(session):
-    result = _query_names(session, "p.count < 10")
+    result = _query_names(session, "m.count < 10")
     assert result == {"alpha"}
 
 
 def test_int_less_equal(session):
-    result = _query_names(session, "p.count <= 10")
+    result = _query_names(session, "m.count <= 10")
     assert result == {"alpha", "beta"}
 
 
@@ -128,12 +128,12 @@ def test_int_less_equal(session):
 
 
 def test_int_equality(session):
-    result = _query_names(session, "p.count = 10")
+    result = _query_names(session, "m.count = 10")
     assert result == {"beta"}
 
 
 def test_int_not_equal(session):
-    result = _query_names(session, "p.count != 10")
+    result = _query_names(session, "m.count != 10")
     assert result == {"alpha", "gamma", "delta"}
 
 
@@ -141,17 +141,17 @@ def test_int_not_equal(session):
 
 
 def test_float_greater_than(session):
-    result = _query_names(session, "p.score > 2.0")
+    result = _query_names(session, "m.score > 2.0")
     assert result == {"beta", "gamma", "delta"}
 
 
 def test_float_less_than(session):
-    result = _query_names(session, "p.score < 3.0")
+    result = _query_names(session, "m.score < 3.0")
     assert result == {"alpha", "beta"}
 
 
 def test_float_less_equal(session):
-    result = _query_names(session, "p.score <= 2.5")
+    result = _query_names(session, "m.score <= 2.5")
     assert result == {"alpha", "beta"}
 
 
@@ -159,12 +159,12 @@ def test_float_less_equal(session):
 
 
 def test_bool_equality_true(session):
-    result = _query_names(session, "p.active = true")
+    result = _query_names(session, "m.active = true")
     assert result == {"alpha", "gamma"}
 
 
 def test_bool_equality_false(session):
-    result = _query_names(session, "p.active = false")
+    result = _query_names(session, "m.active = false")
     assert result == {"beta", "delta"}
 
 
@@ -172,12 +172,12 @@ def test_bool_equality_false(session):
 
 
 def test_string_equality(session):
-    result = _query_names(session, "p.tag = 'a'")
+    result = _query_names(session, "m.tag = 'a'")
     assert result == {"alpha"}
 
 
 def test_string_not_equal(session):
-    result = _query_names(session, "p.tag != 'a'")
+    result = _query_names(session, "m.tag != 'a'")
     assert result == {"beta", "gamma", "delta"}
 
 
@@ -185,7 +185,7 @@ def test_string_not_equal(session):
 
 
 def test_int_in(session):
-    result = _query_names(session, "p.count IN (5, 15)")
+    result = _query_names(session, "m.count IN (5, 15)")
     assert result == {"alpha", "gamma"}
 
 
@@ -193,7 +193,7 @@ def test_int_in(session):
 
 
 def test_string_in(session):
-    result = _query_names(session, "p.tag IN ('a', 'b')")
+    result = _query_names(session, "m.tag IN ('a', 'b')")
     assert result == {"alpha", "beta"}
 
 
@@ -201,7 +201,7 @@ def test_string_in(session):
 
 
 def test_is_null(session):
-    result = _query_names(session, "p.tag IS NULL")
+    result = _query_names(session, "m.tag IS NULL")
     assert result == {"epsilon"}
 
 
@@ -209,14 +209,14 @@ def test_is_null(session):
 
 
 def test_not_comparison(session):
-    result = _query_names(session, "NOT p.count > 10")
+    result = _query_names(session, "NOT m.count > 10")
     # NOT (count > 10) => count <= 10 => alpha(5), beta(10)
     # epsilon has null metadata, so it won't match either side
     assert result == {"alpha", "beta"}
 
 
 def test_not_in(session):
-    result = _query_names(session, "p.tag NOT IN ('a', 'b')")
+    result = _query_names(session, "m.tag NOT IN ('a', 'b')")
     assert result == {"gamma", "delta"}
 
 
@@ -246,7 +246,7 @@ def test_not_and_compound(session):
     # Delta has count=20, active=False, so doesn't match inner (active != true)
     # Epsilon has null metadata, so doesn't match inner
     # So NOT of inner means: everything except gamma
-    result = _query_names(session, "NOT (p.count > 10 AND p.active = true)")
+    result = _query_names(session, "NOT (m.count > 10 AND m.active = true)")
     # Only gamma satisfies the inner condition (count=15 > 10, active=True)
     # So NOT gives us everyone except gamma
     assert result == {"alpha", "beta", "delta"}
@@ -254,5 +254,5 @@ def test_not_and_compound(session):
 
 def test_not_or_compound(session):
     # NOT (tag = 'a' OR tag = 'b') => NOT(alpha, beta) => gamma, delta
-    result = _query_names(session, "NOT (p.tag = 'a' OR p.tag = 'b')")
+    result = _query_names(session, "NOT (m.tag = 'a' OR m.tag = 'b')")
     assert result == {"gamma", "delta"}

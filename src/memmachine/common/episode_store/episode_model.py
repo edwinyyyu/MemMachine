@@ -5,7 +5,7 @@ import json
 from collections.abc import Iterable
 from enum import Enum
 
-from pydantic import AwareDatetime, BaseModel
+from pydantic import AwareDatetime, BaseModel, JsonValue
 
 from memmachine.common.api import EpisodeType
 from memmachine.common.data_types import PropertyValue
@@ -30,7 +30,7 @@ class EpisodeEntry(BaseModel):
 
     produced_for_id: str | None = None
     episode_type: EpisodeType | None = None
-    properties: dict[str, PropertyValue] | None = None
+    metadata: dict[str, JsonValue] | None = None
     created_at: AwareDatetime | None = None
 
 
@@ -57,7 +57,8 @@ class Episode(BaseModel):
 
     episode_type: EpisodeType = EpisodeType.MESSAGE
     content_type: ContentType = ContentType.STRING
-    properties: dict[str, PropertyValue] | None = None
+    filterable_metadata: dict[str, PropertyValue] | None = None
+    metadata: dict[str, JsonValue] | None = None
 
     def __hash__(self) -> int:
         """Hash an episode by its UID."""

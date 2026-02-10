@@ -73,7 +73,7 @@ class TestMemMachineClient:
             )
 
             memory = project.memory(
-                properties={
+                metadata={
                     "group_id": "test_group",
                     "agent_id": "test_agent",
                     "user_id": "test_user",
@@ -85,10 +85,10 @@ class TestMemMachineClient:
             assert memory.client == client
             assert memory.org_id == "test_org"
             assert memory.project_id == "test_project"
-            assert memory.properties.get("group_id") == "test_group"
-            assert memory.properties.get("agent_id") == "test_agent"
-            assert memory.properties.get("user_id") == "test_user"
-            assert memory.properties.get("session_id") == "test_session"
+            assert memory.metadata.get("group_id") == "test_group"
+            assert memory.metadata.get("agent_id") == "test_agent"
+            assert memory.metadata.get("user_id") == "test_user"
+            assert memory.metadata.get("session_id") == "test_session"
 
     def test_project_memory_creation_with_lists(self):
         """Test creating Memory with list IDs from Project."""
@@ -112,7 +112,7 @@ class TestMemMachineClient:
             )
 
             memory = project.memory(
-                properties={
+                metadata={
                     "group_id": "test_group",
                     "agent_id": "agent1",
                     "user_id": "user1",
@@ -121,8 +121,8 @@ class TestMemMachineClient:
 
             assert memory.org_id == "test_org"
             assert memory.project_id == "test_project"
-            assert memory.properties.get("agent_id") == "agent1"
-            assert memory.properties.get("user_id") == "user1"
+            assert memory.metadata.get("agent_id") == "agent1"
+            assert memory.metadata.get("user_id") == "user1"
 
     def test_project_memory_creation_without_optional_params(self):
         """Test creating Memory with only required params from Project."""
@@ -149,9 +149,9 @@ class TestMemMachineClient:
 
             assert memory.org_id == "test_org"
             assert memory.project_id == "test_project"
-            assert memory.properties.get("group_id") is None
-            assert memory.properties.get("agent_id") is None
-            assert memory.properties.get("user_id") is None
+            assert memory.metadata.get("group_id") is None
+            assert memory.metadata.get("agent_id") is None
+            assert memory.metadata.get("user_id") is None
 
     def test_create_project_success(self):
         """Test successful project creation."""
@@ -346,10 +346,7 @@ class TestMemory:
         """Test Memory.list() hits /memories/list and parses ListResult content."""
         client = MemMachineClient(base_url="http://localhost:8080")
         memory = Memory(
-            client=client,
-            org_id="org1",
-            project_id="proj1",
-            properties={"user_id": "u1"},
+            client=client, org_id="org1", project_id="proj1", metadata={"user_id": "u1"}
         )
 
         mock_response = Mock()
@@ -369,7 +366,8 @@ class TestMemory:
                         "sequence_num": 0,
                         "episode_type": "message",
                         "content_type": "string",
-                        "properties": None,
+                        "filterable_metadata": None,
+                        "metadata": None,
                     }
                 ],
                 "semantic_memory": [],
@@ -394,7 +392,7 @@ class TestMemory:
         assert sent["page_num"] == 0
         assert sent["type"] in (MemoryType.Episodic.value, "episodic")
         # Built-in filters should include user_id when present
-        assert "properties.user_id='u1'" in sent.get("filter", "")
+        assert "metadata.user_id='u1'" in sent.get("filter", "")
 
         from memmachine.common.api.spec import ListResult
 

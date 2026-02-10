@@ -30,7 +30,7 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={
+            metadata={
                 "group_id": "test_group",
                 "agent_id": "test_agent",
                 "user_id": "test_user",
@@ -40,10 +40,10 @@ class TestMemory:
         assert memory.client == mock_client
         assert memory.org_id == "test_org"
         assert memory.project_id == "test_project"
-        assert memory.properties.get("group_id") == "test_group"
-        assert memory.properties.get("agent_id") == "test_agent"
-        assert memory.properties.get("user_id") == "test_user"
-        assert memory.properties.get("session_id") is None  # Not set
+        assert memory.metadata.get("group_id") == "test_group"
+        assert memory.metadata.get("agent_id") == "test_agent"
+        assert memory.metadata.get("user_id") == "test_user"
+        assert memory.metadata.get("session_id") is None  # Not set
 
     def test_init_with_only_required_params(self, mock_client):
         """Test Memory initialization with only org_id and project_id."""
@@ -55,10 +55,10 @@ class TestMemory:
 
         assert memory.org_id == "test_org"
         assert memory.project_id == "test_project"
-        assert memory.properties.get("group_id") is None
-        assert memory.properties.get("agent_id") is None
-        assert memory.properties.get("user_id") is None
-        assert memory.properties.get("session_id") is None
+        assert memory.metadata.get("group_id") is None
+        assert memory.metadata.get("agent_id") is None
+        assert memory.metadata.get("user_id") is None
+        assert memory.metadata.get("session_id") is None
 
     def test_init_missing_org_id_raises_error(self, mock_client):
         """Test that missing org_id raises TypeError."""
@@ -76,11 +76,11 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={"agent_id": "agent1", "user_id": "user1"},
+            metadata={"agent_id": "agent1", "user_id": "user1"},
         )
 
-        assert memory.properties.get("agent_id") == "agent1"
-        assert memory.properties.get("user_id") == "user1"
+        assert memory.metadata.get("agent_id") == "agent1"
+        assert memory.metadata.get("user_id") == "user1"
 
     def test_init_with_custom_session_id(self, mock_client):
         """Test Memory initialization with custom session_id."""
@@ -88,14 +88,14 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={
+            metadata={
                 "agent_id": "agent1",
                 "user_id": "user1",
                 "session_id": "custom_session",
             },
         )
 
-        assert memory.properties.get("session_id") == "custom_session"
+        assert memory.metadata.get("session_id") == "custom_session"
 
     def test_add_success(self, mock_client):
         """Test successful memory addition with v2 API format."""
@@ -111,7 +111,7 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={
+            metadata={
                 "group_id": "test_group",
                 "agent_id": "test_agent",
                 "user_id": "test_user",
@@ -145,10 +145,10 @@ class TestMemory:
         assert "timestamp" not in json_data["messages"][0], (
             "timestamp should not be in message when None (server will use current time)"
         )
-        assert "properties" in json_data["messages"][0]
+        assert "metadata" in json_data["messages"][0]
 
-    def test_add_with_properties(self, mock_client):
-        """Test adding memory with properties."""
+    def test_add_with_metadata(self, mock_client):
+        """Test adding memory with metadata."""
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
@@ -159,11 +159,11 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={"agent_id": "agent1", "user_id": "user1"},
+            metadata={"agent_id": "agent1", "user_id": "user1"},
         )
 
-        properties = {"type": "preference", "category": "food"}
-        result = memory.add("I like pizza", properties=properties)
+        metadata = {"type": "preference", "category": "food"}
+        result = memory.add("I like pizza", metadata=metadata)
 
         assert isinstance(result, list)
         assert len(result) > 0
@@ -172,12 +172,12 @@ class TestMemory:
 
         call_args = mock_client.request.call_args
         json_data = call_args[1]["json"]
-        message_properties = json_data["messages"][0]["properties"]
-        assert message_properties["type"] == "preference"
-        assert message_properties["category"] == "food"
-        # Context fields should also be in properties
-        assert message_properties["user_id"] == "user1"
-        assert message_properties["agent_id"] == "agent1"
+        message_metadata = json_data["messages"][0]["metadata"]
+        assert message_metadata["type"] == "preference"
+        assert message_metadata["category"] == "food"
+        # Context fields should also be in metadata
+        assert message_metadata["user_id"] == "user1"
+        assert message_metadata["agent_id"] == "agent1"
 
     def test_add_with_role(self, mock_client):
         """Test adding memory with different roles."""
@@ -191,7 +191,7 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={"user_id": "user1"},
+            metadata={"user_id": "user1"},
         )
 
         # Test user role (default)
@@ -221,7 +221,7 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={"agent_id": "agent1", "user_id": "user1"},
+            metadata={"agent_id": "agent1", "user_id": "user1"},
         )
 
         memory.add("Content", producer="user1", produced_for="agent1")
@@ -274,7 +274,7 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={"user_id": "user1"},
+            metadata={"user_id": "user1"},
         )
 
         memory.add("Content", episode_type=EpisodeType.MESSAGE)
@@ -282,7 +282,7 @@ class TestMemory:
         call_args = mock_client.request.call_args
         json_data = call_args[1]["json"]
         assert (
-            json_data["messages"][0]["properties"]["episode_type"]
+            json_data["messages"][0]["metadata"]["episode_type"]
             == EpisodeType.MESSAGE.value
         )
 
@@ -294,7 +294,7 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={"agent_id": "agent1", "user_id": "user1"},
+            metadata={"agent_id": "agent1", "user_id": "user1"},
         )
 
         with pytest.raises(requests.RequestException):
@@ -312,7 +312,7 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={"agent_id": "agent1", "user_id": "user1"},
+            metadata={"agent_id": "agent1", "user_id": "user1"},
         )
 
         with pytest.raises(requests.RequestException):
@@ -354,7 +354,7 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={"agent_id": "agent1", "user_id": "user1"},
+            metadata={"agent_id": "agent1", "user_id": "user1"},
         )
 
         results = memory.search("test query")
@@ -386,7 +386,7 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={"agent_id": "agent1", "user_id": "user1"},
+            metadata={"agent_id": "agent1", "user_id": "user1"},
         )
 
         memory.search("query", limit=20)
@@ -407,7 +407,7 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={"agent_id": "agent1", "user_id": "user1"},
+            metadata={"agent_id": "agent1", "user_id": "user1"},
         )
 
         filters = {"category": "work", "type": "preference"}
@@ -503,7 +503,7 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={
+            metadata={
                 "user_id": "user1",
                 "agent_id": "agent1",
                 "session_id": "session1",
@@ -512,9 +512,9 @@ class TestMemory:
 
         default_filters = memory.get_default_filter_dict()
         assert default_filters == {
-            "properties.user_id": "user1",
-            "properties.agent_id": "agent1",
-            "properties.session_id": "session1",
+            "metadata.user_id": "user1",
+            "metadata.agent_id": "agent1",
+            "metadata.session_id": "session1",
         }
 
     def test_get_default_filter_dict_with_partial_fields(self, mock_client):
@@ -523,15 +523,18 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={"user_id": "user1", "agent_id": None, "session_id": "session1"},
+            metadata=cast(
+                dict[str, str],
+                {"user_id": "user1", "agent_id": None, "session_id": "session1"},
+            ),
         )
 
         default_filters = memory.get_default_filter_dict()
         assert default_filters == {
-            "properties.user_id": "user1",
-            "properties.session_id": "session1",
+            "metadata.user_id": "user1",
+            "metadata.session_id": "session1",
         }
-        assert "properties.agent_id" not in default_filters
+        assert "metadata.agent_id" not in default_filters
 
     def test_get_default_filter_dict_with_no_fields(self, mock_client):
         """Test get_default_filter_dict with no context fields set."""
@@ -556,7 +559,7 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={"user_id": "user1", "agent_id": "agent1"},
+            metadata={"user_id": "user1", "agent_id": "agent1"},
         )
 
         # Search with user filters only - built-in filters should be automatically merged
@@ -568,8 +571,8 @@ class TestMemory:
         filter_str = json_data["filter"]
 
         # Should contain both built-in filters (automatically applied) and user filters
-        assert "properties.user_id='user1'" in filter_str
-        assert "properties.agent_id='agent1'" in filter_str
+        assert "metadata.user_id='user1'" in filter_str
+        assert "metadata.agent_id='agent1'" in filter_str
         assert "category='work'" in filter_str
 
     def test_search_automatically_applies_built_in_filters(self, mock_client):
@@ -584,7 +587,7 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={
+            metadata={
                 "user_id": "user1",
                 "agent_id": "agent1",
                 "session_id": "session1",
@@ -599,9 +602,9 @@ class TestMemory:
         filter_str = json_data["filter"]
 
         # Should contain built-in filters automatically
-        assert "properties.user_id='user1'" in filter_str
-        assert "properties.agent_id='agent1'" in filter_str
-        assert "properties.session_id='session1'" in filter_str
+        assert "metadata.user_id='user1'" in filter_str
+        assert "metadata.agent_id='agent1'" in filter_str
+        assert "metadata.session_id='session1'" in filter_str
 
     def test_search_user_filters_override_built_in_filters(self, mock_client):
         """Test that user-provided filters override built-in filters for the same key."""
@@ -615,11 +618,11 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={"user_id": "user1", "agent_id": "agent1"},
+            metadata={"user_id": "user1", "agent_id": "agent1"},
         )
 
         # User provides a filter that conflicts with built-in filter
-        user_filters = {"properties.user_id": "user2"}
+        user_filters = {"metadata.user_id": "user2"}
         memory.search("query", filter_dict=user_filters)
 
         call_args = mock_client.request.call_args
@@ -627,18 +630,18 @@ class TestMemory:
         filter_str = json_data["filter"]
 
         # User-provided filter should override built-in filter
-        assert "properties.user_id='user2'" in filter_str
-        assert "properties.user_id='user1'" not in filter_str
+        assert "metadata.user_id='user2'" in filter_str
+        assert "metadata.user_id='user1'" not in filter_str
         # But other built-in filters should still be present
-        assert "properties.agent_id='agent1'" in filter_str
+        assert "metadata.agent_id='agent1'" in filter_str
 
-    def test_get_current_properties(self, mock_client):
-        """Test get_current_properties method returns context, filters, and filter string."""
+    def test_get_current_metadata(self, mock_client):
+        """Test get_current_metadata method returns context, filters, and filter string."""
         memory = Memory(
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={
+            metadata={
                 "user_id": "user1",
                 "agent_id": "agent1",
                 "session_id": "session1",
@@ -646,58 +649,58 @@ class TestMemory:
             },
         )
 
-        result = memory.get_current_properties()
+        metadata = memory.get_current_metadata()
 
         # Check structure
-        assert "context" in result
-        assert "built_in_filters" in result
-        assert "built_in_filter_string" in result
+        assert "context" in metadata
+        assert "built_in_filters" in metadata
+        assert "built_in_filter_string" in metadata
 
         # Check context
-        context = result["context"]
+        context = metadata["context"]
         assert context["org_id"] == "test_org"
         assert context["project_id"] == "test_project"
-        assert context["properties"]["user_id"] == "user1"
-        assert context["properties"]["agent_id"] == "agent1"
-        assert context["properties"]["session_id"] == "session1"
-        assert context["properties"]["group_id"] == "group1"
+        assert context["metadata"]["user_id"] == "user1"
+        assert context["metadata"]["agent_id"] == "agent1"
+        assert context["metadata"]["session_id"] == "session1"
+        assert context["metadata"]["group_id"] == "group1"
 
         # Check built-in filters
-        filters = result["built_in_filters"]
-        assert filters["properties.user_id"] == "user1"
-        assert filters["properties.agent_id"] == "agent1"
-        assert filters["properties.session_id"] == "session1"
+        filters = metadata["built_in_filters"]
+        assert filters["metadata.user_id"] == "user1"
+        assert filters["metadata.agent_id"] == "agent1"
+        assert filters["metadata.session_id"] == "session1"
 
         # Check filter string
-        filter_str = result["built_in_filter_string"]
-        assert "properties.user_id='user1'" in filter_str
-        assert "properties.agent_id='agent1'" in filter_str
-        assert "properties.session_id='session1'" in filter_str
+        filter_str = metadata["built_in_filter_string"]
+        assert "metadata.user_id='user1'" in filter_str
+        assert "metadata.agent_id='agent1'" in filter_str
+        assert "metadata.session_id='session1'" in filter_str
 
-    def test_get_current_properties_with_partial_context(self, mock_client):
-        """Test get_current_properties with only some context fields set."""
+    def test_get_current_metadata_with_partial_context(self, mock_client):
+        """Test get_current_metadata with only some context fields set."""
         memory = Memory(
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={"user_id": "user1"},
-            # agent_id and session_id are None in properties
+            metadata={"user_id": "user1"},
+            # agent_id and session_id are None in metadata
         )
 
-        result = memory.get_current_properties()
+        metadata = memory.get_current_metadata()
 
         # Only user_id should be in built-in filters
-        filters = result["built_in_filters"]
-        assert "properties.user_id" in filters
-        assert filters["properties.user_id"] == "user1"
-        assert "properties.agent_id" not in filters
-        assert "properties.session_id" not in filters
+        filters = metadata["built_in_filters"]
+        assert "metadata.user_id" in filters
+        assert filters["metadata.user_id"] == "user1"
+        assert "metadata.agent_id" not in filters
+        assert "metadata.session_id" not in filters
 
         # Filter string should only contain user_id
-        filter_str = result["built_in_filter_string"]
-        assert "properties.user_id='user1'" in filter_str
-        assert "properties.agent_id" not in filter_str
-        assert "properties.session_id" not in filter_str
+        filter_str = metadata["built_in_filter_string"]
+        assert "metadata.user_id='user1'" in filter_str
+        assert "metadata.agent_id" not in filter_str
+        assert "metadata.session_id" not in filter_str
         assert "category='work'" not in filter_str
 
     def test_search_client_closed(self, mock_client):
@@ -718,7 +721,7 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={
+            metadata={
                 "group_id": "test_group",
                 "agent_id": "agent1",
                 "user_id": "user1",
@@ -730,10 +733,10 @@ class TestMemory:
 
         assert context["org_id"] == "test_org"
         assert context["project_id"] == "test_project"
-        assert context["properties"]["group_id"] == "test_group"
-        assert context["properties"]["agent_id"] == "agent1"
-        assert context["properties"]["user_id"] == "user1"
-        assert context["properties"]["session_id"] == "test_session"
+        assert context["metadata"]["group_id"] == "test_group"
+        assert context["metadata"]["agent_id"] == "agent1"
+        assert context["metadata"]["user_id"] == "user1"
+        assert context["metadata"]["session_id"] == "test_session"
 
     def test_repr(self, mock_client):
         """Test string representation."""
@@ -741,7 +744,7 @@ class TestMemory:
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={
+            metadata={
                 "group_id": "test_group",
                 "agent_id": "agent1",
                 "user_id": "user1",
@@ -767,13 +770,13 @@ class TestMemory:
         memory.mark_client_closed()
         assert memory._client_closed is True
 
-    def test_build_properties(self, mock_client):
-        """Test that _build_properties includes context fields."""
+    def test_build_metadata(self, mock_client):
+        """Test that _build_metadata includes context fields."""
         memory = Memory(
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={
+            metadata={
                 "group_id": "test_group",
                 "agent_id": "agent1",
                 "user_id": "user1",
@@ -781,28 +784,28 @@ class TestMemory:
             },
         )
 
-        result = memory._build_properties({"custom": "value"})
+        metadata = memory._build_metadata({"custom": "value"})
 
-        assert result["custom"] == "value"
-        assert result["group_id"] == "test_group"
-        assert result["user_id"] == "user1"
-        assert result["agent_id"] == "agent1"
-        assert result["session_id"] == "test_session"
+        assert metadata["custom"] == "value"
+        assert metadata["group_id"] == "test_group"
+        assert metadata["user_id"] == "user1"
+        assert metadata["agent_id"] == "agent1"
+        assert metadata["session_id"] == "test_session"
 
-    def test_build_properties_with_string_ids(self, mock_client):
-        """Test that _build_properties handles string IDs correctly."""
+    def test_build_metadata_with_string_ids(self, mock_client):
+        """Test that _build_metadata handles string IDs correctly."""
         memory = Memory(
             client=mock_client,
             org_id="test_org",
             project_id="test_project",
-            properties={"agent_id": "agent1", "user_id": "user1"},
+            metadata={"agent_id": "agent1", "user_id": "user1"},
         )
 
-        result = memory._build_properties({})
+        metadata = memory._build_metadata({})
 
         # Should store as strings
-        assert result["agent_id"] == "agent1"
-        assert result["user_id"] == "user1"
+        assert metadata["agent_id"] == "agent1"
+        assert metadata["user_id"] == "user1"
 
     # Delete episodic method tests
     def test_delete_episodic_success(self, mock_client):

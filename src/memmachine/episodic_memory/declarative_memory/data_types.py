@@ -5,6 +5,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
+from pydantic import JsonValue
+
 from memmachine.common.data_types import PropertyValue
 
 
@@ -24,9 +26,10 @@ class Episode:
     source: str
     content_type: ContentType
     content: Any
-    properties: dict[str, PropertyValue] = field(
+    filterable_properties: dict[str, PropertyValue] = field(
         default_factory=dict,
     )
+    user_metadata: JsonValue = None
 
     def __eq__(self, other: object) -> bool:
         """Compare episodes by UID."""
@@ -38,7 +41,8 @@ class Episode:
             and self.source == other.source
             and self.content_type == other.content_type
             and self.content == other.content
-            and self.properties == other.properties
+            and self.filterable_properties == other.filterable_properties
+            and self.user_metadata == other.user_metadata
         )
 
     def __hash__(self) -> int:
@@ -55,7 +59,7 @@ class Derivative:
     source: str
     content_type: ContentType
     content: Any
-    properties: dict[str, PropertyValue] = field(
+    filterable_properties: dict[str, PropertyValue] = field(
         default_factory=dict,
     )
 
@@ -69,7 +73,7 @@ class Derivative:
             and self.source == other.source
             and self.content_type == other.content_type
             and self.content == other.content
-            and self.properties == other.properties
+            and self.filterable_properties == other.filterable_properties
         )
 
     def __hash__(self) -> int:
@@ -81,12 +85,12 @@ _MANGLE_PROPERTY_KEY_PREFIX = "filterable_"
 
 
 def mangle_property_key(key: str) -> str:
-    """Prefix property keys with the mangling token."""
+    """Prefix filterable property keys with the mangling token."""
     return _MANGLE_PROPERTY_KEY_PREFIX + key
 
 
 def demangle_property_key(mangled_key: str) -> str:
-    """Remove the mangling prefix from a property key."""
+    """Remove the mangling prefix from a filterable property key."""
     return mangled_key.removeprefix(_MANGLE_PROPERTY_KEY_PREFIX)
 
 
