@@ -342,7 +342,9 @@ class ShortTermMemory:
         internal_name, is_user_metadata = normalize_filter_field(field)
         if is_user_metadata:
             key = demangle_user_metadata_key(internal_name)
-            if episode.filterable_metadata and isinstance(episode.filterable_metadata, dict):
+            if episode.filterable_metadata and isinstance(
+                episode.filterable_metadata, dict
+            ):
                 return episode.filterable_metadata.get(key)
             return None
         match internal_name:

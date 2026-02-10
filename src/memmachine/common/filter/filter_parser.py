@@ -283,7 +283,7 @@ def normalize_filter_field(field: str) -> tuple[str, bool]:
     """
     for prefix in USER_METADATA_QUERY_PREFIXES:
         if field.startswith(prefix):
-            key = field[len(prefix) :]
+            key = field.removeprefix(prefix)
             return f"{USER_METADATA_STORAGE_PREFIX}{key}", True
     return field, False
 
