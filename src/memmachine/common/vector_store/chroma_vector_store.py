@@ -9,6 +9,13 @@ from uuid import UUID
 
 from chromadb.api import AsyncClientAPI
 from chromadb.api.models.AsyncCollection import AsyncCollection
+from chromadb.api.types import (
+    BoolInvertedIndexConfig,
+    FloatInvertedIndexConfig,
+    IntInvertedIndexConfig,
+    Schema,
+    StringInvertedIndexConfig,
+)
 from pydantic import BaseModel, Field, InstanceOf
 
 from memmachine.common.data_types import SimilarityMetric
@@ -22,6 +29,15 @@ from memmachine.common.filter.filter_parser import (
     FilterExpr,
 )
 from memmachine.common.filter.filter_parser import (
+    In as FilterIn,
+)
+from memmachine.common.filter.filter_parser import (
+    IsNull as FilterIsNull,
+)
+from memmachine.common.filter.filter_parser import (
+    Not as FilterNot,
+)
+from memmachine.common.filter.filter_parser import (
     Or as FilterOr,
 )
 from memmachine.common.metrics_factory import MetricsFactory
@@ -32,6 +48,8 @@ from .vector_store import Collection, VectorStore
 logger = logging.getLogger(__name__)
 
 _DATETIME_PREFIX = "__dt__:"
+_NULL_SENTINEL = "__null__"
+_ESCAPED_PREFIX = "__esc__:"
 
 _SIMILARITY_METRIC_TO_CHROMA_SPACE: dict[SimilarityMetric, str] = {
     SimilarityMetric.COSINE: "cosine",
@@ -46,11 +64,33 @@ _CHROMA_SPACE_TO_SIMILARITY_METRIC: dict[str, SimilarityMetric] = {
 _OP_MAP: dict[str, str] = {
     "=": "$eq",
     "!=": "$ne",
-    "<>": "$ne",
     ">": "$gt",
     ">=": "$gte",
     "<": "$lt",
     "<=": "$lte",
+}
+
+_INVERSE_OP_MAP: dict[str, str] = {
+    "=": "$ne",
+    "!=": "$eq",
+    ">": "$lte",
+    ">=": "$lt",
+    "<": "$gte",
+    "<=": "$gt",
+}
+
+_PROPERTY_TYPE_TO_INDEX_CONFIG: dict[
+    type,
+    BoolInvertedIndexConfig
+    | IntInvertedIndexConfig
+    | FloatInvertedIndexConfig
+    | StringInvertedIndexConfig,
+] = {
+    bool: BoolInvertedIndexConfig(),
+    int: IntInvertedIndexConfig(),
+    float: FloatInvertedIndexConfig(),
+    str: StringInvertedIndexConfig(),
+    datetime: StringInvertedIndexConfig(),  # datetimes serialize to "__dt__:" prefixed strings
 }
 
 
@@ -59,17 +99,38 @@ _OP_MAP: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
+def _build_chroma_schema(
+    properties_schema: Mapping[str, type[PropertyValue]],
+) -> Schema:
+    """Build a ChromaDB Schema with inverted indexes for the given properties."""
+    schema = Schema()
+    for field_name, field_type in properties_schema.items():
+        index_config = _PROPERTY_TYPE_TO_INDEX_CONFIG.get(field_type)
+        if index_config is None:
+            msg = f"Unsupported property type for indexing: {field_type}"
+            raise TypeError(msg)
+        schema.create_index(config=index_config, key=field_name)
+    return schema
+
+
 def _serialize_property_value(value: PropertyValue) -> str | int | float | bool:
     """Serialize a property value for Chroma metadata storage."""
     if isinstance(value, datetime):
         return f"{_DATETIME_PREFIX}{value.isoformat()}"
+    if isinstance(value, str) and (
+        value == _NULL_SENTINEL or value.startswith(_ESCAPED_PREFIX)
+    ):
+        return f"{_ESCAPED_PREFIX}{value}"
     return value
 
 
 def _deserialize_property_value(value: bool | float | str) -> PropertyValue:
     """Deserialize a Chroma metadata value back to a PropertyValue."""
-    if isinstance(value, str) and value.startswith(_DATETIME_PREFIX):
-        return datetime.fromisoformat(value[len(_DATETIME_PREFIX) :])
+    if isinstance(value, str):
+        if value.startswith(_ESCAPED_PREFIX):
+            return value[len(_ESCAPED_PREFIX) :]
+        if value.startswith(_DATETIME_PREFIX):
+            return datetime.fromisoformat(value[len(_DATETIME_PREFIX) :])
     return value
 
 
@@ -95,6 +156,12 @@ def _build_chroma_where(expr: FilterExpr) -> dict[str, Any]:
     """Convert a FilterExpr tree to a Chroma ``where`` dictionary."""
     if isinstance(expr, FilterComparison):
         return _build_chroma_comparison(expr)
+    if isinstance(expr, FilterIn):
+        return _build_chroma_in(expr)
+    if isinstance(expr, FilterIsNull):
+        return {expr.field: {"$eq": _NULL_SENTINEL}}
+    if isinstance(expr, FilterNot):
+        return _build_chroma_not(expr)
     if isinstance(expr, FilterAnd):
         return {
             "$and": [_build_chroma_where(expr.left), _build_chroma_where(expr.right)]
@@ -109,31 +176,60 @@ def _build_chroma_where(expr: FilterExpr) -> dict[str, Any]:
 
 def _build_chroma_comparison(comp: FilterComparison) -> dict[str, Any]:
     """Convert a single Comparison node into a Chroma where clause."""
-    field = comp.field
-    op = comp.op
-    value = comp.value
-
-    if op in ("is_null", "is_not_null"):
-        msg = f"ChromaVectorStore does not support '{op}' filter operations"
-        raise NotImplementedError(msg)
-
-    if op == "in":
-        if not isinstance(value, list):
-            msg = "'in' operator requires a list value"
-            raise ValueError(msg)
-        serialized = [_serialize_property_value(v) for v in value if v is not None]
-        return {field: {"$in": serialized}}
-
-    chroma_op = _OP_MAP.get(op)
+    chroma_op = _OP_MAP.get(comp.op)
     if chroma_op is None:
-        msg = f"Unsupported filter operator: {op}"
+        msg = f"Unsupported filter operator: {comp.op}"
         raise NotImplementedError(msg)
+    serialized_value = _serialize_property_value(comp.value)
+    return {comp.field: {chroma_op: serialized_value}}
 
-    if isinstance(value, list):
-        msg = f"Unexpected list value for operator '{op}'"
-        raise TypeError(msg)
-    serialized_value = _serialize_property_value(value) if value is not None else value
-    return {field: {chroma_op: serialized_value}}
+
+def _build_chroma_in(expr: FilterIn) -> dict[str, Any]:
+    """Convert an In node into a Chroma where clause."""
+    serialized = [_serialize_property_value(v) for v in expr.values]
+    return {expr.field: {"$in": serialized}}
+
+
+def _build_chroma_not(expr: FilterNot) -> dict[str, Any]:
+    """Convert a Not node into a Chroma where clause.
+
+    ChromaDB has no generic ``$not`` operator, so we handle each case
+    by algebraic inversion.
+    """
+    inner = expr.expr
+    if isinstance(inner, FilterComparison):
+        chroma_op = _INVERSE_OP_MAP.get(inner.op)
+        if chroma_op is None:
+            msg = f"Cannot negate operator: {inner.op}"
+            raise NotImplementedError(msg)
+        serialized_value = _serialize_property_value(inner.value)
+        return {inner.field: {chroma_op: serialized_value}}
+    if isinstance(inner, FilterIn):
+        serialized = [_serialize_property_value(v) for v in inner.values]
+        return {inner.field: {"$nin": serialized}}
+    if isinstance(inner, FilterIsNull):
+        return {inner.field: {"$ne": _NULL_SENTINEL}}
+    if isinstance(inner, FilterNot):
+        # Double negation elimination
+        return _build_chroma_where(inner.expr)
+    if isinstance(inner, FilterAnd):
+        # De Morgan: NOT(A AND B) → (NOT A) OR (NOT B)
+        return {
+            "$or": [
+                _build_chroma_not(FilterNot(expr=inner.left)),
+                _build_chroma_not(FilterNot(expr=inner.right)),
+            ]
+        }
+    if isinstance(inner, FilterOr):
+        # De Morgan: NOT(A OR B) → (NOT A) AND (NOT B)
+        return {
+            "$and": [
+                _build_chroma_not(FilterNot(expr=inner.left)),
+                _build_chroma_not(FilterNot(expr=inner.right)),
+            ]
+        }
+    msg = f"Unsupported filter expression type inside Not: {type(inner)}"
+    raise NotImplementedError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +280,7 @@ class ChromaVectorStore(VectorStore):
 
         self._client: AsyncClientAPI = params.client
         self._collection_metrics: dict[str, SimilarityMetric] = {}
+        self._collection_schemas: dict[str, Mapping[str, type[PropertyValue]]] = {}
         self._collection_handles: dict[str, ChromaCollection] = {}
 
         # Metrics initialization
@@ -292,7 +389,7 @@ class ChromaVectorStore(VectorStore):
         *,
         vector_dimensions: int,  # noqa: ARG002
         similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
-        properties_schema: Mapping[str, type[PropertyValue]] | None = None,  # noqa: ARG002
+        properties_schema: Mapping[str, type[PropertyValue]] | None = None,
     ) -> None:
         """Create a collection in the vector store."""
         start_time = time.monotonic()
@@ -302,11 +399,19 @@ class ChromaVectorStore(VectorStore):
             raise ValueError(msg)
 
         space = _SIMILARITY_METRIC_TO_CHROMA_SPACE[similarity_metric]
+
+        chroma_schema: Schema | None = None
+        if properties_schema is not None:
+            chroma_schema = _build_chroma_schema(properties_schema)
+
         await self._client.create_collection(
             name=collection_name,
             metadata={"hnsw:space": space},
+            schema=chroma_schema,
         )
         self._collection_metrics[collection_name] = similarity_metric
+        if properties_schema is not None:
+            self._collection_schemas[collection_name] = properties_schema
 
         end_time = time.monotonic()
         self._collect_metrics(
@@ -341,6 +446,7 @@ class ChromaVectorStore(VectorStore):
 
         await self._client.delete_collection(name=collection_name)
         self._collection_metrics.pop(collection_name, None)
+        self._collection_schemas.pop(collection_name, None)
 
         end_time = time.monotonic()
         self._collect_metrics(
@@ -365,6 +471,12 @@ class ChromaVectorStore(VectorStore):
     def cache_similarity_metric(self, name: str, metric: SimilarityMetric) -> None:
         """Cache a similarity metric for a collection."""
         self._collection_metrics[name] = metric
+
+    def get_cached_properties_schema(
+        self, name: str
+    ) -> Mapping[str, type[PropertyValue]] | None:
+        """Return cached properties schema for a collection, if available."""
+        return self._collection_schemas.get(name)
 
     def _collect_metrics(
         self,
@@ -455,6 +567,8 @@ class ChromaCollection(Collection):
         embeddings: list[list[float]] = []
         metadatas: list[dict[str, str | int | float | bool]] = []
 
+        schema = self._store.get_cached_properties_schema(self._collection_name)
+
         for record in records_list:
             ids.append(str(record.uuid))
             embeddings.append(record.vector if record.vector is not None else [])
@@ -462,6 +576,10 @@ class ChromaCollection(Collection):
             if record.properties:
                 for key, value in record.properties.items():
                     metadata[key] = _serialize_property_value(value)
+            if schema is not None:
+                for key in schema:
+                    if key not in metadata:
+                        metadata[key] = _NULL_SENTINEL
             metadatas.append(metadata)
 
         collection = await self._get_chroma_collection()
@@ -537,7 +655,7 @@ class ChromaCollection(Collection):
                 properties = {
                     k: _deserialize_property_value(v)
                     for k, v in raw_metadatas[i].items()
-                    if isinstance(v, (str, int, float, bool))
+                    if isinstance(v, (str, int, float, bool)) and v != _NULL_SENTINEL
                 }
 
             vector: list[float] | None = None
@@ -599,7 +717,7 @@ class ChromaCollection(Collection):
                 properties = {
                     k: _deserialize_property_value(v)
                     for k, v in raw_metadatas[i].items()
-                    if isinstance(v, (str, int, float, bool))
+                    if isinstance(v, (str, int, float, bool)) and v != _NULL_SENTINEL
                 }
 
             vector: list[float] | None = None
