@@ -1,7 +1,7 @@
 """Tests for QdrantVectorStore."""
 
 import math
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
@@ -10,7 +10,7 @@ import pytest_asyncio
 from qdrant_client import AsyncQdrantClient
 
 from memmachine.common.data_types import SimilarityMetric
-from memmachine.common.filter.filter_parser import And, Comparison, Or
+from memmachine.common.filter.filter_parser import And, Comparison, In, IsNull, Not, Or
 from memmachine.common.metrics_factory import MetricsFactory
 from memmachine.common.vector_store.data_types import Record
 from memmachine.common.vector_store.qdrant_vector_store import (
@@ -319,9 +319,7 @@ class TestFilters:
         results = list(
             await collection.query(
                 query_vector=v1,
-                property_filter=Comparison(
-                    field="name", op="in", value=["alice", "carol"]
-                ),
+                property_filter=In(field="name", values=["alice", "carol"]),
             )
         )
         uuids = {r.record.uuid for r in results}
@@ -343,7 +341,7 @@ class TestFilters:
         results = list(
             await collection.query(
                 query_vector=v1,
-                property_filter=Comparison(field="name", op="is_null", value=None),
+                property_filter=IsNull(field="name"),
             )
         )
         assert len(results) == 1
@@ -363,11 +361,52 @@ class TestFilters:
         results = list(
             await collection.query(
                 query_vector=v1,
-                property_filter=Comparison(field="name", op="is_not_null", value=None),
+                property_filter=Not(expr=IsNull(field="name")),
             )
         )
         assert len(results) == 1
         assert results[0].record.uuid == r1.uuid
+
+    @pytest.mark.asyncio
+    async def test_filter_eq_float(self, collection):
+        r1, _r2, _r3, v1 = await self._setup_filter_data(collection)
+
+        results = list(
+            await collection.query(
+                query_vector=v1,
+                property_filter=Comparison(field="score", op="=", value=9.5),
+            )
+        )
+        assert len(results) == 1
+        assert results[0].record.uuid == r1.uuid
+
+    @pytest.mark.asyncio
+    async def test_filter_eq_float_whole_number(self, collection):
+        _r1, _r2, r3, v1 = await self._setup_filter_data(collection)
+
+        results = list(
+            await collection.query(
+                query_vector=v1,
+                property_filter=Comparison(field="score", op="=", value=8.0),
+            )
+        )
+        assert len(results) == 1
+        assert results[0].record.uuid == r3.uuid
+
+    @pytest.mark.asyncio
+    async def test_filter_ne_float(self, collection):
+        r1, r2, r3, v1 = await self._setup_filter_data(collection)
+
+        results = list(
+            await collection.query(
+                query_vector=v1,
+                property_filter=Comparison(field="score", op="!=", value=9.5),
+            )
+        )
+        uuids = {r.record.uuid for r in results}
+        assert r1.uuid not in uuids
+        assert r2.uuid in uuids
+        assert r3.uuid in uuids
 
     @pytest.mark.asyncio
     async def test_filter_and(self, collection):
@@ -401,6 +440,21 @@ class TestFilters:
         uuids = {r.record.uuid for r in results}
         assert r1.uuid in uuids
         assert r3.uuid in uuids
+        assert len(results) == 2
+
+    @pytest.mark.asyncio
+    async def test_filter_not_comparison(self, collection):
+        r1, r2, _r3, v1 = await self._setup_filter_data(collection)
+
+        results = list(
+            await collection.query(
+                query_vector=v1,
+                property_filter=Not(expr=Comparison(field="age", op=">", value=30)),
+            )
+        )
+        uuids = {r.record.uuid for r in results}
+        assert r1.uuid in uuids
+        assert r2.uuid in uuids
         assert len(results) == 2
 
 
@@ -539,6 +593,107 @@ class TestDatetime:
         )
         assert len(results) == 1
         assert results[0].record.uuid == r2.uuid
+
+    @pytest.mark.asyncio
+    async def test_datetime_filter_eq(self, collection):
+        v1 = _normalize([1.0, 0.0, 0.0])
+        v2 = _normalize([1.0, 0.1, 0.0])
+
+        dt1 = datetime(2024, 1, 1, tzinfo=UTC)
+        dt2 = datetime(2024, 6, 15, tzinfo=UTC)
+
+        r1 = _make_record(vector=v1, properties={"name": "old", "created_at": dt1})
+        r2 = _make_record(vector=v2, properties={"name": "new", "created_at": dt2})
+
+        await collection.upsert(records=[r1, r2])
+
+        results = list(
+            await collection.query(
+                query_vector=v1,
+                property_filter=Comparison(field="created_at", op="=", value=dt1),
+            )
+        )
+        assert len(results) == 1
+        assert results[0].record.uuid == r1.uuid
+
+    @pytest.mark.asyncio
+    async def test_datetime_filter_ne(self, collection):
+        v1 = _normalize([1.0, 0.0, 0.0])
+        v2 = _normalize([1.0, 0.1, 0.0])
+
+        dt1 = datetime(2024, 1, 1, tzinfo=UTC)
+        dt2 = datetime(2024, 6, 15, tzinfo=UTC)
+
+        r1 = _make_record(vector=v1, properties={"name": "old", "created_at": dt1})
+        r2 = _make_record(vector=v2, properties={"name": "new", "created_at": dt2})
+
+        await collection.upsert(records=[r1, r2])
+
+        results = list(
+            await collection.query(
+                query_vector=v1,
+                property_filter=Comparison(field="created_at", op="!=", value=dt1),
+            )
+        )
+        assert len(results) == 1
+        assert results[0].record.uuid == r2.uuid
+
+    @pytest.mark.asyncio
+    async def test_datetime_filter_eq_cross_timezone(self, collection):
+        """Equality filter matches when the filter value is the same instant in a different timezone."""
+        v1 = _normalize([1.0, 0.0, 0.0])
+        v2 = _normalize([1.0, 0.1, 0.0])
+
+        dt_utc = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC)
+        dt_other = datetime(2024, 6, 15, 18, 0, 0, tzinfo=UTC)
+
+        r1 = _make_record(vector=v1, properties={"name": "a", "created_at": dt_utc})
+        r2 = _make_record(vector=v2, properties={"name": "b", "created_at": dt_other})
+        await collection.upsert(records=[r1, r2])
+
+        # Filter using UTC+5 representation of the same instant as dt_utc
+        plus5 = timezone(timedelta(hours=5))
+        dt_filter = datetime(2024, 6, 15, 17, 0, 0, tzinfo=plus5)
+
+        results = list(
+            await collection.query(
+                query_vector=v1,
+                property_filter=Comparison(field="created_at", op="=", value=dt_filter),
+            )
+        )
+        assert len(results) == 1
+        assert results[0].record.uuid == r1.uuid
+
+    @pytest.mark.asyncio
+    async def test_datetime_filter_range_cross_timezone(self, collection):
+        """Range filter works correctly when the filter value uses a different timezone."""
+        v1 = _normalize([1.0, 0.0, 0.0])
+        v2 = _normalize([1.0, 0.1, 0.0])
+        v3 = _normalize([1.0, 0.2, 0.0])
+
+        dt1 = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+        dt2 = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC)
+        dt3 = datetime(2024, 12, 31, 23, 0, 0, tzinfo=UTC)
+
+        r1 = _make_record(vector=v1, properties={"name": "early", "created_at": dt1})
+        r2 = _make_record(vector=v2, properties={"name": "mid", "created_at": dt2})
+        r3 = _make_record(vector=v3, properties={"name": "late", "created_at": dt3})
+        await collection.upsert(records=[r1, r2, r3])
+
+        # Use UTC-8 (PST) for the cutoff: 2024-06-01 00:00 PST = 2024-06-01 08:00 UTC
+        pst = timezone(timedelta(hours=-8))
+        cutoff = datetime(2024, 6, 1, 0, 0, 0, tzinfo=pst)
+
+        results = list(
+            await collection.query(
+                query_vector=v1,
+                property_filter=Comparison(field="created_at", op=">=", value=cutoff),
+            )
+        )
+        uuids = {r.record.uuid for r in results}
+        assert r1.uuid not in uuids
+        assert r2.uuid in uuids
+        assert r3.uuid in uuids
 
 
 # ── Metrics ──

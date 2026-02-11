@@ -20,6 +20,15 @@ from memmachine.common.filter.filter_parser import (
     FilterExpr,
 )
 from memmachine.common.filter.filter_parser import (
+    In as FilterIn,
+)
+from memmachine.common.filter.filter_parser import (
+    IsNull as FilterIsNull,
+)
+from memmachine.common.filter.filter_parser import (
+    Not as FilterNot,
+)
+from memmachine.common.filter.filter_parser import (
     Or as FilterOr,
 )
 from memmachine.common.metrics_factory import MetricsFactory
@@ -54,12 +63,16 @@ def _build_qdrant_filter(expr: FilterExpr) -> models.Filter:
     """Convert a FilterExpr tree into a Qdrant Filter."""
     if isinstance(expr, FilterComparison):
         return _build_qdrant_comparison(expr)
+    if isinstance(expr, FilterIn):
+        return _in_filter(expr.field, expr.values)
+    if isinstance(expr, FilterIsNull):
+        return _null_filter(expr.field, negate=False)
+    if isinstance(expr, FilterNot):
+        return models.Filter(must_not=[_build_qdrant_filter(expr.expr)])
     if isinstance(expr, FilterAnd):
         left = _build_qdrant_filter(expr.left)
         right = _build_qdrant_filter(expr.right)
-        left_conditions = list(left.must) if left.must else []
-        right_conditions = list(right.must) if right.must else []
-        return models.Filter(must=[*left_conditions, *right_conditions])
+        return models.Filter(must=[left, right])
     if isinstance(expr, FilterOr):
         left = _build_qdrant_filter(expr.left)
         right = _build_qdrant_filter(expr.right)
@@ -68,32 +81,31 @@ def _build_qdrant_filter(expr: FilterExpr) -> models.Filter:
     raise TypeError(msg)
 
 
-def _to_match_value(value: object) -> int | str:
+def _to_match_value(value: PropertyValue) -> int | str:
     """Convert a filter value to a Qdrant MatchValue-compatible type."""
     if isinstance(value, datetime):
-        return value.isoformat()
+        msg = "datetime cannot be used with MatchValue; use a DatetimeRange filter"
+        raise TypeError(msg)
     if isinstance(value, bool):
         return int(value)
     if isinstance(value, int):
         return value
     if isinstance(value, str):
         return value
-    if isinstance(value, float):
-        return int(value) if value == int(value) else str(value)
-    msg = f"Unsupported match value type: {type(value)}"
+    # float
+    if value == int(value):
+        return int(value)
+    msg = (
+        f"Non-integer float {value} cannot be used with MatchValue; use a range filter"
+    )
     raise TypeError(msg)
 
 
-def _to_range_value(value: object) -> int | float | str:
+def _to_range_value(value: PropertyValue) -> int | float | str:
     """Convert a filter value for Qdrant Range."""
     if isinstance(value, datetime):
         return value.isoformat()
-    if isinstance(value, (bool, int, float)):
-        return value
-    if isinstance(value, str):
-        return value
-    msg = f"Unsupported range value type: {type(value)}"
-    raise TypeError(msg)
+    return value
 
 
 def _build_qdrant_comparison(comp: FilterComparison) -> models.Filter:
@@ -102,21 +114,15 @@ def _build_qdrant_comparison(comp: FilterComparison) -> models.Filter:
     op = comp.op
     value = comp.value
 
-    if op == "=":
-        return _match_filter(field, value, negate=False)
-    if op in ("!=", "<>"):
-        return _match_filter(field, value, negate=True)
-    if op == "in":
-        return _in_filter(field, value)
-
-    range_param = _RANGE_OPS.get(op)
-    if range_param is not None:
-        return _range_filter(field, value, range_param)
-
-    if op == "is_null":
-        return _null_filter(field, negate=False)
-    if op == "is_not_null":
-        return _null_filter(field, negate=True)
+    if op in ("=", "!="):
+        negate = op == "!="
+        if isinstance(value, float) and value != int(value):
+            return _float_eq_filter(field, value, negate=negate)
+        if isinstance(value, datetime):
+            return _datetime_eq_filter(field, value, negate=negate)
+        return _match_filter(field, value, negate=negate)
+    if op in _RANGE_OPS:
+        return _range_filter(field, value, _RANGE_OPS[op])
 
     msg = f"Unsupported filter operator: {op}"
     raise ValueError(msg)
@@ -124,7 +130,7 @@ def _build_qdrant_comparison(comp: FilterComparison) -> models.Filter:
 
 def _match_filter(
     field: str,
-    value: object,
+    value: PropertyValue,
     *,
     negate: bool,
 ) -> models.Filter:
@@ -137,16 +143,34 @@ def _match_filter(
     return models.Filter(must=[cond])
 
 
-def _in_filter(field: str, value: object) -> models.Filter:
-    if not isinstance(value, list):
-        msg = "Expected list value for 'in' operator"
-        raise TypeError(msg)
-    serialized: list[str] | list[int] = [_to_match_value(v) for v in value]  # type: ignore[assignment]
+def _float_eq_filter(field: str, value: float, *, negate: bool) -> models.Filter:
+    """Use a range filter for float equality since MatchValue doesn't accept floats."""
+    cond = models.FieldCondition(
+        key=field,
+        range=models.Range(gte=value, lte=value),
+    )
+    if negate:
+        return models.Filter(must_not=[cond])
+    return models.Filter(must=[cond])
+
+
+def _datetime_eq_filter(field: str, value: datetime, *, negate: bool) -> models.Filter:
+    """Use a DatetimeRange filter for datetime equality since MatchValue doesn't accept datetimes."""
+    cond = models.FieldCondition(
+        key=field,
+        range=models.DatetimeRange(gte=value, lte=value),
+    )
+    if negate:
+        return models.Filter(must_not=[cond])
+    return models.Filter(must=[cond])
+
+
+def _in_filter(field: str, value: list[int] | list[str]) -> models.Filter:
     return models.Filter(
         must=[
             models.FieldCondition(
                 key=field,
-                match=models.MatchAny(any=serialized),
+                match=models.MatchAny(any=value),
             ),
         ],
     )
@@ -154,7 +178,7 @@ def _in_filter(field: str, value: object) -> models.Filter:
 
 def _range_filter(
     field: str,
-    value: object,
+    value: PropertyValue,
     param: str,
 ) -> models.Filter:
     if isinstance(value, datetime):
