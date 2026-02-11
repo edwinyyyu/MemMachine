@@ -15,18 +15,15 @@ from pydantic import BaseModel, Field, InstanceOf
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from memmachine.common.data_types import FilterablePropertyValue, SimilarityMetric
+from memmachine.common.data_types import SimilarityMetric
 from memmachine.common.filter.filter_parser import (
-    And as FilterAnd,
-)
-from memmachine.common.filter.filter_parser import (
-    Comparison as FilterComparison,
-)
-from memmachine.common.filter.filter_parser import (
+    And,
+    Comparison,
     FilterExpr,
-)
-from memmachine.common.filter.filter_parser import (
-    Or as FilterOr,
+    In,
+    IsNull,
+    Not,
+    Or,
 )
 from memmachine.common.metrics_factory import MetricsFactory
 
@@ -172,46 +169,48 @@ class _FilterCompiler:
 
     def compile(self, expr: FilterExpr) -> str:
         """Compile a FilterExpr into a SQL WHERE clause fragment."""
-        if isinstance(expr, FilterComparison):
+        if isinstance(expr, Comparison):
             return self._compile_comparison(expr)
-        if isinstance(expr, FilterAnd):
+        if isinstance(expr, In):
+            return self._compile_in(expr)
+        if isinstance(expr, IsNull):
+            return self._compile_is_null(expr)
+        if isinstance(expr, And):
             left = self.compile(expr.left)
             right = self.compile(expr.right)
             return f"({left}) AND ({right})"
-        if isinstance(expr, FilterOr):
+        if isinstance(expr, Or):
             left = self.compile(expr.left)
             right = self.compile(expr.right)
             return f"({left}) OR ({right})"
+        if isinstance(expr, Not):
+            inner = self.compile(expr.expr)
+            return f"NOT ({inner})"
         msg = f"Unsupported filter expression type: {type(expr)}"
         raise TypeError(msg)
 
-    def _compile_comparison(self, comp: FilterComparison) -> str:
+    def _compile_comparison(self, comp: Comparison) -> str:
         json_path = f"json_extract(r.properties, '$.{comp.field}')"
-
-        if comp.op == "is_null":
-            return f"{json_path} IS NULL"
-        if comp.op == "is_not_null":
-            return f"{json_path} IS NOT NULL"
-
-        if comp.op == "in":
-            if not isinstance(comp.value, list):
-                msg = "'in' operator requires a list value"
-                raise TypeError(msg)
-            placeholders = []
-            for v in comp.value:
-                pname = self._next_param()
-                self.params[pname] = self._bind_value(v)
-                placeholders.append(f":{pname}")
-            return f"{json_path} IN ({', '.join(placeholders)})"
-
         pname = self._next_param()
         self.params[pname] = self._bind_value(comp.value)
-        sql_op = {"=": "=", ">": ">", "<": "<", ">=": ">=", "<=": "<="}[comp.op]
-        return f"{json_path} {sql_op} :{pname}"
+        return f"{json_path} {comp.op} :{pname}"
+
+    def _compile_in(self, expr: In) -> str:
+        json_path = f"json_extract(r.properties, '$.{expr.field}')"
+        placeholders = []
+        for v in expr.values:
+            pname = self._next_param()
+            self.params[pname] = self._bind_value(v)
+            placeholders.append(f":{pname}")
+        return f"{json_path} IN ({', '.join(placeholders)})"
+
+    def _compile_is_null(self, expr: IsNull) -> str:
+        json_path = f"json_extract(r.properties, '$.{expr.field}')"
+        return f"{json_path} IS NULL"
 
     @staticmethod
     def _bind_value(
-        value: FilterablePropertyValue | list[FilterablePropertyValue],
+        value: PropertyValue,
     ) -> str | int | float | None:
         """Convert a filter value to a SQLite-compatible bind value."""
         if isinstance(value, bool):
@@ -468,6 +467,20 @@ class SQLiteVectorStore(VectorStore):
                 )
             )
 
+            # Create property indexes for filtered queries
+            if properties_schema:
+                safe_coll = collection_name.replace("'", "''")
+                for field_name in properties_schema:
+                    safe_field = field_name.replace("'", "''")
+                    idx_name = f"idx_vs_prop_{collection_name}_{field_name}"
+                    await conn.execute(
+                        text(
+                            f"CREATE INDEX IF NOT EXISTS [{idx_name}] "
+                            f"ON _vs_records(json_extract(properties, '$.{safe_field}')) "
+                            f"WHERE collection_name = '{safe_coll}'"
+                        )
+                    )
+
         end_time = time.monotonic()
         self.collect_metrics(
             self.create_collection_calls_counter,
@@ -492,7 +505,7 @@ class SQLiteVectorStore(VectorStore):
             # Look up collection config to find the vec0 table
             result = await conn.execute(
                 text(
-                    "SELECT vector_dimensions, similarity_metric "
+                    "SELECT vector_dimensions, similarity_metric, properties_schema "
                     "FROM _vs_collections WHERE name = :name"
                 ),
                 {"name": collection_name},
@@ -502,6 +515,13 @@ class SQLiteVectorStore(VectorStore):
                 dims, metric_str = row[0], row[1]
                 metric = SimilarityMetric(metric_str)
                 vtable = _vec_table_name(dims, metric)
+
+                # Drop property indexes
+                schema = _deserialize_schema(row[2])
+                if schema:
+                    for field_name in schema:
+                        idx_name = f"idx_vs_prop_{collection_name}_{field_name}"
+                        await conn.execute(text(f"DROP INDEX IF EXISTS [{idx_name}]"))
 
                 # Delete vectors from the shared vec0 table
                 await conn.execute(
