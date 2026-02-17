@@ -29,7 +29,6 @@ from memmachine.common.reranker.amazon_bedrock_reranker import (
 from memmachine.common.reranker.identity_reranker import (
     IdentityReranker,
 )
-from memmachine.common.filter.filter_parser import Comparison
 from memmachine.common.utils import async_with
 from memmachine.common.vector_graph_store.neo4j_vector_graph_store import (
     Neo4jVectorGraphStore,
@@ -52,6 +51,7 @@ You are asked to answer a question from a user based on your memories of a conve
 6. Your memories are episodic, meaning that they consist of only your raw observations of what was said. You may need to reason about or guess what the memories imply in order to answer the question.
 7. Your memories may include small or large jumps in time or context. You are not confused by this. You just did not bother to remember everything in between.
 8. Your memories are ordered from earliest to latest. Prioritize the latest memories if anything has changed over time. Consider the question datetime when determining whether an event has actually occurred.
+9. If some detail in your recalled memories and the question does not match, assume that both the detail and the question are correct. Do not assume that you have enough information to answer the question.
 </instructions>
 
 <memories>
@@ -128,7 +128,8 @@ It is CRITICAL that you move beyond simple fact extraction and perform logical i
 
 ---
 
-Memories: {joined_history}
+Memories:
+{memories}
 
 Question Date: {question_timestamp}
 
@@ -184,7 +185,7 @@ async def main():
     language_model = OpenAIResponsesLanguageModel(
         OpenAIResponsesLanguageModelParams(
             client=openai_client,
-            model="gpt-4.1-mini",
+            model="gpt-5-mini",
         )
     )
 
@@ -254,11 +255,11 @@ async def main():
             )
         )
 
-        search_query = question.question
+        search_query = f"User: {question.question}"
 
         total_start = time.monotonic()
         memory_start = time.monotonic()
-        chunks = await memory.search(query=search_query, max_num_episodes=120)
+        chunks = await memory.search(query=search_query, max_num_episodes=20)
         memory_end = time.monotonic()
         memory_latency = memory_end - memory_start
 
