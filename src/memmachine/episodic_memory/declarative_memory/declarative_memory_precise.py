@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, InstanceOf
 
-from memmachine.common.embedder.embedder import Embedder
+from memmachine.common.embedder import Embedder
 from memmachine.common.filter.filter_parser import (
     And as FilterAnd,
 )
@@ -23,7 +23,8 @@ from memmachine.common.filter.filter_parser import (
 from memmachine.common.filter.filter_parser import (
     Or as FilterOr,
 )
-from memmachine.common.reranker.reranker import Reranker
+from memmachine.common.language_model import LanguageModel
+from memmachine.common.reranker import Reranker
 from memmachine.common.utils import extract_sentences
 from memmachine.common.vector_graph_store import Edge, Node, VectorGraphStore
 
@@ -69,6 +70,10 @@ class DeclarativeMemoryParams(BaseModel):
         ...,
         description="Embedder instance for creating embeddings",
     )
+    language_model: InstanceOf[LanguageModel] = Field(
+        ...,
+        description="LanguageModel instance for relevance filtering",
+    )
     reranker: InstanceOf[Reranker] = Field(
         ...,
         description="Reranker instance for reranking search results",
@@ -95,6 +100,7 @@ class DeclarativeMemory:
 
         self._vector_graph_store = params.vector_graph_store
         self._embedder = params.embedder
+        self._language_model = params.language_model
         self._reranker = params.reranker
 
         self._message_sentence_chunking = params.message_sentence_chunking
@@ -439,11 +445,40 @@ class DeclarativeMemory:
             )
         ]
 
-        # Unify episode contexts.
+        # Iterative LLM-based filtering with backfill.
+        excluded_uids: set[str] = set()
+        confirmed_useful_uids: set[str] = set()
+
+        while True:
+            unified = DeclarativeMemory._unify_scored_anchored_episode_contexts(
+                reranked_scored_anchored_episode_contexts,
+                max_num_episodes=max_num_episodes,
+                excluded_uids=excluded_uids,
+            )
+
+            # Check if any new (unevaluated) episodes were added
+            new_uids = {str(ep.uid) for _, ep in unified} - confirmed_useful_uids
+            if not new_uids:
+                break  # No new candidates available, done
+
+            # LLM filter the entire current set (returns indexes)
+            useless_indexes = await self._identify_useless_episodes(query, unified)
+
+            if not useless_indexes:
+                break  # All episodes are useful, done
+
+            # Map indexes back to UIDs and permanently exclude them
+            useless_uids = {str(unified[i][1].uid) for i in useless_indexes}
+            excluded_uids |= useless_uids
+            # Mark the rest as confirmed useful
+            confirmed_useful_uids |= {str(ep.uid) for _, ep in unified} - useless_uids
+
+        # Final unification with all exclusions
         unified_scored_episode_context = (
             DeclarativeMemory._unify_scored_anchored_episode_contexts(
                 reranked_scored_anchored_episode_contexts,
                 max_num_episodes=max_num_episodes,
+                excluded_uids=excluded_uids,
             )
         )
         return unified_scored_episode_context
@@ -521,6 +556,46 @@ class DeclarativeMemory:
 
         return episode_context_scores
 
+    async def _identify_useless_episodes(
+        self,
+        query: str,
+        scored_episodes: list[tuple[float, Episode]],
+    ) -> set[int]:
+        """Identify episodes that are not useful for answering the query."""
+
+        class UselessEpisodes(BaseModel):
+            useless_episode_indexes: list[int] = Field(
+                description="Indexes of episodes that are not useful for answering the query",
+            )
+
+        episodes = [episode for _, episode in scored_episodes]
+        indexed_context = DeclarativeMemory.indexed_string_from_episode_context(episodes)
+
+        system_prompt = (
+            "You are a relevance judge. Given a query and a list of indexed episodes, "
+            "identify which episodes are NOT useful.\n\n"
+            "An episode is useful if:\n"
+            "1. It is directly relevant to the query, OR\n"
+            "2. It provides important context that makes another useful episode "
+            "easier to understand (e.g., a question that precedes a relevant answer, "
+            "or a setup message that gives meaning to a later statement).\n\n"
+            "Return the indexes of useless episodes — those that are neither "
+            "directly relevant nor contextually supporting any relevant episode. "
+            "If all episodes are useful, return an empty list."
+        )
+        user_prompt = f"Query: {query}\n\nEpisodes:\n{indexed_context}"
+
+        result = await self._language_model.generate_parsed_response(
+            output_format=UselessEpisodes,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
+
+        if result is None:
+            return set()
+
+        return set(result.useless_episode_indexes)
+
     @staticmethod
     def string_from_episode_context(episode_context: Iterable[Episode]) -> str:
         """Format episode context as a string."""
@@ -534,6 +609,22 @@ class DeclarativeMemory:
                 episode.timestamp.time(),
             )
             context_string += f"[{context_date} at {context_time}] {episode.source}: {json.dumps(episode.content)}\n"
+
+        return context_string
+
+    @staticmethod
+    def indexed_string_from_episode_context(episode_context: Iterable[Episode]) -> str:
+        """Format episode context as an indexed string."""
+        context_string = ""
+
+        for index, episode in enumerate(episode_context):
+            context_date = DeclarativeMemory._format_date(
+                episode.timestamp.date(),
+            )
+            context_time = DeclarativeMemory._format_time(
+                episode.timestamp.time(),
+            )
+            context_string += f"[{index}] [{context_date} at {context_time}] {episode.source}: {json.dumps(episode.content)}\n"
 
         return context_string
 
@@ -627,12 +718,19 @@ class DeclarativeMemory:
             tuple[float, Episode, Iterable[Episode]]
         ],
         max_num_episodes: int,
+        excluded_uids: set[str] | None = None,
     ) -> list[tuple[float, Episode]]:
         """Unify anchored episode contexts into a single list within the limit."""
         episode_scores: dict[Episode, float] = {}
 
         for score, nuclear_episode, context in scored_anchored_episode_contexts:
-            context = list(context)
+            context = [
+                ep for ep in context
+                if excluded_uids is None or str(ep.uid) not in excluded_uids
+            ]
+
+            if not context:
+                continue
 
             if len(episode_scores) >= max_num_episodes:
                 break
@@ -650,7 +748,10 @@ class DeclarativeMemory:
                 # Prioritize episodes near the nuclear episode.
 
                 # Sort chronological episodes by weighted index-proximity to the nuclear episode.
-                nuclear_index = context.index(nuclear_episode)
+                try:
+                    nuclear_index = context.index(nuclear_episode)
+                except ValueError:
+                    nuclear_index = 0
 
                 nuclear_context = sorted(
                     context,

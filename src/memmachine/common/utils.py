@@ -3,12 +3,14 @@
 import asyncio
 import functools
 import math
+import re
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager
 from typing import Any, ParamSpec, TypeVar, Literal
 
 import cvxpy as cp
+from nltk import sent_tokenize
 import numpy as np
 from kneed import KneeLocator
 
@@ -541,3 +543,32 @@ def zero_random_n_entries(vector: list[float], n: int) -> list[float]:
     vector_np[indexes_to_zero] = 0.0
 
     return vector_np.astype(float).tolist()
+
+def extract_sentences(text: str) -> set[str]:
+    """
+    Extract unique sentences from the input text.
+
+    Args:
+        text (str): The input text from which to extract sentences.
+
+    Returns:
+        set[str]: A set of unique sentences.
+
+    """
+    partitions = {
+        partition
+        for line in text.strip().splitlines()
+        for partition in sent_tokenize(line.strip())
+    }
+
+    sentences = {
+        sentence
+        for partition in partitions
+        for sentence in re.findall(
+            r".*?(?:[?!\.\uff1f\uff01\u3002]*[?!\uff1f\uff01\u3002][?!\.\uff1f\uff01\u3002]*)+|.+$",
+            partition,
+        )
+        if any(c.isalnum() for c in sentence)
+    }
+
+    return sentences

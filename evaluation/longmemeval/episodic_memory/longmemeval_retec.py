@@ -90,15 +90,15 @@ async def main():
         aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
     )
 
-    reranker = AmazonBedrockReranker(
-        AmazonBedrockRerankerParams(
-            client=aws_client,
-            region=region,
-            model_id="cohere.rerank-v3-5:0",
-        )
-    )
+    # reranker = AmazonBedrockReranker(
+    #     AmazonBedrockRerankerParams(
+    #         client=aws_client,
+    #         region=region,
+    #         model_id="cohere.rerank-v3-5:0",
+    #     )
+    # )
 
-    # reranker = IdentityReranker()
+    reranker = IdentityReranker()
 
     async def process_question(
         question: LongMemEvalItem,
@@ -114,7 +114,7 @@ async def main():
             )
         )
 
-        search_query = question.question
+        search_query = f"User: {question.question}"
 
         memory_start = time.monotonic()
         results = await memory.search(query=search_query, max_num_episodes=200)

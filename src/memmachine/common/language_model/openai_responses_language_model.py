@@ -214,6 +214,7 @@ class OpenAIResponsesLanguageModel(LanguageModel):
                     input=input_prompts,
                     tools=tools,
                     tool_choice=tool_choice if tool_choice is not None else "auto",
+                    reasoning={"effort": "minimal"},
                 )  # type: ignore
                 break
             except (
