@@ -322,7 +322,7 @@ def main() -> None:
     # Check if server is available
     if not demo_basic_client():
         print("\n❌ Server not available. Please start MemMachine server first.")
-        print("You can start it with: python -m memmachine.server.app")
+        print("You can start it with: python -m memmachine_server.server.app")
         sys.exit(1)
 
     # Run demos

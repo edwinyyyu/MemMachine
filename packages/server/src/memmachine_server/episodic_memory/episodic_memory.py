@@ -34,7 +34,9 @@ from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
 )
 from memmachine_server.common.metrics_factory import MetricsFactory
-from memmachine_server.episodic_memory.long_term_memory.long_term_memory import LongTermMemory
+from memmachine_server.episodic_memory.long_term_memory.long_term_memory import (
+    LongTermMemory,
+)
 from memmachine_server.episodic_memory.short_term_memory.short_term_memory import (
     ShortTermMemory,
 )

@@ -38,7 +38,9 @@ from memmachine_server.common.filter.filter_parser import (
     normalize_filter_field,
 )
 from memmachine_server.common.language_model import LanguageModel
-from memmachine_server.common.session_manager.session_data_manager import SessionDataManager
+from memmachine_server.common.session_manager.session_data_manager import (
+    SessionDataManager,
+)
 
 logger = logging.getLogger(__name__)
 

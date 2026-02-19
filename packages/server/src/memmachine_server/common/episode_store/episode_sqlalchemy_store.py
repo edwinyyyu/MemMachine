@@ -31,8 +31,14 @@ from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import ColumnElement
 
 from memmachine_server.common.episode_store.episode_model import Episode as EpisodeE
-from memmachine_server.common.episode_store.episode_model import EpisodeEntry, EpisodeType
-from memmachine_server.common.episode_store.episode_storage import EpisodeIdT, EpisodeStorage
+from memmachine_server.common.episode_store.episode_model import (
+    EpisodeEntry,
+    EpisodeType,
+)
+from memmachine_server.common.episode_store.episode_storage import (
+    EpisodeIdT,
+    EpisodeStorage,
+)
 from memmachine_server.common.errors import (
     ConfigurationError,
     InvalidArgumentError,

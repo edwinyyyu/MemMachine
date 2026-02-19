@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`memmachine.main.memmachine`."""
+"""Unit tests for :mod:`memmachine_server.main.memmachine`."""
 
 from __future__ import annotations
 

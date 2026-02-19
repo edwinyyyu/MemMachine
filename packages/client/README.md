@@ -213,7 +213,7 @@ client = MemMachineClient(
 
 ```bash
 # Start MemMachine server first
-python -m memmachine.server.app
+python -m memmachine_server.server.app
 
 # Run examples
 python examples/memmachine_client_example.py

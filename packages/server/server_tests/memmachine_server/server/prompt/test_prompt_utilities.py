@@ -1,4 +1,4 @@
-"""Tests for prompt utility functions in memmachine.server.prompt."""
+"""Tests for prompt utility functions in memmachine_server.server.prompt."""
 
 import pytest
 

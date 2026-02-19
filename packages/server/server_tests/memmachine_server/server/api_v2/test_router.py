@@ -351,7 +351,7 @@ def test_search_memories_with_set_metadata(client, mock_memmachine):
     }
 
     with patch(
-        "memmachine.server.api_v2.router._search_target_memories"
+        "memmachine_server.server.api_v2.router._search_target_memories"
     ) as mock_search:
         mock_search.return_value = SearchResult.model_validate(
             {

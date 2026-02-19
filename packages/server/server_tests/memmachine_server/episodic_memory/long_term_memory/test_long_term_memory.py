@@ -33,7 +33,7 @@ from memmachine_server.episodic_memory.long_term_memory import (
     LongTermMemory,
     LongTermMemoryParams,
 )
-from tests.memmachine.conftest import (
+from server_tests.memmachine_server.conftest import (
     is_docker_available,
     requires_sentence_transformers,
 )
