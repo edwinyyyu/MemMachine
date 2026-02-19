@@ -23,7 +23,12 @@ from memmachine_server.common.errors import (
     CategoryNotFoundError,
     InvalidSetIdConfigurationError,
 )
-from memmachine_server.common.filter.filter_parser import And, Comparison, FilterExpr, In
+from memmachine_server.common.filter.filter_parser import (
+    And,
+    Comparison,
+    FilterExpr,
+    In,
+)
 from memmachine_server.common.language_model import LanguageModel
 
 from .config_store.config_store import SemanticConfigStorage

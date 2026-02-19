@@ -18,12 +18,13 @@ from pydantic import (
 )
 from typing_extensions import Self
 
-from memmachine_server.common.data_types import PropertyValue
-
 from . import EpisodeType, MemoryType
 from .doc import Examples, SpecDoc
 
 UTC = timezone.utc
+
+PropertyValue = bool | int | float | str | datetime
+"""Type for stored property values (duplicated here to avoid server dependency)."""
 
 DEFAULT_ORG_AND_PROJECT_ID = "universal"
 

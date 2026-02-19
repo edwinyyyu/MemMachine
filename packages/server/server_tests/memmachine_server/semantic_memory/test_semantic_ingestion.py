@@ -487,7 +487,7 @@ async def test_process_single_set_deletes_invalid_episode_ids(
     ]
     llm_mock = AsyncMock(return_value=commands)
     monkeypatch.setattr(
-        "memmachine.semantic_memory.semantic_ingestion.llm_feature_update",
+        "memmachine_server.semantic_memory.semantic_ingestion.llm_feature_update",
         llm_mock,
     )
 

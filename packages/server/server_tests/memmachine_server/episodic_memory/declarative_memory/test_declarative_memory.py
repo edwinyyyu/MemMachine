@@ -34,7 +34,7 @@ from memmachine_server.episodic_memory.declarative_memory import (
     DeclarativeMemoryParams,
     Episode,
 )
-from tests.memmachine.conftest import (
+from server_tests.memmachine_server.conftest import (
     is_docker_available,
     requires_sentence_transformers,
 )

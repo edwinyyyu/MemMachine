@@ -9,12 +9,12 @@ core methods (query_search / list_search).
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from memmachine_common.api import MemoryType
 from memmachine_common.api.spec import (
     ListMemoriesSpec,
     SearchMemoriesSpec,
 )
+
 from memmachine_server.server.api_v2.service import (
     _list_target_memories,
     _search_target_memories,

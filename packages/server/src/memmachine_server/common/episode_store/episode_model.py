@@ -5,9 +5,9 @@ import json
 from collections.abc import Iterable
 from enum import Enum
 
+from memmachine_common.api import EpisodeType
 from pydantic import AwareDatetime, BaseModel, JsonValue
 
-from memmachine_common.api import EpisodeType
 from memmachine_server.common.data_types import PropertyValue
 
 EpisodeIdT = str

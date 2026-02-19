@@ -18,7 +18,11 @@ from neo4j import AsyncDriver, Query
 from neo4j.graph import Node as Neo4jNode
 from pydantic import BaseModel, Field, InstanceOf
 
-from memmachine_server.common.data_types import FilterValue, OrderedValue, SimilarityMetric
+from memmachine_server.common.data_types import (
+    FilterValue,
+    OrderedValue,
+    SimilarityMetric,
+)
 from memmachine_server.common.filter.filter_parser import (
     And as FilterAnd,
 )

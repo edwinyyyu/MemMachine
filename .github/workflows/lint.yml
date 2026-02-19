@@ -25,11 +25,14 @@ jobs:
       # Lint check
       - uses: astral-sh/ruff-action@v3
         name: ruff check
+        with:
+          version-file: "pyproject.toml"
 
       # Format check
       - uses: astral-sh/ruff-action@v3
         name: ruff format check
         with:
+          version-file: "pyproject.toml"
           args: "format --check --diff"
 
   ty-static-check-common:
