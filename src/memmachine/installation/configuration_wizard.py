@@ -141,7 +141,8 @@ class ConfigurationWizard:
         return LongTermMemoryConfPartial(
             embedder=self.EMBEDDER_NAME,
             reranker=self.RERANKER_NAME,
-            vector_graph_store=self.NEO4J_DB_ID,
+            vector_store=self.NEO4J_DB_ID,
+            segment_store=self.NEO4J_DB_ID,
         )
 
     @cached_property

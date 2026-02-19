@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable
 from typing import cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, InstanceOf, JsonValue
 
@@ -15,10 +15,12 @@ from memmachine.common.filter.filter_parser import (
     normalize_filter_field,
 )
 from memmachine.common.reranker import Reranker
-from memmachine.common.vector_graph_store import VectorGraphStore
+from memmachine.common.vector_store import Collection
 from memmachine.episodic_memory.declarative_memory import (
     DeclarativeMemory,
     DeclarativeMemoryParams,
+    Segment,
+    SegmentStore,
 )
 from memmachine.episodic_memory.declarative_memory.data_types import (
     ContentType as DeclarativeMemoryContentType,
@@ -33,11 +35,12 @@ class LongTermMemoryParams(BaseModel):
     Parameters for LongTermMemory.
 
     Attributes:
-        session_id (str):
-            Session identifier.
-        vector_graph_store (VectorGraphStore):
-            VectorGraphStore instance
-            for storing and retrieving memories.
+        session_key (str):
+            Session key.
+        collection (Collection):
+            Collection instance in a vector store.
+        segment_store (SegmentStore):
+            Segment store instance for managing segments.
         embedder (Embedder):
             Embedder instance for creating embeddings.
         reranker (Reranker):
@@ -45,13 +48,17 @@ class LongTermMemoryParams(BaseModel):
 
     """
 
-    session_id: str = Field(
+    session_key: str = Field(
         ...,
-        description="Session identifier",
+        description="Session key",
     )
-    vector_graph_store: InstanceOf[VectorGraphStore] = Field(
+    collection: InstanceOf[Collection] = Field(
         ...,
-        description="VectorGraphStore instance for storing and retrieving memories",
+        description="Collection instance in a vector store",
+    )
+    segment_store: InstanceOf[SegmentStore] = Field(
+        ...,
+        description="Segment store instance for managing segments",
     )
     embedder: InstanceOf[Embedder] = Field(
         ...,
@@ -76,8 +83,9 @@ class LongTermMemory:
         """Wire up the declarative memory backing store."""
         self._declarative_memory = DeclarativeMemory(
             DeclarativeMemoryParams(
-                session_id=params.session_id,
-                vector_graph_store=params.vector_graph_store,
+                session_key=params.session_key,
+                collection=params.collection,
+                segment_store=params.segment_store,
                 embedder=params.embedder,
                 reranker=params.reranker,
                 message_sentence_chunking=params.message_sentence_chunking,
@@ -87,14 +95,14 @@ class LongTermMemory:
     async def add_episodes(self, episodes: Iterable[Episode]) -> None:
         declarative_memory_episodes = [
             DeclarativeMemoryEpisode(
-                uid=episode.uid or str(uuid4()),
+                uuid=UUID(episode.uid) if episode.uid else uuid4(),
                 timestamp=episode.created_at,
-                source=episode.producer_id,
+                context=episode.producer_id,
                 content_type=LongTermMemory._declarative_memory_content_type_from_episode(
                     episode,
                 ),
                 content=episode.content,
-                filterable_properties=cast(
+                attributes=cast(
                     dict[str, PropertyValue],
                     {
                         key: value
@@ -121,11 +129,11 @@ class LongTermMemory:
                         else {LongTermMemory._FILTERABLE_METADATA_NONE_FLAG: True}
                     ),
                 ),
-                user_metadata=episode.metadata,
+                payload=cast("dict[str, JsonValue] | None", episode.metadata),
             )
             for episode in episodes
         ]
-        await self._declarative_memory.add_episodes(declarative_memory_episodes)
+        await self._declarative_memory.encode_episodes(declarative_memory_episodes)
 
     async def search(
         self,
@@ -154,71 +162,37 @@ class LongTermMemory:
         score_threshold: float = -float("inf"),
         property_filter: FilterExpr | None = None,
     ) -> list[tuple[float, Episode]]:
-        scored_declarative_memory_episodes = (
-            await self._declarative_memory.search_scored(
-                query,
-                max_num_episodes=num_episodes_limit,
-                expand_context=expand_context,
-                property_filter=LongTermMemory._sanitize_property_filter(
-                    property_filter
-                ),
-            )
+        scored_segments = await self._declarative_memory.search_scored(
+            query,
+            max_num_segments=num_episodes_limit,
+            expand_context=expand_context,
+            property_filter=LongTermMemory._sanitize_property_filter(property_filter),
         )
         return [
             (
                 score,
-                LongTermMemory._episode_from_declarative_memory_episode(
-                    declarative_memory_episode,
-                ),
+                LongTermMemory._episode_from_segment(segment),
             )
-            for score, declarative_memory_episode in (
-                scored_declarative_memory_episodes
-            )
+            for score, segment in scored_segments
             if score >= score_threshold
         ]
 
-    async def get_episodes(self, uids: Iterable[str]) -> list[Episode]:
-        declarative_memory_episodes = await self._declarative_memory.get_episodes(uids)
-        return [
-            LongTermMemory._episode_from_declarative_memory_episode(
-                declarative_memory_episode,
-            )
-            for declarative_memory_episode in declarative_memory_episodes
-        ]
-
-    async def get_matching_episodes(
-        self,
-        property_filter: FilterExpr | None = None,
-    ) -> list[Episode]:
-        declarative_memory_episodes = (
-            await self._declarative_memory.get_matching_episodes(
-                property_filter=LongTermMemory._sanitize_property_filter(
-                    property_filter
-                ),
-            )
-        )
-        return [
-            LongTermMemory._episode_from_declarative_memory_episode(
-                declarative_memory_episode,
-            )
-            for declarative_memory_episode in declarative_memory_episodes
-        ]
-
     async def delete_episodes(self, uids: Iterable[str]) -> None:
-        await self._declarative_memory.delete_episodes(uids)
+        await self._declarative_memory.forget_episodes(UUID(uid) for uid in uids)
+
+    async def forget_episodes(self, episode_uuids: Iterable[UUID]) -> None:
+        await self._declarative_memory.forget_episodes(episode_uuids)
 
     async def delete_matching_episodes(
         self,
         property_filter: FilterExpr | None = None,
     ) -> None:
-        await self._declarative_memory.delete_episodes(
-            episode.uid
-            for episode in await self._declarative_memory.get_matching_episodes(
-                property_filter=LongTermMemory._sanitize_property_filter(
-                    property_filter
-                ),
+        if property_filter is None:
+            await self._declarative_memory.forget_all_episodes()
+        else:
+            raise NotImplementedError(
+                "delete_matching_episodes with a property filter is not yet supported"
             )
-        )
 
     async def close(self) -> None:
         # Do nothing.
@@ -243,23 +217,24 @@ class LongTermMemory:
                         return DeclarativeMemoryContentType.TEXT
 
     @staticmethod
-    def _episode_from_declarative_memory_episode(
-        declarative_memory_episode: DeclarativeMemoryEpisode,
+    def _episode_from_segment(
+        segment: Segment,
     ) -> Episode:
+        attributes = segment.attributes or {}
         return Episode(
-            uid=declarative_memory_episode.uid,
+            uid=str(segment.episode_uuid),
             sequence_num=cast(
                 "int",
-                declarative_memory_episode.filterable_properties.get("sequence_num", 0),
+                attributes.get("sequence_num", 0),
             ),
             session_key=cast(
                 "str",
-                declarative_memory_episode.filterable_properties.get("session_key", ""),
+                attributes.get("session_key", ""),
             ),
             episode_type=EpisodeType(
                 cast(
                     "str",
-                    declarative_memory_episode.filterable_properties.get(
+                    attributes.get(
                         "episode_type",
                         "",
                     ),
@@ -268,40 +243,37 @@ class LongTermMemory:
             content_type=ContentType(
                 cast(
                     "str",
-                    declarative_memory_episode.filterable_properties.get(
+                    attributes.get(
                         "content_type",
                         "",
                     ),
                 ),
             ),
-            content=declarative_memory_episode.content,
-            created_at=declarative_memory_episode.timestamp,
+            content=segment.content,
+            created_at=segment.timestamp,
             producer_id=cast(
                 "str",
-                declarative_memory_episode.filterable_properties.get("producer_id", ""),
+                attributes.get("producer_id", ""),
             ),
             producer_role=cast(
                 "str",
-                declarative_memory_episode.filterable_properties.get(
+                attributes.get(
                     "producer_role",
                     "",
                 ),
             ),
             produced_for_id=cast(
                 "str | None",
-                declarative_memory_episode.filterable_properties.get("produced_for_id"),
+                attributes.get("produced_for_id"),
             ),
             filterable_metadata={
                 LongTermMemory._demangle_filterable_metadata_key(key): value
-                for key, value in declarative_memory_episode.filterable_properties.items()
+                for key, value in attributes.items()
                 if LongTermMemory._is_mangled_filterable_metadata_key(key)
             }
-            if LongTermMemory._FILTERABLE_METADATA_NONE_FLAG
-            not in declarative_memory_episode.filterable_properties
+            if LongTermMemory._FILTERABLE_METADATA_NONE_FLAG not in attributes
             else None,
-            metadata=cast(
-                "dict[str, JsonValue] | None", declarative_memory_episode.user_metadata
-            ),
+            metadata=None,
         )
 
     _MANGLE_FILTERABLE_METADATA_KEY_PREFIX = "metadata."

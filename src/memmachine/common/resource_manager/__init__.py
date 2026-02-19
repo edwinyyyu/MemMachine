@@ -10,7 +10,8 @@ from memmachine.common.language_model import LanguageModel
 from memmachine.common.metrics_factory import MetricsFactory
 from memmachine.common.reranker import Reranker
 from memmachine.common.session_manager.session_data_manager import SessionDataManager
-from memmachine.common.vector_graph_store import VectorGraphStore
+from memmachine.common.vector_store import Collection
+from memmachine.episodic_memory.declarative_memory import SegmentStore
 
 
 @runtime_checkable
@@ -33,8 +34,12 @@ class CommonResourceManager(Protocol):
         """Return the Neo4j driver by name."""
         raise NotImplementedError
 
-    async def get_vector_graph_store(self, name: str) -> VectorGraphStore:
-        """Return the vector graph store by name."""
+    async def get_vector_store_collection(self, name: str) -> Collection:
+        """Return a vector store collection by name."""
+        raise NotImplementedError
+
+    async def get_segment_store(self, name: str) -> SegmentStore:
+        """Return a segment store by name."""
         raise NotImplementedError
 
     async def get_embedder(self, name: str, validate: bool = False) -> Embedder:

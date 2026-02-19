@@ -69,9 +69,13 @@ class LongTermMemoryConfigResponse(BaseModel):
         str | None,
         Field(default=None, description=SpecDoc.LTM_CONFIG_RERANKER),
     ]
-    vector_graph_store: Annotated[
+    vector_store: Annotated[
         str | None,
-        Field(default=None, description=SpecDoc.LTM_CONFIG_VECTOR_GRAPH_STORE),
+        Field(default=None, description=SpecDoc.LTM_CONFIG_VECTOR_STORE),
+    ]
+    segment_store: Annotated[
+        str | None,
+        Field(default=None, description=SpecDoc.LTM_CONFIG_SEGMENT_STORE),
     ]
     enabled: Annotated[
         bool,
@@ -376,9 +380,13 @@ class UpdateLongTermMemorySpec(BaseModel):
         str | None,
         Field(default=None, description=SpecDoc.LTM_RERANKER),
     ]
-    vector_graph_store: Annotated[
+    vector_store: Annotated[
         str | None,
-        Field(default=None, description=SpecDoc.LTM_VECTOR_GRAPH_STORE),
+        Field(default=None, description=SpecDoc.LTM_VECTOR_STORE),
+    ]
+    segment_store: Annotated[
+        str | None,
+        Field(default=None, description=SpecDoc.LTM_SEGMENT_STORE),
     ]
 
 
