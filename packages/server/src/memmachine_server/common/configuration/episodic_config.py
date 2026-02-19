@@ -1,6 +1,6 @@
 """Episodic memory configuration and merge utilities."""
 
-from typing import Self, TypeVar
+from typing import Self
 
 from pydantic import BaseModel, Field
 
@@ -9,11 +9,8 @@ from memmachine_server.common.configuration.mixin_confs import (
     YamlSerializableMixin,
 )
 
-TFull = TypeVar("TFull", bound=BaseModel)
-TPartial = TypeVar("TPartial", bound=BaseModel)
 
-
-def merge_partial_configs(
+def merge_partial_configs[TFull: BaseModel, TPartial: BaseModel](
     primary: TPartial,
     fallback: TPartial,
     full_cls: type[TFull],
