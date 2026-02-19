@@ -100,13 +100,17 @@ class ShortTermMemoryConfPartial(BaseModel):
 class LongTermMemoryConf(BaseModel):
     """Configuration for long-term memory backed by a vector store."""
 
-    session_id: str = Field(
+    session_key: str = Field(
         ...,
         description="Session identifier",
     )
-    vector_graph_store: str = Field(
+    vector_store: str = Field(
         ...,
-        description="ID of the VectorGraphStore instance for storing and retrieving memories",
+        description="ID of the vector store Collection for storing and retrieving memories",
+    )
+    segment_store: str = Field(
+        ...,
+        description="ID of the SegmentStore instance for managing segments",
     )
     embedder: str = Field(
         ...,
@@ -125,13 +129,17 @@ class LongTermMemoryConf(BaseModel):
 class LongTermMemoryConfPartial(BaseModel):
     """Partial configuration for long-term memory."""
 
-    session_id: str | None = Field(
+    session_key: str | None = Field(
         default=None,
         description="Session identifier",
     )
-    vector_graph_store: str | None = Field(
+    vector_store: str | None = Field(
         default=None,
-        description="ID of the VectorGraphStore instance for storing and retrieving memories",
+        description="ID of the vector store Collection for storing and retrieving memories",
+    )
+    segment_store: str | None = Field(
+        default=None,
+        description="ID of the SegmentStore instance for managing segments",
     )
     embedder: str | None = Field(
         default=None,
@@ -233,7 +241,7 @@ class EpisodicMemoryConfPartial(YamlSerializableMixin):
             raise ValueError("EpisodicMemoryConfPartial.merge() requires session_key")
 
         stm_self.session_key = session_key
-        ltm_self.session_id = session_key
+        ltm_self.session_key = session_key
         stm_merged = stm_self.merge(stm_other)
         ltm_merged = ltm_self.merge(ltm_other)
 

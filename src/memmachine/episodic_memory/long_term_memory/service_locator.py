@@ -13,14 +13,18 @@ async def long_term_memory_params_from_config(
     resource_manager: InstanceOf[CommonResourceManager],
 ) -> LongTermMemoryParams:
     """Build LongTermMemory parameters from configuration and resources."""
-    vector_graph_store = await resource_manager.get_vector_graph_store(
-        config.vector_graph_store,
+    collection = await resource_manager.get_vector_store_collection(
+        config.vector_store,
+    )
+    segment_store = await resource_manager.get_segment_store(
+        config.segment_store,
     )
     embedder = await resource_manager.get_embedder(config.embedder, validate=True)
     reranker = await resource_manager.get_reranker(config.reranker, validate=True)
     return LongTermMemoryParams(
-        session_id=config.session_id,
-        vector_graph_store=vector_graph_store,
+        session_key=config.session_key,
+        collection=collection,
+        segment_store=segment_store,
         embedder=embedder,
         reranker=reranker,
         message_sentence_chunking=config.message_sentence_chunking,
