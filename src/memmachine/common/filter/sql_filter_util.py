@@ -4,7 +4,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import ColumnElement, and_, or_
+from sqlalchemy import ColumnElement, and_, false, or_
 
 from memmachine.common.data_types import FilterValue
 from memmachine.common.filter.filter_parser import (
@@ -65,8 +65,7 @@ def _compile_leaf(
 
     if isinstance(expr, In):
         if not expr.values:
-            # Empty IN list always evaluates to false
-            return column != column
+            return false()
         if is_json:
             return _cast_json_column(column, expr.values[0]).in_(expr.values)
         return column.in_(expr.values)

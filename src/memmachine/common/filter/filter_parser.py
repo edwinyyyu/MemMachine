@@ -4,7 +4,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, NamedTuple, Protocol
+from typing import Literal, NamedTuple, Protocol, cast
 
 from memmachine.common.data_types import PropertyValue
 
@@ -196,6 +196,10 @@ class _Parser:
         return self._parse_predicate()
 
     def _parse_predicate(self) -> FilterExpr:
+        # Note: NOT IN has two grammar entry points:
+        # - "NOT field IN (...)" is handled in _parse_primary via Not(parse_primary())
+        # - "field NOT IN (...)" is handled below as a special case
+        # Both produce Not(In(...)).
         field_tok = self._expect("IDENT")
         field = field_tok.value
 
@@ -232,11 +236,26 @@ class _Parser:
 
     def _parse_value_list(self) -> list[int] | list[str]:
         self._expect("LPAREN")
-        values: list[int] | list[str] = [self._parse_value()]  # type: ignore[list-item]
+        raw: list[int | str] = [self._parse_in_value()]
         while self._accept("COMMA"):
-            values.append(self._parse_value())  # type: ignore[arg-type]
+            raw.append(self._parse_in_value())
         self._expect("RPAREN")
-        return values
+        if all(isinstance(v, int) for v in raw):
+            return cast(list[int], raw)
+        if all(isinstance(v, str) for v in raw):
+            return cast(list[str], raw)
+        raise FilterParseError(
+            "Mixed types in IN list: all values must be int or all str"
+        )
+
+    def _parse_in_value(self) -> int | str:
+        """Parse a single value inside an IN list (only int and str allowed)."""
+        value = self._parse_value()
+        if not isinstance(value, (int, str)):
+            raise FilterParseError(
+                f"IN lists only support int and str values, got {type(value).__name__}"
+            )
+        return value
 
     def _parse_value(self) -> PropertyValue:
         tok = self._expect("IDENT", "STRING")

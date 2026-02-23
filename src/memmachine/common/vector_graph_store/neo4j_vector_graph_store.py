@@ -917,7 +917,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                             )
                             if (starting_value := starting_at[index]) is not None
                         )
-                        or "TRUE"
+                        or "TRUE"  # All starting_at values are None → no constraints
                     )
                     + ")"
                 )
