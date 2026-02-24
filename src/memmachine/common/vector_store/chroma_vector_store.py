@@ -51,14 +51,14 @@ _DATETIME_PREFIX = "__dt__:"
 _NULL_SENTINEL = "__null__"
 _ESCAPED_PREFIX = "__esc__:"
 
-_SIMILARITY_METRIC_TO_CHROMA_SPACE: dict[SimilarityMetric, str] = {
+_SIMILARITY_METRIC_TO_CHROMA_DISTANCE: dict[SimilarityMetric, str] = {
     SimilarityMetric.COSINE: "cosine",
     SimilarityMetric.DOT: "ip",
     SimilarityMetric.EUCLIDEAN: "l2",
 }
 
-_CHROMA_SPACE_TO_SIMILARITY_METRIC: dict[str, SimilarityMetric] = {
-    v: k for k, v in _SIMILARITY_METRIC_TO_CHROMA_SPACE.items()
+_CHROMA_DISTANCE_TO_SIMILARITY_METRIC: dict[str, SimilarityMetric] = {
+    v: k for k, v in _SIMILARITY_METRIC_TO_CHROMA_DISTANCE.items()
 }
 
 _OP_MAP: dict[str, str] = {
@@ -92,11 +92,6 @@ _PROPERTY_TYPE_TO_INDEX_CONFIG: dict[
     str: StringInvertedIndexConfig(),
     datetime: StringInvertedIndexConfig(),  # datetimes serialize to "__dt__:" prefixed strings
 }
-
-
-# ---------------------------------------------------------------------------
-# Serialization helpers
-# ---------------------------------------------------------------------------
 
 
 def _build_chroma_schema(
@@ -134,22 +129,12 @@ def _deserialize_property_value(value: bool | float | str) -> PropertyValue:
     return value
 
 
-# ---------------------------------------------------------------------------
-# Distance-to-similarity conversion
-# ---------------------------------------------------------------------------
-
-
 def _distance_to_similarity(distance: float, metric: SimilarityMetric) -> float:
     """Convert a Chroma distance value to a similarity score."""
     if metric in (SimilarityMetric.COSINE, SimilarityMetric.DOT):
         return 1.0 - distance
     # Euclidean
     return 1.0 / (1.0 + distance)
-
-
-# ---------------------------------------------------------------------------
-# Filter conversion
-# ---------------------------------------------------------------------------
 
 
 def _build_chroma_where(expr: FilterExpr) -> dict[str, Any]:
@@ -232,11 +217,6 @@ def _build_chroma_not(expr: FilterNot) -> dict[str, Any]:
     raise NotImplementedError(msg)
 
 
-# ---------------------------------------------------------------------------
-# Params
-# ---------------------------------------------------------------------------
-
-
 class ChromaVectorStoreParams(BaseModel):
     """Parameters for ChromaVectorStore.
 
@@ -264,11 +244,6 @@ class ChromaVectorStoreParams(BaseModel):
         default_factory=dict,
         description="Labels to attach to the collected metrics",
     )
-
-
-# ---------------------------------------------------------------------------
-# ChromaVectorStore
-# ---------------------------------------------------------------------------
 
 
 class ChromaVectorStore(VectorStore):
@@ -398,7 +373,7 @@ class ChromaVectorStore(VectorStore):
             msg = "ChromaDB does not support the Manhattan similarity metric"
             raise ValueError(msg)
 
-        space = _SIMILARITY_METRIC_TO_CHROMA_SPACE[similarity_metric]
+        distance_metric = _SIMILARITY_METRIC_TO_CHROMA_DISTANCE[similarity_metric]
 
         chroma_schema: Schema | None = None
         if properties_schema is not None:
@@ -406,7 +381,7 @@ class ChromaVectorStore(VectorStore):
 
         await self._client.create_collection(
             name=collection_name,
-            metadata={"hnsw:space": space},
+            metadata={"distance_metric": distance_metric},
             schema=chroma_schema,
         )
         self._collection_metrics[collection_name] = similarity_metric
@@ -519,11 +494,6 @@ class ChromaVectorStore(VectorStore):
         )
 
 
-# ---------------------------------------------------------------------------
-# ChromaCollection
-# ---------------------------------------------------------------------------
-
-
 class ChromaCollection(Collection):
     """Proxy around a Chroma collection that lazily resolves on each call."""
 
@@ -544,9 +514,9 @@ class ChromaCollection(Collection):
 
         collection = await self._get_chroma_collection()
         metadata = collection.metadata or {}
-        space = metadata.get("hnsw:space", "cosine")
-        metric = _CHROMA_SPACE_TO_SIMILARITY_METRIC.get(
-            str(space), SimilarityMetric.COSINE
+        distance = metadata.get("distance_metric", "cosine")
+        metric = _CHROMA_DISTANCE_TO_SIMILARITY_METRIC.get(
+            str(distance), SimilarityMetric.COSINE
         )
         self._store.cache_similarity_metric(self._collection_name, metric)
         return metric
