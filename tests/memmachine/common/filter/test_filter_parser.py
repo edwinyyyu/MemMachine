@@ -524,6 +524,21 @@ def test_map_filter_fields_nested() -> None:
     assert result.expr.right == Comparison(field="prefix_b", op="=", value=2)
 
 
+def test_parse_filter_in_rejects_bool() -> None:
+    with pytest.raises(FilterParseError, match="IN lists only support int and str"):
+        parse_filter("flag IN (true, false)")
+
+
+def test_parse_filter_in_rejects_float() -> None:
+    with pytest.raises(FilterParseError, match="IN lists only support int and str"):
+        parse_filter("x IN (1.5, 2.5)")
+
+
+def test_parse_filter_in_rejects_mixed_types() -> None:
+    with pytest.raises(FilterParseError, match="Mixed types in IN list"):
+        parse_filter("x IN (1, 'two')")
+
+
 def test_map_filter_fields_with_normalize() -> None:
     """Test map_filter_fields combined with normalize_filter_field."""
     expr = And(

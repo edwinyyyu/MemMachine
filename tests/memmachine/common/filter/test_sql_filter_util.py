@@ -252,6 +252,11 @@ def test_not_and_compound(session):
     assert result == {"alpha", "beta", "delta"}
 
 
+def test_or_simple(session):
+    result = _query_names(session, "m.tag = 'a' OR m.tag = 'c'")
+    assert result == {"alpha", "gamma"}
+
+
 def test_not_or_compound(session):
     # NOT (tag = 'a' OR tag = 'b') => NOT(alpha, beta) => gamma, delta
     result = _query_names(session, "NOT (m.tag = 'a' OR m.tag = 'b')")

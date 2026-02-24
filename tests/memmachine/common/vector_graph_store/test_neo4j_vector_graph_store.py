@@ -16,7 +16,13 @@ from memmachine.common.filter.filter_parser import (
     Comparison as FilterComparison,
 )
 from memmachine.common.filter.filter_parser import (
+    In as FilterIn,
+)
+from memmachine.common.filter.filter_parser import (
     IsNull as FilterIsNull,
+)
+from memmachine.common.filter.filter_parser import (
+    Not as FilterNot,
 )
 from memmachine.common.filter.filter_parser import (
     Or as FilterOr,
@@ -1254,6 +1260,123 @@ async def test_search_matching_nodes(vector_graph_store):
         ),
     )
     assert len(results) == 3
+
+
+@pytest.mark.asyncio
+async def test_search_matching_nodes_extended_filters(vector_graph_store):
+    person_nodes = [
+        Node(
+            uid=str(uuid4()),
+            properties={
+                "name": "Alice",
+                "age": 30,
+                "city": "San Francisco",
+            },
+        ),
+        Node(
+            uid=str(uuid4()),
+            properties={
+                "name": "Bob",
+                "age": 25,
+                "city": "Los Angeles",
+            },
+        ),
+        Node(
+            uid=str(uuid4()),
+            properties={
+                "name": "Charlie",
+                "city": "New York",
+            },
+        ),
+        Node(
+            uid=str(uuid4()),
+            properties={
+                "name": "David",
+                "age": 30,
+                "city": "New York",
+            },
+        ),
+    ]
+
+    await vector_graph_store.add_nodes(collection="Person", nodes=person_nodes)
+
+    # != on city
+    results = await vector_graph_store.search_matching_nodes(
+        collection="Person",
+        property_filter=FilterComparison(
+            field="city",
+            op="!=",
+            value="New York",
+        ),
+    )
+    assert len(results) == 2
+
+    # > on age
+    results = await vector_graph_store.search_matching_nodes(
+        collection="Person",
+        property_filter=FilterComparison(
+            field="age",
+            op=">",
+            value=25,
+        ),
+    )
+    assert len(results) == 2
+
+    # < on age
+    results = await vector_graph_store.search_matching_nodes(
+        collection="Person",
+        property_filter=FilterComparison(
+            field="age",
+            op="<",
+            value=30,
+        ),
+    )
+    assert len(results) == 1
+
+    # >= on age
+    results = await vector_graph_store.search_matching_nodes(
+        collection="Person",
+        property_filter=FilterComparison(
+            field="age",
+            op=">=",
+            value=30,
+        ),
+    )
+    assert len(results) == 2
+
+    # <= on age
+    results = await vector_graph_store.search_matching_nodes(
+        collection="Person",
+        property_filter=FilterComparison(
+            field="age",
+            op="<=",
+            value=25,
+        ),
+    )
+    assert len(results) == 1
+
+    # In on city
+    results = await vector_graph_store.search_matching_nodes(
+        collection="Person",
+        property_filter=FilterIn(
+            field="city",
+            values=["San Francisco", "Los Angeles"],
+        ),
+    )
+    assert len(results) == 2
+
+    # Not
+    results = await vector_graph_store.search_matching_nodes(
+        collection="Person",
+        property_filter=FilterNot(
+            expr=FilterComparison(
+                field="city",
+                op="=",
+                value="New York",
+            )
+        ),
+    )
+    assert len(results) == 2
 
 
 @pytest.mark.asyncio

@@ -474,3 +474,39 @@ class TestSessionMemoryPublicAPI:
         )
         assert len(episodes) == 2
         assert episodes == [ep1, ep2]
+
+        # != filter: exclude user1
+        filter_str = "producer_id != 'user1'"
+        filters = parse_filter(filter_str)
+        episodes, _ = await memory.get_short_term_memory_context(
+            "test", filters=filters
+        )
+        assert len(episodes) == 1
+        assert episodes == [ep2]
+
+        # In filter: match producer_role
+        filter_str = "producer_role IN ('user')"
+        filters = parse_filter(filter_str)
+        episodes, _ = await memory.get_short_term_memory_context(
+            "test", filters=filters
+        )
+        assert len(episodes) == 1
+        assert episodes == [ep1]
+
+        # IsNull filter: ep1 has no category
+        filter_str = "m.category IS NULL"
+        filters = parse_filter(filter_str)
+        episodes, _ = await memory.get_short_term_memory_context(
+            "test", filters=filters
+        )
+        assert len(episodes) == 1
+        assert episodes == [ep1]
+
+        # Not filter: NOT producer_id = 'user1'
+        filter_str = "NOT producer_id = 'user1'"
+        filters = parse_filter(filter_str)
+        episodes, _ = await memory.get_short_term_memory_context(
+            "test", filters=filters
+        )
+        assert len(episodes) == 1
+        assert episodes == [ep2]

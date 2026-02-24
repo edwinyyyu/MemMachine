@@ -251,7 +251,7 @@ class _Parser:
     def _parse_in_value(self) -> int | str:
         """Parse a single value inside an IN list (only int and str allowed)."""
         value = self._parse_value()
-        if not isinstance(value, (int, str)):
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
             raise FilterParseError(
                 f"IN lists only support int and str values, got {type(value).__name__}"
             )
