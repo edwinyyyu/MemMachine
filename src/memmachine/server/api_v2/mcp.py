@@ -21,6 +21,7 @@ from starlette.types import Lifespan, Receive, Scope, Send
 from memmachine.common.api.spec import (
     AddMemoriesSpec,
     DeleteMemoriesSpec,
+    EpisodeContent,
     EpisodeIdT,
     FeatureIdT,
     MemoryMessage,
@@ -196,7 +197,7 @@ class Params(BaseModel):
             types=ALL_MEMORY_TYPES,
             messages=[
                 MemoryMessage(
-                    content=content,
+                    content=EpisodeContent(text=content),
                     producer=self.user_id,
                     produced_for="unknown",
                     timestamp=datetime.now().astimezone(),

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from memmachine.common.api.spec import ContentType, Episode, SearchResult
+from memmachine.common.api.spec import ContentType, Episode, EpisodeContent, SearchResult
 from memmachine.common.episode_store.episode_model import EpisodeType
 from memmachine.common.errors import (
     ConfigurationError,
@@ -219,7 +219,7 @@ def test_add_memories(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "messages": [{"role": "user", "content": "hello"}],
+        "messages": [{"role": "user", "content": {"text": "hello"}}],
     }
 
     with patch("memmachine.server.api_v2.router._add_messages_to") as mock_add_messages:
@@ -259,8 +259,8 @@ def test_add_memories_episode_type_forwarded(client, mock_memmachine):
         "org_id": "test_org",
         "project_id": "test_proj",
         "messages": [
-            {"role": "user", "content": "hello", "episode_type": "message"},
-            {"role": "user", "content": "world"},
+            {"role": "user", "content": {"text": "hello"}, "episode_type": "message"},
+            {"role": "user", "content": {"text": "world"}},
         ],
     }
 
@@ -352,7 +352,7 @@ def test_list_memories(client, mock_memmachine):
     mock_results.episodic_memory = [
         Episode(
             uid="1",
-            content="mem1",
+            content=EpisodeContent(text="mem1", source="user"),
             session_key="test_org/test_proj",
             created_at=datetime(2025, 1, 1, tzinfo=UTC),
             producer_id="user",
@@ -371,7 +371,7 @@ def test_list_memories(client, mock_memmachine):
     assert response.status_code == 200
     data = response.json()
     assert data["content"]["episodic_memory"][0]["uid"] == "1"
-    assert data["content"]["episodic_memory"][0]["content"] == "mem1"
+    assert data["content"]["episodic_memory"][0]["content"] == {"text": "mem1", "source": "user"}
     assert "semantic_memory" not in data["content"]
 
     mock_memmachine.list_search.assert_awaited_once()

@@ -132,7 +132,7 @@ class TestMemory:
         assert json_data["org_id"] == "test_org"
         assert json_data["project_id"] == "test_project"
         assert len(json_data["messages"]) == 1
-        assert json_data["messages"][0]["content"] == "Test content"
+        assert json_data["messages"][0]["content"] == {"text": "Test content", "source": ""}
         assert json_data["messages"][0]["role"] == ""
         # producer and produced_for are None if not explicitly provided
         assert "producer" not in json_data["messages"][0], (

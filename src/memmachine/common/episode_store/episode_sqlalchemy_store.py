@@ -105,6 +105,8 @@ class Episode(BaseEpisodeStore):
             if self.created_at.tzinfo is None
             else self.created_at
         )
+        metadata = self.json_metadata or {}
+        extra = metadata.pop("__extra__", None) if isinstance(metadata, dict) else None
         return EpisodeE(
             uid=EpisodeIdT(self.id),
             content=self.content,
@@ -114,7 +116,8 @@ class Episode(BaseEpisodeStore):
             produced_for_id=self.produced_for_id,
             episode_type=self.episode_type,
             created_at=created_at,
-            properties=self.json_metadata or None,
+            properties=metadata or None,
+            extra=extra,
         )
 
 
@@ -170,8 +173,11 @@ class SqlAlchemyEpisodeStore(EpisodeStorage):
             if entry.episode_type is not None:
                 entry_values["episode_type"] = entry.episode_type
 
-            if entry.properties is not None:
-                entry_values["json_metadata"] = entry.properties
+            if entry.properties is not None or entry.extra is not None:
+                merged_metadata = dict(entry.properties or {})
+                if entry.extra:
+                    merged_metadata["__extra__"] = entry.extra
+                entry_values["json_metadata"] = merged_metadata
 
             if entry.created_at is not None:
                 entry_values["created_at"] = entry.created_at

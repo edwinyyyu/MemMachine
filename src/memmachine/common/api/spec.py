@@ -57,11 +57,18 @@ class ContentType(Enum):
     STRING = "string"
 
 
+class EpisodeContent(BaseModel):
+    """Structured content for an episode."""
+
+    text: str
+    source: str = ""
+
+
 class EpisodeEntry(BaseModel):
     """Payload used when creating a new episode entry."""
 
     content: Annotated[
-        str,
+        EpisodeContent,
         Field(..., description=SpecDoc.EPISODE_CONTENT),
     ]
     producer_id: Annotated[
@@ -88,6 +95,10 @@ class EpisodeEntry(BaseModel):
         AwareDatetime | None,
         Field(default=None, description=SpecDoc.EPISODE_CREATED_AT),
     ]
+    extra: Annotated[
+        dict[str, JsonValue] | None,
+        Field(default=None, description="Arbitrary non-filterable metadata"),
+    ]
 
 
 class EpisodeResponse(EpisodeEntry):
@@ -111,7 +122,7 @@ class Episode(BaseModel):
         Field(..., description=SpecDoc.EPISODE_UID),
     ]
     content: Annotated[
-        str,
+        EpisodeContent,
         Field(..., description=SpecDoc.EPISODE_CONTENT),
     ]
     session_key: Annotated[
@@ -152,6 +163,10 @@ class Episode(BaseModel):
     properties: Annotated[
         dict[str, PropertyValue] | None,
         Field(default=None, description=SpecDoc.EPISODE_PROPERTIES),
+    ]
+    extra: Annotated[
+        dict[str, JsonValue] | None,
+        Field(default=None, description="Arbitrary non-filterable metadata"),
     ]
 
     def __hash__(self) -> int:
@@ -439,7 +454,7 @@ class MemoryMessage(BaseModel):
     """Model representing a memory message."""
 
     content: Annotated[
-        str,
+        EpisodeContent,
         Field(..., description=SpecDoc.MEMORY_CONTENT),
     ]
     producer: Annotated[
@@ -482,6 +497,13 @@ class MemoryMessage(BaseModel):
         Field(
             default=None,
             description=SpecDoc.MEMORY_EPISODIC_TYPE,
+        ),
+    ]
+    extra: Annotated[
+        dict[str, JsonValue] | None,
+        Field(
+            default=None,
+            description="Arbitrary non-filterable metadata",
         ),
     ]
 

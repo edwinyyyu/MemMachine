@@ -2,17 +2,59 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
-from typing import Any
+
+from pydantic import JsonValue
 
 from memmachine.common.data_types import PropertyValue
 
 
-class ContentType(Enum):
-    """Types of content stored in declarative memory."""
+@dataclass(kw_only=True)
+class MessageContent:
+    """Content formatted as a message (source: text)."""
 
-    MESSAGE = "message"
-    TEXT = "text"
+    type: str = field(default="message", init=False)
+    text: str
+    source: str = ""
+
+    def format(self) -> str:
+        """Format as a message (source: text)."""
+        if self.source:
+            return f"{self.source}: {self.text}"
+        return self.text
+
+
+@dataclass(kw_only=True)
+class TextContent:
+    """Content formatted as plain text."""
+
+    type: str = field(default="text", init=False)
+    text: str
+    source: str = ""
+
+    def format(self) -> str:
+        """Format as plain text."""
+        return self.text
+
+
+@dataclass(kw_only=True)
+class ConversationContent:
+    """Content from a conversation with full producer attribution."""
+
+    type: str = field(default="conversation", init=False)
+    text: str
+    source: str = ""
+    producer_id: str = ""
+    producer_role: str = ""
+    produced_for_id: str | None = None
+
+    def format(self) -> str:
+        """Format as a message (source: text)."""
+        if self.source:
+            return f"{self.source}: {self.text}"
+        return self.text
+
+
+EpisodeContent = MessageContent | TextContent | ConversationContent
 
 
 @dataclass(kw_only=True)
@@ -21,10 +63,11 @@ class Episode:
 
     uid: str
     timestamp: datetime
-    source: str
-    content_type: ContentType
-    content: Any
+    content: EpisodeContent
     properties: dict[str, PropertyValue] = field(
+        default_factory=dict,
+    )
+    extra: dict[str, JsonValue] = field(
         default_factory=dict,
     )
 
@@ -35,10 +78,9 @@ class Episode:
         return (
             self.uid == other.uid
             and self.timestamp == other.timestamp
-            and self.source == other.source
-            and self.content_type == other.content_type
             and self.content == other.content
             and self.properties == other.properties
+            and self.extra == other.extra
         )
 
     def __hash__(self) -> int:
@@ -52,10 +94,11 @@ class Derivative:
 
     uid: str
     timestamp: datetime
-    source: str
-    content_type: ContentType
-    content: Any
+    content: str
     properties: dict[str, PropertyValue] = field(
+        default_factory=dict,
+    )
+    extra: dict[str, JsonValue] = field(
         default_factory=dict,
     )
 
@@ -66,10 +109,9 @@ class Derivative:
         return (
             self.uid == other.uid
             and self.timestamp == other.timestamp
-            and self.source == other.source
-            and self.content_type == other.content_type
             and self.content == other.content
             and self.properties == other.properties
+            and self.extra == other.extra
         )
 
     def __hash__(self) -> int:

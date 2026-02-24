@@ -1,14 +1,20 @@
 """Declarative memory data models and interfaces."""
 
 from .data_types import (
-    ContentType,
+    ConversationContent,
     Episode,
+    EpisodeContent,
+    MessageContent,
+    TextContent,
 )
 from .declarative_memory import DeclarativeMemory, DeclarativeMemoryParams
 
 __all__ = [
-    "ContentType",
+    "ConversationContent",
     "DeclarativeMemory",
     "DeclarativeMemoryParams",
     "Episode",
+    "EpisodeContent",
+    "MessageContent",
+    "TextContent",
 ]

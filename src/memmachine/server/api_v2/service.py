@@ -12,6 +12,7 @@ from memmachine.common.api.spec import (
     AddMemoryResult,
     DeleteMemoriesSpec,
     Episode,
+    EpisodeContent,
     EpisodicSearchResult,
     ListMemoriesSpec,
     ListResult,
@@ -47,13 +48,14 @@ async def _add_messages_to(
 ) -> list[AddMemoryResult]:
     episodes: list[EpisodeEntry] = [
         EpisodeEntry(
-            content=message.content,
-            producer_id=message.producer,
+            content=message.content.text,
+            producer_id=message.producer if message.producer else message.content.source,
             produced_for_id=message.produced_for,
             producer_role=message.role,
             created_at=message.timestamp,
             properties=message.properties,
             episode_type=message.episode_type,
+            extra=message.extra,
         )
         for message in spec.messages
     ]
@@ -86,6 +88,17 @@ async def _delete_memories(
     await asyncio.gather(delete_episodes, delete_semantics)
 
 
+def _to_episode_content(data: dict) -> dict:
+    """Convert internal episode data to API format with structured content."""
+    content = data.get("content")
+    if isinstance(content, str):
+        data["content"] = EpisodeContent(
+            text=content,
+            source=data.get("producer_id", ""),
+        )
+    return data
+
+
 async def _search_target_memories(
     target_memories: list[MemoryTypeE],
     spec: SearchMemoriesSpec,
@@ -110,9 +123,12 @@ async def _search_target_memories(
         semantic_memory=None,
     )
     if results.episodic_memory is not None:
-        content.episodic_memory = EpisodicSearchResult(
-            **results.episodic_memory.model_dump(mode="json")
-        )
+        dumped = results.episodic_memory.model_dump(mode="json")
+        for mem_type in ("long_term_memory", "short_term_memory"):
+            if mem_type in dumped:
+                for ep in dumped[mem_type].get("episodes", []):
+                    _to_episode_content(ep)
+        content.episodic_memory = EpisodicSearchResult(**dumped)
     if results.semantic_memory is not None:
         content.semantic_memory = [
             SemanticFeature(**f.model_dump(mode="json"))
@@ -146,7 +162,8 @@ async def _list_target_memories(
     )
     if results.episodic_memory is not None:
         content.episodic_memory = [
-            Episode(**e.model_dump(mode="json")) for e in results.episodic_memory
+            Episode(**_to_episode_content(e.model_dump(mode="json")))
+            for e in results.episodic_memory
         ]
     if results.semantic_memory is not None:
         content.semantic_memory = [

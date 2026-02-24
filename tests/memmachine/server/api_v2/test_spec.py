@@ -131,8 +131,8 @@ def test_memory_message_required_fields():
         MemoryMessage.model_validate({})
     assert_pydantic_errors(exc_info, {"content": "missing"})
 
-    message = MemoryMessage.model_validate({"content": "This is a memory message."})
-    assert message.content == "This is a memory message."
+    message = MemoryMessage.model_validate({"content": {"text": "This is a memory message."}})
+    assert message.content.text == "This is a memory message."
     assert message.producer == "user"
     assert message.produced_for == ""
     assert message.timestamp
@@ -143,13 +143,13 @@ def test_memory_message_required_fields():
 
 def test_memory_message_episode_type_validation():
     message = MemoryMessage.model_validate(
-        {"content": "hello", "episode_type": "message"}
+        {"content": {"text": "hello"}, "episode_type": "message"}
     )
     assert message.episode_type == EpisodeType.MESSAGE
 
     with pytest.raises(ValidationError) as exc_info:
         MemoryMessage.model_validate(
-            {"content": "hello", "episode_type": "not-a-real-type"}
+            {"content": {"text": "hello"}, "episode_type": "not-a-real-type"}
         )
     assert any(e["loc"][-1] == "episode_type" for e in exc_info.value.errors())
 
@@ -160,7 +160,7 @@ def test_add_memory_spec():
     assert_pydantic_errors(exc_info, {"messages": "missing"})
 
     message = MemoryMessage.model_validate(
-        {"content": "Test content", "producer": "test_producer"}
+        {"content": {"text": "Test content"}, "producer": "test_producer"}
     )
     spec = AddMemoriesSpec.model_validate({"messages": [message]})
     assert spec.types == []
@@ -290,7 +290,7 @@ def test_rest_error_without_exception():
 
 def test_timestamp_default_now():
     before = datetime.now(UTC)
-    msg = MemoryMessage.model_validate({"content": "hello"})
+    msg = MemoryMessage.model_validate({"content": {"text": "hello"}})
     after = datetime.now(UTC)
 
     assert before <= msg.timestamp <= after
@@ -299,7 +299,7 @@ def test_timestamp_default_now():
 
 def test_timestamp_datetime_with_tz():
     dt = datetime(2025, 5, 23, 10, 30, tzinfo=UTC)
-    msg = MemoryMessage.model_validate({"content": "hello", "timestamp": dt})
+    msg = MemoryMessage.model_validate({"content": {"text": "hello"}, "timestamp": dt})
 
     assert msg.timestamp == dt
 
@@ -307,7 +307,7 @@ def test_timestamp_datetime_with_tz():
 def test_timestamp_datetime_without_tz():
     aware = datetime(2025, 5, 23, 10, 30, tzinfo=UTC)
     dt = aware.replace(tzinfo=None)
-    msg = MemoryMessage.model_validate({"content": "hello", "timestamp": dt})
+    msg = MemoryMessage.model_validate({"content": {"text": "hello"}, "timestamp": dt})
 
     assert msg.timestamp.tzinfo == UTC
     assert msg.timestamp.replace(tzinfo=None) == dt
@@ -315,28 +315,28 @@ def test_timestamp_datetime_without_tz():
 
 def test_timestamp_unix_seconds():
     ts = 1_716_480_000  # unix seconds
-    msg = MemoryMessage.model_validate({"content": "hello", "timestamp": ts})
+    msg = MemoryMessage.model_validate({"content": {"text": "hello"}, "timestamp": ts})
 
     assert msg.timestamp == datetime.fromtimestamp(ts, tz=UTC)
 
 
 def test_timestamp_unix_milliseconds():
     ts_ms = 1_716_480_000_000  # unix ms
-    msg = MemoryMessage.model_validate({"content": "hello", "timestamp": ts_ms})
+    msg = MemoryMessage.model_validate({"content": {"text": "hello"}, "timestamp": ts_ms})
 
     assert msg.timestamp == datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
 
 
 def test_timestamp_iso_string():
     ts = "2025-05-23T10:30:00Z"
-    msg = MemoryMessage.model_validate({"content": "hello", "timestamp": ts})
+    msg = MemoryMessage.model_validate({"content": {"text": "hello"}, "timestamp": ts})
 
     assert msg.timestamp == datetime(2025, 5, 23, 10, 30, tzinfo=UTC)
 
 
 def test_timestamp_common_datetime_string():
     ts = "2023-10-01T08:20:00-04:00"
-    msg = MemoryMessage.model_validate({"content": "hello", "timestamp": ts})
+    msg = MemoryMessage.model_validate({"content": {"text": "hello"}, "timestamp": ts})
 
     tz = tzoffset(None, -14400)
     assert msg.timestamp == datetime(2023, 10, 1, 8, 20, tzinfo=tz)
@@ -344,7 +344,7 @@ def test_timestamp_common_datetime_string():
 
 def test_timestamp_none_uses_now():
     before = datetime.now(UTC)
-    msg = MemoryMessage.model_validate({"content": "hello", "timestamp": None})
+    msg = MemoryMessage.model_validate({"content": {"text": "hello"}, "timestamp": None})
     after = datetime.now(UTC)
 
     assert before <= msg.timestamp <= after
@@ -363,12 +363,12 @@ def test_timestamp_invalid_string(timestamp):
         ValidationError,
         match=r"Unsupported timestamp: " + timestamp,
     ):
-        MemoryMessage.model_validate({"content": "hello", "timestamp": timestamp})
+        MemoryMessage.model_validate({"content": {"text": "hello"}, "timestamp": timestamp})
 
 
 def test_timestamp_invalid_type():
     error_msg = "Unsupported timestamp: {'bad': 'value'}"
     with pytest.raises(ValidationError, match=error_msg):
         MemoryMessage.model_validate(
-            {"content": "hello", "timestamp": {"bad": "value"}}
+            {"content": {"text": "hello"}, "timestamp": {"bad": "value"}}
         )

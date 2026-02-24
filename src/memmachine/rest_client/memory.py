@@ -37,6 +37,7 @@ from memmachine.common.api.spec import (
     DeleteSemanticSetTypeSpec,
     DeleteSemanticTagSpec,
     DisableSemanticCategorySpec,
+    EpisodeContent,
     EpisodicMemoryConfigEntry,
     GetEpisodicMemoryConfigSpec,
     GetFeatureSpec,
@@ -227,6 +228,7 @@ class Memory:
         episode_type: EpisodeType | None,
         properties: dict[str, PropertyValue] | None,
         timestamp: datetime | None,
+        extra: dict[str, JsonValue] | None = None,
     ) -> MemoryMessage:
         """Build a MemoryMessage object from parameters."""
         # Build properties including old context fields and episode_type
@@ -234,9 +236,15 @@ class Memory:
         if episode_type is not None:
             combined_properties["episode_type"] = episode_type.value
 
+        # Build EpisodeContent with producer as source
+        episode_content = EpisodeContent(
+            text=content,
+            source=producer or "",
+        )
+
         # Use shared API Pydantic models
         message = MemoryMessage(  # type: ignore[call-arg,arg-type]
-            content=content,
+            content=episode_content,
             role=role,
             properties=combined_properties,
         )
@@ -250,6 +258,8 @@ class Memory:
             message.timestamp = timestamp
         if episode_type is not None:
             message.episode_type = episode_type
+        if extra is not None:
+            message.extra = extra
 
         return message
 
@@ -264,6 +274,7 @@ class Memory:
         properties: dict[str, PropertyValue] | None = None,
         timestamp: datetime | None = None,
         timeout: int | None = None,
+        extra: dict[str, JsonValue] | None = None,
     ) -> builtins.list[AddMemoryResult]:
         """
         Add a memory episode.
@@ -318,6 +329,7 @@ class Memory:
                 episode_type=episode_type,
                 properties=properties,
                 timestamp=timestamp,
+                extra=extra,
             )
 
             spec = AddMemoriesSpec(

@@ -24,10 +24,19 @@ from memmachine.episodic_memory.declarative_memory import (
     DeclarativeMemoryParams,
 )
 from memmachine.episodic_memory.declarative_memory.data_types import (
-    ContentType as DeclarativeMemoryContentType,
+    ConversationContent as DeclarativeMemoryConversationContent,
 )
 from memmachine.episodic_memory.declarative_memory.data_types import (
     Episode as DeclarativeMemoryEpisode,
+)
+from memmachine.episodic_memory.declarative_memory.data_types import (
+    EpisodeContent as DeclarativeMemoryEpisodeContent,
+)
+from memmachine.episodic_memory.declarative_memory.data_types import (
+    MessageContent as DeclarativeMemoryMessageContent,
+)
+from memmachine.episodic_memory.declarative_memory.data_types import (
+    TextContent as DeclarativeMemoryTextContent,
 )
 
 
@@ -92,11 +101,10 @@ class LongTermMemory:
             DeclarativeMemoryEpisode(
                 uid=episode.uid or str(uuid4()),
                 timestamp=episode.created_at,
-                source=episode.producer_id,
-                content_type=LongTermMemory._declarative_memory_content_type_from_episode(
+                content=LongTermMemory._declarative_memory_content_from_episode(
                     episode,
                 ),
-                content=episode.content,
+                extra=episode.extra or {},
                 properties=cast(
                     dict[str, PropertyValue],
                     {
@@ -104,9 +112,6 @@ class LongTermMemory:
                         for key, value in {
                             "created_at": episode.created_at,
                             "session_key": episode.session_key,
-                            "producer_id": episode.producer_id,
-                            "producer_role": episode.producer_role,
-                            "produced_for_id": episode.produced_for_id,
                             "sequence_num": episode.sequence_num,
                             "episode_type": episode.episode_type.value,
                             "content_type": episode.content_type.value,
@@ -225,22 +230,22 @@ class LongTermMemory:
         pass
 
     @staticmethod
-    def _declarative_memory_content_type_from_episode(
+    def _declarative_memory_content_from_episode(
         episode: Episode,
-    ) -> DeclarativeMemoryContentType:
+    ) -> DeclarativeMemoryEpisodeContent:
         match episode.episode_type:
             case EpisodeType.MESSAGE:
-                match episode.content_type:
-                    case ContentType.STRING:
-                        return DeclarativeMemoryContentType.MESSAGE
-                    case _:
-                        return DeclarativeMemoryContentType.TEXT
+                return DeclarativeMemoryConversationContent(
+                    text=episode.content,
+                    source=episode.producer_id,
+                    producer_id=episode.producer_id,
+                    producer_role=episode.producer_role,
+                    produced_for_id=episode.produced_for_id,
+                )
             case _:
-                match episode.content_type:
-                    case ContentType.STRING:
-                        return DeclarativeMemoryContentType.TEXT
-                    case _:
-                        return DeclarativeMemoryContentType.TEXT
+                return DeclarativeMemoryTextContent(
+                    text=episode.content, source=episode.producer_id,
+                )
 
     @staticmethod
     def _episode_from_declarative_memory_episode(
@@ -274,22 +279,22 @@ class LongTermMemory:
                     ),
                 ),
             ),
-            content=declarative_memory_episode.content,
+            content=declarative_memory_episode.content.text,
             created_at=declarative_memory_episode.timestamp,
-            producer_id=cast(
-                "str",
-                declarative_memory_episode.properties.get("producer_id", ""),
+            producer_id=(
+                declarative_memory_episode.content.producer_id
+                if isinstance(declarative_memory_episode.content, DeclarativeMemoryConversationContent)
+                else cast("str", declarative_memory_episode.properties.get("producer_id", ""))
             ),
-            producer_role=cast(
-                "str",
-                declarative_memory_episode.properties.get(
-                    "producer_role",
-                    "",
-                ),
+            producer_role=(
+                declarative_memory_episode.content.producer_role
+                if isinstance(declarative_memory_episode.content, DeclarativeMemoryConversationContent)
+                else cast("str", declarative_memory_episode.properties.get("producer_role", ""))
             ),
-            produced_for_id=cast(
-                "str | None",
-                declarative_memory_episode.properties.get("produced_for_id"),
+            produced_for_id=(
+                declarative_memory_episode.content.produced_for_id
+                if isinstance(declarative_memory_episode.content, DeclarativeMemoryConversationContent)
+                else cast("str | None", declarative_memory_episode.properties.get("produced_for_id"))
             ),
             properties={
                 demangle_user_property_key(key): value
@@ -299,6 +304,7 @@ class LongTermMemory:
             if LongTermMemory._PROPERTIES_NONE_FLAG
             not in declarative_memory_episode.properties
             else None,
+            extra=declarative_memory_episode.extra,
         )
 
     @staticmethod

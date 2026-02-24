@@ -360,7 +360,7 @@ class TestMemory:
                 "episodic_memory": [
                     {
                         "uid": "e1",
-                        "content": "hello",
+                        "content": {"text": "hello", "source": "u1"},
                         "session_key": "org1/proj1",
                         "created_at": "2025-01-01T00:00:00Z",
                         "producer_id": "u1",

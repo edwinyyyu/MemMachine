@@ -115,7 +115,7 @@ def test_add_memory_param_get_new_episode(params):
     assert message.timestamp is not None
     assert message.producer == "usr"
     assert message.produced_for == "unknown"
-    assert message.content == "Hello memory!"
+    assert message.content.text == "Hello memory!"
     assert message.role == "user"
     assert spec.org_id == "org"
     assert spec.project_id == "proj"

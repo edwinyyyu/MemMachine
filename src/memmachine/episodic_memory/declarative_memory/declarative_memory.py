@@ -1,6 +1,7 @@
 """Declarative memory system for storing and retrieving episodic memory."""
 
 import asyncio
+import dataclasses
 import datetime
 import json
 import logging
@@ -21,13 +22,18 @@ from memmachine.common.utils import extract_sentences
 from memmachine.common.vector_graph_store import Edge, Node, VectorGraphStore
 
 from .data_types import (
-    ContentType,
+    ConversationContent,
     Derivative,
     Episode,
+    EpisodeContent,
+    MessageContent,
+    TextContent,
     demangle_property_key,
     is_mangled_property_key,
     mangle_property_key,
 )
+
+_CONTENT_NON_PROPERTY_FIELDS = frozenset({"type", "text"})
 
 logger = logging.getLogger(__name__)
 
@@ -120,10 +126,10 @@ class DeclarativeMemory:
                 properties={
                     "uid": str(episode.uid),
                     "timestamp": episode.timestamp,
-                    "source": episode.source,
-                    "content_type": episode.content_type.value,
-                    "content": episode.content,
+                    "content": json.dumps(dataclasses.asdict(episode.content)),
+                    "extra": json.dumps(episode.extra),
                 }
+                | DeclarativeMemory._content_properties(episode.content)
                 | {
                     mangle_property_key(key): value
                     for key, value in episode.properties.items()
@@ -154,9 +160,8 @@ class DeclarativeMemory:
                 properties={
                     "uid": derivative.uid,
                     "timestamp": derivative.timestamp,
-                    "source": derivative.source,
-                    "content_type": derivative.content_type.value,
                     "content": derivative.content,
+                    "extra": json.dumps(derivative.extra),
                 }
                 | {
                     mangle_property_key(key): value
@@ -224,51 +229,46 @@ class DeclarativeMemory:
             list[Derivative]: A list of derived derivatives.
 
         """
-        match episode.content_type:
-            case ContentType.MESSAGE:
-                if not self._message_sentence_chunking:
-                    return [
-                        Derivative(
-                            uid=str(uuid4()),
-                            timestamp=episode.timestamp,
-                            source=episode.source,
-                            content_type=ContentType.MESSAGE,
-                            content=f"{episode.source}: {episode.content}",
-                            properties=episode.properties,
-                        ),
-                    ]
-
-                sentences = extract_sentences(episode.content)
-
+        if isinstance(episode.content, (MessageContent, ConversationContent)):
+            if not self._message_sentence_chunking:
                 return [
                     Derivative(
                         uid=str(uuid4()),
                         timestamp=episode.timestamp,
-                        source=episode.source,
-                        content_type=ContentType.MESSAGE,
-                        content=f"{episode.source}: {sentence}",
+                        content=episode.content.format(),
                         properties=episode.properties,
-                    )
-                    for sentence in sentences
-                ]
-            case ContentType.TEXT:
-                text_content = episode.content
-                return [
-                    Derivative(
-                        uid=str(uuid4()),
-                        timestamp=episode.timestamp,
-                        source=episode.source,
-                        content_type=ContentType.TEXT,
-                        content=text_content,
-                        properties=episode.properties,
+                        extra=episode.extra,
                     ),
                 ]
-            case _:
-                logger.warning(
-                    "Unsupported content type for derivative derivation: %s",
-                    episode.content_type,
+
+            sentences = extract_sentences(episode.content.text)
+
+            return [
+                Derivative(
+                    uid=str(uuid4()),
+                    timestamp=episode.timestamp,
+                    content=type(episode.content)(text=sentence, source=episode.content.source).format(),
+                    properties=episode.properties,
+                    extra=episode.extra,
                 )
-                return []
+                for sentence in sentences
+            ]
+        elif isinstance(episode.content, TextContent):
+            return [
+                Derivative(
+                    uid=str(uuid4()),
+                    timestamp=episode.timestamp,
+                    content=episode.content.format(),
+                    properties=episode.properties,
+                    extra=episode.extra,
+                ),
+            ]
+        else:
+            logger.warning(
+                "Unsupported content type for derivative derivation: %s",
+                type(episode.content),
+            )
+            return []
 
     async def search(
         self,
@@ -524,7 +524,8 @@ class DeclarativeMemory:
             context_time = DeclarativeMemory._format_time(
                 episode.timestamp.time(),
             )
-            context_string += f"[{context_date} at {context_time}] {episode.source}: {json.dumps(episode.content)}\n"
+            formatted = episode.content.format()
+            context_string += f"[{context_date} at {context_time}] {formatted}\n"
 
         return context_string
 
@@ -682,13 +683,61 @@ class DeclarativeMemory:
         return -proximity
 
     @staticmethod
+    def _content_properties(content: EpisodeContent) -> dict[str, PropertyValue]:
+        """Extract filterable fields from content for graph node storage."""
+        return {
+            f.name: getattr(content, f.name)
+            for f in dataclasses.fields(content)
+            if f.name not in _CONTENT_NON_PROPERTY_FIELDS
+            and getattr(content, f.name) is not None
+        }
+
+    @staticmethod
+    def _content_from_dict(d: dict, node_properties: dict) -> EpisodeContent:
+        content_type = d.pop("type", None)
+        if content_type is None:
+            # Legacy: fall back to node-level content_type property.
+            content_type = node_properties.get("content_type", "message")
+        if content_type == "conversation":
+            return ConversationContent(**d)
+        elif content_type == "message":
+            return MessageContent(**d)
+        else:
+            return TextContent(**d)
+
+    @staticmethod
     def _episode_from_episode_node(episode_node: Node) -> Episode:
+        raw_content = episode_node.properties["content"]
+        if isinstance(raw_content, str):
+            try:
+                parsed = json.loads(raw_content)
+                if isinstance(parsed, dict):
+                    content = DeclarativeMemory._content_from_dict(
+                        parsed, episode_node.properties,
+                    )
+                else:
+                    content = MessageContent(
+                        text=raw_content,
+                        source=cast("str", episode_node.properties.get("source", "")),
+                    )
+            except (json.JSONDecodeError, TypeError):
+                content = MessageContent(
+                    text=raw_content,
+                    source=cast("str", episode_node.properties.get("source", "")),
+                )
+        else:
+            content = MessageContent(
+                text=str(raw_content),
+                source=cast("str", episode_node.properties.get("source", "")),
+            )
+
+        raw_extra = episode_node.properties.get("extra")
+        extra: dict = json.loads(raw_extra) if isinstance(raw_extra, str) else {}
+
         return Episode(
             uid=cast("str", episode_node.properties["uid"]),
             timestamp=cast("datetime.datetime", episode_node.properties["timestamp"]),
-            source=cast("str", episode_node.properties["source"]),
-            content_type=ContentType(episode_node.properties["content_type"]),
-            content=episode_node.properties["content"],
+            content=content,
             properties={
                 demangle_property_key(key): cast(
                     PropertyValue,
@@ -697,6 +746,7 @@ class DeclarativeMemory:
                 for key, value in episode_node.properties.items()
                 if is_mangled_property_key(key)
             },
+            extra=extra,
         )
 
     @staticmethod

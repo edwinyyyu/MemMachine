@@ -20,10 +20,11 @@ from memmachine.common.vector_graph_store.neo4j_vector_graph_store import (
     Neo4jVectorGraphStoreParams,
 )
 from memmachine.episodic_memory.declarative_memory import (
-    ContentType,
     DeclarativeMemory,
     DeclarativeMemoryParams,
     Episode,
+    MessageContent,
+    TextContent,
 )
 from tests.memmachine.conftest import (
     is_docker_available,
@@ -150,32 +151,24 @@ async def test_add_episodes(declarative_memory):
         Episode(
             uid="episode1",
             timestamp=now,
-            source="Alice",
-            content_type=ContentType.MESSAGE,
-            content="This test is broken. Who wrote this test?",
+            content=MessageContent(text="This test is broken. Who wrote this test?", source="Alice"),
             properties={"project": "memmachine", "length": "short"},
         ),
         Episode(
             uid="episode2",
             timestamp=now + timedelta(seconds=10),
-            source="Bob",
-            content_type=ContentType.MESSAGE,
-            content=("Edwin Yu: https://github.com/edwinyyyu\n"),
+            content=MessageContent(text="Edwin Yu: https://github.com/edwinyyyu\n", source="Bob"),
         ),
         Episode(
             uid="episode3",
             timestamp=now + timedelta(seconds=20),
-            source="textbook",
-            content_type=ContentType.TEXT,
-            content="The mitochondria is the powerhouse of the cell.",
+            content=TextContent(text="The mitochondria is the powerhouse of the cell.", source="textbook"),
             properties={"project": "other", "length": "short"},
         ),
         Episode(
             uid="episode4",
             timestamp=now + timedelta(seconds=30),
-            source="pet rock",
-            content_type=ContentType.MESSAGE,
-            content="",
+            content=MessageContent(text="", source="pet rock"),
         ),
     ]
 
@@ -193,13 +186,11 @@ async def test_search(declarative_memory):
         Episode(
             uid=str(uuid4()),
             timestamp=now - i * timedelta(seconds=1),
-            source="filler",
-            content_type=ContentType.MESSAGE,
-            content=str(uuid4())
+            content=MessageContent(text=str(uuid4())
             + str(uuid4())
             + str(uuid4())
             + str(uuid4())
-            + str(uuid4()),
+            + str(uuid4()), source="filler"),
             properties={"project": "testing", "length": "medium"},
         )
         for i in range(1, 11)
@@ -208,13 +199,11 @@ async def test_search(declarative_memory):
         Episode(
             uid=str(uuid4()),
             timestamp=now - i * timedelta(seconds=1),
-            source="filler",
-            content_type=ContentType.MESSAGE,
-            content=str(uuid4())
+            content=MessageContent(text=str(uuid4())
             + str(uuid4())
             + str(uuid4())
             + str(uuid4())
-            + str(uuid4()),
+            + str(uuid4()), source="filler"),
             properties={"project": "memmachine", "length": "medium"},
         )
         for i in range(1, 11)
@@ -223,47 +212,35 @@ async def test_search(declarative_memory):
         Episode(
             uid="episode1",
             timestamp=now,
-            source="Alice",
-            content_type=ContentType.MESSAGE,
-            content="This test is broken. Who wrote this test?",
+            content=MessageContent(text="This test is broken. Who wrote this test?", source="Alice"),
             properties={"project": "memmachine", "length": "short"},
         ),
         Episode(
             uid="episode2",
             timestamp=now + timedelta(seconds=10),
-            source="Bob",
-            content_type=ContentType.MESSAGE,
-            content="Charlie.",
+            content=MessageContent(text="Charlie.", source="Bob"),
             properties={"project": "other", "length": "short"},
         ),
         Episode(
             uid="episode3",
             timestamp=now + timedelta(seconds=20),
-            source="textbook",
-            content_type=ContentType.TEXT,
-            content="The mitochondria is the powerhouse of the cell.",
+            content=TextContent(text="The mitochondria is the powerhouse of the cell.", source="textbook"),
         ),
         Episode(
             uid="episode4",
             timestamp=now + timedelta(seconds=30),
-            source="pet rock",
-            content_type=ContentType.MESSAGE,
-            content="",
+            content=MessageContent(text="", source="pet rock"),
         ),
         Episode(
             uid="episode5",
             timestamp=now + timedelta(seconds=40),
-            source="Charlie",
-            content_type=ContentType.MESSAGE,
-            content="Edwin Yu: https://github.com/edwinyyyu\n",
+            content=MessageContent(text="Edwin Yu: https://github.com/edwinyyyu\n", source="Charlie"),
             properties={"project": "memmachine"},
         ),
         Episode(
             uid="episode6",
             timestamp=now + timedelta(seconds=50),
-            source="Edwin",
-            content_type=ContentType.MESSAGE,
-            content="I wrote this test.",
+            content=MessageContent(text="I wrote this test.", source="Edwin"),
             properties={"project": "memmachine", "length": "short"},
         ),
     ]
@@ -271,13 +248,11 @@ async def test_search(declarative_memory):
         Episode(
             uid=str(uuid4()),
             timestamp=now + i * timedelta(seconds=1),
-            source="filler",
-            content_type=ContentType.MESSAGE,
-            content=str(uuid4())
+            content=MessageContent(text=str(uuid4())
             + str(uuid4())
             + str(uuid4())
             + str(uuid4())
-            + str(uuid4()),
+            + str(uuid4()), source="filler"),
             properties={"project": "testing", "length": "medium"},
         )
         for i in range(1, 11)
@@ -286,13 +261,11 @@ async def test_search(declarative_memory):
         Episode(
             uid=str(uuid4()),
             timestamp=now + i * timedelta(seconds=100),
-            source="filler",
-            content_type=ContentType.MESSAGE,
-            content=str(uuid4())
+            content=MessageContent(text=str(uuid4())
             + str(uuid4())
             + str(uuid4())
             + str(uuid4())
-            + str(uuid4()),
+            + str(uuid4()), source="filler"),
             properties={"project": "memmachine", "length": "medium"},
         )
         for i in range(1, 11)
@@ -372,13 +345,11 @@ async def test_get_episodes(declarative_memory):
         Episode(
             uid=str(uuid4()),
             timestamp=now - i * timedelta(seconds=1),
-            source="filler",
-            content_type=ContentType.MESSAGE,
-            content=str(uuid4())
+            content=MessageContent(text=str(uuid4())
             + str(uuid4())
             + str(uuid4())
             + str(uuid4())
-            + str(uuid4()),
+            + str(uuid4()), source="filler"),
             properties={"project": "testing", "length": "medium"},
         )
         for i in range(1, 11)
@@ -387,13 +358,11 @@ async def test_get_episodes(declarative_memory):
         Episode(
             uid=str(uuid4()),
             timestamp=now - i * timedelta(seconds=1),
-            source="filler",
-            content_type=ContentType.MESSAGE,
-            content=str(uuid4())
+            content=MessageContent(text=str(uuid4())
             + str(uuid4())
             + str(uuid4())
             + str(uuid4())
-            + str(uuid4()),
+            + str(uuid4()), source="filler"),
             properties={"project": "memmachine", "length": "medium"},
         )
         for i in range(1, 11)
@@ -402,39 +371,29 @@ async def test_get_episodes(declarative_memory):
         Episode(
             uid="episode1",
             timestamp=now,
-            source="Alice",
-            content_type=ContentType.MESSAGE,
-            content="This test is broken. Who wrote this test?",
+            content=MessageContent(text="This test is broken. Who wrote this test?", source="Alice"),
             properties={"project": "memmachine", "length": "short"},
         ),
         Episode(
             uid="episode2",
             timestamp=now + timedelta(seconds=10),
-            source="Bob",
-            content_type=ContentType.MESSAGE,
-            content="Charlie.",
+            content=MessageContent(text="Charlie.", source="Bob"),
             properties={"project": "other", "length": "short"},
         ),
         Episode(
             uid="episode3",
             timestamp=now + timedelta(seconds=20),
-            source="textbook",
-            content_type=ContentType.TEXT,
-            content="The mitochondria is the powerhouse of the cell.",
+            content=TextContent(text="The mitochondria is the powerhouse of the cell.", source="textbook"),
         ),
         Episode(
             uid="episode4",
             timestamp=now + timedelta(seconds=30),
-            source="pet rock",
-            content_type=ContentType.MESSAGE,
-            content="",
+            content=MessageContent(text="", source="pet rock"),
         ),
         Episode(
             uid="episode5",
             timestamp=now + timedelta(seconds=40),
-            source="Charlie",
-            content_type=ContentType.MESSAGE,
-            content="Edwin Yu: https://github.com/edwinyyyu\n",
+            content=MessageContent(text="Edwin Yu: https://github.com/edwinyyyu\n", source="Charlie"),
             properties={"project": "memmachine"},
         ),
     ]
@@ -443,13 +402,11 @@ async def test_get_episodes(declarative_memory):
         Episode(
             uid=str(uuid4()),
             timestamp=now + i * timedelta(seconds=1),
-            source="filler",
-            content_type=ContentType.MESSAGE,
-            content=str(uuid4())
+            content=MessageContent(text=str(uuid4())
             + str(uuid4())
             + str(uuid4())
             + str(uuid4())
-            + str(uuid4()),
+            + str(uuid4()), source="filler"),
             properties={"project": "testing", "length": "medium"},
         )
         for i in range(1, 11)
@@ -458,13 +415,11 @@ async def test_get_episodes(declarative_memory):
         Episode(
             uid=str(uuid4()),
             timestamp=now + i * timedelta(seconds=100),
-            source="filler",
-            content_type=ContentType.MESSAGE,
-            content=str(uuid4())
+            content=MessageContent(text=str(uuid4())
             + str(uuid4())
             + str(uuid4())
             + str(uuid4())
-            + str(uuid4()),
+            + str(uuid4()), source="filler"),
             properties={"project": "memmachine", "length": "medium"},
         )
         for i in range(1, 11)
@@ -495,13 +450,11 @@ async def test_get_matching_episodes(declarative_memory):
         Episode(
             uid=str(uuid4()),
             timestamp=now - i * timedelta(seconds=1),
-            source="filler",
-            content_type=ContentType.MESSAGE,
-            content=str(uuid4())
+            content=MessageContent(text=str(uuid4())
             + str(uuid4())
             + str(uuid4())
             + str(uuid4())
-            + str(uuid4()),
+            + str(uuid4()), source="filler"),
             properties={"project": "testing", "length": "medium"},
         )
         for i in range(1, 11)
@@ -510,13 +463,11 @@ async def test_get_matching_episodes(declarative_memory):
         Episode(
             uid=str(uuid4()),
             timestamp=now - i * timedelta(seconds=1),
-            source="filler",
-            content_type=ContentType.MESSAGE,
-            content=str(uuid4())
+            content=MessageContent(text=str(uuid4())
             + str(uuid4())
             + str(uuid4())
             + str(uuid4())
-            + str(uuid4()),
+            + str(uuid4()), source="filler"),
             properties={"project": "memmachine", "length": "medium"},
         )
         for i in range(1, 11)
@@ -525,39 +476,29 @@ async def test_get_matching_episodes(declarative_memory):
         Episode(
             uid="episode1",
             timestamp=now,
-            source="Alice",
-            content_type=ContentType.MESSAGE,
-            content="This test is broken. Who wrote this test?",
+            content=MessageContent(text="This test is broken. Who wrote this test?", source="Alice"),
             properties={"project": "memmachine", "length": "short"},
         ),
         Episode(
             uid="episode2",
             timestamp=now + timedelta(seconds=10),
-            source="Bob",
-            content_type=ContentType.MESSAGE,
-            content="Charlie.",
+            content=MessageContent(text="Charlie.", source="Bob"),
             properties={"project": "other", "length": "short"},
         ),
         Episode(
             uid="episode3",
             timestamp=now + timedelta(seconds=20),
-            source="textbook",
-            content_type=ContentType.TEXT,
-            content="The mitochondria is the powerhouse of the cell.",
+            content=TextContent(text="The mitochondria is the powerhouse of the cell.", source="textbook"),
         ),
         Episode(
             uid="episode4",
             timestamp=now + timedelta(seconds=30),
-            source="pet rock",
-            content_type=ContentType.MESSAGE,
-            content="",
+            content=MessageContent(text="", source="pet rock"),
         ),
         Episode(
             uid="episode5",
             timestamp=now + timedelta(seconds=40),
-            source="Charlie",
-            content_type=ContentType.MESSAGE,
-            content="Edwin Yu: https://github.com/edwinyyyu\n",
+            content=MessageContent(text="Edwin Yu: https://github.com/edwinyyyu\n", source="Charlie"),
             properties={"project": "memmachine"},
         ),
     ]
@@ -565,13 +506,11 @@ async def test_get_matching_episodes(declarative_memory):
         Episode(
             uid=str(uuid4()),
             timestamp=now + i * timedelta(seconds=1),
-            source="filler",
-            content_type=ContentType.MESSAGE,
-            content=str(uuid4())
+            content=MessageContent(text=str(uuid4())
             + str(uuid4())
             + str(uuid4())
             + str(uuid4())
-            + str(uuid4()),
+            + str(uuid4()), source="filler"),
             properties={"project": "testing", "length": "medium"},
         )
         for i in range(1, 11)
@@ -580,13 +519,11 @@ async def test_get_matching_episodes(declarative_memory):
         Episode(
             uid=str(uuid4()),
             timestamp=now + i * timedelta(seconds=100),
-            source="filler",
-            content_type=ContentType.MESSAGE,
-            content=str(uuid4())
+            content=MessageContent(text=str(uuid4())
             + str(uuid4())
             + str(uuid4())
             + str(uuid4())
-            + str(uuid4()),
+            + str(uuid4()), source="filler"),
             properties={"project": "memmachine", "length": "medium"},
         )
         for i in range(1, 11)
@@ -654,13 +591,11 @@ async def test_delete_episodes(declarative_memory):
         Episode(
             uid=str(uuid4()),
             timestamp=now - i * timedelta(seconds=1),
-            source="filler",
-            content_type=ContentType.MESSAGE,
-            content=str(uuid4())
+            content=MessageContent(text=str(uuid4())
             + str(uuid4())
             + str(uuid4())
             + str(uuid4())
-            + str(uuid4()),
+            + str(uuid4()), source="filler"),
             properties={"project": "testing", "length": "medium"},
         )
         for i in range(1, 11)
@@ -669,13 +604,11 @@ async def test_delete_episodes(declarative_memory):
         Episode(
             uid=str(uuid4()),
             timestamp=now - i * timedelta(seconds=1),
-            source="filler",
-            content_type=ContentType.MESSAGE,
-            content=str(uuid4())
+            content=MessageContent(text=str(uuid4())
             + str(uuid4())
             + str(uuid4())
             + str(uuid4())
-            + str(uuid4()),
+            + str(uuid4()), source="filler"),
             properties={"project": "memmachine", "length": "medium"},
         )
         for i in range(1, 11)
@@ -684,39 +617,29 @@ async def test_delete_episodes(declarative_memory):
         Episode(
             uid="episode1",
             timestamp=now,
-            source="Alice",
-            content_type=ContentType.MESSAGE,
-            content="This test is broken. Who wrote this test?",
+            content=MessageContent(text="This test is broken. Who wrote this test?", source="Alice"),
             properties={"project": "memmachine", "length": "short"},
         ),
         Episode(
             uid="episode2",
             timestamp=now + timedelta(seconds=10),
-            source="Bob",
-            content_type=ContentType.MESSAGE,
-            content="Charlie.",
+            content=MessageContent(text="Charlie.", source="Bob"),
             properties={"project": "other", "length": "short"},
         ),
         Episode(
             uid="episode3",
             timestamp=now + timedelta(seconds=20),
-            source="textbook",
-            content_type=ContentType.TEXT,
-            content="The mitochondria is the powerhouse of the cell.",
+            content=TextContent(text="The mitochondria is the powerhouse of the cell.", source="textbook"),
         ),
         Episode(
             uid="episode4",
             timestamp=now + timedelta(seconds=30),
-            source="pet rock",
-            content_type=ContentType.MESSAGE,
-            content="",
+            content=MessageContent(text="", source="pet rock"),
         ),
         Episode(
             uid="episode5",
             timestamp=now + timedelta(seconds=40),
-            source="Charlie",
-            content_type=ContentType.MESSAGE,
-            content="Edwin Yu: https://github.com/edwinyyyu\n",
+            content=MessageContent(text="Edwin Yu: https://github.com/edwinyyyu\n", source="Charlie"),
             properties={"project": "memmachine"},
         ),
     ]
@@ -725,13 +648,11 @@ async def test_delete_episodes(declarative_memory):
         Episode(
             uid=str(uuid4()),
             timestamp=now + i * timedelta(seconds=1),
-            source="filler",
-            content_type=ContentType.MESSAGE,
-            content=str(uuid4())
+            content=MessageContent(text=str(uuid4())
             + str(uuid4())
             + str(uuid4())
             + str(uuid4())
-            + str(uuid4()),
+            + str(uuid4()), source="filler"),
             properties={"project": "testing", "length": "medium"},
         )
         for i in range(1, 11)
@@ -740,13 +661,11 @@ async def test_delete_episodes(declarative_memory):
         Episode(
             uid=str(uuid4()),
             timestamp=now + i * timedelta(seconds=100),
-            source="filler",
-            content_type=ContentType.MESSAGE,
-            content=str(uuid4())
+            content=MessageContent(text=str(uuid4())
             + str(uuid4())
             + str(uuid4())
             + str(uuid4())
-            + str(uuid4()),
+            + str(uuid4()), source="filler"),
             properties={"project": "memmachine", "length": "medium"},
         )
         for i in range(1, 11)
@@ -772,29 +691,23 @@ def test_string_from_episode_context():
     episode1 = Episode(
         uid="episode1",
         timestamp=now,
-        source="Alice",
-        content_type=ContentType.MESSAGE,
-        content="This test is broken. Who wrote this test?",
+        content=MessageContent(text="This test is broken. Who wrote this test?", source="Alice"),
     )
     episode2 = Episode(
         uid="episode2",
         timestamp=now + timedelta(seconds=10),
-        source="Bob",
-        content_type=ContentType.MESSAGE,
-        content="Edwin.",
+        content=MessageContent(text="Edwin.", source="Bob"),
     )
     episode3 = Episode(
         uid="episode3",
         timestamp=now + timedelta(seconds=20),
-        source="textbook",
-        content_type=ContentType.TEXT,
-        content="The mitochondria is the powerhouse of the cell.",
+        content=TextContent(text="The mitochondria is the powerhouse of the cell.", source="textbook"),
     )
 
     context_string = DeclarativeMemory.string_from_episode_context(
         [episode1, episode2, episode3],
     )
 
-    assert episode1.content in context_string
-    assert episode2.content in context_string
-    assert episode3.content in context_string
+    assert episode1.content.text in context_string
+    assert episode2.content.text in context_string
+    assert episode3.content.text in context_string
