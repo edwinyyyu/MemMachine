@@ -588,6 +588,13 @@ class SearchMemoriesSpec(_WithOrgAndProj):
             examples=Examples.FILTER_MEM,
         ),
     ]
+    set_metadata: Annotated[
+        dict[str, JsonValue] | None,
+        Field(
+            default=None,
+            description=SpecDoc.SET_METADATA,
+        ),
+    ]
     expand_context: Annotated[
         int,
         Field(
@@ -661,6 +668,13 @@ class ListMemoriesSpec(_WithOrgAndProj):
             default="",
             description=SpecDoc.FILTER_MEM,
             examples=Examples.FILTER_MEM,
+        ),
+    ]
+    set_metadata: Annotated[
+        dict[str, JsonValue] | None,
+        Field(
+            default=None,
+            description=SpecDoc.SET_METADATA,
         ),
     ]
     type: Annotated[
