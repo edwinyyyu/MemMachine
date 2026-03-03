@@ -57,8 +57,11 @@ def _format_thread(thread_id: int, frame: FrameType) -> str:
 
 def dump_traceback() -> None:
     """Dump all asyncio task stacks and thread stacks to the logger."""
-    loop = asyncio.get_running_loop()
-    tasks = asyncio.all_tasks(loop)
+    try:
+        loop = asyncio.get_running_loop()
+        tasks = asyncio.all_tasks(loop)
+    except RuntimeError:
+        tasks = set()
 
     sections: list[str] = []
 
