@@ -25,8 +25,6 @@ if True:
 class MemmachineHelperRestapiv1(MemmachineHelperBase):
     """MemMachine REST API v1
     Please use factory method to create this object
-    Specification is in MemMachine repo:
-        cd MemMachine/src/memmachine/server/api.py
     """
 
     def __init__(self, log=None, url=None):

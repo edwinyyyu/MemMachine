@@ -82,7 +82,6 @@ convention = "google"
 
 # Do not add any new paths under packages/
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["ANN", "D", "SLF", "ARG"]
 "packages/client/client_tests/**/*.py" = ["ANN", "D", "SLF", "ARG"]
 "packages/server/server_tests/**/*.py" = ["ANN", "D", "SLF", "ARG"]
 "packages/common/common_tests/**/*.py" = ["ANN", "D", "SLF", "ARG"]
@@ -145,7 +144,7 @@ markers = [
 ]
 
 [tool.complexipy]
-paths = ["packages/server/src", "packages/client/src", "tests"]
+paths = ["packages/server/src", "packages/client/src", "packages/common/src"]
 max-complexity-allowed = 10
 quiet = false
 ignore-complexity = false
