@@ -871,7 +871,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         *,
         collection: str,
         by_properties: Iterable[str],
-        starting_at: Iterable[OrderedValue | None],
+        starting_at: Iterable[OrderedValue | str | None],
         order_ascending: Iterable[bool],
         include_equal_start: bool = False,
         limit: int | None = 1,
@@ -986,7 +986,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         entity_query_alias: str,
         starting_at_query_parameter: str,
         sanitized_by_properties: Iterable[str],
-        starting_at: Iterable[OrderedValue | None],
+        starting_at: Iterable[OrderedValue | str | None],
         order_ascending: Iterable[bool],
     ) -> str:
         sanitized_by_properties = list(sanitized_by_properties)

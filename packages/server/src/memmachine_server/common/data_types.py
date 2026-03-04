@@ -6,10 +6,22 @@ from enum import Enum
 PropertyValue = bool | int | float | str | datetime
 """Type for stored property values."""
 
+PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME: dict[type[PropertyValue], str] = {
+    bool: "bool",
+    int: "int",
+    float: "float",
+    str: "str",
+    datetime: "datetime",
+}
+
+PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE: dict[str, type[PropertyValue]] = {
+    v: k for k, v in PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME.items()
+}
+
 FilterValue = bool | int | float | str | datetime | list[int] | list[str]
 """Type for filter expression values (includes list types for IN clauses)."""
 
-OrderedValue = int | float | str | datetime
+OrderedValue = int | float | datetime
 """Type for values that can be ordered/sorted."""
 
 
