@@ -52,6 +52,10 @@ class OpenAIResponsesLanguageModelParams(BaseModel):
         ...,
         description="Name of the OpenAI model to use (e.g. 'gpt-5-nano')",
     )
+    reasoning: dict[str, Any] | None = Field(
+        None,
+        description="Configuration options for reasoning",
+    )
     max_retry_interval_seconds: int = Field(
         120,
         description="Maximal retry interval in seconds when retrying API calls",
@@ -84,6 +88,7 @@ class OpenAIResponsesLanguageModel(LanguageModel):
         self._client = params.client
 
         self._model = params.model
+        self._reasoning = params.reasoning
 
         self._max_retry_interval_seconds = params.max_retry_interval_seconds
 
@@ -214,7 +219,7 @@ class OpenAIResponsesLanguageModel(LanguageModel):
                     input=input_prompts,
                     tools=tools,
                     tool_choice=tool_choice if tool_choice is not None else "auto",
-                    reasoning={"effort": "minimal"},
+                    reasoning=self._reasoning,
                 )  # type: ignore
                 break
             except (

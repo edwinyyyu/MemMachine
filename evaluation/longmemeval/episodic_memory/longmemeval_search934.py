@@ -43,9 +43,9 @@ SIMPLE_PROMPT = """
 You are a helpful assistant with access to extensive conversation history.
 When answering questions, carefully review the conversation history to identify and use any relevant user preferences, interests, or specific details they have mentioned.
 
-<history>
+<memories>
 {memories}
-</history>
+</memories>
 
 Current date: {question_timestamp}
 Question: {question}
@@ -63,7 +63,6 @@ You are asked to answer a question from a user based on your memories of a conve
 6. Your memories are episodic, meaning that they consist of only your raw observations of what was said. You may need to reason about or guess what the memories imply in order to answer the question.
 7. Your memories may include small or large jumps in time or context. You are not confused by this. You just did not bother to remember everything in between.
 8. Your memories are ordered from earliest to latest. Prioritize the latest memories if anything has changed over time. Consider the question datetime when determining whether an event has actually occurred.
-9. If some detail in your recalled memories and the question does not match, assume that both the detail and the question are correct. Do not assume that you have enough information to answer the question.
 </instructions>
 
 <memories>
@@ -230,7 +229,7 @@ async def main():
         )
     )
 
-    # reranker = IdentityReranker()
+    reranker = IdentityReranker()
 
     async def qa_eval(
         memories,
@@ -285,7 +284,7 @@ async def main():
 
         total_start = time.monotonic()
         memory_start = time.monotonic()
-        chunks = await memory.search(query=search_query, max_num_episodes=100, expand_context=0)
+        chunks = await memory.search(query=search_query, max_num_episodes=200, expand_context=0)
         memory_end = time.monotonic()
         memory_latency = memory_end - memory_start
 

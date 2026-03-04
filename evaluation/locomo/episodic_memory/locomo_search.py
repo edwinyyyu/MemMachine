@@ -18,6 +18,10 @@ from memmachine.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
 )
+from memmachine.common.language_model.openai_responses_language_model import (
+    OpenAIResponsesLanguageModel,
+    OpenAIResponsesLanguageModelParams,
+)
 from memmachine.common.reranker.amazon_bedrock_reranker import (
     AmazonBedrockReranker,
     AmazonBedrockRerankerParams,
@@ -92,6 +96,7 @@ async def process_question(
     chunks = await memory.search(
         query=question,
         max_num_episodes=20,
+        expand_context=3,
     )
     memory_end = time.time()
 
@@ -170,6 +175,13 @@ async def main():
         api_key=os.getenv("OPENAI_API_KEY"),
     )
 
+    language_model = OpenAIResponsesLanguageModel(
+        OpenAIResponsesLanguageModelParams(
+            client=openai_client,
+            model="gpt-5-mini",
+        )
+    )
+
     embedder = OpenAIEmbedder(
         OpenAIEmbedderParams(
             client=openai_client,
@@ -214,6 +226,7 @@ async def main():
                 session_id=group_id,
                 vector_graph_store=vector_graph_store,
                 embedder=embedder,
+                language_model=language_model,
                 reranker=reranker,
             )
         )
@@ -240,7 +253,7 @@ async def main():
                 question_response,
             )
 
-        semaphore = asyncio.Semaphore(5)
+        semaphore = asyncio.Semaphore(10)
         response_tasks = [
             async_with(
                 semaphore,

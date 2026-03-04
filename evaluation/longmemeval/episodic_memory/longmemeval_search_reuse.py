@@ -15,6 +15,24 @@ from openai import AsyncOpenAI
 from memmachine.common.utils import async_with
 
 
+SIMPLE_PROMPT = """
+You are a helpful assistant with access to extensive conversation history.
+When answering questions, carefully review the conversation history to identify and use any relevant user preferences, interests, or specific details they have mentioned.
+
+<history>
+{memories}
+</history>
+
+IMPORTANT: When responding, reference specific details from these observations. Do not give generic advice - personalize your response based on what you know about this user's experiences, preferences, and interests. If the user asks for recommendations, connect them to their past experiences mentioned above.
+
+KNOWLEDGE UPDATES: When asked about current state (e.g., "where do I currently...", "what is my current..."), always prefer the MOST RECENT information. Observations include dates - if you see conflicting information, the newer observation supersedes the older one. Look for phrases like "will start", "is switching", "changed to", "moved to" as indicators that previous information has been updated.
+
+PLANNED ACTIONS: If the user stated they planned to do something (e.g., "I'm going to...", "I'm looking forward to...", "I will...") and the date they planned to do it is now in the past (check the relative time like "3 weeks ago"), assume they completed the action unless there's evidence they didn't. For example, if someone said "I'll start my new diet on Monday" and that was 2 weeks ago, assume they started the diet.
+
+Current date: {question_timestamp}
+Question: {question}
+"""
+
 ANSWER_PROMPT = """
 You are asked to answer a question based on your memories of a conversation.
 
@@ -49,6 +67,30 @@ You are asked to answer a question from a user based on your memories of a conve
 6. Your memories are episodic, meaning that they consist of only your raw observations of what was said. You may need to reason about or guess what the memories imply in order to answer the question.
 7. Your memories may include small or large jumps in time or context. You are not confused by this. You just did not bother to remember everything in between.
 8. Your memories are ordered from earliest to latest. Prioritize the latest memories if anything has changed over time. Consider the question datetime when determining whether an event has actually occurred.
+</instructions>
+
+<memories>
+{memories}
+</memories>
+
+Question timestamp: {question_timestamp}
+Question: {question}
+Your short response to the question without fluff (no more than a couple of sentences):
+"""
+
+ANSWER_PROMPT = """
+You are asked to answer a question from a user based on your memories of a conversation between the user and an assistant.
+
+<instructions>
+1. Prioritize memories that answer the question directly. Be meticulous about recalling details.
+2. When there may be multiple answers to the question, think hard to remember and list all possible answers. Do not become satisfied with just the first few answers you remember.
+3. When asked to count items, carefully enumerate the items using numbers.
+4. When asked about time intervals, the duration between events is computed by subtracting the start date from the end date in the chosen unit.
+5. When asked for advice or suggestions, synthesize your memories of the user's interests, preferences, possessions, and problems to provide tailored recommendations.
+6. Your memories are episodic, meaning that they consist of only your raw observations of what was said. You may need to reason about or guess what the memories imply in order to answer the question.
+7. Your memories may include small or large jumps in time or context. You are not confused by this. You just did not bother to remember everything in between.
+8. Your memories are ordered from earliest to latest. Prioritize the latest memories if anything has changed over time. Consider the question datetime when determining whether an event has actually occurred.
+9. If some detail in your recalled memories and the question does not match, assume that both the detail and the question are correct. Do not assume that you have enough information to answer the question.
 </instructions>
 
 <memories>
@@ -95,7 +137,7 @@ async def main():
         memories,
         question_timestamp,
         question: str,
-        model: str = "gpt-5",
+        model: str = "gpt-5-mini",
     ):
         start_time = time.monotonic()
         response = await openai_client.chat.completions.create(
@@ -103,7 +145,7 @@ async def main():
             messages=[
                 {
                     "role": "user",
-                    "content": ANSWER_PROMPT.format(
+                    "content": SIMPLE_PROMPT.format(
                         memories=memories,
                         question_timestamp=question_timestamp,
                         question=question,

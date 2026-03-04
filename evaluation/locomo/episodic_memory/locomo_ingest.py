@@ -82,7 +82,7 @@ async def main():
     language_model = OpenAIResponsesLanguageModel(
         OpenAIResponsesLanguageModelParams(
             client=openai_client,
-            model="gpt-4.1-nano",
+            model="gpt-4.1-mini",
         )
     )
 
@@ -123,6 +123,8 @@ async def main():
                 embedder=embedder,
                 reranker=reranker,
                 language_model=language_model,
+                derivative_dedup_threshold=0.9,
+                message_sentence_chunking=True,
             )
         )
 

@@ -1,16 +1,18 @@
 """Declarative memory system for storing and retrieving episodic memory."""
 
 import asyncio
+import math
 import datetime
 import json
 import logging
+from collections import defaultdict
 from collections.abc import Iterable
 from typing import cast
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, InstanceOf
 
-from memmachine.common.embedder.embedder import Embedder
+from memmachine.common.embedder import Embedder
 from memmachine.common.filter.filter_parser import (
     And as FilterAnd,
 )
@@ -23,7 +25,8 @@ from memmachine.common.filter.filter_parser import (
 from memmachine.common.filter.filter_parser import (
     Or as FilterOr,
 )
-from memmachine.common.reranker.reranker import Reranker
+from memmachine.common.language_model import LanguageModel
+from memmachine.common.reranker import Reranker
 from memmachine.common.utils import extract_sentences
 from memmachine.common.vector_graph_store import Edge, Node, VectorGraphStore
 
@@ -69,6 +72,14 @@ class DeclarativeMemoryParams(BaseModel):
         ...,
         description="Embedder instance for creating embeddings",
     )
+    hyde_language_model: InstanceOf[LanguageModel] = Field(
+        ...,
+        description="LanguageModel instance for generating hypothetical answers",
+    )
+    language_model: InstanceOf[LanguageModel] = Field(
+        ...,
+        description="LanguageModel instance for relevance filtering",
+    )
     reranker: InstanceOf[Reranker] = Field(
         ...,
         description="Reranker instance for reranking search results",
@@ -95,6 +106,8 @@ class DeclarativeMemory:
 
         self._vector_graph_store = params.vector_graph_store
         self._embedder = params.embedder
+        self._hyde_language_model = params.hyde_language_model
+        self._language_model = params.language_model
         self._reranker = params.reranker
 
         self._message_sentence_chunking = params.message_sentence_chunking
@@ -353,8 +366,12 @@ class DeclarativeMemory:
             property_filter,
         )
 
+        # hyde_query = await self._generate_hyde_query(query)
+        # print(f"Original query: {query}\nHyDE query: {hyde_query}")
+
         query_embedding = (
             await self._embedder.search_embed(
+                # [hyde_query],
                 [query],
             )
         )[0]
@@ -404,49 +421,146 @@ class DeclarativeMemory:
         ]
 
         expand_context = min(max(0, expand_context), max_num_episodes - 1)
-        max_backward_episodes = expand_context // 3
-        max_forward_episodes = expand_context - max_backward_episodes
 
-        contextualize_episode_tasks = [
-            self._contextualize_episode(
-                nuclear_episode,
-                max_backward_episodes=max_backward_episodes,
-                max_forward_episodes=max_forward_episodes,
-                mangled_property_filter=mangled_property_filter,
-            )
-            for nuclear_episode in nuclear_episodes
-        ]
+        if expand_context > 0:
+            max_backward_episodes = expand_context // 3
+            max_forward_episodes = expand_context - max_backward_episodes
 
-        episode_contexts = await asyncio.gather(*contextualize_episode_tasks)
+            contextualize_episode_tasks = [
+                self._contextualize_episode(
+                    nuclear_episode,
+                    max_backward_episodes=max_backward_episodes,
+                    max_forward_episodes=max_forward_episodes,
+                    mangled_property_filter=mangled_property_filter,
+                )
+                for nuclear_episode in nuclear_episodes
+            ]
 
-        # Rerank episode contexts.
-        episode_context_scores = await self._score_episode_contexts(
-            query,
-            episode_contexts,
+            episode_contexts = await asyncio.gather(*contextualize_episode_tasks)
+        else:
+            episode_contexts = [[ep] for ep in nuclear_episodes]
+
+        # Deduplicate and sort all episodes chronologically.
+        all_episodes = sorted(
+            {ep for episode_context in episode_contexts for ep in episode_context},
+            key=lambda ep: (ep.timestamp, ep.uid),
         )
 
-        reranked_scored_anchored_episode_contexts = [
-            (episode_context_score, nuclear_episode, episode_context)
-            for episode_context_score, nuclear_episode, episode_context in sorted(
-                zip(
-                    episode_context_scores,
-                    nuclear_episodes,
-                    episode_contexts,
-                    strict=True,
-                ),
-                key=lambda triple: triple[0],
-                reverse=True,
-            )
-        ]
+        num_episodes = len(all_episodes)
+        BATCH_SIZE = 20
 
-        # Unify episode contexts.
-        unified_scored_episode_context = (
-            DeclarativeMemory._unify_scored_anchored_episode_contexts(
-                reranked_scored_anchored_episode_contexts,
-                max_num_episodes=max_num_episodes,
+        if num_episodes <= BATCH_SIZE:
+            # Small pool: single LLM call.
+            useless_indexes = await self._identify_useless_episodes(
+                query, all_episodes
             )
+            useless_uids = {str(all_episodes[i].uid) for i in useless_indexes}
+        else:
+            batches = DeclarativeMemory._build_circular_batches(
+                all_episodes, BATCH_SIZE
+            )
+
+            # Evaluate ALL batches in parallel.
+            batch_results = await asyncio.gather(
+                *[
+                    self._identify_useless_episodes(query, batch)
+                    for _, batch in batches
+                ]
+            )
+
+            # Consensus: count useless votes per episode.
+            useless_votes: dict[str, int] = defaultdict(int)
+            for (indexes, _), useless_batch_indexes in zip(
+                batches, batch_results
+            ):
+                for batch_idx in useless_batch_indexes:
+                    original_idx = indexes[batch_idx]
+                    useless_votes[str(all_episodes[original_idx].uid)] += 1
+
+            # Only remove if useless in BOTH batches containing it.
+            useless_uids = {
+                uid for uid, votes in useless_votes.items() if votes > 1
+            }
+
+        # Filter to useful episodes.
+        useful = [ep for ep in all_episodes if str(ep.uid) not in useless_uids]
+
+        # Rerank by relevance and take top max_num_episodes.
+        scores = await self._score_episode_contexts(
+            query, [[ep] for ep in useful]
         )
-        return unified_scored_episode_context
+        scored = sorted(
+            zip(scores, useful), key=lambda pair: pair[0], reverse=True
+        )
+        top = scored[:max_num_episodes]
+
+        # Return sorted by timestamp.
+        return sorted(top, key=lambda pair: (pair[1].timestamp, pair[1].uid))
+
+    async def _generate_hyde_query(self, query: str) -> str:
+        system_prompt = (
+            "You are rewriting user inputs into retrieval cues for a semantic search system. The goal is to produce output that maximally overlaps with the actual content stored in documents, notes, chat logs, or records — because that is what the retrieval system will be searching against. The stored content may include source prefixes (e.g., \"User:\", \"Assistant:\", \"[Name]:\") as part of the indexed text.\n"
+            "\n"
+            "Ask yourself: \"What was actually written down or said at the time this happened?\" Your output should be as close to that original recorded content as possible. Your output can be a statement, a question, a phrase, or a keyword — whatever is most likely to resemble the stored content. Ensure the cue retains enough semantic context for the embedding to be meaningful — if stripping or converting words would make the cue ambiguous or too short to distinguish from unrelated content, keep the key terms that anchor the meaning.\n"
+            "\n"
+            "## Rules\n"
+            "\n"
+            "1. **Always rewrite question inputs. If the input is a question, the output must not be that same question.**\n"
+            "  - **Most inputs are questions about facts or events.** Convert these into the declarative statement that would appear in content describing that fact or event. This is the default behavior. Strip the question structure entirely and rephrase as a statement — even if the input includes a source prefix.\n"
+            "    - \"Where did I go on vacation?\" → \"I went on vacation to\"\n"
+            "    - \"How many times have I gone on a hike recently?\" → \"I went on a hike\"\n"
+            "    - \"What car do I drive?\" → \"I drive a car\"\n"
+            "    - \"User: Who taught me to play guitar?\" → \"User: [someone] taught me to play guitar\"\n"
+            "    - \"User: How long did Alice stay in London?\" → \"Alice stayed in London for [time]\"\n"
+            "  - **If the input is a request for recommendations, suggestions, or advice,** the useful stored content is the user's related preferences, history, or interests — not the request itself. Rewrite the cue to target that underlying context.\n"
+            "    - \"User: recommend me a book\" → \"User: I like reading [genre]\"\n"
+            "    - \"User: what should I eat tonight?\" → \"User: I like to eat [cuisine/dish]\"\n"
+            "  - **If the input is a pure knowledge question directed at the assistant** (e.g., asking for an explanation, definition, or general information), the source label is irrelevant — drop it and output only the topical content.\n"
+            "    - \"User: Can you explain concurrency?\" → \"concurrency\"\n"
+            "    - \"User: What is the capital of France?\" → \"capital of France\"\n"
+            "  - **If the input asks about something the assistant previously said or explained,** the stored content is from the Assistant. Replace the source label with \"Assistant:\" and extract the topic, preserving all specific details mentioned.\n"
+            "    - \"User: What was that Italian restaurant you suggested near downtown?\" → \"Assistant: Italian restaurant near downtown\"\n"
+            "    - \"User: Can you remind me which Python framework you recommended for web scraping?\" → \"Assistant: Python framework for web scraping\"\n"
+            "    - \"User: What did you say about the side effects of melatonin?\" → \"Assistant: side effects of melatonin\"\n"
+            "  - **Rarely, the input asks about something that was itself previously said or written** — meaning the stored content is literally a past utterance or message. Only in this case, extract that utterance directly. Look for explicit signals like \"asked,\" \"said,\" \"wrote,\" or \"searched for\" combined with a referenced phrase or question.\n"
+            "    - \"How many times have I asked what the weather is like?\" → \"What's the weather like?\"\n"
+            "  - **If the input contains multiple retrieval targets** (e.g., comparisons, conjunctions, or multi-part questions), include all targets in the cue. Do not reduce to a single target — the stored content relevant to each part may be in different places, and retrieving them individually may lose the relationship between them.\n"
+            "    - \"User: Do I prefer coffee or tea?\" → \"User: I prefer coffee or tea\" (keep both so the comparison can be resolved)\n"
+            "    - \"User: What did I eat for breakfast and where did I go after?\" → \"User: I ate breakfast and I went to\"\n"
+            "\n"
+            "2. **Source labels and named references.** If the input has an explicit source prefix (e.g., \"User:\", \"Alice:\") and the question is about the speaker themselves, keep the source label on the cue. When the question is about a different named person mentioned *inside* the question, drop the source label entirely — the name in the content itself provides the semantic anchor. When the question asks about what the assistant said, replace the source label with \"Assistant:\". Do not infer or add source labels beyond these cases. If there is no explicit source in the input, do not add any label.\n"
+            "    - \"Alice: Where did I go on vacation?\" → \"Alice: I went on vacation to\" (Alice asking about herself — keep label)\n"
+            "    - \"User: Who taught me to play guitar?\" → \"User: [someone] taught me to play guitar\" (User asking about themselves — keep label)\n"
+            "    - \"User: How long did Alice stay in London?\" → \"Alice stayed in London for [time]\" (about a third party — drop source label)\n"
+            "    - \"Bob: How long did Alice stay in London?\" → \"Alice stayed in London for [time]\" (about a third party — drop source label)\n"
+            "    - \"User: How many times have I asked what the weather is like?\" → \"User: What's the weather like?\"\n"
+            "    - \"How many times have I asked what the weather is like?\" → \"What's the weather like?\" (no explicit source)\n"
+            "    - \"Python concurrency patterns\" → \"Python concurrency patterns\" (no source evident)\n"
+            "\n"
+            "3. **Strip all meta-framing.** Remove quantifiers (\"how many times\"), frequency language (\"how often\"), analytical framing (\"frequency of,\" \"number of,\" \"tell me about,\" \"can you tell me\"), ordering or sorting instructions (\"in order,\" \"starting from the earliest,\" \"ranked by\"), and conversational wrappers (\"do you know,\" \"I was wondering,\" \"can you remind me\"). What remains should be the underlying content or event.\n"
+            "\n"
+            "4. **Convert temporal and relative time expressions into context-appropriate phrasing or omit them.** Raw temporal references like \"last night,\" \"yesterday,\" \"recently\" do not appear in content written at the time of the event. Infer what natural phrasing the original content would use (e.g., a question about eating \"last night\" maps to content about eating \"for dinner\"). If no natural replacement exists, omit the temporal reference. Never insert specific dates.\n"
+            "\n"
+            "5. **Preserve all specific details present in the input. Do not invent new ones.** Keep every concrete entity, name, or term the user provided. Never fabricate specific entities and never replace specific terms the user already gave you with vaguer ones. If a detail is missing from the input, leave it out of the cue.\n"
+            "\n"
+            "6. **Preserve keywords and technical terms as-is.** If the input is already a short phrase or technical query, return it unchanged or nearly unchanged.\n"
+            "\n"
+            "7. **Do not over-correct bad input.** If the input is vague or poorly formed, produce the closest natural phrasing you can without guessing missing context.\n"
+            "\n"
+            "8. **Return only the cue.** No commentary or explanations."
+        )
+        user_prompt = (
+            "## Input\n"
+            "\n"
+            f"{query}"
+        )
+
+        hyde_query, _ = await self._hyde_language_model.generate_response(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
+
+        return hyde_query.strip()
 
     async def _contextualize_episode(
         self,
@@ -522,6 +636,193 @@ class DeclarativeMemory:
         return episode_context_scores
 
     @staticmethod
+    def _build_circular_batches(
+        episodes: list[Episode],
+        batch_size: int,
+    ) -> list[tuple[list[int], list[Episode]]]:
+        """Build overlapping circular batches for parallel LLM evaluation.
+
+        Each episode appears in exactly 2 batches. All batch sizes are within
+        1 of each other. This is achieved by dividing episodes into B balanced
+        segments, then forming each batch as the union of two adjacent segments.
+
+        Args:
+            episodes: Episodes sorted chronologically.
+            batch_size: Target number of episodes per batch.
+
+        Returns:
+            List of (indexes, batch) tuples where indexes maps batch-local
+            positions back to episodes positions.
+
+        """
+        n = len(episodes)
+        num_batches = max(2, math.ceil(2 * n / batch_size))
+        num_segments = num_batches  # each batch = 2 adjacent segments
+
+        # Balanced partition into num_segments segments.
+        # Segment k spans episodes[seg_start[k] : seg_start[k+1]].
+        seg_start = [(k * n) // num_segments for k in range(num_segments + 1)]
+
+        # Each batch k = segment k ∪ segment (k+1) % num_segments.
+        batches: list[tuple[list[int], list[Episode]]] = []
+        for k in range(num_batches):
+            next_k = (k + 1) % num_segments
+            indexes = list(range(seg_start[k], seg_start[k + 1]))
+            indexes += list(range(seg_start[next_k], seg_start[next_k + 1]))
+            # Sort for chronological order (only matters for wrap-around batch).
+            indexes.sort()
+            batch = [episodes[i] for i in indexes]
+            batches.append((indexes, batch))
+
+        return batches
+
+    async def _identify_useless_episodes(
+        self,
+        query: str,
+        episodes: list[Episode],
+    ) -> set[int]:
+        """Identify episodes that are not useful for answering the query."""
+
+        class UselessEpisodes(BaseModel):
+            useless_episode_indexes: list[int] = Field(
+                description="Indexes of episodes that are not useful for answering the query",
+            )
+
+        indexed_context = DeclarativeMemory.indexed_string_from_episode_context(episodes)
+
+        system_prompt = (
+            "You are a relevance judge. Given a query and a list of indexed episodes, "
+            "identify which episodes are NOT useful for answering the query.\n\n"
+            "An episode is useless unless it contains information that would be "
+            "directly cited or referenced when answering the query, or removing "
+            "it would make a cited episode ambiguous or uninterpretable.\n\n"
+            "Return the indexes of useless episodes. "
+            "If all episodes are useful, return an empty list."
+        )
+        user_prompt = f"Query: {query}\n\nEpisodes:\n{indexed_context}"
+
+        result = await self._language_model.generate_parsed_response(
+            output_format=UselessEpisodes,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
+
+        if result is None:
+            return set()
+
+        return {i for i in result.useless_episode_indexes if 0 <= i < len(episodes)}
+
+    async def _identify_useless_episodes_binary(
+        self,
+        query: str,
+        episodes: list[Episode],
+    ) -> set[int]:
+        """Identify episodes that are not useful for answering the query.
+
+        Uses a binary 0/1 output format: one value per episode where
+        0 = useful, 1 = useless.
+        """
+        indexed_context = DeclarativeMemory.indexed_string_from_episode_context(episodes)
+        num_episodes = len(episodes)
+
+        system_prompt = (
+            "You are a relevance judge. Given a query and a list of indexed episodes, "
+            "identify which episodes are NOT useful for answering the query.\n\n"
+            "An episode is useless unless it contains information that would be "
+            "directly cited or referenced when answering the query, or removing "
+            "it would make a cited episode ambiguous or uninterpretable.\n\n"
+            "For each episode, output 0 if it is useful or 1 if it is useless. "
+            f"Output exactly {num_episodes} values (one per episode, in order), "
+            "separated by spaces, on a single line. No other text."
+        )
+        user_prompt = f"Query: {query}\n\nEpisodes:\n{indexed_context}"
+
+        response, _ = await self._language_model.generate_response(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
+
+        tokens = response.strip().split()
+        if len(tokens) != num_episodes:
+            logger.warning(
+                "Binary useless-episodes response had %d tokens, expected %d. "
+                "Falling back to empty set.",
+                len(tokens),
+                num_episodes,
+            )
+            return set()
+
+        return {i for i, token in enumerate(tokens) if token == "1"}
+
+    async def _identify_useless_episodes_checkbox(
+        self,
+        query: str,
+        episodes: list[Episode],
+    ) -> set[int]:
+        """Identify episodes that are not useful for answering the query.
+
+        Uses a checkbox output format: the LLM receives unchecked checkboxes
+        and checks the ones corresponding to useless episodes.
+        """
+        num_episodes = len(episodes)
+        checkbox_lines = []
+        for episode in episodes:
+            context_date = DeclarativeMemory._format_date(episode.timestamp.date())
+            context_time = DeclarativeMemory._format_time(episode.timestamp.time())
+            content = json.dumps(episode.content)
+            checkbox_lines.append(
+                f"- [ ] [{context_date} at {context_time}] {episode.source}: {content}"
+            )
+        checkboxes = "\n".join(checkbox_lines)
+
+        system_prompt = (
+            "You are a relevance judge. Given a query and a checklist of episodes, "
+            "identify which episodes are NOT useful for answering the query by "
+            "checking their checkboxes.\n\n"
+            "An episode is useless unless it contains information that would be "
+            "directly cited or referenced when answering the query, or removing "
+            "it would make a cited episode ambiguous or uninterpretable.\n\n"
+            "Return the full checklist with useless episodes checked (replace "
+            "\"[ ]\" with \"[x]\"). Keep useful episodes unchecked. "
+            f"Output exactly {num_episodes} checkbox lines. No other text."
+        )
+        user_prompt = f"Query: {query}\n\nEpisodes:\n{checkboxes}"
+
+        response, _ = await self._language_model.generate_response(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
+
+        lines = [
+            line for line in response.strip().split("\n")
+            if line.strip().startswith("- [")
+        ]
+        if len(lines) != num_episodes:
+            logger.warning(
+                "Checkbox useless-episodes response had %d checkbox lines, "
+                "expected %d. Falling back to empty set.",
+                len(lines),
+                num_episodes,
+            )
+            return set()
+
+        useless: set[int] = set()
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("- [x]") or stripped.startswith("- [X]"):
+                useless.add(i)
+            elif not stripped.startswith("- [ ]"):
+                logger.warning(
+                    "Unexpected checkbox format at line %d: %r. "
+                    "Falling back to empty set.",
+                    i,
+                    stripped[:40],
+                )
+                return set()
+
+        return useless
+
+    @staticmethod
     def string_from_episode_context(episode_context: Iterable[Episode]) -> str:
         """Format episode context as a string."""
         context_string = ""
@@ -534,6 +835,22 @@ class DeclarativeMemory:
                 episode.timestamp.time(),
             )
             context_string += f"[{context_date} at {context_time}] {episode.source}: {json.dumps(episode.content)}\n"
+
+        return context_string
+
+    @staticmethod
+    def indexed_string_from_episode_context(episode_context: Iterable[Episode]) -> str:
+        """Format episode context as an indexed string."""
+        context_string = ""
+
+        for index, episode in enumerate(episode_context):
+            context_date = DeclarativeMemory._format_date(
+                episode.timestamp.date(),
+            )
+            context_time = DeclarativeMemory._format_time(
+                episode.timestamp.time(),
+            )
+            context_string += f"[{index}] [{context_date} at {context_time}] {episode.source}: {json.dumps(episode.content)}\n"
 
         return context_string
 
@@ -627,12 +944,19 @@ class DeclarativeMemory:
             tuple[float, Episode, Iterable[Episode]]
         ],
         max_num_episodes: int,
+        excluded_uids: set[str] | None = None,
     ) -> list[tuple[float, Episode]]:
         """Unify anchored episode contexts into a single list within the limit."""
         episode_scores: dict[Episode, float] = {}
 
         for score, nuclear_episode, context in scored_anchored_episode_contexts:
-            context = list(context)
+            context = [
+                ep for ep in context
+                if excluded_uids is None or str(ep.uid) not in excluded_uids
+            ]
+
+            if not context:
+                continue
 
             if len(episode_scores) >= max_num_episodes:
                 break
@@ -650,7 +974,10 @@ class DeclarativeMemory:
                 # Prioritize episodes near the nuclear episode.
 
                 # Sort chronological episodes by weighted index-proximity to the nuclear episode.
-                nuclear_index = context.index(nuclear_episode)
+                try:
+                    nuclear_index = context.index(nuclear_episode)
+                except ValueError:
+                    nuclear_index = 0
 
                 nuclear_context = sorted(
                     context,
