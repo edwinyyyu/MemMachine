@@ -2,11 +2,12 @@
 
 from datetime import datetime
 from enum import Enum
+from typing import Final
 
 PropertyValue = bool | int | float | str | datetime
 """Type for stored property values."""
 
-PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME: dict[type[PropertyValue], str] = {
+PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME: Final[dict[type[PropertyValue], str]] = {
     bool: "bool",
     int: "int",
     float: "float",
@@ -14,7 +15,7 @@ PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME: dict[type[PropertyValue], str] = {
     datetime: "datetime",
 }
 
-PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE: dict[str, type[PropertyValue]] = {
+PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE: Final[dict[str, type[PropertyValue]]] = {
     v: k for k, v in PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME.items()
 }
 
