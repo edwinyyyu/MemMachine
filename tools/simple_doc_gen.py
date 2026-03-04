@@ -5,35 +5,35 @@ from pathlib import Path
 # Configuration
 MODULES_TO_DOC = [
     (
-        "src/memmachine/rest_client/client.py",
+        "packages/client/src/memmachine_client/client.py",
         "docs/api_reference/python/client_api.mdx",
         "Client API",
         "Low-level API reference for MemMachineClient",
         "code",
     ),
     (
-        "src/memmachine/rest_client/project.py",
+        "packages/client/src/memmachine_client/project.py",
         "docs/api_reference/python/project_api.mdx",
         "Project API",
         "API reference for Project management",
         "folder",
     ),
     (
-        "src/memmachine/rest_client/memory.py",
+        "packages/client/src/memmachine_client/memory.py",
         "docs/api_reference/python/memory_api.mdx",
         "Memory API",
         "API reference for Memory operations",
         "brain",
     ),
     (
-        "src/memmachine/episodic_memory/episodic_memory.py",
+        "packages/server/src/memmachine_server/episodic_memory/episodic_memory.py",
         "docs/api_reference/python/episodic_memory.mdx",
         "Episodic Memory",
         "Server-side Episodic Memory API",
         "server",
     ),
     (
-        "src/memmachine/episodic_memory/episodic_memory_manager.py",
+        "packages/server/src/memmachine_server/episodic_memory/episodic_memory_manager.py",
         "docs/api_reference/python/episodic_memory_manager.mdx",
         "Episodic Memory Manager",
         "Manager for Episodic Memory instances",

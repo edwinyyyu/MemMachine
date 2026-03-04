@@ -27,8 +27,7 @@ class MemmachineHelperRestapiv2(MemmachineHelperBase):
     """MemMachine REST API v2
     Please use factory method to create this object
     Specification is in MemMachine repo:
-        cd MemMachine/src/memmachine/server/api_v2
-        vi spec.py router.py
+        MemMachine/packages/server/src/memmachine_server/server/api_v2
     """
 
     def __init__(self, log=None, url=None):
