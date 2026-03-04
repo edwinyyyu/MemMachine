@@ -69,6 +69,9 @@ Issues = "https://github.com/MemMachine/MemMachine/issues"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"*" = ["*.md", "*.txt", "*.yml", "*.yaml", "*.sql"]
+
 [tool.setuptools_scm]
 root = "../.."
 
