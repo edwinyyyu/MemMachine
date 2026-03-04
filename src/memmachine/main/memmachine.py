@@ -143,8 +143,10 @@ class MemMachine:
                 self._conf.episodic_memory.long_term_memory_enabled = False
                 return
 
-        if ltm.vector_graph_store is None:
-            ltm.vector_graph_store = "default_store"
+        if ltm.vector_store is None:
+            ltm.vector_store = "default_store"
+        if ltm.segment_store is None:
+            ltm.segment_store = "default_store"
 
     def _resolve_stm_defaults(self) -> None:
         """Resolve short-term memory defaults."""

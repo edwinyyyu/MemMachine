@@ -148,10 +148,15 @@ def _apply_ltm_updates(
     if spec_ltm.reranker is not None:
         ltm.reranker = spec_ltm.reranker
         changes.append(f"episodic_memory.long_term_memory.reranker={spec_ltm.reranker}")
-    if spec_ltm.vector_graph_store is not None:
-        ltm.vector_graph_store = spec_ltm.vector_graph_store
+    if spec_ltm.vector_store is not None:
+        ltm.vector_store = spec_ltm.vector_store
         changes.append(
-            f"episodic_memory.long_term_memory.vector_graph_store={spec_ltm.vector_graph_store}"
+            f"episodic_memory.long_term_memory.vector_store={spec_ltm.vector_store}"
+        )
+    if spec_ltm.segment_store is not None:
+        ltm.segment_store = spec_ltm.segment_store
+        changes.append(
+            f"episodic_memory.long_term_memory.segment_store={spec_ltm.segment_store}"
         )
     return changes
 
@@ -519,7 +524,10 @@ class ConfigService:
         ltm_config = LongTermMemoryConfigResponse(
             embedder=em.long_term_memory.embedder if em.long_term_memory else None,
             reranker=em.long_term_memory.reranker if em.long_term_memory else None,
-            vector_graph_store=em.long_term_memory.vector_graph_store
+            vector_store=em.long_term_memory.vector_store
+            if em.long_term_memory
+            else None,
+            segment_store=em.long_term_memory.segment_store
             if em.long_term_memory
             else None,
             enabled=em.long_term_memory_enabled
@@ -563,7 +571,10 @@ class ConfigService:
         return LongTermMemoryConfigResponse(
             embedder=em.long_term_memory.embedder if em.long_term_memory else None,
             reranker=em.long_term_memory.reranker if em.long_term_memory else None,
-            vector_graph_store=em.long_term_memory.vector_graph_store
+            vector_store=em.long_term_memory.vector_store
+            if em.long_term_memory
+            else None,
+            segment_store=em.long_term_memory.segment_store
             if em.long_term_memory
             else None,
             enabled=em.long_term_memory_enabled

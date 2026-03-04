@@ -314,7 +314,8 @@ class Config:
         self,
         embedder: str | None = None,
         reranker: str | None = None,
-        vector_graph_store: str | None = None,
+        vector_store: str | None = None,
+        segment_store: str | None = None,
         enabled: bool | None = None,
         timeout: int | None = None,
     ) -> UpdateMemoryConfigResponse:
@@ -324,7 +325,8 @@ class Config:
         Args:
             embedder: Name of the embedder to use for long-term memory
             reranker: Name of the reranker to use for long-term memory
-            vector_graph_store: Name of the vector graph store to use
+            vector_store: Name of the vector store collection to use
+            segment_store: Name of the segment store to use
             enabled: Whether long-term memory is enabled
             timeout: Request timeout in seconds (uses client default if not provided)
 
@@ -340,7 +342,8 @@ class Config:
         spec = UpdateLongTermMemorySpec(
             embedder=embedder,
             reranker=reranker,
-            vector_graph_store=vector_graph_store,
+            vector_store=vector_store,
+            segment_store=segment_store,
         )
         payload = spec.model_dump(exclude_none=True)
         if enabled is not None:

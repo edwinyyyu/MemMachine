@@ -28,7 +28,8 @@ from memmachine.common.session_manager.session_data_manager import SessionDataMa
 from memmachine.common.session_manager.session_data_manager_sql_impl import (
     SessionDataManagerSQL,
 )
-from memmachine.common.vector_graph_store import VectorGraphStore
+from memmachine.common.vector_store import Collection
+from memmachine.episodic_memory.declarative_memory import SegmentStore
 from memmachine.episodic_memory.episodic_memory_manager import (
     EpisodicMemoryManager,
     EpisodicMemoryManagerParams,
@@ -106,9 +107,17 @@ class ResourceManagerImpl:
             name, validate=validate
         )
 
-    async def get_vector_graph_store(self, name: str) -> VectorGraphStore:
-        """Return a vector graph store by name."""
-        return await self._database_manager.get_vector_graph_store(name)
+    async def get_vector_store_collection(self, name: str) -> Collection:
+        """Return a vector store collection by name."""
+        raise NotImplementedError(
+            "get_vector_store_collection is not yet implemented; concrete backends pending"
+        )
+
+    async def get_segment_store(self, name: str) -> SegmentStore:
+        """Return a segment store by name."""
+        raise NotImplementedError(
+            "get_segment_store is not yet implemented; concrete backends pending"
+        )
 
     async def get_embedder(self, name: str, validate: bool = False) -> Embedder:
         """Return an embedder by name."""

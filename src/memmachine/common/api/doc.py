@@ -403,9 +403,13 @@ class SpecDoc:
     The ID of the reranker resource to use for long-term memory search.
     Must reference a reranker configured in the resources section."""
 
-    LTM_VECTOR_GRAPH_STORE = """
-    The ID of the vector graph store (database) for storing long-term memories.
-    Must reference a database configured in the resources section."""
+    LTM_VECTOR_STORE = """
+    The ID of the vector store collection for storing long-term memories.
+    Must reference a store configured in the resources section."""
+
+    LTM_SEGMENT_STORE = """
+    The ID of the segment store for managing episode segments.
+    Must reference a store configured in the resources section."""
 
     STM_LLM_MODEL = """
     The ID of the language model to use for short-term memory summarization.
@@ -478,8 +482,11 @@ class SpecDoc:
     LTM_CONFIG_RERANKER = """
     ID of the reranker resource used for long-term memory search."""
 
-    LTM_CONFIG_VECTOR_GRAPH_STORE = """
-    ID of the vector graph store (database) for storing long-term memories."""
+    LTM_CONFIG_VECTOR_STORE = """
+    ID of the vector store collection for storing long-term memories."""
+
+    LTM_CONFIG_SEGMENT_STORE = """
+    ID of the segment store for managing episode segments."""
 
     LTM_CONFIG_ENABLED = """
     Whether long-term memory is enabled."""
@@ -1036,7 +1043,8 @@ class RouterDoc:
     The configuration includes:
     - embedder: The embedder resource to use for creating embeddings
     - reranker: The reranker resource to use for search result reranking
-    - vector_graph_store: The database for storing long-term memories
+    - vector_store: The vector store collection for storing long-term memories
+    - segment_store: The segment store for managing episode segments
     - enabled: Whether long-term memory is enabled
     """
 
@@ -1069,7 +1077,7 @@ class RouterDoc:
     current values.
 
     The configuration includes:
-    - long_term_memory: Long-term memory settings (embedder, reranker, vector_graph_store)
+    - long_term_memory: Long-term memory settings (embedder, reranker, vector_store, segment_store)
     - short_term_memory: Short-term memory settings (llm_model, message_capacity)
     - long_term_memory_enabled: Whether long-term memory is enabled
     - short_term_memory_enabled: Whether short-term memory is enabled
@@ -1080,7 +1088,7 @@ class RouterDoc:
     Get long-term memory configuration.
 
     Returns the current long-term memory configuration including embedder,
-    reranker, vector graph store, and enabled status.
+    reranker, vector store, segment store, and enabled status.
     """
 
     GET_STM_CONFIG = """
