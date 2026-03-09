@@ -45,7 +45,7 @@ class Collection(ABC):
         property_filter: FilterExpr | None = None,
         return_vector: bool = True,
         return_properties: bool = True,
-    ) -> Iterable[Iterable[QueryResult]]:
+    ) -> Iterable[QueryResult]:
         """
         Query for records matching the criteria by query vectors.
 
@@ -71,9 +71,8 @@ class Collection(ABC):
                 (default: True).
 
         Returns:
-            Iterable[Iterable[QueryResult]]:
-                Iterables of results matching the criteria for each query vector,
-                each ordered by score from best to worst.
+            Iterable[QueryResult]:
+                Results for each query vector.
 
         """
         raise NotImplementedError
