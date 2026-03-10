@@ -20,6 +20,16 @@ class Collection(ABC):
     """Collection in a vector store."""
 
     @abstractmethod
+    async def startup(self) -> None:
+        """Startup."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def shutdown(self) -> None:
+        """Shutdown."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def upsert(
         self,
         *,
@@ -43,7 +53,7 @@ class Collection(ABC):
         score_threshold: float | None = None,
         limit: int | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = True,
+        return_vector: bool = False,
         return_properties: bool = True,
     ) -> Iterable[QueryResult]:
         """
@@ -82,7 +92,7 @@ class Collection(ABC):
         self,
         *,
         record_uuids: Iterable[UUID],
-        return_vector: bool = True,
+        return_vector: bool = False,
         return_properties: bool = True,
     ) -> Iterable[Record]:
         """
@@ -164,7 +174,7 @@ class VectorStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_collection(self, collection_name: str) -> Collection:
+    async def get_collection(self, collection_name: str) -> Collection | None:
         """
         Get a collection from the vector store.
 
@@ -173,8 +183,8 @@ class VectorStore(ABC):
                 Name of the collection to get.
 
         Returns:
-            Collection:
-                The requested collection.
+            Collection | None:
+                The requested collection, or None if it does not exist.
 
         """
         raise NotImplementedError
