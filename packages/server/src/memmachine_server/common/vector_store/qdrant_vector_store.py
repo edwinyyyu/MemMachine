@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, InstanceOf
 from qdrant_client import AsyncQdrantClient, models
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
 from memmachine_server.common.data_types import (
     PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE,
@@ -360,10 +361,22 @@ class QdrantCollection(Collection):
                 for record in records
             ]
             if points:
-                await self._client.upsert(
-                    collection_name=self._collection_name,
-                    points=points,
-                )
+                await self._upsert_with_backoff(points)
+
+    async def _upsert_with_backoff(self, points: Iterable[models.PointStruct]) -> None:
+        """Upsert points, splitting the batch in half on failure and retrying."""
+        points = list(points)
+        try:
+            await self._client.upsert(
+                collection_name=self._collection_name,
+                points=points,
+            )
+        except (ResponseHandlingException, UnexpectedResponse):
+            if len(points) <= 1:
+                raise
+            mid = len(points) // 2
+            await self._upsert_with_backoff(points[:mid])
+            await self._upsert_with_backoff(points[mid:])
 
     @override
     async def query(
