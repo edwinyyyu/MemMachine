@@ -146,6 +146,7 @@ python lme_generate.py --data-path eval.json
 overall: 0.9580
 multi-session: 0.9323
 temporal-reasoning: 0.9624
+knowledge-update: 0.9359
 single-session-user: 0.9857
 single-session-assistant: 1.0000
 single-session-preference: 0.9667

@@ -9,6 +9,7 @@ categories = [
     "overall",
     "multi-session",
     "temporal-reasoning",
+    "knowledge-update",
     "single-session-user",
     "single-session-assistant",
     "single-session-preference",
