@@ -16,32 +16,8 @@ from memmachine_server.common.filter.filter_parser import (
 from .data_types import QueryResult, Record
 
 
-class CollectionAlreadyExistsError(Exception):
-    """Raised when creating a collection that already exists."""
-
-    def __init__(self, namespace: str, name: str) -> None:
-        """Initialize with the namespace and name of the existing collection."""
-        self.namespace = namespace
-        self.name = name
-        super().__init__(f"Collection ({namespace!r}, {name!r}) already exists.")
-
-
-class CollectionNotFoundError(Exception):
-    """Raised when a collection is not found."""
-
-    def __init__(self, namespace: str, name: str) -> None:
-        """Initialize with the namespace and name of the missing collection."""
-        self.namespace = namespace
-        self.name = name
-        super().__init__(f"Collection ({namespace!r}, {name!r}) not found.")
-
-
 class Collection(ABC):
-    """A logical collection in a vector store.
-
-    Identified by a (namespace, name) pair. All data operations
-    are scoped to this collection.
-    """
+    """Collection in a vector store."""
 
     @abstractmethod
     async def startup(self) -> None:
@@ -57,12 +33,15 @@ class Collection(ABC):
     async def upsert(
         self,
         *,
+        partition_key: str,
         records: Iterable[Record],
     ) -> None:
         """
         Upsert records in the collection.
 
         Args:
+            partition_key (str):
+                The key of the partition to which the records belong.
             records (Iterable[Record]):
                 Iterable of records to upsert.
 
@@ -73,6 +52,7 @@ class Collection(ABC):
     async def query(
         self,
         *,
+        partition_key: str,
         query_vectors: Iterable[Sequence[float]],
         score_threshold: float | None = None,
         limit: int | None = None,
@@ -84,6 +64,8 @@ class Collection(ABC):
         Query for records matching the criteria by query vectors.
 
         Args:
+            partition_key (str):
+                The key of the partition to which the records belong.
             query_vectors (Iterable[Sequence[float]]):
                 The vectors to compare against.
             score_threshold (float | None):
@@ -115,6 +97,7 @@ class Collection(ABC):
     async def get(
         self,
         *,
+        partition_key: str,
         record_uuids: Iterable[UUID],
         return_vector: bool = False,
         return_properties: bool = True,
@@ -123,6 +106,8 @@ class Collection(ABC):
         Get records from the collection by their UUIDs.
 
         Args:
+            partition_key (str):
+                The key of the partition to which the records belong.
             record_uuids (Iterable[UUID]):
                 Iterable of UUIDs of the records to retrieve.
             return_vector (bool):
@@ -144,12 +129,15 @@ class Collection(ABC):
     async def delete(
         self,
         *,
+        partition_key: str,
         record_uuids: Iterable[UUID],
     ) -> None:
         """
         Delete records from the collection by their UUIDs.
 
         Args:
+            partition_key (str):
+                The key of the partition to which the records belong.
             record_uuids (Iterable[UUID]):
                 Iterable of UUIDs of the records to delete.
 
@@ -158,12 +146,7 @@ class Collection(ABC):
 
 
 class VectorStore(ABC):
-    """
-    Abstract base class for a vector store.
-
-    Consumers must provide external coordination
-    for concurrent collection management from multiple processes.
-    """
+    """Abstract base class for a vector store."""
 
     @abstractmethod
     async def startup(self) -> None:
@@ -178,26 +161,18 @@ class VectorStore(ABC):
     @abstractmethod
     async def create_collection(
         self,
+        collection_name: str,
         *,
-        namespace: str,
-        name: str,
         vector_dimensions: int,
         similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
         properties_schema: Mapping[str, type[PropertyValue]] | None = None,
     ) -> None:
         """
-        Create a logical collection in the vector store.
-
-        A (namespace, name) pair uniquely identifies a collection.
-        The configuration (dimensions, similarity metric, schema)
-        is fixed at creation time.
+        Create a collection in the vector store.
 
         Args:
-            namespace (str):
-                Groups related collections and guarantees storage
-                isolation at the native collection level.
-            name (str):
-                Name to identify the collection within a namespace.
+            collection_name (str):
+                Name of the collection to create.
             vector_dimensions (int):
                 Number of dimensions for the vectors.
             similarity_metric (SimilarityMetric):
@@ -207,23 +182,17 @@ class VectorStore(ABC):
                 Mapping of property names to their types
                 (default: None).
 
-        Raises:
-            CollectionAlreadyExistsError: If a collection with the same
-                (namespace, name) already exists.
-
         """
         raise NotImplementedError
 
     @abstractmethod
-    async def get_collection(self, *, namespace: str, name: str) -> Collection | None:
+    async def get_collection(self, collection_name: str) -> Collection | None:
         """
-        Get a logical collection from the vector store.
+        Get a collection from the vector store.
 
         Args:
-            namespace (str):
-                Namespace of the collection.
-            name (str):
-                Name of the collection within the namespace.
+            collection_name (str):
+                Name of the collection to get.
 
         Returns:
             Collection | None:
@@ -233,19 +202,13 @@ class VectorStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def delete_collection(self, *, namespace: str, name: str) -> None:
+    async def delete_collection(self, collection_name: str) -> None:
         """
-        Delete a logical collection from the vector store.
+        Delete a collection from the vector store.
 
         Args:
-            namespace (str):
-                Namespace of the collection.
-            name (str):
-                Name of the collection within the namespace.
-
-        Raises:
-            CollectionNotFoundError: If no collection with the given
-                (namespace, name) exists.
+            collection_name (str):
+                Name of the collection to delete.
 
         """
         raise NotImplementedError
