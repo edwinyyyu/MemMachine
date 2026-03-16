@@ -16,8 +16,32 @@ from memmachine_server.common.filter.filter_parser import (
 from .data_types import QueryResult, Record
 
 
+class CollectionAlreadyExistsError(Exception):
+    """Raised when creating a collection that already exists."""
+
+    def __init__(self, namespace: str, name: str) -> None:
+        """Initialize with the namespace and name of the existing collection."""
+        self.namespace = namespace
+        self.name = name
+        super().__init__(f"Collection ({namespace!r}, {name!r}) already exists.")
+
+
+class CollectionNotFoundError(Exception):
+    """Raised when a collection is not found."""
+
+    def __init__(self, namespace: str, name: str) -> None:
+        """Initialize with the namespace and name of the missing collection."""
+        self.namespace = namespace
+        self.name = name
+        super().__init__(f"Collection ({namespace!r}, {name!r}) not found.")
+
+
 class Collection(ABC):
-    """Collection in a vector store."""
+    """A logical collection in a vector store.
+
+    Identified by a (namespace, name) pair. All data operations
+    are scoped to this collection.
+    """
 
     @abstractmethod
     async def startup(self) -> None:
@@ -134,7 +158,12 @@ class Collection(ABC):
 
 
 class VectorStore(ABC):
-    """Abstract base class for a vector store."""
+    """
+    Abstract base class for a vector store.
+
+    Consumers must provide external coordination
+    for concurrent collection management from multiple processes.
+    """
 
     @abstractmethod
     async def startup(self) -> None:
@@ -159,10 +188,14 @@ class VectorStore(ABC):
         """
         Create a logical collection in the vector store.
 
+        A (namespace, name) pair uniquely identifies a collection.
+        The configuration (dimensions, similarity metric, schema)
+        is fixed at creation time.
+
         Args:
             namespace (str):
-                Groups related collections and guarantees storage solation
-                between different namespaces at the native collection level.
+                Groups related collections and guarantees storage
+                isolation at the native collection level.
             name (str):
                 Name to identify the collection within a namespace.
             vector_dimensions (int):
@@ -173,6 +206,10 @@ class VectorStore(ABC):
             properties_schema (Mapping[str, type] | None):
                 Mapping of property names to their types
                 (default: None).
+
+        Raises:
+            CollectionAlreadyExistsError: If a collection with the same
+                (namespace, name) already exists.
 
         """
         raise NotImplementedError
@@ -205,6 +242,10 @@ class VectorStore(ABC):
                 Namespace of the collection.
             name (str):
                 Name of the collection within the namespace.
+
+        Raises:
+            CollectionNotFoundError: If no collection with the given
+                (namespace, name) exists.
 
         """
         raise NotImplementedError
