@@ -4,9 +4,12 @@ Abstract base class for a vector store.
 Defines the interface for adding, querying, and deleting records.
 """
 
+import json
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
 from uuid import UUID
+
+from pydantic import JsonValue
 
 from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
@@ -24,6 +27,27 @@ class CollectionAlreadyExistsError(Exception):
         self.namespace = namespace
         self.name = name
         super().__init__(f"Collection ({namespace!r}, {name!r}) already exists.")
+
+
+class CollectionConfigurationMismatchError(Exception):
+    """Raised when opening a collection with a different configuration than it was created with."""
+
+    def __init__(
+        self,
+        namespace: str,
+        name: str,
+        existing_config: dict[str, JsonValue],
+        requested_config: dict[str, JsonValue],
+    ) -> None:
+        """Initialize with the namespace, name, and configurations."""
+        self.namespace = namespace
+        self.name = name
+        self.existing_config = existing_config
+        self.requested_config = requested_config
+        super().__init__(
+            f"Collection ({namespace!r}, {name!r}) already exists with a different configuration. "
+            f"Existing config: {json.dumps(existing_config)}, requested config: {json.dumps(requested_config)}."
+        )
 
 
 class Collection(ABC):
@@ -232,6 +256,10 @@ class VectorStore(ABC):
         Returns:
             Collection:
                 A handle to the opened or created collection.
+
+        Raises:
+            CollectionConfigurationMismatchError: If a collection with the same
+                (namespace, name) already exists with a different configuration.
         """
         raise NotImplementedError
 
