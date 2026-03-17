@@ -39,8 +39,8 @@ class CollectionNotFoundError(Exception):
 class Collection(ABC):
     """A logical collection in a vector store.
 
-    Identified by a (namespace, name) pair. All data operations
-    are scoped to this collection.
+    Identified by a (namespace, name) pair.
+    All data operations are scoped to this logical collection.
     """
 
     @abstractmethod
@@ -161,8 +161,13 @@ class VectorStore(ABC):
     """
     Abstract base class for a vector store.
 
-    Consumers must provide external coordination
-    for concurrent collection management from multiple processes.
+    A given logical collection identified by a (namespace, name) pair
+    must be managed by at most one process at a time.
+    The consumer is responsible for sharding names across processes.
+
+    Different namespaces are fully independent (separate native collections).
+    Multiple logical collections with the same (namespace, vector dimensions, similarity metric, properties schema)
+    may share a native collection to reduce overhead.
     """
 
     @abstractmethod
