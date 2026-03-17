@@ -37,21 +37,12 @@ class CollectionNotFoundError(Exception):
 
 
 class Collection(ABC):
-    """A logical collection in a vector store.
+    """
+    A logical collection in a vector store.
 
     Identified by a (namespace, name) pair.
     All data operations are scoped to this logical collection.
     """
-
-    @abstractmethod
-    async def startup(self) -> None:
-        """Startup."""
-        raise NotImplementedError
-
-    @abstractmethod
-    async def shutdown(self) -> None:
-        """Shutdown."""
-        raise NotImplementedError
 
     @abstractmethod
     async def upsert(
@@ -62,10 +53,12 @@ class Collection(ABC):
         """
         Upsert records in the collection.
 
+        Insert records with new UUIDs,
+        and update records with existing UUIDs.
+
         Args:
             records (Iterable[Record]):
                 Iterable of records to upsert.
-
         """
         raise NotImplementedError
 
@@ -79,7 +72,7 @@ class Collection(ABC):
         property_filter: FilterExpr | None = None,
         return_vector: bool = False,
         return_properties: bool = True,
-    ) -> Iterable[QueryResult]:
+    ) -> list[QueryResult]:
         """
         Query for records matching the criteria by query vectors.
 
@@ -105,9 +98,9 @@ class Collection(ABC):
                 (default: True).
 
         Returns:
-            Iterable[QueryResult]:
-                Results for each query vector.
-
+            list[QueryResult]:
+                Results for each query vector,
+                ordered as in the input iterable.
         """
         raise NotImplementedError
 
@@ -118,7 +111,7 @@ class Collection(ABC):
         record_uuids: Iterable[UUID],
         return_vector: bool = False,
         return_properties: bool = True,
-    ) -> Iterable[Record]:
+    ) -> list[Record]:
         """
         Get records from the collection by their UUIDs.
 
@@ -133,10 +126,9 @@ class Collection(ABC):
                 (default: True).
 
         Returns:
-            Iterable[Record]:
+            list[Record]:
                 Iterable of records with the specified UUIDs,
                 ordered as in the input iterable.
-
         """
         raise NotImplementedError
 
@@ -152,7 +144,6 @@ class Collection(ABC):
         Args:
             record_uuids (Iterable[UUID]):
                 Iterable of UUIDs of the records to delete.
-
         """
         raise NotImplementedError
 
@@ -191,7 +182,7 @@ class VectorStore(ABC):
         properties_schema: Mapping[str, type[PropertyValue]] | None = None,
     ) -> None:
         """
-        Create a logical collection in the vector store.
+        Create a logical collection in the vector store and return a handle to it.
 
         A (namespace, name) pair uniquely identifies a collection.
         The configuration (dimensions, similarity metric, schema)
@@ -209,20 +200,55 @@ class VectorStore(ABC):
                 Similarity metric to use for vector comparisons
                 (default: SimilarityMetric.COSINE).
             properties_schema (Mapping[str, type] | None):
-                Mapping of property names to their types
+                Mapping of property names to their types.
+                Will be used to create metadata indexes if supported.
                 (default: None).
 
         Raises:
             CollectionAlreadyExistsError: If a collection with the same
                 (namespace, name) already exists.
-
         """
         raise NotImplementedError
 
     @abstractmethod
-    async def get_collection(self, *, namespace: str, name: str) -> Collection | None:
+    async def open_or_create_collection(
+        self,
+        *,
+        namespace: str,
+        name: str,
+        vector_dimensions: int,
+        similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
+        properties_schema: Mapping[str, type[PropertyValue]] | None = None,
+    ) -> Collection:
         """
-        Get a logical collection from the vector store.
+        Open the collection if it exists, or create it if it does not.
+
+        Args:
+            namespace (str):
+                Groups related collections and guarantees storage
+                isolation at the native collection level.
+            name (str):
+                Name to identify the collection within a namespace.
+            vector_dimensions (int):
+                Number of dimensions for the vectors.
+            similarity_metric (SimilarityMetric):
+                Similarity metric to use for vector comparisons
+                (default: SimilarityMetric.COSINE).
+            properties_schema (Mapping[str, type] | None):
+                Mapping of property names to their types.
+                Will be used to create metadata indexes if supported.
+                (default: None).
+
+        Returns:
+            Collection:
+                A handle to the opened or created collection.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def open_collection(self, *, namespace: str, name: str) -> Collection:
+        """
+        Get a handle to a logical collection in the vector store.
 
         Args:
             namespace (str):
@@ -231,9 +257,23 @@ class VectorStore(ABC):
                 Name of the collection within the namespace.
 
         Returns:
-            Collection | None:
-                The requested collection, or None if it does not exist.
+            Collection:
+                A handle to the opened collection.
 
+        Raises:
+            CollectionNotFoundError: If no collection with the given
+                (namespace, name) exists.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def close_collection(self, *, collection: Collection) -> None:
+        """
+        Close a collection handle.
+
+        Args:
+            collection (Collection):
+                The handle of the collection to close.
         """
         raise NotImplementedError
 
@@ -241,6 +281,8 @@ class VectorStore(ABC):
     async def delete_collection(self, *, namespace: str, name: str) -> None:
         """
         Delete a logical collection from the vector store.
+
+        This will delete all data in the collection.
 
         Args:
             namespace (str):
@@ -251,6 +293,5 @@ class VectorStore(ABC):
         Raises:
             CollectionNotFoundError: If no collection with the given
                 (namespace, name) exists.
-
         """
         raise NotImplementedError
