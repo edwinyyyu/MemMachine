@@ -26,16 +26,6 @@ class CollectionAlreadyExistsError(Exception):
         super().__init__(f"Collection ({namespace!r}, {name!r}) already exists.")
 
 
-class CollectionNotFoundError(Exception):
-    """Raised when a collection is not found."""
-
-    def __init__(self, namespace: str, name: str) -> None:
-        """Initialize with the namespace and name of the missing collection."""
-        self.namespace = namespace
-        self.name = name
-        super().__init__(f"Collection ({namespace!r}, {name!r}) not found.")
-
-
 class Collection(ABC):
     """
     A logical collection in a vector store.
@@ -257,12 +247,8 @@ class VectorStore(ABC):
                 Name of the collection within the namespace.
 
         Returns:
-            Collection:
-                A handle to the opened collection.
-
-        Raises:
-            CollectionNotFoundError: If no collection with the given
-                (namespace, name) exists.
+            Collection | None:
+                A handle to the opened collection, or None if it does not exist.
         """
         raise NotImplementedError
 
@@ -283,15 +269,12 @@ class VectorStore(ABC):
         Delete a logical collection from the vector store.
 
         This will delete all data in the collection.
+        It is idempotent.
 
         Args:
             namespace (str):
                 Namespace of the collection.
             name (str):
                 Name of the collection within the namespace.
-
-        Raises:
-            CollectionNotFoundError: If no collection with the given
-                (namespace, name) exists.
         """
         raise NotImplementedError
