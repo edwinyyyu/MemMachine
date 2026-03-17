@@ -24,12 +24,16 @@ from memmachine_server.common.vector_store.qdrant_vector_store import (
     QdrantVectorStore,
     QdrantVectorStoreParams,
 )
+from memmachine_server.common.vector_store.vector_store import (
+    CollectionAlreadyExistsError,
+    CollectionNotFoundError,
+)
 
 pytestmark = [pytest.mark.integration]
 
-COLLECTION = "test_collection"
+NAMESPACE = "test_namespace"
+NAME = "test_name"
 VECTOR_DIM = 3
-PARTITION_KEY = "test_partition"
 
 
 @pytest_asyncio.fixture
@@ -43,7 +47,8 @@ async def store(qdrant_client):
 @pytest_asyncio.fixture
 async def collection(store):
     await store.create_collection(
-        COLLECTION,
+        namespace=NAMESPACE,
+        name=NAME,
         vector_dimensions=VECTOR_DIM,
         similarity_metric=SimilarityMetric.COSINE,
         properties_schema={
@@ -54,10 +59,10 @@ async def collection(store):
             "created_at": datetime,
         },
     )
-    coll = await store.get_collection(COLLECTION)
+    coll = await store.get_collection(namespace=NAMESPACE, name=NAME)
     assert coll is not None
     yield coll
-    await store.delete_collection(COLLECTION)
+    await store.delete_collection(namespace=NAMESPACE, name=NAME)
 
 
 def _normalize(v: list[float]) -> list[float]:
@@ -85,17 +90,68 @@ class TestCollectionLifecycle:
     @pytest.mark.asyncio
     async def test_create_get_delete(self, store):
         await store.create_collection(
-            "lifecycle",
+            namespace=NAMESPACE,
+            name="lifecycle",
             vector_dimensions=VECTOR_DIM,
         )
-        coll = await store.get_collection("lifecycle")
+        coll = await store.get_collection(namespace=NAMESPACE, name="lifecycle")
         assert isinstance(coll, QdrantCollection)
-        await store.delete_collection("lifecycle")
+        await store.delete_collection(namespace=NAMESPACE, name="lifecycle")
 
     @pytest.mark.asyncio
     async def test_get_collection_returns_qdrant_collection(self, store, collection):
-        coll = await store.get_collection(COLLECTION)
+        coll = await store.get_collection(namespace=NAMESPACE, name=NAME)
         assert isinstance(coll, QdrantCollection)
+
+    @pytest.mark.asyncio
+    async def test_duplicate_name_raises(self, store, collection):
+        with pytest.raises(CollectionAlreadyExistsError):
+            await store.create_collection(
+                namespace=NAMESPACE,
+                name=NAME,
+                vector_dimensions=VECTOR_DIM,
+                similarity_metric=SimilarityMetric.COSINE,
+                properties_schema={
+                    "name": str,
+                    "age": int,
+                    "score": float,
+                    "active": bool,
+                    "created_at": datetime,
+                },
+            )
+
+    @pytest.mark.asyncio
+    async def test_delete_nonexistent_raises(self, store):
+        with pytest.raises(CollectionNotFoundError):
+            await store.delete_collection(namespace=NAMESPACE, name="nonexistent")
+
+    @pytest.mark.asyncio
+    async def test_same_config_shares_native_collection(self, store):
+        """Two logical collections with the same config share one native collection."""
+        schema = {"name": str}
+        await store.create_collection(
+            namespace=NAMESPACE,
+            name="coll_a",
+            vector_dimensions=VECTOR_DIM,
+            similarity_metric=SimilarityMetric.COSINE,
+            properties_schema=schema,
+        )
+        await store.create_collection(
+            namespace=NAMESPACE,
+            name="coll_b",
+            vector_dimensions=VECTOR_DIM,
+            similarity_metric=SimilarityMetric.COSINE,
+            properties_schema=schema,
+        )
+
+        coll_a = await store.get_collection(namespace=NAMESPACE, name="coll_a")
+        coll_b = await store.get_collection(namespace=NAMESPACE, name="coll_b")
+        assert coll_a is not None
+        assert coll_b is not None
+        assert coll_a._collection_name == coll_b._collection_name
+
+        await store.delete_collection(namespace=NAMESPACE, name="coll_a")
+        await store.delete_collection(namespace=NAMESPACE, name="coll_b")
 
 
 # ── Upsert + Query ──
@@ -112,13 +168,9 @@ class TestUpsertAndQuery:
         r2 = _make_record(vector=v2, properties={"name": "b"})
         r3 = _make_record(vector=v3, properties={"name": "c"})
 
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1, r2, r3])
+        await collection.upsert(records=[r1, r2, r3])
 
-        query_results = list(
-            await collection.query(
-                partition_key=PARTITION_KEY, query_vectors=[v1], limit=3
-            )
-        )
+        query_results = list(await collection.query(query_vectors=[v1], limit=3))
         matches = query_results[0].matches
 
         assert len(matches) == 3
@@ -135,12 +187,10 @@ class TestUpsertAndQuery:
         r1 = _make_record(vector=v1)
         r2 = _make_record(vector=v2)
 
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1, r2])
+        await collection.upsert(records=[r1, r2])
 
         query_results = list(
-            await collection.query(
-                partition_key=PARTITION_KEY, query_vectors=[v1], score_threshold=0.9
-            )
+            await collection.query(query_vectors=[v1], score_threshold=0.9)
         )
         matches = query_results[0].matches
 
@@ -151,12 +201,10 @@ class TestUpsertAndQuery:
     async def test_query_with_limit(self, collection):
         vectors = [_normalize([1.0, float(i) * 0.01, 0.0]) for i in range(5)]
         records = [_make_record(vector=v) for v in vectors]
-        await collection.upsert(partition_key=PARTITION_KEY, records=records)
+        await collection.upsert(records=records)
 
         query_results = list(
-            await collection.query(
-                partition_key=PARTITION_KEY, query_vectors=[vectors[0]], limit=2
-            )
+            await collection.query(query_vectors=[vectors[0]], limit=2)
         )
         assert len(query_results[0].matches) == 2
 
@@ -164,12 +212,10 @@ class TestUpsertAndQuery:
     async def test_query_with_limit_none(self, collection):
         vectors = [_normalize([1.0, float(i) * 0.01, 0.0]) for i in range(5)]
         records = [_make_record(vector=v) for v in vectors]
-        await collection.upsert(partition_key=PARTITION_KEY, records=records)
+        await collection.upsert(records=records)
 
         query_results = list(
-            await collection.query(
-                partition_key=PARTITION_KEY, query_vectors=[vectors[0]], limit=None
-            )
+            await collection.query(query_vectors=[vectors[0]], limit=None)
         )
         assert len(query_results[0].matches) == 5
 
@@ -177,12 +223,10 @@ class TestUpsertAndQuery:
     async def test_query_return_vector_false(self, collection):
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1, properties={"name": "test"})
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1])
+        await collection.upsert(records=[r1])
 
         query_results = list(
-            await collection.query(
-                partition_key=PARTITION_KEY, query_vectors=[v1], return_vector=False
-            )
+            await collection.query(query_vectors=[v1], return_vector=False)
         )
         matches = query_results[0].matches
         assert len(matches) == 1
@@ -193,11 +237,10 @@ class TestUpsertAndQuery:
     async def test_query_return_properties_false(self, collection):
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1, properties={"name": "test"})
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1])
+        await collection.upsert(records=[r1])
 
         query_results = list(
             await collection.query(
-                partition_key=PARTITION_KEY,
                 query_vectors=[v1],
                 return_vector=True,
                 return_properties=False,
@@ -215,13 +258,9 @@ class TestUpsertAndQuery:
 
         r1 = _make_record(vector=v1, properties={"name": "a"})
         r2 = _make_record(vector=v2, properties={"name": "b"})
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1, r2])
+        await collection.upsert(records=[r1, r2])
 
-        all_results = list(
-            await collection.query(
-                partition_key=PARTITION_KEY, query_vectors=[v1, v2], limit=1
-            )
-        )
+        all_results = list(await collection.query(query_vectors=[v1, v2], limit=1))
 
         assert len(all_results) == 2
         assert all_results[0].matches[0].record.uuid == r1.uuid
@@ -229,9 +268,7 @@ class TestUpsertAndQuery:
 
     @pytest.mark.asyncio
     async def test_query_empty_vectors(self, collection):
-        all_results = list(
-            await collection.query(partition_key=PARTITION_KEY, query_vectors=[])
-        )
+        all_results = list(await collection.query(query_vectors=[]))
         assert len(all_results) == 0
 
 
@@ -256,7 +293,7 @@ class TestFilters:
             vector=v3,
             properties={"name": "carol", "age": 35, "score": 8.0, "active": True},
         )
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1, r2, r3])
+        await collection.upsert(records=[r1, r2, r3])
         return r1, r2, r3, v1
 
     # scores: r0=-1.5, r1=0.0, r2=0.5, r3=1.5, r4=2.0
@@ -267,7 +304,7 @@ class TestFilters:
             _make_record(vector=v, properties={"score": s})
             for v, s in zip(vectors, scores, strict=True)
         ]
-        await collection.upsert(partition_key=PARTITION_KEY, records=records)
+        await collection.upsert(records=records)
         return records, vectors[0]
 
     # dts: r0=Jan, r1=Mar, r2=Jun, r3=Sep, r4=Dec
@@ -284,13 +321,12 @@ class TestFilters:
             _make_record(vector=v, properties={"name": f"r{i}", "created_at": dt})
             for i, (v, dt) in enumerate(zip(vectors, dts, strict=True))
         ]
-        await collection.upsert(partition_key=PARTITION_KEY, records=records)
+        await collection.upsert(records=records)
         return records, vectors[0], dts
 
     async def _query(self, collection, query_vec, field, op, value):
         all_results = list(
             await collection.query(
-                partition_key=PARTITION_KEY,
                 query_vectors=[query_vec],
                 property_filter=Comparison(field=field, op=op, value=value),
             )
@@ -304,7 +340,6 @@ class TestFilters:
         r1, _r2, _r3, v1 = await self._setup(collection)
         query_results = list(
             await collection.query(
-                partition_key=PARTITION_KEY,
                 query_vectors=[v1],
                 property_filter=Comparison(field="name", op="=", value="alice"),
             )
@@ -326,7 +361,6 @@ class TestFilters:
         _r1, _r2, r3, v1 = await self._setup(collection)
         query_results = list(
             await collection.query(
-                partition_key=PARTITION_KEY,
                 query_vectors=[v1],
                 property_filter=Comparison(field="age", op=">", value=30),
             )
@@ -348,7 +382,6 @@ class TestFilters:
         _r1, r2, _r3, v1 = await self._setup(collection)
         query_results = list(
             await collection.query(
-                partition_key=PARTITION_KEY,
                 query_vectors=[v1],
                 property_filter=Comparison(field="age", op="<", value=30),
             )
@@ -501,11 +534,9 @@ class TestFilters:
         v1 = _normalize([1.0, 0.0, 0.0])
         dt = datetime(2024, 6, 15, 12, 30, 0, tzinfo=UTC)
         r1 = _make_record(vector=v1, properties={"name": "test", "created_at": dt})
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1])
+        await collection.upsert(records=[r1])
 
-        results = list(
-            await collection.get(partition_key=PARTITION_KEY, record_uuids=[r1.uuid])
-        )
+        results = list(await collection.get(record_uuids=[r1.uuid]))
         assert results[0].properties["created_at"] == dt
 
     @pytest.mark.asyncio
@@ -514,11 +545,9 @@ class TestFilters:
         v1 = _normalize([1.0, 0.0, 0.0])
         dt = datetime(2024, 6, 15, 12, 30, 45, 123456, tzinfo=UTC)
         r1 = _make_record(vector=v1, properties={"name": "micro", "created_at": dt})
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1])
+        await collection.upsert(records=[r1])
 
-        results = list(
-            await collection.get(partition_key=PARTITION_KEY, record_uuids=[r1.uuid])
-        )
+        results = list(await collection.get(record_uuids=[r1.uuid]))
         assert results[0].properties["created_at"] == dt
 
     @pytest.mark.asyncio
@@ -584,7 +613,7 @@ class TestFilters:
         dt2 = datetime(2024, 6, 15, 12, 30, 45, 999999, tzinfo=UTC)
         r1 = _make_record(vector=v1, properties={"name": "a", "created_at": dt1})
         r2 = _make_record(vector=v2, properties={"name": "b", "created_at": dt2})
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1, r2])
+        await collection.upsert(records=[r1, r2])
 
         uuids = await self._query(collection, v1, "created_at", "=", dt1)
         assert r1.uuid in uuids
@@ -599,7 +628,7 @@ class TestFilters:
         before = datetime(2024, 5, 31, 23, 59, 59, tzinfo=UTC)
         r1 = _make_record(vector=v1, properties={"name": "b", "created_at": boundary})
         r2 = _make_record(vector=v2, properties={"name": "a", "created_at": before})
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1, r2])
+        await collection.upsert(records=[r1, r2])
 
         gte_uuids = await self._query(collection, v1, "created_at", ">=", boundary)
         lte_uuids = await self._query(collection, v1, "created_at", "<=", boundary)
@@ -617,7 +646,7 @@ class TestFilters:
         dt_other = datetime(2024, 6, 15, 18, 0, 0, tzinfo=UTC)
         r1 = _make_record(vector=v1, properties={"name": "a", "created_at": dt_utc})
         r2 = _make_record(vector=v2, properties={"name": "b", "created_at": dt_other})
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1, r2])
+        await collection.upsert(records=[r1, r2])
 
         plus5 = timezone(timedelta(hours=5))
         dt_filter = datetime(2024, 6, 15, 17, 0, 0, tzinfo=plus5)
@@ -637,7 +666,7 @@ class TestFilters:
         r1 = _make_record(vector=v1, properties={"name": "a", "created_at": dt1})
         r2 = _make_record(vector=v2, properties={"name": "b", "created_at": dt2})
         r3 = _make_record(vector=v3, properties={"name": "c", "created_at": dt3})
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1, r2, r3])
+        await collection.upsert(records=[r1, r2, r3])
 
         # 2024-06-01 00:00 PST = 2024-06-01 08:00 UTC
         pst = timezone(timedelta(hours=-8))
@@ -653,11 +682,9 @@ class TestFilters:
         v1 = _normalize([1.0, 0.0, 0.0])
         naive_dt = datetime(2024, 6, 15, 12, 30, 0, tzinfo=UTC).replace(tzinfo=None)
         r1 = _make_record(vector=v1, properties={"name": "n", "created_at": naive_dt})
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1])
+        await collection.upsert(records=[r1])
 
-        results = list(
-            await collection.get(partition_key=PARTITION_KEY, record_uuids=[r1.uuid])
-        )
+        results = list(await collection.get(record_uuids=[r1.uuid]))
         got = results[0].properties["created_at"]
         assert isinstance(got, datetime)
         assert got.tzinfo is not None
@@ -669,7 +696,7 @@ class TestFilters:
         v1 = _normalize([1.0, 0.0, 0.0])
         naive_dt = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC).replace(tzinfo=None)
         r1 = _make_record(vector=v1, properties={"name": "n", "created_at": naive_dt})
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1])
+        await collection.upsert(records=[r1])
 
         uuids = await self._query(collection, v1, "created_at", "=", naive_dt)
         assert r1.uuid in uuids
@@ -684,7 +711,7 @@ class TestFilters:
         naive2 = datetime(2024, 6, 15, tzinfo=UTC).replace(tzinfo=None)
         r1 = _make_record(vector=v1, properties={"name": "a", "created_at": naive1})
         r2 = _make_record(vector=v2, properties={"name": "b", "created_at": naive2})
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1, r2])
+        await collection.upsert(records=[r1, r2])
 
         uuids = await self._query(collection, v1, "created_at", "!=", naive1)
         assert r1.uuid not in uuids
@@ -699,7 +726,7 @@ class TestFilters:
         naive2 = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC).replace(tzinfo=None)
         r1 = _make_record(vector=v1, properties={"name": "a", "created_at": naive1})
         r2 = _make_record(vector=v2, properties={"name": "b", "created_at": naive2})
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1, r2])
+        await collection.upsert(records=[r1, r2])
 
         cutoff = datetime(2024, 3, 1, tzinfo=UTC).replace(tzinfo=None)
         uuids = await self._query(collection, v1, "created_at", ">", cutoff)
@@ -715,7 +742,7 @@ class TestFilters:
         naive2 = datetime(2024, 6, 15, tzinfo=UTC).replace(tzinfo=None)
         r1 = _make_record(vector=v1, properties={"name": "a", "created_at": naive1})
         r2 = _make_record(vector=v2, properties={"name": "b", "created_at": naive2})
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1, r2])
+        await collection.upsert(records=[r1, r2])
 
         cutoff = datetime(2024, 3, 1, tzinfo=UTC).replace(tzinfo=None)
         uuids = await self._query(collection, v1, "created_at", "<", cutoff)
@@ -735,13 +762,11 @@ class TestFilters:
         r_key_missing = _make_record(vector=v3, properties={"age": 25})
         r_no_payload = _make_record(vector=v4, properties=None)
         await collection.upsert(
-            partition_key=PARTITION_KEY,
             records=[r_has_value, r_explicit_none, r_key_missing, r_no_payload],
         )
 
         query_results = list(
             await collection.query(
-                partition_key=PARTITION_KEY,
                 query_vectors=[v1],
                 property_filter=IsNull(field="name"),
             )
@@ -763,13 +788,11 @@ class TestFilters:
         r_key_missing = _make_record(vector=v3, properties={"age": 25})
         r_no_payload = _make_record(vector=v4, properties=None)
         await collection.upsert(
-            partition_key=PARTITION_KEY,
             records=[r_has_value, r_explicit_none, r_key_missing, r_no_payload],
         )
 
         query_results = list(
             await collection.query(
-                partition_key=PARTITION_KEY,
                 query_vectors=[v1],
                 property_filter=Not(expr=IsNull(field="name")),
             )
@@ -787,7 +810,6 @@ class TestFilters:
         r1, _r2, r3, v1 = await self._setup(collection)
         query_results = list(
             await collection.query(
-                partition_key=PARTITION_KEY,
                 query_vectors=[v1],
                 property_filter=In(field="name", values=["alice", "carol"]),
             )
@@ -803,7 +825,6 @@ class TestFilters:
         _r1, _r2, r3, v1 = await self._setup(collection)
         query_results = list(
             await collection.query(
-                partition_key=PARTITION_KEY,
                 query_vectors=[v1],
                 property_filter=And(
                     left=Comparison(field="active", op="=", value=True),
@@ -820,7 +841,6 @@ class TestFilters:
         r1, _r2, r3, v1 = await self._setup(collection)
         query_results = list(
             await collection.query(
-                partition_key=PARTITION_KEY,
                 query_vectors=[v1],
                 property_filter=Or(
                     left=Comparison(field="name", op="=", value="alice"),
@@ -839,7 +859,6 @@ class TestFilters:
         r1, r2, _r3, v1 = await self._setup(collection)
         query_results = list(
             await collection.query(
-                partition_key=PARTITION_KEY,
                 query_vectors=[v1],
                 property_filter=Not(expr=Comparison(field="age", op=">", value=30)),
             )
@@ -865,13 +884,9 @@ class TestGet:
         r2 = _make_record(vector=v2, properties={"name": "b"})
         r3 = _make_record(vector=v3, properties={"name": "c"})
 
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1, r2, r3])
+        await collection.upsert(records=[r1, r2, r3])
 
-        results = list(
-            await collection.get(
-                partition_key=PARTITION_KEY, record_uuids=[r3.uuid, r1.uuid]
-            )
-        )
+        results = list(await collection.get(record_uuids=[r3.uuid, r1.uuid]))
         assert len(results) == 2
         assert results[0].uuid == r3.uuid
         assert results[1].uuid == r1.uuid
@@ -880,34 +895,26 @@ class TestGet:
     async def test_get_missing_uuids(self, collection):
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1)
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1])
+        await collection.upsert(records=[r1])
 
         missing_uuid = uuid4()
-        results = list(
-            await collection.get(
-                partition_key=PARTITION_KEY, record_uuids=[r1.uuid, missing_uuid]
-            )
-        )
+        results = list(await collection.get(record_uuids=[r1.uuid, missing_uuid]))
         assert len(results) == 1
         assert results[0].uuid == r1.uuid
 
     @pytest.mark.asyncio
     async def test_get_empty_list(self, collection):
-        results = list(
-            await collection.get(partition_key=PARTITION_KEY, record_uuids=[])
-        )
+        results = list(await collection.get(record_uuids=[]))
         assert len(results) == 0
 
     @pytest.mark.asyncio
     async def test_get_return_vector_false(self, collection):
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1, properties={"name": "test"})
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1])
+        await collection.upsert(records=[r1])
 
         results = list(
-            await collection.get(
-                partition_key=PARTITION_KEY, record_uuids=[r1.uuid], return_vector=False
-            )
+            await collection.get(record_uuids=[r1.uuid], return_vector=False)
         )
         assert len(results) == 1
         assert results[0].vector is None
@@ -917,11 +924,10 @@ class TestGet:
     async def test_get_return_properties_false(self, collection):
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1, properties={"name": "test"})
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1])
+        await collection.upsert(records=[r1])
 
         results = list(
             await collection.get(
-                partition_key=PARTITION_KEY,
                 record_uuids=[r1.uuid],
                 return_vector=True,
                 return_properties=False,
@@ -944,91 +950,126 @@ class TestDelete:
         r1 = _make_record(vector=v1)
         r2 = _make_record(vector=v2)
 
-        await collection.upsert(partition_key=PARTITION_KEY, records=[r1, r2])
-        await collection.delete(partition_key=PARTITION_KEY, record_uuids=[r1.uuid])
+        await collection.upsert(records=[r1, r2])
+        await collection.delete(record_uuids=[r1.uuid])
 
-        results = list(
-            await collection.get(
-                partition_key=PARTITION_KEY, record_uuids=[r1.uuid, r2.uuid]
-            )
-        )
+        results = list(await collection.get(record_uuids=[r1.uuid, r2.uuid]))
         assert len(results) == 1
         assert results[0].uuid == r2.uuid
 
 
-# ── Partition isolation ──
+# ── Partition isolation (via separate logical collections) ──
 
 
 class TestPartitionIsolation:
     @pytest.mark.asyncio
-    async def test_query_only_returns_own_partition(self, collection):
+    async def test_query_only_returns_own_partition(self, store):
+        await store.create_collection(
+            namespace=NAMESPACE,
+            name="tenant_a",
+            vector_dimensions=VECTOR_DIM,
+        )
+        await store.create_collection(
+            namespace=NAMESPACE,
+            name="tenant_b",
+            vector_dimensions=VECTOR_DIM,
+        )
+        coll_a = await store.get_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.get_collection(namespace=NAMESPACE, name="tenant_b")
+        assert coll_a is not None
+        assert coll_b is not None
+
         v1 = _normalize([1.0, 0.0, 0.0])
-        r1 = _make_record(vector=v1, properties={"name": "a"})
-        r2 = _make_record(vector=v1, properties={"name": "b"})
+        r1 = _make_record(vector=v1, properties={})
+        r2 = _make_record(vector=v1, properties={})
 
-        await collection.upsert(partition_key="tenant_a", records=[r1])
-        await collection.upsert(partition_key="tenant_b", records=[r2])
+        await coll_a.upsert(records=[r1])
+        await coll_b.upsert(records=[r2])
 
-        results_a = list(
-            await collection.query(
-                partition_key="tenant_a", query_vectors=[v1], limit=10
-            )
-        )
-        results_b = list(
-            await collection.query(
-                partition_key="tenant_b", query_vectors=[v1], limit=10
-            )
-        )
+        results_a = list(await coll_a.query(query_vectors=[v1], limit=10))
+        results_b = list(await coll_b.query(query_vectors=[v1], limit=10))
 
         uuids_a = {m.record.uuid for m in results_a[0].matches}
         uuids_b = {m.record.uuid for m in results_b[0].matches}
         assert uuids_a == {r1.uuid}
         assert uuids_b == {r2.uuid}
 
+        await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
+        await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
+
     @pytest.mark.asyncio
-    async def test_get_only_returns_own_partition(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        r1 = _make_record(vector=v1, properties={"name": "a"})
-        r2 = _make_record(vector=v1, properties={"name": "b"})
-
-        await collection.upsert(partition_key="tenant_a", records=[r1])
-        await collection.upsert(partition_key="tenant_b", records=[r2])
-
-        results = list(
-            await collection.get(
-                partition_key="tenant_a", record_uuids=[r1.uuid, r2.uuid]
-            )
+    async def test_get_only_returns_own_partition(self, store):
+        await store.create_collection(
+            namespace=NAMESPACE,
+            name="tenant_a",
+            vector_dimensions=VECTOR_DIM,
         )
+        await store.create_collection(
+            namespace=NAMESPACE,
+            name="tenant_b",
+            vector_dimensions=VECTOR_DIM,
+        )
+        coll_a = await store.get_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.get_collection(namespace=NAMESPACE, name="tenant_b")
+        assert coll_a is not None
+        assert coll_b is not None
+
+        v1 = _normalize([1.0, 0.0, 0.0])
+        r1 = _make_record(vector=v1)
+        r2 = _make_record(vector=v1)
+
+        await coll_a.upsert(records=[r1])
+        await coll_b.upsert(records=[r2])
+
+        results = list(await coll_a.get(record_uuids=[r1.uuid, r2.uuid]))
         assert len(results) == 1
         assert results[0].uuid == r1.uuid
 
+        await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
+        await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
+
     @pytest.mark.asyncio
-    async def test_delete_only_affects_own_partition(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        r1 = _make_record(vector=v1, properties={"name": "a"})
-        r2 = _make_record(vector=v1, properties={"name": "b"})
-
-        await collection.upsert(partition_key="tenant_a", records=[r1])
-        await collection.upsert(partition_key="tenant_b", records=[r2])
-
-        # Attempt to delete r2 using tenant_a's partition key — should not work
-        await collection.delete(partition_key="tenant_a", record_uuids=[r2.uuid])
-
-        results = list(
-            await collection.get(partition_key="tenant_b", record_uuids=[r2.uuid])
+    async def test_delete_only_affects_own_partition(self, store):
+        await store.create_collection(
+            namespace=NAMESPACE,
+            name="tenant_a",
+            vector_dimensions=VECTOR_DIM,
         )
+        await store.create_collection(
+            namespace=NAMESPACE,
+            name="tenant_b",
+            vector_dimensions=VECTOR_DIM,
+        )
+        coll_a = await store.get_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.get_collection(namespace=NAMESPACE, name="tenant_b")
+        assert coll_a is not None
+        assert coll_b is not None
+
+        v1 = _normalize([1.0, 0.0, 0.0])
+        r1 = _make_record(vector=v1)
+        r2 = _make_record(vector=v1)
+
+        await coll_a.upsert(records=[r1])
+        await coll_b.upsert(records=[r2])
+
+        # Attempt to delete r2 using tenant_a's collection — should not work
+        await coll_a.delete(record_uuids=[r2.uuid])
+
+        results = list(await coll_b.get(record_uuids=[r2.uuid]))
         assert len(results) == 1
         assert results[0].uuid == r2.uuid
+
+        await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
+        await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
 
     @pytest.mark.asyncio
     async def test_filter_on_partition_key_field_rejected(self, collection):
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1, properties={"name": "a"})
-        await collection.upsert(partition_key="tenant_a", records=[r1])
+        await collection.upsert(records=[r1])
 
         with pytest.raises(ValueError, match="reserved field"):
             await collection.query(
-                partition_key="tenant_a",
                 query_vectors=[v1],
                 property_filter=Comparison(
                     field="_partition_key", op="=", value="tenant_b"
@@ -1041,7 +1082,6 @@ class TestPartitionIsolation:
 
         with pytest.raises(ValueError, match="reserved field"):
             await collection.query(
-                partition_key="tenant_a",
                 query_vectors=[v1],
                 property_filter=In(
                     field="_partition_key", values=["tenant_a", "tenant_b"]
@@ -1054,7 +1094,6 @@ class TestPartitionIsolation:
 
         with pytest.raises(ValueError, match="reserved field"):
             await collection.query(
-                partition_key="tenant_a",
                 query_vectors=[v1],
                 property_filter=IsNull(field="_partition_key"),
             )
@@ -1065,7 +1104,6 @@ class TestPartitionIsolation:
 
         with pytest.raises(ValueError, match="reserved field"):
             await collection.query(
-                partition_key="tenant_a",
                 query_vectors=[v1],
                 property_filter=Not(
                     expr=Comparison(field="_partition_key", op="=", value="tenant_a")
@@ -1091,7 +1129,8 @@ class TestMetrics:
         await store.startup()
 
         await store.create_collection(
-            "metrics_test",
+            namespace=NAMESPACE,
+            name="metrics_test",
             vector_dimensions=VECTOR_DIM,
         )
 
@@ -1102,15 +1141,15 @@ class TestMetrics:
 
         mock_histogram.reset_mock()
 
-        coll = await store.get_collection("metrics_test")
+        coll = await store.get_collection(namespace=NAMESPACE, name="metrics_test")
         assert coll is not None
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1)
-        await coll.upsert(partition_key=PARTITION_KEY, records=[r1])
+        await coll.upsert(records=[r1])
 
         assert mock_histogram.observe.called
         call_labels = mock_histogram.observe.call_args
         assert call_labels[1]["labels"]["operation"] == "upsert"
         assert call_labels[1]["labels"]["status"] == "ok"
 
-        await store.delete_collection("metrics_test")
+        await store.delete_collection(namespace=NAMESPACE, name="metrics_test")
