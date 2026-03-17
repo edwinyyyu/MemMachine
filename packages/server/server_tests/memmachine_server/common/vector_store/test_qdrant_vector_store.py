@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
+from qdrant_client import AsyncQdrantClient
 
 from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
@@ -29,16 +30,30 @@ from memmachine_server.common.vector_store.vector_store import (
     CollectionNotFoundError,
 )
 
-pytestmark = [pytest.mark.integration]
-
 NAMESPACE = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
 
 
+@pytest.fixture
+def in_memory_qdrant_client():
+    return AsyncQdrantClient(location=":memory:")
+
+
+@pytest.fixture(
+    params=[
+        "in_memory_qdrant_client",
+        pytest.param("qdrant_client", marks=pytest.mark.integration),
+        pytest.param("qdrant_grpc_client", marks=pytest.mark.integration),
+    ],
+)
+def any_qdrant_client(request):
+    return request.getfixturevalue(request.param)
+
+
 @pytest_asyncio.fixture
-async def store(qdrant_client):
-    params = QdrantVectorStoreParams(client=qdrant_client)
+async def store(any_qdrant_client):
+    params = QdrantVectorStoreParams(client=any_qdrant_client)
     s = QdrantVectorStore(params)
     await s.startup()
     yield s
@@ -1114,6 +1129,7 @@ class TestPartitionIsolation:
 # ── Metrics ──
 
 
+@pytest.mark.integration
 class TestMetrics:
     @pytest.mark.asyncio
     async def test_metrics_collection(self, qdrant_client):

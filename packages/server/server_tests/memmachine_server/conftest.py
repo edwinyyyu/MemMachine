@@ -415,6 +415,13 @@ async def qdrant_client(qdrant_container):
     await client.close()
 
 
+@pytest_asyncio.fixture(scope="session")
+async def qdrant_grpc_client(qdrant_container):
+    client = qdrant_container.get_async_client(prefer_grpc=True)
+    yield client
+    await client.close()
+
+
 @pytest.fixture(
     params=[
         pytest.param("pgvector_semantic_storage", marks=pytest.mark.integration),

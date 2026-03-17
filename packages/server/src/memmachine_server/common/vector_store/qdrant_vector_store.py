@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar, cast, override
 from uuid import UUID, uuid5
 
+import grpc
+import grpc.aio
 from pydantic import BaseModel, Field, InstanceOf
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
@@ -70,6 +72,28 @@ _RANGE_OPERATORS = {
     "<": "lt",
     "<=": "lte",
 }
+
+
+def _is_already_exists_error(error: Exception) -> bool:
+    """Check if an exception indicates a resource already exists."""
+    if isinstance(error, UnexpectedResponse):
+        return error.status_code == 409
+    if isinstance(error, grpc.aio.AioRpcError):
+        return error.code() == grpc.StatusCode.ALREADY_EXISTS
+    if isinstance(error, ValueError):
+        return "already exists" in str(error).lower()
+    return False
+
+
+def _is_not_found_error(error: Exception) -> bool:
+    """Check if an exception indicates a resource was not found."""
+    if isinstance(error, UnexpectedResponse):
+        return error.status_code == 404
+    if isinstance(error, grpc.aio.AioRpcError):
+        return error.code() == grpc.StatusCode.NOT_FOUND
+    if isinstance(error, ValueError):
+        return "not found" in str(error).lower()
+    return False
 
 
 def _check_field_not_reserved(field: str) -> None:
@@ -623,8 +647,8 @@ class QdrantVectorStore(VectorStore):
                     distance=models.Distance.COSINE,
                 ),
             )
-        except UnexpectedResponse as e:
-            if e.status_code != 409:
+        except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
+            if not _is_already_exists_error(e):
                 raise
 
     async def _get_registry_entry(
@@ -646,8 +670,8 @@ class QdrantVectorStore(VectorStore):
                 ids=[point_uuid],
                 with_payload=True,
             )
-        except UnexpectedResponse as e:
-            if e.status_code == 404:
+        except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
+            if _is_not_found_error(e):
                 return None
             raise
 
@@ -715,8 +739,8 @@ class QdrantVectorStore(VectorStore):
                                 field_name=prop_name,
                                 field_schema=index_type,
                             )
-            except UnexpectedResponse as e:
-                if e.status_code != 409:
+            except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
+                if not _is_already_exists_error(e):
                     raise
 
             # Register the logical collection in the registry.
