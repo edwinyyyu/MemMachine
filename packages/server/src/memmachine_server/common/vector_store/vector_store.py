@@ -142,6 +142,11 @@ class VectorStore(ABC):
     Different namespaces are fully independent (separate native collections).
     Multiple logical collections with the same (namespace, vector dimensions, similarity metric, properties schema)
     may share a native collection to reduce overhead.
+
+    Naming constraints:
+        - Namespaces, names, and property keys must match `[a-z0-9_]+`
+          (lowercase alphanumeric and underscores only).
+        - Each identifier must be at most 32 bytes.
     """
 
     @abstractmethod
