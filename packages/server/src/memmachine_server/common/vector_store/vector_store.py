@@ -215,7 +215,7 @@ class VectorStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def open_collection(self, *, namespace: str, name: str) -> Collection:
+    async def open_collection(self, *, namespace: str, name: str) -> Collection | None:
         """
         Get a handle to a logical collection in the vector store.
 
