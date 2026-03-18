@@ -1,11 +1,13 @@
 """Data types for vector store."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from uuid import UUID
 
-from pydantic import BaseModel, field_serializer
+from pydantic import BaseModel, field_serializer, field_validator
 
 from memmachine_server.common.data_types import (
+    PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE,
     PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
     PropertyValue,
     SimilarityMetric,
@@ -18,6 +20,24 @@ class CollectionConfig(BaseModel):
     vector_dimensions: int
     similarity_metric: SimilarityMetric = SimilarityMetric.COSINE
     properties_schema: dict[str, type[PropertyValue]] | None = None
+
+    @field_validator("properties_schema", mode="before")
+    @classmethod
+    def _coerce_properties_schema(cls, v: object) -> object:
+        if isinstance(v, Mapping):
+            result = {}
+            for key, value in v.items():
+                if isinstance(value, str):
+                    if value not in PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE:
+                        raise ValueError(
+                            f"Unknown property type name {value!r} for key {key!r}."
+                        )
+                    result[key] = PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE[value]
+                else:
+                    result[key] = value
+            return result
+
+        return v
 
     @field_serializer("properties_schema")
     def _serialize_properties_schema(
