@@ -1,9 +1,64 @@
 """Data types for vector store."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from uuid import UUID
 
-from memmachine_server.common.data_types import PropertyValue
+from pydantic import BaseModel, field_serializer
+
+from memmachine_server.common.data_types import (
+    PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
+    PropertyValue,
+    SimilarityMetric,
+)
+
+
+class CollectionConfig(BaseModel):
+    """Configuration for a logical collection in a vector store."""
+
+    vector_dimensions: int
+    similarity_metric: SimilarityMetric = SimilarityMetric.COSINE
+    properties_schema: Mapping[str, type[PropertyValue]] | None = None
+
+    @field_serializer("properties_schema")
+    def _serialize_properties_schema(
+        self, v: Mapping[str, type[PropertyValue]] | None
+    ) -> dict[str, str] | None:
+        if v is None:
+            return None
+        return {k: PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[val] for k, val in v.items()}
+
+
+class CollectionAlreadyExistsError(Exception):
+    """Raised when creating a collection that already exists."""
+
+    def __init__(self, namespace: str, name: str) -> None:
+        """Initialize with the namespace and name of the existing collection."""
+        self.namespace = namespace
+        self.name = name
+        super().__init__(f"Collection ({namespace!r}, {name!r}) already exists.")
+
+
+class CollectionConfigurationMismatchError(Exception):
+    """Raised when opening a collection with a different configuration than it was created with."""
+
+    def __init__(
+        self,
+        namespace: str,
+        name: str,
+        existing_config: CollectionConfig,
+        requested_config: CollectionConfig,
+    ) -> None:
+        """Initialize with the namespace, name, and configurations."""
+        self.namespace = namespace
+        self.name = name
+        self.existing_config = existing_config
+        self.requested_config = requested_config
+        super().__init__(
+            f"Collection ({namespace!r}, {name!r}) already exists with a different configuration. "
+            f"Existing config: {existing_config.model_dump_json()}, "
+            f"requested config: {requested_config.model_dump_json()}."
+        )
 
 
 @dataclass(kw_only=True)
