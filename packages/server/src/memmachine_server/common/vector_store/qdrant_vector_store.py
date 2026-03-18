@@ -265,6 +265,10 @@ class QdrantVectorStoreParams(BaseModel):
     Attributes:
         client (AsyncQdrantClient):
             Async Qdrant client instance.
+        registry_replication_factor (int):
+            Replication factor for registry collections. Write consistency factor is
+            set to match so all replicas confirm writes before returning, guaranteeing
+            read-your-writes from any available replica.
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -274,6 +278,14 @@ class QdrantVectorStoreParams(BaseModel):
     client: InstanceOf[AsyncQdrantClient] = Field(
         ...,
         description="Async Qdrant client instance",
+    )
+    registry_replication_factor: int = Field(
+        1,
+        description=(
+            "Replication factor for registry collections. Write consistency factor is "
+            "set to match so all replicas confirm writes before returning, guaranteeing "
+            "read-your-writes from any available replica"
+        ),
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
@@ -574,6 +586,7 @@ class QdrantVectorStore(VectorStore):
         """Initialize the vector store with the provided parameters."""
         super().__init__()
         self._client: AsyncQdrantClient = params.client
+        self._registry_replication_factor = params.registry_replication_factor
         self._tracker = OperationTracker(
             params.metrics_factory,
             prefix="vector_store_qdrant",
@@ -603,6 +616,8 @@ class QdrantVectorStore(VectorStore):
                     size=1,
                     distance=models.Distance.COSINE,
                 ),
+                replication_factor=self._registry_replication_factor,
+                write_consistency_factor=self._registry_replication_factor,
             )
         except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
             if not _is_already_exists_error(e):
@@ -725,6 +740,7 @@ class QdrantVectorStore(VectorStore):
                     },
                 ),
             ],
+            wait=True,
         )
 
     @override
@@ -814,4 +830,5 @@ class QdrantVectorStore(VectorStore):
                 points_selector=models.PointIdsList(
                     points=[point_uuid],
                 ),
+                wait=True,
             )
