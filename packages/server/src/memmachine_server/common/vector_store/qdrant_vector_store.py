@@ -49,11 +49,14 @@ from .data_types import (
     QueryResult,
     Record,
 )
+from .utils import validate_filter, validate_identifier
 from .vector_store import Collection, VectorStore
 
-# Point payload keys (stored on every Qdrant point)
-_RESERVED_PAYLOAD_PREFIX = "_"
-_PAYLOAD_PARTITION_KEY = f"{_RESERVED_PAYLOAD_PREFIX}partition_key"
+# Point payload keys (stored on every Qdrant point).
+# System keys use _SYSTEM_KEY_PREFIX, which contains a hyphen. Hyphens are valid in
+# Qdrant but forbidden by _IDENTIFIER_RE, so system keys can never collide with user keys.
+_SYSTEM_KEY_PREFIX = "sys-"
+_PAYLOAD_PARTITION_KEY = f"{_SYSTEM_KEY_PREFIX}partition_key"
 
 # Registry collection keys (stored on registry points, one per logical collection)
 _REGISTRY_SUFFIX = "__registry"
@@ -95,23 +98,13 @@ def _is_not_found_error(error: Exception) -> bool:
     return False
 
 
-def _check_field_not_reserved(field: str) -> None:
-    """Raise if a filter field targets a reserved payload key."""
-    if field.startswith(_RESERVED_PAYLOAD_PREFIX):
-        message = f"Filtering on reserved field '{field}' is not allowed"
-        raise ValueError(message)
-
-
 def _build_qdrant_filter(expr: FilterExpr) -> models.Filter:
     """Convert a FilterExpr tree into a Qdrant Filter."""
     if isinstance(expr, FilterComparison):
-        _check_field_not_reserved(expr.field)
         return _build_qdrant_comparison(expr)
     if isinstance(expr, FilterIn):
-        _check_field_not_reserved(expr.field)
         return _in_filter(expr.field, expr.values)
     if isinstance(expr, FilterIsNull):
-        _check_field_not_reserved(expr.field)
         return _null_filter(expr.field, negate=False)
     if isinstance(expr, FilterNot):
         return models.Filter(must_not=[_build_qdrant_filter(expr.expr)])
@@ -349,7 +342,7 @@ class QdrantCollection(Collection):
         properties_schema = self._properties_schema
         result: dict[str, PropertyValue] = {}
         for key, value in payload.items():
-            if key == _PAYLOAD_PARTITION_KEY:
+            if key == _PAYLOAD_PARTITION_KEY or value is None:
                 continue
             if properties_schema.get(key) is datetime and isinstance(value, str):
                 result[key] = datetime.fromisoformat(value)
@@ -407,6 +400,8 @@ class QdrantCollection(Collection):
         async with self._tracker("query"):
             partition_key_filter = _partition_filter(self._partition_key)
             if property_filter:
+                if not validate_filter(property_filter):
+                    raise ValueError("Filter contains an invalid property key")
                 property_qdrant_filter = _build_qdrant_filter(property_filter)
                 qdrant_filter = models.Filter(
                     must=[partition_key_filter, property_qdrant_filter]
@@ -752,6 +747,14 @@ class QdrantVectorStore(VectorStore):
         config: CollectionConfig,
     ) -> None:
         """Create a logical collection in the Qdrant vector store."""
+        if not validate_identifier(namespace):
+            raise ValueError(
+                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
+            )
+        if not validate_identifier(name):
+            raise ValueError(
+                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
+            )
         lock = self._name_locks[(namespace, name)]
         async with lock, self._tracker("create_collection"):
             await self._ensure_namespace_registry_collection(namespace)
@@ -769,6 +772,14 @@ class QdrantVectorStore(VectorStore):
         config: CollectionConfig,
     ) -> QdrantCollection:
         """Open the collection if it exists, or create and return it."""
+        if not validate_identifier(namespace):
+            raise ValueError(
+                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
+            )
+        if not validate_identifier(name):
+            raise ValueError(
+                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
+            )
         lock = self._name_locks[(namespace, name)]
         async with lock, self._tracker("open_or_create_collection"):
             entry = await self._get_registry_entry(namespace, name)
@@ -790,6 +801,14 @@ class QdrantVectorStore(VectorStore):
         self, *, namespace: str, name: str
     ) -> QdrantCollection | None:
         """Get a collection handle from the vector store."""
+        if not validate_identifier(namespace):
+            raise ValueError(
+                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
+            )
+        if not validate_identifier(name):
+            raise ValueError(
+                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
+            )
         entry = await self._get_registry_entry(namespace, name)
         if entry is None:
             return None
@@ -804,6 +823,14 @@ class QdrantVectorStore(VectorStore):
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
         """Delete a logical collection from the Qdrant vector store."""
+        if not validate_identifier(namespace):
+            raise ValueError(
+                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
+            )
+        if not validate_identifier(name):
+            raise ValueError(
+                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
+            )
         lock = self._name_locks[(namespace, name)]
         async with lock, self._tracker("delete_collection"):
             entry = await self._get_registry_entry(namespace, name)
