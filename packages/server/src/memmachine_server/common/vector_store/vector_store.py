@@ -209,7 +209,7 @@ class VectorStore(ABC):
                 A handle to the opened or created collection.
 
         Raises:
-            CollectionConfigurationMismatchError: If a collection with the same
+            CollectionConfigMismatchError: If a collection with the same
                 (namespace, name) already exists with a different configuration.
         """
         raise NotImplementedError

@@ -3,7 +3,7 @@
 from .data_types import (
     CollectionAlreadyExistsError,
     CollectionConfig,
-    CollectionConfigurationMismatchError,
+    CollectionConfigMismatchError,
     QueryResult,
     Record,
 )
@@ -13,7 +13,7 @@ __all__ = [
     "Collection",
     "CollectionAlreadyExistsError",
     "CollectionConfig",
-    "CollectionConfigurationMismatchError",
+    "CollectionConfigMismatchError",
     "QueryResult",
     "Record",
     "VectorStore",

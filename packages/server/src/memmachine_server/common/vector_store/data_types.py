@@ -39,7 +39,7 @@ class CollectionAlreadyExistsError(Exception):
         super().__init__(f"Collection ({namespace!r}, {name!r}) already exists.")
 
 
-class CollectionConfigurationMismatchError(Exception):
+class CollectionConfigMismatchError(Exception):
     """Raised when opening a collection with a different configuration than it was created with."""
 
     def __init__(
