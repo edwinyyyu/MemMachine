@@ -1,6 +1,5 @@
 """Data types for vector store."""
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -18,15 +17,17 @@ class CollectionConfig(BaseModel):
 
     vector_dimensions: int
     similarity_metric: SimilarityMetric = SimilarityMetric.COSINE
-    properties_schema: Mapping[str, type[PropertyValue]] | None = None
+    properties_schema: dict[str, type[PropertyValue]] | None = None
 
     @field_serializer("properties_schema")
     def _serialize_properties_schema(
-        self, v: Mapping[str, type[PropertyValue]] | None
+        self, v: dict[str, type[PropertyValue]] | None
     ) -> dict[str, str] | None:
         if v is None:
             return None
-        return {k: PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[val] for k, val in v.items()}
+        return {
+            k: PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[val] for k, val in sorted(v.items())
+        }
 
 
 class CollectionAlreadyExistsError(Exception):
