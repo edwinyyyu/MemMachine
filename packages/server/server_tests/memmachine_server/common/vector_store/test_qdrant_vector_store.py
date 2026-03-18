@@ -9,7 +9,7 @@ import pytest
 import pytest_asyncio
 from qdrant_client import AsyncQdrantClient
 
-from memmachine_server.common.data_types import SimilarityMetric
+from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
@@ -19,15 +19,16 @@ from memmachine_server.common.filter.filter_parser import (
     Or,
 )
 from memmachine_server.common.metrics_factory import MetricsFactory
-from memmachine_server.common.vector_store.data_types import Record
+from memmachine_server.common.vector_store.data_types import (
+    CollectionAlreadyExistsError,
+    CollectionConfig,
+    CollectionConfigMismatchError,
+    Record,
+)
 from memmachine_server.common.vector_store.qdrant_vector_store import (
     QdrantCollection,
     QdrantVectorStore,
     QdrantVectorStoreParams,
-)
-from memmachine_server.common.vector_store.vector_store import (
-    CollectionAlreadyExistsError,
-    CollectionNotFoundError,
 )
 
 NAMESPACE = "test_namespace"
@@ -64,17 +65,19 @@ async def collection(store):
     await store.create_collection(
         namespace=NAMESPACE,
         name=NAME,
-        vector_dimensions=VECTOR_DIM,
-        similarity_metric=SimilarityMetric.COSINE,
-        properties_schema={
-            "name": str,
-            "age": int,
-            "score": float,
-            "active": bool,
-            "created_at": datetime,
-        },
+        config=CollectionConfig(
+            vector_dimensions=VECTOR_DIM,
+            similarity_metric=SimilarityMetric.COSINE,
+            properties_schema={
+                "name": str,
+                "age": int,
+                "score": float,
+                "active": bool,
+                "created_at": datetime,
+            },
+        ),
     )
-    coll = await store.get_collection(namespace=NAMESPACE, name=NAME)
+    coll = await store.open_collection(namespace=NAMESPACE, name=NAME)
     assert coll is not None
     yield coll
     await store.delete_collection(namespace=NAMESPACE, name=NAME)
@@ -107,15 +110,15 @@ class TestCollectionLifecycle:
         await store.create_collection(
             namespace=NAMESPACE,
             name="lifecycle",
-            vector_dimensions=VECTOR_DIM,
+            config=CollectionConfig(vector_dimensions=VECTOR_DIM),
         )
-        coll = await store.get_collection(namespace=NAMESPACE, name="lifecycle")
+        coll = await store.open_collection(namespace=NAMESPACE, name="lifecycle")
         assert isinstance(coll, QdrantCollection)
         await store.delete_collection(namespace=NAMESPACE, name="lifecycle")
 
     @pytest.mark.asyncio
-    async def test_get_collection_returns_qdrant_collection(self, store, collection):
-        coll = await store.get_collection(namespace=NAMESPACE, name=NAME)
+    async def test_open_collection_returns_qdrant_collection(self, store, collection):
+        coll = await store.open_collection(namespace=NAMESPACE, name=NAME)
         assert isinstance(coll, QdrantCollection)
 
     @pytest.mark.asyncio
@@ -124,43 +127,73 @@ class TestCollectionLifecycle:
             await store.create_collection(
                 namespace=NAMESPACE,
                 name=NAME,
-                vector_dimensions=VECTOR_DIM,
-                similarity_metric=SimilarityMetric.COSINE,
-                properties_schema={
-                    "name": str,
-                    "age": int,
-                    "score": float,
-                    "active": bool,
-                    "created_at": datetime,
-                },
+                config=CollectionConfig(
+                    vector_dimensions=VECTOR_DIM,
+                    similarity_metric=SimilarityMetric.COSINE,
+                    properties_schema={
+                        "name": str,
+                        "age": int,
+                        "score": float,
+                        "active": bool,
+                        "created_at": datetime,
+                    },
+                ),
             )
 
     @pytest.mark.asyncio
-    async def test_delete_nonexistent_raises(self, store):
-        with pytest.raises(CollectionNotFoundError):
-            await store.delete_collection(namespace=NAMESPACE, name="nonexistent")
+    async def test_delete_nonexistent_is_idempotent(self, store):
+        await store.delete_collection(namespace=NAMESPACE, name="nonexistent")
+
+    @pytest.mark.asyncio
+    async def test_open_or_create_creates_when_missing(self, store):
+        config = CollectionConfig(vector_dimensions=VECTOR_DIM)
+        coll = await store.open_or_create_collection(
+            namespace=NAMESPACE, name="new", config=config
+        )
+        assert isinstance(coll, QdrantCollection)
+        await store.delete_collection(namespace=NAMESPACE, name="new")
+
+    @pytest.mark.asyncio
+    async def test_open_or_create_opens_when_exists(self, store):
+        config = CollectionConfig(vector_dimensions=VECTOR_DIM)
+        await store.create_collection(
+            namespace=NAMESPACE, name="existing", config=config
+        )
+        coll = await store.open_or_create_collection(
+            namespace=NAMESPACE, name="existing", config=config
+        )
+        assert isinstance(coll, QdrantCollection)
+        await store.delete_collection(namespace=NAMESPACE, name="existing")
+
+    @pytest.mark.asyncio
+    async def test_open_or_create_raises_on_config_mismatch(self, store):
+        await store.create_collection(
+            namespace=NAMESPACE,
+            name="mismatch",
+            config=CollectionConfig(vector_dimensions=VECTOR_DIM),
+        )
+        with pytest.raises(CollectionConfigMismatchError):
+            await store.open_or_create_collection(
+                namespace=NAMESPACE,
+                name="mismatch",
+                config=CollectionConfig(vector_dimensions=VECTOR_DIM + 1),
+            )
+        await store.delete_collection(namespace=NAMESPACE, name="mismatch")
 
     @pytest.mark.asyncio
     async def test_same_config_shares_native_collection(self, store):
         """Two logical collections with the same config share one native collection."""
-        schema = {"name": str}
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="coll_a",
+        schema: dict[str, type[PropertyValue]] = {"name": str}
+        config = CollectionConfig(
             vector_dimensions=VECTOR_DIM,
             similarity_metric=SimilarityMetric.COSINE,
             properties_schema=schema,
         )
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="coll_b",
-            vector_dimensions=VECTOR_DIM,
-            similarity_metric=SimilarityMetric.COSINE,
-            properties_schema=schema,
-        )
+        await store.create_collection(namespace=NAMESPACE, name="coll_a", config=config)
+        await store.create_collection(namespace=NAMESPACE, name="coll_b", config=config)
 
-        coll_a = await store.get_collection(namespace=NAMESPACE, name="coll_a")
-        coll_b = await store.get_collection(namespace=NAMESPACE, name="coll_b")
+        coll_a = await store.open_collection(namespace=NAMESPACE, name="coll_a")
+        coll_b = await store.open_collection(namespace=NAMESPACE, name="coll_b")
         assert coll_a is not None
         assert coll_b is not None
         assert coll_a._collection_name == coll_b._collection_name
@@ -982,15 +1015,15 @@ class TestPartitionIsolation:
         await store.create_collection(
             namespace=NAMESPACE,
             name="tenant_a",
-            vector_dimensions=VECTOR_DIM,
+            config=CollectionConfig(vector_dimensions=VECTOR_DIM),
         )
         await store.create_collection(
             namespace=NAMESPACE,
             name="tenant_b",
-            vector_dimensions=VECTOR_DIM,
+            config=CollectionConfig(vector_dimensions=VECTOR_DIM),
         )
-        coll_a = await store.get_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.get_collection(namespace=NAMESPACE, name="tenant_b")
+        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -1017,15 +1050,15 @@ class TestPartitionIsolation:
         await store.create_collection(
             namespace=NAMESPACE,
             name="tenant_a",
-            vector_dimensions=VECTOR_DIM,
+            config=CollectionConfig(vector_dimensions=VECTOR_DIM),
         )
         await store.create_collection(
             namespace=NAMESPACE,
             name="tenant_b",
-            vector_dimensions=VECTOR_DIM,
+            config=CollectionConfig(vector_dimensions=VECTOR_DIM),
         )
-        coll_a = await store.get_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.get_collection(namespace=NAMESPACE, name="tenant_b")
+        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -1048,15 +1081,15 @@ class TestPartitionIsolation:
         await store.create_collection(
             namespace=NAMESPACE,
             name="tenant_a",
-            vector_dimensions=VECTOR_DIM,
+            config=CollectionConfig(vector_dimensions=VECTOR_DIM),
         )
         await store.create_collection(
             namespace=NAMESPACE,
             name="tenant_b",
-            vector_dimensions=VECTOR_DIM,
+            config=CollectionConfig(vector_dimensions=VECTOR_DIM),
         )
-        coll_a = await store.get_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.get_collection(namespace=NAMESPACE, name="tenant_b")
+        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -1147,7 +1180,7 @@ class TestMetrics:
         await store.create_collection(
             namespace=NAMESPACE,
             name="metrics_test",
-            vector_dimensions=VECTOR_DIM,
+            config=CollectionConfig(vector_dimensions=VECTOR_DIM),
         )
 
         assert mock_histogram.observe.called
@@ -1157,7 +1190,7 @@ class TestMetrics:
 
         mock_histogram.reset_mock()
 
-        coll = await store.get_collection(namespace=NAMESPACE, name="metrics_test")
+        coll = await store.open_collection(namespace=NAMESPACE, name="metrics_test")
         assert coll is not None
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1)
