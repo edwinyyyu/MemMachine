@@ -1,7 +1,6 @@
 """Data types for vector store."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_serializer, field_validator
@@ -13,6 +12,8 @@ from memmachine_server.common.data_types import (
     SimilarityMetric,
 )
 
+from .utils import validate_identifier
+
 
 class CollectionConfig(BaseModel):
     """Configuration for a logical collection in a vector store."""
@@ -20,6 +21,18 @@ class CollectionConfig(BaseModel):
     vector_dimensions: int
     similarity_metric: SimilarityMetric = SimilarityMetric.COSINE
     properties_schema: dict[str, type[PropertyValue]] = Field(default_factory=dict)
+
+    @field_validator("properties_schema", mode="after")
+    @classmethod
+    def _validate_property_keys(
+        cls, v: dict[str, type[PropertyValue]]
+    ) -> dict[str, type[PropertyValue]]:
+        for key in v:
+            if not validate_identifier(key):
+                raise ValueError(
+                    f"Property key {key!r} must match [a-z0-9_]+ and be at most 32 bytes"
+                )
+        return v
 
     @field_validator("properties_schema", mode="before")
     @classmethod
@@ -82,39 +95,39 @@ class CollectionConfigMismatchError(Exception):
         )
 
 
-@dataclass(kw_only=True)
-class Record:
+class Record(BaseModel):
     """A record in the vector store."""
 
     uuid: UUID
     vector: list[float] | None = None
     properties: dict[str, PropertyValue] | None = None
 
-    def __eq__(self, other: object) -> bool:
-        """Compare nodes by UID, vector, and properties."""
-        if not isinstance(other, Record):
-            return False
-        return (
-            self.uuid == other.uuid
-            and self.vector == other.vector
-            and self.properties == other.properties
-        )
+    @field_validator("properties")
+    @classmethod
+    def _validate_property_keys(
+        cls, v: dict[str, PropertyValue] | None
+    ) -> dict[str, PropertyValue] | None:
+        if v:
+            for key in v:
+                if not validate_identifier(key):
+                    raise ValueError(
+                        f"Property key {key!r} must match [a-z0-9_]+ and be at most 32 bytes"
+                    )
+        return v
 
     def __hash__(self) -> int:
         """Hash a record by its UID."""
         return hash(self.uuid)
 
 
-@dataclass(kw_only=True)
-class QueryMatch:
+class QueryMatch(BaseModel):
     """A single vector store query match."""
 
     score: float
     record: Record
 
 
-@dataclass(kw_only=True)
-class QueryResult:
+class QueryResult(BaseModel):
     """Result of a vector store query."""
 
     matches: list[QueryMatch]
