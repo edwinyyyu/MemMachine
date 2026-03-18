@@ -2,7 +2,6 @@
 
 import asyncio
 import hashlib
-import json
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -16,8 +15,6 @@ from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
 from memmachine_server.common.data_types import (
-    PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE,
-    PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
     PropertyValue,
     SimilarityMetric,
 )
@@ -44,13 +41,15 @@ from memmachine_server.common.filter.filter_parser import (
 )
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 
-from .data_types import QueryMatch, QueryResult, Record
-from .vector_store import (
-    Collection,
+from .data_types import (
     CollectionAlreadyExistsError,
-    CollectionNotFoundError,
-    VectorStore,
+    CollectionConfig,
+    CollectionConfigMismatchError,
+    QueryMatch,
+    QueryResult,
+    Record,
 )
+from .vector_store import Collection, VectorStore
 
 # Point payload keys (stored on every Qdrant point)
 _RESERVED_PAYLOAD_PREFIX = "_"
@@ -301,14 +300,6 @@ class QdrantCollection(Collection):
         self._partition_key = partition_key
         self._properties_schema = properties_schema
 
-    @override
-    async def startup(self) -> None:
-        """No-op; Qdrant collections require no explicit open."""
-
-    @override
-    async def shutdown(self) -> None:
-        """No-op; Qdrant collections require no explicit close."""
-
     def _build_payload(
         self,
         properties: dict[str, PropertyValue] | None,
@@ -399,7 +390,7 @@ class QdrantCollection(Collection):
         property_filter: FilterExpr | None = None,
         return_vector: bool = False,
         return_properties: bool = True,
-    ) -> Iterable[QueryResult]:
+    ) -> list[QueryResult]:
         """Query for records matching the criteria by query vectors."""
         async with self._tracker("query"):
             partition_key_filter = _partition_filter(self._partition_key)
@@ -465,7 +456,7 @@ class QdrantCollection(Collection):
         record_uuids: Iterable[UUID],
         return_vector: bool = False,
         return_properties: bool = True,
-    ) -> Iterable[Record]:
+    ) -> list[Record]:
         """Get records from the collection by their UUIDs."""
         async with self._tracker("get"):
             uuid_list = list(record_uuids)
@@ -564,28 +555,6 @@ class QdrantVectorStore(VectorStore):
     }
 
     @staticmethod
-    def _build_schema_metadata(
-        properties_schema: Mapping[str, type[PropertyValue]],
-    ) -> dict[str, str]:
-        """Build schema metadata from properties schema."""
-        return {
-            name: PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[property_type]
-            for name, property_type in properties_schema.items()
-        }
-
-    @staticmethod
-    def _parse_schema_metadata(
-        schema_metadata: Mapping[str, str],
-    ) -> dict[str, type[PropertyValue]]:
-        """Parse properties schema from schema metadata."""
-        return {
-            name: property_type
-            for name, type_name in schema_metadata.items()
-            if (property_type := PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE.get(type_name))
-            is not None
-        }
-
-    @staticmethod
     def _registry_collection_name(namespace: str) -> str:
         """Return the registry collection name for a namespace."""
         return f"{namespace}{_REGISTRY_SUFFIX}"
@@ -596,21 +565,9 @@ class QdrantVectorStore(VectorStore):
         return uuid5(_REGISTRY_UUID_NAMESPACE, name)
 
     @staticmethod
-    def _build_native_collection_name(
-        namespace: str,
-        vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
-        properties_schema: Mapping[str, type[PropertyValue]] | None,
-    ) -> str:
+    def _build_native_collection_name(namespace: str, config: CollectionConfig) -> str:
         """Build a deterministic native collection name from namespace and config."""
-        string_properties_schema = {
-            name: PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[property_type]
-            for name, property_type in sorted((properties_schema or {}).items())
-        }
-        canonical = json.dumps(
-            [vector_dimensions, similarity_metric.value, string_properties_schema],
-        )
-        digest = hashlib.sha256(canonical.encode()).hexdigest()
+        digest = hashlib.sha256(config.model_dump_json().encode()).hexdigest()
         return f"{namespace}__{digest}"
 
     def __init__(self, params: QdrantVectorStoreParams) -> None:
@@ -684,114 +641,151 @@ class QdrantVectorStore(VectorStore):
 
         return payload
 
+    @staticmethod
+    def _parse_entry(entry: Mapping[str, Any]) -> CollectionConfig:
+        """Parse a CollectionConfig from a registry entry."""
+        return CollectionConfig(
+            vector_dimensions=entry[_REGISTRY_VECTOR_DIMENSIONS],
+            similarity_metric=entry[_REGISTRY_SIMILARITY_METRIC],
+            properties_schema=entry.get(_REGISTRY_PROPERTIES_SCHEMA),
+        )
+
+    def _build_collection_handle(
+        self, namespace: str, name: str, config: CollectionConfig
+    ) -> QdrantCollection:
+        """Build a QdrantCollection handle."""
+        return QdrantCollection(
+            client=self._client,
+            collection_name=QdrantVectorStore._build_native_collection_name(
+                namespace, config
+            ),
+            partition_key=name,
+            properties_schema=config.properties_schema or {},
+            tracker=self._tracker,
+        )
+
+    async def _create_native_collection(
+        self, namespace: str, config: CollectionConfig
+    ) -> None:
+        """Idempotently create the native Qdrant collection and payload indexes."""
+        native_collection_name = QdrantVectorStore._build_native_collection_name(
+            namespace, config
+        )
+        distance = QdrantVectorStore._SIMILARITY_METRIC_TO_QDRANT_DISTANCE[
+            config.similarity_metric
+        ]
+        try:
+            await self._client.create_collection(
+                collection_name=native_collection_name,
+                vectors_config=models.VectorParams(
+                    size=config.vector_dimensions, distance=distance
+                ),
+            )
+            await self._client.create_payload_index(
+                collection_name=native_collection_name,
+                field_name=_PAYLOAD_PARTITION_KEY,
+                field_schema=models.KeywordIndexParams(
+                    type=models.KeywordIndexType.KEYWORD,
+                    is_tenant=True,
+                ),
+            )
+            if config.properties_schema:
+                for prop_name, prop_type in config.properties_schema.items():
+                    index_type = QdrantVectorStore._PROPERTY_TYPE_TO_INDEX_TYPE.get(
+                        prop_type
+                    )
+                    if index_type is not None:
+                        await self._client.create_payload_index(
+                            collection_name=native_collection_name,
+                            field_name=prop_name,
+                            field_schema=index_type,
+                        )
+        except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
+            if not _is_already_exists_error(e):
+                raise
+
+    async def _register_collection(
+        self, namespace: str, name: str, config: CollectionConfig
+    ) -> None:
+        """Write the logical collection entry to the registry."""
+        registry_name = QdrantVectorStore._registry_collection_name(namespace)
+        point_uuid = QdrantVectorStore._registry_point_uuid(name)
+        await self._client.upsert(
+            collection_name=registry_name,
+            points=[
+                models.PointStruct(
+                    id=point_uuid,
+                    vector=[0.0],
+                    payload={
+                        _REGISTRY_NAME: name,
+                        _REGISTRY_VECTOR_DIMENSIONS: config.vector_dimensions,
+                        _REGISTRY_SIMILARITY_METRIC: config.similarity_metric.value,
+                        _REGISTRY_PROPERTIES_SCHEMA: config.model_dump(mode="json")[
+                            "properties_schema"
+                        ]
+                        or {},
+                    },
+                ),
+            ],
+        )
+
     @override
     async def create_collection(
         self,
         *,
         namespace: str,
         name: str,
-        vector_dimensions: int,
-        similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
-        properties_schema: Mapping[str, type[PropertyValue]] | None = None,
+        config: CollectionConfig,
     ) -> None:
         """Create a logical collection in the Qdrant vector store."""
         lock = self._name_locks[(namespace, name)]
         async with lock, self._tracker("create_collection"):
             await self._ensure_namespace_registry_collection(namespace)
-
-            existing = await self._get_registry_entry(namespace, name)
-            if existing is not None:
+            if await self._get_registry_entry(namespace, name) is not None:
                 raise CollectionAlreadyExistsError(namespace, name)
-
-            native_collection_name = QdrantVectorStore._build_native_collection_name(
-                namespace, vector_dimensions, similarity_metric, properties_schema
-            )
-
-            distance = QdrantVectorStore._SIMILARITY_METRIC_TO_QDRANT_DISTANCE[
-                similarity_metric
-            ]
-            try:
-                await self._client.create_collection(
-                    collection_name=native_collection_name,
-                    vectors_config=models.VectorParams(
-                        size=vector_dimensions,
-                        distance=distance,
-                    ),
-                )
-
-                await self._client.create_payload_index(
-                    collection_name=native_collection_name,
-                    field_name=_PAYLOAD_PARTITION_KEY,
-                    field_schema=models.KeywordIndexParams(
-                        type=models.KeywordIndexType.KEYWORD,
-                        is_tenant=True,
-                    ),
-                )
-
-                if properties_schema:
-                    for prop_name, prop_type in properties_schema.items():
-                        index_type = QdrantVectorStore._PROPERTY_TYPE_TO_INDEX_TYPE.get(
-                            prop_type
-                        )
-                        if index_type is not None:
-                            await self._client.create_payload_index(
-                                collection_name=native_collection_name,
-                                field_name=prop_name,
-                                field_schema=index_type,
-                            )
-            except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
-                if not _is_already_exists_error(e):
-                    raise
-
-            # Register the logical collection in the registry.
-            registry_name = QdrantVectorStore._registry_collection_name(namespace)
-            point_uuid = QdrantVectorStore._registry_point_uuid(name)
-            await self._client.upsert(
-                collection_name=registry_name,
-                points=[
-                    models.PointStruct(
-                        id=point_uuid,
-                        vector=[0.0],
-                        payload={
-                            _REGISTRY_NAME: name,
-                            _REGISTRY_VECTOR_DIMENSIONS: vector_dimensions,
-                            _REGISTRY_SIMILARITY_METRIC: similarity_metric.value,
-                            _REGISTRY_PROPERTIES_SCHEMA: QdrantVectorStore._build_schema_metadata(
-                                properties_schema or {}
-                            ),
-                        },
-                    ),
-                ],
-            )
+            await self._create_native_collection(namespace, config)
+            await self._register_collection(namespace, name, config)
 
     @override
-    async def get_collection(
+    async def open_or_create_collection(
+        self,
+        *,
+        namespace: str,
+        name: str,
+        config: CollectionConfig,
+    ) -> QdrantCollection:
+        """Open the collection if it exists, or create and return it."""
+        lock = self._name_locks[(namespace, name)]
+        async with lock, self._tracker("open_or_create_collection"):
+            entry = await self._get_registry_entry(namespace, name)
+            if entry is not None:
+                existing_config = QdrantVectorStore._parse_entry(entry)
+                if existing_config != config:
+                    raise CollectionConfigMismatchError(
+                        namespace, name, existing_config, config
+                    )
+                return self._build_collection_handle(namespace, name, existing_config)
+
+            await self._ensure_namespace_registry_collection(namespace)
+            await self._create_native_collection(namespace, config)
+            await self._register_collection(namespace, name, config)
+            return self._build_collection_handle(namespace, name, config)
+
+    @override
+    async def open_collection(
         self, *, namespace: str, name: str
     ) -> QdrantCollection | None:
         """Get a collection handle from the vector store."""
         entry = await self._get_registry_entry(namespace, name)
         if entry is None:
             return None
-
-        vector_dimensions = cast(int, entry[_REGISTRY_VECTOR_DIMENSIONS])
-        similarity_metric = SimilarityMetric(entry[_REGISTRY_SIMILARITY_METRIC])
-        schema_metadata = cast(
-            dict[str, str], entry.get(_REGISTRY_PROPERTIES_SCHEMA, {})
-        )
-        properties_schema = (
-            QdrantVectorStore._parse_schema_metadata(schema_metadata) or None
+        return self._build_collection_handle(
+            namespace, name, QdrantVectorStore._parse_entry(entry)
         )
 
-        native_collection_name = QdrantVectorStore._build_native_collection_name(
-            namespace, vector_dimensions, similarity_metric, properties_schema
-        )
-        return QdrantCollection(
-            client=self._client,
-            collection_name=native_collection_name,
-            partition_key=name,
-            properties_schema=QdrantVectorStore._parse_schema_metadata(schema_metadata),
-            tracker=self._tracker,
-        )
+    @override
+    async def close_collection(self, *, collection: Collection) -> None:
+        """No-op; Qdrant collection handles require no explicit close."""
 
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
@@ -800,22 +794,11 @@ class QdrantVectorStore(VectorStore):
         async with lock, self._tracker("delete_collection"):
             entry = await self._get_registry_entry(namespace, name)
             if entry is None:
-                raise CollectionNotFoundError(namespace, name)
+                return
 
-            vector_dimensions = cast(int, entry[_REGISTRY_VECTOR_DIMENSIONS])
-            similarity_metric = SimilarityMetric(entry[_REGISTRY_SIMILARITY_METRIC])
-            schema_metadata = cast(
-                dict[str, str], entry.get(_REGISTRY_PROPERTIES_SCHEMA, {})
-            )
-            properties_schema = (
-                QdrantVectorStore._parse_schema_metadata(schema_metadata) or None
-            )
-
+            config = QdrantVectorStore._parse_entry(entry)
             native_collection_name = QdrantVectorStore._build_native_collection_name(
-                namespace,
-                vector_dimensions,
-                similarity_metric,
-                properties_schema,
+                namespace, config
             )
 
             # Delete partition data, then registry entry.
