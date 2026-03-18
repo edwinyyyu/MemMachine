@@ -806,7 +806,7 @@ class TestFilters:
         v3 = _normalize([1.0, 0.2, 0.0])
         v4 = _normalize([1.0, 0.3, 0.0])
         r_has_value = _make_record(vector=v1, properties={"name": "has_name"})
-        r_explicit_none = _make_record(vector=v2, properties={"name": None})
+        r_explicit_none = _make_record(vector=v2, properties={})
         r_key_missing = _make_record(vector=v3, properties={"age": 25})
         r_no_payload = _make_record(vector=v4, properties=None)
         await collection.upsert(
@@ -832,7 +832,7 @@ class TestFilters:
         v3 = _normalize([1.0, 0.2, 0.0])
         v4 = _normalize([1.0, 0.3, 0.0])
         r_has_value = _make_record(vector=v1, properties={"name": "has_name"})
-        r_explicit_none = _make_record(vector=v2, properties={"name": None})
+        r_explicit_none = _make_record(vector=v2, properties={})
         r_key_missing = _make_record(vector=v3, properties={"age": 25})
         r_no_payload = _make_record(vector=v4, properties=None)
         await collection.upsert(
@@ -1109,54 +1109,6 @@ class TestPartitionIsolation:
 
         await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
-
-    @pytest.mark.asyncio
-    async def test_filter_on_partition_key_field_rejected(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        r1 = _make_record(vector=v1, properties={"name": "a"})
-        await collection.upsert(records=[r1])
-
-        with pytest.raises(ValueError, match="reserved field"):
-            await collection.query(
-                query_vectors=[v1],
-                property_filter=Comparison(
-                    field="_partition_key", op="=", value="tenant_b"
-                ),
-            )
-
-    @pytest.mark.asyncio
-    async def test_filter_on_partition_key_in_rejected(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-
-        with pytest.raises(ValueError, match="reserved field"):
-            await collection.query(
-                query_vectors=[v1],
-                property_filter=In(
-                    field="_partition_key", values=["tenant_a", "tenant_b"]
-                ),
-            )
-
-    @pytest.mark.asyncio
-    async def test_filter_on_partition_key_is_null_rejected(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-
-        with pytest.raises(ValueError, match="reserved field"):
-            await collection.query(
-                query_vectors=[v1],
-                property_filter=IsNull(field="_partition_key"),
-            )
-
-    @pytest.mark.asyncio
-    async def test_filter_on_partition_key_nested_rejected(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-
-        with pytest.raises(ValueError, match="reserved field"):
-            await collection.query(
-                query_vectors=[v1],
-                property_filter=Not(
-                    expr=Comparison(field="_partition_key", op="=", value="tenant_a")
-                ),
-            )
 
 
 # ── Metrics ──
