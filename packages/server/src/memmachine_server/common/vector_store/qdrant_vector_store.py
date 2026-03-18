@@ -647,7 +647,7 @@ class QdrantVectorStore(VectorStore):
         return CollectionConfig(
             vector_dimensions=entry[_REGISTRY_VECTOR_DIMENSIONS],
             similarity_metric=entry[_REGISTRY_SIMILARITY_METRIC],
-            properties_schema=entry.get(_REGISTRY_PROPERTIES_SCHEMA),
+            properties_schema=entry[_REGISTRY_PROPERTIES_SCHEMA],
         )
 
     def _build_collection_handle(
@@ -660,7 +660,7 @@ class QdrantVectorStore(VectorStore):
                 namespace, config
             ),
             partition_key=name,
-            properties_schema=config.properties_schema or {},
+            properties_schema=config.properties_schema,
             tracker=self._tracker,
         )
 
@@ -689,17 +689,16 @@ class QdrantVectorStore(VectorStore):
                     is_tenant=True,
                 ),
             )
-            if config.properties_schema:
-                for prop_name, prop_type in config.properties_schema.items():
-                    index_type = QdrantVectorStore._PROPERTY_TYPE_TO_INDEX_TYPE.get(
-                        prop_type
+            for prop_name, prop_type in config.properties_schema.items():
+                index_type = QdrantVectorStore._PROPERTY_TYPE_TO_INDEX_TYPE.get(
+                    prop_type
+                )
+                if index_type is not None:
+                    await self._client.create_payload_index(
+                        collection_name=native_collection_name,
+                        field_name=prop_name,
+                        field_schema=index_type,
                     )
-                    if index_type is not None:
-                        await self._client.create_payload_index(
-                            collection_name=native_collection_name,
-                            field_name=prop_name,
-                            field_schema=index_type,
-                        )
         except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
             if not _is_already_exists_error(e):
                 raise
@@ -722,8 +721,7 @@ class QdrantVectorStore(VectorStore):
                         _REGISTRY_SIMILARITY_METRIC: config.similarity_metric.value,
                         _REGISTRY_PROPERTIES_SCHEMA: config.model_dump(mode="json")[
                             "properties_schema"
-                        ]
-                        or {},
+                        ],
                     },
                 ),
             ],
