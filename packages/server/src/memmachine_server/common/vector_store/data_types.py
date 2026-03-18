@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from uuid import UUID
 
-from pydantic import BaseModel, field_serializer, field_validator
+from pydantic import BaseModel, Field, field_serializer, field_validator
 
 from memmachine_server.common.data_types import (
     PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE,
@@ -19,11 +19,13 @@ class CollectionConfig(BaseModel):
 
     vector_dimensions: int
     similarity_metric: SimilarityMetric = SimilarityMetric.COSINE
-    properties_schema: dict[str, type[PropertyValue]] | None = None
+    properties_schema: dict[str, type[PropertyValue]] = Field(default_factory=dict)
 
     @field_validator("properties_schema", mode="before")
     @classmethod
     def _coerce_properties_schema(cls, v: object) -> object:
+        if v is None:
+            return {}
         if isinstance(v, Mapping):
             result = {}
             for key, value in v.items():
@@ -41,10 +43,8 @@ class CollectionConfig(BaseModel):
 
     @field_serializer("properties_schema")
     def _serialize_properties_schema(
-        self, v: dict[str, type[PropertyValue]] | None
-    ) -> dict[str, str] | None:
-        if v is None:
-            return None
+        self, v: dict[str, type[PropertyValue]]
+    ) -> dict[str, str]:
         return {
             k: PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[val] for k, val in sorted(v.items())
         }
