@@ -581,7 +581,11 @@ class QdrantVectorStore(VectorStore):
         """Initialize the vector store with the provided parameters."""
         super().__init__()
         self._client: AsyncQdrantClient = params.client
+
         self._registry_replication_factor = params.registry_replication_factor
+
+        self._hnsw_m = 16
+
         self._tracker = OperationTracker(
             params.metrics_factory,
             prefix="vector_store_qdrant",
@@ -610,6 +614,9 @@ class QdrantVectorStore(VectorStore):
                 vectors_config=models.VectorParams(
                     size=1,
                     distance=models.Distance.COSINE,
+                ),
+                hnsw_config=models.HnswConfigDiff(
+                    m=0,
                 ),
                 replication_factor=self._registry_replication_factor,
                 write_consistency_factor=self._registry_replication_factor,
@@ -689,6 +696,10 @@ class QdrantVectorStore(VectorStore):
                 collection_name=native_collection_name,
                 vectors_config=models.VectorParams(
                     size=config.vector_dimensions, distance=distance
+                ),
+                hnsw_config=models.HnswConfigDiff(
+                    m=0,
+                    payload_m=self._hnsw_m,
                 ),
             )
             await self._client.create_payload_index(
