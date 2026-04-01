@@ -96,7 +96,23 @@ class CollectionConfigMismatchError(Exception):
 
 
 class Record(BaseModel):
-    """A record in the vector store."""
+    """
+    A record in the vector store.
+
+    Attributes:
+        uuid (UUID):
+            Unique identifier for the record.
+        vector (list[float] | None):
+            Vector for similarity search.
+            `None` is not allowed on input.
+            `None` on output means the vector was not requested (`return_vector=False`)
+            (default: None).
+        properties (dict[str, PropertyValue] | None):
+            Property key-value pairs.
+            Use `{}` to represent missing properties; `None` on input is treated as `{}`.
+            `None` on output means the properties were not requested (`return_properties=False`)
+            (default: None).
+    """
 
     uuid: UUID
     vector: list[float] | None = None
