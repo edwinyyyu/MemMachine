@@ -32,8 +32,8 @@ from usearch.index import Index, MetricKind
 
 from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import FilterExpr
-from memmachine_server.common.sql_json_properties import (
-    compile_property_filter,
+from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
+from memmachine_server.common.properties_json import (
     decode_properties,
     encode_properties,
 )
@@ -129,8 +129,10 @@ class SQLiteUSearchCollection(Collection):
         self, property_filter: FilterExpr
     ) -> sa.ColumnElement[bool]:
         """Compile a property filter against this collection's JSON properties column."""
-        return compile_property_filter(
-            property_filter, self._records_table.c.properties
+        properties_column = self._records_table.c.properties
+        return compile_sql_filter(
+            property_filter,
+            lambda field: (properties_column[field], "properties_json"),
         )
 
     @override
