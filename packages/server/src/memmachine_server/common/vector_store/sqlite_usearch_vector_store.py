@@ -18,7 +18,7 @@ import asyncio
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, override
 from uuid import UUID
 
 import numpy as np
@@ -133,6 +133,7 @@ class SQLiteUSearchCollection(Collection):
             property_filter, self._records_table.c.properties
         )
 
+    @override
     async def upsert(self, *, records: Iterable[Record]) -> None:
         records_list = list(records)
         if not records_list:
@@ -238,6 +239,7 @@ class SQLiteUSearchCollection(Collection):
                     )
                 )
 
+    @override
     async def query(
         self,
         *,
@@ -251,6 +253,9 @@ class SQLiteUSearchCollection(Collection):
         query_vectors_list = list(query_vectors)
         if not query_vectors_list:
             return []
+
+        if limit is not None and limit <= 0:
+            return [QueryResult(matches=[]) for _ in query_vectors_list]
 
         if property_filter is not None and not validate_filter(property_filter):
             raise ValueError("Filter contains invalid field names")
@@ -456,6 +461,7 @@ class SQLiteUSearchCollection(Collection):
             matches = matches[:limit]
         return matches
 
+    @override
     async def get(
         self,
         *,
@@ -507,6 +513,7 @@ class SQLiteUSearchCollection(Collection):
             if record_uuid in record_map
         ]
 
+    @override
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
         uuid_list = list(record_uuids)
         if not uuid_list:
@@ -586,6 +593,21 @@ class SQLiteUSearchVectorStoreParams(BaseModel):
     )
 
 
+def _replay_upsert_one(
+    usearch_index: Index, label: int, vector_data: np.ndarray
+) -> None:
+    """Replace a single vector in the USearch index (crash-recovery helper)."""
+    if usearch_index.count(label) > 0:
+        usearch_index.remove(label)
+    usearch_index.add(label, vector_data)
+
+
+def _replay_remove_one(usearch_index: Index, label: int) -> None:
+    """Remove a single vector from the USearch index (crash-recovery helper)."""
+    if usearch_index.count(label) > 0:
+        usearch_index.remove(label)
+
+
 class SQLiteUSearchVectorStore(VectorStore):
     """Vector store backed by SQLite (metadata) + USearch HNSW (ANN index).
 
@@ -644,6 +666,7 @@ class SQLiteUSearchVectorStore(VectorStore):
             sa.Column("vector", LargeBinary, nullable=True),
         )
 
+    @override
     async def startup(self) -> None:
         if self._index_dir is not None:
             self._index_dir.mkdir(parents=True, exist_ok=True)
@@ -726,22 +749,9 @@ class SQLiteUSearchVectorStore(VectorStore):
                     ).scalar_one_or_none()
                 if row is not None:
                     vector = np.frombuffer(row, dtype=np.float32)
-
-                    def _upsert_one(
-                        usearch_index: Index, label: int, vector_data: np.ndarray
-                    ) -> None:
-                        if usearch_index.count(label) > 0:
-                            usearch_index.remove(label)
-                        usearch_index.add(label, vector_data)
-
-                    await asyncio.to_thread(_upsert_one, index, op.rowid, vector)
+                    await asyncio.to_thread(_replay_upsert_one, index, op.rowid, vector)
             elif op.op == "remove":
-
-                def _remove_one(usearch_index: Index, label: int) -> None:
-                    if usearch_index.count(label) > 0:
-                        usearch_index.remove(label)
-
-                await asyncio.to_thread(_remove_one, index, op.rowid)
+                await asyncio.to_thread(_replay_remove_one, index, op.rowid)
 
         operation_ids = [op.id for op in ops]
         async with self._create_session() as session, session.begin():
@@ -749,6 +759,7 @@ class SQLiteUSearchVectorStore(VectorStore):
                 sa.delete(_PendingOpRow).where(_PendingOpRow.id.in_(operation_ids))
             )
 
+    @override
     async def shutdown(self) -> None:
         if self._index_dir is not None:
             for collection_prefix, index in self._indexes.items():
@@ -854,6 +865,7 @@ class SQLiteUSearchVectorStore(VectorStore):
             collection_prefix=collection_prefix,
         )
 
+    @override
     async def create_collection(
         self,
         *,
@@ -885,6 +897,7 @@ class SQLiteUSearchVectorStore(VectorStore):
                 )
             )
 
+    @override
     async def open_or_create_collection(
         self,
         *,
@@ -933,6 +946,7 @@ class SQLiteUSearchVectorStore(VectorStore):
             name, config, records_table, index, collection_prefix
         )
 
+    @override
     async def open_collection(
         self,
         *,
@@ -953,9 +967,11 @@ class SQLiteUSearchVectorStore(VectorStore):
             name, existing, records_table, index, collection_prefix
         )
 
+    @override
     async def close_collection(self, *, collection: Collection) -> None:
         pass
 
+    @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
         if not validate_identifier(namespace) or not validate_identifier(name):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
