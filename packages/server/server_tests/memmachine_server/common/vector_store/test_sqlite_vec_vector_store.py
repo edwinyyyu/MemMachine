@@ -1,6 +1,7 @@
 """Tests for SQLiteVecVectorStore."""
 
 import math
+import sqlite3
 from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -25,6 +26,11 @@ from memmachine_server.common.vector_store.sqlite_vec_vector_store import (
     SQLiteVecCollection,
     SQLiteVecVectorStore,
     SQLiteVecVectorStoreParams,
+)
+
+pytestmark = pytest.mark.skipif(
+    not hasattr(sqlite3.Connection, "enable_load_extension"),
+    reason="sqlite3 built without extension loading support",
 )
 
 NAMESPACE = "test_namespace"
