@@ -14,7 +14,7 @@ import json
 import struct
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
-from typing import ClassVar
+from typing import ClassVar, override
 from uuid import UUID
 
 import aiosqlite
@@ -131,6 +131,7 @@ class SQLiteVecCollection(Collection):
             property_filter, self._records_table.c.properties
         )
 
+    @override
     async def upsert(self, *, records: Iterable[Record]) -> None:
         records_list = list(records)
         if not records_list:
@@ -185,6 +186,7 @@ class SQLiteVecCollection(Collection):
                         },
                     )
 
+    @override
     async def query(
         self,
         *,
@@ -198,6 +200,9 @@ class SQLiteVecCollection(Collection):
         query_vectors_list = list(query_vectors)
         if not query_vectors_list:
             return []
+
+        if limit is not None and limit <= 0:
+            return [QueryResult(matches=[]) for _ in query_vectors_list]
 
         if property_filter is not None and not validate_filter(property_filter):
             raise ValueError("Filter contains invalid field names")
@@ -301,14 +306,14 @@ class SQLiteVecCollection(Collection):
         if return_vector:
             select_parts.append(f"[{vec_table_name}].embedding")
 
+        # literal_binds is required because this filter clause is embedded in a
+        # raw text() SQL query (for the vec0 distance function join).
         compiled = self._compile_property_filter(property_filter)
-        filter_clause = ""
-        if compiled is not None:
-            filter_sql = compiled.compile(
-                dialect=sa_sqlite.dialect(),
-                compile_kwargs={"literal_binds": True},
-            )
-            filter_clause = f"AND ({filter_sql})"
+        filter_sql = compiled.compile(
+            dialect=sa_sqlite.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+        filter_clause = f"AND ({filter_sql})"
 
         params: dict[str, bytes | str | int | float] = {}
 
@@ -345,7 +350,6 @@ class SQLiteVecCollection(Collection):
         return_vector: bool,
     ) -> list[QueryMatch]:
         """Parse raw rows from a filtered query into QueryMatch objects."""
-        dict(self._config.properties_schema)
         matches: list[QueryMatch] = []
         for row in rows:
             column_index = 0
@@ -392,7 +396,6 @@ class SQLiteVecCollection(Collection):
         """Fetch record data for rowids from a KNN search and build matches."""
         records_table = self._records_table
         vec_table_name = self._vec_table_name
-        dict(self._config.properties_schema)
 
         rowid_list = list(rowid_to_distance.keys())
 
@@ -460,6 +463,7 @@ class SQLiteVecCollection(Collection):
         matches.sort(key=lambda match: match.score, reverse=True)
         return matches
 
+    @override
     async def get(
         self,
         *,
@@ -533,6 +537,7 @@ class SQLiteVecCollection(Collection):
             if record_uuid in record_map
         ]
 
+    @override
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
         uuid_list = list(record_uuids)
         if not uuid_list:
@@ -665,10 +670,12 @@ class SQLiteVecVectorStore(VectorStore):
             sa.Column("properties", JSON, nullable=True),
         )
 
+    @override
     async def startup(self) -> None:
         async with self._engine.begin() as connection:
             await connection.run_sync(BaseSQLiteVecVectorStore.metadata.create_all)
 
+    @override
     async def shutdown(self) -> None:
         self._records_tables.clear()
 
@@ -756,6 +763,7 @@ class SQLiteVecVectorStore(VectorStore):
             vec_table_name=vec_table_name,
         )
 
+    @override
     async def create_collection(
         self,
         *,
@@ -787,6 +795,7 @@ class SQLiteVecVectorStore(VectorStore):
                 )
             )
 
+    @override
     async def open_or_create_collection(
         self,
         *,
@@ -833,6 +842,7 @@ class SQLiteVecVectorStore(VectorStore):
             name, config, records_table, vec_table_name
         )
 
+    @override
     async def open_collection(self, *, namespace: str, name: str) -> Collection | None:
         if not validate_identifier(namespace) or not validate_identifier(name):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
@@ -848,9 +858,11 @@ class SQLiteVecVectorStore(VectorStore):
             name, existing, records_table, vec_table_name
         )
 
+    @override
     async def close_collection(self, *, collection: Collection) -> None:
         pass  # No resources to release
 
+    @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
         if not validate_identifier(namespace) or not validate_identifier(name):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
