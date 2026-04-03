@@ -1,4 +1,5 @@
-"""SQLite + sqlite-vec backed vector store implementation.
+"""
+SQLite + sqlite-vec backed vector store implementation.
 
 SQLite stores collection metadata, record UUIDs, and properties.
 sqlite-vec provides the vec0 virtual table for vector search.
@@ -16,6 +17,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from typing import ClassVar, override
 from uuid import UUID
+from weakref import WeakKeyDictionary
 
 import aiosqlite
 import sqlalchemy as sa
@@ -602,16 +604,32 @@ class SQLiteVecVectorStore(VectorStore):
         SimilarityMetric.EUCLIDEAN: "L2",
     }
 
+    # Shared across all instances so that stores using the same engine
+    # serialise SQLite writes through the same lock.
+    # Keyed by engine so locks are garbage-collected when the engine is.
+    _write_locks: WeakKeyDictionary[AsyncEngine, asyncio.Lock] = WeakKeyDictionary()
+    _name_locks_by_engine: WeakKeyDictionary[
+        AsyncEngine, defaultdict[tuple[str, str], asyncio.Lock]
+    ] = WeakKeyDictionary()
+
     def __init__(self, params: SQLiteVecVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
         self._engine = params.engine
         self._create_session = async_sessionmaker(self._engine, expire_on_commit=False)
-        self._write_lock = asyncio.Lock()
-        self._name_locks: defaultdict[tuple[str, str], asyncio.Lock] = defaultdict(
-            asyncio.Lock
-        )
         self._records_tables: dict[str, sa.Table] = {}
         self._sa_metadata = sa.MetaData()
+
+    @property
+    def _write_lock(self) -> asyncio.Lock:
+        return SQLiteVecVectorStore._write_locks.setdefault(
+            self._engine, asyncio.Lock()
+        )
+
+    @property
+    def _name_locks(self) -> defaultdict[tuple[str, str], asyncio.Lock]:
+        return SQLiteVecVectorStore._name_locks_by_engine.setdefault(
+            self._engine, defaultdict(asyncio.Lock)
+        )
 
     @staticmethod
     def create_engine(url: str) -> AsyncEngine:
