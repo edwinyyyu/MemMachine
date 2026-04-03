@@ -1,7 +1,8 @@
-"""SQLite + USearch HNSW backed vector store implementation.
+"""
+SQLite + USearch backed vector store implementation.
 
 SQLite stores collection metadata, record UUIDs, and properties.
-USearch provides the HNSW ANN index for vector search.
+USearch provides the ANN index for vector search.
 Vectors are stored in both SQLite (source of truth) and USearch (derived index).
 
 Each logical collection gets its own records table and USearch index.
@@ -20,6 +21,7 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import ClassVar, override
 from uuid import UUID
+from weakref import WeakKeyDictionary
 
 import numpy as np
 import sqlalchemy as sa
@@ -626,6 +628,14 @@ class SQLiteUSearchVectorStore(VectorStore):
         SimilarityMetric.DOT: MetricKind.IP,
     }
 
+    # Shared across all instances so that stores using the same engine
+    # serialise SQLite writes through the same lock.
+    # Keyed by engine so locks are garbage-collected when the engine is.
+    _write_locks: WeakKeyDictionary[AsyncEngine, asyncio.Lock] = WeakKeyDictionary()
+    _name_locks_by_engine: WeakKeyDictionary[
+        AsyncEngine, defaultdict[tuple[str, str], asyncio.Lock]
+    ] = WeakKeyDictionary()
+
     def __init__(self, params: SQLiteUSearchVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
         self._engine = params.engine
@@ -633,13 +643,21 @@ class SQLiteUSearchVectorStore(VectorStore):
             Path(params.index_directory) if params.index_directory else None
         )
         self._create_session = async_sessionmaker(self._engine, expire_on_commit=False)
-        self._write_lock = asyncio.Lock()
-        self._name_locks: defaultdict[tuple[str, str], asyncio.Lock] = defaultdict(
-            asyncio.Lock
-        )
         self._records_tables: dict[str, sa.Table] = {}
         self._indexes: dict[str, Index] = {}
         self._sa_metadata = sa.MetaData()
+
+    @property
+    def _write_lock(self) -> asyncio.Lock:
+        return SQLiteUSearchVectorStore._write_locks.setdefault(
+            self._engine, asyncio.Lock()
+        )
+
+    @property
+    def _name_locks(self) -> defaultdict[tuple[str, str], asyncio.Lock]:
+        return SQLiteUSearchVectorStore._name_locks_by_engine.setdefault(
+            self._engine, defaultdict(asyncio.Lock)
+        )
 
     @staticmethod
     def _collection_prefix(namespace: str, name: str) -> str:
