@@ -75,12 +75,9 @@ def _compile_column_leaf(
     return _get_op(expr.op)(column, expr.value)
 
 
-_JsonScalar = bool | int | float | str
-
-
 def _cast_json_value(
     column: ColumnElement,
-    value: _JsonScalar,
+    value: bool | float | str,
 ) -> ColumnElement:
     """Cast a raw JSON path element based on the Python value type."""
     if isinstance(value, bool):
@@ -92,7 +89,7 @@ def _cast_json_value(
     return column.as_string()
 
 
-def _check_json_value(value: PropertyValue) -> _JsonScalar:
+def _check_json_value(value: PropertyValue) -> bool | int | float | str:
     """Validate that a filter value is usable with raw JSON fields."""
     if isinstance(value, datetime):
         raise TypeError(
