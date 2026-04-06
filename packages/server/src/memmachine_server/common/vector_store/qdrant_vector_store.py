@@ -44,15 +44,15 @@ from memmachine_server.common.metrics_factory import MetricsFactory, OperationTr
 from memmachine_server.common.utils import ensure_tz_aware
 
 from .data_types import (
-    CollectionAlreadyExistsError,
-    CollectionConfig,
-    CollectionConfigMismatchError,
     QueryMatch,
     QueryResult,
     Record,
+    VectorStoreCollectionAlreadyExistsError,
+    VectorStoreCollectionConfig,
+    VectorStoreCollectionConfigMismatchError,
 )
 from .utils import validate_filter, validate_identifier
-from .vector_store import Collection, VectorStore
+from .vector_store import VectorStore, VectorStoreCollection
 
 # Point payload keys (stored on every Qdrant point).
 # System keys use _SYSTEM_KEY_PREFIX, which contains a hyphen. Hyphens are valid in
@@ -73,7 +73,7 @@ def _partition_filter(partition_key: str) -> models.Filter:
     )
 
 
-class QdrantCollection(Collection):
+class QdrantCollection(VectorStoreCollection):
     """A collection backed by Qdrant."""
 
     _RANGE_OPERATORS: ClassVar[dict[str, str]] = {
@@ -613,7 +613,9 @@ class QdrantVectorStore(VectorStore):
         return uuid5(QdrantVectorStore._REGISTRY_UUID_NAMESPACE, name)
 
     @staticmethod
-    def _build_native_collection_name(namespace: str, config: CollectionConfig) -> str:
+    def _build_native_collection_name(
+        namespace: str, config: VectorStoreCollectionConfig
+    ) -> str:
         """Build a deterministic native collection name from namespace and config."""
         digest = hashlib.sha256(config.model_dump_json().encode()).hexdigest()
         return f"{namespace}__{digest}"
@@ -701,16 +703,16 @@ class QdrantVectorStore(VectorStore):
         return payload
 
     @staticmethod
-    def _parse_entry(entry: Mapping[str, Any]) -> CollectionConfig:
-        """Parse a CollectionConfig from a registry entry."""
-        return CollectionConfig(
+    def _parse_entry(entry: Mapping[str, Any]) -> VectorStoreCollectionConfig:
+        """Parse a VectorStoreCollectionConfig from a registry entry."""
+        return VectorStoreCollectionConfig(
             vector_dimensions=entry[QdrantVectorStore._REGISTRY_VECTOR_DIMENSIONS],
             similarity_metric=entry[QdrantVectorStore._REGISTRY_SIMILARITY_METRIC],
             properties_schema=entry[QdrantVectorStore._REGISTRY_PROPERTIES_SCHEMA],
         )
 
     def _build_collection_handle(
-        self, namespace: str, name: str, config: CollectionConfig
+        self, namespace: str, name: str, config: VectorStoreCollectionConfig
     ) -> QdrantCollection:
         """Build a QdrantCollection handle."""
         return QdrantCollection(
@@ -725,7 +727,7 @@ class QdrantVectorStore(VectorStore):
         )
 
     async def _create_native_collection(
-        self, namespace: str, config: CollectionConfig
+        self, namespace: str, config: VectorStoreCollectionConfig
     ) -> None:
         """Idempotently create the native Qdrant collection and payload indexes."""
         native_collection_name = QdrantVectorStore._build_native_collection_name(
@@ -783,7 +785,7 @@ class QdrantVectorStore(VectorStore):
                 raise
 
     async def _register_collection(
-        self, namespace: str, name: str, config: CollectionConfig
+        self, namespace: str, name: str, config: VectorStoreCollectionConfig
     ) -> None:
         """Write the logical collection entry to the registry."""
         registry_name = QdrantVectorStore._registry_collection_name(namespace)
@@ -813,7 +815,7 @@ class QdrantVectorStore(VectorStore):
         *,
         namespace: str,
         name: str,
-        config: CollectionConfig,
+        config: VectorStoreCollectionConfig,
     ) -> None:
         """Create a logical collection in the Qdrant vector store."""
         if not validate_identifier(namespace):
@@ -830,7 +832,7 @@ class QdrantVectorStore(VectorStore):
         ):
             await self._ensure_namespace_registry_collection(namespace)
             if await self._get_registry_entry(namespace, name) is not None:
-                raise CollectionAlreadyExistsError(namespace, name)
+                raise VectorStoreCollectionAlreadyExistsError(namespace, name)
             await self._create_native_collection(namespace, config)
             if self._is_distributed:
                 native_collection_name = (
@@ -845,7 +847,7 @@ class QdrantVectorStore(VectorStore):
         *,
         namespace: str,
         name: str,
-        config: CollectionConfig,
+        config: VectorStoreCollectionConfig,
     ) -> QdrantCollection:
         """Open the collection if it exists, or create and return it."""
         if not validate_identifier(namespace):
@@ -864,7 +866,7 @@ class QdrantVectorStore(VectorStore):
             if entry is not None:
                 existing_config = QdrantVectorStore._parse_entry(entry)
                 if existing_config != config:
-                    raise CollectionConfigMismatchError(
+                    raise VectorStoreCollectionConfigMismatchError(
                         namespace, name, existing_config, config
                     )
                 return self._build_collection_handle(namespace, name, existing_config)
@@ -900,7 +902,7 @@ class QdrantVectorStore(VectorStore):
         )
 
     @override
-    async def close_collection(self, *, collection: Collection) -> None:
+    async def close_collection(self, *, collection: VectorStoreCollection) -> None:
         """No-op; Qdrant collection handles require no explicit close."""
 
     @override
