@@ -26,8 +26,8 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStoreCollectionConfigMismatchError,
 )
 from memmachine_server.common.vector_store.qdrant_vector_store import (
-    QdrantCollection,
     QdrantVectorStore,
+    QdrantVectorStoreCollection,
     QdrantVectorStoreParams,
 )
 
@@ -113,13 +113,13 @@ class TestCollectionLifecycle:
             config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
         )
         coll = await store.open_collection(namespace=NAMESPACE, name="lifecycle")
-        assert isinstance(coll, QdrantCollection)
+        assert isinstance(coll, QdrantVectorStoreCollection)
         await store.delete_collection(namespace=NAMESPACE, name="lifecycle")
 
     @pytest.mark.asyncio
     async def test_open_collection_returns_qdrant_collection(self, store, collection):
         coll = await store.open_collection(namespace=NAMESPACE, name=NAME)
-        assert isinstance(coll, QdrantCollection)
+        assert isinstance(coll, QdrantVectorStoreCollection)
 
     @pytest.mark.asyncio
     async def test_duplicate_name_raises(self, store, collection):
@@ -150,7 +150,7 @@ class TestCollectionLifecycle:
         coll = await store.open_or_create_collection(
             namespace=NAMESPACE, name="new", config=config
         )
-        assert isinstance(coll, QdrantCollection)
+        assert isinstance(coll, QdrantVectorStoreCollection)
         await store.delete_collection(namespace=NAMESPACE, name="new")
 
     @pytest.mark.asyncio
@@ -162,7 +162,7 @@ class TestCollectionLifecycle:
         coll = await store.open_or_create_collection(
             namespace=NAMESPACE, name="existing", config=config
         )
-        assert isinstance(coll, QdrantCollection)
+        assert isinstance(coll, QdrantVectorStoreCollection)
         await store.delete_collection(namespace=NAMESPACE, name="existing")
 
     @pytest.mark.asyncio

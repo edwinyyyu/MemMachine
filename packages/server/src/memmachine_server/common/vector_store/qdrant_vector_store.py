@@ -73,7 +73,7 @@ def _partition_filter(partition_key: str) -> models.Filter:
     )
 
 
-class QdrantCollection(VectorStoreCollection):
+class QdrantVectorStoreCollection(VectorStoreCollection):
     """A collection backed by Qdrant."""
 
     _RANGE_OPERATORS: ClassVar[dict[str, str]] = {
@@ -94,22 +94,22 @@ class QdrantCollection(VectorStoreCollection):
     def _build_qdrant_filter(expr: FilterExpr) -> models.Filter:
         """Convert a FilterExpr tree into a Qdrant Filter."""
         if isinstance(expr, FilterComparison):
-            return QdrantCollection._build_qdrant_comparison(expr)
+            return QdrantVectorStoreCollection._build_qdrant_comparison(expr)
         if isinstance(expr, FilterIn):
-            return QdrantCollection._in_filter(expr.field, expr.values)
+            return QdrantVectorStoreCollection._in_filter(expr.field, expr.values)
         if isinstance(expr, FilterIsNull):
-            return QdrantCollection._null_filter(expr.field, negate=False)
+            return QdrantVectorStoreCollection._null_filter(expr.field, negate=False)
         if isinstance(expr, FilterNot):
             return models.Filter(
-                must_not=[QdrantCollection._build_qdrant_filter(expr.expr)]
+                must_not=[QdrantVectorStoreCollection._build_qdrant_filter(expr.expr)]
             )
         if isinstance(expr, FilterAnd):
-            left = QdrantCollection._build_qdrant_filter(expr.left)
-            right = QdrantCollection._build_qdrant_filter(expr.right)
+            left = QdrantVectorStoreCollection._build_qdrant_filter(expr.left)
+            right = QdrantVectorStoreCollection._build_qdrant_filter(expr.right)
             return models.Filter(must=[left, right])
         if isinstance(expr, FilterOr):
-            left = QdrantCollection._build_qdrant_filter(expr.left)
-            right = QdrantCollection._build_qdrant_filter(expr.right)
+            left = QdrantVectorStoreCollection._build_qdrant_filter(expr.left)
+            right = QdrantVectorStoreCollection._build_qdrant_filter(expr.right)
             return models.Filter(should=[left, right])
         message = f"Unsupported filter expression type: {type(expr)}"
         raise TypeError(message)
@@ -124,13 +124,19 @@ class QdrantCollection(VectorStoreCollection):
         if operator in ("=", "!="):
             negate = operator == "!="
             if isinstance(value, float):
-                return QdrantCollection._float_eq_filter(field, value, negate=negate)
+                return QdrantVectorStoreCollection._float_eq_filter(
+                    field, value, negate=negate
+                )
             if isinstance(value, datetime):
-                return QdrantCollection._datetime_eq_filter(field, value, negate=negate)
-            return QdrantCollection._match_filter(field, value, negate=negate)
-        if operator in QdrantCollection._RANGE_OPERATORS:
-            return QdrantCollection._range_filter(
-                field, value, QdrantCollection._RANGE_OPERATORS[operator]
+                return QdrantVectorStoreCollection._datetime_eq_filter(
+                    field, value, negate=negate
+                )
+            return QdrantVectorStoreCollection._match_filter(
+                field, value, negate=negate
+            )
+        if operator in QdrantVectorStoreCollection._RANGE_OPERATORS:
+            return QdrantVectorStoreCollection._range_filter(
+                field, value, QdrantVectorStoreCollection._RANGE_OPERATORS[operator]
             )
 
         message = f"Unsupported filter operator: {operator}"
@@ -204,7 +210,7 @@ class QdrantCollection(VectorStoreCollection):
                 ],
             )
 
-        range_value = QdrantCollection._to_range_value(value)
+        range_value = QdrantVectorStoreCollection._to_range_value(value)
         return models.Filter(
             must=[
                 models.FieldCondition(
@@ -229,7 +235,7 @@ class QdrantCollection(VectorStoreCollection):
         client: AsyncQdrantClient,
         collection_name: str,
         partition_key: str,
-        properties_schema: Mapping[str, type[PropertyValue]],
+        config: VectorStoreCollectionConfig,
         tracker: OperationTracker,
         shard_key: str | None = None,
     ) -> None:
@@ -238,8 +244,14 @@ class QdrantCollection(VectorStoreCollection):
         self._tracker = tracker
         self._collection_name = collection_name
         self._partition_key = partition_key
-        self._properties_schema = properties_schema
+        self._config = config
         self._shard_key = shard_key
+
+    @property
+    @override
+    def config(self) -> VectorStoreCollectionConfig:
+        """The configuration for this collection."""
+        return self._config
 
     def _build_payload(
         self,
@@ -275,7 +287,7 @@ class QdrantCollection(VectorStoreCollection):
         if payload is None:
             return None
 
-        properties_schema = self._properties_schema
+        properties_schema = self._config.properties_schema
         result: dict[str, PropertyValue] = {}
         for key, value in payload.items():
             if key == _PAYLOAD_PARTITION_KEY or value is None:
@@ -294,7 +306,7 @@ class QdrantCollection(VectorStoreCollection):
     ) -> None:
         """Upsert records into the collection."""
         async with self._tracker("upsert"):
-            properties_schema = self._properties_schema
+            properties_schema = self._config.properties_schema
             points: list[models.PointStruct] = []
             for record in records:
                 if record.vector is None:
@@ -345,8 +357,8 @@ class QdrantCollection(VectorStoreCollection):
             if property_filter:
                 if not validate_filter(property_filter):
                     raise ValueError("Filter contains an invalid property key")
-                property_qdrant_filter = QdrantCollection._build_qdrant_filter(
-                    property_filter
+                property_qdrant_filter = (
+                    QdrantVectorStoreCollection._build_qdrant_filter(property_filter)
                 )
                 qdrant_filter = models.Filter(
                     must=[partition_key_filter, property_qdrant_filter]
@@ -713,15 +725,15 @@ class QdrantVectorStore(VectorStore):
 
     def _build_collection_handle(
         self, namespace: str, name: str, config: VectorStoreCollectionConfig
-    ) -> QdrantCollection:
-        """Build a QdrantCollection handle."""
-        return QdrantCollection(
+    ) -> QdrantVectorStoreCollection:
+        """Build a QdrantVectorStoreCollection handle."""
+        return QdrantVectorStoreCollection(
             client=self._client,
             collection_name=QdrantVectorStore._build_native_collection_name(
                 namespace, config
             ),
             partition_key=name,
-            properties_schema=config.properties_schema,
+            config=config,
             tracker=self._tracker,
             shard_key=name if self._is_distributed else None,
         )
@@ -848,7 +860,7 @@ class QdrantVectorStore(VectorStore):
         namespace: str,
         name: str,
         config: VectorStoreCollectionConfig,
-    ) -> QdrantCollection:
+    ) -> QdrantVectorStoreCollection:
         """Open the collection if it exists, or create and return it."""
         if not validate_identifier(namespace):
             raise ValueError(
@@ -884,7 +896,7 @@ class QdrantVectorStore(VectorStore):
     @override
     async def open_collection(
         self, *, namespace: str, name: str
-    ) -> QdrantCollection | None:
+    ) -> QdrantVectorStoreCollection | None:
         """Get a collection handle from the vector store."""
         if not validate_identifier(namespace):
             raise ValueError(
