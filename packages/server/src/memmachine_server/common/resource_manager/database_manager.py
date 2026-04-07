@@ -530,8 +530,6 @@ class DatabaseManager:
             if validate:
                 await self.validate_qdrant_client(name, client)
 
-            self.qdrant_clients[name] = client
-
             from memmachine_server.common.vector_store.qdrant_vector_store import (
                 QdrantVectorStore,
                 QdrantVectorStoreParams,
@@ -542,8 +540,14 @@ class DatabaseManager:
                 is_distributed=conf.is_distributed,
                 registry_replication_factor=conf.registry_replication_factor,
             )
-            store = QdrantVectorStore(params)
-            await store.startup()
+            try:
+                store = QdrantVectorStore(params)
+                await store.startup()
+            except Exception:
+                await client.close()
+                raise
+
+            self.qdrant_clients[name] = client
             self.vector_stores[name] = store
 
             return client
