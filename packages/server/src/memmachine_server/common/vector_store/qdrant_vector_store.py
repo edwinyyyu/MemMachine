@@ -279,7 +279,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                     payload[key] = value
         return payload
 
-    async def _parse_payload(
+    def _parse_payload(
         self,
         payload: dict[str, Any] | None,
     ) -> dict[str, PropertyValue] | None:
@@ -381,6 +381,9 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                 for query_vector in query_vectors
             ]
 
+            if not requests:
+                return []
+
             batch_results = await self._client.query_batch_points(
                 collection_name=self._collection_name,
                 requests=requests,
@@ -396,7 +399,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
 
                     properties: dict[str, PropertyValue] | None = None
                     if return_properties and point.payload is not None:
-                        properties = await self._parse_payload(
+                        properties = self._parse_payload(
                             cast(dict[str, Any], point.payload),
                         )
 
@@ -457,7 +460,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
 
                 properties: dict[str, PropertyValue] | None = None
                 if return_properties and point.payload is not None:
-                    properties = await self._parse_payload(
+                    properties = self._parse_payload(
                         cast(dict[str, Any] | None, point.payload),
                     )
 
@@ -531,7 +534,7 @@ class QdrantVectorStoreParams(BaseModel):
         description=(
             "Whether the Qdrant cluster is running in distributed mode. "
             "If True, native collections use custom sharding "
-            "so each so each logical collection maps to a dedicated shard key. "
+            "so each logical collection maps to a dedicated shard key. "
             "This enables logical collection deletion via shard drop "
             "instead of filter-based deletion"
         ),
