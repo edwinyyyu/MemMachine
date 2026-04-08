@@ -1,6 +1,6 @@
 """Tests for common event memory data types, formatting, and unification."""
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -32,7 +32,7 @@ def _make_segment(
         event_uuid=event_uuid or uuid4(),
         index=index,
         offset=offset,
-        timestamp=timestamp or datetime(2026, 1, 15, 10, 30, tzinfo=UTC),
+        timestamp=timestamp or datetime(2026, 1, 15, 10, 30, tzinfo=timezone.utc),
         context=context,
         block=EventMemoryText(text=text),
         properties=properties or {},
@@ -42,7 +42,7 @@ def _make_segment(
 class TestSegmentRoundTrip:
     def test_serialize_deserialize(self):
         seg = _make_segment(
-            properties={"count": 42, "ts": datetime(2026, 1, 1, tzinfo=UTC)},
+            properties={"count": 42, "ts": datetime(2026, 1, 1, tzinfo=timezone.utc)},
         )
         seg2 = EventMemorySegment.model_validate(seg.model_dump(mode="json"))
         assert seg.uuid == seg2.uuid
@@ -90,7 +90,7 @@ class TestFormatSegmentContext:
     def test_timezone_formatting(self):
         tz = timezone(timedelta(hours=9))
         seg = _make_segment(
-            timestamp=datetime(2026, 1, 15, 10, 30, tzinfo=UTC),
+            timestamp=datetime(2026, 1, 15, 10, 30, tzinfo=timezone.utc),
             text="test",
         )
         opts = EventMemoryFormatOptions(timezone=tz, show_timezone_label=True)
@@ -133,7 +133,7 @@ class TestBuildContext:
             event_uuid=event_uuid,
             index=0,
             offset=0,
-            timestamp=datetime(2026, 1, 15, 10, 30, tzinfo=UTC),
+            timestamp=datetime(2026, 1, 15, 10, 30, tzinfo=timezone.utc),
             block=EventMemoryText(text="seed"),
             properties={},
         )
@@ -181,10 +181,10 @@ class TestBuildContext:
 
     def test_chronological_order(self):
         seg1 = _make_segment(
-            timestamp=datetime(2026, 1, 15, 10, 0, tzinfo=UTC), text="first"
+            timestamp=datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc), text="first"
         )
         seg2 = _make_segment(
-            timestamp=datetime(2026, 1, 15, 11, 0, tzinfo=UTC), text="second"
+            timestamp=datetime(2026, 1, 15, 11, 0, tzinfo=timezone.utc), text="second"
         )
         ctx = EventMemoryScoredSegmentContext(
             seed_segment_uuid=seg2.uuid,
@@ -226,11 +226,11 @@ class TestPropertiesRoundTrip:
             {"name": "test"},
             {"ratio": 3.14},
             {"flag": True},
-            {"ts": datetime(2026, 1, 15, tzinfo=UTC)},
+            {"ts": datetime(2026, 1, 15, tzinfo=timezone.utc)},
             {
                 "count": 42,
                 "name": "test",
-                "ts": datetime(2026, 1, 15, tzinfo=UTC),
+                "ts": datetime(2026, 1, 15, tzinfo=timezone.utc),
             },
         ],
     )
