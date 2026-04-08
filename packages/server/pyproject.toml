@@ -54,9 +54,6 @@ classifiers = [
 license = "Apache-2.0"
 
 [project.optional-dependencies]
-faiss = [
-    "faiss-cpu>=1.13.0",
-]
 gpu = [
     "sentence-transformers>=5.1.0",
 ]
