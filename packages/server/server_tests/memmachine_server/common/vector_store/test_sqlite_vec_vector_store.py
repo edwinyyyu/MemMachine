@@ -17,14 +17,14 @@ from memmachine_server.common.filter.filter_parser import (
     Or,
 )
 from memmachine_server.common.vector_store.data_types import (
-    CollectionAlreadyExistsError,
-    CollectionConfig,
-    CollectionConfigMismatchError,
     Record,
+    VectorStoreCollectionAlreadyExistsError,
+    VectorStoreCollectionConfig,
+    VectorStoreCollectionConfigMismatchError,
 )
 from memmachine_server.common.vector_store.sqlite_vec_vector_store import (
-    SQLiteVecCollection,
     SQLiteVecVectorStore,
+    SQLiteVecVectorStoreCollection,
     SQLiteVecVectorStoreParams,
 )
 
@@ -72,7 +72,7 @@ async def collection(store):
     await store.create_collection(
         namespace=NAMESPACE,
         name=NAME,
-        config=CollectionConfig(
+        config=VectorStoreCollectionConfig(
             vector_dimensions=VECTOR_DIM,
             similarity_metric=SimilarityMetric.COSINE,
             properties_schema={
@@ -99,24 +99,24 @@ class TestCollectionLifecycle:
         await store.create_collection(
             namespace=NAMESPACE,
             name="lifecycle",
-            config=CollectionConfig(vector_dimensions=VECTOR_DIM),
+            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
         )
         coll = await store.open_collection(namespace=NAMESPACE, name="lifecycle")
-        assert isinstance(coll, SQLiteVecCollection)
+        assert isinstance(coll, SQLiteVecVectorStoreCollection)
         await store.delete_collection(namespace=NAMESPACE, name="lifecycle")
 
     @pytest.mark.asyncio
     async def test_open_returns_correct_type(self, store, collection):
         coll = await store.open_collection(namespace=NAMESPACE, name=NAME)
-        assert isinstance(coll, SQLiteVecCollection)
+        assert isinstance(coll, SQLiteVecVectorStoreCollection)
 
     @pytest.mark.asyncio
     async def test_duplicate_name_raises(self, store, collection):
-        with pytest.raises(CollectionAlreadyExistsError):
+        with pytest.raises(VectorStoreCollectionAlreadyExistsError):
             await store.create_collection(
                 namespace=NAMESPACE,
                 name=NAME,
-                config=CollectionConfig(
+                config=VectorStoreCollectionConfig(
                     vector_dimensions=VECTOR_DIM,
                     similarity_metric=SimilarityMetric.COSINE,
                     properties_schema={
@@ -135,23 +135,23 @@ class TestCollectionLifecycle:
 
     @pytest.mark.asyncio
     async def test_open_or_create_creates_when_missing(self, store):
-        config = CollectionConfig(vector_dimensions=VECTOR_DIM)
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
         coll = await store.open_or_create_collection(
             namespace=NAMESPACE, name="new", config=config
         )
-        assert isinstance(coll, SQLiteVecCollection)
+        assert isinstance(coll, SQLiteVecVectorStoreCollection)
         await store.delete_collection(namespace=NAMESPACE, name="new")
 
     @pytest.mark.asyncio
     async def test_open_or_create_opens_when_exists(self, store):
-        config = CollectionConfig(vector_dimensions=VECTOR_DIM)
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
         await store.create_collection(
             namespace=NAMESPACE, name="existing", config=config
         )
         coll = await store.open_or_create_collection(
             namespace=NAMESPACE, name="existing", config=config
         )
-        assert isinstance(coll, SQLiteVecCollection)
+        assert isinstance(coll, SQLiteVecVectorStoreCollection)
         await store.delete_collection(namespace=NAMESPACE, name="existing")
 
     @pytest.mark.asyncio
@@ -159,13 +159,13 @@ class TestCollectionLifecycle:
         await store.create_collection(
             namespace=NAMESPACE,
             name="mismatch",
-            config=CollectionConfig(vector_dimensions=VECTOR_DIM),
+            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
         )
-        with pytest.raises(CollectionConfigMismatchError):
+        with pytest.raises(VectorStoreCollectionConfigMismatchError):
             await store.open_or_create_collection(
                 namespace=NAMESPACE,
                 name="mismatch",
-                config=CollectionConfig(vector_dimensions=VECTOR_DIM + 1),
+                config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM + 1),
             )
         await store.delete_collection(namespace=NAMESPACE, name="mismatch")
 
@@ -179,7 +179,7 @@ class TestCollectionLifecycle:
             await store.create_collection(
                 namespace=NAMESPACE,
                 name="bad_metric",
-                config=CollectionConfig(
+                config=VectorStoreCollectionConfig(
                     vector_dimensions=VECTOR_DIM,
                     similarity_metric=SimilarityMetric.DOT,
                 ),
@@ -191,7 +191,7 @@ class TestCollectionLifecycle:
             await store.create_collection(
                 namespace="INVALID",
                 name="test",
-                config=CollectionConfig(vector_dimensions=VECTOR_DIM),
+                config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
             )
 
     @pytest.mark.asyncio
@@ -200,7 +200,7 @@ class TestCollectionLifecycle:
             await store.create_collection(
                 namespace="valid",
                 name="INVALID",
-                config=CollectionConfig(vector_dimensions=VECTOR_DIM),
+                config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
             )
 
 
@@ -708,7 +708,7 @@ class TestDelete:
 class TestPartitionIsolation:
     @pytest.mark.asyncio
     async def test_query_only_returns_own_collection(self, store):
-        config = CollectionConfig(vector_dimensions=VECTOR_DIM)
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
         await store.create_collection(
             namespace=NAMESPACE, name="tenant_a", config=config
         )
@@ -740,7 +740,7 @@ class TestPartitionIsolation:
 
     @pytest.mark.asyncio
     async def test_get_only_returns_own_collection(self, store):
-        config = CollectionConfig(vector_dimensions=VECTOR_DIM)
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
         await store.create_collection(
             namespace=NAMESPACE, name="tenant_a", config=config
         )
@@ -768,7 +768,7 @@ class TestPartitionIsolation:
 
     @pytest.mark.asyncio
     async def test_delete_only_affects_own_collection(self, store):
-        config = CollectionConfig(vector_dimensions=VECTOR_DIM)
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
         await store.create_collection(
             namespace=NAMESPACE, name="tenant_a", config=config
         )
@@ -798,7 +798,7 @@ class TestPartitionIsolation:
 
     @pytest.mark.asyncio
     async def test_namespace_isolation(self, store):
-        config = CollectionConfig(vector_dimensions=VECTOR_DIM)
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
         await store.create_collection(
             namespace="namespace_a", name="coll", config=config
         )
@@ -826,7 +826,7 @@ class TestPartitionIsolation:
     @pytest.mark.asyncio
     async def test_delete_collection_does_not_affect_sibling(self, store):
         """Deleting one collection doesn't break a sibling sharing tables."""
-        config = CollectionConfig(vector_dimensions=VECTOR_DIM)
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
         coll_a = await store.open_or_create_collection(
             namespace=NAMESPACE, name="sibling_a", config=config
         )
@@ -855,7 +855,7 @@ class TestPartitionIsolation:
 class TestEuclideanMetric:
     @pytest.mark.asyncio
     async def test_euclidean_ordering(self, store):
-        config = CollectionConfig(
+        config = VectorStoreCollectionConfig(
             vector_dimensions=2,
             similarity_metric=SimilarityMetric.EUCLIDEAN,
         )
@@ -878,7 +878,7 @@ class TestEuclideanMetric:
 class TestNoProperties:
     @pytest.mark.asyncio
     async def test_collection_without_properties(self, store):
-        config = CollectionConfig(vector_dimensions=2)
+        config = VectorStoreCollectionConfig(vector_dimensions=2)
         coll = await store.open_or_create_collection(
             namespace=NAMESPACE, name="no_props", config=config
         )

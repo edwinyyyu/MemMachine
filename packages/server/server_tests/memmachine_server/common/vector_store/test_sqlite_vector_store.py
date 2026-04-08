@@ -1,4 +1,4 @@
-"""Tests for SQLiteUSearchVectorStore."""
+"""Tests for SQLiteVectorStore."""
 
 import math
 from datetime import UTC, datetime, timedelta, timezone
@@ -17,15 +17,18 @@ from memmachine_server.common.filter.filter_parser import (
     Or,
 )
 from memmachine_server.common.vector_store.data_types import (
-    CollectionAlreadyExistsError,
-    CollectionConfig,
-    CollectionConfigMismatchError,
     Record,
+    VectorStoreCollectionAlreadyExistsError,
+    VectorStoreCollectionConfig,
+    VectorStoreCollectionConfigMismatchError,
 )
-from memmachine_server.common.vector_store.sqlite_usearch_vector_store import (
-    SQLiteUSearchCollection,
-    SQLiteUSearchVectorStore,
-    SQLiteUSearchVectorStoreParams,
+from memmachine_server.common.vector_store.sqlite_vector_store import (
+    SQLiteVectorStore,
+    SQLiteVectorStoreCollection,
+    SQLiteVectorStoreParams,
+)
+from memmachine_server.common.vector_store.vector_search_engine.usearch_engine import (
+    USearchVectorSearchEngine,
 )
 
 NAMESPACE = "test_namespace"
@@ -54,8 +57,13 @@ def _make_record(
 @pytest_asyncio.fixture
 async def store():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    params = SQLiteUSearchVectorStoreParams(engine=engine)
-    vector_store = SQLiteUSearchVectorStore(params)
+    params = SQLiteVectorStoreParams(
+        engine=engine,
+        engine_factory=lambda ndim, metric: USearchVectorSearchEngine(
+            ndim=ndim, metric=metric
+        ),
+    )
+    vector_store = SQLiteVectorStore(params)
     await vector_store.startup()
     yield vector_store
     await vector_store.shutdown()
@@ -67,7 +75,7 @@ async def collection(store):
     await store.create_collection(
         namespace=NAMESPACE,
         name=NAME,
-        config=CollectionConfig(
+        config=VectorStoreCollectionConfig(
             vector_dimensions=VECTOR_DIM,
             similarity_metric=SimilarityMetric.COSINE,
             properties_schema={
@@ -94,24 +102,24 @@ class TestCollectionLifecycle:
         await store.create_collection(
             namespace=NAMESPACE,
             name="lifecycle",
-            config=CollectionConfig(vector_dimensions=VECTOR_DIM),
+            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
         )
         coll = await store.open_collection(namespace=NAMESPACE, name="lifecycle")
-        assert isinstance(coll, SQLiteUSearchCollection)
+        assert isinstance(coll, SQLiteVectorStoreCollection)
         await store.delete_collection(namespace=NAMESPACE, name="lifecycle")
 
     @pytest.mark.asyncio
     async def test_open_returns_correct_type(self, store, collection):
         coll = await store.open_collection(namespace=NAMESPACE, name=NAME)
-        assert isinstance(coll, SQLiteUSearchCollection)
+        assert isinstance(coll, SQLiteVectorStoreCollection)
 
     @pytest.mark.asyncio
     async def test_duplicate_name_raises(self, store, collection):
-        with pytest.raises(CollectionAlreadyExistsError):
+        with pytest.raises(VectorStoreCollectionAlreadyExistsError):
             await store.create_collection(
                 namespace=NAMESPACE,
                 name=NAME,
-                config=CollectionConfig(
+                config=VectorStoreCollectionConfig(
                     vector_dimensions=VECTOR_DIM,
                     similarity_metric=SimilarityMetric.COSINE,
                     properties_schema={
@@ -130,23 +138,23 @@ class TestCollectionLifecycle:
 
     @pytest.mark.asyncio
     async def test_open_or_create_creates_when_missing(self, store):
-        config = CollectionConfig(vector_dimensions=VECTOR_DIM)
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
         coll = await store.open_or_create_collection(
             namespace=NAMESPACE, name="new", config=config
         )
-        assert isinstance(coll, SQLiteUSearchCollection)
+        assert isinstance(coll, SQLiteVectorStoreCollection)
         await store.delete_collection(namespace=NAMESPACE, name="new")
 
     @pytest.mark.asyncio
     async def test_open_or_create_opens_when_exists(self, store):
-        config = CollectionConfig(vector_dimensions=VECTOR_DIM)
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
         await store.create_collection(
             namespace=NAMESPACE, name="existing", config=config
         )
         coll = await store.open_or_create_collection(
             namespace=NAMESPACE, name="existing", config=config
         )
-        assert isinstance(coll, SQLiteUSearchCollection)
+        assert isinstance(coll, SQLiteVectorStoreCollection)
         await store.delete_collection(namespace=NAMESPACE, name="existing")
 
     @pytest.mark.asyncio
@@ -154,13 +162,13 @@ class TestCollectionLifecycle:
         await store.create_collection(
             namespace=NAMESPACE,
             name="mismatch",
-            config=CollectionConfig(vector_dimensions=VECTOR_DIM),
+            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
         )
-        with pytest.raises(CollectionConfigMismatchError):
+        with pytest.raises(VectorStoreCollectionConfigMismatchError):
             await store.open_or_create_collection(
                 namespace=NAMESPACE,
                 name="mismatch",
-                config=CollectionConfig(vector_dimensions=VECTOR_DIM + 1),
+                config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM + 1),
             )
         await store.delete_collection(namespace=NAMESPACE, name="mismatch")
 
@@ -170,11 +178,11 @@ class TestCollectionLifecycle:
 
     @pytest.mark.asyncio
     async def test_unsupported_metric_raises(self, store):
-        with pytest.raises(ValueError, match="Unsupported"):
+        with pytest.raises(ValueError, match="does not support"):
             await store.create_collection(
                 namespace=NAMESPACE,
                 name="bad_metric",
-                config=CollectionConfig(
+                config=VectorStoreCollectionConfig(
                     vector_dimensions=VECTOR_DIM,
                     similarity_metric=SimilarityMetric.MANHATTAN,
                 ),
@@ -186,7 +194,7 @@ class TestCollectionLifecycle:
             await store.create_collection(
                 namespace="INVALID",
                 name="test",
-                config=CollectionConfig(vector_dimensions=VECTOR_DIM),
+                config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
             )
 
     @pytest.mark.asyncio
@@ -195,7 +203,7 @@ class TestCollectionLifecycle:
             await store.create_collection(
                 namespace="valid",
                 name="INVALID",
-                config=CollectionConfig(vector_dimensions=VECTOR_DIM),
+                config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
             )
 
 
@@ -703,7 +711,7 @@ class TestDelete:
 class TestPartitionIsolation:
     @pytest.mark.asyncio
     async def test_query_only_returns_own_collection(self, store):
-        config = CollectionConfig(vector_dimensions=VECTOR_DIM)
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
         await store.create_collection(
             namespace=NAMESPACE, name="tenant_a", config=config
         )
@@ -735,7 +743,7 @@ class TestPartitionIsolation:
 
     @pytest.mark.asyncio
     async def test_get_only_returns_own_collection(self, store):
-        config = CollectionConfig(vector_dimensions=VECTOR_DIM)
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
         await store.create_collection(
             namespace=NAMESPACE, name="tenant_a", config=config
         )
@@ -763,7 +771,7 @@ class TestPartitionIsolation:
 
     @pytest.mark.asyncio
     async def test_delete_only_affects_own_collection(self, store):
-        config = CollectionConfig(vector_dimensions=VECTOR_DIM)
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
         await store.create_collection(
             namespace=NAMESPACE, name="tenant_a", config=config
         )
@@ -793,7 +801,7 @@ class TestPartitionIsolation:
 
     @pytest.mark.asyncio
     async def test_namespace_isolation(self, store):
-        config = CollectionConfig(vector_dimensions=VECTOR_DIM)
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
         await store.create_collection(
             namespace="namespace_a", name="coll", config=config
         )
@@ -821,7 +829,7 @@ class TestPartitionIsolation:
     @pytest.mark.asyncio
     async def test_delete_collection_does_not_affect_sibling(self, store):
         """Deleting one collection doesn't break a sibling sharing tables."""
-        config = CollectionConfig(vector_dimensions=VECTOR_DIM)
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
         coll_a = await store.open_or_create_collection(
             namespace=NAMESPACE, name="sibling_a", config=config
         )
@@ -850,7 +858,7 @@ class TestPartitionIsolation:
 class TestEuclideanMetric:
     @pytest.mark.asyncio
     async def test_euclidean_ordering(self, store):
-        config = CollectionConfig(
+        config = VectorStoreCollectionConfig(
             vector_dimensions=2,
             similarity_metric=SimilarityMetric.EUCLIDEAN,
         )
@@ -862,7 +870,8 @@ class TestEuclideanMetric:
         await coll.upsert(records=[r1, r2])
 
         results = await coll.query(query_vectors=[[0.0, 0.0]], limit=2)
-        assert results[0].matches[0].score > results[0].matches[1].score
+        # Euclidean: lower distance = better match; best match is first
+        assert results[0].matches[0].score < results[0].matches[1].score
 
         await store.delete_collection(namespace=NAMESPACE, name="euclidean")
 
@@ -873,7 +882,7 @@ class TestEuclideanMetric:
 class TestNoProperties:
     @pytest.mark.asyncio
     async def test_collection_without_properties(self, store):
-        config = CollectionConfig(vector_dimensions=2)
+        config = VectorStoreCollectionConfig(vector_dimensions=2)
         coll = await store.open_or_create_collection(
             namespace=NAMESPACE, name="no_props", config=config
         )
@@ -893,7 +902,7 @@ class TestDotProductMetric:
     @pytest.mark.asyncio
     async def test_dot_product_supported(self, store):
         """Dot product is supported by USearch but not sqlite-vec."""
-        config = CollectionConfig(
+        config = VectorStoreCollectionConfig(
             vector_dimensions=VECTOR_DIM,
             similarity_metric=SimilarityMetric.DOT,
         )

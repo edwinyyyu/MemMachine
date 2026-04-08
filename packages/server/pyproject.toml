@@ -33,6 +33,7 @@ dependencies = [
     "usearch>=2.23.0",
     "uvicorn>=0.35.0",
     "greenlet>=3.2.4",
+    "hnswlib>=0.8.0",
     "tzdata>=2024.1 ; sys_platform == 'win32'",
     "psutil>=7.1.0",
 ]
@@ -53,6 +54,9 @@ classifiers = [
 license = "Apache-2.0"
 
 [project.optional-dependencies]
+faiss = [
+    "faiss-cpu>=1.13.0",
+]
 gpu = [
     "sentence-transformers>=5.1.0",
 ]
