@@ -15,7 +15,7 @@ Datetimes additionally include a timezone offset::
 """
 
 from collections.abc import Mapping
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Final
 
 PropertyValue = bool | int | float | str | datetime
@@ -46,7 +46,7 @@ _EXPECTED_DATETIME_KEYS = frozenset(
 def _ensure_tz_aware(dt: datetime) -> datetime:
     """Return an aware datetime; treat naive datetimes as UTC."""
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=UTC)
+        return dt.replace(tzinfo=timezone.utc)
     return dt
 
 
@@ -70,7 +70,7 @@ def encode_properties(
         if isinstance(value, datetime):
             aware_value = _ensure_tz_aware(value)
             encoded[key] = {
-                PROPERTY_VALUE_KEY: aware_value.astimezone(UTC).isoformat(),
+                PROPERTY_VALUE_KEY: aware_value.astimezone(timezone.utc).isoformat(),
                 PROPERTY_TYPE_KEY: type_name,
                 PROPERTY_TIMEZONE_OFFSET_KEY: _utc_offset_seconds(value),
             }
