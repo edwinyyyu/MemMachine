@@ -9,7 +9,8 @@ import type {
   SearchMemoriesOptions,
   SearchMemoriesResult,
   AddMemoryResult,
-  ListMemoriesOptions
+  ListMemoriesOptions,
+  ListMemoriesResult
 } from './memmachine-memory.types'
 
 /**
@@ -102,7 +103,7 @@ export class MemMachineMemory {
    * @returns A promise that resolves to the search results.
    * @throws {@link MemMachineAPIError} if the API request fails.
    */
-  list(options?: ListMemoriesOptions): Promise<SearchMemoriesResult> {
+  list(options?: ListMemoriesOptions): Promise<ListMemoriesResult> {
     return this._listMemories(options)
   }
 
@@ -231,7 +232,7 @@ export class MemMachineMemory {
    * @returns A promise that resolves to the search results.
    * @throws {@link MemMachineAPIError} if the API request fails.
    */
-  private async _listMemories(options?: ListMemoriesOptions): Promise<SearchMemoriesResult> {
+  private async _listMemories(options?: ListMemoriesOptions): Promise<ListMemoriesResult> {
     const { page_size = 10, page_num = 0, filter = '', type = 'episodic' } = options ?? {}
 
     const payload = {

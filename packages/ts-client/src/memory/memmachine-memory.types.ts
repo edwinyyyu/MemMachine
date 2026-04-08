@@ -154,6 +154,24 @@ export interface SearchMemoriesResult {
 }
 
 /**
+ * Represents the result of listing memories in MemMachine.
+ *
+ * Unlike {@link SearchMemoriesResult}, list results contain flat arrays
+ * of episodes and semantic memories rather than a nested long-term /
+ * short-term structure.
+ *
+ * @property status - Status code of the list operation result.
+ * @property content - Content of the list result, including episodic and semantic memories.
+ */
+export interface ListMemoriesResult {
+  status: number
+  content: {
+    episodic_memory?: EpisodicMemory[]
+    semantic_memory?: SemanticMemory[]
+  }
+}
+
+/**
  * Options for listing memories in MemMachine.
  *
  * @property page_size - Number of memories per page (optional).
