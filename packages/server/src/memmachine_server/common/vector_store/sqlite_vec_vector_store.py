@@ -40,15 +40,15 @@ from memmachine_server.common.properties_json import (
 )
 
 from .data_types import (
-    CollectionAlreadyExistsError,
-    CollectionConfig,
-    CollectionConfigMismatchError,
     QueryMatch,
     QueryResult,
     Record,
+    VectorStoreCollectionAlreadyExistsError,
+    VectorStoreCollectionConfig,
+    VectorStoreCollectionConfigMismatchError,
 )
 from .utils import validate_filter, validate_identifier
-from .vector_store import Collection, VectorStore
+from .vector_store import VectorStore, VectorStoreCollection
 
 
 class BaseSQLiteVecVectorStore(DeclarativeBase):
@@ -65,7 +65,7 @@ class _CollectionRow(BaseSQLiteVecVectorStore):
     )
 
 
-class SQLiteVecCollection(Collection):
+class SQLiteVecVectorStoreCollection(VectorStoreCollection):
     """A logical collection backed by SQLite + sqlite-vec.
 
     Each logical collection has its own records table and vec0 virtual table,
@@ -83,7 +83,7 @@ class SQLiteVecCollection(Collection):
         create_session: async_sessionmaker[AsyncSession],
         write_lock: asyncio.Lock,
         name: str,
-        config: CollectionConfig,
+        config: VectorStoreCollectionConfig,
         records_table: sa.Table,
         vec_table_name: str,
     ) -> None:
@@ -96,6 +96,11 @@ class SQLiteVecCollection(Collection):
         self._vec_table_name = vec_table_name
         self._metric = config.similarity_metric
         self._distance_function = self._DISTANCE_FUNCTIONS[config.similarity_metric]
+
+    @property
+    @override
+    def config(self) -> VectorStoreCollectionConfig:
+        return self._config
 
     @staticmethod
     def _serialize_vector(vector: Sequence[float]) -> bytes:
@@ -709,7 +714,7 @@ class SQLiteVecVectorStore(VectorStore):
 
     async def _get_stored_config(
         self, session: AsyncSession, namespace: str, name: str
-    ) -> CollectionConfig | None:
+    ) -> VectorStoreCollectionConfig | None:
         row = (
             await session.execute(
                 select(_CollectionRow.config_json).where(
@@ -720,14 +725,14 @@ class SQLiteVecVectorStore(VectorStore):
         ).scalar_one_or_none()
         if row is None:
             return None
-        return CollectionConfig.model_validate(row)
+        return VectorStoreCollectionConfig.model_validate(row)
 
     async def _ensure_native_tables(
         self,
         session: AsyncSession,
         namespace: str,
         name: str,
-        config: CollectionConfig,
+        config: VectorStoreCollectionConfig,
     ) -> tuple[sa.Table, str]:
         """Idempotently create per-collection native tables."""
         collection_prefix = self._collection_prefix(namespace, name)
@@ -770,11 +775,11 @@ class SQLiteVecVectorStore(VectorStore):
     def _build_collection_handle(
         self,
         name: str,
-        config: CollectionConfig,
+        config: VectorStoreCollectionConfig,
         records_table: sa.Table,
         vec_table_name: str,
-    ) -> SQLiteVecCollection:
-        return SQLiteVecCollection(
+    ) -> SQLiteVecVectorStoreCollection:
+        return SQLiteVecVectorStoreCollection(
             create_session=self._create_session,
             write_lock=self._write_lock,
             name=name,
@@ -789,7 +794,7 @@ class SQLiteVecVectorStore(VectorStore):
         *,
         namespace: str,
         name: str,
-        config: CollectionConfig,
+        config: VectorStoreCollectionConfig,
     ) -> None:
         if not validate_identifier(namespace) or not validate_identifier(name):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
@@ -804,7 +809,7 @@ class SQLiteVecVectorStore(VectorStore):
         ):
             existing = await self._get_stored_config(session, namespace, name)
             if existing is not None:
-                raise CollectionAlreadyExistsError(namespace, name)
+                raise VectorStoreCollectionAlreadyExistsError(namespace, name)
 
             await self._ensure_native_tables(session, namespace, name, config)
             session.add(
@@ -821,8 +826,8 @@ class SQLiteVecVectorStore(VectorStore):
         *,
         namespace: str,
         name: str,
-        config: CollectionConfig,
-    ) -> Collection:
+        config: VectorStoreCollectionConfig,
+    ) -> VectorStoreCollection:
         if not validate_identifier(namespace) or not validate_identifier(name):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
         self._validate_metric(config.similarity_metric)
@@ -837,7 +842,7 @@ class SQLiteVecVectorStore(VectorStore):
             existing = await self._get_stored_config(session, namespace, name)
             if existing is not None:
                 if existing != config:
-                    raise CollectionConfigMismatchError(
+                    raise VectorStoreCollectionConfigMismatchError(
                         namespace, name, existing, config
                     )
                 records_table, vec_table_name = await self._ensure_native_tables(
@@ -863,7 +868,9 @@ class SQLiteVecVectorStore(VectorStore):
         )
 
     @override
-    async def open_collection(self, *, namespace: str, name: str) -> Collection | None:
+    async def open_collection(
+        self, *, namespace: str, name: str
+    ) -> VectorStoreCollection | None:
         if not validate_identifier(namespace) or not validate_identifier(name):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
         async with self._create_session() as session:
@@ -879,7 +886,7 @@ class SQLiteVecVectorStore(VectorStore):
         )
 
     @override
-    async def close_collection(self, *, collection: Collection) -> None:
+    async def close_collection(self, *, collection: VectorStoreCollection) -> None:
         pass  # No resources to release
 
     @override
