@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 from memmachine_server.common import rw_locks
 from memmachine_server.semantic_memory.config_store.config_store import (
     SemanticConfigStorage,
@@ -26,8 +28,11 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
         """Initialize the cache with a wrapped storage backend."""
         self._wrapped = wrapped
 
-        # Per-set_id locks
-        self._setid_locks = rw_locks.AsyncRWLockPool()
+        # Per-set_id locks (global lock gates all_write_locks barrier)
+        self._setid_locks: defaultdict[SetIdT, rw_locks.AsyncRWLock] = defaultdict(
+            rw_locks.AsyncRWLock
+        )
+        self._setid_global_lock = rw_locks.AsyncRWLock()
 
         # Shared lock for non-set_id caches
         self._other_lock = rw_locks.AsyncRWLock()
@@ -62,16 +67,25 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
             llm_name=llm_name,
         )
 
-        async with self._setid_locks.write_lock(set_id):
+        async with (
+            self._setid_global_lock.read_lock(),
+            self._setid_locks[set_id].write_lock(),
+        ):
             self._setid_config_cache.pop(set_id, None)
 
     async def get_setid_config(self, *, set_id: SetIdT) -> SemanticConfigStorage.Config:
-        async with self._setid_locks.read_lock(set_id):
+        async with (
+            self._setid_global_lock.read_lock(),
+            self._setid_locks[set_id].read_lock(),
+        ):
             cached = self._setid_config_cache.get(set_id)
             if cached is not None:
                 return cached
 
-        async with self._setid_locks.write_lock(set_id):
+        async with (
+            self._setid_global_lock.read_lock(),
+            self._setid_locks[set_id].write_lock(),
+        ):
             cached = self._setid_config_cache.get(set_id)
             if cached is not None:
                 return cached
@@ -83,7 +97,10 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
     async def register_set_id_set_type(
         self, *, set_id: SetIdT, set_type_id: str
     ) -> None:
-        async with self._setid_locks.write_lock(set_id):
+        async with (
+            self._setid_global_lock.read_lock(),
+            self._setid_locks[set_id].write_lock(),
+        ):
             if set_id in self._registered_set_id_set_types:
                 return
 
@@ -158,7 +175,7 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
     async def delete_category(self, *, category_id: CategoryIdT) -> None:
         await self._wrapped.delete_category(category_id=category_id)
 
-        async with self._setid_locks.all_write_locks():
+        async with self._setid_global_lock.write_lock():
             self._setid_config_cache.clear()
 
         async with self._other_lock.write_lock():
@@ -209,7 +226,7 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
         async with self._other_lock.write_lock():
             self._set_type_categories_cache.pop(set_type_id, None)
 
-        async with self._setid_locks.all_write_locks():
+        async with self._setid_global_lock.write_lock():
             self._setid_config_cache.clear()
 
         return category_id
@@ -276,7 +293,7 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
     async def delete_tag(self, *, tag_id: str) -> None:
         await self._wrapped.delete_tag(tag_id=tag_id)
 
-        async with self._setid_locks.all_write_locks():
+        async with self._setid_global_lock.write_lock():
             self._setid_config_cache.clear()
 
         async with self._other_lock.write_lock():
@@ -323,12 +340,12 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
             self._set_type_categories_cache.pop(set_type_id, None)
             self._set_type_ids_cache.clear()
 
-        async with self._setid_locks.all_write_locks():
+        async with self._setid_global_lock.write_lock():
             self._setid_config_cache.clear()
             self._registered_set_id_set_types.clear()
 
     async def _clear_all_caches(self) -> None:
-        async with self._setid_locks.all_write_locks():
+        async with self._setid_global_lock.write_lock():
             self._setid_config_cache.clear()
             self._registered_set_id_set_types.clear()
 
@@ -339,11 +356,14 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
             self._set_type_ids_cache.clear()
 
     async def _invalidate_set_id_config(self, set_id: SetIdT) -> None:
-        async with self._setid_locks.write_lock(set_id):
+        async with (
+            self._setid_global_lock.read_lock(),
+            self._setid_locks[set_id].write_lock(),
+        ):
             self._setid_config_cache.pop(set_id, None)
 
     async def _invalidate_tags_and_setid_configs(self) -> None:
-        async with self._setid_locks.all_write_locks():
+        async with self._setid_global_lock.write_lock():
             self._setid_config_cache.clear()
 
         async with self._other_lock.write_lock():

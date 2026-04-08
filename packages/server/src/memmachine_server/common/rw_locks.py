@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
@@ -88,72 +88,3 @@ class AsyncRWLock:
         """Release a write lock."""
         self._writer_lock.release()
         self._read_gate.release()
-
-
-class AsyncRWLockPool:
-    """
-    Manages a fixed-size pool of AsyncRWLocks using hash-based striping.
-
-    This implementation eliminates global lock contention and the need for
-    background cleanup tasks. Multiple keys may map to the same lock (collision),
-    but with a large enough pool size, this is rare.
-    """
-
-    def __init__(self, pool_size: int = 128) -> None:
-        """
-        Initialize the manager with a fixed number of locks.
-
-        Args:
-            pool_size: The number of underlying locks. Higher values reduce
-                       the chance of collisions between different keys.
-
-        """
-        if pool_size <= 0:
-            raise ValueError("pool_size must be a positive integer")
-
-        self._pool_size = pool_size
-        # Pre-allocate all locks
-        self._locks = [AsyncRWLock() for _ in range(pool_size)]
-
-    def _get_lock(self, key: str) -> AsyncRWLock:
-        """Calculate the hash-based index and return the associated lock."""
-        # hash() is stable within a single process run
-        index = hash(key) % self._pool_size
-        return self._locks[index]
-
-    @asynccontextmanager
-    async def read_lock(self, key: str) -> AsyncIterator[None]:
-        """Acquire the read lock for the bucket associated with the key."""
-        lock = self._get_lock(key)
-        async with lock.read_lock():
-            yield
-
-    @asynccontextmanager
-    async def write_lock(self, key: str) -> AsyncIterator[None]:
-        """Acquire the write lock for the bucket associated with the key."""
-        lock = self._get_lock(key)
-        async with lock.write_lock():
-            yield
-
-    @asynccontextmanager
-    async def all_write_locks(self) -> AsyncIterator[None]:
-        """Acquire write locks for all buckets.
-
-        This is useful for bulk operations like clearing a cache.
-        """
-        for lock in self._locks:
-            await lock.acquire_write()
-        try:
-            yield
-        finally:
-            for lock in reversed(self._locks):
-                lock.release_write()
-
-    async def close(self) -> None:
-        """
-        Clear the pool.
-
-        Since there's no background task,
-        this just helps with garbage collection.
-        """
-        self._locks.clear()
