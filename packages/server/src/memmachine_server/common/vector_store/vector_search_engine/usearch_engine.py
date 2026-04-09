@@ -1,6 +1,7 @@
 """USearch HNSW implementation of VectorSearchEngine."""
 
 import asyncio
+import math
 from collections.abc import Container, Iterable, Mapping, Sequence
 from typing import ClassVar, override
 
@@ -19,7 +20,7 @@ class USearchVectorSearchEngine(VectorSearchEngine):
     - Cosine: cosine similarity (USearch returns ``1 - cos_sim``,
       converted back to ``cos_sim``).
     - Dot: inner product (USearch returns ``1 - dot``, converted back).
-    - Euclidean: L2 squared distance (passed through as-is).
+    - Euclidean: Euclidean distance [0, inf) (converted from L2 squared).
     """
 
     _METRIC_MAP: ClassVar[dict[SimilarityMetric, MetricKind]] = {
@@ -42,9 +43,13 @@ class USearchVectorSearchEngine(VectorSearchEngine):
 
     def _distance_to_score(self, distance: float) -> float:
         """Convert a USearch distance to a pure metric score."""
-        if self._metric in (SimilarityMetric.COSINE, SimilarityMetric.DOT):
-            return 1.0 - distance
-        return distance
+        match self._metric:
+            case SimilarityMetric.COSINE | SimilarityMetric.DOT:
+                return 1.0 - distance
+            case SimilarityMetric.EUCLIDEAN:
+                return math.sqrt(max(0.0, distance))
+            case _:
+                raise NotImplementedError(self._metric)
 
     def _sync_add(self, vectors: Mapping[int, Sequence[float]]) -> None:
         keys_array = np.array(list(vectors.keys()), dtype=np.int64)
@@ -58,6 +63,8 @@ class USearchVectorSearchEngine(VectorSearchEngine):
         async with self._lock:
             await asyncio.to_thread(self._sync_add, vectors)
 
+    _OVERFETCH_BASE: ClassVar[int] = 4
+
     def _sync_search_one(
         self,
         vector: Sequence[float],
@@ -67,20 +74,34 @@ class USearchVectorSearchEngine(VectorSearchEngine):
         query = np.array(vector, dtype=np.float32)
         if allowed_keys is None:
             results = self._index.search(query, k)
-        else:
-            # USearch has no native filter — full scan + post-filter.
-            results = self._index.search(query, self._index.size)
-        matches: list[SearchMatch] = []
-        for key, dist in zip(results.keys, results.distances, strict=True):
-            int_key = int(key)
-            if allowed_keys is not None and int_key not in allowed_keys:
-                continue
-            matches.append(
-                SearchMatch(key=int_key, score=self._distance_to_score(float(dist)))
+            return SearchResult(
+                matches=[
+                    SearchMatch(
+                        key=int(key), score=self._distance_to_score(float(dist))
+                    )
+                    for key, dist in zip(results.keys, results.distances, strict=True)
+                ]
             )
-            if len(matches) >= k:
-                break
-        return SearchResult(matches=matches)
+
+        # Geometric overfetch: 4x → 16x → 64x → ... → full scan.
+        index_size = self._index.size
+        factor = self._OVERFETCH_BASE
+        while True:
+            fetch_k = min(k * factor, index_size)
+            results = self._index.search(query, fetch_k)
+            matches: list[SearchMatch] = []
+            for key, dist in zip(results.keys, results.distances, strict=True):
+                int_key = int(key)
+                if int_key not in allowed_keys:
+                    continue
+                matches.append(
+                    SearchMatch(key=int_key, score=self._distance_to_score(float(dist)))
+                )
+                if len(matches) >= k:
+                    break
+            if len(matches) >= k or fetch_k >= index_size:
+                return SearchResult(matches=matches)
+            factor *= self._OVERFETCH_BASE
 
     def _sync_search(
         self,
@@ -105,6 +126,20 @@ class USearchVectorSearchEngine(VectorSearchEngine):
             return await asyncio.to_thread(
                 self._sync_search, vectors_list, k, allowed_keys
             )
+
+    @override
+    async def get_vectors(self, keys: Iterable[int]) -> dict[int, list[float]]:
+        keys_list = list(keys)
+        if not keys_list:
+            return {}
+        keys_array = np.array(keys_list, dtype=np.int64)
+        vectors = await asyncio.to_thread(self._index.get, keys_array)
+        result: dict[int, list[float]] = {}
+        for i, key in enumerate(keys_list):
+            vec = vectors[i] if vectors is not None else None
+            if vec is not None:
+                result[key] = list(vec)
+        return result
 
     def _sync_remove(self, keys: Iterable[int]) -> None:
         index = self._index

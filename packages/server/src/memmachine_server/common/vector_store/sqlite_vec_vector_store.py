@@ -1,27 +1,32 @@
 """
-SQLite + sqlite-vec backed vector store implementation.
-
-SQLite stores collection metadata, record UUIDs, and properties.
-sqlite-vec provides the vec0 virtual table for vector search.
+Vector store backed by SQLite + sqlite-vec.
 
 Each logical collection gets its own records table and vec0 virtual table.
-Different namespaces always get separate native tables, as required by the
-VectorStore contract.  Per-collection vec0 tables enable future use of ANN
-indexes (IVF, DiskANN) which are incompatible with vec0 partition keys.
+Partition keys are avoided in favor of per-collection tables,
+since sqlite-vec ANN indexes may not support them.
 """
 
-import json
 import struct
 from collections.abc import Iterable, Sequence
 from typing import ClassVar, override
 from uuid import UUID
 
 import aiosqlite
-import sqlalchemy as sa
 import sqlite_vec
 from pydantic import BaseModel, Field, InstanceOf, JsonValue, field_validator
-from sqlalchemy import JSON, String, event, select, text
-from sqlalchemy.dialects import sqlite as sa_sqlite
+from sqlalchemy import (
+    JSON,
+    Column,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Uuid,
+    delete,
+    event,
+    select,
+    text,
+)
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine.interfaces import DBAPIConnection
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -53,21 +58,17 @@ class BaseSQLiteVecVectorStore(DeclarativeBase):
 
 
 class _CollectionRow(BaseSQLiteVecVectorStore):
-    __tablename__ = "vector_store_sqlite_vec_collections"
+    __tablename__ = "vector_store_sqlite_vec_cl"
 
-    namespace: MappedColumn[str] = mapped_column(String(32), primary_key=True)
-    name: MappedColumn[str] = mapped_column(String(32), primary_key=True)
+    namespace: MappedColumn[str] = mapped_column(String(255), primary_key=True)
+    name: MappedColumn[str] = mapped_column(String(255), primary_key=True)
     config_json: MappedColumn[dict[str, JsonValue]] = mapped_column(
         JSON, nullable=False
     )
 
 
 class SQLiteVecVectorStoreCollection(VectorStoreCollection):
-    """A logical collection backed by SQLite + sqlite-vec.
-
-    Each logical collection has its own records table and vec0 virtual table,
-    so KNN queries search only this collection's vectors directly.
-    """
+    """A logical collection backed by SQLite + sqlite-vec."""
 
     _DISTANCE_FUNCTIONS: ClassVar[dict[SimilarityMetric, str]] = {
         SimilarityMetric.COSINE: "vec_distance_cosine",
@@ -80,16 +81,17 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         create_session: async_sessionmaker[AsyncSession],
         name: str,
         config: VectorStoreCollectionConfig,
-        records_table: sa.Table,
-        vec_table_name: str,
+        records_table: Table,
+        vector_table_name: str,
     ) -> None:
         """Initialize with session factory and table references."""
         self._create_session = create_session
         self._name = name
         self._config = config
         self._records_table = records_table
-        self._vec_table_name = vec_table_name
-        self._metric = config.similarity_metric
+        self._vector_table_name = vector_table_name
+
+        self._similarity_metric = config.similarity_metric
         self._distance_function = self._DISTANCE_FUNCTIONS[config.similarity_metric]
 
     @property
@@ -104,91 +106,87 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
     @staticmethod
     def _deserialize_vector(data: bytes) -> list[float]:
         count = len(data) // 4
-        return list(struct.unpack(f"<{count}f", data))
+        return list(struct.unpack(f"={count}f", data))
 
     @staticmethod
     def _distance_to_score(
         distance: float, similarity_metric: SimilarityMetric
     ) -> float:
-        if similarity_metric == SimilarityMetric.COSINE:
-            return 1.0 - distance
-        return 1.0 / (1.0 + distance)
+        match similarity_metric:
+            case SimilarityMetric.COSINE:
+                return 1.0 - distance
+            case SimilarityMetric.EUCLIDEAN:
+                return distance
+            case _:
+                raise NotImplementedError(similarity_metric)
 
     @staticmethod
-    def _score_to_max_distance(
+    def _threshold_to_max_distance(
         threshold: float, similarity_metric: SimilarityMetric
     ) -> float:
-        """Convert a similarity threshold to a maximum distance for SQL filtering."""
-        if similarity_metric == SimilarityMetric.COSINE:
-            return 1.0 - threshold
-        if threshold <= 0:
-            return float("inf")
-        return (1.0 - threshold) / threshold
-
-    def _compile_property_filter(
-        self, property_filter: FilterExpr
-    ) -> sa.ColumnElement[bool]:
-        """Compile a property filter against this collection's JSON properties column."""
-        properties_column = self._records_table.c.properties
-        return compile_sql_filter(
-            property_filter,
-            lambda field: (properties_column[field], "properties_json"),
-        )
+        match similarity_metric:
+            case SimilarityMetric.COSINE:
+                return 1.0 - threshold
+            case SimilarityMetric.EUCLIDEAN:
+                return threshold
+            case _:
+                raise NotImplementedError(similarity_metric)
 
     @override
     async def upsert(self, *, records: Iterable[Record]) -> None:
-        records_list = list(records)
-        if not records_list:
+        records = list(records)
+        if not records:
             return
 
         records_table = self._records_table
-        vec_table_name = self._vec_table_name
+        vector_table_name = self._vector_table_name
 
         async with self._create_session() as session, session.begin():
-            statement = sqlite_insert(records_table).on_conflict_do_update(
+            upsert_records = sqlite_insert(records_table).on_conflict_do_update(
                 index_elements=[records_table.c.uuid],
                 set_={"properties": sqlite_insert(records_table).excluded.properties},
             )
             await session.execute(
-                statement,
+                upsert_records,
                 [
                     {
-                        "uuid": str(record.uuid),
+                        "uuid": record.uuid,
                         "properties": encode_properties(record.properties),
                     }
-                    for record in records_list
+                    for record in records
                 ],
             )
 
-            # Fetch rowids for vec0 operations
-            uuid_strs = [str(record.uuid) for record in records_list]
+            record_uuids = [record.uuid for record in records]
             rows = (
                 await session.execute(
                     select(records_table.c.uuid, records_table.c.rowid).where(
-                        records_table.c.uuid.in_(uuid_strs),
+                        records_table.c.uuid.in_(record_uuids),
                     )
                 )
             ).all()
-            uuid_to_rowid: dict[str, int] = {row.uuid: row.rowid for row in rows}
+            uuid_to_rowid: dict[UUID, int] = {row.uuid: row.rowid for row in rows}
 
-            # vec0: delete + insert for each record with a vector
-            for record in records_list:
-                if record.vector is not None:
-                    rowid = uuid_to_rowid[str(record.uuid)]
-                    await session.execute(
-                        text(f"DELETE FROM [{vec_table_name}] WHERE rowid = :rid"),
-                        {"rid": rowid},
-                    )
-                    await session.execute(
-                        text(
-                            f"INSERT INTO [{vec_table_name}](rowid, embedding) "
-                            f"VALUES (:rid, :vec)"
-                        ),
-                        {
-                            "rid": rowid,
-                            "vec": self._serialize_vector(record.vector),
-                        },
-                    )
+            vector_params = [
+                {
+                    "rowid": uuid_to_rowid[record.uuid],
+                    "vector": self._serialize_vector(record.vector),
+                }
+                for record in records
+                if record.vector is not None
+            ]
+            if vector_params:
+                await session.execute(
+                    text(f"DELETE FROM [{vector_table_name}] WHERE rowid = :rowid"),
+                    vector_params,
+                )
+                await session.execute(
+                    text(
+                        f"INSERT INTO [{vector_table_name}](rowid, vector) "
+                        f"VALUES (:rowid, :vector)"
+                    ),
+                    vector_params,
+                )
 
     @override
     async def query(
@@ -201,248 +199,102 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         return_vector: bool = False,
         return_properties: bool = True,
     ) -> list[QueryResult]:
-        query_vectors_list = list(query_vectors)
-        if not query_vectors_list:
+        query_vectors = list(query_vectors)
+        if not query_vectors:
             return []
 
         if limit is not None and limit <= 0:
-            return [QueryResult(matches=[]) for _ in query_vectors_list]
+            return [QueryResult(matches=[]) for _ in query_vectors]
 
         if property_filter is not None and not validate_filter(property_filter):
             raise ValueError("Filter contains invalid field names")
 
         results: list[QueryResult] = []
         async with self._create_session() as session:
-            for query_vector in query_vectors_list:
+            for query_vector in query_vectors:
                 query_blob = self._serialize_vector(query_vector)
-                if property_filter is None:
-                    matches = await self._query_knn(
-                        session,
-                        query_blob,
-                        score_threshold,
-                        limit,
-                        return_vector,
-                        return_properties,
+                effective_limit = min(limit, 4096) if limit is not None else 4096
+
+                knn_rows = (
+                    await session.execute(
+                        text(
+                            f"SELECT rowid, distance FROM [{self._vector_table_name}] "
+                            f"WHERE vector MATCH :query AND k = :k "
+                            f"ORDER BY distance"
+                        ),
+                        {"query": query_blob, "k": effective_limit},
                     )
-                else:
-                    matches = await self._query_filtered(
-                        session,
-                        query_blob,
-                        score_threshold,
-                        limit,
-                        property_filter,
-                        return_vector,
-                        return_properties,
-                    )
+                ).all()
+
+                if not knn_rows:
+                    results.append(QueryResult(matches=[]))
+                    continue
+
+                rowid_to_distance: dict[int, float] = {
+                    row.rowid: row.distance for row in knn_rows
+                }
+                matches = await self._build_matches(
+                    session,
+                    rowid_to_distance,
+                    score_threshold=score_threshold,
+                    property_filter=property_filter,
+                    return_vector=return_vector,
+                    return_properties=return_properties,
+                )
                 results.append(QueryResult(matches=matches))
 
         return results
 
-    async def _query_knn(
-        self,
-        session: AsyncSession,
-        query_blob: bytes,
-        score_threshold: float | None,
-        limit: int | None,
-        return_vector: bool,
-        return_properties: bool,
-    ) -> list[QueryMatch]:
-        """Pure KNN query via vec0 MATCH.
-
-        The vec0 table contains only this collection's vectors, so no
-        partition key filtering is needed.
-        """
-        vec_table_name = self._vec_table_name
-        # sqlite-vec caps k at 4096
-        effective_limit = min(limit, 4096) if limit is not None else 4096
-
-        knn_rows = (
-            await session.execute(
-                text(
-                    f"SELECT rowid, distance FROM [{vec_table_name}] "
-                    f"WHERE embedding MATCH :query AND k = :k "
-                    f"ORDER BY distance"
-                ),
-                {"query": query_blob, "k": effective_limit},
-            )
-        ).all()
-
-        if not knn_rows:
-            return []
-
-        rowid_to_distance: dict[int, float] = {
-            row.rowid: row.distance for row in knn_rows
-        }
-        return await self._build_matches_from_rowids(
-            session,
-            rowid_to_distance,
-            score_threshold,
-            return_vector,
-            return_properties,
-        )
-
-    async def _query_filtered(
-        self,
-        session: AsyncSession,
-        query_blob: bytes,
-        score_threshold: float | None,
-        limit: int | None,
-        property_filter: FilterExpr,
-        return_vector: bool,
-        return_properties: bool,
-    ) -> list[QueryMatch]:
-        """Filtered query using brute-force distance computation (perfect recall)."""
-        records_table_name = self._records_table.name
-        vec_table_name = self._vec_table_name
-
-        select_parts = [
-            f"[{records_table_name}].uuid",
-            f"[{records_table_name}].rowid",
-        ]
-        if return_properties:
-            select_parts.append(f"[{records_table_name}].properties")
-
-        distance_expression = (
-            f"{self._distance_function}([{vec_table_name}].embedding, :query)"
-        )
-        select_parts.append(f"{distance_expression} AS distance")
-
-        if return_vector:
-            select_parts.append(f"[{vec_table_name}].embedding")
-
-        # literal_binds is required because this filter clause is embedded in a
-        # raw text() SQL query (for the vec0 distance function join).
-        compiled = self._compile_property_filter(property_filter)
-        filter_sql = compiled.compile(
-            dialect=sa_sqlite.dialect(),
-            compile_kwargs={"literal_binds": True},
-        )
-        filter_clause = f"AND ({filter_sql})"
-
-        params: dict[str, bytes | str | int | float] = {}
-
-        distance_filter = ""
-        if score_threshold is not None:
-            max_distance = self._score_to_max_distance(score_threshold, self._metric)
-            distance_filter = f"AND {distance_expression} <= :max_dist"
-            params["max_dist"] = max_distance
-
-        limit_clause = ""
-        if limit is not None:
-            limit_clause = "LIMIT :lim"
-            params["lim"] = limit
-
-        sql = (
-            f"SELECT {', '.join(select_parts)} "
-            f"FROM [{records_table_name}] "
-            f"JOIN [{vec_table_name}] ON [{vec_table_name}].rowid = [{records_table_name}].rowid "
-            f"WHERE 1=1 "
-            f"{filter_clause} {distance_filter} "
-            f"ORDER BY distance ASC {limit_clause}"
-        )
-
-        params["query"] = query_blob
-
-        rows = (await session.execute(text(sql), params)).all()
-
-        return self._parse_filtered_rows(rows, return_properties, return_vector)
-
-    def _parse_filtered_rows(
-        self,
-        rows: Sequence[sa.Row[tuple[str, ...]]],
-        return_properties: bool,
-        return_vector: bool,
-    ) -> list[QueryMatch]:
-        """Parse raw rows from a filtered query into QueryMatch objects."""
-        matches: list[QueryMatch] = []
-        for row in rows:
-            column_index = 0
-            uuid_val = UUID(row[column_index])
-            column_index += 1
-            _rowid = row[column_index]
-            column_index += 1
-
-            properties: dict[str, PropertyValue] | None = None
-            if return_properties:
-                raw_properties = row[column_index]
-                column_index += 1
-                if isinstance(raw_properties, str):
-                    raw_properties = json.loads(raw_properties)
-                properties = decode_properties(raw_properties)
-
-            distance = row[column_index]
-            column_index += 1
-
-            vector: list[float] | None = None
-            if return_vector:
-                raw_vector = row[column_index]
-                if raw_vector is not None:
-                    vector = self._deserialize_vector(raw_vector)
-
-            score = self._distance_to_score(distance, self._metric)
-            matches.append(
-                QueryMatch(
-                    score=score,
-                    record=Record(uuid=uuid_val, vector=vector, properties=properties),
-                )
-            )
-
-        return matches
-
-    async def _build_matches_from_rowids(
+    async def _build_matches(
         self,
         session: AsyncSession,
         rowid_to_distance: dict[int, float],
         score_threshold: float | None,
+        property_filter: FilterExpr | None,
         return_vector: bool,
         return_properties: bool,
     ) -> list[QueryMatch]:
-        """Fetch record data for rowids from a KNN search and build matches."""
+        """Fetch record data for row IDs and build matches with optional post-filter."""
         records_table = self._records_table
-        vec_table_name = self._vec_table_name
 
-        rowid_list = list(rowid_to_distance.keys())
+        matched_rowids = list(rowid_to_distance.keys())
 
-        columns = [records_table.c.uuid, records_table.c.rowid]
+        select_columns = [records_table.c.uuid, records_table.c.rowid]
         if return_properties:
-            columns.append(records_table.c.properties)
-        statement = select(*columns).where(
-            records_table.c.rowid.in_(rowid_list),
+            select_columns.append(records_table.c.properties)
+        fetch_records = select(*select_columns).where(
+            records_table.c.rowid.in_(matched_rowids),
         )
-        rows = (await session.execute(statement)).all()
-
-        # Fetch vectors if needed
-        vector_data_map: dict[int, bytes] = {}
-        if return_vector:
-            filtered_rowids = [row.rowid for row in rows]
-            if filtered_rowids:
-                placeholders = ", ".join(
-                    f":r{index}" for index in range(len(filtered_rowids))
+        if property_filter is not None:
+            fetch_records = fetch_records.where(
+                compile_sql_filter(
+                    property_filter,
+                    lambda field: (
+                        records_table.c.properties[field],
+                        "properties_json",
+                    ),
                 )
-                vector_rows = (
-                    await session.execute(
-                        text(
-                            f"SELECT rowid, embedding FROM [{vec_table_name}] "
-                            f"WHERE rowid IN ({placeholders})"
-                        ),
-                        {
-                            f"r{index}": row_id
-                            for index, row_id in enumerate(filtered_rowids)
-                        },
-                    )
-                ).all()
-                vector_data_map = {
-                    vector_row.rowid: vector_row.embedding for vector_row in vector_rows
-                }
+            )
+        matched_rows = (await session.execute(fetch_records)).all()
+
+        rowid_to_vector_bytes: dict[int, bytes] = {}
+        if return_vector:
+            rowid_to_vector_bytes = await self._fetch_vectors(
+                session, [row.rowid for row in matched_rows]
+            )
 
         matches: list[QueryMatch] = []
-        for row in rows:
+        for row in matched_rows:
             distance = rowid_to_distance.get(row.rowid)
             if distance is None:
                 continue
 
-            score = self._distance_to_score(distance, self._metric)
-            if score_threshold is not None and score < score_threshold:
+            score = self._distance_to_score(distance, self._similarity_metric)
+            if score_threshold is not None and (
+                score < score_threshold
+                if self._similarity_metric.higher_is_better
+                else score > score_threshold
+            ):
                 continue
 
             properties: dict[str, PropertyValue] | None = None
@@ -451,21 +303,40 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
 
             vector: list[float] | None = None
             if return_vector:
-                raw_vector = vector_data_map.get(row.rowid)
-                if raw_vector is not None:
-                    vector = self._deserialize_vector(raw_vector)
+                vector_bytes = rowid_to_vector_bytes.get(row.rowid)
+                if vector_bytes is not None:
+                    vector = self._deserialize_vector(vector_bytes)
 
             matches.append(
                 QueryMatch(
                     score=score,
-                    record=Record(
-                        uuid=UUID(row.uuid), vector=vector, properties=properties
-                    ),
+                    record=Record(uuid=row.uuid, vector=vector, properties=properties),
                 )
             )
 
-        matches.sort(key=lambda match: match.score, reverse=True)
+        matches.sort(
+            key=lambda match: match.score,
+            reverse=self._similarity_metric.higher_is_better,
+        )
         return matches
+
+    async def _fetch_vectors(
+        self, session: AsyncSession, rowids: list[int]
+    ) -> dict[int, bytes]:
+        """Fetch serialized vectors from the vec0 table by rowid."""
+        if not rowids:
+            return {}
+        placeholders = ", ".join(f":r{i}" for i in range(len(rowids)))
+        vector_rows = (
+            await session.execute(
+                text(
+                    f"SELECT rowid, vector FROM [{self._vector_table_name}] "
+                    f"WHERE rowid IN ({placeholders})"
+                ),
+                {f"r{i}": rowid for i, rowid in enumerate(rowids)},
+            )
+        ).all()
+        return {row.rowid: row.vector for row in vector_rows}
 
     @override
     async def get(
@@ -475,51 +346,33 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         return_vector: bool = False,
         return_properties: bool = True,
     ) -> list[Record]:
-        uuid_list = list(record_uuids)
-        if not uuid_list:
+        record_uuids = list(record_uuids)
+        if not record_uuids:
             return []
 
         records_table = self._records_table
-        vec_table_name = self._vec_table_name
-        dict(self._config.properties_schema)
-        uuid_strs = [str(record_uuid) for record_uuid in uuid_list]
 
         async with self._create_session() as session:
-            columns = [records_table.c.uuid, records_table.c.rowid]
+            select_columns = [records_table.c.uuid, records_table.c.rowid]
             if return_properties:
-                columns.append(records_table.c.properties)
-            statement = select(*columns).where(
-                records_table.c.uuid.in_(uuid_strs),
-            )
-            rows = (await session.execute(statement)).all()
-
-            vector_data_map: dict[int, bytes] = {}
-            if return_vector:
-                rowids = [row.rowid for row in rows]
-                if rowids:
-                    placeholders = ", ".join(
-                        f":r{index}" for index in range(len(rowids))
+                select_columns.append(records_table.c.properties)
+            fetched_rows = (
+                await session.execute(
+                    select(*select_columns).where(
+                        records_table.c.uuid.in_(record_uuids),
                     )
-                    vector_rows = (
-                        await session.execute(
-                            text(
-                                f"SELECT rowid, embedding FROM [{vec_table_name}] "
-                                f"WHERE rowid IN ({placeholders})"
-                            ),
-                            {
-                                f"r{index}": row_id
-                                for index, row_id in enumerate(rowids)
-                            },
-                        )
-                    ).all()
-                    vector_data_map = {
-                        vector_row.rowid: vector_row.embedding
-                        for vector_row in vector_rows
-                    }
+                )
+            ).all()
+
+            rowid_to_vector_bytes: dict[int, bytes] = {}
+            if return_vector:
+                rowid_to_vector_bytes = await self._fetch_vectors(
+                    session, [row.rowid for row in fetched_rows]
+                )
 
         record_map: dict[UUID, Record] = {}
-        for row in rows:
-            uuid_val = UUID(row.uuid)
+        for row in fetched_rows:
+            record_uuid = row.uuid
 
             properties: dict[str, PropertyValue] | None = None
             if return_properties:
@@ -527,17 +380,17 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
 
             vector: list[float] | None = None
             if return_vector:
-                raw_vector = vector_data_map.get(row.rowid)
-                if raw_vector is not None:
-                    vector = self._deserialize_vector(raw_vector)
+                vector_bytes = rowid_to_vector_bytes.get(row.rowid)
+                if vector_bytes is not None:
+                    vector = self._deserialize_vector(vector_bytes)
 
-            record_map[uuid_val] = Record(
-                uuid=uuid_val, vector=vector, properties=properties
+            record_map[record_uuid] = Record(
+                uuid=record_uuid, vector=vector, properties=properties
             )
 
         return [
             record_map[record_uuid]
-            for record_uuid in uuid_list
+            for record_uuid in record_uuids
             if record_uuid in record_map
         ]
 
@@ -548,33 +401,35 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
             return
 
         records_table = self._records_table
-        vec_table_name = self._vec_table_name
-        uuid_strs = [str(record_uuid) for record_uuid in uuid_list]
+        vector_table_name = self._vector_table_name
+        record_uuids = list(uuid_list)
 
         async with self._create_session() as session, session.begin():
             rows = (
                 await session.execute(
                     select(records_table.c.rowid).where(
-                        records_table.c.uuid.in_(uuid_strs),
+                        records_table.c.uuid.in_(record_uuids),
                     )
                 )
             ).all()
             if not rows:
                 return
 
-            rowids = [row.rowid for row in rows]
+            record_rowids = [row.rowid for row in rows]
 
-            # Delete from vec0
-            placeholders = ", ".join(f":r{index}" for index in range(len(rowids)))
+            placeholders = ", ".join(
+                f":r{index}" for index in range(len(record_rowids))
+            )
             await session.execute(
-                text(f"DELETE FROM [{vec_table_name}] WHERE rowid IN ({placeholders})"),
-                {f"r{index}": row_id for index, row_id in enumerate(rowids)},
+                text(
+                    f"DELETE FROM [{vector_table_name}] WHERE rowid IN ({placeholders})"
+                ),
+                {f"r{index}": row_id for index, row_id in enumerate(record_rowids)},
             )
 
-            # Delete from records
             await session.execute(
-                sa.delete(records_table).where(
-                    records_table.c.uuid.in_(uuid_strs),
+                delete(records_table).where(
+                    records_table.c.uuid.in_(record_uuids),
                 )
             )
 
@@ -623,8 +478,8 @@ class SQLiteVecVectorStore(VectorStore):
         """Initialize the vector store with the provided parameters."""
         self._engine = params.engine
         self._create_session = async_sessionmaker(self._engine, expire_on_commit=False)
-        self._records_tables: dict[str, sa.Table] = {}
-        self._sa_metadata = sa.MetaData()
+        self._records_tables: dict[str, Table] = {}
+        self._sa_metadata = MetaData()
 
     @staticmethod
     def create_engine(url: str) -> AsyncEngine:
@@ -675,14 +530,14 @@ class SQLiteVecVectorStore(VectorStore):
             )
 
     @staticmethod
-    def _build_records_table(table_name: str, sa_metadata: sa.MetaData) -> sa.Table:
+    def _build_records_table(table_name: str, sa_metadata: MetaData) -> Table:
         """Build a SQLAlchemy Core Table for a per-collection records table."""
-        return sa.Table(
+        return Table(
             table_name,
             sa_metadata,
-            sa.Column("rowid", sa.Integer, primary_key=True, autoincrement=True),
-            sa.Column("uuid", sa.Text, nullable=False, unique=True),
-            sa.Column("properties", JSON, nullable=True),
+            Column("rowid", Integer, primary_key=True, autoincrement=True),
+            Column("uuid", Uuid, nullable=False, unique=True),
+            Column("properties", JSON, nullable=True),
         )
 
     @override
@@ -694,9 +549,9 @@ class SQLiteVecVectorStore(VectorStore):
     async def shutdown(self) -> None:
         self._records_tables.clear()
 
-    def _get_or_build_records_table(self, collection_prefix: str) -> sa.Table:
+    def _get_or_build_records_table(self, collection_prefix: str) -> Table:
         if collection_prefix not in self._records_tables:
-            table_name = f"{collection_prefix}_records"
+            table_name = f"{collection_prefix}_rc"
             self._records_tables[collection_prefix] = self._build_records_table(
                 table_name, self._sa_metadata
             )
@@ -723,58 +578,55 @@ class SQLiteVecVectorStore(VectorStore):
         namespace: str,
         name: str,
         config: VectorStoreCollectionConfig,
-    ) -> tuple[sa.Table, str]:
+    ) -> tuple[Table, str]:
         """Idempotently create per-collection native tables."""
         collection_prefix = self._collection_prefix(namespace, name)
         records_table = self._get_or_build_records_table(collection_prefix)
-        vec_table_name = f"{collection_prefix}_vec"
+        vector_table_name = f"{collection_prefix}_vc"
         distance_metric_value = self._SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE[
             config.similarity_metric
         ]
 
-        # Create records table via SQLAlchemy (idempotent)
         connection = await session.connection()
         await connection.run_sync(
             self._sa_metadata.create_all,
             tables=[records_table],
         )
 
-        # Create vec0 virtual table (idempotent, no partition key)
         await session.execute(
             text(
-                f"CREATE VIRTUAL TABLE IF NOT EXISTS [{vec_table_name}] USING vec0("
-                f"embedding float[{config.vector_dimensions}] distance_metric={distance_metric_value}"
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS [{vector_table_name}] USING vec0("
+                f"vector float[{config.vector_dimensions}] distance_metric={distance_metric_value}"
                 f")"
             )
         )
 
-        # Create property indexes
         for field_name in config.properties_schema:
-            index_name = f"idx_{records_table.name}_{field_name}"
             safe_field = field_name.replace("'", "''")
+            index_name = f"idx_{records_table.name}_{field_name}_v"
             await session.execute(
                 text(
                     f"CREATE INDEX IF NOT EXISTS [{index_name}] "
                     f"ON [{records_table.name}]"
-                    f"(json_extract(properties, '$.{safe_field}'))"
+                    f"(json_extract(properties, '$.{safe_field}.v'))"
                 )
             )
 
-        return records_table, vec_table_name
+        return records_table, vector_table_name
 
     def _build_collection_handle(
         self,
         name: str,
         config: VectorStoreCollectionConfig,
-        records_table: sa.Table,
-        vec_table_name: str,
+        records_table: Table,
+        vector_table_name: str,
     ) -> SQLiteVecVectorStoreCollection:
         return SQLiteVecVectorStoreCollection(
             create_session=self._create_session,
             name=name,
             config=config,
             records_table=records_table,
-            vec_table_name=vec_table_name,
+            vector_table_name=vector_table_name,
         )
 
     @override
@@ -822,14 +674,14 @@ class SQLiteVecVectorStore(VectorStore):
                     raise VectorStoreCollectionConfigMismatchError(
                         namespace, name, existing, config
                     )
-                records_table, vec_table_name = await self._ensure_native_tables(
+                records_table, vector_table_name = await self._ensure_native_tables(
                     session, namespace, name, existing
                 )
                 return self._build_collection_handle(
-                    name, existing, records_table, vec_table_name
+                    name, existing, records_table, vector_table_name
                 )
 
-            records_table, vec_table_name = await self._ensure_native_tables(
+            records_table, vector_table_name = await self._ensure_native_tables(
                 session, namespace, name, config
             )
             session.add(
@@ -841,7 +693,7 @@ class SQLiteVecVectorStore(VectorStore):
             )
 
         return self._build_collection_handle(
-            name, config, records_table, vec_table_name
+            name, config, records_table, vector_table_name
         )
 
     @override
@@ -857,9 +709,9 @@ class SQLiteVecVectorStore(VectorStore):
 
         collection_prefix = self._collection_prefix(namespace, name)
         records_table = self._get_or_build_records_table(collection_prefix)
-        vec_table_name = f"{collection_prefix}_vec"
+        vector_table_name = f"{collection_prefix}_vc"
         return self._build_collection_handle(
-            name, existing, records_table, vec_table_name
+            name, existing, records_table, vector_table_name
         )
 
     @override
@@ -877,20 +729,17 @@ class SQLiteVecVectorStore(VectorStore):
 
             collection_prefix = self._collection_prefix(namespace, name)
             records_table = self._get_or_build_records_table(collection_prefix)
-            vec_table_name = f"{collection_prefix}_vec"
+            vector_table_name = f"{collection_prefix}_vc"
 
-            # Drop per-collection tables (cascades indexes)
-            await session.execute(text(f"DROP TABLE IF EXISTS [{vec_table_name}]"))
+            await session.execute(text(f"DROP TABLE IF EXISTS [{vector_table_name}]"))
             await session.execute(text(f"DROP TABLE IF EXISTS [{records_table.name}]"))
 
-            # Remove from registry
             await session.execute(
-                sa.delete(_CollectionRow).where(
+                delete(_CollectionRow).where(
                     _CollectionRow.namespace == namespace,
                     _CollectionRow.name == name,
                 )
             )
 
-            # Clean up in-memory caches
             self._records_tables.pop(collection_prefix, None)
             self._sa_metadata.remove(records_table)

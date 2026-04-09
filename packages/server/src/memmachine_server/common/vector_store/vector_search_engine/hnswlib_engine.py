@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import math
 from collections.abc import Container, Iterable, Mapping, Sequence
 from typing import ClassVar, override
 
@@ -24,7 +25,7 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
       as distance, converted back to ``cos_sim``).
     - Dot: inner product (hnswlib ``ip`` space returns ``1 - IP``
       as distance, converted back to ``IP``).
-    - Euclidean: L2 squared distance (passed through as-is).
+    - Euclidean: Euclidean distance [0, inf) (converted from L2 squared).
     """
 
     _SPACE_MAP: ClassVar[dict[SimilarityMetric, str]] = {
@@ -72,9 +73,13 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
 
     def _distance_to_score(self, distance: float) -> float:
         """Convert an hnswlib distance to a pure metric score."""
-        if self._metric in (SimilarityMetric.COSINE, SimilarityMetric.DOT):
-            return 1.0 - distance
-        return distance
+        match self._metric:
+            case SimilarityMetric.COSINE | SimilarityMetric.DOT:
+                return 1.0 - distance
+            case SimilarityMetric.EUCLIDEAN:
+                return math.sqrt(max(0.0, distance))
+            case _:
+                raise NotImplementedError(self._metric)
 
     def _ensure_capacity(self, needed: int) -> None:
         """Grow the index if there isn't room for ``needed`` more elements."""
@@ -109,21 +114,65 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
         allowed_keys: Container[int] | None,
     ) -> list[SearchResult]:
         query = np.array(vectors, dtype=np.float32)
-        effective_k = min(k, len(self._live_ids))
-        try:
-            if allowed_keys is None:
-                all_labels, all_distances = self._index.knn_query(
-                    query, k=effective_k, num_threads=1
+        if allowed_keys is None:
+            effective_k = min(k, len(self._live_ids))
+            try:
+                result = self._index.knn_query(query, k=effective_k, num_threads=1)
+            except RuntimeError:
+                return [SearchResult(matches=[]) for _ in vectors]
+            return self._parse_search_results(result)
+
+        # hnswlib throws RuntimeError when fewer than k results pass the
+        # filter. Use binary search to find the maximum k that works.
+        return self._sync_search_filtered(query, k, allowed_keys)
+
+    def _sync_search_filtered(
+        self,
+        query: np.ndarray,
+        k: int,
+        allowed_keys: Container[int],
+    ) -> list[SearchResult]:
+        """Filtered search with binary search for available result count.
+
+        hnswlib throws RuntimeError when fewer than k results pass the
+        filter. Try k first; if it fails, try 1; if 1 works, binary
+        search between 1 and k to find the maximum that succeeds.
+        """
+        filter_fn = lambda idx: idx in allowed_keys  # noqa: E731
+
+        def _try_query(try_k: int) -> tuple[np.ndarray, np.ndarray] | None:
+            try:
+                return self._index.knn_query(
+                    query, k=try_k, num_threads=1, filter=filter_fn
                 )
+            except RuntimeError:
+                return None
+
+        result = _try_query(k)
+        if result is not None:
+            return self._parse_search_results(result)
+
+        if _try_query(1) is None:
+            return [SearchResult(matches=[]) for _ in query]
+
+        lo, hi = 1, k
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if _try_query(mid) is not None:
+                lo = mid
             else:
-                all_labels, all_distances = self._index.knn_query(
-                    query,
-                    k=effective_k,
-                    num_threads=1,
-                    filter=lambda idx: idx in allowed_keys,
-                )
-        except RuntimeError:
-            return [SearchResult(matches=[]) for _ in vectors]
+                hi = mid - 1
+
+        result = _try_query(lo)
+        if result is None:
+            return [SearchResult(matches=[]) for _ in query]
+        return self._parse_search_results(result)
+
+    def _parse_search_results(
+        self,
+        result: tuple[np.ndarray, np.ndarray],
+    ) -> list[SearchResult]:
+        all_labels, all_distances = result
         results: list[SearchResult] = []
         for labels, distances in zip(all_labels, all_distances, strict=True):
             matches = [
@@ -149,6 +198,14 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
             return await asyncio.to_thread(
                 self._sync_search, vectors_list, k, allowed_keys
             )
+
+    @override
+    async def get_vectors(self, keys: Iterable[int]) -> dict[int, list[float]]:
+        keys_list = [k for k in keys if k in self._live_ids]
+        if not keys_list:
+            return {}
+        vectors = await asyncio.to_thread(self._index.get_items, keys_list)
+        return {key: list(vec) for key, vec in zip(keys_list, vectors, strict=True)}
 
     def _sync_remove(self, keys: Iterable[int]) -> None:
         for key in keys:

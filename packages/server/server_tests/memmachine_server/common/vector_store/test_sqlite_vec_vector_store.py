@@ -868,7 +868,7 @@ class TestEuclideanMetric:
         await coll.upsert(records=[r1, r2])
 
         results = await coll.query(query_vectors=[[0.0, 0.0]], limit=2)
-        assert results[0].matches[0].score > results[0].matches[1].score
+        assert results[0].matches[0].score < results[0].matches[1].score
 
         await store.delete_collection(namespace=NAMESPACE, name="euclidean")
 
