@@ -155,21 +155,31 @@ class SpecDoc:
 
     SEARCH_SEMANTIC_MEMORY = "Semantic memory search results."
 
-    SEARCH_EVENT_MEMORY = "Event memory search results."
+    SEARCH_EVENT_MEMORY = "Event memory search results"
 
-    EVENT_MEMORY_SEGMENTS = "Matched segments with full metadata."
+    EVENT_MEMORY_SEGMENTS = "Matched segments with full metadata"
 
-    EVENT_MEMORY_EMBEDDER = "Resource ID of the Embedder instance."
-    EVENT_MEMORY_RERANKER = "Resource ID of the Reranker instance, or null."
+    EVENT_MEMORY_EMBEDDER = "Resource ID of the Embedder instance"
+    EVENT_MEMORY_RERANKER = "Resource ID of the Reranker instance, or null"
     EVENT_MEMORY_PROPERTIES_SCHEMA = (
-        "User-defined filterable properties and their types."
+        "User-defined filterable properties and their types"
     )
     EVENT_MEMORY_DERIVE_SENTENCES = (
-        "Whether to derive sentence-level derivatives from content."
+        "Whether to derive sentence-level derivatives from content"
     )
     EVENT_MEMORY_MAX_TEXT_CHUNK_LENGTH = (
-        "Max code-point length for text chunking in segment creation."
+        "Max code-point length for text chunking in segment creation"
     )
+    EVENT_MEMORY_EVICTION_SIMILARITY_THRESHOLD = (
+        "Similarity threshold for eviction clustering; None disables eviction"
+    )
+    EVENT_MEMORY_EVICTION_SEARCH_LIMIT = (
+        "Max similar vectors to retrieve per derivative for eviction evaluation"
+    )
+    EVENT_MEMORY_EVICTION_TARGET_SIZE = (
+        "Target cluster size; eviction starts when similar vectors exceed this"
+    )
+    EVENT_MEMORY_SERIALIZE_ENCODE = "Serialize encode_events calls with an async lock"
 
     LIST_EPISODIC_MEMORY = "Listed episodic memory entries."
 
