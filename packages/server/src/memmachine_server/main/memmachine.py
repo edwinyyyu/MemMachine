@@ -867,6 +867,10 @@ class MemMachine:
                 reranker=reranker,
                 derive_sentences=conf.derive_sentences,
                 max_text_chunk_length=conf.max_text_chunk_length,
+                eviction_similarity_threshold=conf.eviction_similarity_threshold,
+                eviction_search_limit=conf.eviction_search_limit,
+                eviction_target_size=conf.eviction_target_size,
+                serialize_encode=conf.serialize_encode,
             )
         )
 
