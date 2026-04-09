@@ -215,13 +215,13 @@ class TestSearchCosine:
 
 class TestSearchEuclidean:
     @pytest.mark.asyncio
-    async def test_scores_are_l2sq_distance(self):
+    async def test_scores_are_euclidean_distance(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.EUCLIDEAN)
         await engine.add({1: [0, 0, 0], 2: [3, 4, 0]})
         result = await _search_one(engine, [0, 0, 0], k=2)
         assert result.matches[0].key == 1
         assert result.matches[0].score == pytest.approx(0.0, abs=0.01)
-        assert result.matches[1].score == pytest.approx(25.0, abs=0.01)
+        assert result.matches[1].score == pytest.approx(5.0, abs=0.01)
 
     @pytest.mark.asyncio
     async def test_scores_ordered_best_first(self):
