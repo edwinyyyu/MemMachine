@@ -1,14 +1,15 @@
 """USearch HNSW implementation of VectorSearchEngine."""
 
-from collections.abc import Iterable, Sequence
-from typing import ClassVar
+import asyncio
+from collections.abc import Container, Iterable, Mapping, Sequence
+from typing import ClassVar, override
 
 import numpy as np
 from usearch.index import Index, MetricKind
 
 from memmachine_server.common.data_types import SimilarityMetric
 
-from .vector_search_engine import SearchResult, VectorSearchEngine
+from .vector_search_engine import SearchMatch, SearchResult, VectorSearchEngine
 
 
 class USearchVectorSearchEngine(VectorSearchEngine):
@@ -37,50 +38,91 @@ class USearchVectorSearchEngine(VectorSearchEngine):
             )
         self._index = Index(ndim=ndim, metric=usearch_metric, dtype="f32")
         self._metric = metric
+        self._lock = asyncio.Lock()
 
     def _distance_to_score(self, distance: float) -> float:
         """Convert a USearch distance to a pure metric score."""
         if self._metric in (SimilarityMetric.COSINE, SimilarityMetric.DOT):
-            # USearch returns 1 - similarity for both Cos and IP metrics.
             return 1.0 - distance
-        # Euclidean: L2sq distance is already the pure metric value.
         return distance
 
-    def add(self, keys: Sequence[int], vectors: Sequence[Sequence[float]]) -> None:
-        if not keys:
+    def _sync_add(self, vectors: Mapping[int, Sequence[float]]) -> None:
+        keys_array = np.array(list(vectors.keys()), dtype=np.int64)
+        vectors_array = np.array(list(vectors.values()), dtype=np.float32)
+        self._index.add(keys_array, vectors_array)
+
+    @override
+    async def add(self, vectors: Mapping[int, Sequence[float]]) -> None:
+        if not vectors:
             return
-        index = self._index
-        keys_array = np.array(keys, dtype=np.int64)
-        vectors_array = np.array(vectors, dtype=np.float32)
-        for key in keys_array:
-            if index.count(int(key)) > 0:
-                index.remove(int(key))
-        index.add(keys_array, vectors_array)
+        async with self._lock:
+            await asyncio.to_thread(self._sync_add, vectors)
 
-    def _raw_search(self, vector: Sequence[float], k: int) -> SearchResult:
+    def _sync_search_one(
+        self,
+        vector: Sequence[float],
+        k: int,
+        allowed_keys: Container[int] | None,
+    ) -> SearchResult:
         query = np.array(vector, dtype=np.float32)
-        results = self._index.search(query, k)
-        return SearchResult(
-            keys=[int(key) for key in results.keys],
-            scores=[self._distance_to_score(float(d)) for d in results.distances],
-        )
+        if allowed_keys is None:
+            results = self._index.search(query, k)
+        else:
+            # USearch has no native filter — full scan + post-filter.
+            results = self._index.search(query, self._index.size)
+        matches: list[SearchMatch] = []
+        for key, dist in zip(results.keys, results.distances, strict=True):
+            int_key = int(key)
+            if allowed_keys is not None and int_key not in allowed_keys:
+                continue
+            matches.append(
+                SearchMatch(key=int_key, score=self._distance_to_score(float(dist)))
+            )
+            if len(matches) >= k:
+                break
+        return SearchResult(matches=matches)
 
-    def remove(self, keys: Iterable[int]) -> None:
+    def _sync_search(
+        self,
+        vectors: Sequence[Sequence[float]],
+        k: int,
+        allowed_keys: Container[int] | None,
+    ) -> list[SearchResult]:
+        return [self._sync_search_one(v, k, allowed_keys) for v in vectors]
+
+    @override
+    async def search(
+        self,
+        vectors: Iterable[Sequence[float]],
+        k: int,
+        *,
+        allowed_keys: Container[int] | None = None,
+    ) -> list[SearchResult]:
+        vectors_list = list(vectors)
+        if self._index.size == 0 or not vectors_list:
+            return [SearchResult(matches=[]) for _ in vectors_list]
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._sync_search, vectors_list, k, allowed_keys
+            )
+
+    def _sync_remove(self, keys: Iterable[int]) -> None:
         index = self._index
         for key in keys:
-            if index.count(int(key)) > 0:
-                index.remove(int(key))
+            # USearch silently ignores remove on nonexistent keys.
+            index.remove(int(key))
 
-    def __len__(self) -> int:
-        """Return number of vectors in the index."""
-        return self._index.size
+    @override
+    async def remove(self, keys: Iterable[int]) -> None:
+        async with self._lock:
+            await asyncio.to_thread(self._sync_remove, keys)
 
-    def __contains__(self, key: int) -> bool:
-        """Return whether the key exists in the index."""
-        return bool(self._index.count(int(key)) > 0)
+    @override
+    async def save(self, path: str) -> None:
+        async with self._lock:
+            await asyncio.to_thread(self._index.save, path)
 
-    def save(self, path: str) -> None:
-        self._index.save(path)
-
-    def load(self, path: str) -> None:
-        self._index.load(path)
+    @override
+    async def load(self, path: str) -> None:
+        async with self._lock:
+            await asyncio.to_thread(self._index.load, path)

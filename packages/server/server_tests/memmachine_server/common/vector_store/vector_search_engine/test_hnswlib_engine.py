@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from memmachine_server.common.data_types import SimilarityMetric
-from memmachine_server.common.vector_store.vector_search_engine import KeyFilter
 from memmachine_server.common.vector_store.vector_search_engine.hnswlib_engine import (
     HnswlibVectorSearchEngine,
 )
@@ -19,14 +18,10 @@ def _normalize(v: list[float]) -> list[float]:
     return [x / magnitude for x in v]
 
 
-class _SetFilter(KeyFilter):
-    """Simple set-backed KeyFilter for testing."""
-
-    def __init__(self, allowed: set[int]) -> None:
-        self._allowed = allowed
-
-    def __contains__(self, key: object) -> bool:
-        return key in self._allowed
+async def _search_one(engine, vector, k=10, **kwargs):
+    """Helper: search a single vector, return the one SearchResult."""
+    results = await engine.search([vector], k, **kwargs)
+    return results[0]
 
 
 # -- Construction --
@@ -39,279 +34,287 @@ class TestConstruction:
             SimilarityMetric.EUCLIDEAN,
             SimilarityMetric.DOT,
         ):
-            engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=metric)
-            assert len(engine) == 0
+            HnswlibVectorSearchEngine(ndim=NDIM, metric=metric)
 
     def test_unsupported_metric_raises(self):
         with pytest.raises(ValueError, match="does not support"):
             HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.MANHATTAN)
 
 
-# -- Add / len / contains --
+# -- Add --
 
 
 class TestAdd:
-    def test_add_single(self):
+    @pytest.mark.asyncio
+    async def test_add_single(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add([1], [[1.0, 0.0, 0.0]])
-        assert len(engine) == 1
-        assert 1 in engine
-        assert 99 not in engine
+        await engine.add({1: [1.0, 0.0, 0.0]})
+        result = await _search_one(engine, [1.0, 0.0, 0.0], k=1)
+        assert result.matches[0].key == 1
 
-    def test_add_batch(self):
+    @pytest.mark.asyncio
+    async def test_add_batch(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add([10, 20, 30], [[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-        assert len(engine) == 3
-        assert 10 in engine
-        assert 20 in engine
-        assert 30 in engine
+        await engine.add({10: [1, 0, 0], 20: [0, 1, 0], 30: [0, 0, 1]})
+        result = await _search_one(engine, [1, 0, 0], k=3)
+        assert {m.key for m in result.matches} == {10, 20, 30}
 
-    def test_add_replaces_existing_key(self):
+    @pytest.mark.asyncio
+    async def test_remove_then_add_replaces_key(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add([1], [[1.0, 0.0, 0.0]])
-        engine.add([1], [[0.0, 1.0, 0.0]])
-        assert len(engine) == 1
-        result = engine.search(_normalize([0, 1, 0]), k=1)
-        assert result.keys[0] == 1
-        assert result.scores[0] == pytest.approx(1.0, abs=0.01)
+        await engine.add({1: [1.0, 0.0, 0.0]})
+        await engine.remove([1])
+        await engine.add({1: [0.0, 1.0, 0.0]})
+        result = await _search_one(engine, _normalize([0, 1, 0]), k=1)
+        assert result.matches[0].key == 1
+        assert result.matches[0].score == pytest.approx(1.0, abs=0.01)
 
-    def test_add_empty(self):
+    @pytest.mark.asyncio
+    async def test_add_empty(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add([], [])
-        assert len(engine) == 0
+        await engine.add({})
+        result = await _search_one(engine, [1, 0, 0], k=1)
+        assert result.matches == []
 
-    def test_add_beyond_initial_capacity(self):
+    @pytest.mark.asyncio
+    async def test_add_beyond_initial_capacity(self):
         engine = HnswlibVectorSearchEngine(
             ndim=NDIM, metric=SimilarityMetric.COSINE, initial_capacity=2
         )
-        engine.add(
-            [1, 2, 3, 4, 5], [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [0, 1, 1]]
+        await engine.add(
+            {
+                1: [1, 0, 0],
+                2: [0, 1, 0],
+                3: [0, 0, 1],
+                4: [1, 1, 0],
+                5: [0, 1, 1],
+            }
         )
-        assert len(engine) == 5
+        result = await _search_one(engine, [1, 0, 0], k=5)
+        assert len(result.matches) == 5
 
 
 # -- Remove --
 
 
 class TestRemove:
-    def test_remove_existing(self):
+    @pytest.mark.asyncio
+    async def test_remove_existing(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add([1, 2], [[1, 0, 0], [0, 1, 0]])
-        engine.remove([1])
-        assert len(engine) == 1
-        assert 1 not in engine
-        assert 2 in engine
+        await engine.add({1: [1, 0, 0], 2: [0, 1, 0]})
+        await engine.remove([1])
+        result = await _search_one(engine, [1, 0, 0], k=2)
+        keys = {m.key for m in result.matches}
+        assert 1 not in keys
+        assert 2 in keys
 
-    def test_remove_missing_is_ignored(self):
+    @pytest.mark.asyncio
+    async def test_remove_missing_is_ignored(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add([1], [[1, 0, 0]])
-        engine.remove([99, 100])
-        assert len(engine) == 1
+        await engine.add({1: [1, 0, 0]})
+        await engine.remove([99, 100])
+        result = await _search_one(engine, [1, 0, 0], k=1)
+        assert result.matches[0].key == 1
 
-    def test_remove_all(self):
+    @pytest.mark.asyncio
+    async def test_remove_all(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add([1, 2, 3], [[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-        engine.remove([1, 2, 3])
-        assert len(engine) == 0
+        await engine.add({1: [1, 0, 0], 2: [0, 1, 0], 3: [0, 0, 1]})
+        await engine.remove([1, 2, 3])
+        result = await _search_one(engine, [1, 0, 0], k=3)
+        assert result.matches == []
 
-    def test_remove_empty_iterable(self):
+    @pytest.mark.asyncio
+    async def test_remove_empty_iterable(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add([1], [[1, 0, 0]])
-        engine.remove([])
-        assert len(engine) == 1
+        await engine.add({1: [1, 0, 0]})
+        await engine.remove([])
+        result = await _search_one(engine, [1, 0, 0], k=1)
+        assert result.matches[0].key == 1
 
-    def test_remove_excludes_from_search(self):
+    @pytest.mark.asyncio
+    async def test_remove_excludes_from_search(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add([1, 2], [_normalize([1, 0, 0]), _normalize([0, 1, 0])])
-        engine.remove([1])
-        result = engine.search(_normalize([1, 0, 0]), k=2)
-        assert 1 not in result.keys
+        await engine.add({1: _normalize([1, 0, 0]), 2: _normalize([0, 1, 0])})
+        await engine.remove([1])
+        result = await _search_one(engine, _normalize([1, 0, 0]), k=2)
+        assert 1 not in {m.key for m in result.matches}
 
 
 # -- Search: Cosine --
 
 
 class TestSearchCosine:
-    def test_basic_knn(self):
+    @pytest.mark.asyncio
+    async def test_basic_knn(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add(
-            [1, 2, 3],
-            [_normalize([1, 0, 0]), _normalize([0, 1, 0]), _normalize([1, 1, 0])],
+        await engine.add(
+            {
+                1: _normalize([1, 0, 0]),
+                2: _normalize([0, 1, 0]),
+                3: _normalize([1, 1, 0]),
+            }
         )
-        result = engine.search(_normalize([1, 0, 0]), k=3)
-        assert len(result.keys) == 3
-        assert result.keys[0] == 1
-        assert result.scores[0] == pytest.approx(1.0, abs=0.01)
-        assert result.scores[1] == pytest.approx(1.0 / math.sqrt(2), abs=0.01)
+        result = await _search_one(engine, _normalize([1, 0, 0]), k=3)
+        assert len(result.matches) == 3
+        assert result.matches[0].key == 1
+        assert result.matches[0].score == pytest.approx(1.0, abs=0.01)
+        assert result.matches[1].score == pytest.approx(1.0 / math.sqrt(2), abs=0.01)
 
-    def test_scores_are_cosine_similarity(self):
+    @pytest.mark.asyncio
+    async def test_scores_are_cosine_similarity(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
         v1 = _normalize([1, 0, 0])
         v2 = _normalize([0, 1, 0])
-        engine.add([1, 2], [v1, v2])
-        result = engine.search(v1, k=2)
-        assert result.scores[0] == pytest.approx(1.0, abs=0.01)
-        assert result.scores[1] == pytest.approx(0.0, abs=0.01)
+        await engine.add({1: v1, 2: v2})
+        result = await _search_one(engine, v1, k=2)
+        assert result.matches[0].score == pytest.approx(1.0, abs=0.01)
+        assert result.matches[1].score == pytest.approx(0.0, abs=0.01)
 
-    def test_scores_ordered_best_first(self):
+    @pytest.mark.asyncio
+    async def test_scores_ordered_best_first(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add(
-            [1, 2, 3],
-            [_normalize([1, 0, 0]), _normalize([0, 1, 0]), _normalize([1, 1, 0])],
+        await engine.add(
+            {
+                1: _normalize([1, 0, 0]),
+                2: _normalize([0, 1, 0]),
+                3: _normalize([1, 1, 0]),
+            }
         )
-        result = engine.search(_normalize([1, 0, 0]), k=3)
-        for i in range(len(result.scores) - 1):
-            assert result.scores[i] >= result.scores[i + 1]
+        result = await _search_one(engine, _normalize([1, 0, 0]), k=3)
+        for i in range(len(result.matches) - 1):
+            assert result.matches[i].score >= result.matches[i + 1].score
 
-    def test_k_larger_than_index(self):
+    @pytest.mark.asyncio
+    async def test_k_larger_than_index(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add([1], [[1, 0, 0]])
-        result = engine.search([1, 0, 0], k=10)
-        assert len(result.keys) == 1
+        await engine.add({1: [1, 0, 0]})
+        result = await _search_one(engine, [1, 0, 0], k=10)
+        assert len(result.matches) == 1
 
-    def test_search_empty_index(self):
+    @pytest.mark.asyncio
+    async def test_search_empty_index(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        result = engine.search([1, 0, 0], k=5)
-        assert len(result.keys) == 0
+        result = await _search_one(engine, [1, 0, 0], k=5)
+        assert result.matches == []
+
+    @pytest.mark.asyncio
+    async def test_batched_search(self):
+        engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
+        await engine.add({1: _normalize([1, 0, 0]), 2: _normalize([0, 1, 0])})
+        results = await engine.search(
+            [_normalize([1, 0, 0]), _normalize([0, 1, 0])], k=1
+        )
+        assert len(results) == 2
+        assert results[0].matches[0].key == 1
+        assert results[1].matches[0].key == 2
 
 
 # -- Search: Euclidean --
 
 
 class TestSearchEuclidean:
-    def test_scores_are_l2sq_distance(self):
+    @pytest.mark.asyncio
+    async def test_scores_are_l2sq_distance(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.EUCLIDEAN)
-        engine.add([1, 2], [[0, 0, 0], [3, 4, 0]])
-        result = engine.search([0, 0, 0], k=2)
-        assert result.keys[0] == 1
-        assert result.scores[0] == pytest.approx(0.0, abs=0.01)
-        assert result.scores[1] == pytest.approx(25.0, abs=0.01)
+        await engine.add({1: [0, 0, 0], 2: [3, 4, 0]})
+        result = await _search_one(engine, [0, 0, 0], k=2)
+        assert result.matches[0].key == 1
+        assert result.matches[0].score == pytest.approx(0.0, abs=0.01)
+        assert result.matches[1].score == pytest.approx(25.0, abs=0.01)
 
-    def test_scores_ordered_best_first(self):
+    @pytest.mark.asyncio
+    async def test_scores_ordered_best_first(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.EUCLIDEAN)
-        engine.add([1, 2, 3], [[0, 0, 0], [1, 0, 0], [3, 4, 0]])
-        result = engine.search([0, 0, 0], k=3)
-        for i in range(len(result.scores) - 1):
-            assert result.scores[i] <= result.scores[i + 1]
+        await engine.add({1: [0, 0, 0], 2: [1, 0, 0], 3: [3, 4, 0]})
+        result = await _search_one(engine, [0, 0, 0], k=3)
+        for i in range(len(result.matches) - 1):
+            assert result.matches[i].score <= result.matches[i + 1].score
 
 
 # -- Search: Dot product --
 
 
 class TestSearchDot:
-    def test_scores_are_inner_product(self):
+    @pytest.mark.asyncio
+    async def test_scores_are_inner_product(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.DOT)
         v1 = _normalize([1, 0, 0])
         v2 = _normalize([0, 1, 0])
-        engine.add([1, 2], [v1, v2])
-        result = engine.search(v1, k=2)
-        assert result.keys[0] == 1
-        assert result.scores[0] == pytest.approx(1.0, abs=0.01)
-        assert result.scores[1] == pytest.approx(0.0, abs=0.01)
+        await engine.add({1: v1, 2: v2})
+        result = await _search_one(engine, v1, k=2)
+        assert result.matches[0].key == 1
+        assert result.matches[0].score == pytest.approx(1.0, abs=0.01)
+        assert result.matches[1].score == pytest.approx(0.0, abs=0.01)
 
-    def test_scores_ordered_best_first(self):
+    @pytest.mark.asyncio
+    async def test_scores_ordered_best_first(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.DOT)
         v1 = _normalize([1, 0, 0])
         v2 = _normalize([1, 1, 0])
         v3 = _normalize([0, 1, 0])
-        engine.add([1, 2, 3], [v1, v2, v3])
-        result = engine.search(v1, k=3)
-        for i in range(len(result.scores) - 1):
-            assert result.scores[i] >= result.scores[i + 1]
-
-
-# -- Filtered search --
-
-
-class TestFilteredSearch:
-    def test_filter_excludes_best_match(self):
-        engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add(
-            [1, 2, 3],
-            [_normalize([1, 0, 0]), _normalize([0, 1, 0]), _normalize([1, 1, 0])],
-        )
-        result = engine.search(
-            _normalize([1, 0, 0]), k=2, key_filter=_SetFilter({2, 3})
-        )
-        assert 1 not in result.keys
-        assert len(result.keys) == 2
-
-    def test_filter_all_excluded(self):
-        engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add([1, 2], [_normalize([1, 0, 0]), _normalize([0, 1, 0])])
-        result = engine.search(_normalize([1, 0, 0]), k=2, key_filter=_SetFilter(set()))
-        assert len(result.keys) == 0
-
-    def test_filter_with_single_allowed(self):
-        engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add(
-            [1, 2, 3],
-            [_normalize([1, 0, 0]), _normalize([0, 1, 0]), _normalize([0, 0, 1])],
-        )
-        result = engine.search(_normalize([1, 0, 0]), k=1, key_filter=_SetFilter({2}))
-        assert result.keys == [2]
-
-    def test_filter_none_is_unfiltered(self):
-        engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add([1, 2], [_normalize([1, 0, 0]), _normalize([0, 1, 0])])
-        result = engine.search(_normalize([1, 0, 0]), k=2, key_filter=None)
-        assert len(result.keys) == 2
+        await engine.add({1: v1, 2: v2, 3: v3})
+        result = await _search_one(engine, v1, k=3)
+        for i in range(len(result.matches) - 1):
+            assert result.matches[i].score >= result.matches[i + 1].score
 
 
 # -- Persistence --
 
 
 class TestPersistence:
-    def test_save_and_load(self, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_save_and_load(self, tmp_path: Path):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add([1, 2], [_normalize([1, 0, 0]), _normalize([0, 1, 0])])
+        await engine.add({1: _normalize([1, 0, 0]), 2: _normalize([0, 1, 0])})
 
         path = str(tmp_path / "test.hnswlib")
-        engine.save(path)
+        await engine.save(path)
 
         engine2 = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine2.load(path)
+        await engine2.load(path)
 
-        assert len(engine2) == 2
-        assert 1 in engine2
-        assert 2 in engine2
+        result = await _search_one(engine2, _normalize([1, 0, 0]), k=2)
+        assert {m.key for m in result.matches} == {1, 2}
+        assert result.matches[0].key == 1
+        assert result.matches[0].score == pytest.approx(1.0, abs=0.01)
 
-        result = engine2.search(_normalize([1, 0, 0]), k=2)
-        assert result.keys[0] == 1
-        assert result.scores[0] == pytest.approx(1.0, abs=0.01)
-
-    def test_save_and_load_with_deletions(self, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_save_and_load_with_deletions(self, tmp_path: Path):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add(
-            [1, 2, 3],
-            [_normalize([1, 0, 0]), _normalize([0, 1, 0]), _normalize([0, 0, 1])],
+        await engine.add(
+            {
+                1: _normalize([1, 0, 0]),
+                2: _normalize([0, 1, 0]),
+                3: _normalize([0, 0, 1]),
+            }
         )
-        engine.remove([2])
+        await engine.remove([2])
 
         path = str(tmp_path / "test.hnswlib")
-        engine.save(path)
+        await engine.save(path)
 
         engine2 = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine2.load(path)
+        await engine2.load(path)
 
-        assert len(engine2) == 2
-        assert 1 in engine2
-        assert 2 not in engine2
-        assert 3 in engine2
+        result = await _search_one(engine2, _normalize([1, 0, 0]), k=3)
+        assert {m.key for m in result.matches} == {1, 3}
 
 
 # -- SearchResult types --
 
 
 class TestSearchResultTypes:
-    def test_keys_are_ints(self):
+    @pytest.mark.asyncio
+    async def test_keys_are_ints(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add([42], [[1, 0, 0]])
-        result = engine.search([1, 0, 0], k=1)
-        assert isinstance(result.keys[0], int)
+        await engine.add({42: [1, 0, 0]})
+        result = await _search_one(engine, [1, 0, 0], k=1)
+        assert isinstance(result.matches[0].key, int)
 
-    def test_scores_are_floats(self):
+    @pytest.mark.asyncio
+    async def test_scores_are_floats(self):
         engine = HnswlibVectorSearchEngine(ndim=NDIM, metric=SimilarityMetric.COSINE)
-        engine.add([42], [[1, 0, 0]])
-        result = engine.search([1, 0, 0], k=1)
-        assert isinstance(result.scores[0], float)
+        await engine.add({42: [1, 0, 0]})
+        result = await _search_one(engine, [1, 0, 0], k=1)
+        assert isinstance(result.matches[0].score, float)

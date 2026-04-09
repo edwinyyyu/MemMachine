@@ -1,14 +1,16 @@
 """hnswlib HNSW implementation of VectorSearchEngine."""
 
-from collections.abc import Iterable, Sequence
-from typing import ClassVar
+import asyncio
+import contextlib
+from collections.abc import Container, Iterable, Mapping, Sequence
+from typing import ClassVar, override
 
 import hnswlib  # ty: ignore[unresolved-import]  # C extension, no py.typed
 import numpy as np
 
 from memmachine_server.common.data_types import SimilarityMetric
 
-from .vector_search_engine import KeyFilter, SearchResult, VectorSearchEngine
+from .vector_search_engine import SearchMatch, SearchResult, VectorSearchEngine
 
 
 class HnswlibVectorSearchEngine(VectorSearchEngine):
@@ -16,9 +18,6 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
 
     Supports caller-provided integer keys, tombstone-based deletion,
     and in-place upserts via ``mark_deleted`` + ``add_items``.
-
-    Filtered search uses hnswlib's native callback filter, which
-    evaluates a predicate per candidate during graph traversal.
 
     Scores are pure metric values:
     - Cosine: cosine similarity (hnswlib returns ``1 - cos_sim``
@@ -69,6 +68,7 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
         )
         self._index.set_ef(ef_search)
         self._live_ids: set[int] = set()
+        self._lock = asyncio.Lock()
 
     def _distance_to_score(self, distance: float) -> float:
         """Convert an hnswlib distance to a pure metric score."""
@@ -88,89 +88,93 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
         )
         self._index.resize_index(new_max)
 
-    def add(self, keys: Sequence[int], vectors: Sequence[Sequence[float]]) -> None:
-        if not keys:
-            return
-        keys_array = np.array(keys, dtype=np.int64)
-        vectors_array = np.array(vectors, dtype=np.float32)
-
-        # Upsert: mark_deleted + re-add for existing keys.
-        for key in keys_array:
-            k = int(key)
-            if k in self._live_ids:
-                self._index.mark_deleted(k)
-                self._live_ids.discard(k)
-
+    def _sync_add(self, vectors: Mapping[int, Sequence[float]]) -> None:
+        keys_array = np.array(list(vectors.keys()), dtype=np.int64)
+        vectors_array = np.array(list(vectors.values()), dtype=np.float32)
         self._ensure_capacity(len(keys_array))
         self._index.add_items(vectors_array, keys_array)
         self._live_ids.update(int(k) for k in keys_array)
 
-    def _raw_search(self, vector: Sequence[float], k: int) -> SearchResult:
-        if not self._live_ids:
-            return SearchResult(keys=[], scores=[])
-        query = np.array([vector], dtype=np.float32)
-        effective_k = min(k, len(self._live_ids))
-        labels, distances = self._index.knn_query(query, k=effective_k, num_threads=1)
-        return SearchResult(
-            keys=[int(i) for i in labels[0]],
-            scores=[self._distance_to_score(float(d)) for d in distances[0]],
-        )
+    @override
+    async def add(self, vectors: Mapping[int, Sequence[float]]) -> None:
+        if not vectors:
+            return
+        async with self._lock:
+            await asyncio.to_thread(self._sync_add, vectors)
 
-    def search(
+    def _sync_search(
         self,
-        vector: Sequence[float],
+        vectors: Sequence[Sequence[float]],
         k: int,
-        *,
-        key_filter: KeyFilter | None = None,
-    ) -> SearchResult:
-        """Search with optional native callback filtering."""
-        if not self._live_ids:
-            return SearchResult(keys=[], scores=[])
-        query = np.array([vector], dtype=np.float32)
+        allowed_keys: Container[int] | None,
+    ) -> list[SearchResult]:
+        query = np.array(vectors, dtype=np.float32)
         effective_k = min(k, len(self._live_ids))
         try:
-            if key_filter is None:
-                labels, distances = self._index.knn_query(
+            if allowed_keys is None:
+                all_labels, all_distances = self._index.knn_query(
                     query, k=effective_k, num_threads=1
                 )
             else:
-                labels, distances = self._index.knn_query(
+                all_labels, all_distances = self._index.knn_query(
                     query,
                     k=effective_k,
                     num_threads=1,
-                    filter=lambda idx: idx in key_filter,
+                    filter=lambda idx: idx in allowed_keys,
                 )
         except RuntimeError:
-            # hnswlib throws when filter excludes all candidates.
-            return SearchResult(keys=[], scores=[])
-        return SearchResult(
-            keys=[int(i) for i in labels[0]],
-            scores=[self._distance_to_score(float(d)) for d in distances[0]],
-        )
+            return [SearchResult(matches=[]) for _ in vectors]
+        results: list[SearchResult] = []
+        for labels, distances in zip(all_labels, all_distances, strict=True):
+            matches = [
+                SearchMatch(key=int(label), score=self._distance_to_score(float(dist)))
+                for label, dist in zip(labels, distances, strict=True)
+                if int(label) >= 0
+            ]
+            results.append(SearchResult(matches=matches))
+        return results
 
-    def remove(self, keys: Iterable[int]) -> None:
+    @override
+    async def search(
+        self,
+        vectors: Iterable[Sequence[float]],
+        k: int,
+        *,
+        allowed_keys: Container[int] | None = None,
+    ) -> list[SearchResult]:
+        vectors_list = list(vectors)
+        if not self._live_ids or not vectors_list:
+            return [SearchResult(matches=[]) for _ in vectors_list]
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._sync_search, vectors_list, k, allowed_keys
+            )
+
+    def _sync_remove(self, keys: Iterable[int]) -> None:
         for key in keys:
-            if key in self._live_ids:
+            with contextlib.suppress(RuntimeError):
                 self._index.mark_deleted(key)
-                self._live_ids.discard(key)
+            self._live_ids.discard(key)
 
-    def __len__(self) -> int:
-        """Return number of live vectors in the index."""
-        return len(self._live_ids)
+    @override
+    async def remove(self, keys: Iterable[int]) -> None:
+        async with self._lock:
+            await asyncio.to_thread(self._sync_remove, keys)
 
-    def __contains__(self, key: int) -> bool:
-        """Return whether the key is live in the index."""
-        return key in self._live_ids
+    @override
+    async def save(self, path: str) -> None:
+        async with self._lock:
+            await asyncio.to_thread(self._index.save_index, path)
 
-    def save(self, path: str) -> None:
-        self._index.save_index(path)
+    @override
+    async def load(self, path: str) -> None:
+        async with self._lock:
+            await asyncio.to_thread(self._load, path)
 
-    def load(self, path: str) -> None:
+    def _load(self, path: str) -> None:
         self._index = hnswlib.Index(space=self._space, dim=self._ndim)
         self._index.load_index(path)
         self._index.set_ef(self._ef_search)
-        # Reconstruct live IDs — get_ids_list includes tombstoned IDs,
-        # so filter by attempting get_items (throws for deleted).
         self._live_ids = set()
         for label in self._index.get_ids_list():
             try:

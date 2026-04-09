@@ -1,143 +1,125 @@
 """Abstract base class for a vector search engine."""
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Sequence
+from collections.abc import Container, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import ClassVar
+
+
+@dataclass(frozen=True)
+class SearchMatch:
+    """
+    A single search match.
+
+    Attributes:
+        score (float):
+            The meaning depends on the collection's `SimilarityMetric`:
+            - *cosine*: cosine similarity in [-1, 1].
+            - *dot*: raw dot product [0, inf).
+            - *euclidean*: Euclidean distance [0, inf).
+            - *manhattan*: Manhattan distance [0, inf).
+        key (int): Engine key for the matched vector.
+    """
+
+    score: float
+    key: int
 
 
 @dataclass(frozen=True)
 class SearchResult:
-    """Result of a nearest-neighbor search.
+    """
+    Result of a nearest-neighbor search for a single query vector.
 
-    Attributes:
-        keys: Engine keys for the matched vectors.
-        scores: Pure metric scores (e.g. cosine similarity,
-            L2 distance).  Ordered from best to worst.
+    Matches are ordered from best to worst.
     """
 
-    keys: list[int]
-    scores: list[float]
-
-
-class KeyFilter(ABC):
-    """Predicate that decides which keys are allowed in search results.
-
-    Engines call ``key in filter`` per candidate during search.
-    Implementations may back this with a set, a SQL query, a bitmap, etc.
-    """
-
-    @abstractmethod
-    def __contains__(self, key: object) -> bool:
-        """Return whether the key is allowed."""
-        ...
+    matches: list[SearchMatch]
 
 
 class VectorSearchEngine(ABC):
-    """A vector search engine that indexes vectors by integer key.
+    """
+    A vector search engine that indexes vectors by integer key.
 
     Provides nearest-neighbor search (exact or approximate) over vectors
-    identified by caller-provided integer keys (typically SQLite rowids).
-
-    Scores are pure metric values:
-    - Cosine: cosine similarity (1.0 = identical, higher is better)
-    - Dot: inner product (higher is better)
-    - Euclidean: L2 distance (0.0 = identical, lower is better)
+    identified by caller-provided integer keys.
 
     Results are returned ordered from best to worst.
 
-    All operations are synchronous and NOT thread-safe.
-    The caller is responsible for serializing writes and wrapping
-    calls in ``asyncio.to_thread`` for async contexts.
-
-    Subclasses must implement :meth:`_raw_search` (unfiltered search).
-    The default :meth:`search` handles ``key_filter`` via overfetch +
-    post-filter.  Engines with native filtering (e.g. FAISS callback)
-    should override :meth:`search` directly.
+    Safe for concurrent use from async tasks (single event loop).
+    Not safe across threads or processes.
     """
 
-    _OVERFETCH_FACTORS: ClassVar[list[int]] = [20, 100]
-
     @abstractmethod
-    def add(self, keys: Sequence[int], vectors: Sequence[Sequence[float]]) -> None:
-        """Add or replace vectors.
+    async def add(self, vectors: Mapping[int, Sequence[float]]) -> None:
+        """
+        Add vectors.
+
+        Keys must not already exist. The caller is responsible for
+        removing existing keys before adding. Behavior on duplicate
+        keys is undefined.
 
         Args:
-            keys: Integer keys, one per vector.
-            vectors: Vectors to add, each of length ndim.
-
-        If a key already exists, its vector is replaced.
+            vectors (Mapping[int, Sequence[float]]):
+                Mapping of integer keys to vectors.
         """
 
     @abstractmethod
-    def _raw_search(self, vector: Sequence[float], k: int) -> SearchResult:
-        """Unfiltered nearest-neighbor search.  Subclasses must implement."""
-
-    def search(
+    async def search(
         self,
-        vector: Sequence[float],
-        k: int,
+        vectors: Iterable[Sequence[float]],
         *,
-        key_filter: KeyFilter | None = None,
-    ) -> SearchResult:
-        """Find the k nearest neighbors of ``vector``.
-
-        If ``key_filter`` is provided, only keys present in the filter
-        are returned.  The default implementation uses overfetch +
-        post-filter.  Override for native filtering support.
-
-        Returns a :class:`SearchResult` with keys and scores
-        ordered from best to worst.
+        k: int,
+        allowed_keys: Container[int] | None = None,
+    ) -> list[SearchResult]:
         """
-        if key_filter is None:
-            return self._raw_search(vector, k)
+        Search for vectors similar to the query vectors.
 
-        engine_size = len(self)
-        if engine_size == 0:
-            return SearchResult(keys=[], scores=[])
+        Results may be approximate depending on the engine implementation.
 
-        for factor in self._OVERFETCH_FACTORS:
-            overfetch_k = min(k * factor, engine_size)
-            result = self._raw_search(vector, overfetch_k)
-            filtered = _apply_key_filter(result, key_filter, k)
-            if len(filtered.keys) >= k or overfetch_k >= engine_size:
-                return filtered
+        Args:
+            vectors (Iterable[Sequence[float]]):
+                Query vectors.
+            k (int):
+                Maximum number of results per query.
+            allowed_keys (Container[int] | None):
+                If provided, only return results whose keys
+                are in this container. The container's ``__contains__``
+                is called synchronously per candidate during search
+                (default: None).
 
-        # Full scan fallback
-        result = self._raw_search(vector, engine_size)
-        return _apply_key_filter(result, key_filter, k)
-
-    @abstractmethod
-    def remove(self, keys: Iterable[int]) -> None:
-        """Remove vectors by key. Missing keys are ignored."""
-
-    @abstractmethod
-    def __len__(self) -> int:
-        """Number of vectors in the engine."""
+        Returns:
+            list[SearchResult]:
+                Results for each query vector,
+                ordered as in the input iterable.
+        """
 
     @abstractmethod
-    def __contains__(self, key: int) -> bool:
-        """Whether a key exists in the engine."""
+    async def remove(self, keys: Iterable[int]) -> None:
+        """
+        Remove vectors by key.
+
+        Missing keys are silently ignored.
+
+        Args:
+            keys (Iterable[int]):
+                Keys of vectors to remove.
+        """
 
     @abstractmethod
-    def save(self, path: str) -> None:
-        """Persist the index to disk."""
+    async def save(self, path: str) -> None:
+        """
+        Persist the index to disk.
+
+        Args:
+            path (str):
+                File path to write the index to.
+        """
 
     @abstractmethod
-    def load(self, path: str) -> None:
-        """Load the index from disk."""
+    async def load(self, path: str) -> None:
+        """
+        Load the index from disk.
 
-
-def _apply_key_filter(
-    result: SearchResult, key_filter: KeyFilter, k: int
-) -> SearchResult:
-    """Post-filter a SearchResult, keeping only keys in the filter."""
-    filtered_keys: list[int] = []
-    filtered_scores: list[float] = []
-    for key, score in zip(result.keys, result.scores, strict=True):
-        if key in key_filter:
-            filtered_keys.append(key)
-            filtered_scores.append(score)
-            if len(filtered_keys) >= k:
-                break
-    return SearchResult(keys=filtered_keys, scores=filtered_scores)
+        Args:
+            path (str):
+                File path to read the index from.
+        """

@@ -1,11 +1,11 @@
 """Vector search engine interface and implementations."""
 
 from .key_filters import SQLKeyFilter
-from .vector_search_engine import KeyFilter, SearchResult, VectorSearchEngine
+from .vector_search_engine import SearchMatch, SearchResult, VectorSearchEngine
 
 __all__ = [
-    "KeyFilter",
     "SQLKeyFilter",
+    "SearchMatch",
     "SearchResult",
     "VectorSearchEngine",
 ]
