@@ -10,26 +10,23 @@ VectorStore contract.  Per-collection vec0 tables enable future use of ANN
 indexes (IVF, DiskANN) which are incompatible with vec0 partition keys.
 """
 
-import asyncio
 import json
 import struct
-from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from typing import ClassVar, override
 from uuid import UUID
-from weakref import WeakKeyDictionary
 
 import aiosqlite
 import sqlalchemy as sa
 import sqlite_vec
-from pydantic import BaseModel, Field, InstanceOf, JsonValue
+from pydantic import BaseModel, Field, InstanceOf, JsonValue, field_validator
 from sqlalchemy import JSON, String, event, select, text
 from sqlalchemy.dialects import sqlite as sa_sqlite
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine.interfaces import DBAPIConnection
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, MappedColumn, mapped_column
-from sqlalchemy.pool import ConnectionPoolEntry
+from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 
 from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import FilterExpr
@@ -81,15 +78,13 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         self,
         *,
         create_session: async_sessionmaker[AsyncSession],
-        write_lock: asyncio.Lock,
         name: str,
         config: VectorStoreCollectionConfig,
         records_table: sa.Table,
         vec_table_name: str,
     ) -> None:
-        """Initialize with session factory, lock, and table references."""
+        """Initialize with session factory and table references."""
         self._create_session = create_session
-        self._write_lock = write_lock
         self._name = name
         self._config = config
         self._records_table = records_table
@@ -149,7 +144,7 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         records_table = self._records_table
         vec_table_name = self._vec_table_name
 
-        async with self._write_lock, self._create_session() as session, session.begin():
+        async with self._create_session() as session, session.begin():
             statement = sqlite_insert(records_table).on_conflict_do_update(
                 index_elements=[records_table.c.uuid],
                 set_={"properties": sqlite_insert(records_table).excluded.properties},
@@ -556,7 +551,7 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         vec_table_name = self._vec_table_name
         uuid_strs = [str(record_uuid) for record_uuid in uuid_list]
 
-        async with self._write_lock, self._create_session() as session, session.begin():
+        async with self._create_session() as session, session.begin():
             rows = (
                 await session.execute(
                     select(records_table.c.rowid).where(
@@ -597,6 +592,21 @@ class SQLiteVecVectorStoreParams(BaseModel):
         description="Async SQLAlchemy engine (sqlite+aiosqlite) with sqlite-vec loaded",
     )
 
+    @field_validator("engine")
+    @classmethod
+    def _validate_engine(cls, engine: AsyncEngine) -> AsyncEngine:
+        assert not isinstance(engine.pool, StaticPool), (
+            "Engine uses StaticPool, which shares one connection across sessions. "
+            "Use a multi-connection pool instead."
+        )
+        db = engine.url.database
+        if engine.dialect.name == "sqlite" and (db is None or db == ":memory:"):
+            raise ValueError(
+                "Engine uses ephemeral SQLite, where each connection gets a separate "
+                "database. Use a file path instead."
+            )
+        return engine
+
 
 class SQLiteVecVectorStore(VectorStore):
     """Vector store backed by SQLite + sqlite-vec.
@@ -609,32 +619,12 @@ class SQLiteVecVectorStore(VectorStore):
         SimilarityMetric.EUCLIDEAN: "L2",
     }
 
-    # Shared across all instances so that stores using the same engine
-    # serialise SQLite writes through the same lock.
-    # Keyed by engine so locks are garbage-collected when the engine is.
-    _write_locks: WeakKeyDictionary[AsyncEngine, asyncio.Lock] = WeakKeyDictionary()
-    _name_locks_by_engine: WeakKeyDictionary[
-        AsyncEngine, defaultdict[tuple[str, str], asyncio.Lock]
-    ] = WeakKeyDictionary()
-
     def __init__(self, params: SQLiteVecVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
         self._engine = params.engine
         self._create_session = async_sessionmaker(self._engine, expire_on_commit=False)
         self._records_tables: dict[str, sa.Table] = {}
         self._sa_metadata = sa.MetaData()
-
-    @property
-    def _write_lock(self) -> asyncio.Lock:
-        return SQLiteVecVectorStore._write_locks.setdefault(
-            self._engine, asyncio.Lock()
-        )
-
-    @property
-    def _name_locks(self) -> defaultdict[tuple[str, str], asyncio.Lock]:
-        return SQLiteVecVectorStore._name_locks_by_engine.setdefault(
-            self._engine, defaultdict(asyncio.Lock)
-        )
 
     @staticmethod
     def create_engine(url: str) -> AsyncEngine:
@@ -781,7 +771,6 @@ class SQLiteVecVectorStore(VectorStore):
     ) -> SQLiteVecVectorStoreCollection:
         return SQLiteVecVectorStoreCollection(
             create_session=self._create_session,
-            write_lock=self._write_lock,
             name=name,
             config=config,
             records_table=records_table,
@@ -800,13 +789,7 @@ class SQLiteVecVectorStore(VectorStore):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
         self._validate_metric(config.similarity_metric)
 
-        lock = self._name_locks[(namespace, name)]
-        async with (
-            lock,
-            self._write_lock,
-            self._create_session() as session,
-            session.begin(),
-        ):
+        async with self._create_session() as session, session.begin():
             existing = await self._get_stored_config(session, namespace, name)
             if existing is not None:
                 raise VectorStoreCollectionAlreadyExistsError(namespace, name)
@@ -832,13 +815,7 @@ class SQLiteVecVectorStore(VectorStore):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
         self._validate_metric(config.similarity_metric)
 
-        lock = self._name_locks[(namespace, name)]
-        async with (
-            lock,
-            self._write_lock,
-            self._create_session() as session,
-            session.begin(),
-        ):
+        async with self._create_session() as session, session.begin():
             existing = await self._get_stored_config(session, namespace, name)
             if existing is not None:
                 if existing != config:
@@ -893,13 +870,7 @@ class SQLiteVecVectorStore(VectorStore):
     async def delete_collection(self, *, namespace: str, name: str) -> None:
         if not validate_identifier(namespace) or not validate_identifier(name):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
-        lock = self._name_locks[(namespace, name)]
-        async with (
-            lock,
-            self._write_lock,
-            self._create_session() as session,
-            session.begin(),
-        ):
+        async with self._create_session() as session, session.begin():
             existing = await self._get_stored_config(session, namespace, name)
             if existing is None:
                 return

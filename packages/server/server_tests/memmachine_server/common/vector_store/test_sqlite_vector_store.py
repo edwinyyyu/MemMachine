@@ -55,8 +55,9 @@ def _make_record(
 
 
 @pytest_asyncio.fixture
-async def store():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+async def store(tmp_path):
+    db_path = tmp_path / "test.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     params = SQLiteVectorStoreParams(
         engine=engine,
         engine_factory=lambda ndim, metric: USearchVectorSearchEngine(
