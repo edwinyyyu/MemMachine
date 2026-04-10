@@ -886,7 +886,6 @@ async def test_get_feature_set_unknown_filter_column_errors(
         embedding=np.array([1.0], dtype=float),
     )
 
-    # No errors occurs
     with pytest.raises(ValueError, match="Unknown filter field"):
         await _collect_feature_set(
             semantic_storage,
