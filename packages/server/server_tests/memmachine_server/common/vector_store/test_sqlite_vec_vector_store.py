@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
@@ -59,7 +60,7 @@ def _make_record(
 @pytest_asyncio.fixture
 async def store(tmp_path):
     db_path = tmp_path / "test.db"
-    engine = SQLiteVecVectorStore.create_engine(f"sqlite+aiosqlite:///{db_path}")
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     params = SQLiteVecVectorStoreParams(engine=engine)
     vector_store = SQLiteVecVectorStore(params)
     await vector_store.startup()
@@ -890,3 +891,121 @@ class TestNoProperties:
         assert len(results[0].matches) == 1
 
         await store.delete_collection(namespace=NAMESPACE, name="no_props")
+
+
+# ── Input validation ──
+
+
+class TestInputValidation:
+    @pytest.mark.asyncio
+    async def test_upsert_rejects_none_vector(self, collection):
+        record = _make_record(vector=None)
+        with pytest.raises(ValueError, match="vector=None"):
+            await collection.upsert(records=[record])
+
+    @pytest.mark.asyncio
+    async def test_upsert_none_properties_treated_as_empty(self, collection):
+        v1 = _normalize([1.0, 0.0, 0.0])
+        record = _make_record(vector=v1, properties=None)
+        await collection.upsert(records=[record])
+        fetched = await collection.get(
+            record_uuids=[record.uuid], return_properties=True
+        )
+        assert len(fetched) == 1
+        assert fetched[0].properties == {}
+
+
+# ── Score semantics ──
+
+
+class TestScoreSemantics:
+    @pytest.mark.asyncio
+    async def test_cosine_higher_is_better(self, collection):
+        v1 = _normalize([1.0, 0.0, 0.0])
+        v2 = _normalize([0.0, 1.0, 0.0])
+        r1 = _make_record(vector=v1)
+        r2 = _make_record(vector=v2)
+        await collection.upsert(records=[r1, r2])
+
+        results = await collection.query(query_vectors=[v1], limit=2)
+        scores = [m.score for m in results[0].matches]
+        assert scores[0] > scores[1]
+
+    @pytest.mark.asyncio
+    async def test_euclidean_lower_is_better(self, store):
+        config = VectorStoreCollectionConfig(
+            vector_dimensions=2,
+            similarity_metric=SimilarityMetric.EUCLIDEAN,
+        )
+        coll = await store.open_or_create_collection(
+            namespace=NAMESPACE, name="euclidean_score", config=config
+        )
+        r1 = _make_record(vector=[0.0, 0.0])
+        r2 = _make_record(vector=[3.0, 4.0])
+        await coll.upsert(records=[r1, r2])
+
+        results = await coll.query(query_vectors=[[0.0, 0.0]], limit=2)
+        scores = [m.score for m in results[0].matches]
+        assert scores[0] < scores[1]
+        assert scores[0] == pytest.approx(0.0, abs=0.01)
+        assert scores[1] == pytest.approx(5.0, abs=0.01)
+
+        await store.delete_collection(namespace=NAMESPACE, name="euclidean_score")
+
+
+# ── Upsert behavior ──
+
+
+class TestUpsertBehavior:
+    @pytest.mark.asyncio
+    async def test_upsert_replaces_vector_and_properties(self, collection):
+        v1 = _normalize([1.0, 0.0, 0.0])
+        v2 = _normalize([0.0, 1.0, 0.0])
+        record_uuid = uuid4()
+
+        await collection.upsert(
+            records=[
+                _make_record(uuid=record_uuid, vector=v1, properties={"name": "alice"})
+            ]
+        )
+        await collection.upsert(
+            records=[
+                _make_record(uuid=record_uuid, vector=v2, properties={"name": "bob"})
+            ]
+        )
+
+        fetched = await collection.get(
+            record_uuids=[record_uuid], return_vector=True, return_properties=True
+        )
+        assert len(fetched) == 1
+        assert fetched[0].properties["name"] == "bob"
+
+        results = await collection.query(query_vectors=[v2], limit=1)
+        assert results[0].matches[0].record.uuid == record_uuid
+        assert results[0].matches[0].score == pytest.approx(1.0, abs=0.01)
+
+
+# ── Filter edge cases ──
+
+
+class TestFilterEdgeCases:
+    @pytest.mark.asyncio
+    async def test_or_filter_does_not_match_all(self, collection):
+        """Regression: OR filter with parenthesization must not bypass rowid constraint."""
+        v1 = _normalize([1.0, 0.0, 0.0])
+        r1 = _make_record(vector=v1, properties={"name": "alice"})
+        r2 = _make_record(vector=v1, properties={"name": "bob"})
+        r3 = _make_record(vector=v1, properties={"name": "carol"})
+        await collection.upsert(records=[r1, r2, r3])
+
+        results = await collection.query(
+            query_vectors=[v1],
+            property_filter=Or(
+                left=Comparison(field="name", op="=", value="alice"),
+                right=Comparison(field="name", op="=", value="carol"),
+            ),
+        )
+        uuids = {m.record.uuid for m in results[0].matches}
+        assert r1.uuid in uuids
+        assert r3.uuid in uuids
+        assert r2.uuid not in uuids
