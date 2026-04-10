@@ -6,7 +6,8 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
@@ -26,6 +27,7 @@ from memmachine_server.common.vector_store.sqlite_vector_store import (
     SQLiteVectorStore,
     SQLiteVectorStoreCollection,
     SQLiteVectorStoreParams,
+    _PendingOperationRow,
 )
 from memmachine_server.common.vector_store.vector_search_engine.usearch_engine import (
     USearchVectorSearchEngine,
@@ -59,8 +61,8 @@ async def store(tmp_path):
     db_path = tmp_path / "test.db"
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     params = SQLiteVectorStoreParams(
-        engine=engine,
-        engine_factory=lambda ndim, metric: USearchVectorSearchEngine(
+        sqlalchemy_engine=engine,
+        vector_search_engine_factory=lambda ndim, metric: USearchVectorSearchEngine(
             ndim=ndim, metric=metric
         ),
     )
@@ -1065,3 +1067,252 @@ class TestConcurrentAsync:
             await collection.upsert(records=more_records)
 
         await asyncio.gather(query_loop(), upsert_more())
+
+
+# ── Crash recovery & pending operations ──
+
+
+def _engine_factory(ndim, metric):
+    return USearchVectorSearchEngine(ndim=ndim, metric=metric)
+
+
+CONFIG = VectorStoreCollectionConfig(
+    vector_dimensions=VECTOR_DIM,
+    similarity_metric=SimilarityMetric.COSINE,
+)
+
+
+async def _fresh_store(db_path, tmp_path, *, save_threshold=1000):
+    """Create a new SQLiteVectorStore against the same DB file."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    params = SQLiteVectorStoreParams(
+        sqlalchemy_engine=engine,
+        vector_search_engine_factory=_engine_factory,
+        index_directory=str(tmp_path / "indexes"),
+        save_threshold=save_threshold,
+    )
+    store = SQLiteVectorStore(params)
+    await store.startup()
+    return store, engine
+
+
+async def _pending_operation_count(engine) -> int:
+    """Count all rows in the pending operations table."""
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        return (
+            await session.execute(
+                select(func.count()).select_from(_PendingOperationRow)
+            )
+        ).scalar_one()
+
+
+async def _set_all_pending_operations_unapplied(engine) -> None:
+    """Mark all pending operations as unapplied (simulates crash before engine apply)."""
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session, session.begin():
+        await session.execute(update(_PendingOperationRow).values(applied=False))
+
+
+class TestCrashRecovery:
+    """Tests for pending operations replay on startup."""
+
+    @pytest.mark.asyncio
+    async def test_replay_upserts_after_crash(self, tmp_path):
+        """Records upserted before crash are queryable after restart."""
+        db_path = tmp_path / "test.db"
+        store1, engine1 = await _fresh_store(db_path, tmp_path)
+
+        coll = await store1.open_or_create_collection(
+            namespace=NAMESPACE, name=NAME, config=CONFIG
+        )
+        records = [
+            _make_record(vector=_normalize([1.0, 0.0, 0.0])),
+            _make_record(vector=_normalize([0.0, 1.0, 0.0])),
+        ]
+        await coll.upsert(records=records)
+
+        # Simulate crash: dispose without shutdown (pending ops remain).
+        await engine1.dispose()
+
+        # Restart with fresh in-memory engines.
+        store2, engine2 = await _fresh_store(db_path, tmp_path)
+        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        assert coll2 is not None
+
+        results = await coll2.query(
+            query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=10
+        )
+        assert len(results[0].matches) == 2
+
+        await store2.shutdown()
+        await engine2.dispose()
+
+    @pytest.mark.asyncio
+    async def test_replay_unapplied_upserts(self, tmp_path):
+        """Unapplied pending upserts (crash before engine apply) are replayed."""
+        db_path = tmp_path / "test.db"
+        store1, engine1 = await _fresh_store(db_path, tmp_path)
+
+        coll = await store1.open_or_create_collection(
+            namespace=NAMESPACE, name=NAME, config=CONFIG
+        )
+        records = [
+            _make_record(vector=_normalize([1.0, 0.0, 0.0])),
+            _make_record(vector=_normalize([0.0, 1.0, 0.0])),
+        ]
+        await coll.upsert(records=records)
+
+        # Simulate crash between SQLite commit and engine apply:
+        # mark all pending ops as unapplied.
+        await _set_all_pending_operations_unapplied(engine1)
+        await engine1.dispose()
+
+        # Restart: replay should re-apply unapplied ops to the engine.
+        store2, engine2 = await _fresh_store(db_path, tmp_path)
+        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        assert coll2 is not None
+
+        results = await coll2.query(
+            query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=10
+        )
+        assert len(results[0].matches) == 2
+
+        await store2.shutdown()
+        await engine2.dispose()
+
+    @pytest.mark.asyncio
+    async def test_replay_deletes_after_crash(self, tmp_path):
+        """Pending delete operations are replayed on restart."""
+        db_path = tmp_path / "test.db"
+        store1, engine1 = await _fresh_store(db_path, tmp_path)
+
+        coll = await store1.open_or_create_collection(
+            namespace=NAMESPACE, name=NAME, config=CONFIG
+        )
+        r1 = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+        r2 = _make_record(vector=_normalize([0.0, 1.0, 0.0]))
+        await coll.upsert(records=[r1, r2])
+        await coll.delete(record_uuids=[r1.uuid])
+
+        # Simulate crash.
+        await engine1.dispose()
+
+        store2, engine2 = await _fresh_store(db_path, tmp_path)
+        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        assert coll2 is not None
+
+        results = await coll2.query(
+            query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=10
+        )
+        assert len(results[0].matches) == 1
+
+        fetched = await coll2.get(record_uuids=[r1.uuid])
+        assert len(fetched) == 0
+
+        await store2.shutdown()
+        await engine2.dispose()
+
+    @pytest.mark.asyncio
+    async def test_replay_mixed_upserts_and_deletes(self, tmp_path):
+        """Mixed upsert and delete pending ops are replayed correctly."""
+        db_path = tmp_path / "test.db"
+        store1, engine1 = await _fresh_store(db_path, tmp_path)
+
+        coll = await store1.open_or_create_collection(
+            namespace=NAMESPACE, name=NAME, config=CONFIG
+        )
+        r1 = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+        r2 = _make_record(vector=_normalize([0.0, 1.0, 0.0]))
+        r3 = _make_record(vector=_normalize([0.0, 0.0, 1.0]))
+        await coll.upsert(records=[r1, r2, r3])
+        await coll.delete(record_uuids=[r2.uuid])
+
+        # Simulate crash.
+        await engine1.dispose()
+
+        store2, engine2 = await _fresh_store(db_path, tmp_path)
+        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        assert coll2 is not None
+
+        results = await coll2.query(
+            query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=10
+        )
+        assert len(results[0].matches) == 2
+
+        fetched = await coll2.get(record_uuids=[r1.uuid, r2.uuid, r3.uuid])
+        fetched_uuids = {r.uuid for r in fetched}
+        assert r1.uuid in fetched_uuids
+        assert r2.uuid not in fetched_uuids
+        assert r3.uuid in fetched_uuids
+
+        await store2.shutdown()
+        await engine2.dispose()
+
+    @pytest.mark.asyncio
+    async def test_save_threshold_clears_applied_ops(self, tmp_path):
+        """Applied pending ops are deleted after save threshold is reached."""
+        db_path = tmp_path / "test.db"
+        store1, engine1 = await _fresh_store(db_path, tmp_path, save_threshold=2)
+
+        coll = await store1.open_or_create_collection(
+            namespace=NAMESPACE, name=NAME, config=CONFIG
+        )
+
+        # Upsert 1 record: below threshold, pending op should remain.
+        r1 = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+        await coll.upsert(records=[r1])
+        assert await _pending_operation_count(engine1) == 1
+
+        # Upsert 1 more: reaches threshold of 2, should trigger save + cleanup.
+        r2 = _make_record(vector=_normalize([0.0, 1.0, 0.0]))
+        await coll.upsert(records=[r2])
+        assert await _pending_operation_count(engine1) == 0
+
+        await store1.shutdown()
+        await engine1.dispose()
+
+    @pytest.mark.asyncio
+    async def test_cascade_deletes_pending_ops(self, tmp_path):
+        """Deleting a collection cascades to its pending operations."""
+        db_path = tmp_path / "test.db"
+        store1, engine1 = await _fresh_store(db_path, tmp_path)
+
+        coll = await store1.open_or_create_collection(
+            namespace=NAMESPACE, name=NAME, config=CONFIG
+        )
+        records = [
+            _make_record(vector=_normalize([1.0, 0.0, 0.0])),
+            _make_record(vector=_normalize([0.0, 1.0, 0.0])),
+        ]
+        await coll.upsert(records=records)
+        assert await _pending_operation_count(engine1) == 2
+
+        await store1.delete_collection(namespace=NAMESPACE, name=NAME)
+        assert await _pending_operation_count(engine1) == 0
+
+        await store1.shutdown()
+        await engine1.dispose()
+
+    @pytest.mark.asyncio
+    async def test_require_started(self, tmp_path):
+        """Store methods raise RuntimeError before startup."""
+        db_path = tmp_path / "test.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+        store = SQLiteVectorStore(
+            SQLiteVectorStoreParams(
+                sqlalchemy_engine=engine,
+                vector_search_engine_factory=_engine_factory,
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="startup"):
+            await store.open_collection(namespace=NAMESPACE, name=NAME)
+
+        with pytest.raises(RuntimeError, match="startup"):
+            await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+
+        with pytest.raises(RuntimeError, match="startup"):
+            await store.delete_collection(namespace=NAMESPACE, name=NAME)
+
+        await engine.dispose()

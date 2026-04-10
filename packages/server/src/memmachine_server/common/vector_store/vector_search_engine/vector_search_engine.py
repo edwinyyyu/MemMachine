@@ -67,7 +67,7 @@ class VectorSearchEngine(ABC):
         self,
         vectors: Iterable[Sequence[float]],
         *,
-        k: int,
+        limit: int | None = None,
         allowed_keys: Container[int] | None = None,
     ) -> list[SearchResult]:
         """
@@ -78,8 +78,10 @@ class VectorSearchEngine(ABC):
         Args:
             vectors (Iterable[Sequence[float]]):
                 Query vectors.
-            k (int):
+            limit (int | None):
                 Maximum number of results per query.
+                If None, return as many matching records as possible
+                (default: None).
             allowed_keys (Container[int] | None):
                 If provided, only return results whose keys
                 are in this container. The container's ``__contains__``

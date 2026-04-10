@@ -3,12 +3,12 @@ Vector store backed by SQLite + pluggable vector search engine.
 
 Each logical collection gets its own records table and vector search engine.
 A pending operations table tracks search engine operations for crash recovery:
-On startup, unprocessed operations are replayed.
+on startup, unfinalized operations are replayed.
 """
 
 import logging
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import override
 from uuid import UUID
@@ -19,25 +19,26 @@ from sqlalchemy import (
     JSON,
     Boolean,
     Column,
+    ForeignKeyConstraint,
     Integer,
     LargeBinary,
     MetaData,
     String,
     Table,
-    Text,
     Uuid,
     create_engine,
     delete,
+    event,
     func,
     select,
-    text,
     update,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
+from sqlalchemy.engine.interfaces import DBAPIConnection
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, MappedColumn, Session, mapped_column
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 
 from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
@@ -78,59 +79,62 @@ class _CollectionRow(BaseSQLiteVectorStore):
 
 
 class _PendingOperationRow(BaseSQLiteVectorStore):
-    """Pending engine index operations for crash recovery.
+    """
+    Pending collection operations for crash recovery.
 
-    Stores the latest unprocessed operation per (collection, record).
-    Written in the same SQLite transaction as the data change.
-    Marked completed after the engine processes the operation.
-    Cleared after the engine is saved to disk.
-    On startup, all remaining rows are replayed.
+    One row per (namespace, name, record). New operations replace old ones.
+    Lifecycle:
+    1. Inserted in the same SQLite transaction as the records table change.
+    2. Marked `applied=True` after the search engine processes the operation.
+    3. Applied operations are deleted after the search engine is saved to disk.
+    4. On startup, all remaining rows (applied or not) are replayed.
     """
 
     __tablename__ = "vector_store_sqlite_pd_op"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["namespace", "name"],
+            [
+                f"{_CollectionRow.__tablename__}.namespace",
+                f"{_CollectionRow.__tablename__}.name",
+            ],
+            ondelete="CASCADE",
+        ),
+    )
 
-    collection_prefix: MappedColumn[str] = mapped_column(Text, primary_key=True)
+    namespace: MappedColumn[str] = mapped_column(String(255), primary_key=True)
+    name: MappedColumn[str] = mapped_column(String(255), primary_key=True)
     record_row_id: MappedColumn[int] = mapped_column(Integer, primary_key=True)
     operation_type: MappedColumn[str] = mapped_column(
         String(8), nullable=False
     )  # "upsert" or "delete"
     vector: MappedColumn[bytes | None] = mapped_column(LargeBinary, nullable=True)
-    completed: MappedColumn[bool] = mapped_column(
-        Boolean, nullable=False, default=False
-    )
+    applied: MappedColumn[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class SQLiteVectorStoreCollection(VectorStoreCollection):
-    """A logical collection backed by SQLite + a pluggable vector search engine.
-
-    Each logical collection has its own records table and engine instance,
-    so KNN queries search only this collection's vectors directly.
-    """
+    """A logical collection backed by SQLite + a pluggable vector search engine."""
 
     class _KeyFilter:
-        """Per-candidate SQL filter using a sync SQLAlchemy session.
-
-        Each ``__contains__`` call executes an indexed row ID lookup.
-        Results are cached for the lifetime of the filter.
-        The session is closed automatically when the filter is garbage-collected.
-        """
+        """Per-candidate SQL filter using a sync SQLAlchemy session."""
 
         def __init__(
             self,
-            sync_engine: Engine,
+            sync_sqlalchemy_engine: Engine,
             records_table: Table,
             filter_expression: ColumnElement[bool],
         ) -> None:
-            """Initialize with a sync engine, records table, and filter expression."""
-            self._sync_engine = sync_engine
+            """Initialize with a sync SQLAlchemy engine, records table, and filter expression."""
+            self._sync_sqlalchemy_engine = sync_sqlalchemy_engine
             self._records_table = records_table
             self._filter_expression = filter_expression
+
             self._cache: dict[int, bool] = {}
             self._session: Session | None = None
 
         def _get_session(self) -> Session:
             if self._session is None:
-                self._session = Session(self._sync_engine)
+                self._session = Session(self._sync_sqlalchemy_engine)
             return self._session
 
         def __contains__(self, key: object) -> bool:
@@ -139,6 +143,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                 return False
             if key in self._cache:
                 return self._cache[key]
+
             row = (
                 self._get_session()
                 .execute(
@@ -161,30 +166,26 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         self,
         *,
         create_session: async_sessionmaker[AsyncSession],
+        sync_sqlalchemy_engine: Engine,
+        records_table: Table,
+        search_engine: VectorSearchEngine,
+        namespace: str,
         name: str,
         config: VectorStoreCollectionConfig,
-        records_table: Table,
-        engine: VectorSearchEngine,
-        sync_engine: Engine,
-        collection_prefix: str,
         index_path: str | None,
         save_threshold: int,
     ) -> None:
-        """Initialize with session factory, table, and search engine."""
+        """Initialize a collection handle."""
         self._create_session = create_session
-        self._name = name
-        self._config = config
+        self._sync_sqlalchemy_engine = sync_sqlalchemy_engine
         self._records_table = records_table
-        self._engine = engine
-        self._sync_engine = sync_engine
-        self._metric = config.similarity_metric
+        self._search_engine = search_engine
 
-        self._score_is_better = (
-            (lambda a, b: a >= b)
-            if config.similarity_metric.higher_is_better
-            else (lambda a, b: a <= b)
-        )
-        self._collection_prefix = collection_prefix
+        self._namespace = namespace
+        self._name = name
+
+        self._config = config
+
         self._index_path = index_path
         self._save_threshold = save_threshold
 
@@ -194,129 +195,129 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         return self._config
 
     async def _maybe_save_engine(self) -> None:
-        """Save the engine index to disk if completed pending operations exceed the threshold."""
+        """Save the engine index to disk if applied pending operations exceed the threshold."""
         if self._index_path is None:
             return
+
         async with self._create_session() as session:
             count = (
                 await session.execute(
                     select(func.count()).where(
-                        _PendingOperationRow.collection_prefix
-                        == self._collection_prefix,
-                        _PendingOperationRow.completed.is_(True),
+                        _PendingOperationRow.namespace == self._namespace,
+                        _PendingOperationRow.name == self._name,
+                        _PendingOperationRow.applied.is_(True),
                     )
                 )
             ).scalar_one()
+
         if count >= self._save_threshold:
-            await self._engine.save(self._index_path)
+            await self._search_engine.save(self._index_path)
+
             async with self._create_session() as session, session.begin():
                 await session.execute(
                     delete(_PendingOperationRow).where(
-                        _PendingOperationRow.collection_prefix
-                        == self._collection_prefix,
-                        _PendingOperationRow.completed.is_(True),
+                        _PendingOperationRow.namespace == self._namespace,
+                        _PendingOperationRow.name == self._name,
+                        _PendingOperationRow.applied.is_(True),
                     )
                 )
 
     @override
     async def upsert(self, *, records: Iterable[Record]) -> None:
-        records_list = list(records)
-        for record in records_list:
+        records = list(records)
+        if not records:
+            return
+
+        for record in records:
             if record.vector is None:
                 raise ValueError(
                     f"Record {record.uuid} has vector=None, which is not allowed on input."
                 )
 
-        if not records_list:
-            return
-
-        records_table = self._records_table
-        engine = self._engine
-        collection_prefix = self._collection_prefix
-
         async with self._create_session() as session, session.begin():
-            upsert_records = sqlite_insert(records_table).on_conflict_do_update(
-                index_elements=[records_table.c.uuid],
-                set_={
-                    "properties": sqlite_insert(records_table).excluded.properties,
-                },
+            upsert_records = (
+                sqlite_insert(self._records_table)
+                .on_conflict_do_update(
+                    index_elements=[self._records_table.c.uuid],
+                    set_={
+                        "properties": sqlite_insert(
+                            self._records_table
+                        ).excluded.properties,
+                    },
+                )
+                .returning(self._records_table.c.uuid, self._records_table.c.row_id)
             )
-            await session.execute(
-                upsert_records,
-                [
-                    {
-                        "uuid": record.uuid,
-                        "properties": encode_properties(record.properties),
-                    }
-                    for record in records_list
-                ],
-            )
-
-            record_uuids = [record.uuid for record in records_list]
             rows = (
                 await session.execute(
-                    select(records_table.c.uuid, records_table.c.row_id).where(
-                        records_table.c.uuid.in_(record_uuids),
-                    )
+                    upsert_records,
+                    [
+                        {
+                            "uuid": record.uuid,
+                            "properties": encode_properties(record.properties),
+                        }
+                        for record in records
+                    ],
                 )
             ).all()
             uuid_to_row_id: dict[UUID, int] = {row.uuid: row.row_id for row in rows}
 
             pending_operation_values = [
                 {
-                    "collection_prefix": collection_prefix,
+                    "namespace": self._namespace,
+                    "name": self._name,
                     "record_row_id": uuid_to_row_id[record.uuid],
                     "operation_type": "upsert",
                     "vector": np.array(record.vector, dtype=np.float32).tobytes(),
-                    "completed": False,
+                    "applied": False,
                 }
-                for record in records_list
+                for record in records
             ]
             if pending_operation_values:
                 upsert_pending_operation = sqlite_insert(_PendingOperationRow)
                 await session.execute(
                     upsert_pending_operation.on_conflict_do_update(
-                        index_elements=["collection_prefix", "record_row_id"],
+                        index_elements=["namespace", "name", "record_row_id"],
                         set_={
                             "operation_type": upsert_pending_operation.excluded.operation_type,
                             "vector": upsert_pending_operation.excluded.vector,
-                            "completed": upsert_pending_operation.excluded.completed,
+                            "applied": upsert_pending_operation.excluded.applied,
                         },
                     ),
                     pending_operation_values,
                 )
 
-        await self._apply_engine_upserts(records_list, uuid_to_row_id, engine)
+        await self._apply_engine_upserts(records, uuid_to_row_id)
 
     async def _apply_engine_upserts(
         self,
-        records_list: list[Record],
-        uuid_to_row_id: dict[UUID, int],
-        engine: VectorSearchEngine,
+        records: Iterable[Record],
+        uuid_to_row_id: Mapping[UUID, int],
     ) -> None:
-        """Update engine index after SQLite commit."""
+        """Update search engine index after SQLite commit."""
         engine_vectors: dict[int, list[float]] = {
             uuid_to_row_id[record.uuid]: record.vector
-            for record in records_list
+            for record in records
             if record.vector is not None
         }
 
         if engine_vectors:
-            await engine.remove(engine_vectors.keys())
-            await engine.add(engine_vectors)
+            await self._search_engine.remove(engine_vectors.keys())
+            await self._search_engine.add(engine_vectors)
+
             async with self._create_session() as session, session.begin():
                 await session.execute(
                     update(_PendingOperationRow)
                     .where(
-                        _PendingOperationRow.collection_prefix
-                        == self._collection_prefix,
+                        _PendingOperationRow.namespace == self._namespace,
+                        _PendingOperationRow.name == self._name,
                         _PendingOperationRow.record_row_id.in_(
                             list(engine_vectors.keys())
                         ),
-                        _PendingOperationRow.completed.is_(False),
+                        _PendingOperationRow.applied.is_(False),
                     )
-                    .values(completed=True)
+                    .values(applied=True)
                 )
+
             await self._maybe_save_engine()
 
     @override
@@ -330,21 +331,20 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         return_vector: bool = False,
         return_properties: bool = True,
     ) -> list[QueryResult]:
-        query_vectors_list = list(query_vectors)
-        if not query_vectors_list:
+        query_vectors = list(query_vectors)
+        if not query_vectors:
             return []
 
         if limit is not None and limit <= 0:
-            return [QueryResult(matches=[]) for _ in query_vectors_list]
+            return [QueryResult(matches=[]) for _ in query_vectors]
 
         if property_filter is not None and not validate_filter(property_filter):
             raise ValueError("Filter contains invalid field names")
 
         key_filter = self._build_key_filter(property_filter)
-        effective_limit = limit if limit is not None else 2**31 - 1
 
-        search_results = await self._engine.search(
-            query_vectors_list, k=effective_limit, allowed_keys=key_filter
+        search_results = await self._search_engine.search(
+            query_vectors, limit=limit, allowed_keys=key_filter
         )
 
         results: list[QueryResult] = []
@@ -365,11 +365,11 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
     def _build_key_filter(
         self, property_filter: FilterExpr | None
     ) -> _KeyFilter | None:
-        """Build a key filter for the given property filter, or None."""
         if property_filter is None:
             return None
+
         return SQLiteVectorStoreCollection._KeyFilter(
-            sync_engine=self._sync_engine,
+            sync_sqlalchemy_engine=self._sync_sqlalchemy_engine,
             records_table=self._records_table,
             filter_expression=compile_sql_filter(
                 property_filter,
@@ -382,21 +382,19 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
 
     async def _build_matches(
         self,
-        row_id_to_score: dict[int, float],
+        row_id_to_score: Mapping[int, float],
         score_threshold: float | None,
         return_vector: bool,
         return_properties: bool,
     ) -> list[QueryMatch]:
-        """Fetch records for matched row IDs and build QueryMatch list."""
-        records_table = self._records_table
         matched_row_ids = list(row_id_to_score.keys())
 
-        select_columns = [records_table.c.uuid, records_table.c.row_id]
+        selected_columns = [self._records_table.c.uuid, self._records_table.c.row_id]
         if return_properties:
-            select_columns.append(records_table.c.properties)
+            selected_columns.append(self._records_table.c.properties)
 
-        fetch_records = select(*select_columns).where(
-            records_table.c.row_id.in_(matched_row_ids),
+        fetch_records = select(*selected_columns).where(
+            self._records_table.c.row_id.in_(matched_row_ids),
         )
 
         async with self._create_session() as session:
@@ -404,17 +402,17 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
 
         vector_map: dict[int, list[float]] = {}
         if return_vector:
-            vector_map = await self._engine.get_vectors(matched_row_ids)
+            vector_map = await self._search_engine.get_vectors(matched_row_ids)
 
-        score_is_better = self._score_is_better
+        higher_is_better = self._config.similarity_metric.higher_is_better
         matches: list[QueryMatch] = []
         for row in matched_rows:
             score = row_id_to_score.get(row.row_id)
             if score is None:
                 continue
 
-            if score_threshold is not None and not score_is_better(
-                score, score_threshold
+            if score_threshold is not None and (
+                score < score_threshold if higher_is_better else score > score_threshold
             ):
                 continue
 
@@ -433,7 +431,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
 
         matches.sort(
             key=lambda match: match.score,
-            reverse=self._metric.higher_is_better,
+            reverse=self._config.similarity_metric.higher_is_better,
         )
         return matches
 
@@ -445,29 +443,26 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         return_vector: bool = False,
         return_properties: bool = True,
     ) -> list[Record]:
-        uuid_list = list(record_uuids)
-        if not uuid_list:
+        record_uuids = list(record_uuids)
+        if not record_uuids:
             return []
 
-        records_table = self._records_table
-        record_uuids = list(uuid_list)
-
-        select_columns = [records_table.c.uuid, records_table.c.row_id]
+        selected_columns = [self._records_table.c.uuid, self._records_table.c.row_id]
         if return_properties:
-            select_columns.append(records_table.c.properties)
+            selected_columns.append(self._records_table.c.properties)
 
         async with self._create_session() as session:
             fetched_rows = (
                 await session.execute(
-                    select(*select_columns).where(
-                        records_table.c.uuid.in_(record_uuids),
+                    select(*selected_columns).where(
+                        self._records_table.c.uuid.in_(record_uuids),
                     )
                 )
             ).all()
 
-        vector_map: dict[int, list[float]] = {}
+        row_id_to_vector: dict[int, list[float]] = {}
         if return_vector:
-            vector_map = await self._engine.get_vectors(
+            row_id_to_vector = await self._search_engine.get_vectors(
                 [row.row_id for row in fetched_rows]
             )
 
@@ -479,7 +474,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
             if return_properties:
                 properties = decode_properties(row.properties)
 
-            vector: list[float] | None = vector_map.get(row.row_id)
+            vector: list[float] | None = row_id_to_vector.get(row.row_id)
 
             record_map[record_uuid] = Record(
                 uuid=record_uuid, vector=vector, properties=properties
@@ -487,7 +482,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
 
         return [
             record_map[record_uuid]
-            for record_uuid in uuid_list
+            for record_uuid in record_uuids
             if record_uuid in record_map
         ]
 
@@ -497,16 +492,13 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         if not uuid_list:
             return
 
-        records_table = self._records_table
-        engine = self._engine
-        collection_prefix = self._collection_prefix
         record_uuids = list(uuid_list)
 
         async with self._create_session() as session, session.begin():
             rows = (
                 await session.execute(
-                    select(records_table.c.row_id).where(
-                        records_table.c.uuid.in_(record_uuids),
+                    select(self._records_table.c.row_id).where(
+                        self._records_table.c.uuid.in_(record_uuids),
                     )
                 )
             ).all()
@@ -518,74 +510,93 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
             upsert_pending_operation = sqlite_insert(_PendingOperationRow)
             await session.execute(
                 upsert_pending_operation.on_conflict_do_update(
-                    index_elements=["collection_prefix", "record_row_id"],
+                    index_elements=["namespace", "name", "record_row_id"],
                     set_={
                         "operation_type": upsert_pending_operation.excluded.operation_type,
-                        "completed": upsert_pending_operation.excluded.completed,
+                        "applied": upsert_pending_operation.excluded.applied,
                     },
                 ),
                 [
                     {
-                        "collection_prefix": collection_prefix,
+                        "namespace": self._namespace,
+                        "name": self._name,
                         "record_row_id": record_row_id,
                         "operation_type": "delete",
-                        "completed": False,
+                        "applied": False,
                     }
                     for record_row_id in record_row_ids
                 ],
             )
 
             await session.execute(
-                delete(records_table).where(
-                    records_table.c.uuid.in_(record_uuids),
+                delete(self._records_table).where(
+                    self._records_table.c.uuid.in_(record_uuids),
                 )
             )
 
-        await engine.remove(record_row_ids)
+        await self._search_engine.remove(record_row_ids)
         async with self._create_session() as session, session.begin():
             await session.execute(
                 update(_PendingOperationRow)
                 .where(
-                    _PendingOperationRow.collection_prefix == collection_prefix,
+                    _PendingOperationRow.namespace == self._namespace,
+                    _PendingOperationRow.name == self._name,
                     _PendingOperationRow.record_row_id.in_(record_row_ids),
-                    _PendingOperationRow.completed.is_(False),
+                    _PendingOperationRow.applied.is_(False),
                 )
-                .values(completed=True)
+                .values(applied=True)
             )
         await self._maybe_save_engine()
 
 
-EngineFactory = Callable[[int, SimilarityMetric], VectorSearchEngine]
-"""Callable that creates a VectorSearchEngine given (ndim, metric)."""
+VectorSearchEngineFactory = Callable[[int, SimilarityMetric], VectorSearchEngine]
+"""Callable that creates a VectorSearchEngine given (num_dimensions, similarity_metric)."""
 
 
 class SQLiteVectorStoreParams(BaseModel):
     """Parameters for constructing a SQLiteVectorStore.
 
     Attributes:
-        engine: Async SQLAlchemy engine (sqlite+aiosqlite).
-        index_directory: Directory for persisting index files.
-            If None, indexes are in-memory only.
-        engine_factory: Factory for creating :class:`VectorSearchEngine`
-            instances.  Receives ``(ndim, metric)`` and returns an engine.
+        sqlalchemy_engine (AsyncEngine):
+            Async SQLAlchemy engine (sqlite+aiosqlite).
+        engine_factory (Callable[[int, SimilarityMetric], VectorSearchEngine]):
+            Factory for creating :class:`VectorSearchEngine` instances.
+            Receives `(ndim, metric)` and returns a search engine.
+        index_directory (str | None):
+            Directory for persisting index files.
+            If None, indexes are in-memory only
+            (default: None).
+        save_threshold (int):
+            Number of engine operations before auto-saving the index to disk.
+            Only applies when index_directory is set
+            (default: 1000).
     """
 
-    engine: InstanceOf[AsyncEngine] = Field(
+    sqlalchemy_engine: InstanceOf[AsyncEngine] = Field(
         ..., description="Async SQLAlchemy engine (sqlite+aiosqlite)"
     )
-    index_directory: str | None = Field(
-        None, description="Directory for persisting index files"
+    vector_search_engine_factory: VectorSearchEngineFactory = Field(
+        ...,
+        description=(
+            "Factory for creating VectorSearchEngine instances. "
+            "Receives `(ndim, metric)` and returns a search engine"
+        ),
     )
-    engine_factory: EngineFactory = Field(
-        ..., description="Factory for creating VectorSearchEngine instances"
+    index_directory: str | None = Field(
+        None,
+        description=(
+            "Directory for persisting index files. If None, indexes are in-memory only"
+        ),
     )
     save_threshold: int = Field(
         1000,
-        description="Number of engine operations before auto-saving the index to disk. "
-        "Only applies when index_directory is set.",
+        description=(
+            "Number of engine operations before auto-saving the index to disk. "
+            "Only applies when index_directory is set"
+        ),
     )
 
-    @field_validator("engine")
+    @field_validator("sqlalchemy_engine")
     @classmethod
     def _validate_engine(cls, engine: AsyncEngine) -> AsyncEngine:
         assert not isinstance(engine.pool, StaticPool), (
@@ -601,72 +612,68 @@ class SQLiteVectorStoreParams(BaseModel):
         return engine
 
 
-async def _replay_upsert_one(
-    search_engine: VectorSearchEngine, label: int, vector_data: np.ndarray
-) -> None:
-    """Replace a single vector in the engine (crash-recovery helper)."""
-    await search_engine.remove([label])
-    await search_engine.add({label: list(vector_data.flat)})
-
-
-async def _replay_remove_one(search_engine: VectorSearchEngine, label: int) -> None:
-    """Remove a single vector from the engine (crash-recovery helper)."""
-    await search_engine.remove([label])
-
-
 class SQLiteVectorStore(VectorStore):
-    """Vector store backed by SQLite + a pluggable vector search engine.
+    """
+    Vector store backed by SQLite + a pluggable vector search engine.
 
     Each logical collection gets its own records table and engine instance.
-    Vectors are stored in SQLite as source of truth; the engine is a derived
-    index that can be rebuilt.
     """
 
     def __init__(self, params: SQLiteVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
-        self._db_engine = params.engine
-        self._index_dir = (
+        self._sqlalchemy_engine = params.sqlalchemy_engine
+        self._vector_search_engine_factory = params.vector_search_engine_factory
+
+        self._index_directory = (
             Path(params.index_directory) if params.index_directory else None
         )
-        self._engine_factory = params.engine_factory
         self._save_threshold = params.save_threshold
+
         self._create_session = async_sessionmaker(
-            self._db_engine, expire_on_commit=False
+            self._sqlalchemy_engine, expire_on_commit=False
         )
-        self._search_engines: dict[str, VectorSearchEngine] = {}
+        self._search_engines: dict[tuple[str, str], VectorSearchEngine] = {}
         self._sa_metadata = MetaData()
 
-        self._sync_engine = create_engine(
-            str(self._db_engine.url).replace("aiosqlite", "pysqlite")
+        self._sync_sqlalchemy_engine = create_engine(
+            str(self._sqlalchemy_engine.url).replace("aiosqlite", "pysqlite")
         )
 
-    @staticmethod
-    def _collection_prefix(namespace: str, name: str) -> str:
-        """Unique prefix for a logical collection's native resources."""
-        return f"vector_store_sqlite_{len(namespace)}_{namespace}_{len(name)}_{name}"
+        @event.listens_for(self._sqlalchemy_engine.sync_engine, "connect")
+        @event.listens_for(self._sync_sqlalchemy_engine, "connect")
+        def _enable_sqlite_foreign_keys(
+            dbapi_connection: DBAPIConnection,
+            _connection_record: ConnectionPoolEntry,
+        ) -> None:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
 
-    def _records_table(self, namespace: str, name: str) -> Table:
-        """Get or create a SQLAlchemy Table for a per-collection records table."""
-        collection_prefix = self._collection_prefix(namespace, name)
-        return Table(
-            f"{collection_prefix}_rc",
-            self._sa_metadata,
-            Column("row_id", Integer, primary_key=True, autoincrement=True),
-            Column("uuid", Uuid, nullable=False, unique=True),
-            Column("properties", JSON, nullable=False, default=dict),
-            extend_existing=True,
-        )
+        self._started = False
+
+    def _require_started(self) -> None:
+        if not self._started:
+            raise RuntimeError(
+                "VectorStore has not been started. Call startup() first."
+            )
 
     @override
     async def startup(self) -> None:
-        if self._index_dir is not None:
-            self._index_dir.mkdir(parents=True, exist_ok=True)
-        async with self._db_engine.begin() as connection:
+        if self._started:
+            return
+
+        if self._index_directory is not None:
+            self._index_directory.mkdir(parents=True, exist_ok=True)
+
+        async with self._sqlalchemy_engine.begin() as connection:
             await connection.run_sync(BaseSQLiteVectorStore.metadata.create_all)
+
         await self._replay_pending_operations()
 
+        self._started = True
+
     async def _replay_pending_operations(self) -> None:
-        """Replay any pending engine operations from a prior crash."""
+        """Replay any pending engine operations."""
         async with self._create_session() as session:
             pending_operations = (
                 (await session.execute(select(_PendingOperationRow))).scalars().all()
@@ -675,125 +682,268 @@ class SQLiteVectorStore(VectorStore):
         if not pending_operations:
             return
 
-        operations_by_prefix: dict[str, list[_PendingOperationRow]] = defaultdict(list)
+        operations_by_collection: dict[tuple[str, str], list[_PendingOperationRow]] = (
+            defaultdict(list)
+        )
         for operation in pending_operations:
-            operations_by_prefix[operation.collection_prefix].append(operation)
-
-        for collection_prefix, operations in operations_by_prefix.items():
-            await self._replay_prefix_operations(collection_prefix, operations)
-
-    async def _resolve_prefix(
-        self, collection_prefix: str
-    ) -> tuple[VectorSearchEngine, Table] | None:
-        """Resolve a collection prefix to its search engine and records table.
-
-        Returns ``None`` if no stored collection matches the prefix.
-        """
-        async with self._create_session() as session:
-            all_collections = (
-                (await session.execute(select(_CollectionRow))).scalars().all()
+            operations_by_collection[(operation.namespace, operation.name)].append(
+                operation
             )
 
-        for collection_row in all_collections:
-            if (
-                self._collection_prefix(collection_row.namespace, collection_row.name)
-                == collection_prefix
-            ):
-                config = VectorStoreCollectionConfig.model_validate(
-                    collection_row.config_json
-                )
-                search_engine = self._get_or_create_engine(collection_prefix, config)
-                records_table = self._records_table(
-                    collection_row.namespace, collection_row.name
-                )
-                return search_engine, records_table
+        for (namespace, name), operations in operations_by_collection.items():
+            await self._replay_collection_operations(namespace, name, operations)
 
-        return None
-
-    async def _replay_prefix_operations(
-        self, collection_prefix: str, operations: list[_PendingOperationRow]
+    async def _replay_collection_operations(
+        self, namespace: str, name: str, operations: Iterable[_PendingOperationRow]
     ) -> None:
-        """Replay pending operations for a single collection."""
-        resolved = await self._resolve_prefix(collection_prefix)
-        if resolved is None:
-            async with self._create_session() as session, session.begin():
-                await session.execute(
-                    delete(_PendingOperationRow).where(
-                        _PendingOperationRow.collection_prefix == collection_prefix
-                    )
-                )
+        async with self._create_session() as session:
+            config = await self._get_stored_config(session, namespace, name)
+        if config is None:
             return
 
-        search_engine, _ = resolved
+        search_engine = self._get_or_create_vector_search_engine(
+            namespace, name, config
+        )
 
-        replayed_record_row_ids: list[int] = []
+        upserted_vectors: dict[int, list[float]] = {}
+        deleted_row_ids: list[int] = []
         for operation in operations:
-            try:
-                if operation.operation_type == "upsert":
-                    if operation.vector is not None:
-                        vector = np.frombuffer(operation.vector, dtype=np.float32)
-                        await _replay_upsert_one(
-                            search_engine, operation.record_row_id, vector
-                        )
-                    replayed_record_row_ids.append(operation.record_row_id)
-                elif operation.operation_type == "delete":
-                    await _replay_remove_one(search_engine, operation.record_row_id)
-                    replayed_record_row_ids.append(operation.record_row_id)
-            except Exception:
-                logger.warning(
-                    "Failed to replay %s operation for record_row_id %d in %s",
-                    operation.operation_type,
-                    operation.record_row_id,
-                    collection_prefix,
-                    exc_info=True,
-                )
+            if operation.operation_type == "upsert" and operation.vector is not None:
+                vector = np.frombuffer(operation.vector, dtype=np.float32)
+                upserted_vectors[operation.record_row_id] = list(vector.flat)
+            elif operation.operation_type == "delete":
+                deleted_row_ids.append(operation.record_row_id)
 
-        if replayed_record_row_ids:
-            async with self._create_session() as session, session.begin():
-                await session.execute(
-                    update(_PendingOperationRow)
-                    .where(
-                        _PendingOperationRow.collection_prefix == collection_prefix,
-                        _PendingOperationRow.record_row_id.in_(replayed_record_row_ids),
-                    )
-                    .values(completed=True)
+        all_row_ids = list(upserted_vectors.keys()) + deleted_row_ids
+        if not all_row_ids:
+            return
+
+        await search_engine.remove(all_row_ids)
+        if upserted_vectors:
+            await search_engine.add(upserted_vectors)
+
+        async with self._create_session() as session, session.begin():
+            await session.execute(
+                update(_PendingOperationRow)
+                .where(
+                    _PendingOperationRow.namespace == namespace,
+                    _PendingOperationRow.name == name,
+                    _PendingOperationRow.record_row_id.in_(all_row_ids),
                 )
+                .values(applied=True)
+            )
 
     @override
     async def shutdown(self) -> None:
-        if self._index_dir is not None:
-            saved_prefixes: list[str] = []
-            for collection_prefix, search_engine in self._search_engines.items():
-                path = self._index_dir / f"{collection_prefix}.idx"
+        self._require_started()
+        if self._index_directory is not None:
+            saved_collections: list[tuple[str, str]] = []
+            for (namespace, name), search_engine in self._search_engines.items():
+                path = self._index_path(namespace, name)
+                assert path is not None
                 await search_engine.save(str(path))
-                saved_prefixes.append(collection_prefix)
-            if saved_prefixes:
+                saved_collections.append((namespace, name))
+            for namespace, name in saved_collections:
                 async with self._create_session() as session, session.begin():
                     await session.execute(
                         delete(_PendingOperationRow).where(
-                            _PendingOperationRow.collection_prefix.in_(saved_prefixes),
-                            _PendingOperationRow.completed.is_(True),
+                            _PendingOperationRow.namespace == namespace,
+                            _PendingOperationRow.name == name,
+                            _PendingOperationRow.applied.is_(True),
                         )
                     )
         self._search_engines.clear()
+        self._started = False
 
-    def _get_or_create_engine(
+    @override
+    async def create_collection(
         self,
-        collection_prefix: str,
+        *,
+        namespace: str,
+        name: str,
         config: VectorStoreCollectionConfig,
-    ) -> VectorSearchEngine:
-        if collection_prefix not in self._search_engines:
-            search_engine = self._engine_factory(
-                config.vector_dimensions, config.similarity_metric
+    ) -> None:
+        self._require_started()
+        if not validate_identifier(namespace) or not validate_identifier(name):
+            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
+
+        async with self._create_session() as session, session.begin():
+            existing_config = await self._get_stored_config(session, namespace, name)
+            if existing_config is not None:
+                raise VectorStoreCollectionAlreadyExistsError(namespace, name)
+
+            self._clear_search_engine_state(namespace, name)
+            await self._ensure_collection_resources(session, namespace, name, config)
+            session.add(
+                _CollectionRow(
+                    namespace=namespace,
+                    name=name,
+                    config_json=config.model_dump(mode="json"),
+                )
             )
 
-            if self._index_dir is not None:
-                path = self._index_dir / f"{collection_prefix}.idx"
-                if path.exists():
-                    search_engine.load(str(path))
+    @override
+    async def open_or_create_collection(
+        self,
+        *,
+        namespace: str,
+        name: str,
+        config: VectorStoreCollectionConfig,
+    ) -> VectorStoreCollection:
+        self._require_started()
+        if not validate_identifier(namespace) or not validate_identifier(name):
+            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
 
-            self._search_engines[collection_prefix] = search_engine
-        return self._search_engines[collection_prefix]
+        index_path = self._index_path(namespace, name)
+
+        async with self._create_session() as session, session.begin():
+            existing_config = await self._get_stored_config(session, namespace, name)
+            if existing_config is not None:
+                if existing_config != config:
+                    raise VectorStoreCollectionConfigMismatchError(
+                        namespace, name, existing_config, config
+                    )
+                records_table, search_engine = await self._ensure_collection_resources(
+                    session, namespace, name, existing_config
+                )
+                return SQLiteVectorStoreCollection(
+                    create_session=self._create_session,
+                    sync_sqlalchemy_engine=self._sync_sqlalchemy_engine,
+                    records_table=records_table,
+                    search_engine=search_engine,
+                    namespace=namespace,
+                    name=name,
+                    config=existing_config,
+                    index_path=str(index_path) if index_path is not None else None,
+                    save_threshold=self._save_threshold,
+                )
+
+            self._clear_search_engine_state(namespace, name)
+            records_table, search_engine = await self._ensure_collection_resources(
+                session, namespace, name, config
+            )
+            session.add(
+                _CollectionRow(
+                    namespace=namespace,
+                    name=name,
+                    config_json=config.model_dump(mode="json"),
+                )
+            )
+
+        return SQLiteVectorStoreCollection(
+            create_session=self._create_session,
+            sync_sqlalchemy_engine=self._sync_sqlalchemy_engine,
+            records_table=records_table,
+            search_engine=search_engine,
+            namespace=namespace,
+            name=name,
+            config=config,
+            index_path=str(index_path) if index_path is not None else None,
+            save_threshold=self._save_threshold,
+        )
+
+    @override
+    async def open_collection(
+        self,
+        *,
+        namespace: str,
+        name: str,
+    ) -> VectorStoreCollection | None:
+        self._require_started()
+        if not validate_identifier(namespace) or not validate_identifier(name):
+            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
+
+        async with self._create_session() as session:
+            existing = await self._get_stored_config(session, namespace, name)
+        if existing is None:
+            return None
+
+        records_table = self._records_table(namespace, name)
+        search_engine = self._get_or_create_vector_search_engine(
+            namespace, name, existing
+        )
+
+        index_path = self._index_path(namespace, name)
+        return SQLiteVectorStoreCollection(
+            create_session=self._create_session,
+            sync_sqlalchemy_engine=self._sync_sqlalchemy_engine,
+            records_table=records_table,
+            search_engine=search_engine,
+            namespace=namespace,
+            name=name,
+            config=existing,
+            index_path=str(index_path) if index_path is not None else None,
+            save_threshold=self._save_threshold,
+        )
+
+    @override
+    async def close_collection(self, *, collection: VectorStoreCollection) -> None:
+        self._require_started()
+
+    @override
+    async def delete_collection(self, *, namespace: str, name: str) -> None:
+        self._require_started()
+        if not validate_identifier(namespace) or not validate_identifier(name):
+            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
+
+        async with self._create_session() as session:
+            existing = await self._get_stored_config(session, namespace, name)
+        if existing is None:
+            return
+
+        records_table = self._records_table(namespace, name)
+        async with self._create_session() as session, session.begin():
+            connection = await session.connection()
+            await connection.run_sync(
+                self._sa_metadata.drop_all, tables=[records_table]
+            )
+
+            await session.execute(
+                delete(_CollectionRow).where(
+                    _CollectionRow.namespace == namespace,
+                    _CollectionRow.name == name,
+                )
+            )
+
+        self._sa_metadata.remove(records_table)
+
+        # If unlink fails, the orphan is harmless.
+        # _clear_search_engine_state will clean it up if a new collection with the same name is created.
+        index_path = self._index_path(namespace, name)
+        if index_path is not None and index_path.exists():
+            index_path.unlink()
+        self._search_engines.pop((namespace, name), None)
+
+    # Helpers.
+
+    @staticmethod
+    def _collection_prefix(namespace: str, name: str) -> str:
+        """Unique prefix for a logical collection's native resources."""
+        return f"vector_store_sqlite_{len(namespace)}_{namespace}_{len(name)}_{name}"
+
+    def _records_table(self, namespace: str, name: str) -> Table:
+        """Get or create a SQLAlchemy Table for a per-collection records table."""
+        return Table(
+            f"{self._collection_prefix(namespace, name)}_rc",
+            self._sa_metadata,
+            Column("row_id", Integer, primary_key=True, autoincrement=True),
+            Column("uuid", Uuid, nullable=False, unique=True),
+            Column("properties", JSON, nullable=False, default=dict),
+            extend_existing=True,
+        )
+
+    def _index_path(self, namespace: str, name: str) -> Path | None:
+        """Return the on-disk index path for a collection, or None if in-memory."""
+        if self._index_directory is None:
+            return None
+        return self._index_directory / f"{self._collection_prefix(namespace, name)}.idx"
+
+    def _clear_search_engine_state(self, namespace: str, name: str) -> None:
+        """Remove any in-memory engine and on-disk index for a collection."""
+        self._search_engines.pop((namespace, name), None)
+        index_path = self._index_path(namespace, name)
+        if index_path is not None and index_path.exists():
+            index_path.unlink()
 
     async def _get_stored_config(
         self,
@@ -813,17 +963,37 @@ class SQLiteVectorStore(VectorStore):
             return None
         return VectorStoreCollectionConfig.model_validate(row)
 
-    async def _ensure_native_tables(
+    def _get_or_create_vector_search_engine(
+        self,
+        namespace: str,
+        name: str,
+        config: VectorStoreCollectionConfig,
+    ) -> VectorSearchEngine:
+        cache_key = (namespace, name)
+        if cache_key not in self._search_engines:
+            search_engine = self._vector_search_engine_factory(
+                config.vector_dimensions, config.similarity_metric
+            )
+
+            path = self._index_path(namespace, name)
+            if path is not None and path.exists():
+                search_engine.load(str(path))
+
+            self._search_engines[cache_key] = search_engine
+
+        return self._search_engines[cache_key]
+
+    async def _ensure_collection_resources(
         self,
         session: AsyncSession,
         namespace: str,
         name: str,
         config: VectorStoreCollectionConfig,
-    ) -> tuple[Table, VectorSearchEngine, str]:
-        """Idempotently create per-collection native resources."""
-        collection_prefix = self._collection_prefix(namespace, name)
+    ) -> tuple[Table, VectorSearchEngine]:
         records_table = self._records_table(namespace, name)
-        search_engine = self._get_or_create_engine(collection_prefix, config)
+        search_engine = self._get_or_create_vector_search_engine(
+            namespace, name, config
+        )
 
         connection = await session.connection()
         await connection.run_sync(
@@ -831,158 +1001,4 @@ class SQLiteVectorStore(VectorStore):
             tables=[records_table],
         )
 
-        return records_table, search_engine, collection_prefix
-
-    def _build_collection_handle(
-        self,
-        name: str,
-        config: VectorStoreCollectionConfig,
-        records_table: Table,
-        search_engine: VectorSearchEngine,
-        collection_prefix: str,
-    ) -> SQLiteVectorStoreCollection:
-        index_path = (
-            str(self._index_dir / f"{collection_prefix}.idx")
-            if self._index_dir is not None
-            else None
-        )
-        return SQLiteVectorStoreCollection(
-            create_session=self._create_session,
-            name=name,
-            config=config,
-            records_table=records_table,
-            engine=search_engine,
-            sync_engine=self._sync_engine,
-            collection_prefix=collection_prefix,
-            index_path=index_path,
-            save_threshold=self._save_threshold,
-        )
-
-    @override
-    async def create_collection(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
-    ) -> None:
-        if not validate_identifier(namespace) or not validate_identifier(name):
-            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
-
-        async with self._create_session() as session, session.begin():
-            existing = await self._get_stored_config(session, namespace, name)
-            if existing is not None:
-                raise VectorStoreCollectionAlreadyExistsError(namespace, name)
-
-            await self._ensure_native_tables(session, namespace, name, config)
-            session.add(
-                _CollectionRow(
-                    namespace=namespace,
-                    name=name,
-                    config_json=config.model_dump(mode="json"),
-                )
-            )
-
-    @override
-    async def open_or_create_collection(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
-    ) -> VectorStoreCollection:
-        if not validate_identifier(namespace) or not validate_identifier(name):
-            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
-
-        async with self._create_session() as session, session.begin():
-            existing = await self._get_stored_config(session, namespace, name)
-            if existing is not None:
-                if existing != config:
-                    raise VectorStoreCollectionConfigMismatchError(
-                        namespace, name, existing, config
-                    )
-                (
-                    records_table,
-                    search_engine,
-                    collection_prefix,
-                ) = await self._ensure_native_tables(session, namespace, name, existing)
-                return self._build_collection_handle(
-                    name, existing, records_table, search_engine, collection_prefix
-                )
-
-            (
-                records_table,
-                search_engine,
-                collection_prefix,
-            ) = await self._ensure_native_tables(session, namespace, name, config)
-            session.add(
-                _CollectionRow(
-                    namespace=namespace,
-                    name=name,
-                    config_json=config.model_dump(mode="json"),
-                )
-            )
-
-        return self._build_collection_handle(
-            name, config, records_table, search_engine, collection_prefix
-        )
-
-    @override
-    async def open_collection(
-        self,
-        *,
-        namespace: str,
-        name: str,
-    ) -> VectorStoreCollection | None:
-        if not validate_identifier(namespace) or not validate_identifier(name):
-            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
-        async with self._create_session() as session:
-            existing = await self._get_stored_config(session, namespace, name)
-        if existing is None:
-            return None
-
-        collection_prefix = self._collection_prefix(namespace, name)
-        records_table = self._records_table(namespace, name)
-        search_engine = self._get_or_create_engine(collection_prefix, existing)
-        return self._build_collection_handle(
-            name, existing, records_table, search_engine, collection_prefix
-        )
-
-    @override
-    async def close_collection(self, *, collection: VectorStoreCollection) -> None:
-        pass
-
-    @override
-    async def delete_collection(self, *, namespace: str, name: str) -> None:
-        if not validate_identifier(namespace) or not validate_identifier(name):
-            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
-        async with self._create_session() as session, session.begin():
-            existing = await self._get_stored_config(session, namespace, name)
-            if existing is None:
-                return
-
-            collection_prefix = self._collection_prefix(namespace, name)
-            records_table = self._records_table(namespace, name)
-
-            await session.execute(text(f"DROP TABLE IF EXISTS [{records_table.name}]"))
-
-            await session.execute(
-                delete(_PendingOperationRow).where(
-                    _PendingOperationRow.collection_prefix == collection_prefix
-                )
-            )
-
-            await session.execute(
-                delete(_CollectionRow).where(
-                    _CollectionRow.namespace == namespace,
-                    _CollectionRow.name == name,
-                )
-            )
-
-            self._search_engines.pop(collection_prefix, None)
-            self._sa_metadata.remove(records_table)
-
-            if self._index_dir is not None:
-                index_path = self._index_dir / f"{collection_prefix}.idx"
-                if index_path.exists():
-                    index_path.unlink()
+        return records_table, search_engine
