@@ -79,20 +79,17 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         self,
         *,
         create_session: async_sessionmaker[AsyncSession],
-        name: str,
         config: VectorStoreCollectionConfig,
         records_table: Table,
         vector_table_name: str,
     ) -> None:
         """Initialize with session factory and table references."""
         self._create_session = create_session
-        self._name = name
         self._config = config
         self._records_table = records_table
         self._vector_table_name = vector_table_name
 
         self._similarity_metric = config.similarity_metric
-        self._distance_function = self._DISTANCE_FUNCTIONS[config.similarity_metric]
 
     @property
     @override
@@ -145,31 +142,28 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
                 )
 
         async with self._create_session() as session, session.begin():
-            upsert_records = sqlite_insert(self._records_table).on_conflict_do_update(
-                index_elements=[self._records_table.c.uuid],
-                set_={
-                    "properties": sqlite_insert(self._records_table).excluded.properties
-                },
+            upsert_records = (
+                sqlite_insert(self._records_table)
+                .on_conflict_do_update(
+                    index_elements=[self._records_table.c.uuid],
+                    set_={
+                        "properties": sqlite_insert(
+                            self._records_table
+                        ).excluded.properties,
+                    },
+                )
+                .returning(self._records_table.c.uuid, self._records_table.c.rowid)
             )
-            await session.execute(
-                upsert_records,
-                [
-                    {
-                        "uuid": record.uuid,
-                        "properties": encode_properties(record.properties),
-                    }
-                    for record in records
-                ],
-            )
-
-            record_uuids = [record.uuid for record in records]
             rows = (
                 await session.execute(
-                    select(
-                        self._records_table.c.uuid, self._records_table.c.rowid
-                    ).where(
-                        self._records_table.c.uuid.in_(record_uuids),
-                    )
+                    upsert_records,
+                    [
+                        {
+                            "uuid": record.uuid,
+                            "properties": encode_properties(record.properties),
+                        }
+                        for record in records
+                    ],
                 )
             ).all()
             uuid_to_rowid: dict[UUID, int] = {row.uuid: row.rowid for row in rows}
@@ -351,11 +345,11 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         if not record_uuids:
             return []
 
-        async with self._create_session() as session:
-            selected_columns = [self._records_table.c.uuid, self._records_table.c.rowid]
-            if return_properties:
-                selected_columns.append(self._records_table.c.properties)
+        selected_columns = [self._records_table.c.uuid, self._records_table.c.rowid]
+        if return_properties:
+            selected_columns.append(self._records_table.c.properties)
 
+        async with self._create_session() as session:
             fetched_rows = (
                 await session.execute(
                     select(*selected_columns).where(
@@ -378,9 +372,7 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
             if return_properties:
                 properties = decode_properties(row.properties)
 
-            vector: list[float] | None = None
-            if return_vector:
-                vector = rowid_to_vector.get(row.rowid)
+            vector: list[float] | None = rowid_to_vector.get(row.rowid)
 
             record_map[record_uuid] = Record(
                 uuid=record_uuid, vector=vector, properties=properties
@@ -433,7 +425,7 @@ class SQLiteVecVectorStoreParams(BaseModel):
     Parameters for constructing a SQLiteVecVectorStore.
 
     Attributes:
-        engine: Async SQLAlchemy engine (sqlite+aiosqlite).
+        engine (AsyncEngine): Async SQLAlchemy engine (sqlite+aiosqlite).
     """
 
     engine: InstanceOf[AsyncEngine] = Field(
@@ -488,35 +480,6 @@ class SQLiteVecVectorStore(VectorStore):
                 await aio_connection.enable_load_extension(False)
 
             dbapi_connection.run_async(_load_extension)
-
-    @staticmethod
-    def _collection_prefix(namespace: str, name: str) -> str:
-        return (
-            f"vector_store_sqlite_vec_{len(namespace)}_{namespace}_{len(name)}_{name}"
-        )
-
-    @staticmethod
-    def _records_table_name(namespace: str, name: str) -> str:
-        return f"{SQLiteVecVectorStore._collection_prefix(namespace, name)}_rc"
-
-    @staticmethod
-    def _vector_table_name(namespace: str, name: str) -> str:
-        return f"{SQLiteVecVectorStore._collection_prefix(namespace, name)}_vc"
-
-    @staticmethod
-    def _validate_metric(similarity_metric: SimilarityMetric) -> None:
-        if (
-            similarity_metric
-            not in SQLiteVecVectorStore._SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE
-        ):
-            supported = ", ".join(
-                similarity_metric.value
-                for similarity_metric in SQLiteVecVectorStore._SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE
-            )
-            raise ValueError(
-                f"sqlite-vec only supports {supported} similarity metrics, "
-                f"got {similarity_metric.value!r}"
-            )
 
     @override
     async def startup(self) -> None:
@@ -578,7 +541,6 @@ class SQLiteVecVectorStore(VectorStore):
                 )
                 return SQLiteVecVectorStoreCollection(
                     create_session=self._create_session,
-                    name=name,
                     config=existing_config,
                     records_table=records_table,
                     vector_table_name=vector_table_name,
@@ -597,7 +559,6 @@ class SQLiteVecVectorStore(VectorStore):
 
         return SQLiteVecVectorStoreCollection(
             create_session=self._create_session,
-            name=name,
             config=config,
             records_table=records_table,
             vector_table_name=vector_table_name,
@@ -619,7 +580,6 @@ class SQLiteVecVectorStore(VectorStore):
         vector_table_name = self._vector_table_name(namespace, name)
         return SQLiteVecVectorStoreCollection(
             create_session=self._create_session,
-            name=name,
             config=existing,
             records_table=records_table,
             vector_table_name=vector_table_name,
@@ -655,6 +615,35 @@ class SQLiteVecVectorStore(VectorStore):
             self._sa_metadata.remove(records_table)
 
     # Helpers.
+
+    @staticmethod
+    def _collection_prefix(namespace: str, name: str) -> str:
+        return (
+            f"vector_store_sqlite_vec_{len(namespace)}_{namespace}_{len(name)}_{name}"
+        )
+
+    @staticmethod
+    def _records_table_name(namespace: str, name: str) -> str:
+        return f"{SQLiteVecVectorStore._collection_prefix(namespace, name)}_rc"
+
+    @staticmethod
+    def _vector_table_name(namespace: str, name: str) -> str:
+        return f"{SQLiteVecVectorStore._collection_prefix(namespace, name)}_vc"
+
+    @staticmethod
+    def _validate_metric(similarity_metric: SimilarityMetric) -> None:
+        if (
+            similarity_metric
+            not in SQLiteVecVectorStore._SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE
+        ):
+            supported = ", ".join(
+                similarity_metric.value
+                for similarity_metric in SQLiteVecVectorStore._SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE
+            )
+            raise ValueError(
+                f"sqlite-vec only supports {supported} similarity metrics, "
+                f"got {similarity_metric.value!r}"
+            )
 
     async def _get_stored_config(
         self, session: AsyncSession, namespace: str, name: str

@@ -221,6 +221,12 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
     @override
     async def upsert(self, *, records: Iterable[Record]) -> None:
         records_list = list(records)
+        for record in records_list:
+            if record.vector is None:
+                raise ValueError(
+                    f"Record {record.uuid} has vector=None, which is not allowed on input."
+                )
+
         if not records_list:
             return
 
@@ -265,7 +271,6 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                     "completed": False,
                 }
                 for record in records_list
-                if record.vector is not None
             ]
             if pending_operation_values:
                 upsert_pending_operation = sqlite_insert(_PendingOperationRow)
@@ -290,11 +295,11 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         engine: VectorSearchEngine,
     ) -> None:
         """Update engine index after SQLite commit."""
-        engine_vectors: dict[int, list[float]] = {}
-        for record in records_list:
-            if record.vector is not None:
-                record_row_id = uuid_to_row_id[record.uuid]
-                engine_vectors[record_row_id] = record.vector
+        engine_vectors: dict[int, list[float]] = {
+            uuid_to_row_id[record.uuid]: record.vector
+            for record in records_list
+            if record.vector is not None
+        }
 
         if engine_vectors:
             await engine.remove(engine_vectors.keys())
@@ -628,7 +633,6 @@ class SQLiteVectorStore(VectorStore):
         self._create_session = async_sessionmaker(
             self._db_engine, expire_on_commit=False
         )
-        self._records_tables: dict[str, Table] = {}
         self._search_engines: dict[str, VectorSearchEngine] = {}
         self._sa_metadata = MetaData()
 
@@ -639,16 +643,18 @@ class SQLiteVectorStore(VectorStore):
     @staticmethod
     def _collection_prefix(namespace: str, name: str) -> str:
         """Unique prefix for a logical collection's native resources."""
-        return f"vector_store_sqlite_{namespace}_{name}"
+        return f"vector_store_sqlite_{len(namespace)}_{namespace}_{len(name)}_{name}"
 
-    @staticmethod
-    def _build_records_table(table_name: str, sa_metadata: MetaData) -> Table:
+    def _records_table(self, namespace: str, name: str) -> Table:
+        """Get or create a SQLAlchemy Table for a per-collection records table."""
+        collection_prefix = self._collection_prefix(namespace, name)
         return Table(
-            table_name,
-            sa_metadata,
+            f"{collection_prefix}_rc",
+            self._sa_metadata,
             Column("row_id", Integer, primary_key=True, autoincrement=True),
             Column("uuid", Uuid, nullable=False, unique=True),
-            Column("properties", JSON, nullable=True),
+            Column("properties", JSON, nullable=False, default=dict),
+            extend_existing=True,
         )
 
     @override
@@ -697,7 +703,9 @@ class SQLiteVectorStore(VectorStore):
                     collection_row.config_json
                 )
                 search_engine = self._get_or_create_engine(collection_prefix, config)
-                records_table = self._get_or_build_records_table(collection_prefix)
+                records_table = self._records_table(
+                    collection_row.namespace, collection_row.name
+                )
                 return search_engine, records_table
 
         return None
@@ -768,15 +776,6 @@ class SQLiteVectorStore(VectorStore):
                         )
                     )
         self._search_engines.clear()
-        self._records_tables.clear()
-
-    def _get_or_build_records_table(self, collection_prefix: str) -> Table:
-        if collection_prefix not in self._records_tables:
-            table_name = f"{collection_prefix}_rc"
-            self._records_tables[collection_prefix] = self._build_records_table(
-                table_name, self._sa_metadata
-            )
-        return self._records_tables[collection_prefix]
 
     def _get_or_create_engine(
         self,
@@ -823,7 +822,7 @@ class SQLiteVectorStore(VectorStore):
     ) -> tuple[Table, VectorSearchEngine, str]:
         """Idempotently create per-collection native resources."""
         collection_prefix = self._collection_prefix(namespace, name)
-        records_table = self._get_or_build_records_table(collection_prefix)
+        records_table = self._records_table(namespace, name)
         search_engine = self._get_or_create_engine(collection_prefix, config)
 
         connection = await session.connection()
@@ -831,17 +830,6 @@ class SQLiteVectorStore(VectorStore):
             self._sa_metadata.create_all,
             tables=[records_table],
         )
-
-        for field_name in config.properties_schema:
-            safe_field = field_name.replace("'", "''")
-            index_name = f"idx_{records_table.name}_{field_name}_v"
-            await session.execute(
-                text(
-                    f"CREATE INDEX IF NOT EXISTS [{index_name}] "
-                    f"ON [{records_table.name}]"
-                    f"(json_extract(properties, '$.{safe_field}.v'))"
-                )
-            )
 
         return records_table, search_engine, collection_prefix
 
@@ -954,7 +942,7 @@ class SQLiteVectorStore(VectorStore):
             return None
 
         collection_prefix = self._collection_prefix(namespace, name)
-        records_table = self._get_or_build_records_table(collection_prefix)
+        records_table = self._records_table(namespace, name)
         search_engine = self._get_or_create_engine(collection_prefix, existing)
         return self._build_collection_handle(
             name, existing, records_table, search_engine, collection_prefix
@@ -974,7 +962,7 @@ class SQLiteVectorStore(VectorStore):
                 return
 
             collection_prefix = self._collection_prefix(namespace, name)
-            records_table = self._get_or_build_records_table(collection_prefix)
+            records_table = self._records_table(namespace, name)
 
             await session.execute(text(f"DROP TABLE IF EXISTS [{records_table.name}]"))
 
@@ -991,7 +979,6 @@ class SQLiteVectorStore(VectorStore):
                 )
             )
 
-            self._records_tables.pop(collection_prefix, None)
             self._search_engines.pop(collection_prefix, None)
             self._sa_metadata.remove(records_table)
 
