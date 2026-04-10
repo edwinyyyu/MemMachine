@@ -222,8 +222,8 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
 
     @staticmethod
     def _null_filter(field: str, *, negate: bool) -> models.Filter:
-        condition = models.IsNullCondition(
-            is_null=models.PayloadField(key=field),
+        condition = models.IsEmptyCondition(
+            is_empty=models.PayloadField(key=field),
         )
         if negate:
             return models.Filter(must_not=[condition])
@@ -256,19 +256,9 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     def _build_payload(
         self,
         properties: dict[str, PropertyValue] | None,
-        properties_schema: Mapping[str, type[PropertyValue]],
-    ) -> dict[str, bool | int | float | str | None]:
-        """
-        Build Qdrant-compatible payload from record properties.
-
-        Missing schema keys are stored as explicit nulls so that
-        `IsNull` filters work via the index for both omitted and
-        `None` values.
-        """
-        payload: dict[str, bool | int | float | str | None] = dict.fromkeys(
-            properties_schema
-        )
-        payload[_PAYLOAD_PARTITION_KEY] = self._partition_key
+    ) -> dict[str, PropertyValue]:
+        """Build Qdrant-compatible payload from record properties."""
+        payload = {_PAYLOAD_PARTITION_KEY: self._partition_key}
         if properties:
             for key, value in properties.items():
                 if value is None:
@@ -306,7 +296,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     ) -> None:
         """Upsert records into the collection."""
         async with self._tracker("upsert"):
-            properties_schema = self._config.properties_schema
             points: list[models.PointStruct] = []
             for record in records:
                 if record.vector is None:
@@ -318,7 +307,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                     models.PointStruct(
                         id=record.uuid,
                         vector=record.vector,
-                        payload=self._build_payload(properties, properties_schema),
+                        payload=self._build_payload(properties),
                     )
                 )
             if points:
