@@ -63,7 +63,7 @@ async def store(tmp_path):
     params = SQLiteVectorStoreParams(
         sqlalchemy_engine=engine,
         vector_search_engine_factory=lambda ndim, metric: USearchVectorSearchEngine(
-            ndim=ndim, metric=metric
+            num_dimensions=ndim, similarity_metric=metric
         ),
     )
     vector_store = SQLiteVectorStore(params)
@@ -1073,7 +1073,7 @@ class TestConcurrentAsync:
 
 
 def _engine_factory(ndim, metric):
-    return USearchVectorSearchEngine(ndim=ndim, metric=metric)
+    return USearchVectorSearchEngine(num_dimensions=ndim, similarity_metric=metric)
 
 
 CONFIG = VectorStoreCollectionConfig(
