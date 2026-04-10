@@ -920,3 +920,148 @@ class TestDotProductMetric:
         assert len(results[0].matches) == 2
 
         await store.delete_collection(namespace=NAMESPACE, name="dot")
+
+
+# ── Input validation ──
+
+
+class TestInputValidation:
+    @pytest.mark.asyncio
+    async def test_upsert_rejects_none_vector(self, collection):
+        record = _make_record(vector=None)
+        with pytest.raises(ValueError, match="vector=None"):
+            await collection.upsert(records=[record])
+
+    @pytest.mark.asyncio
+    async def test_upsert_none_properties_treated_as_empty(self, collection):
+        v1 = _normalize([1.0, 0.0, 0.0])
+        record = _make_record(vector=v1, properties=None)
+        await collection.upsert(records=[record])
+        fetched = await collection.get(
+            record_uuids=[record.uuid], return_properties=True
+        )
+        assert len(fetched) == 1
+        assert fetched[0].properties == {}
+
+
+# ── Score semantics ──
+
+
+class TestScoreSemantics:
+    @pytest.mark.asyncio
+    async def test_cosine_higher_is_better(self, collection):
+        v1 = _normalize([1.0, 0.0, 0.0])
+        v2 = _normalize([0.0, 1.0, 0.0])
+        r1 = _make_record(vector=v1)
+        r2 = _make_record(vector=v2)
+        await collection.upsert(records=[r1, r2])
+
+        results = await collection.query(query_vectors=[v1], limit=2)
+        scores = [m.score for m in results[0].matches]
+        assert scores[0] > scores[1]
+
+    @pytest.mark.asyncio
+    async def test_euclidean_lower_is_better(self, store):
+        config = VectorStoreCollectionConfig(
+            vector_dimensions=2,
+            similarity_metric=SimilarityMetric.EUCLIDEAN,
+        )
+        coll = await store.open_or_create_collection(
+            namespace=NAMESPACE, name="euclidean_score", config=config
+        )
+        r1 = _make_record(vector=[0.0, 0.0])
+        r2 = _make_record(vector=[3.0, 4.0])
+        await coll.upsert(records=[r1, r2])
+
+        results = await coll.query(query_vectors=[[0.0, 0.0]], limit=2)
+        scores = [m.score for m in results[0].matches]
+        assert scores[0] < scores[1]
+        assert scores[0] == pytest.approx(0.0, abs=0.01)
+        assert scores[1] == pytest.approx(5.0, abs=0.01)
+
+        await store.delete_collection(namespace=NAMESPACE, name="euclidean_score")
+
+
+# ── Upsert behavior ──
+
+
+class TestUpsertBehavior:
+    @pytest.mark.asyncio
+    async def test_upsert_replaces_vector_and_properties(self, collection):
+        v1 = _normalize([1.0, 0.0, 0.0])
+        v2 = _normalize([0.0, 1.0, 0.0])
+        record_uuid = uuid4()
+
+        await collection.upsert(
+            records=[
+                _make_record(uuid=record_uuid, vector=v1, properties={"name": "alice"})
+            ]
+        )
+        await collection.upsert(
+            records=[
+                _make_record(uuid=record_uuid, vector=v2, properties={"name": "bob"})
+            ]
+        )
+
+        fetched = await collection.get(
+            record_uuids=[record_uuid], return_vector=True, return_properties=True
+        )
+        assert len(fetched) == 1
+        assert fetched[0].properties["name"] == "bob"
+
+        results = await collection.query(query_vectors=[v2], limit=1)
+        assert results[0].matches[0].record.uuid == record_uuid
+        assert results[0].matches[0].score == pytest.approx(1.0, abs=0.01)
+
+
+# ── Concurrent async behavior ──
+
+
+class TestConcurrentAsync:
+    @pytest.mark.asyncio
+    async def test_concurrent_upserts(self, collection):
+        """Multiple concurrent upserts should not error."""
+        import asyncio
+
+        async def upsert_batch(start: int) -> None:
+            records = [
+                _make_record(vector=_normalize([float(i), 1.0, 0.0]))
+                for i in range(start, start + 10)
+            ]
+            await collection.upsert(records=records)
+
+        await asyncio.gather(
+            upsert_batch(0),
+            upsert_batch(10),
+            upsert_batch(20),
+        )
+
+        results = await collection.query(
+            query_vectors=[_normalize([1.0, 1.0, 0.0])], limit=30
+        )
+        assert len(results[0].matches) == 30
+
+    @pytest.mark.asyncio
+    async def test_concurrent_upsert_and_query(self, collection):
+        """Query during upsert should not error (eventual consistency)."""
+        import asyncio
+
+        records = [
+            _make_record(vector=_normalize([float(i), 1.0, 0.0])) for i in range(20)
+        ]
+        await collection.upsert(records=records)
+
+        async def query_loop() -> None:
+            for _ in range(5):
+                await collection.query(
+                    query_vectors=[_normalize([1.0, 1.0, 0.0])], limit=10
+                )
+
+        async def upsert_more() -> None:
+            more_records = [
+                _make_record(vector=_normalize([float(i), 0.0, 1.0]))
+                for i in range(20, 30)
+            ]
+            await collection.upsert(records=more_records)
+
+        await asyncio.gather(query_loop(), upsert_more())
