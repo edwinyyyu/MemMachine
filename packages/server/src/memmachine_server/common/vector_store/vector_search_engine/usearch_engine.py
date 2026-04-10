@@ -69,17 +69,34 @@ class USearchVectorSearchEngine(VectorSearchEngine):
             case _:
                 raise NotImplementedError(self._similarity_metric)
 
-    def _sync_add(self, vectors: Mapping[int, Sequence[float]]) -> None:
-        keys_array = np.array(list(vectors.keys()), dtype=np.int64)
-        vectors_array = np.array(list(vectors.values()), dtype=np.float32)
-        self._index.add(keys_array, vectors_array)
-
     @override
     async def add(self, vectors: Mapping[int, Sequence[float]]) -> None:
         if not vectors:
             return
         async with self._lock:
             await asyncio.to_thread(self._sync_add, vectors)
+
+    def _sync_add(self, vectors: Mapping[int, Sequence[float]]) -> None:
+        keys_array = np.array(list(vectors.keys()), dtype=np.int64)
+        vectors_array = np.array(list(vectors.values()), dtype=np.float32)
+        self._index.add(keys_array, vectors_array)
+
+    @override
+    async def search(
+        self,
+        vectors: Iterable[Sequence[float]],
+        *,
+        limit: int | None = None,
+        allowed_keys: Container[int] | None = None,
+    ) -> list[SearchResult]:
+        vectors = list(vectors)
+        if self._index.size == 0 or not vectors:
+            return [SearchResult(matches=[]) for _ in vectors]
+
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._sync_search, vectors, limit, allowed_keys
+            )
 
     def _sync_search(
         self,
@@ -139,23 +156,6 @@ class USearchVectorSearchEngine(VectorSearchEngine):
         return [r if r is not None else SearchResult(matches=[]) for r in final_results]
 
     @override
-    async def search(
-        self,
-        vectors: Iterable[Sequence[float]],
-        *,
-        limit: int | None = None,
-        allowed_keys: Container[int] | None = None,
-    ) -> list[SearchResult]:
-        vectors = list(vectors)
-        if self._index.size == 0 or not vectors:
-            return [SearchResult(matches=[]) for _ in vectors]
-
-        async with self._lock:
-            return await asyncio.to_thread(
-                self._sync_search, vectors, limit, allowed_keys
-            )
-
-    @override
     async def get_vectors(self, keys: Iterable[int]) -> dict[int, list[float]]:
         keys = list(keys)
         if not keys:
@@ -172,15 +172,15 @@ class USearchVectorSearchEngine(VectorSearchEngine):
 
         return result
 
-    def _sync_remove(self, keys: Iterable[int]) -> None:
-        index = self._index
-        for key in keys:
-            index.remove(int(key))
-
     @override
     async def remove(self, keys: Iterable[int]) -> None:
         async with self._lock:
             await asyncio.to_thread(self._sync_remove, keys)
+
+    def _sync_remove(self, keys: Iterable[int]) -> None:
+        index = self._index
+        for key in keys:
+            index.remove(int(key))
 
     @override
     async def save(self, path: str) -> None:
