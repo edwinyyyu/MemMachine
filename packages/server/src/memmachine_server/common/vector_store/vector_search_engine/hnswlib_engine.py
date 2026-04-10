@@ -101,6 +101,75 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
         async with self._lock:
             await asyncio.to_thread(self._sync_add, vectors)
 
+    @override
+    async def search(
+        self,
+        vectors: Iterable[Sequence[float]],
+        *,
+        limit: int | None = None,
+        allowed_keys: Container[int] | None = None,
+    ) -> list[SearchResult]:
+        vectors = list(vectors)
+        if self._index.element_count == 0 or not vectors:
+            return [SearchResult(matches=[]) for _ in vectors]
+
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._sync_search, vectors, limit, allowed_keys
+            )
+
+    def _sync_search(
+        self,
+        vectors: Iterable[Sequence[float]],
+        limit: int | None,
+        allowed_keys: Container[int] | None,
+    ) -> list[SearchResult]:
+        vectors = list(vectors)
+        if not vectors:
+            return []
+
+        query = np.array(vectors, dtype=np.float32)
+
+        effective_limit = (
+            min(limit, self._index.element_count)
+            if limit is not None
+            else self._index.element_count
+        )
+        if effective_limit <= 0:
+            return [SearchResult(matches=[]) for _ in vectors]
+
+        filter_fn = (
+            (lambda idx: idx in allowed_keys) if allowed_keys is not None else None
+        )
+        return self._binary_search_query(query, effective_limit, filter_fn)
+
+    def _binary_search_query(
+        self,
+        query: np.ndarray,
+        k: int,
+        filter_fn: Callable[[int], bool] | None,
+    ) -> list[SearchResult]:
+        # Fast path: requested k works for the full batch.
+        result = self._try_knn_query(query, k, filter_fn)
+        if result is not None:
+            return self._build_search_results_from_knn(result)
+
+        # Binary search with a single probe to find max fillable k.
+        max_k = self._find_max_k(query[0:1], k, filter_fn)
+        if max_k == 0:
+            return [SearchResult(matches=[]) for _ in query]
+
+        # Get candidate keys from the probe (these are all passing vectors).
+        probe_result = self._try_knn_query(query[0:1], max_k, filter_fn)
+        if probe_result is None:
+            return [SearchResult(matches=[]) for _ in query]
+
+        candidate_keys = [int(label) for label in probe_result[0][0] if label >= 0]
+        if not candidate_keys:
+            return [SearchResult(matches=[]) for _ in query]
+
+        return self._build_search_results_from_candidates(query, candidate_keys)
+
     def _try_knn_query(
         self,
         query: np.ndarray,
@@ -116,7 +185,7 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
         except RuntimeError:
             return None
 
-    def _build_search_results(
+    def _build_search_results_from_knn(
         self,
         result: tuple[np.ndarray, np.ndarray],
     ) -> list[SearchResult]:
@@ -147,7 +216,7 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
 
         return max_fillable
 
-    def _score_candidates_for_queries(
+    def _build_search_results_from_candidates(
         self, query_vectors: np.ndarray, candidate_keys: list[int]
     ) -> list[SearchResult]:
         candidate_vectors = np.array(
@@ -188,74 +257,9 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
             results.append(SearchResult(matches=matches))
         return results
 
-    def _binary_search_query(
-        self,
-        query: np.ndarray,
-        k: int,
-        filter_fn: Callable[[int], bool] | None,
-    ) -> list[SearchResult]:
-        # Fast path: requested k works for the full batch.
-        result = self._try_knn_query(query, k, filter_fn)
-        if result is not None:
-            return self._build_search_results(result)
-
-        # Binary search with a single probe to find max fillable k.
-        max_k = self._find_max_k(query[0:1], k, filter_fn)
-        if max_k == 0:
-            return [SearchResult(matches=[]) for _ in query]
-
-        # Get candidate keys from the probe (these are all passing vectors).
-        probe_result = self._try_knn_query(query[0:1], max_k, filter_fn)
-        if probe_result is None:
-            return [SearchResult(matches=[]) for _ in query]
-
-        candidate_keys = [int(label) for label in probe_result[0][0] if label >= 0]
-        if not candidate_keys:
-            return [SearchResult(matches=[]) for _ in query]
-
-        return self._score_candidates_for_queries(query, candidate_keys)
-
-    def _sync_search(
-        self,
-        vectors: Iterable[Sequence[float]],
-        limit: int | None,
-        allowed_keys: Container[int] | None,
-    ) -> list[SearchResult]:
-        vectors = list(vectors)
-        if not vectors:
-            return []
-
-        query = np.array(vectors, dtype=np.float32)
-
-        effective_limit = (
-            min(limit, self._index.element_count)
-            if limit is not None
-            else self._index.element_count
-        )
-        if effective_limit <= 0:
-            return [SearchResult(matches=[]) for _ in vectors]
-
-        filter_fn = (
-            (lambda idx: idx in allowed_keys) if allowed_keys is not None else None
-        )
-        return self._binary_search_query(query, effective_limit, filter_fn)
-
     @override
-    async def search(
-        self,
-        vectors: Iterable[Sequence[float]],
-        *,
-        limit: int | None = None,
-        allowed_keys: Container[int] | None = None,
-    ) -> list[SearchResult]:
-        vectors = list(vectors)
-        if self._index.element_count == 0 or not vectors:
-            return [SearchResult(matches=[]) for _ in vectors]
-
-        async with self._lock:
-            return await asyncio.to_thread(
-                self._sync_search, vectors, limit, allowed_keys
-            )
+    async def get_vectors(self, keys: Iterable[int]) -> dict[int, list[float]]:
+        return await asyncio.to_thread(self._sync_get_vectors, keys)
 
     def _sync_get_vectors(self, keys: Iterable[int]) -> dict[int, list[float]]:
         keys = list(keys)
@@ -276,18 +280,14 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
             return result
 
     @override
-    async def get_vectors(self, keys: Iterable[int]) -> dict[int, list[float]]:
-        return await asyncio.to_thread(self._sync_get_vectors, keys)
+    async def remove(self, keys: Iterable[int]) -> None:
+        async with self._lock:
+            await asyncio.to_thread(self._sync_remove, keys)
 
     def _sync_remove(self, keys: Iterable[int]) -> None:
         for key in keys:
             with contextlib.suppress(RuntimeError):
                 self._index.mark_deleted(key)
-
-    @override
-    async def remove(self, keys: Iterable[int]) -> None:
-        async with self._lock:
-            await asyncio.to_thread(self._sync_remove, keys)
 
     @override
     async def save(self, path: str) -> None:
