@@ -2,7 +2,7 @@
 
 import math
 from datetime import UTC, datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -1022,14 +1022,17 @@ class TestUpsertBehavior:
 class TestConcurrentAsync:
     @pytest.mark.asyncio
     async def test_concurrent_upserts(self, collection):
-        """Multiple concurrent upserts should not error."""
+        """Multiple concurrent upserts should not error and all records should be persisted."""
         import asyncio
+
+        all_uuids: list[UUID] = []
 
         async def upsert_batch(start: int) -> None:
             records = [
                 _make_record(vector=_normalize([float(i), 1.0, 0.0]))
                 for i in range(start, start + 10)
             ]
+            all_uuids.extend(r.uuid for r in records)
             await collection.upsert(records=records)
 
         await asyncio.gather(
@@ -1038,10 +1041,9 @@ class TestConcurrentAsync:
             upsert_batch(20),
         )
 
-        results = await collection.query(
-            query_vectors=[_normalize([1.0, 1.0, 0.0])], limit=30
-        )
-        assert len(results[0].matches) == 30
+        # Verify all records were persisted (deterministic, not ANN-dependent).
+        fetched = await collection.get(record_uuids=all_uuids)
+        assert len(fetched) == 30
 
     @pytest.mark.asyncio
     async def test_concurrent_upsert_and_query(self, collection):
