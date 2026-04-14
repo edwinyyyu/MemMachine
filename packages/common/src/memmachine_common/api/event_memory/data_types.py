@@ -13,7 +13,7 @@ from datetime import datetime, tzinfo
 from typing import Annotated, Literal
 from uuid import UUID
 
-from babel.dates import format_date, format_datetime
+from babel.dates import format_date, format_time, get_datetime_format
 from pydantic import (
     BaseModel,
     Field,
@@ -131,12 +131,22 @@ class EventMemorySegment(BaseModel):
 
 # FormatOptions
 
+# CLDR datetime style. Ordered from compact to verbose.
+EventMemoryDateTimeStyle = Literal["short", "medium", "long", "full"]
+
+_DATETIME_STYLE_LEVELS: tuple[EventMemoryDateTimeStyle, ...] = (
+    "short",
+    "medium",
+    "long",
+    "full",
+)
+
 
 class EventMemoryFormatOptions(BaseModel):
     """Options for formatting."""
 
-    datetime_style: Literal["short", "medium", "long", "full"] | None = "full"
-    include_time: bool = True
+    date_style: EventMemoryDateTimeStyle | None = "full"
+    time_style: EventMemoryDateTimeStyle | None = "long"
     locale: str = "en_US"
     timezone: InstanceOf[tzinfo] | None = None
 
@@ -276,18 +286,14 @@ def _segment_header(
     segment: EventMemorySegment, format_options: EventMemoryFormatOptions
 ) -> str:
     """Build the header emitted before a segment."""
-    datetime_style = format_options.datetime_style
-    if datetime_style is None:
-        timestamp_prefix = ""
-    else:
-        formatted_timestamp = _format_timestamp(
-            segment.timestamp,
-            datetime_style=datetime_style,
-            include_time=format_options.include_time,
-            locale=format_options.locale,
-            timezone=format_options.timezone,
-        )
-        timestamp_prefix = f"[{formatted_timestamp}] "
+    formatted_timestamp = _format_timestamp(
+        segment.timestamp,
+        date_style=format_options.date_style,
+        time_style=format_options.time_style,
+        locale=format_options.locale,
+        timezone=format_options.timezone,
+    )
+    timestamp_prefix = f"[{formatted_timestamp}] " if formatted_timestamp else ""
 
     match segment.context:
         case EventMemoryMessageContext(source=source):
@@ -301,20 +307,45 @@ def _segment_header(
 def _format_timestamp(
     timestamp: datetime,
     *,
-    datetime_style: Literal["short", "medium", "long", "full"],
-    include_time: bool,
+    date_style: EventMemoryDateTimeStyle | None,
+    time_style: EventMemoryDateTimeStyle | None,
     locale: str,
     timezone: tzinfo | None,
 ) -> str:
     """Format a timestamp."""
+    if date_style is None and time_style is None:
+        return ""
+
     normalized_timestamp = (
         timestamp.astimezone(timezone) if timezone is not None else timestamp
     )
-    if include_time:
-        return format_datetime(
-            normalized_timestamp, format=datetime_style, locale=locale
+
+    date_string = ""
+    time_string = ""
+
+    if date_style is not None:
+        date_string = format_date(
+            normalized_timestamp, format=date_style, locale=locale
         )
-    return format_date(normalized_timestamp, format=datetime_style, locale=locale)
+    if time_style is not None:
+        time_string = format_time(
+            normalized_timestamp, format=time_style, locale=locale
+        )
+
+    if not time_string:
+        return date_string
+    if not date_string:
+        return time_string
+
+    connector_style = _DATETIME_STYLE_LEVELS[
+        max(
+            _DATETIME_STYLE_LEVELS.index(date_style),
+            _DATETIME_STYLE_LEVELS.index(time_style),
+        )
+    ]
+
+    template = str(get_datetime_format(connector_style, locale=locale))
+    return template.replace("{1}", date_string).replace("{0}", time_string)
 
 
 def _seed_proximity(
