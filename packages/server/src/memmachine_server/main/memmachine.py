@@ -838,7 +838,7 @@ class MemMachine:
                     vector_dimensions=embedder.dimensions,
                     similarity_metric=embedder.similarity_metric,
                     properties_schema={
-                        **EventMemory.SYSTEM_PROPERTIES_SCHEMA,
+                        **EventMemory.expected_vector_store_collection_schema(),
                         **user_schema,
                     },
                 )
