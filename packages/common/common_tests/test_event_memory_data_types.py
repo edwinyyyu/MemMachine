@@ -93,15 +93,36 @@ class TestFormatSegmentContext:
             timestamp=datetime(2026, 1, 15, 10, 30, tzinfo=timezone.utc),
             text="test",
         )
-        opts = EventMemoryFormatOptions(timezone=tz, show_timezone_label=True)
+        opts = EventMemoryFormatOptions(timezone=tz)
         result = format_segment_context([seg], format_options=opts)
-        assert "UTC+09:00" in result
+        # 10:30 UTC == 19:30 in UTC+09:00
+        assert "7:30" in result
 
-    def test_no_timezone_label(self):
+    def test_datetime_style_none_omits_timestamp(self):
         seg = _make_segment(text="test")
-        opts = EventMemoryFormatOptions(show_timezone_label=False)
+        opts = EventMemoryFormatOptions(datetime_style=None)
         result = format_segment_context([seg], format_options=opts)
-        assert "UTC" not in result
+        assert not result.startswith("[")
+
+    def test_include_time_false_omits_time(self):
+        seg = _make_segment(
+            timestamp=datetime(2026, 1, 15, 10, 30, tzinfo=timezone.utc),
+            text="test",
+        )
+        opts = EventMemoryFormatOptions(include_time=False)
+        result = format_segment_context([seg], format_options=opts)
+        assert "10:30" not in result
+
+    def test_locale_formatting(self):
+        seg = _make_segment(
+            timestamp=datetime(2026, 1, 15, 10, 30, tzinfo=timezone.utc),
+            text="test",
+        )
+        opts_en = EventMemoryFormatOptions(locale="en_US")
+        opts_fr = EventMemoryFormatOptions(locale="fr_FR")
+        assert format_segment_context([seg], format_options=opts_en) != (
+            format_segment_context([seg], format_options=opts_fr)
+        )
 
 
 class TestScoredSegmentContextToString:

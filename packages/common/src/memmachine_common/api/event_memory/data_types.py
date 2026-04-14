@@ -13,6 +13,7 @@ from datetime import datetime, tzinfo
 from typing import Annotated, Literal
 from uuid import UUID
 
+from babel.dates import format_date, format_datetime
 from pydantic import (
     BaseModel,
     Field,
@@ -132,10 +133,12 @@ class EventMemorySegment(BaseModel):
 
 
 class EventMemoryFormatOptions(BaseModel):
-    """Options for formatting query results."""
+    """Options for formatting."""
 
+    datetime_style: Literal["short", "medium", "long", "full"] | None = "full"
+    include_time: bool = True
+    locale: str = "en_US"
     timezone: InstanceOf[tzinfo] | None = None
-    show_timezone_label: bool = True
 
 
 # ScoredSegmentContext + QueryResult
@@ -244,16 +247,7 @@ def format_segment_context(
                 context_string += json.dumps(accumulated_text) + "\n"
             first = False
             accumulated_text = ""
-
-            timestamp = _format_timestamp(segment.timestamp, format_options)
-
-            match segment.context:
-                case EventMemoryMessageContext(source=source):
-                    context_string += f"{timestamp} {source}: "
-                case EventMemoryCitationContext(source=source):
-                    context_string += f"{timestamp} From '{source}': "
-                case _:
-                    context_string += f"{timestamp} "
+            context_string += _segment_header(segment, format_options)
 
         text = _extract_text(segment.block)
         if text is not None:
@@ -278,37 +272,49 @@ def _extract_text(block: EventMemoryBlock) -> str | None:
             return None
 
 
-def _format_timestamp(
-    timestamp: datetime, format_options: EventMemoryFormatOptions
+def _segment_header(
+    segment: EventMemorySegment, format_options: EventMemoryFormatOptions
 ) -> str:
-    """Format a timestamp as a bracketed date/time string."""
-    display_timestamp = (
-        timestamp.astimezone(format_options.timezone)
-        if format_options.timezone is not None
-        else timestamp
+    """Build the header emitted before a segment."""
+    datetime_style = format_options.datetime_style
+    if datetime_style is None:
+        timestamp_prefix = ""
+    else:
+        formatted_timestamp = _format_timestamp(
+            segment.timestamp,
+            datetime_style=datetime_style,
+            include_time=format_options.include_time,
+            locale=format_options.locale,
+            timezone=format_options.timezone,
+        )
+        timestamp_prefix = f"[{formatted_timestamp}] "
+
+    match segment.context:
+        case EventMemoryMessageContext(source=source):
+            return f"{timestamp_prefix}{source}: "
+        case EventMemoryCitationContext(source=source):
+            return f"{timestamp_prefix}From '{source}': "
+        case _:
+            return timestamp_prefix
+
+
+def _format_timestamp(
+    timestamp: datetime,
+    *,
+    datetime_style: Literal["short", "medium", "long", "full"],
+    include_time: bool,
+    locale: str,
+    timezone: tzinfo | None,
+) -> str:
+    """Format a timestamp."""
+    normalized_timestamp = (
+        timestamp.astimezone(timezone) if timezone is not None else timestamp
     )
-    date_str = display_timestamp.date().strftime("%A, %B %d, %Y")
-    time_str = display_timestamp.time().strftime("%I:%M %p")
-    if format_options.show_timezone_label:
-        tz_label = _format_timezone(display_timestamp)
-        if tz_label:
-            time_str += " " + tz_label
-    return f"[{date_str} at {time_str}]"
-
-
-def _format_timezone(timestamp: datetime) -> str:
-    """Format the timezone of a datetime as a UTC offset string."""
-    offset = timestamp.utcoffset()
-    if offset is None:
-        return ""
-    total_seconds = int(offset.total_seconds())
-    sign = "+" if total_seconds >= 0 else "-"
-    total_seconds = abs(total_seconds)
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    if seconds:
-        return f"UTC{sign}{hours:02d}:{minutes:02d}:{seconds:02d}"
-    return f"UTC{sign}{hours:02d}:{minutes:02d}"
+    if include_time:
+        return format_datetime(
+            normalized_timestamp, format=datetime_style, locale=locale
+        )
+    return format_date(normalized_timestamp, format=datetime_style, locale=locale)
 
 
 def _seed_proximity(
