@@ -15,7 +15,7 @@ These tests require a running MemMachine server.
 import os
 import time
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import requests
@@ -1222,8 +1222,7 @@ class TestMemMachineIntegration:
         )
 
         assert set_type_id is not None
-        assert isinstance(set_type_id, str)
-        assert len(set_type_id) > 0
+        assert isinstance(set_type_id, UUID)
 
     def test_create_semantic_set_type_minimal(self, memory, unique_test_ids):
         """Test creating a set type with minimal parameters."""
@@ -1232,7 +1231,7 @@ class TestMemMachineIntegration:
         )
 
         assert set_type_id is not None
-        assert isinstance(set_type_id, str)
+        assert isinstance(set_type_id, UUID)
 
     def test_list_semantic_set_types(self, memory, unique_test_ids):
         """Test listing semantic set types."""

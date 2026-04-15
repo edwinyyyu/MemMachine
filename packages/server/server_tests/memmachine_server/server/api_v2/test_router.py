@@ -19,6 +19,7 @@ from memmachine_server.main.memmachine import ALL_MEMORY_TYPES, MemoryType
 from memmachine_server.server.api_v2.router import RestError, get_memmachine
 from memmachine_server.server.api_v2.service import _SessionData
 from memmachine_server.server.app import MemMachineAPI
+from uuid import UUID
 
 
 @pytest.fixture
@@ -654,11 +655,11 @@ def test_add_feature(client, mock_memmachine):
         "value": "pizza",
     }
 
-    mock_memmachine.add_feature.return_value = "feature_123"
+    mock_memmachine.add_feature.return_value = "00000000-0000-0000-0000-000000000101"
 
     response = client.post("/api/v2/memories/semantic/feature", json=payload)
     assert response.status_code == 201
-    assert response.json()["feature_id"] == "feature_123"
+    assert response.json()["feature_id"] == "00000000-0000-0000-0000-000000000101"
 
     mock_memmachine.add_feature.assert_awaited_once()
     call_args = mock_memmachine.add_feature.call_args[1]
@@ -685,11 +686,11 @@ def test_add_feature_with_metadata_and_citations(client, mock_memmachine):
         ],
     }
 
-    mock_memmachine.add_feature.return_value = "feature_456"
+    mock_memmachine.add_feature.return_value = "00000000-0000-0000-0000-000000000102"
 
     response = client.post("/api/v2/memories/semantic/feature", json=payload)
     assert response.status_code == 201
-    assert response.json()["feature_id"] == "feature_456"
+    assert response.json()["feature_id"] == "00000000-0000-0000-0000-000000000102"
 
     call_args = mock_memmachine.add_feature.call_args[1]
     assert call_args["feature_metadata"] == {"source": "conversation"}
@@ -737,7 +738,7 @@ def test_get_feature(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "feature_id": "feature_123",
+        "feature_id": "00000000-0000-0000-0000-000000000101",
     }
 
     mock_feature = MagicMock()
@@ -747,7 +748,7 @@ def test_get_feature(client, mock_memmachine):
     mock_feature.feature_name = "favorite_food"
     mock_feature.value = "pizza"
     mock_feature.metadata = MagicMock()
-    mock_feature.metadata.id = "feature_123"
+    mock_feature.metadata.id = "00000000-0000-0000-0000-000000000101"
     mock_feature.metadata.citations = None
     mock_feature.metadata.other = None
 
@@ -764,7 +765,7 @@ def test_get_feature(client, mock_memmachine):
 
     mock_memmachine.get_feature.assert_awaited_once()
     call_args = mock_memmachine.get_feature.call_args[1]
-    assert call_args["feature_id"] == "feature_123"
+    assert call_args["feature_id"] == UUID("00000000-0000-0000-0000-000000000101")
     assert call_args["load_citations"] is False
 
 
@@ -772,7 +773,7 @@ def test_get_feature_with_citations(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "feature_id": "feature_123",
+        "feature_id": "00000000-0000-0000-0000-000000000101",
         "load_citations": True,
     }
 
@@ -808,7 +809,7 @@ def test_get_feature_not_found(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "feature_id": "nonexistent",
+        "feature_id": "00000000-0000-0000-0000-000000000099",
     }
 
     mock_memmachine.get_feature.return_value = None
@@ -822,7 +823,7 @@ def test_get_feature_error(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "feature_id": "feature_123",
+        "feature_id": "00000000-0000-0000-0000-000000000101",
     }
 
     mock_memmachine.get_feature.side_effect = Exception("Database error")
@@ -835,7 +836,7 @@ def test_update_feature(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "feature_id": "feature_123",
+        "feature_id": "00000000-0000-0000-0000-000000000101",
         "value": "sushi",
     }
 
@@ -844,7 +845,7 @@ def test_update_feature(client, mock_memmachine):
 
     mock_memmachine.update_feature.assert_awaited_once()
     call_args = mock_memmachine.update_feature.call_args[1]
-    assert call_args["feature_id"] == "feature_123"
+    assert call_args["feature_id"] == UUID("00000000-0000-0000-0000-000000000101")
     assert call_args["value"] == "sushi"
     assert call_args["category_name"] is None
     assert call_args["feature"] is None
@@ -856,7 +857,7 @@ def test_update_feature_all_fields(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "feature_id": "feature_123",
+        "feature_id": "00000000-0000-0000-0000-000000000101",
         "category_name": "new_preferences",
         "tag": "cuisine",
         "feature": "top_food",
@@ -879,7 +880,7 @@ def test_update_feature_not_found(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "feature_id": "nonexistent",
+        "feature_id": "00000000-0000-0000-0000-000000000099",
         "value": "sushi",
     }
 
@@ -895,7 +896,7 @@ def test_update_feature_error(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "feature_id": "feature_123",
+        "feature_id": "00000000-0000-0000-0000-000000000101",
         "value": "sushi",
     }
 
@@ -918,11 +919,11 @@ def test_create_semantic_set_type(client, mock_memmachine):
         "description": "Set type for user sessions",
     }
 
-    mock_memmachine.create_semantic_set_type.return_value = "set_type_123"
+    mock_memmachine.create_semantic_set_type.return_value = "00000000-0000-0000-0000-000000000005"
 
     response = client.post("/api/v2/memories/semantic/set_type", json=payload)
     assert response.status_code == 201
-    assert response.json()["set_type_id"] == "set_type_123"
+    assert response.json()["set_type_id"] == "00000000-0000-0000-0000-000000000005"
 
     mock_memmachine.create_semantic_set_type.assert_awaited_once()
     call_args = mock_memmachine.create_semantic_set_type.call_args[1]
@@ -940,11 +941,11 @@ def test_create_semantic_set_type_minimal(client, mock_memmachine):
         "metadata_tags": ["user_id"],
     }
 
-    mock_memmachine.create_semantic_set_type.return_value = "set_type_456"
+    mock_memmachine.create_semantic_set_type.return_value = "00000000-0000-0000-0000-000000000006"
 
     response = client.post("/api/v2/memories/semantic/set_type", json=payload)
     assert response.status_code == 201
-    assert response.json()["set_type_id"] == "set_type_456"
+    assert response.json()["set_type_id"] == "00000000-0000-0000-0000-000000000006"
 
 
 def test_create_semantic_set_type_invalid_arg(client, mock_memmachine):
@@ -980,14 +981,14 @@ def test_list_semantic_set_types(client, mock_memmachine):
     }
 
     mock_set_type1 = MagicMock()
-    mock_set_type1.id = "st_1"
+    mock_set_type1.id = "00000000-0000-0000-0000-000000000201"
     mock_set_type1.is_org_level = False
     mock_set_type1.tags = ["user_id"]
     mock_set_type1.name = "User Set"
     mock_set_type1.description = "User-scoped sets"
 
     mock_set_type2 = MagicMock()
-    mock_set_type2.id = "st_2"
+    mock_set_type2.id = "00000000-0000-0000-0000-000000000202"
     mock_set_type2.is_org_level = True
     mock_set_type2.tags = []
     mock_set_type2.name = None
@@ -1002,11 +1003,11 @@ def test_list_semantic_set_types(client, mock_memmachine):
     assert response.status_code == 200
     data = response.json()
     assert len(data["set_types"]) == 2
-    assert data["set_types"][0]["id"] == "st_1"
+    assert data["set_types"][0]["id"] == "00000000-0000-0000-0000-000000000201"
     assert data["set_types"][0]["is_org_level"] is False
     assert data["set_types"][0]["tags"] == ["user_id"]
     assert data["set_types"][0]["name"] == "User Set"
-    assert data["set_types"][1]["id"] == "st_2"
+    assert data["set_types"][1]["id"] == "00000000-0000-0000-0000-000000000202"
     assert data["set_types"][1]["is_org_level"] is True
 
 
@@ -1026,14 +1027,14 @@ def test_delete_semantic_set_type(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "set_type_id": "st_123",
+        "set_type_id": "00000000-0000-0000-0000-000000000001",
     }
 
     response = client.post("/api/v2/memories/semantic/set_type/delete", json=payload)
     assert response.status_code == 204
 
     mock_memmachine.delete_semantic_set_type.assert_awaited_once_with(
-        set_type_id="st_123"
+        set_type_id=UUID("00000000-0000-0000-0000-000000000001")
     )
 
 
@@ -1041,7 +1042,7 @@ def test_delete_semantic_set_type_not_found(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "set_type_id": "nonexistent",
+        "set_type_id": "00000000-0000-0000-0000-000000000002",
     }
 
     mock_memmachine.delete_semantic_set_type.side_effect = ResourceNotFoundError(
@@ -1056,7 +1057,7 @@ def test_delete_semantic_set_type_error(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "set_type_id": "st_123",
+        "set_type_id": "00000000-0000-0000-0000-000000000001",
     }
 
     mock_memmachine.delete_semantic_set_type.side_effect = Exception("Database error")
@@ -1278,11 +1279,11 @@ def test_get_semantic_category(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "category_id": "cat_123",
+        "category_id": "00000000-0000-0000-0000-000000000003",
     }
 
     mock_category = MagicMock()
-    mock_category.id = "cat_123"
+    mock_category.id = "00000000-0000-0000-0000-000000000003"
     mock_category.name = "preferences"
     mock_category.prompt = "Extract user preferences"
     mock_category.description = "Category for user preferences"
@@ -1292,7 +1293,7 @@ def test_get_semantic_category(client, mock_memmachine):
     response = client.post("/api/v2/memories/semantic/category/get", json=payload)
     assert response.status_code == 200
     data = response.json()
-    assert data["id"] == "cat_123"
+    assert data["id"] == "00000000-0000-0000-0000-000000000003"
     assert data["name"] == "preferences"
     assert data["prompt"] == "Extract user preferences"
     assert data["description"] == "Category for user preferences"
@@ -1302,7 +1303,7 @@ def test_get_semantic_category_not_found(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "category_id": "nonexistent",
+        "category_id": "00000000-0000-0000-0000-000000000002",
     }
 
     mock_memmachine.semantic_get_category.return_value = None
@@ -1316,7 +1317,7 @@ def test_get_semantic_category_error(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "category_id": "cat_123",
+        "category_id": "00000000-0000-0000-0000-000000000003",
     }
 
     mock_memmachine.semantic_get_category.side_effect = Exception("Database error")
@@ -1335,11 +1336,11 @@ def test_add_semantic_category(client, mock_memmachine):
         "description": "Category for user preferences",
     }
 
-    mock_memmachine.semantic_add_category.return_value = "cat_456"
+    mock_memmachine.semantic_add_category.return_value = "00000000-0000-0000-0000-000000000007"
 
     response = client.post("/api/v2/memories/semantic/category", json=payload)
     assert response.status_code == 201
-    assert response.json()["category_id"] == "cat_456"
+    assert response.json()["category_id"] == "00000000-0000-0000-0000-000000000007"
 
     mock_memmachine.semantic_add_category.assert_awaited_once()
     call_args = mock_memmachine.semantic_add_category.call_args[1]
@@ -1358,11 +1359,11 @@ def test_add_semantic_category_minimal(client, mock_memmachine):
         "prompt": "Extract preferences",
     }
 
-    mock_memmachine.semantic_add_category.return_value = "cat_789"
+    mock_memmachine.semantic_add_category.return_value = "00000000-0000-0000-0000-000000000008"
 
     response = client.post("/api/v2/memories/semantic/category", json=payload)
     assert response.status_code == 201
-    assert response.json()["category_id"] == "cat_789"
+    assert response.json()["category_id"] == "00000000-0000-0000-0000-000000000008"
 
 
 def test_add_semantic_category_invalid_arg(client, mock_memmachine):
@@ -1399,21 +1400,21 @@ def test_add_semantic_category_template(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "set_type_id": "st_123",
+        "set_type_id": "00000000-0000-0000-0000-000000000001",
         "category_name": "preferences",
         "prompt": "Extract user preferences",
         "description": "Template for user preferences",
     }
 
-    mock_memmachine.semantic_add_category_template.return_value = "cat_template_456"
+    mock_memmachine.semantic_add_category_template.return_value = "00000000-0000-0000-0000-000000000009"
 
     response = client.post("/api/v2/memories/semantic/category/template", json=payload)
     assert response.status_code == 201
-    assert response.json()["category_id"] == "cat_template_456"
+    assert response.json()["category_id"] == "00000000-0000-0000-0000-000000000009"
 
     mock_memmachine.semantic_add_category_template.assert_awaited_once()
     call_args = mock_memmachine.semantic_add_category_template.call_args[1]
-    assert call_args["set_type_id"] == "st_123"
+    assert call_args["set_type_id"] == UUID("00000000-0000-0000-0000-000000000001")
     assert call_args["category_name"] == "preferences"
     assert call_args["prompt"] == "Extract user preferences"
     assert call_args["description"] == "Template for user preferences"
@@ -1423,7 +1424,7 @@ def test_add_semantic_category_template_error(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "set_type_id": "st_123",
+        "set_type_id": "00000000-0000-0000-0000-000000000001",
         "category_name": "preferences",
         "prompt": "Extract preferences",
     }
@@ -1440,18 +1441,18 @@ def test_list_semantic_category_templates(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "set_type_id": "st_123",
+        "set_type_id": "00000000-0000-0000-0000-000000000001",
     }
 
     mock_cat1 = MagicMock()
-    mock_cat1.id = "cat_1"
+    mock_cat1.id = "00000000-0000-0000-0000-000000000203"
     mock_cat1.name = "preferences"
     mock_cat1.origin_type = "set_type"
-    mock_cat1.origin_id = "st_123"
+    mock_cat1.origin_id = "00000000-0000-0000-0000-000000000001"
     mock_cat1.inherited = False
 
     mock_cat2 = MagicMock()
-    mock_cat2.id = "cat_2"
+    mock_cat2.id = "00000000-0000-0000-0000-000000000204"
     mock_cat2.name = "facts"
     mock_cat2.origin_type = "set"
     mock_cat2.origin_id = "set_456"
@@ -1468,11 +1469,11 @@ def test_list_semantic_category_templates(client, mock_memmachine):
     assert response.status_code == 200
     data = response.json()
     assert len(data["categories"]) == 2
-    assert data["categories"][0]["id"] == "cat_1"
+    assert data["categories"][0]["id"] == "00000000-0000-0000-0000-000000000203"
     assert data["categories"][0]["name"] == "preferences"
     assert data["categories"][0]["origin_type"] == "set_type"
     assert data["categories"][0]["inherited"] is False
-    assert data["categories"][1]["id"] == "cat_2"
+    assert data["categories"][1]["id"] == "00000000-0000-0000-0000-000000000204"
     assert data["categories"][1]["inherited"] is True
 
 
@@ -1480,7 +1481,7 @@ def test_list_semantic_category_templates_error(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "set_type_id": "st_123",
+        "set_type_id": "00000000-0000-0000-0000-000000000001",
     }
 
     mock_memmachine.semantic_list_category_templates.side_effect = Exception(
@@ -1544,7 +1545,7 @@ def test_get_semantic_category_set_ids(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "category_id": "cat_123",
+        "category_id": "00000000-0000-0000-0000-000000000003",
     }
 
     mock_memmachine.semantic_get_category_set_ids.return_value = [
@@ -1565,7 +1566,7 @@ def test_get_semantic_category_set_ids_empty(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "category_id": "cat_123",
+        "category_id": "00000000-0000-0000-0000-000000000003",
     }
 
     mock_memmachine.semantic_get_category_set_ids.return_value = []
@@ -1582,7 +1583,7 @@ def test_get_semantic_category_set_ids_error(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "category_id": "cat_123",
+        "category_id": "00000000-0000-0000-0000-000000000003",
     }
 
     mock_memmachine.semantic_get_category_set_ids.side_effect = Exception(
@@ -1599,7 +1600,7 @@ def test_delete_semantic_category(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "category_id": "cat_123",
+        "category_id": "00000000-0000-0000-0000-000000000003",
     }
 
     response = client.post("/api/v2/memories/semantic/category/delete", json=payload)
@@ -1607,14 +1608,14 @@ def test_delete_semantic_category(client, mock_memmachine):
 
     mock_memmachine.semantic_delete_category.assert_awaited_once()
     call_args = mock_memmachine.semantic_delete_category.call_args[1]
-    assert call_args["category_id"] == "cat_123"
+    assert call_args["category_id"] == UUID("00000000-0000-0000-0000-000000000003")
 
 
 def test_delete_semantic_category_not_found(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "category_id": "nonexistent",
+        "category_id": "00000000-0000-0000-0000-000000000002",
     }
 
     mock_memmachine.semantic_delete_category.side_effect = ResourceNotFoundError(
@@ -1629,7 +1630,7 @@ def test_delete_semantic_category_error(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "category_id": "cat_123",
+        "category_id": "00000000-0000-0000-0000-000000000003",
     }
 
     mock_memmachine.semantic_delete_category.side_effect = Exception("Database error")
@@ -1645,20 +1646,20 @@ def test_add_semantic_tag(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "category_id": "cat_123",
+        "category_id": "00000000-0000-0000-0000-000000000003",
         "tag_name": "food_preference",
         "tag_description": "User food preferences",
     }
 
-    mock_memmachine.semantic_add_tag_to_category.return_value = "tag_456"
+    mock_memmachine.semantic_add_tag_to_category.return_value = "00000000-0000-0000-0000-000000000010"
 
     response = client.post("/api/v2/memories/semantic/category/tag", json=payload)
     assert response.status_code == 201
-    assert response.json()["tag_id"] == "tag_456"
+    assert response.json()["tag_id"] == "00000000-0000-0000-0000-000000000010"
 
     mock_memmachine.semantic_add_tag_to_category.assert_awaited_once()
     call_args = mock_memmachine.semantic_add_tag_to_category.call_args[1]
-    assert call_args["category_id"] == "cat_123"
+    assert call_args["category_id"] == UUID("00000000-0000-0000-0000-000000000003")
     assert call_args["tag_name"] == "food_preference"
     assert call_args["tag_description"] == "User food preferences"
 
@@ -1667,7 +1668,7 @@ def test_add_semantic_tag_not_found(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "category_id": "nonexistent",
+        "category_id": "00000000-0000-0000-0000-000000000002",
         "tag_name": "food_preference",
         "tag_description": "User food preferences",
     }
@@ -1684,7 +1685,7 @@ def test_add_semantic_tag_invalid_arg(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "category_id": "cat_123",
+        "category_id": "00000000-0000-0000-0000-000000000003",
         "tag_name": "food_preference",
         "tag_description": "User food preferences",
     }
@@ -1699,7 +1700,7 @@ def test_add_semantic_tag_error(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "category_id": "cat_123",
+        "category_id": "00000000-0000-0000-0000-000000000003",
         "tag_name": "food_preference",
         "tag_description": "User food preferences",
     }
@@ -1716,7 +1717,7 @@ def test_delete_semantic_tag(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "tag_id": "tag_123",
+        "tag_id": "00000000-0000-0000-0000-000000000004",
     }
 
     response = client.post(
@@ -1726,14 +1727,14 @@ def test_delete_semantic_tag(client, mock_memmachine):
 
     mock_memmachine.semantic_delete_tag.assert_awaited_once()
     call_args = mock_memmachine.semantic_delete_tag.call_args[1]
-    assert call_args["tag_id"] == "tag_123"
+    assert call_args["tag_id"] == UUID("00000000-0000-0000-0000-000000000004")
 
 
 def test_delete_semantic_tag_not_found(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "tag_id": "nonexistent",
+        "tag_id": "00000000-0000-0000-0000-000000000002",
     }
 
     mock_memmachine.semantic_delete_tag.side_effect = ResourceNotFoundError(
@@ -1750,7 +1751,7 @@ def test_delete_semantic_tag_error(client, mock_memmachine):
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "tag_id": "tag_123",
+        "tag_id": "00000000-0000-0000-0000-000000000004",
     }
 
     mock_memmachine.semantic_delete_tag.side_effect = Exception("Database error")

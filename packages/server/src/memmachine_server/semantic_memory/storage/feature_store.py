@@ -1,14 +1,15 @@
 """Abstract interface for the relational side of semantic feature storage.
 
-This module defines :class:`SemanticFeatureStore`, which owns all
-structured / relational data for semantic memory: features, citations,
-and history-ingestion tracking.  It does **not** handle embeddings or
-vector similarity search — those are delegated to a
+Defines :class:`SemanticFeatureStore`, which owns all structured /
+relational data for semantic memory: features, citations, and
+history-ingestion tracking.  Embeddings and similarity search are
+delegated to a
 :class:`~memmachine_server.common.vector_store.VectorStoreCollection`.
 
-Each feature carries a ``vector_uuid`` (:class:`~uuid.UUID`) that links
-it to the corresponding :class:`~memmachine_server.common.vector_store.Record`
-in the vector store.  The mapping is 1-to-1.
+Each feature's primary key is a :class:`~uuid.UUID`, used directly as
+``Record.uuid`` in the vector store.  The orchestrator generates the
+UUID via ``uuid4()`` before writing to either store; the same UUID
+identifies the feature row and its embedding record.
 """
 
 from abc import ABC, abstractmethod
@@ -20,7 +21,6 @@ from uuid import UUID
 from memmachine_server.common.episode_store.episode_model import EpisodeIdT
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.semantic_memory.semantic_model import (
-    FeatureIdT,
     SemanticFeature,
     SetIdT,
 )
@@ -31,17 +31,15 @@ class SemanticFeatureStore(ABC):
 
     Implementations persist all structured data **except** embeddings.
     Vector storage and similarity search are handled by a separate
-    ``VectorStoreCollection`` instance; the two stores are linked by
-    ``vector_uuid``.
+    :class:`~memmachine_server.common.vector_store.VectorStoreCollection`
+    instance; the two stores are linked by identity — each feature's
+    UUID primary key is also its ``Record.uuid`` in the vector store.
 
-    Lifecycle
-    ---------
-    The orchestrator is responsible for:
-
-    * generating a ``vector_uuid`` (via ``uuid4()``) before writing,
-    * upserting the corresponding ``Record`` into the vector store,
-    * deleting vector-store records when features are removed (using the
-      ``vector_uuid`` values returned by the delete methods).
+    The orchestrator generates the UUID via ``uuid4()``, passes it to
+    :meth:`add_feature`, and uses the same value for the corresponding
+    vector-store ``Record``.  Deletion methods that take a filter return
+    the UUIDs of the deleted features so the caller can clean up the
+    vector store.
     """
 
     # ------------------------------------------------------------------ #
@@ -76,39 +74,25 @@ class SemanticFeatureStore(ABC):
     async def add_feature(
         self,
         *,
-        vector_uuid: UUID,
+        feature_id: UUID,
         set_id: SetIdT,
         category_name: str,
         feature: str,
         value: str,
         tag: str,
         metadata: Mapping[str, Any] | None = None,
-    ) -> FeatureIdT:
-        """Persist a new feature and return its relational id.
+    ) -> None:
+        """Persist a new feature with the caller-supplied UUID.
 
-        The caller is responsible for upserting a
-        :class:`~memmachine_server.common.vector_store.Record` with the
-        same *vector_uuid* into the vector store.
-
-        Args:
-            vector_uuid: UUID that identifies this feature's record in the
-                vector store.
-            set_id: Feature-set this feature belongs to.
-            category_name: Semantic category.
-            feature: Feature name / key.
-            value: Textual value.
-            tag: Tag label.
-            metadata: Optional user-defined key-value pairs.
-
-        Returns:
-            The newly assigned ``FeatureIdT``.
+        The same *feature_id* must be used as ``Record.uuid`` when the
+        caller upserts the corresponding embedding into the vector store.
         """
         raise NotImplementedError
 
     @abstractmethod
     async def update_feature(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         *,
         set_id: SetIdT | None = None,
         category_name: str | None = None,
@@ -119,39 +103,38 @@ class SemanticFeatureStore(ABC):
     ) -> None:
         """Update relational fields of an existing feature.
 
-        Only non-``None`` arguments are applied.  This method does **not**
-        accept an embedding — if the *value* changed the caller must also
-        update the vector store via
-        :meth:`~memmachine_server.common.vector_store.VectorStoreCollection.upsert`.
-        If *set_id*, *category_name*, or *tag* changed the caller must
-        also update the corresponding vector-store properties.
+        Only non-``None`` arguments are applied.  No embedding parameter
+        — if *value* changed the caller must also upsert the vector
+        record; if *set_id*, *category_name*, or *tag* changed the
+        caller must also update the vector record's properties.
         """
         raise NotImplementedError
 
     @abstractmethod
     async def get_feature(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         load_citations: bool = False,
     ) -> SemanticFeature | None:
-        """Fetch a single feature by its relational id."""
+        """Fetch a single feature by id."""
         raise NotImplementedError
 
     @abstractmethod
-    async def get_features_by_vector_uuids(
+    async def get_features(
         self,
-        vector_uuids: Sequence[UUID],
+        feature_ids: Sequence[UUID],
         load_citations: bool = False,
     ) -> Mapping[UUID, SemanticFeature]:
-        """Bulk-load features by their vector-store UUIDs.
+        """Bulk-load features by id.
 
-        This is the primary enrichment method: after querying the vector
-        store the orchestrator calls this to hydrate full
-        :class:`SemanticFeature` objects for the matched UUIDs.
+        This is the primary enrichment path after a vector-store query:
+        pass the UUIDs returned by
+        :meth:`~memmachine_server.common.vector_store.VectorStoreCollection.query`
+        to hydrate full :class:`SemanticFeature` objects.
 
         Returns:
-            Mapping from *vector_uuid* to ``SemanticFeature``.
-            UUIDs that do not match any stored feature are silently
+            Mapping from *feature_id* to ``SemanticFeature``.
+            IDs that do not match any stored feature are silently
             omitted from the result.
         """
         raise NotImplementedError
@@ -170,44 +153,7 @@ class SemanticFeatureStore(ABC):
 
         For vector-similarity search the orchestrator should query the
         ``VectorStoreCollection`` first, then enrich via
-        :meth:`get_features_by_vector_uuids`.
-
-        Args:
-            filter_expr: Relational filter tree
-                (``set_id``, ``category``, ``tag``, etc.).
-            page_size: Maximum results per page.
-            page_num: Zero-based page number (requires *page_size*).
-            tag_threshold: Only return features whose tag appears at
-                least this many times in the result set.
-            load_citations: Whether to eagerly load citation episode IDs.
-        """
-        raise NotImplementedError
-
-    # ------------------------------------------------------------------ #
-    # Feature → vector UUID lookups
-    # ------------------------------------------------------------------ #
-
-    @abstractmethod
-    async def get_vector_uuid(
-        self,
-        feature_id: FeatureIdT,
-    ) -> UUID | None:
-        """Look up the vector-store UUID for a single feature.
-
-        Returns ``None`` if the feature does not exist.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    async def get_vector_uuids(
-        self,
-        feature_ids: Sequence[FeatureIdT],
-    ) -> Mapping[FeatureIdT, UUID]:
-        """Bulk look up vector-store UUIDs for multiple features.
-
-        Returns:
-            Mapping from *feature_id* to *vector_uuid*.
-            Feature IDs that do not exist are silently omitted.
+        :meth:`get_features`.
         """
         raise NotImplementedError
 
@@ -218,15 +164,12 @@ class SemanticFeatureStore(ABC):
     @abstractmethod
     async def delete_features(
         self,
-        feature_ids: Sequence[FeatureIdT],
-    ) -> Sequence[UUID]:
-        """Delete features by relational id.
+        feature_ids: Sequence[UUID],
+    ) -> None:
+        """Delete features by id.
 
-        The caller must also delete the corresponding records from the
-        vector store using the returned UUIDs.
-
-        Returns:
-            The ``vector_uuid`` values of the deleted features.
+        The caller is responsible for deleting the matching records
+        from the vector store using the same IDs.
         """
         raise NotImplementedError
 
@@ -236,13 +179,10 @@ class SemanticFeatureStore(ABC):
         *,
         filter_expr: FilterExpr | None = None,
     ) -> Sequence[UUID]:
-        """Delete features matching the filter.
+        """Delete features matching the filter; return the deleted IDs.
 
-        The caller must also delete the corresponding records from the
-        vector store using the returned UUIDs.
-
-        Returns:
-            The ``vector_uuid`` values of the deleted features.
+        The caller must delete the matching records from the vector
+        store using the returned IDs.
         """
         raise NotImplementedError
 
@@ -253,7 +193,7 @@ class SemanticFeatureStore(ABC):
     @abstractmethod
     async def add_citations(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         history_ids: Sequence[EpisodeIdT],
     ) -> None:
         """Associate episode IDs as citations for a feature."""

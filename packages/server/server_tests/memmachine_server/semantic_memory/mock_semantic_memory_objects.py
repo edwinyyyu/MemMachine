@@ -11,7 +11,6 @@ from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.embedder import Embedder
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.semantic_memory.semantic_model import (
-    FeatureIdT,
     Resources,
     SemanticFeature,
     SetIdT,
@@ -43,7 +42,7 @@ class MockSemanticStorage(SemanticStorage):
 
     async def get_feature(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         load_citations: bool = False,
     ) -> SemanticFeature | None:
         raise NotImplementedError
@@ -58,7 +57,7 @@ class MockSemanticStorage(SemanticStorage):
         tag: str,
         embedding: InstanceOf[np.ndarray],
         metadata: Mapping[str, Any] | None = None,
-    ) -> FeatureIdT:
+    ) -> UUID:
         return await self.add_feature_mock(
             set_id=set_id,
             type_name=category_name,
@@ -71,7 +70,7 @@ class MockSemanticStorage(SemanticStorage):
 
     async def update_feature(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         *,
         set_id: SetIdT | None = None,
         category_name: str | None = None,
@@ -83,7 +82,7 @@ class MockSemanticStorage(SemanticStorage):
     ) -> None:
         raise NotImplementedError
 
-    async def delete_features(self, feature_ids: Sequence[FeatureIdT]) -> None:
+    async def delete_features(self, feature_ids: Sequence[UUID]) -> None:
         await self.delete_features_mock(feature_ids)
 
     async def get_feature_set(
@@ -118,7 +117,7 @@ class MockSemanticStorage(SemanticStorage):
 
     async def add_citations(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         history_ids: Sequence[UUID],
     ) -> None:
         await self.add_citations_mock(feature_id, history_ids)

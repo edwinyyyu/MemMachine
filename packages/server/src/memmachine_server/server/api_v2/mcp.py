@@ -17,7 +17,7 @@ from fastmcp.server.http import StarletteWithLifespan
 from memmachine_common.api.spec import (
     AddMemoriesSpec,
     DeleteMemoriesSpec,
-    FeatureIdT,
+    UUID,
     MemoryMessage,
     SearchMemoriesSpec,
     SearchResult,
@@ -238,7 +238,7 @@ class Params(BaseModel):
     def to_delete_memories_spec(
         self,
         episodic_memory_uids: list[UUID],
-        semantic_memory_uids: list[FeatureIdT],
+        semantic_memory_uids: list[UUID],
     ) -> DeleteMemoriesSpec:
         """Convert to DeleteMemoriesSpec."""
         return DeleteMemoriesSpec(
@@ -549,7 +549,7 @@ async def mcp_delete_memory(
     org_id: str = "",
     proj_id: str = "",
     episodic_memory_uids: list[UUID] | None = None,
-    semantic_memory_uids: list[FeatureIdT] | None = None,
+    semantic_memory_uids: list[UUID] | None = None,
 ) -> McpResponse:
     """Delete specific memories from the user's memory store."""
     if semantic_memory_uids is None:

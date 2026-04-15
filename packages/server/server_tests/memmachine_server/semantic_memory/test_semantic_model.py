@@ -224,6 +224,9 @@ class TestSemanticFeature:
             producer_role="user_role",
         )
 
+        from uuid import UUID
+
+        feature_id = UUID("00000000-0000-0000-0000-0000000000a7")
         feature = SemanticFeature(
             set_id="user-123",
             category="Profile",

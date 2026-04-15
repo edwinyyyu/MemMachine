@@ -37,13 +37,10 @@ from memmachine_server.common.utils import merge_async_iterators
 from .config_store.config_store import SemanticConfigStorage
 from .semantic_ingestion import IngestionService
 from .semantic_model import (
-    CategoryIdT,
-    FeatureIdT,
     Resources,
     SemanticCategory,
     SemanticFeature,
     SetIdT,
-    TagIdT,
 )
 from .storage.storage_base import SemanticStorage
 
@@ -290,7 +287,7 @@ class SemanticService:
         tag: str,
         metadata: Mapping[str, str] | None = None,
         citations: Sequence[UUID] | None = None,
-    ) -> FeatureIdT:
+    ) -> UUID:
         logger.debug("Adding new feature %s to set %s", feature, set_id)
 
         resources = await self._set_id_resource(set_id=set_id)
@@ -319,7 +316,7 @@ class SemanticService:
 
     async def get_feature(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         load_citations: bool,
     ) -> SemanticFeature | None:
         logger.debug("Getting feature %s", feature_id)
@@ -353,7 +350,7 @@ class SemanticService:
 
     async def update_feature(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         *,
         set_id: SetIdT | None = None,
         category_name: str | None = None,
@@ -406,7 +403,7 @@ class SemanticService:
 
         await self._semantic_storage.delete_history(history_ids)
 
-    async def delete_features(self, feature_ids: Sequence[FeatureIdT]) -> None:
+    async def delete_features(self, feature_ids: Sequence[UUID]) -> None:
         logger.info("Deleting features ids %s", feature_ids)
 
         await self._semantic_storage.delete_features(feature_ids)
@@ -602,7 +599,7 @@ class SemanticService:
     async def get_category(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
     ) -> SemanticConfigStorage.Category | None:
         logger.debug("Getting category %s", category_id)
 
@@ -615,7 +612,7 @@ class SemanticService:
         category_name: str,
         prompt: str,
         description: str | None,
-    ) -> CategoryIdT:
+    ) -> UUID:
         logger.info("Adding new category %s to set %s", category_name, set_id)
 
         category_id = await self._semantic_config_storage.create_category(
@@ -630,11 +627,11 @@ class SemanticService:
     async def add_new_category_to_set_type(
         self,
         *,
-        set_type_id: str,
+        set_type_id: UUID,
         category_name: str,
         prompt: str,
         description: str | None,
-    ) -> CategoryIdT:
+    ) -> UUID:
         logger.info("Adding new category %s to set type %s", category_name, set_type_id)
 
         return await self._semantic_config_storage.create_set_type_category(
@@ -645,7 +642,7 @@ class SemanticService:
         )
 
     async def get_set_type_categories(
-        self, *, set_type_id: str
+        self, *, set_type_id: UUID
     ) -> Sequence[SemanticCategory]:
         logger.debug("Getting set type categories for %s", set_type_id)
 
@@ -656,10 +653,10 @@ class SemanticService:
     async def clone_category(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
         new_set_id: SetIdT,
         new_category_name: str,
-    ) -> CategoryIdT:
+    ) -> UUID:
         logger.info("Cloning category %s to %s", category_id, new_category_name)
 
         return await self._semantic_config_storage.clone_category(
@@ -679,7 +676,7 @@ class SemanticService:
     async def get_category_set_ids(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
     ) -> Sequence[SetIdT]:
         logger.debug("Getting set_ids for category %s", category_id)
 
@@ -690,7 +687,7 @@ class SemanticService:
     async def delete_category(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
     ) -> None:
         logger.info("Deleting category %s", category_id)
 
@@ -736,10 +733,10 @@ class SemanticService:
     async def add_tag(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
         tag_name: str,
         tag_description: str,
-    ) -> TagIdT:
+    ) -> UUID:
         logger.info("Adding tag %s to category %s", tag_name, category_id)
 
         return await self._semantic_config_storage.add_tag(
@@ -751,7 +748,7 @@ class SemanticService:
     async def update_tag(
         self,
         *,
-        tag_id: TagIdT,
+        tag_id: UUID,
         tag_name: str,
         tag_description: str,
     ) -> None:
@@ -763,7 +760,7 @@ class SemanticService:
             tag_description=tag_description,
         )
 
-    async def delete_tag(self, *, tag_id: TagIdT) -> None:
+    async def delete_tag(self, *, tag_id: UUID) -> None:
         logger.info("Deleting tag %s", tag_id)
 
         await self._semantic_config_storage.delete_tag(tag_id=tag_id)

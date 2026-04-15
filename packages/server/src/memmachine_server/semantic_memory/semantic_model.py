@@ -13,9 +13,6 @@ from memmachine_server.common.language_model import LanguageModel
 from memmachine_server.semantic_memory.util import semantic_prompt_template
 
 SetIdT = str
-FeatureIdT = str
-CategoryIdT = str
-TagIdT = str
 
 
 class SemanticCommandType(Enum):
@@ -74,7 +71,7 @@ class SemanticFeature(BaseModel):
         """Storage metadata for a semantic feature, including id and citations."""
 
         citations: Sequence[UUID] | None = None
-        id: FeatureIdT | None = None
+        id: UUID | None = None
         other: Mapping[str, Any] | None = None
 
     set_id: SetIdT | None = None
@@ -135,7 +132,7 @@ class SemanticPrompt(Protocol):
 class SemanticCategory(BaseModel):
     """Defines a semantic feature category, its allowed tags, and prompt strategy."""
 
-    id: CategoryIdT | None = None
+    id: UUID | None = None
 
     origin_type: Literal["set_id", "set_type"] | None = None
     origin_id: str | None = None
@@ -156,7 +153,7 @@ class Resources(BaseModel):
 class SetTypeEntry(BaseModel):
     """Persisted entry describing an org/project set type."""
 
-    id: str | None = None
+    id: UUID | None = None
     is_org_level: bool
     tags: Sequence[str]
     name: str | None = None

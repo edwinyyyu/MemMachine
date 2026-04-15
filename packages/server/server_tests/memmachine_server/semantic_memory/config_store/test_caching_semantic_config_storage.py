@@ -1,3 +1,5 @@
+from uuid import UUID, uuid4
+
 import pytest
 
 from memmachine_server.semantic_memory.config_store.caching_semantic_config_storage import (
@@ -39,11 +41,11 @@ class DummySemanticConfigStorage:
         self.get_setid_config_calls += 1
         return self._configs[set_id]
 
-    async def get_category(self, *, category_id: str):
+    async def get_category(self, *, category_id: UUID):
         self.get_category_calls += 1
         return
 
-    async def register_set_id_set_type(self, *, set_id: str, set_type_id: str) -> None:
+    async def register_set_id_set_type(self, *, set_id: str, set_type_id: UUID) -> None:
         self.register_set_id_set_type_calls += 1
         return
 
@@ -74,8 +76,9 @@ async def test_get_category_negative_cached() -> None:
     wrapped = DummySemanticConfigStorage()
     storage = CachingSemanticConfigStorage(wrapped)  # type: ignore[arg-type]
 
-    assert await storage.get_category(category_id="missing") is None
-    assert await storage.get_category(category_id="missing") is None
+    missing_id = uuid4()
+    assert await storage.get_category(category_id=missing_id) is None
+    assert await storage.get_category(category_id=missing_id) is None
 
     assert wrapped.get_category_calls == 1
 
@@ -85,7 +88,7 @@ async def test_register_set_id_set_type_short_circuits() -> None:
     wrapped = DummySemanticConfigStorage()
     storage = CachingSemanticConfigStorage(wrapped)  # type: ignore[arg-type]
 
-    await storage.register_set_id_set_type(set_id="set-a", set_type_id="1")
-    await storage.register_set_id_set_type(set_id="set-a", set_type_id="2")
+    await storage.register_set_id_set_type(set_id="set-a", set_type_id=uuid4())
+    await storage.register_set_id_set_type(set_id="set-a", set_type_id=uuid4())
 
     assert wrapped.register_set_id_set_type_calls == 1

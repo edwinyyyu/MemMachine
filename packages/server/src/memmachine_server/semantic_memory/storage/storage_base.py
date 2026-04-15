@@ -12,7 +12,6 @@ from pydantic import InstanceOf
 
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.semantic_memory.semantic_model import (
-    FeatureIdT,
     SemanticFeature,
     SetIdT,
 )
@@ -46,7 +45,7 @@ class SemanticStorage(ABC):
     @abstractmethod
     async def get_feature(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         load_citations: bool = False,
     ) -> SemanticFeature | None:
         """Fetch a feature by id, optionally loading citation details."""
@@ -63,14 +62,14 @@ class SemanticStorage(ABC):
         tag: str,
         embedding: InstanceOf[np.ndarray],
         metadata: Mapping[str, Any] | None = None,
-    ) -> FeatureIdT:
+    ) -> UUID:
         """Add a new feature to the user."""
         raise NotImplementedError
 
     @abstractmethod
     async def update_feature(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         *,
         set_id: SetIdT | None = None,
         category_name: str | None = None,
@@ -84,7 +83,7 @@ class SemanticStorage(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def delete_features(self, feature_ids: Sequence[FeatureIdT]) -> None:
+    async def delete_features(self, feature_ids: Sequence[UUID]) -> None:
         """Delete the requested feature ids."""
         raise NotImplementedError
 
@@ -127,7 +126,7 @@ class SemanticStorage(ABC):
     @abstractmethod
     async def add_citations(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         history_ids: Sequence[UUID],
     ) -> None:
         """Associate history ids as citations for a feature."""

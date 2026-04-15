@@ -25,13 +25,10 @@ from memmachine_server.semantic_memory.config_store.config_store import (
 )
 from memmachine_server.semantic_memory.semantic_memory import SemanticService
 from memmachine_server.semantic_memory.semantic_model import (
-    CategoryIdT,
-    FeatureIdT,
     SemanticCategory,
     SemanticFeature,
     SetIdT,
     SetTypeEntry,
-    TagIdT,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,17 +56,17 @@ class SemanticConfigStorage(Protocol):
         metadata_tags: list[str],
         name: str | None = None,
         description: str | None = None,
-    ) -> str: ...
+    ) -> UUID: ...
 
     async def list_set_type_ids(self, *, org_id: str) -> list[SetTypeEntry]: ...
 
-    async def delete_set_type_id(self, *, set_type_id: str) -> None: ...
+    async def delete_set_type_id(self, *, set_type_id: UUID) -> None: ...
 
     async def register_set_id_set_type(
         self,
         *,
         set_id: SetIdT,
-        set_type_id: str,
+        set_type_id: UUID,
     ) -> None: ...
 
 
@@ -207,7 +204,7 @@ class SemanticSessionManager:
         value: str,
         tag: str,
         citations: Sequence[UUID] | None = None,
-    ) -> FeatureIdT:
+    ) -> UUID:
         metadata = (
             {k: str(v) for k, v in feature_metadata.items()}
             if feature_metadata is not None
@@ -226,7 +223,7 @@ class SemanticSessionManager:
 
     async def get_feature(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         load_citations: bool = False,
     ) -> SemanticFeature | None:
         return await self._semantic_service.get_feature(
@@ -236,7 +233,7 @@ class SemanticSessionManager:
 
     async def update_feature(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         *,
         category_name: str | None = None,
         feature: str | None = None,
@@ -253,7 +250,7 @@ class SemanticSessionManager:
             metadata=metadata,
         )
 
-    async def delete_features(self, feature_ids: Sequence[FeatureIdT]) -> None:
+    async def delete_features(self, feature_ids: Sequence[UUID]) -> None:
         await self._semantic_service.delete_features(feature_ids)
 
     async def get_set_features(
@@ -323,7 +320,7 @@ class SemanticSessionManager:
     class _SetIdEntry:
         """Resolved set_id qualifiers for a session message."""
 
-        set_type_id: str
+        set_type_id: UUID
         is_org_level: bool
         tags: Mapping[str, str]
 
@@ -498,7 +495,7 @@ class SemanticSessionManager:
         metadata_tags: Sequence[str],
         name: str | None = None,
         description: str | None = None,
-    ) -> str:
+    ) -> UUID:
         self._assert_session_data_implements_protocol(session_data=session_data)
 
         return await self._semantic_config.add_set_type_id(
@@ -512,7 +509,7 @@ class SemanticSessionManager:
     async def delete_set_type(
         self,
         *,
-        set_type_id: str,
+        set_type_id: UUID,
     ) -> None:
         await self._semantic_config.delete_set_type_id(set_type_id=set_type_id)
 
@@ -553,14 +550,14 @@ class SemanticSessionManager:
     async def get_category(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
     ) -> ESemanticConfigStorage.Category | None:
         return await self._semantic_service.get_category(category_id=category_id)
 
     async def get_category_set_ids(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
     ) -> Iterable[SetIdT]:
         return await self._semantic_service.get_category_set_ids(
             category_id=category_id
@@ -573,7 +570,7 @@ class SemanticSessionManager:
         category_name: str,
         prompt: str,
         description: str | None,
-    ) -> CategoryIdT:
+    ) -> UUID:
         return await self._semantic_service.add_new_category_to_set_id(
             set_id=set_id,
             category_name=category_name,
@@ -584,11 +581,11 @@ class SemanticSessionManager:
     async def add_category_template(
         self,
         *,
-        set_type_id: str,
+        set_type_id: UUID,
         category_name: str,
         prompt: str,
         description: str | None,
-    ) -> CategoryIdT:
+    ) -> UUID:
         return await self._semantic_service.add_new_category_to_set_type(
             set_type_id=set_type_id,
             category_name=category_name,
@@ -597,7 +594,7 @@ class SemanticSessionManager:
         )
 
     async def list_category_templates(
-        self, *, set_type_id: str
+        self, *, set_type_id: UUID
     ) -> Iterable[SemanticCategory]:
         return await self._semantic_service.get_set_type_categories(
             set_type_id=set_type_id
@@ -777,7 +774,7 @@ class SemanticSessionManager:
     async def delete_category(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
     ) -> None:
         await self._semantic_service.delete_category(
             category_id=category_id,
@@ -786,10 +783,10 @@ class SemanticSessionManager:
     async def add_tag(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
         tag_name: str,
         tag_description: str,
-    ) -> TagIdT:
+    ) -> UUID:
         return await self._semantic_service.add_tag(
             category_id=category_id,
             tag_name=tag_name,
@@ -799,7 +796,7 @@ class SemanticSessionManager:
     async def update_tag(
         self,
         *,
-        tag_id: TagIdT,
+        tag_id: UUID,
         tag_name: str,
         tag_description: str,
     ) -> None:
@@ -809,5 +806,5 @@ class SemanticSessionManager:
             tag_description=tag_description,
         )
 
-    async def delete_tag(self, *, tag_id: TagIdT) -> None:
+    async def delete_tag(self, *, tag_id: UUID) -> None:
         await self._semantic_service.delete_tag(tag_id=tag_id)

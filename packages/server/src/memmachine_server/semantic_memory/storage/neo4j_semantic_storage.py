@@ -50,7 +50,6 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.neo4j_utils import coerce_datetime_to_timestamp
 from memmachine_server.semantic_memory.semantic_model import SemanticFeature, SetIdT
 from memmachine_server.semantic_memory.storage.storage_base import (
-    FeatureIdT,
     SemanticStorage,
 )
 
@@ -61,7 +60,7 @@ def _utc_timestamp() -> float:
 
 @dataclass
 class _FeatureEntry:
-    feature_id: FeatureIdT
+    feature_id: UUID
     set_id: str
     category_name: str
     tag: str
@@ -230,7 +229,7 @@ class Neo4jSemanticStorage(SemanticStorage):
         tag: str,
         embedding: InstanceOf[np.ndarray],
         metadata: Mapping[str, Any] | None = None,
-    ) -> FeatureIdT:
+    ) -> UUID:
         timestamp = _utc_timestamp()
         dimensions = len(np.array(embedding, dtype=float))
 
@@ -275,11 +274,11 @@ class Neo4jSemanticStorage(SemanticStorage):
         feature_id = records[0].get("feature_id")
         if feature_id is None:
             raise RuntimeError("Neo4j did not return a feature id")
-        return FeatureIdT(str(feature_id))
+        return UUID(str(feature_id))
 
     async def update_feature(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         *,
         set_id: SetIdT | None = None,
         category_name: str | None = None,
@@ -349,7 +348,7 @@ class Neo4jSemanticStorage(SemanticStorage):
     def _build_update_assignments(
         self,
         *,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         set_id: str | None,
         category_name: str | None,
         feature: str | None,
@@ -423,7 +422,7 @@ class Neo4jSemanticStorage(SemanticStorage):
 
     async def get_feature(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         load_citations: bool = False,
     ) -> SemanticFeature | None:
         records, _, _ = await self._driver.execute_query(
@@ -441,7 +440,7 @@ class Neo4jSemanticStorage(SemanticStorage):
         entry = self._node_to_entry(records[0]["f"])
         return self._entry_to_model(entry, load_citations=load_citations)
 
-    async def delete_features(self, feature_ids: Sequence[FeatureIdT]) -> None:
+    async def delete_features(self, feature_ids: Sequence[UUID]) -> None:
         if not feature_ids:
             return
 
@@ -518,12 +517,12 @@ class Neo4jSemanticStorage(SemanticStorage):
             )
         ]
         await self.delete_features(
-            [FeatureIdT(entry.metadata.id) for entry in entries if entry.metadata.id],
+            [UUID(entry.metadata.id) for entry in entries if entry.metadata.id],
         )
 
     async def add_citations(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         history_ids: Sequence[UUID],
     ) -> None:
         if not history_ids:
@@ -842,7 +841,7 @@ class Neo4jSemanticStorage(SemanticStorage):
             node_id = props.get("id")
         if node_id is None:
             raise ValueError("Feature node missing identifier")
-        feature_id = FeatureIdT(str(node_id))
+        feature_id = UUID(str(node_id))
         embedding = np.array(props.get("embedding", []), dtype=float)
         citations = [UUID(cid) for cid in props.get("citations", [])]
         metadata = self._parse_metadata(props)
@@ -1425,7 +1424,7 @@ class Neo4jSemanticStorage(SemanticStorage):
 
     async def _get_feature_dimensions(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
     ) -> Mapping[str, Any] | None:
         records, _, _ = await self._driver.execute_query(
             _neo4j_query(

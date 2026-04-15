@@ -2,6 +2,7 @@
 
 import json
 import logging
+from uuid import UUID
 
 from pydantic import (
     BaseModel,
@@ -15,7 +16,7 @@ from pydantic import (
 
 from memmachine_server.common.language_model import LanguageModel
 from memmachine_server.semantic_memory.semantic_model import (
-    FeatureIdT,
+    UUID,
     SemanticCommand,
     SemanticFeature,
 )
@@ -54,7 +55,7 @@ def _features_to_consolidation_format(
             "tag": f.tag,
             "feature": f.feature_name,
             "value": f.value,
-            "metadata": {"id": f.metadata.id},
+            "metadata": {"id": str(f.metadata.id) if f.metadata.id else None},
         }
         for f in features
     ]
@@ -120,7 +121,7 @@ class SemanticConsolidateMemoryRes(BaseModel):
     """LLM response describing merged features and ids of features to retain."""
 
     consolidated_memories: list[LLMReducedFeature] = Field(default_factory=list)
-    keep_memories: list[FeatureIdT] | None
+    keep_memories: list[UUID] | None
     model_config = ConfigDict(coerce_numbers_to_str=True)
 
 

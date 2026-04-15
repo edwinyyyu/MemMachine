@@ -154,7 +154,6 @@ class Episode(BaseModel):
 
 
 SetIdT = str
-FeatureIdT = str
 
 
 class SemanticFeature(BaseModel):
@@ -168,7 +167,7 @@ class SemanticFeature(BaseModel):
             Field(default=None, description=SpecDoc.SEMANTIC_METADATA_CITATIONS),
         ]
         id: Annotated[
-            FeatureIdT | None,
+            UUID | None,
             Field(default=None, description=SpecDoc.SEMANTIC_METADATA_ID),
         ]
         other: Annotated[
@@ -614,7 +613,7 @@ class DeleteMemoriesSpec(_WithOrgAndProj):
     ]
 
     semantic_memory_uids: Annotated[
-        list[FeatureIdT],
+        list[UUID],
         Field(
             default=[],
             description=SpecDoc.SEMANTIC_IDS,
@@ -799,7 +798,7 @@ class AddFeatureResponse(BaseModel):
     """Response model for adding a semantic feature."""
 
     feature_id: Annotated[
-        FeatureIdT,
+        UUID,
         Field(
             ...,
             description=SpecDoc.FEATURE_ID,
@@ -811,7 +810,7 @@ class GetFeatureSpec(_WithOrgAndProj):
     """Specification model for getting a semantic feature."""
 
     feature_id: Annotated[
-        str,
+        UUID,
         Field(
             ...,
             description=SpecDoc.FEATURE_ID,
@@ -830,7 +829,7 @@ class UpdateFeatureSpec(_WithOrgAndProj):
     """Specification model for updating a semantic feature."""
 
     feature_id: Annotated[
-        str,
+        UUID,
         Field(
             ...,
             description=SpecDoc.FEATURE_ID,
@@ -1059,7 +1058,7 @@ class CreateSemanticSetTypeResponse(BaseModel):
     """Response model for creating a semantic set type."""
 
     set_type_id: Annotated[
-        str,
+        UUID,
         Field(
             ...,
             description=SpecDoc.SET_TYPE_ID,
@@ -1075,7 +1074,7 @@ class SemanticSetTypeEntry(BaseModel):
     """A semantic set type entry."""
 
     id: Annotated[
-        str | None,
+        UUID | None,
         Field(
             default=None,
             description=SpecDoc.SET_TYPE_ID,
@@ -1127,7 +1126,7 @@ class DeleteSemanticSetTypeSpec(_WithOrgAndProj):
     """Specification model for deleting a semantic set type."""
 
     set_type_id: Annotated[
-        str,
+        UUID,
         Field(
             ...,
             description=SpecDoc.SET_TYPE_ID,
@@ -1270,7 +1269,7 @@ class GetSemanticCategorySpec(_WithOrgAndProj):
     """Specification model for getting a semantic category."""
 
     category_id: Annotated[
-        str,
+        UUID,
         Field(
             ...,
             description=SpecDoc.CATEGORY_ID,
@@ -1282,7 +1281,7 @@ class SemanticCategoryEntry(BaseModel):
     """A semantic category entry."""
 
     id: Annotated[
-        str,
+        UUID,
         Field(
             ...,
             description=SpecDoc.CATEGORY_ID,
@@ -1348,7 +1347,7 @@ class AddSemanticCategoryResponse(BaseModel):
     """Response model for adding a semantic category."""
 
     category_id: Annotated[
-        str,
+        UUID,
         Field(
             ...,
             description=SpecDoc.CATEGORY_ID,
@@ -1360,7 +1359,7 @@ class AddSemanticCategoryTemplateSpec(_WithOrgAndProj):
     """Specification model for adding a semantic category template."""
 
     set_type_id: Annotated[
-        str,
+        UUID,
         Field(
             ...,
             description=SpecDoc.SET_TYPE_ID,
@@ -1393,7 +1392,7 @@ class ListSemanticCategoryTemplatesSpec(_WithOrgAndProj):
     """Specification model for listing semantic category templates."""
 
     set_type_id: Annotated[
-        str,
+        UUID,
         Field(
             ...,
             description=SpecDoc.SET_TYPE_ID,
@@ -1405,7 +1404,7 @@ class SemanticCategoryTemplateEntry(BaseModel):
     """A semantic category template entry."""
 
     id: Annotated[
-        str | None,
+        UUID | None,
         Field(
             default=None,
             description=SpecDoc.CATEGORY_ID,
@@ -1476,7 +1475,7 @@ class GetSemanticCategorySetIdsSpec(_WithOrgAndProj):
     """Specification model for getting set IDs for a category."""
 
     category_id: Annotated[
-        str,
+        UUID,
         Field(
             ...,
             description=SpecDoc.CATEGORY_ID,
@@ -1500,7 +1499,7 @@ class DeleteSemanticCategorySpec(_WithOrgAndProj):
     """Specification model for deleting a semantic category."""
 
     category_id: Annotated[
-        str,
+        UUID,
         Field(
             ...,
             description=SpecDoc.CATEGORY_ID,
@@ -1515,7 +1514,7 @@ class AddSemanticTagSpec(_WithOrgAndProj):
     """Specification model for adding a tag to a category."""
 
     category_id: Annotated[
-        str,
+        UUID,
         Field(
             ...,
             description=SpecDoc.CATEGORY_ID,
@@ -1541,7 +1540,7 @@ class AddSemanticTagResponse(BaseModel):
     """Response model for adding a tag."""
 
     tag_id: Annotated[
-        str,
+        UUID,
         Field(
             ...,
             description=SpecDoc.TAG_ID,
@@ -1553,7 +1552,7 @@ class DeleteSemanticTagSpec(_WithOrgAndProj):
     """Specification model for deleting a tag."""
 
     tag_id: Annotated[
-        str,
+        UUID,
         Field(
             ...,
             description=SpecDoc.TAG_ID,

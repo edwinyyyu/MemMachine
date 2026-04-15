@@ -14,7 +14,7 @@ from memmachine_server.common.episode_store import (
 )
 from memmachine_server.common.errors import InvalidArgumentError
 from memmachine_server.common.filter.filter_parser import FilterExpr, parse_filter
-from memmachine_server.semantic_memory.semantic_model import FeatureIdT, SemanticFeature
+from memmachine_server.semantic_memory.semantic_model import SemanticFeature
 from memmachine_server.semantic_memory.storage.neo4j_semantic_storage import (
     Neo4jSemanticStorage,
 )
@@ -221,7 +221,7 @@ async def test_multiple_features(
 
 @pytest.mark.asyncio
 async def test_feature_value_comparison_filters(semantic_storage: SemanticStorage):
-    feature_ids: list[FeatureIdT] = [
+    feature_ids: list[UUID] = [
         await semantic_storage.add_feature(
             set_id="cmp-user",
             category_name="default",
@@ -330,7 +330,7 @@ async def test_delete_feature_set_by_set_id(
 async def test_get_feature_set_with_page_offset(
     semantic_storage: SemanticStorage,
 ):
-    feature_ids: list[FeatureIdT] = [
+    feature_ids: list[UUID] = [
         await semantic_storage.add_feature(
             set_id="user",
             category_name="default",
@@ -576,7 +576,7 @@ async def feature_and_citations(
 @pytest.mark.asyncio
 async def test_add_feature_with_citations(
     semantic_storage: SemanticStorage,
-    feature_and_citations: tuple[FeatureIdT, set[UUID]],
+    feature_and_citations: tuple[UUID, set[UUID]],
 ):
     feature_id, citations = feature_and_citations
 
@@ -1498,7 +1498,7 @@ async def test_add_feature_with_null_bytes_does_not_crash(
 
 @pytest.mark.asyncio
 async def test_filter_equality(semantic_storage: SemanticStorage):
-    feature_ids: list[FeatureIdT] = [
+    feature_ids: list[UUID] = [
         await semantic_storage.add_feature(
             set_id="eq-user",
             category_name="default",
@@ -1523,7 +1523,7 @@ async def test_filter_equality(semantic_storage: SemanticStorage):
 
 @pytest.mark.asyncio
 async def test_filter_not_equal(semantic_storage: SemanticStorage):
-    feature_ids: list[FeatureIdT] = [
+    feature_ids: list[UUID] = [
         await semantic_storage.add_feature(
             set_id="ne-user",
             category_name="default",
@@ -1547,7 +1547,7 @@ async def test_filter_not_equal(semantic_storage: SemanticStorage):
 
 @pytest.mark.asyncio
 async def test_filter_greater_equal(semantic_storage: SemanticStorage):
-    feature_ids: list[FeatureIdT] = [
+    feature_ids: list[UUID] = [
         await semantic_storage.add_feature(
             set_id="ge-user",
             category_name="default",
@@ -1571,7 +1571,7 @@ async def test_filter_greater_equal(semantic_storage: SemanticStorage):
 
 @pytest.mark.asyncio
 async def test_filter_or(semantic_storage: SemanticStorage):
-    feature_ids: list[FeatureIdT] = []
+    feature_ids: list[UUID] = []
     for set_id in ("or-u1", "or-u2", "or-u3"):
         fid = await semantic_storage.add_feature(
             set_id=set_id,
@@ -1595,7 +1595,7 @@ async def test_filter_or(semantic_storage: SemanticStorage):
 
 @pytest.mark.asyncio
 async def test_filter_not(semantic_storage: SemanticStorage):
-    feature_ids: list[FeatureIdT] = [
+    feature_ids: list[UUID] = [
         await semantic_storage.add_feature(
             set_id="not-user",
             category_name="default",

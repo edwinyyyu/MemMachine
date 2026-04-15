@@ -2,13 +2,12 @@
 
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
+from uuid import UUID
 
 from memmachine_server.semantic_memory.semantic_model import (
-    CategoryIdT,
     SemanticCategory,
     SetIdT,
     SetTypeEntry,
-    TagIdT,
 )
 
 
@@ -47,14 +46,14 @@ class SemanticConfigStorage(Protocol):
         self,
         *,
         set_id: SetIdT,
-        set_type_id: str,
+        set_type_id: UUID,
     ) -> None: ...
 
     @dataclass(frozen=True)
     class Category:
         """Represents a semantic category as stored in the database."""
 
-        id: CategoryIdT
+        id: UUID
         name: str
         prompt: str
         description: str | None
@@ -62,13 +61,13 @@ class SemanticConfigStorage(Protocol):
     async def get_category(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
     ) -> Category | None: ...
 
     async def get_category_set_ids(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
     ) -> list[SetIdT]: ...
 
     async def create_category(
@@ -78,20 +77,20 @@ class SemanticConfigStorage(Protocol):
         category_name: str,
         prompt: str,
         description: str | None = None,
-    ) -> CategoryIdT: ...
+    ) -> UUID: ...
 
     async def clone_category(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
         new_set_id: SetIdT,
         new_name: str,
-    ) -> CategoryIdT: ...
+    ) -> UUID: ...
 
     async def delete_category(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
     ) -> None: ...
 
     async def add_disabled_category_to_setid(
@@ -111,44 +110,44 @@ class SemanticConfigStorage(Protocol):
     async def create_set_type_category(
         self,
         *,
-        set_type_id: str,
+        set_type_id: UUID,
         category_name: str,
         prompt: str,
         description: str | None = None,
-    ) -> CategoryIdT: ...
+    ) -> UUID: ...
 
     async def get_set_type_categories(
         self,
         *,
-        set_type_id: str,
+        set_type_id: UUID,
     ) -> list[SemanticCategory]: ...
 
     @dataclass(frozen=True)
     class Tag:
         """Represents a tag associated with a category as represented in the database."""
 
-        id: str
+        id: UUID
         name: str
         description: str
 
     async def get_tag(
         self,
         *,
-        tag_id: str,
+        tag_id: UUID,
     ) -> Tag | None: ...
 
     async def add_tag(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
         tag_name: str,
         description: str,
-    ) -> TagIdT: ...
+    ) -> UUID: ...
 
     async def update_tag(
         self,
         *,
-        tag_id: str,
+        tag_id: UUID,
         tag_name: str,
         tag_description: str,
     ) -> None: ...
@@ -156,7 +155,7 @@ class SemanticConfigStorage(Protocol):
     async def delete_tag(
         self,
         *,
-        tag_id: str,
+        tag_id: UUID,
     ) -> None: ...
 
     async def add_set_type_id(
@@ -167,8 +166,8 @@ class SemanticConfigStorage(Protocol):
         metadata_tags: list[str],
         name: str | None = None,
         description: str | None = None,
-    ) -> str: ...
+    ) -> UUID: ...
 
     async def list_set_type_ids(self, *, org_id: str) -> list[SetTypeEntry]: ...
 
-    async def delete_set_type_id(self, *, set_type_id: str) -> None: ...
+    async def delete_set_type_id(self, *, set_type_id: UUID) -> None: ...

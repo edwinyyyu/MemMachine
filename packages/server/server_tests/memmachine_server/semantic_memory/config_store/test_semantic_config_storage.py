@@ -1,4 +1,5 @@
 from typing import cast
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -139,10 +140,10 @@ async def test_add_and_get_category(
 async def test_get_non_existent_category(
     semantic_config_storage: SemanticConfigStorage,
 ):
-    category = await semantic_config_storage.get_category(category_id="non-existent")
+    category = await semantic_config_storage.get_category(category_id=uuid4())
     assert category is None
 
-    category = await semantic_config_storage.get_category(category_id="523")
+    category = await semantic_config_storage.get_category(category_id=uuid4())
     assert category is None
 
 
@@ -220,7 +221,7 @@ async def test_update_and_delete_tags(
     session_factory = async_sessionmaker(bind=sqlalchemy_engine, expire_on_commit=False)
 
     async with session_factory() as session:
-        tag_id = str((await session.execute(select(Tag.id))).scalar_one())
+        tag_id = (await session.execute(select(Tag.id))).scalar_one()
 
     await semantic_config_storage.update_tag(
         tag_id=tag_id,
@@ -411,7 +412,7 @@ async def test_set_type_categories_are_inherited_by_mapped_set_id(
 
     assert [c.name for c in config.categories] == ["org-category"]
     assert config.categories[0].origin_type == "set_type"
-    assert config.categories[0].origin_id == set_type_id
+    assert config.categories[0].origin_id == str(set_type_id)
     assert config.categories[0].inherited is True
     assert cast(StructuredSemanticPrompt, config.categories[0].prompt).tags == {
         "t1": "Tag 1"
@@ -589,7 +590,7 @@ async def test_get_category_set_ids_for_non_existent_category(
     semantic_config_storage: SemanticConfigStorage,
 ):
     """Test that get_category_set_ids returns empty list for non-existent category."""
-    set_ids = await semantic_config_storage.get_category_set_ids(category_id="999999")
+    set_ids = await semantic_config_storage.get_category_set_ids(category_id=uuid4())
 
     assert set_ids == []
 

@@ -56,13 +56,10 @@ from memmachine_server.semantic_memory.config_store.config_store import (
     SemanticConfigStorage,
 )
 from memmachine_server.semantic_memory.semantic_model import (
-    CategoryIdT,
-    FeatureIdT,
     SemanticCategory,
     SemanticFeature,
     SetIdT,
     SetTypeEntry,
-    TagIdT,
 )
 from memmachine_server.semantic_memory.semantic_session_manager import (
     SemanticSessionManager,
@@ -1104,7 +1101,7 @@ class MemMachine:
 
     async def delete_features(
         self,
-        feature_ids: list[FeatureIdT],
+        feature_ids: list[UUID],
     ) -> None:
         """
         Delete semantic features by ID.
@@ -1129,7 +1126,7 @@ class MemMachine:
         value: str,
         feature_metadata: dict[str, JsonValue] | None = None,
         citations: list[UUID] | None = None,
-    ) -> FeatureIdT:
+    ) -> UUID:
         """
         Add a semantic feature to the current semantic set.
 
@@ -1160,7 +1157,7 @@ class MemMachine:
 
     async def get_feature(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         load_citations: bool = False,
     ) -> SemanticFeature | None:
         """
@@ -1183,7 +1180,7 @@ class MemMachine:
     async def update_feature(
         self,
         *,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         category_name: str | None = None,
         feature: str | None = None,
         value: str | None = None,
@@ -1306,7 +1303,7 @@ class MemMachine:
             set_metadata=set_metadata,
         )
 
-    async def delete_semantic_set_type(self, set_type_id: str) -> None:
+    async def delete_semantic_set_type(self, set_type_id: UUID) -> None:
         """
         Delete a semantic set type by ID.
 
@@ -1374,7 +1371,7 @@ class MemMachine:
     async def semantic_get_category(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
     ) -> SemanticConfigStorage.Category | None:
         """
         Get a semantic category by its ID.
@@ -1397,7 +1394,7 @@ class MemMachine:
         category_name: str,
         prompt: str,
         description: str | None = None,
-    ) -> CategoryIdT:
+    ) -> UUID:
         """
         Create a new semantic category within the configured set.
 
@@ -1423,11 +1420,11 @@ class MemMachine:
     async def semantic_add_category_template(
         self,
         *,
-        set_type_id: str,
+        set_type_id: UUID,
         category_name: str,
         prompt: str,
         description: str | None = None,
-    ) -> CategoryIdT:
+    ) -> UUID:
         """Create a new semantic category on a set type.
 
         Categories created here are inherited by set_ids mapped to the set type.
@@ -1454,7 +1451,7 @@ class MemMachine:
     async def semantic_list_category_templates(
         self,
         *,
-        set_type_id: str,
+        set_type_id: UUID,
     ) -> Iterable[SemanticCategory]:
         """List semantic categories defined on a set type."""
         semantic_session = await self._resources.get_semantic_session_manager()
@@ -1488,7 +1485,7 @@ class MemMachine:
     async def semantic_get_category_set_ids(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
     ) -> Iterable[SetIdT]:
         """
         Get the set_ids associated with a semantic category.
@@ -1509,7 +1506,7 @@ class MemMachine:
     async def semantic_delete_category(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
     ) -> None:
         """
         Delete a semantic category and all its tags.
@@ -1530,10 +1527,10 @@ class MemMachine:
     async def semantic_add_tag_to_category(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
         tag_name: str,
         tag_description: str,
-    ) -> TagIdT:
+    ) -> UUID:
         """
         Add a tag to an existing semantic category.
 
@@ -1554,7 +1551,7 @@ class MemMachine:
             tag_description=tag_description,
         )
 
-    async def semantic_delete_tag(self, *, tag_id: TagIdT) -> None:
+    async def semantic_delete_tag(self, *, tag_id: UUID) -> None:
         """
         Delete a semantic tag by ID.
 

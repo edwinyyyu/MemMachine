@@ -1,12 +1,13 @@
 """SQLAlchemy-backed implementation of the semantic config storage."""
 
 import logging
+from uuid import UUID, uuid4
 
 from sqlalchemy import (
     CheckConstraint,
     ForeignKey,
-    Integer,
     UniqueConstraint,
+    Uuid,
     delete,
     insert,
     select,
@@ -27,17 +28,14 @@ from sqlalchemy.orm import (
 )
 from sqlalchemy.sql.sqltypes import Boolean, String
 
-from memmachine_server.common.errors import ResourceNotFoundError
 from memmachine_server.semantic_memory.config_store.config_store import (
     SemanticConfigStorage,
 )
 from memmachine_server.semantic_memory.semantic_model import (
-    CategoryIdT,
     SemanticCategory,
     SetIdT,
     SetTypeEntry,
     StructuredSemanticPrompt,
-    TagIdT,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,7 +75,7 @@ class SetIdSetType(BaseSemanticConfigStore):
 
     set_id = mapped_column(String, primary_key=True, nullable=False)
     set_type_id = mapped_column(
-        Integer,
+        Uuid,
         ForeignKey("set_type.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -105,10 +103,10 @@ class Category(BaseSemanticConfigStore):
 
     __tablename__ = "semantic_config_category"
 
-    id = mapped_column(Integer, primary_key=True, nullable=False)
+    id = mapped_column(Uuid, primary_key=True, nullable=False, default=uuid4)
     set_id = mapped_column(String, nullable=True, index=True)
     set_type_id = mapped_column(
-        Integer,
+        Uuid,
         ForeignKey("set_type.id", ondelete="CASCADE"),
         nullable=True,
         index=True,
@@ -141,7 +139,7 @@ class Category(BaseSemanticConfigStore):
             inherited = None
 
         return SemanticCategory(
-            id=CategoryIdT(self.id),
+            id=self.id,
             origin_type=origin_type,
             origin_id=origin_id,
             inherited=inherited,
@@ -167,12 +165,12 @@ class Tag(BaseSemanticConfigStore):
 
     __tablename__ = "semantic_config_tag"
 
-    id = mapped_column(Integer, primary_key=True, nullable=False)
+    id = mapped_column(Uuid, primary_key=True, nullable=False, default=uuid4)
     name = mapped_column(String, nullable=False)
     description = mapped_column(String, nullable=False)
 
     category_id = mapped_column(
-        Integer,
+        Uuid,
         ForeignKey("semantic_config_category.id", ondelete="CASCADE"),
         nullable=False,
     )
@@ -187,7 +185,7 @@ class SetType(BaseSemanticConfigStore):
 
     __tablename__ = "set_type"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     org_id: Mapped[str] = mapped_column(String, nullable=False)
     org_level_set: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
@@ -208,7 +206,7 @@ class SetType(BaseSemanticConfigStore):
         tags = self.metadata_tags_sig.split(_TAG_SEP)
 
         return SetTypeEntry(
-            id=str(self.id),
+            id=self.id,
             tags=tags,
             is_org_level=self.org_level_set,
             name=self.name,
@@ -358,10 +356,8 @@ class SemanticConfigStorageSqlAlchemy(SemanticConfigStorage):
         self,
         *,
         set_id: SetIdT,
-        set_type_id: str,
+        set_type_id: UUID,
     ) -> None:
-        set_type_id_int = int(set_type_id)
-
         dialect_name = self._engine.dialect.name
         ins: PgInsert | SQliteInsert
         if dialect_name == "postgresql":
@@ -373,7 +369,7 @@ class SemanticConfigStorageSqlAlchemy(SemanticConfigStorage):
 
         stmt = ins.values(
             set_id=set_id,
-            set_type_id=set_type_id_int,
+            set_type_id=set_type_id,
         ).on_conflict_do_nothing(
             index_elements=["set_id"],
         )
@@ -386,41 +382,34 @@ class SemanticConfigStorageSqlAlchemy(SemanticConfigStorage):
     async def create_set_type_category(
         self,
         *,
-        set_type_id: str,
+        set_type_id: UUID,
         category_name: str,
         prompt: str,
         description: str | None = None,
-    ) -> CategoryIdT:
-        set_type_id_int = int(set_type_id)
-
-        stmt = (
-            insert(Category)
-            .values(
-                name=category_name,
-                prompt=prompt,
-                set_type_id=set_type_id_int,
-                description=description,
-            )
-            .returning(Category.id)
+    ) -> UUID:
+        new_id = uuid4()
+        stmt = insert(Category).values(
+            id=new_id,
+            name=category_name,
+            prompt=prompt,
+            set_type_id=set_type_id,
+            description=description,
         )
 
         async with self._create_session() as session:
-            res = await session.execute(stmt)
-            category_id = res.scalar_one()
+            await session.execute(stmt)
             await session.commit()
 
-        return CategoryIdT(category_id)
+        return new_id
 
     async def get_set_type_categories(
         self,
         *,
-        set_type_id: str,
+        set_type_id: UUID,
     ) -> list[SemanticCategory]:
-        set_type_id_int = int(set_type_id)
-
         stmt = (
             select(Category)
-            .where(Category.set_type_id == set_type_id_int)
+            .where(Category.set_type_id == set_type_id)
             .options(selectinload(Category.tags))
         )
 
@@ -433,15 +422,9 @@ class SemanticConfigStorageSqlAlchemy(SemanticConfigStorage):
     async def get_category(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
     ) -> SemanticConfigStorage.Category | None:
-        try:
-            category_id_int = int(category_id)
-        except (TypeError, ValueError):
-            logger.exception("Error parsing category ID")
-            return None
-
-        stmt = select(Category).where(Category.id == category_id_int)
+        stmt = select(Category).where(Category.id == category_id)
 
         async with self._create_session() as session:
             res = await session.execute(stmt)
@@ -451,7 +434,7 @@ class SemanticConfigStorageSqlAlchemy(SemanticConfigStorage):
             return None
 
         return SemanticConfigStorage.Category(
-            id=CategoryIdT(category.id),
+            id=category.id,
             name=category.name,
             prompt=category.prompt,
             description=category.description,
@@ -460,12 +443,10 @@ class SemanticConfigStorageSqlAlchemy(SemanticConfigStorage):
     async def get_category_set_ids(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
     ) -> list[SetIdT]:
-        category_id_int = int(category_id)
-
         async with self._create_session() as session:
-            category_stmt = select(Category).where(Category.id == category_id_int)
+            category_stmt = select(Category).where(Category.id == category_id)
             category_res = await session.execute(category_stmt)
             category = category_res.scalar_one_or_none()
 
@@ -499,38 +480,33 @@ class SemanticConfigStorageSqlAlchemy(SemanticConfigStorage):
         category_name: str,
         prompt: str,
         description: str | None = None,
-    ) -> CategoryIdT:
-        stmt = (
-            insert(Category)
-            .values(
-                name=category_name,
-                prompt=prompt,
-                set_id=set_id,
-                description=description,
-            )
-            .returning(Category.id)
+    ) -> UUID:
+        new_id = uuid4()
+        stmt = insert(Category).values(
+            id=new_id,
+            name=category_name,
+            prompt=prompt,
+            set_id=set_id,
+            description=description,
         )
 
         async with self._create_session() as session:
-            res = await session.execute(stmt)
-            category_id = res.scalar_one()
+            await session.execute(stmt)
             await session.commit()
 
-        return CategoryIdT(category_id)
+        return new_id
 
     async def clone_category(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
         new_set_id: SetIdT,
         new_name: str,
-    ) -> CategoryIdT:
-        category_id_int = int(category_id)
-
+    ) -> UUID:
         async with self._create_session() as session:
             res = await session.execute(
                 select(Category)
-                .where(Category.id == category_id_int)
+                .where(Category.id == category_id)
                 .options(selectinload(Category.tags))
             )
             category = res.scalar_one()
@@ -555,22 +531,20 @@ class SemanticConfigStorageSqlAlchemy(SemanticConfigStorage):
 
             await session.commit()
 
-            return CategoryIdT(cloned_category.id)
+            return cloned_category.id
 
     async def delete_category(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
     ) -> None:
-        category_id_int = int(category_id)
-
         async with self._create_session() as session:
             result = await session.execute(
-                delete(Tag).where(Tag.category_id == category_id_int)
+                delete(Tag).where(Tag.category_id == category_id)
             )
             result.close()
             result = await session.execute(
-                delete(Category).where(Category.id == category_id_int)
+                delete(Category).where(Category.id == category_id)
             )
             result.close()
 
@@ -640,15 +614,9 @@ class SemanticConfigStorageSqlAlchemy(SemanticConfigStorage):
     async def get_tag(
         self,
         *,
-        tag_id: str,
+        tag_id: UUID,
     ) -> SemanticConfigStorage.Tag | None:
-        try:
-            tag_id_int = int(tag_id)
-        except (TypeError, ValueError):
-            logger.exception("Error parsing tag ID")
-            return None
-
-        stmt = select(Tag).where(Tag.id == tag_id_int)
+        stmt = select(Tag).where(Tag.id == tag_id)
 
         async with self._create_session() as session:
             res = await session.execute(stmt)
@@ -658,7 +626,7 @@ class SemanticConfigStorageSqlAlchemy(SemanticConfigStorage):
             return None
 
         return SemanticConfigStorage.Tag(
-            id=str(tag_id_int),
+            id=tag.id,
             name=tag.name,
             description=tag.description,
         )
@@ -666,44 +634,34 @@ class SemanticConfigStorageSqlAlchemy(SemanticConfigStorage):
     async def add_tag(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
         tag_name: str,
         description: str,
-    ) -> TagIdT:
-        try:
-            category_id_int = int(category_id)
-        except (TypeError, ValueError) as e:
-            raise ResourceNotFoundError(f"Invalid feature ID: {category_id}") from e
-
-        tag_stmt = (
-            insert(Tag)
-            .values(
-                name=tag_name,
-                description=description,
-                category_id=category_id_int,
-            )
-            .returning(Tag.id)
+    ) -> UUID:
+        new_id = uuid4()
+        tag_stmt = insert(Tag).values(
+            id=new_id,
+            name=tag_name,
+            description=description,
+            category_id=category_id,
         )
 
         async with self._create_session() as session:
-            res = await session.execute(tag_stmt)
-            tag_id = res.scalar_one()
+            await session.execute(tag_stmt)
             await session.commit()
 
-        return TagIdT(tag_id)
+        return new_id
 
     async def update_tag(
         self,
         *,
-        tag_id: str,
+        tag_id: UUID,
         tag_name: str,
         tag_description: str,
     ) -> None:
-        tag_id_int = int(tag_id)
-
         stmt = (
             update(Tag)
-            .where(Tag.id == tag_id_int)
+            .where(Tag.id == tag_id)
             .values(name=tag_name, description=tag_description)
         )
 
@@ -715,12 +673,10 @@ class SemanticConfigStorageSqlAlchemy(SemanticConfigStorage):
     async def delete_tag(
         self,
         *,
-        tag_id: str,
+        tag_id: UUID,
     ) -> None:
-        tag_id_int = int(tag_id)
-
         async with self._create_session() as session:
-            result = await session.execute(delete(Tag).where(Tag.id == tag_id_int))
+            result = await session.execute(delete(Tag).where(Tag.id == tag_id))
             result.close()
             await session.commit()
 
@@ -732,29 +688,26 @@ class SemanticConfigStorageSqlAlchemy(SemanticConfigStorage):
         metadata_tags: list[str],
         name: str | None = None,
         description: str | None = None,
-    ) -> str:
+    ) -> UUID:
         cleaned_tags = sorted({t.strip() for t in metadata_tags if t and t.strip()})
 
         assert all(_TAG_SEP not in t for t in cleaned_tags)
 
         tag_str = _TAG_SEP.join(cleaned_tags)
 
-        stmt = (
-            insert(SetType)
-            .values(
-                org_id=org_id,
-                org_level_set=org_level_set,
-                metadata_tags_sig=tag_str,
-                name=name,
-                description=description,
-            )
-            .returning(SetType.id)
+        new_id = uuid4()
+        stmt = insert(SetType).values(
+            id=new_id,
+            org_id=org_id,
+            org_level_set=org_level_set,
+            metadata_tags_sig=tag_str,
+            name=name,
+            description=description,
         )
 
         async with self._create_session() as session:
             try:
-                res = await session.execute(stmt)
-                set_type_id = res.scalar_one()
+                await session.execute(stmt)
                 await session.commit()
             except IntegrityError:
                 await session.rollback()
@@ -772,9 +725,9 @@ class SemanticConfigStorageSqlAlchemy(SemanticConfigStorage):
                 if existing_id is None:
                     raise
 
-                return str(existing_id)
+                return existing_id
 
-        return str(set_type_id)
+        return new_id
 
     async def list_set_type_ids(self, *, org_id: str) -> list[SetTypeEntry]:
         stmt = select(SetType).where(SetType.org_id == org_id)
@@ -787,8 +740,8 @@ class SemanticConfigStorageSqlAlchemy(SemanticConfigStorage):
 
         return models
 
-    async def delete_set_type_id(self, *, set_type_id: str) -> None:
-        stmt = delete(SetType).where(SetType.id == int(set_type_id))
+    async def delete_set_type_id(self, *, set_type_id: UUID) -> None:
+        stmt = delete(SetType).where(SetType.id == set_type_id)
 
         async with self._create_session() as session:
             result = await session.execute(stmt)

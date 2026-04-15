@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from uuid import UUID
 
 from memmachine_server.common import rw_locks
 from memmachine_server.semantic_memory.config_store.config_store import (
     SemanticConfigStorage,
 )
 from memmachine_server.semantic_memory.semantic_model import (
-    CategoryIdT,
     SemanticCategory,
     SetIdT,
     SetTypeEntry,
-    TagIdT,
 )
 
 
@@ -41,10 +40,10 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
         self._registered_set_id_set_types: set[SetIdT] = set()
 
         self._category_cache: dict[
-            CategoryIdT, SemanticConfigStorage.Category | None
+            UUID, SemanticConfigStorage.Category | None
         ] = {}
-        self._tag_cache: dict[TagIdT, SemanticConfigStorage.Tag | None] = {}
-        self._set_type_categories_cache: dict[str, list[SemanticCategory]] = {}
+        self._tag_cache: dict[UUID, SemanticConfigStorage.Tag | None] = {}
+        self._set_type_categories_cache: dict[UUID, list[SemanticCategory]] = {}
         self._set_type_ids_cache: dict[str, list[SetTypeEntry]] = {}
 
     async def startup(self) -> None:
@@ -95,7 +94,7 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
             return config
 
     async def register_set_id_set_type(
-        self, *, set_id: SetIdT, set_type_id: str
+        self, *, set_id: SetIdT, set_type_id: UUID
     ) -> None:
         async with (
             self._setid_global_lock.read_lock(),
@@ -120,7 +119,7 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
     async def get_category(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
     ) -> SemanticConfigStorage.Category | None:
         async with self._other_lock.read_lock():
             if category_id in self._category_cache:
@@ -136,7 +135,7 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
     async def get_category_set_ids(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
     ) -> list[SetIdT]:
         return await self._wrapped.get_category_set_ids(category_id=category_id)
 
@@ -147,7 +146,7 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
         category_name: str,
         prompt: str,
         description: str | None = None,
-    ) -> CategoryIdT:
+    ) -> UUID:
         category_id = await self._wrapped.create_category(
             set_id=set_id,
             category_name=category_name,
@@ -160,10 +159,10 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
     async def clone_category(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
         new_set_id: SetIdT,
         new_name: str,
-    ) -> CategoryIdT:
+    ) -> UUID:
         cloned_id = await self._wrapped.clone_category(
             category_id=category_id,
             new_set_id=new_set_id,
@@ -172,7 +171,7 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
         await self._invalidate_set_id_config(new_set_id)
         return cloned_id
 
-    async def delete_category(self, *, category_id: CategoryIdT) -> None:
+    async def delete_category(self, *, category_id: UUID) -> None:
         await self._wrapped.delete_category(category_id=category_id)
 
         async with self._setid_global_lock.write_lock():
@@ -211,11 +210,11 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
     async def create_set_type_category(
         self,
         *,
-        set_type_id: str,
+        set_type_id: UUID,
         category_name: str,
         prompt: str,
         description: str | None = None,
-    ) -> CategoryIdT:
+    ) -> UUID:
         category_id = await self._wrapped.create_set_type_category(
             set_type_id=set_type_id,
             category_name=category_name,
@@ -234,7 +233,7 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
     async def get_set_type_categories(
         self,
         *,
-        set_type_id: str,
+        set_type_id: UUID,
     ) -> list[SemanticCategory]:
         async with self._other_lock.read_lock():
             if set_type_id in self._set_type_categories_cache:
@@ -249,7 +248,7 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
 
         return categories
 
-    async def get_tag(self, *, tag_id: str) -> SemanticConfigStorage.Tag | None:
+    async def get_tag(self, *, tag_id: UUID) -> SemanticConfigStorage.Tag | None:
         async with self._other_lock.read_lock():
             if tag_id in self._tag_cache:
                 return self._tag_cache[tag_id]
@@ -264,10 +263,10 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
     async def add_tag(
         self,
         *,
-        category_id: CategoryIdT,
+        category_id: UUID,
         tag_name: str,
         description: str,
-    ) -> TagIdT:
+    ) -> UUID:
         tag_id = await self._wrapped.add_tag(
             category_id=category_id,
             tag_name=tag_name,
@@ -279,7 +278,7 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
     async def update_tag(
         self,
         *,
-        tag_id: str,
+        tag_id: UUID,
         tag_name: str,
         tag_description: str,
     ) -> None:
@@ -290,7 +289,7 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
         )
         await self._invalidate_tags_and_setid_configs()
 
-    async def delete_tag(self, *, tag_id: str) -> None:
+    async def delete_tag(self, *, tag_id: UUID) -> None:
         await self._wrapped.delete_tag(tag_id=tag_id)
 
         async with self._setid_global_lock.write_lock():
@@ -307,7 +306,7 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
         metadata_tags: list[str],
         name: str | None = None,
         description: str | None = None,
-    ) -> str:
+    ) -> UUID:
         set_type_id = await self._wrapped.add_set_type_id(
             org_id=org_id,
             org_level_set=org_level_set,
@@ -333,7 +332,7 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
 
         return entries
 
-    async def delete_set_type_id(self, *, set_type_id: str) -> None:
+    async def delete_set_type_id(self, *, set_type_id: UUID) -> None:
         await self._wrapped.delete_set_type_id(set_type_id=set_type_id)
 
         async with self._other_lock.write_lock():

@@ -36,7 +36,6 @@ from memmachine_server.common.filter.filter_parser import (
     Or as FilterOr,
 )
 from memmachine_server.semantic_memory.semantic_model import (
-    FeatureIdT,
     SemanticFeature,
     SetIdT,
 )
@@ -59,7 +58,7 @@ def _cosine_similarity(lhs: np.ndarray, rhs: np.ndarray) -> float | None:
 
 @dataclass
 class _FeatureEntry:
-    id: FeatureIdT
+    id: UUID
     set_id: str
     semantic_type_id: str
     tag: str
@@ -76,8 +75,8 @@ class InMemorySemanticStorage(SemanticStorage):
     """In-memory implementation of :class:`SemanticStorageBase` used for testing."""
 
     def __init__(self):
-        self._features_by_id: dict[FeatureIdT, _FeatureEntry] = {}
-        self._feature_ids_by_set: dict[str, list[FeatureIdT]] = {}
+        self._features_by_id: dict[UUID, _FeatureEntry] = {}
+        self._feature_ids_by_set: dict[str, list[UUID]] = {}
         # History tracking mirrors the SetIngestedHistory table
         self._set_history_map: dict[str, dict[UUID, bool]] = {}
         self._history_created_at: dict[tuple[str, UUID], datetime] = {}
@@ -99,12 +98,11 @@ class InMemorySemanticStorage(SemanticStorage):
             self._set_history_map.clear()
             self._history_created_at.clear()
             self._history_to_sets.clear()
-            self._next_feature_id = 1
             self._next_history_id = 1
 
     async def get_feature(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         load_citations: bool = False,
     ) -> SemanticFeature | None:
         async with self._lock:
@@ -127,12 +125,10 @@ class InMemorySemanticStorage(SemanticStorage):
         tag: str,
         embedding: InstanceOf[np.ndarray],
         metadata: Mapping[str, Any] | None = None,
-    ) -> FeatureIdT:
+    ) -> UUID:
         metadata = dict(metadata or {}) or None
         async with self._lock:
-            feature_id = FeatureIdT(str(self._next_feature_id))
-            self._next_feature_id += 1
-            assert isinstance(feature_id, FeatureIdT)
+            feature_id = uuid4()
             entry = _FeatureEntry(
                 id=feature_id,
                 set_id=set_id,
@@ -149,7 +145,7 @@ class InMemorySemanticStorage(SemanticStorage):
 
     async def update_feature(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         *,
         set_id: SetIdT | None = None,
         category_name: str | None = None,
@@ -178,7 +174,7 @@ class InMemorySemanticStorage(SemanticStorage):
 
             entry.updated_at = _utcnow()
 
-    async def delete_features(self, feature_ids: Sequence[FeatureIdT]):
+    async def delete_features(self, feature_ids: Sequence[UUID]):
         if not feature_ids:
             return
 
@@ -253,7 +249,7 @@ class InMemorySemanticStorage(SemanticStorage):
 
     async def add_citations(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         history_ids: Sequence[UUID],
     ) -> None:
         if not history_ids:
@@ -390,7 +386,7 @@ class InMemorySemanticStorage(SemanticStorage):
     def _handle_set_change(
         self,
         entry: _FeatureEntry,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         set_id: SetIdT | None,
     ) -> None:
         if set_id is None:
@@ -429,7 +425,7 @@ class InMemorySemanticStorage(SemanticStorage):
     def _move_feature_to_set(
         self,
         entry: _FeatureEntry,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         new_set_id: SetIdT,
     ) -> None:
         if new_set_id == entry.set_id:
@@ -567,7 +563,7 @@ class InMemorySemanticStorage(SemanticStorage):
             citations = list(entry.citations)
 
         feature_id = entry.id
-        assert isinstance(feature_id, FeatureIdT)
+        assert isinstance(feature_id, UUID)
 
         return SemanticFeature(
             set_id=entry.set_id,
@@ -583,8 +579,8 @@ class InMemorySemanticStorage(SemanticStorage):
         )
 
     @staticmethod
-    def _normalize_feature_id(feature_id: FeatureIdT) -> FeatureIdT:
-        return FeatureIdT(feature_id)
+    def _normalize_feature_id(feature_id: UUID) -> UUID:
+        return feature_id
 
     def _filter_features(
         self,

@@ -177,8 +177,10 @@ async def test_consolidate_with_valid_memories(
     magic_mock_llm_model: MagicMock,
     basic_features: list[SemanticFeature],
 ):
+    keep_a = "00000000-0000-0000-0000-000000000001"
+    keep_b = "00000000-0000-0000-0000-000000000002"
     magic_mock_llm_model.generate_parsed_response.return_value = {
-        "keep_memories": [1, 2],
+        "keep_memories": [keep_a, keep_b],
         "consolidated_memories": [
             {
                 "tag": "food",
@@ -199,8 +201,10 @@ async def test_consolidate_with_valid_memories(
         consolidate_prompt="Consolidate features",
     )
 
+    from uuid import UUID
+
     assert result is not None
-    assert result.keep_memories == ["1", "2"]
+    assert result.keep_memories == [UUID(keep_a), UUID(keep_b)]
     assert len(result.consolidated_memories) == 2
     assert result.consolidated_memories[0].feature == "favorite_pizza"
     assert result.consolidated_memories[1].feature == "favorite_drink"
@@ -261,20 +265,24 @@ class TestConsolidationSerialization:
 
     @pytest.fixture
     def features_with_ids(self):
+        from uuid import UUID
+
+        self.id_a = UUID("00000000-0000-0000-0000-000000000042")
+        self.id_b = UUID("00000000-0000-0000-0000-000000000043")
         return [
             SemanticFeature(
                 category="CodeKnowledge",
                 tag="bugfix",
                 feature_name="observer_fix",
                 value="Fixed observer subagent bug",
-                metadata=SemanticFeature.Metadata(id="42"),
+                metadata=SemanticFeature.Metadata(id=self.id_a),
             ),
             SemanticFeature(
                 category="CodeKnowledge",
                 tag="progress",
                 feature_name="more_agents",
                 value="User added more agents",
-                metadata=SemanticFeature.Metadata(id="43"),
+                metadata=SemanticFeature.Metadata(id=self.id_b),
             ),
         ]
 
@@ -286,8 +294,8 @@ class TestConsolidationSerialization:
         formatted = _features_to_llm_format(features_with_ids)
         serialized = json.dumps(formatted)
 
-        assert "42" not in serialized
-        assert "43" not in serialized
+        assert str(self.id_a) not in serialized
+        assert str(self.id_b) not in serialized
 
     def test_consolidation_format_includes_ids(self, features_with_ids):
         """The consolidation serializer must include ``metadata.id`` so
@@ -297,8 +305,8 @@ class TestConsolidationSerialization:
         formatted = _features_to_consolidation_format(features_with_ids)
         serialized = json.dumps(formatted)
 
-        assert "42" in serialized
-        assert "43" in serialized
+        assert str(self.id_a) in serialized
+        assert str(self.id_b) in serialized
         assert "metadata" in serialized
 
     def test_consolidation_format_preserves_all_fields(self, features_with_ids):
@@ -311,4 +319,4 @@ class TestConsolidationSerialization:
         assert entry["tag"] == "bugfix"
         assert entry["feature"] == "observer_fix"
         assert entry["value"] == "Fixed observer subagent bug"
-        assert entry["metadata"] == {"id": "42"}
+        assert entry["metadata"] == {"id": str(self.id_a)}

@@ -1036,7 +1036,7 @@ class Memory:
 
     def delete_semantic_set_type(
         self,
-        set_type_id: str,
+        set_type_id: UUID,
         timeout: int | None = None,
     ) -> bool:
         """
@@ -1234,7 +1234,7 @@ class Memory:
 
     def get_semantic_category(
         self,
-        category_id: str,
+        category_id: UUID,
         timeout: int | None = None,
     ) -> SemanticCategoryEntry | None:
         """
@@ -1351,7 +1351,7 @@ class Memory:
     def add_semantic_category_template(
         self,
         *,
-        set_type_id: str,
+        set_type_id: UUID,
         category_name: str,
         prompt: str,
         description: str | None = None,
@@ -1409,7 +1409,7 @@ class Memory:
 
     def list_semantic_category_templates(
         self,
-        set_type_id: str,
+        set_type_id: UUID,
         timeout: int | None = None,
     ) -> list[SemanticCategoryTemplateEntry]:
         """
@@ -1511,7 +1511,7 @@ class Memory:
 
     def get_semantic_category_set_ids(
         self,
-        category_id: str,
+        category_id: UUID,
         timeout: int | None = None,
     ) -> list[str]:
         """
@@ -1562,7 +1562,7 @@ class Memory:
 
     def delete_semantic_category(
         self,
-        category_id: str,
+        category_id: UUID,
         timeout: int | None = None,
     ) -> bool:
         """
@@ -1608,7 +1608,7 @@ class Memory:
     def add_semantic_tag(
         self,
         *,
-        category_id: str,
+        category_id: UUID,
         tag_name: str,
         tag_description: str,
         timeout: int | None = None,
@@ -1663,7 +1663,7 @@ class Memory:
 
     def delete_semantic_tag(
         self,
-        tag_id: str,
+        tag_id: UUID,
         timeout: int | None = None,
     ) -> bool:
         """

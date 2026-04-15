@@ -50,7 +50,6 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
 from memmachine_server.semantic_memory.semantic_model import SemanticFeature, SetIdT
 from memmachine_server.semantic_memory.storage.storage_base import (
-    FeatureIdT,
     SemanticStorage,
 )
 from memmachine_server.semantic_memory.storage.text_sanitizer import sanitize_pg_text
@@ -137,7 +136,7 @@ class Feature(BaseSemanticStorage):
     ) -> SemanticFeature:
         return SemanticFeature(
             metadata=SemanticFeature.Metadata(
-                id=FeatureIdT(self.id),
+                id=UUID(self.id),
                 citations=citations,
                 other=self.json_metadata or None,
             ),
@@ -234,7 +233,7 @@ class SqlAlchemyPgVectorSemanticStorage(SemanticStorage):
         tag: str,
         embedding: InstanceOf[np.ndarray],
         metadata: Mapping[str, Any] | None = None,
-    ) -> FeatureIdT:
+    ) -> UUID:
         stmt = (
             insert(Feature)
             .values(
@@ -254,11 +253,11 @@ class SqlAlchemyPgVectorSemanticStorage(SemanticStorage):
             await session.commit()
             feature_id = result.scalar_one()
 
-        return FeatureIdT(feature_id)
+        return UUID(feature_id)
 
     async def update_feature(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         *,
         set_id: SetIdT | None = None,
         category_name: str | None = None,
@@ -298,7 +297,7 @@ class SqlAlchemyPgVectorSemanticStorage(SemanticStorage):
 
     async def get_feature(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         load_citations: bool = False,
     ) -> SemanticFeature | None:
         try:
@@ -381,7 +380,7 @@ class SqlAlchemyPgVectorSemanticStorage(SemanticStorage):
             async for feature in result.scalars():
                 yield feature.to_typed_model()
 
-    async def delete_features(self, feature_ids: Sequence[FeatureIdT]) -> None:
+    async def delete_features(self, feature_ids: Sequence[UUID]) -> None:
         try:
             feature_ids_ints = TypeAdapter(list[int]).validate_python(feature_ids)
         except ValidationError as e:
@@ -408,7 +407,7 @@ class SqlAlchemyPgVectorSemanticStorage(SemanticStorage):
 
     async def add_citations(
         self,
-        feature_id: FeatureIdT,
+        feature_id: UUID,
         history_ids: Sequence[UUID],
     ) -> None:
         if not history_ids:
