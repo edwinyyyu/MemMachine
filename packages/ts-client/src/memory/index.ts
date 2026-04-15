@@ -6,10 +6,12 @@
  */
 export { MemMachineMemory } from './memmachine-memory'
 export { formatEpisodes, formatSemanticMemories, formatSearchResult } from './format'
+export type { FormattableEpisode } from './format'
 
 export type {
   MemoryType,
   EpisodicMemory,
+  ListEpisodicMemory,
   SemanticMemory,
   MemoryContext,
   MemoryProducerRole,

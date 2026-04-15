@@ -1,5 +1,10 @@
 import { formatEpisodes, formatSemanticMemories, formatSearchResult } from '@/memory/format'
-import type { EpisodicMemory, SemanticMemory, SearchMemoriesResult } from '@/memory/memmachine-memory.types'
+import type {
+  EpisodicMemory,
+  ListEpisodicMemory,
+  SemanticMemory,
+  SearchMemoriesResult
+} from '@/memory/memmachine-memory.types'
 
 describe('formatEpisodes', () => {
   it('returns empty string for empty array', () => {
@@ -60,6 +65,35 @@ describe('formatEpisodes', () => {
     }
     const result = formatEpisodes([episode])
     expect(result).toContain(JSON.stringify('She said "hello"'))
+  })
+
+  it('accepts list-shaped episodes (no score, adds session_key)', () => {
+    const episode: ListEpisodicMemory = {
+      uid: '1',
+      content: 'Listed item',
+      session_key: 'sess_1',
+      created_at: '2024-02-14T10:30:00.000Z',
+      producer_id: 'user_1',
+      producer_role: 'user',
+      sequence_num: 0,
+      episode_type: 'message'
+    }
+    const result = formatEpisodes([episode])
+    expect(result).toBe('[Wednesday, February 14, 2024 at 10:30 AM] user_1: "Listed item"\n')
+  })
+
+  it('omits timestamp prefix when created_at is missing', () => {
+    const result = formatEpisodes([
+      { content: 'No timestamp', producer_id: 'user_1' }
+    ])
+    expect(result).toBe('user_1: "No timestamp"\n')
+  })
+
+  it('omits timestamp prefix when created_at is null', () => {
+    const result = formatEpisodes([
+      { content: 'Null ts', producer_id: 'user_1', created_at: null }
+    ])
+    expect(result).toBe('user_1: "Null ts"\n')
   })
 })
 
@@ -206,6 +240,73 @@ describe('formatSearchResult', () => {
     expect(formatted).not.toContain('[Episodic Memory]')
     const semanticJson = formatted.replace('[Semantic Memory]\n', '')
     expect(JSON.parse(semanticJson)).toEqual({ prefs: { food: 'pizza' } })
+  })
+
+  it('returns empty string when both fields are undefined', () => {
+    const result: SearchMemoriesResult = {
+      status: 0,
+      content: {}
+    }
+    expect(formatSearchResult(result)).toBe('')
+  })
+
+  it('returns empty string when both fields are null', () => {
+    const result: SearchMemoriesResult = {
+      status: 0,
+      content: {
+        episodic_memory: null,
+        semantic_memory: null
+      }
+    }
+    expect(formatSearchResult(result)).toBe('')
+  })
+
+  it('handles episodic_memory undefined with semantic present', () => {
+    const result: SearchMemoriesResult = {
+      status: 0,
+      content: {
+        semantic_memory: [
+          {
+            set_id: 'set_1',
+            category: 'profile',
+            tag: 'prefs',
+            feature_name: 'food',
+            value: 'pizza',
+            metadata: {}
+          }
+        ]
+      }
+    }
+    const formatted = formatSearchResult(result)
+    expect(formatted).toMatch(/^\[Semantic Memory\]\n/)
+    expect(formatted).not.toContain('[Episodic Memory]')
+  })
+
+  it('handles semantic_memory undefined with episodic present', () => {
+    const result: SearchMemoriesResult = {
+      status: 0,
+      content: {
+        episodic_memory: {
+          long_term_memory: {
+            episodes: [
+              {
+                uid: '1',
+                score: 0.9,
+                content: 'Hello',
+                created_at: '2024-01-01T12:00:00.000Z',
+                producer_id: 'user_1',
+                producer_role: 'user',
+                episode_type: 'message'
+              }
+            ]
+          },
+          short_term_memory: { episodes: [], episode_summary: [] }
+        }
+      }
+    }
+    const formatted = formatSearchResult(result)
+    expect(formatted).toMatch(/^\[Episodic Memory\]\n/)
+    expect(formatted).not.toContain('[Semantic Memory]')
   })
 
   it('formats combined result', () => {

@@ -11,7 +11,20 @@
  * @packageDocumentation
  */
 
-import type { EpisodicMemory, SemanticMemory, SearchMemoriesResult } from './memmachine-memory.types'
+import type { SemanticMemory, SearchMemoriesResult } from './memmachine-memory.types'
+
+/**
+ * Minimal shape required to format an episode.
+ *
+ * Both search-response episodes ({@link EpisodicMemory}) and list-response
+ * episodes ({@link ListEpisodicMemory}) satisfy this shape, so
+ * {@link formatEpisodes} works with episodes from either endpoint.
+ */
+export interface FormattableEpisode {
+  created_at?: string | null
+  producer_id: string
+  content: string
+}
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const
 const MONTHS = [
@@ -55,16 +68,24 @@ function _formatTime(date: Date): string {
  *
  * This mirrors the server's `string_from_episode_context` output.
  *
+ * Accepts any object with `created_at`, `producer_id`, and `content`,
+ * so both search-response and list-response episodes work without
+ * additional adaptation.
+ *
  * @param episodes - Episodic memory entries from a search or list result.
  * @returns Newline-terminated formatted string (empty string when episodes is empty).
  */
-export function formatEpisodes(episodes: EpisodicMemory[]): string {
+export function formatEpisodes(episodes: FormattableEpisode[]): string {
   let result = ''
   for (const episode of episodes) {
-    const date = new Date(episode.created_at)
-    const dateStr = _formatDate(date)
-    const timeStr = _formatTime(date)
-    result += `[${dateStr} at ${timeStr}] ${episode.producer_id}: ${JSON.stringify(episode.content)}\n`
+    if (episode.created_at) {
+      const date = new Date(episode.created_at)
+      const dateStr = _formatDate(date)
+      const timeStr = _formatTime(date)
+      result += `[${dateStr} at ${timeStr}] ${episode.producer_id}: ${JSON.stringify(episode.content)}\n`
+    } else {
+      result += `${episode.producer_id}: ${JSON.stringify(episode.content)}\n`
+    }
   }
   return result
 }
