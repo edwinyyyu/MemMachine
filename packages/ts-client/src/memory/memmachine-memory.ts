@@ -100,7 +100,7 @@ export class MemMachineMemory {
    * Lists memories within MemMachine for the current project.
    *
    * @param options - Additional options for listing memories.
-   * @returns A promise that resolves to the search results.
+   * @returns A promise that resolves to the list results.
    * @throws {@link MemMachineAPIError} if the API request fails.
    */
   list(options?: ListMemoriesOptions): Promise<ListMemoriesResult> {
