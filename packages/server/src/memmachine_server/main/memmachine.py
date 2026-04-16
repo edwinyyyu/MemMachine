@@ -1223,7 +1223,7 @@ class MemMachine:
         metadata_tags: list[str],
         name: str | None = None,
         description: str | None = None,
-    ) -> str:
+    ) -> UUID:
         """
         Create a new semantic set type.
 

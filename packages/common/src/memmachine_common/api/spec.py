@@ -708,15 +708,15 @@ class DeleteSemanticMemorySpec(_WithOrgAndProj):
     """Specification model for deleting semantic memories."""
 
     semantic_id: Annotated[
-        SafeId,
+        UUID | None,
         Field(
-            default="",
+            default=None,
             description=SpecDoc.SEMANTIC_ID,
             examples=Examples.SEMANTIC_ID,
         ),
     ]
     semantic_ids: Annotated[
-        list[SafeId],
+        list[UUID],
         Field(
             default=[],
             description=SpecDoc.SEMANTIC_IDS,
@@ -724,12 +724,11 @@ class DeleteSemanticMemorySpec(_WithOrgAndProj):
         ),
     ]
 
-    def get_ids(self) -> list[str]:
+    def get_ids(self) -> list[UUID]:
         """Get a list of semantic IDs to delete."""
         id_set = set(self.semantic_ids)
-        if len(self.semantic_id) > 0:
+        if self.semantic_id is not None:
             id_set.add(self.semantic_id)
-        id_set = {i.strip() for i in id_set if len(i.strip()) > 0}
         return sorted(id_set)
 
     @model_validator(mode="after")

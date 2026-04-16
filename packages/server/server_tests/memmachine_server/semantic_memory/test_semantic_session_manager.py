@@ -472,11 +472,12 @@ async def test_get_feature_proxies_call(
     mock_session_manager: SemanticSessionManager,
     mock_semantic_service: MagicMock,
 ):
-    result = await mock_session_manager.get_feature("42", load_citations=True)
+    feature_id = uuid4()
+    result = await mock_session_manager.get_feature(feature_id, load_citations=True)
 
     mock_semantic_service.get_feature.assert_awaited_once()
     args, kwargs = mock_semantic_service.get_feature.await_args
-    assert args == ("42",)
+    assert args == (feature_id,)
     assert kwargs == {"load_citations": True}
     assert result == "feature"
 
@@ -485,8 +486,9 @@ async def test_update_feature_forwards_arguments(
     mock_session_manager: SemanticSessionManager,
     mock_semantic_service: MagicMock,
 ):
+    feature_id = uuid4()
     await mock_session_manager.update_feature(
-        "17",
+        feature_id,
         category_name="Profile",
         feature="tone",
         value="calm",
@@ -496,7 +498,7 @@ async def test_update_feature_forwards_arguments(
 
     mock_semantic_service.update_feature.assert_awaited_once()
     args, kwargs = mock_semantic_service.update_feature.await_args
-    assert args == ("17",)
+    assert args == (feature_id,)
     assert kwargs == {
         "category_name": "Profile",
         "feature": "tone",

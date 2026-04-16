@@ -39,9 +39,7 @@ class CachingSemanticConfigStorage(SemanticConfigStorage):
         self._setid_config_cache: dict[SetIdT, SemanticConfigStorage.Config] = {}
         self._registered_set_id_set_types: set[SetIdT] = set()
 
-        self._category_cache: dict[
-            UUID, SemanticConfigStorage.Category | None
-        ] = {}
+        self._category_cache: dict[UUID, SemanticConfigStorage.Category | None] = {}
         self._tag_cache: dict[UUID, SemanticConfigStorage.Tag | None] = {}
         self._set_type_categories_cache: dict[UUID, list[SemanticCategory]] = {}
         self._set_type_ids_cache: dict[str, list[SetTypeEntry]] = {}

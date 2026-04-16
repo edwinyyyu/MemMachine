@@ -19,7 +19,6 @@ from memmachine_server.main.memmachine import ALL_MEMORY_TYPES, MemoryType
 from memmachine_server.server.api_v2.router import RestError, get_memmachine
 from memmachine_server.server.api_v2.service import _SessionData
 from memmachine_server.server.app import MemMachineAPI
-from uuid import UUID
 
 
 @pytest.fixture
@@ -550,16 +549,17 @@ def test_delete_episodic_memories_empty(client, mock_memmachine):
 
 
 def test_delete_semantic_memory(client, mock_memmachine):
+    sem1 = "00000000-0000-0000-0000-000000000001"
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "semantic_id": "sem1",
+        "semantic_id": sem1,
     }
 
     # Success
     response = client.post("/api/v2/memories/semantic/delete", json=payload)
     assert response.status_code == 204
-    mock_memmachine.delete_features.assert_awaited_once_with(feature_ids=["sem1"])
+    mock_memmachine.delete_features.assert_awaited_once_with(feature_ids=[UUID(sem1)])
 
     # Invalid arg
     mock_memmachine.delete_features.reset_mock()
@@ -584,18 +584,20 @@ def test_delete_semantic_memory(client, mock_memmachine):
 
 
 def test_delete_semantic_memories(client, mock_memmachine):
+    sem1 = "00000000-0000-0000-0000-000000000001"
+    sem3 = "00000000-0000-0000-0000-000000000003"
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
-        "semantic_id": "sem1",
-        "semantic_ids": ["sem3", "sem1"],
+        "semantic_id": sem1,
+        "semantic_ids": [sem3, sem1],
     }
 
     # Success
     response = client.post("/api/v2/memories/semantic/delete", json=payload)
     assert response.status_code == 204
     mock_memmachine.delete_features.assert_awaited_once_with(
-        feature_ids=["sem1", "sem3"]
+        feature_ids=[UUID(sem1), UUID(sem3)]
     )
 
 
@@ -784,7 +786,7 @@ def test_get_feature_with_citations(client, mock_memmachine):
     mock_feature.feature_name = "favorite_food"
     mock_feature.value = "pizza"
     mock_feature.metadata = MagicMock()
-    mock_feature.metadata.id = "feature_123"
+    mock_feature.metadata.id = UUID("00000000-0000-0000-0000-000000000007")
     mock_feature.metadata.citations = [
         "00000000-0000-0000-0000-000000000001",
         "00000000-0000-0000-0000-000000000002",
@@ -919,7 +921,9 @@ def test_create_semantic_set_type(client, mock_memmachine):
         "description": "Set type for user sessions",
     }
 
-    mock_memmachine.create_semantic_set_type.return_value = "00000000-0000-0000-0000-000000000005"
+    mock_memmachine.create_semantic_set_type.return_value = (
+        "00000000-0000-0000-0000-000000000005"
+    )
 
     response = client.post("/api/v2/memories/semantic/set_type", json=payload)
     assert response.status_code == 201
@@ -941,7 +945,9 @@ def test_create_semantic_set_type_minimal(client, mock_memmachine):
         "metadata_tags": ["user_id"],
     }
 
-    mock_memmachine.create_semantic_set_type.return_value = "00000000-0000-0000-0000-000000000006"
+    mock_memmachine.create_semantic_set_type.return_value = (
+        "00000000-0000-0000-0000-000000000006"
+    )
 
     response = client.post("/api/v2/memories/semantic/set_type", json=payload)
     assert response.status_code == 201
@@ -1336,7 +1342,9 @@ def test_add_semantic_category(client, mock_memmachine):
         "description": "Category for user preferences",
     }
 
-    mock_memmachine.semantic_add_category.return_value = "00000000-0000-0000-0000-000000000007"
+    mock_memmachine.semantic_add_category.return_value = (
+        "00000000-0000-0000-0000-000000000007"
+    )
 
     response = client.post("/api/v2/memories/semantic/category", json=payload)
     assert response.status_code == 201
@@ -1359,7 +1367,9 @@ def test_add_semantic_category_minimal(client, mock_memmachine):
         "prompt": "Extract preferences",
     }
 
-    mock_memmachine.semantic_add_category.return_value = "00000000-0000-0000-0000-000000000008"
+    mock_memmachine.semantic_add_category.return_value = (
+        "00000000-0000-0000-0000-000000000008"
+    )
 
     response = client.post("/api/v2/memories/semantic/category", json=payload)
     assert response.status_code == 201
@@ -1406,7 +1416,9 @@ def test_add_semantic_category_template(client, mock_memmachine):
         "description": "Template for user preferences",
     }
 
-    mock_memmachine.semantic_add_category_template.return_value = "00000000-0000-0000-0000-000000000009"
+    mock_memmachine.semantic_add_category_template.return_value = (
+        "00000000-0000-0000-0000-000000000009"
+    )
 
     response = client.post("/api/v2/memories/semantic/category/template", json=payload)
     assert response.status_code == 201
@@ -1651,7 +1663,9 @@ def test_add_semantic_tag(client, mock_memmachine):
         "tag_description": "User food preferences",
     }
 
-    mock_memmachine.semantic_add_tag_to_category.return_value = "00000000-0000-0000-0000-000000000010"
+    mock_memmachine.semantic_add_tag_to_category.return_value = (
+        "00000000-0000-0000-0000-000000000010"
+    )
 
     response = client.post("/api/v2/memories/semantic/category/tag", json=payload)
     assert response.status_code == 201

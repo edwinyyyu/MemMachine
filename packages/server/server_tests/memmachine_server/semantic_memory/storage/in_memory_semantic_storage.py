@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, ClassVar
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import numpy as np
 from pydantic import InstanceOf

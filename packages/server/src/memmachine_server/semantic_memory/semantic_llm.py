@@ -16,7 +16,6 @@ from pydantic import (
 
 from memmachine_server.common.language_model import LanguageModel
 from memmachine_server.semantic_memory.semantic_model import (
-    UUID,
     SemanticCommand,
     SemanticFeature,
 )

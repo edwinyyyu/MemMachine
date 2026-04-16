@@ -17,7 +17,6 @@ from fastmcp.server.http import StarletteWithLifespan
 from memmachine_common.api.spec import (
     AddMemoriesSpec,
     DeleteMemoriesSpec,
-    UUID,
     MemoryMessage,
     SearchMemoriesSpec,
     SearchResult,

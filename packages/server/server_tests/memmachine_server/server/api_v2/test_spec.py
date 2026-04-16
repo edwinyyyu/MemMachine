@@ -276,20 +276,25 @@ def test_delete_semantic_memory_spec():
     with pytest.raises(ValidationError):
         DeleteSemanticMemorySpec.model_validate({})
 
-    spec = DeleteSemanticMemorySpec.model_validate({"semantic_id": "sem-123"})
+    sem_id = "00000000-0000-0000-0000-000000000123"
+    spec = DeleteSemanticMemorySpec.model_validate({"semantic_id": sem_id})
     assert spec.org_id == DEFAULT_ORG_AND_PROJECT_ID
     assert spec.project_id == DEFAULT_ORG_AND_PROJECT_ID
-    assert spec.semantic_id == "sem-123"
+    assert spec.semantic_id == UUID(sem_id)
 
 
 def test_get_semantic_ids():
-    spec = DeleteSemanticMemorySpec.model_validate({"semantic_ids": ["2", "1"]})
-    assert spec.get_ids() == ["1", "2"]
+    uid1 = UUID("00000000-0000-0000-0000-000000000001")
+    uid2 = UUID("00000000-0000-0000-0000-000000000002")
+    spec = DeleteSemanticMemorySpec.model_validate(
+        {"semantic_ids": [str(uid2), str(uid1)]}
+    )
+    assert spec.get_ids() == [uid1, uid2]
 
     spec = DeleteSemanticMemorySpec.model_validate(
-        {"semantic_id": "1", "semantic_ids": ["2", "1"]}
+        {"semantic_id": str(uid1), "semantic_ids": [str(uid2), str(uid1)]}
     )
-    assert spec.get_ids() == ["1", "2"]
+    assert spec.get_ids() == [uid1, uid2]
 
 
 def test_get_episodic_ids():

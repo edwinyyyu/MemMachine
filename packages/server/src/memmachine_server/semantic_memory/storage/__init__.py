@@ -9,7 +9,7 @@ from memmachine_server.semantic_memory.storage.sqlalchemy_feature_store import (
 )
 
 __all__ = [
-    "SemanticFeatureStore",
     "SQLAlchemyFeatureStore",
     "SQLAlchemyFeatureStoreParams",
+    "SemanticFeatureStore",
 ]

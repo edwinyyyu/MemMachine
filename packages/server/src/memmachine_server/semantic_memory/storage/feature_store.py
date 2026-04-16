@@ -18,7 +18,6 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from memmachine_server.common.episode_store.episode_model import EpisodeIdT
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.semantic_memory.semantic_model import (
     SemanticFeature,
@@ -194,7 +193,7 @@ class SemanticFeatureStore(ABC):
     async def add_citations(
         self,
         feature_id: UUID,
-        history_ids: Sequence[EpisodeIdT],
+        history_ids: Sequence[UUID],
     ) -> None:
         """Associate episode IDs as citations for a feature."""
         raise NotImplementedError
@@ -207,7 +206,7 @@ class SemanticFeatureStore(ABC):
     async def add_history_to_set(
         self,
         set_id: SetIdT,
-        history_id: EpisodeIdT,
+        history_id: UUID,
     ) -> None:
         """Record that a history message belongs to a feature set."""
         raise NotImplementedError
@@ -219,7 +218,7 @@ class SemanticFeatureStore(ABC):
         set_ids: Sequence[SetIdT] | None = None,
         limit: int | None = None,
         is_ingested: bool | None = None,
-    ) -> AsyncIterator[EpisodeIdT]:
+    ) -> AsyncIterator[UUID]:
         """Retrieve history message IDs with optional ingestion filter."""
         raise NotImplementedError
 
@@ -238,7 +237,7 @@ class SemanticFeatureStore(ABC):
         self,
         *,
         set_id: SetIdT,
-        history_ids: Sequence[EpisodeIdT],
+        history_ids: Sequence[UUID],
     ) -> None:
         """Mark history messages as ingested for the given set."""
         raise NotImplementedError
@@ -246,7 +245,7 @@ class SemanticFeatureStore(ABC):
     @abstractmethod
     async def delete_history(
         self,
-        history_ids: Sequence[EpisodeIdT],
+        history_ids: Sequence[UUID],
     ) -> None:
         """Delete history references and their citation associations."""
         raise NotImplementedError

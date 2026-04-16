@@ -620,8 +620,8 @@ class Memory:
 
     def delete_semantic(
         self,
-        semantic_id: str = "",
-        semantic_ids: list[str] | None = None,
+        semantic_id: UUID | None = None,
+        semantic_ids: list[UUID] | None = None,
         timeout: int | None = None,
     ) -> bool:
         """
@@ -677,7 +677,7 @@ class Memory:
         feature_metadata: dict[str, JsonValue] | None = None,
         citations: list[UUID] | None = None,
         timeout: int | None = None,
-    ) -> str:
+    ) -> UUID:
         """
         Add a semantic feature.
 
@@ -738,7 +738,7 @@ class Memory:
 
     def get_feature(
         self,
-        feature_id: str,
+        feature_id: UUID,
         load_citations: bool = False,
         timeout: int | None = None,
     ) -> SemanticFeature | None:
@@ -799,7 +799,7 @@ class Memory:
     def update_feature(
         self,
         *,
-        feature_id: str,
+        feature_id: UUID,
         category_name: str | None = None,
         feature: str | None = None,
         value: str | None = None,
@@ -938,7 +938,7 @@ class Memory:
         name: str | None = None,
         description: str | None = None,
         timeout: int | None = None,
-    ) -> str:
+    ) -> UUID:
         """
         Create a new semantic set type.
 
@@ -1299,7 +1299,7 @@ class Memory:
         prompt: str,
         description: str | None = None,
         timeout: int | None = None,
-    ) -> str:
+    ) -> UUID:
         """
         Add a semantic category to a set.
 
@@ -1356,7 +1356,7 @@ class Memory:
         prompt: str,
         description: str | None = None,
         timeout: int | None = None,
-    ) -> str:
+    ) -> UUID:
         """
         Add a category template to a set type.
 
@@ -1612,7 +1612,7 @@ class Memory:
         tag_name: str,
         tag_description: str,
         timeout: int | None = None,
-    ) -> str:
+    ) -> UUID:
         """
         Add a tag to a semantic category.
 

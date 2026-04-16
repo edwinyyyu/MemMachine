@@ -517,7 +517,7 @@ class Neo4jSemanticStorage(SemanticStorage):
             )
         ]
         await self.delete_features(
-            [UUID(entry.metadata.id) for entry in entries if entry.metadata.id],
+            [entry.metadata.id for entry in entries if entry.metadata.id],
         )
 
     async def add_citations(

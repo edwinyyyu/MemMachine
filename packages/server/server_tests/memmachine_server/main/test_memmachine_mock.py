@@ -848,6 +848,7 @@ async def test_delete_features_forwards_to_semantic_manager(
         return_value=semantic_manager
     )
 
-    await memmachine.delete_features(["feat1", "feat2"])
+    feat1, feat2 = _uid("feat1"), _uid("feat2")
+    await memmachine.delete_features([feat1, feat2])
 
-    semantic_manager.delete_features.assert_awaited_once_with(["feat1", "feat2"])
+    semantic_manager.delete_features.assert_awaited_once_with([feat1, feat2])

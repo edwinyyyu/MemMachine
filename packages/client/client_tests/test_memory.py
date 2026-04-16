@@ -10,7 +10,6 @@ from memmachine_common.api import EpisodeType
 from memmachine_common.api.spec import AddMemoryResult, SearchResult
 
 from memmachine_client import MemMachineClient, Memory
-from uuid import UUID
 
 
 def _uid(label: str) -> UUID:
@@ -1070,7 +1069,7 @@ class TestMemory:
             project_id="test_project",
         )
 
-        semantic_id = "00000000-0000-0000-0000-000000000008"
+        semantic_id = UUID("00000000-0000-0000-0000-000000000008")
         result = memory.delete_semantic(semantic_id=semantic_id)
 
         assert result is True
@@ -1081,7 +1080,7 @@ class TestMemory:
         json_data = call_args[1]["json"]
         assert json_data["org_id"] == "test_org"
         assert json_data["project_id"] == "test_project"
-        assert json_data["semantic_id"] == semantic_id
+        assert json_data["semantic_id"] == str(semantic_id)
 
     def test_delete_semantic_with_timeout(self, mock_client):
         """Test delete_semantic with custom timeout."""
@@ -1096,7 +1095,9 @@ class TestMemory:
             project_id="test_project",
         )
 
-        result = memory.delete_semantic(semantic_id="00000000-0000-0000-0000-000000000008", timeout=60)
+        result = memory.delete_semantic(
+            semantic_id=UUID("00000000-0000-0000-0000-000000000008"), timeout=60
+        )
 
         assert result is True
         call_args = mock_client.request.call_args
@@ -1117,7 +1118,9 @@ class TestMemory:
         )
 
         with pytest.raises(requests.RequestException):
-            memory.delete_semantic(semantic_id="00000000-0000-0000-0000-000000000008")
+            memory.delete_semantic(
+                semantic_id=UUID("00000000-0000-0000-0000-000000000008")
+            )
 
     def test_delete_semantic_client_closed(self, mock_client):
         """Test delete_semantic raises RuntimeError when client is closed."""
@@ -1131,7 +1134,9 @@ class TestMemory:
         with pytest.raises(
             RuntimeError, match="Cannot delete semantic memory: client has been closed"
         ):
-            memory.delete_semantic(semantic_id="00000000-0000-0000-0000-000000000008")
+            memory.delete_semantic(
+                semantic_id=UUID("00000000-0000-0000-0000-000000000008")
+            )
 
     # Feature management tests
     def test_add_feature_success(self, mock_client):
@@ -1139,7 +1144,9 @@ class TestMemory:
         mock_response = Mock()
         mock_response.status_code = 201
         mock_response.raise_for_status = Mock()
-        mock_response.json.return_value = {"feature_id": "00000000-0000-0000-0000-000000000007"}
+        mock_response.json.return_value = {
+            "feature_id": "00000000-0000-0000-0000-000000000007"
+        }
         mock_client.request.return_value = mock_response
 
         memory = Memory(
@@ -1175,7 +1182,9 @@ class TestMemory:
         mock_response = Mock()
         mock_response.status_code = 201
         mock_response.raise_for_status = Mock()
-        mock_response.json.return_value = {"feature_id": "00000000-0000-0000-0000-000000000008"}
+        mock_response.json.return_value = {
+            "feature_id": "00000000-0000-0000-0000-000000000008"
+        }
         mock_client.request.return_value = mock_response
 
         memory = Memory(
@@ -1260,7 +1269,11 @@ class TestMemory:
             "tag": "food",
             "feature_name": "favorite_food",
             "value": "pizza",
-            "metadata": {"id": "00000000-0000-0000-0000-000000000007", "citations": None, "other": None},
+            "metadata": {
+                "id": "00000000-0000-0000-0000-000000000007",
+                "citations": None,
+                "other": None,
+            },
         }
         mock_client.request.return_value = mock_response
 
@@ -1270,7 +1283,9 @@ class TestMemory:
             project_id="test_project",
         )
 
-        result = memory.get_feature(feature_id="00000000-0000-0000-0000-000000000007")
+        result = memory.get_feature(
+            feature_id=UUID("00000000-0000-0000-0000-000000000007")
+        )
 
         assert result is not None
         assert result.set_id == "test_set"
@@ -1298,7 +1313,7 @@ class TestMemory:
             "feature_name": "favorite_food",
             "value": "pizza",
             "metadata": {
-                "id": "feature_123",
+                "id": "00000000-0000-0000-0000-000000000007",
                 "citations": [
                     "00000000-0000-0000-0000-0000000000e1",
                     "00000000-0000-0000-0000-0000000000e2",
@@ -1314,7 +1329,9 @@ class TestMemory:
             project_id="test_project",
         )
 
-        result = memory.get_feature(feature_id="00000000-0000-0000-0000-000000000007", load_citations=True)
+        result = memory.get_feature(
+            feature_id=UUID("00000000-0000-0000-0000-000000000007"), load_citations=True
+        )
 
         assert result is not None
         assert result.metadata.citations == [
@@ -1337,7 +1354,9 @@ class TestMemory:
             project_id="test_project",
         )
 
-        result = memory.get_feature(feature_id="00000000-0000-0000-0000-000000000013")
+        result = memory.get_feature(
+            feature_id=UUID("00000000-0000-0000-0000-000000000013")
+        )
         assert result is None
 
     def test_get_feature_http_error_not_found(self, mock_client):
@@ -1353,7 +1372,9 @@ class TestMemory:
             project_id="test_project",
         )
 
-        result = memory.get_feature(feature_id="00000000-0000-0000-0000-000000000013")
+        result = memory.get_feature(
+            feature_id=UUID("00000000-0000-0000-0000-000000000013")
+        )
         assert result is None
 
     def test_get_feature_client_closed(self, mock_client):
@@ -1368,7 +1389,7 @@ class TestMemory:
         with pytest.raises(
             RuntimeError, match="Cannot get feature: client has been closed"
         ):
-            memory.get_feature(feature_id="00000000-0000-0000-0000-000000000007")
+            memory.get_feature(feature_id=UUID("00000000-0000-0000-0000-000000000007"))
 
     def test_update_feature_success(self, mock_client):
         """Test successful feature update."""
@@ -1383,7 +1404,9 @@ class TestMemory:
             project_id="test_project",
         )
 
-        result = memory.update_feature(feature_id="00000000-0000-0000-0000-000000000007", value="sushi")
+        result = memory.update_feature(
+            feature_id=UUID("00000000-0000-0000-0000-000000000007"), value="sushi"
+        )
 
         assert result is True
         mock_client.request.assert_called_once()
@@ -1413,7 +1436,7 @@ class TestMemory:
         )
 
         result = memory.update_feature(
-            feature_id="00000000-0000-0000-0000-000000000007",
+            feature_id=UUID("00000000-0000-0000-0000-000000000007"),
             category_name="new_preferences",
             tag="cuisine",
             feature="top_food",
@@ -1445,7 +1468,9 @@ class TestMemory:
         )
 
         with pytest.raises(requests.RequestException):
-            memory.update_feature(feature_id="00000000-0000-0000-0000-000000000007", value="sushi")
+            memory.update_feature(
+                feature_id=UUID("00000000-0000-0000-0000-000000000007"), value="sushi"
+            )
 
     def test_update_feature_client_closed(self, mock_client):
         """Test update_feature raises RuntimeError when client is closed."""
@@ -1459,7 +1484,9 @@ class TestMemory:
         with pytest.raises(
             RuntimeError, match="Cannot update feature: client has been closed"
         ):
-            memory.update_feature(feature_id="00000000-0000-0000-0000-000000000007", value="sushi")
+            memory.update_feature(
+                feature_id=UUID("00000000-0000-0000-0000-000000000007"), value="sushi"
+            )
 
     # --- Semantic Set Type SDK Tests ---
 
@@ -1468,7 +1495,9 @@ class TestMemory:
         mock_response = Mock()
         mock_response.status_code = 201
         mock_response.raise_for_status = Mock()
-        mock_response.json.return_value = {"set_type_id": "00000000-0000-0000-0000-000000000014"}
+        mock_response.json.return_value = {
+            "set_type_id": "00000000-0000-0000-0000-000000000014"
+        }
         mock_client.request.return_value = mock_response
 
         memory = Memory(
@@ -1502,7 +1531,9 @@ class TestMemory:
         mock_response = Mock()
         mock_response.status_code = 201
         mock_response.raise_for_status = Mock()
-        mock_response.json.return_value = {"set_type_id": "00000000-0000-0000-0000-000000000015"}
+        mock_response.json.return_value = {
+            "set_type_id": "00000000-0000-0000-0000-000000000015"
+        }
         mock_client.request.return_value = mock_response
 
         memory = Memory(
@@ -1636,7 +1667,9 @@ class TestMemory:
             project_id="test_project",
         )
 
-        result = memory.delete_semantic_set_type(set_type_id="00000000-0000-0000-0000-000000000017")
+        result = memory.delete_semantic_set_type(
+            set_type_id=UUID("00000000-0000-0000-0000-000000000017")
+        )
 
         assert result is True
         mock_client.request.assert_called_once()
@@ -1661,7 +1694,9 @@ class TestMemory:
         )
 
         with pytest.raises(requests.RequestException):
-            memory.delete_semantic_set_type(set_type_id="00000000-0000-0000-0000-000000000013")
+            memory.delete_semantic_set_type(
+                set_type_id=UUID("00000000-0000-0000-0000-000000000013")
+            )
 
     def test_delete_semantic_set_type_client_closed(self, mock_client):
         """Test set type deletion raises RuntimeError when client is closed."""
@@ -1675,7 +1710,9 @@ class TestMemory:
         with pytest.raises(
             RuntimeError, match="Cannot delete set type: client has been closed"
         ):
-            memory.delete_semantic_set_type(set_type_id="00000000-0000-0000-0000-000000000017")
+            memory.delete_semantic_set_type(
+                set_type_id=UUID("00000000-0000-0000-0000-000000000017")
+            )
 
     def test_get_semantic_set_id_success(self, mock_client):
         """Test successful semantic set ID retrieval."""
@@ -1957,7 +1994,9 @@ class TestMemory:
             project_id="test_project",
         )
 
-        result = memory.get_semantic_category("00000000-0000-0000-0000-000000000002")
+        result = memory.get_semantic_category(
+            UUID("00000000-0000-0000-0000-000000000002")
+        )
 
         assert result is not None
         assert result.id == UUID("00000000-0000-0000-0000-000000000002")
@@ -1982,7 +2021,9 @@ class TestMemory:
             project_id="test_project",
         )
 
-        result = memory.get_semantic_category("00000000-0000-0000-0000-000000000013")
+        result = memory.get_semantic_category(
+            UUID("00000000-0000-0000-0000-000000000013")
+        )
         assert result is None
 
     def test_get_semantic_category_client_closed(self, mock_client):
@@ -1997,14 +2038,16 @@ class TestMemory:
         with pytest.raises(
             RuntimeError, match="Cannot get category: client has been closed"
         ):
-            memory.get_semantic_category("00000000-0000-0000-0000-000000000002")
+            memory.get_semantic_category(UUID("00000000-0000-0000-0000-000000000002"))
 
     def test_add_semantic_category_success(self, mock_client):
         """Test successful category creation."""
         mock_response = Mock()
         mock_response.status_code = 201
         mock_response.raise_for_status = Mock()
-        mock_response.json.return_value = {"category_id": "00000000-0000-0000-0000-000000000004"}
+        mock_response.json.return_value = {
+            "category_id": "00000000-0000-0000-0000-000000000004"
+        }
         mock_client.request.return_value = mock_response
 
         memory = Memory(
@@ -2036,7 +2079,9 @@ class TestMemory:
         mock_response = Mock()
         mock_response.status_code = 201
         mock_response.raise_for_status = Mock()
-        mock_response.json.return_value = {"category_id": "00000000-0000-0000-0000-000000000005"}
+        mock_response.json.return_value = {
+            "category_id": "00000000-0000-0000-0000-000000000005"
+        }
         mock_client.request.return_value = mock_response
 
         memory = Memory(
@@ -2100,7 +2145,9 @@ class TestMemory:
         mock_response = Mock()
         mock_response.status_code = 201
         mock_response.raise_for_status = Mock()
-        mock_response.json.return_value = {"category_id": "00000000-0000-0000-0000-000000000006"}
+        mock_response.json.return_value = {
+            "category_id": "00000000-0000-0000-0000-000000000006"
+        }
         mock_client.request.return_value = mock_response
 
         memory = Memory(
@@ -2110,7 +2157,7 @@ class TestMemory:
         )
 
         result = memory.add_semantic_category_template(
-            set_type_id="00000000-0000-0000-0000-000000000017",
+            set_type_id=UUID("00000000-0000-0000-0000-000000000017"),
             category_name="preferences",
             prompt="Extract user preferences",
             description="Template for user preferences",
@@ -2141,7 +2188,7 @@ class TestMemory:
 
         with pytest.raises(requests.RequestException):
             memory.add_semantic_category_template(
-                set_type_id="00000000-0000-0000-0000-000000000017",
+                set_type_id=UUID("00000000-0000-0000-0000-000000000017"),
                 category_name="preferences",
                 prompt="Extract preferences",
             )
@@ -2159,7 +2206,7 @@ class TestMemory:
             RuntimeError, match="Cannot add category template: client has been closed"
         ):
             memory.add_semantic_category_template(
-                set_type_id="00000000-0000-0000-0000-000000000017",
+                set_type_id=UUID("00000000-0000-0000-0000-000000000017"),
                 category_name="preferences",
                 prompt="Extract preferences",
             )
@@ -2195,7 +2242,9 @@ class TestMemory:
             project_id="test_project",
         )
 
-        result = memory.list_semantic_category_templates("00000000-0000-0000-0000-000000000017")
+        result = memory.list_semantic_category_templates(
+            UUID("00000000-0000-0000-0000-000000000017")
+        )
 
         assert len(result) == 2
         assert result[0].id == UUID("00000000-0000-0000-0000-000000000001")
@@ -2220,7 +2269,9 @@ class TestMemory:
         )
 
         with pytest.raises(requests.RequestException):
-            memory.list_semantic_category_templates("00000000-0000-0000-0000-000000000017")
+            memory.list_semantic_category_templates(
+                UUID("00000000-0000-0000-0000-000000000017")
+            )
 
     def test_list_semantic_category_templates_client_closed(self, mock_client):
         """Test listing category templates raises RuntimeError when client is closed."""
@@ -2235,7 +2286,9 @@ class TestMemory:
             RuntimeError,
             match="Cannot list category templates: client has been closed",
         ):
-            memory.list_semantic_category_templates("00000000-0000-0000-0000-000000000017")
+            memory.list_semantic_category_templates(
+                UUID("00000000-0000-0000-0000-000000000017")
+            )
 
     def test_disable_semantic_category_success(self, mock_client):
         """Test successful category disabling."""
@@ -2315,7 +2368,9 @@ class TestMemory:
             project_id="test_project",
         )
 
-        result = memory.get_semantic_category_set_ids("00000000-0000-0000-0000-000000000002")
+        result = memory.get_semantic_category_set_ids(
+            UUID("00000000-0000-0000-0000-000000000002")
+        )
 
         assert result == ["set_1", "set_2", "set_3"]
         mock_client.request.assert_called_once()
@@ -2337,7 +2392,9 @@ class TestMemory:
             project_id="test_project",
         )
 
-        result = memory.get_semantic_category_set_ids("00000000-0000-0000-0000-000000000002")
+        result = memory.get_semantic_category_set_ids(
+            UUID("00000000-0000-0000-0000-000000000002")
+        )
         assert result == []
 
     def test_get_semantic_category_set_ids_http_error(self, mock_client):
@@ -2355,7 +2412,9 @@ class TestMemory:
         )
 
         with pytest.raises(requests.RequestException):
-            memory.get_semantic_category_set_ids("00000000-0000-0000-0000-000000000002")
+            memory.get_semantic_category_set_ids(
+                UUID("00000000-0000-0000-0000-000000000002")
+            )
 
     def test_get_semantic_category_set_ids_client_closed(self, mock_client):
         """Test category set IDs retrieval raises RuntimeError when client is closed."""
@@ -2369,7 +2428,9 @@ class TestMemory:
         with pytest.raises(
             RuntimeError, match="Cannot get category set IDs: client has been closed"
         ):
-            memory.get_semantic_category_set_ids("00000000-0000-0000-0000-000000000002")
+            memory.get_semantic_category_set_ids(
+                UUID("00000000-0000-0000-0000-000000000002")
+            )
 
     def test_delete_semantic_category_success(self, mock_client):
         """Test successful category deletion."""
@@ -2384,7 +2445,9 @@ class TestMemory:
             project_id="test_project",
         )
 
-        result = memory.delete_semantic_category("00000000-0000-0000-0000-000000000002")
+        result = memory.delete_semantic_category(
+            UUID("00000000-0000-0000-0000-000000000002")
+        )
 
         assert result is True
         mock_client.request.assert_called_once()
@@ -2409,7 +2472,9 @@ class TestMemory:
         )
 
         with pytest.raises(requests.RequestException):
-            memory.delete_semantic_category("00000000-0000-0000-0000-000000000013")
+            memory.delete_semantic_category(
+                UUID("00000000-0000-0000-0000-000000000013")
+            )
 
     def test_delete_semantic_category_client_closed(self, mock_client):
         """Test category deletion raises RuntimeError when client is closed."""
@@ -2423,7 +2488,9 @@ class TestMemory:
         with pytest.raises(
             RuntimeError, match="Cannot delete category: client has been closed"
         ):
-            memory.delete_semantic_category("00000000-0000-0000-0000-000000000002")
+            memory.delete_semantic_category(
+                UUID("00000000-0000-0000-0000-000000000002")
+            )
 
     # --- Semantic Tag Tests ---
 
@@ -2432,7 +2499,9 @@ class TestMemory:
         mock_response = Mock()
         mock_response.status_code = 201
         mock_response.raise_for_status = Mock()
-        mock_response.json.return_value = {"tag_id": "00000000-0000-0000-0000-000000000020"}
+        mock_response.json.return_value = {
+            "tag_id": "00000000-0000-0000-0000-000000000020"
+        }
         mock_client.request.return_value = mock_response
 
         memory = Memory(
@@ -2442,7 +2511,7 @@ class TestMemory:
         )
 
         result = memory.add_semantic_tag(
-            category_id="00000000-0000-0000-0000-000000000002",
+            category_id=UUID("00000000-0000-0000-0000-000000000002"),
             tag_name="food_preference",
             tag_description="User food preferences",
         )
@@ -2473,7 +2542,7 @@ class TestMemory:
 
         with pytest.raises(requests.RequestException):
             memory.add_semantic_tag(
-                category_id="00000000-0000-0000-0000-000000000013",
+                category_id=UUID("00000000-0000-0000-0000-000000000013"),
                 tag_name="food_preference",
                 tag_description="User food preferences",
             )
@@ -2491,7 +2560,7 @@ class TestMemory:
             RuntimeError, match="Cannot add tag: client has been closed"
         ):
             memory.add_semantic_tag(
-                category_id="00000000-0000-0000-0000-000000000002",
+                category_id=UUID("00000000-0000-0000-0000-000000000002"),
                 tag_name="food_preference",
                 tag_description="User food preferences",
             )
@@ -2509,7 +2578,9 @@ class TestMemory:
             project_id="test_project",
         )
 
-        result = memory.delete_semantic_tag("00000000-0000-0000-0000-000000000019")
+        result = memory.delete_semantic_tag(
+            UUID("00000000-0000-0000-0000-000000000019")
+        )
 
         assert result is True
         mock_client.request.assert_called_once()
@@ -2534,7 +2605,7 @@ class TestMemory:
         )
 
         with pytest.raises(requests.RequestException):
-            memory.delete_semantic_tag("00000000-0000-0000-0000-000000000013")
+            memory.delete_semantic_tag(UUID("00000000-0000-0000-0000-000000000013"))
 
     def test_delete_semantic_tag_client_closed(self, mock_client):
         """Test tag deletion raises RuntimeError when client is closed."""
@@ -2548,7 +2619,7 @@ class TestMemory:
         with pytest.raises(
             RuntimeError, match="Cannot delete tag: client has been closed"
         ):
-            memory.delete_semantic_tag("00000000-0000-0000-0000-000000000019")
+            memory.delete_semantic_tag(UUID("00000000-0000-0000-0000-000000000019"))
 
     # --- Episodic Memory Configuration Tests ---
 

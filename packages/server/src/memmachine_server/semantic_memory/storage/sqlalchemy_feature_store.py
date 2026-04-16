@@ -53,7 +53,6 @@ from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 from sqlalchemy.sql import Delete, Select
 from sqlalchemy.sql.elements import ColumnElement
 
-from memmachine_server.common.episode_store.episode_model import EpisodeIdT
 from memmachine_server.common.errors import InvalidArgumentError
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
@@ -132,7 +131,7 @@ class FeatureRow(BaseFeatureStore):
     def to_typed_model(
         self,
         *,
-        citations: Sequence[EpisodeIdT] | None = None,
+        citations: Sequence[UUID] | None = None,
     ) -> SemanticFeature:
         return SemanticFeature(
             set_id=self.set_id,
@@ -161,7 +160,7 @@ class CitationRow(BaseFeatureStore):
         ),
         primary_key=True,
     )
-    history_id: MappedColumn[str] = mapped_column(String, primary_key=True)
+    history_id: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
 
 
 class SetHistoryRow(BaseFeatureStore):
@@ -170,19 +169,15 @@ class SetHistoryRow(BaseFeatureStore):
     __tablename__ = "semantic_feature_store_sh"
 
     set_id: MappedColumn[str] = mapped_column(String, primary_key=True, index=True)
-    history_id: MappedColumn[str] = mapped_column(String, primary_key=True)
-    ingested: MappedColumn[bool] = mapped_column(
-        Boolean, nullable=False, default=False
-    )
+    history_id: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
+    ingested: MappedColumn[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: MappedColumn[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
     )
 
-    __table_args__ = (
-        Index("semantic_feature_store_sh__si_ing", "set_id", "ingested"),
-    )
+    __table_args__ = (Index("semantic_feature_store_sh__si_ing", "set_id", "ingested"),)
 
 
 # ---------------------------------------------------------------------- #
@@ -193,9 +188,7 @@ class SetHistoryRow(BaseFeatureStore):
 class SQLAlchemyFeatureStoreParams(BaseModel):
     """Parameters for constructing a :class:`SQLAlchemyFeatureStore`."""
 
-    engine: InstanceOf[AsyncEngine] = Field(
-        ..., description="Async SQLAlchemy engine"
-    )
+    engine: InstanceOf[AsyncEngine] = Field(..., description="Async SQLAlchemy engine")
 
     @field_validator("engine")
     @classmethod
@@ -217,10 +210,9 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
     """SQLAlchemy-backed :class:`SemanticFeatureStore`."""
 
     def __init__(self, params: SQLAlchemyFeatureStoreParams) -> None:
+        """Initialize with engine; set up session factory and SQLite FK pragma."""
         self._engine = params.engine
-        self._create_session = async_sessionmaker(
-            self._engine, expire_on_commit=False
-        )
+        self._create_session = async_sessionmaker(self._engine, expire_on_commit=False)
         self._is_sqlite = self._engine.dialect.name == "sqlite"
 
         # SQLite requires PRAGMA foreign_keys = ON for CASCADE deletes.
@@ -320,9 +312,7 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
         if not values:
             return
 
-        stmt = (
-            update(FeatureRow).where(FeatureRow.uuid == feature_id).values(**values)
-        )
+        stmt = update(FeatureRow).where(FeatureRow.uuid == feature_id).values(**values)
         async with self._create_session() as session, session.begin():
             await session.execute(stmt)
 
@@ -342,7 +332,7 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
             if row is None:
                 return None
 
-            citations_map: Mapping[UUID, Sequence[EpisodeIdT]] = {}
+            citations_map: Mapping[UUID, Sequence[UUID]] = {}
             if load_citations:
                 citations_map = await self._load_citations(session, [row.uuid])
 
@@ -369,7 +359,7 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
                 .all()
             )
 
-            citations_map: Mapping[UUID, Sequence[EpisodeIdT]] = {}
+            citations_map: Mapping[UUID, Sequence[UUID]] = {}
             if load_citations and rows:
                 citations_map = await self._load_citations(
                     session, [row.uuid for row in rows]
@@ -401,9 +391,7 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
         if page_size is not None:
             stmt = stmt.limit(page_size).offset(page_size * (page_num or 0))
 
-        buffering = load_citations or (
-            tag_threshold is not None and tag_threshold > 0
-        )
+        buffering = load_citations or (tag_threshold is not None and tag_threshold > 0)
 
         async with self._create_session() as session:
             result = await session.stream(stmt)
@@ -419,7 +407,7 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
                 counts = Counter(row.tag for row in rows)
                 rows = [row for row in rows if counts[row.tag] >= tag_threshold]
 
-            citations_map: Mapping[UUID, Sequence[EpisodeIdT]] = {}
+            citations_map: Mapping[UUID, Sequence[UUID]] = {}
             if load_citations and rows:
                 citations_map = await self._load_citations(
                     session, [row.uuid for row in rows]
@@ -452,9 +440,10 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
         filter_expr: FilterExpr | None = None,
     ) -> Sequence[UUID]:
         async with self._create_session() as session, session.begin():
-            stmt: Delete = delete(FeatureRow).returning(FeatureRow.uuid)
-            stmt = self._apply_feature_filter(stmt, filter_expr=filter_expr)
-            result = await session.execute(stmt)
+            stmt = self._apply_feature_filter(
+                delete(FeatureRow), filter_expr=filter_expr
+            )
+            result = await session.execute(stmt.returning(FeatureRow.uuid))
             return [row[0] for row in result.all()]
 
     # ------------------------------------------------------------------ #
@@ -465,13 +454,13 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
     async def add_citations(
         self,
         feature_id: UUID,
-        history_ids: Sequence[EpisodeIdT],
+        history_ids: Sequence[UUID],
     ) -> None:
         if not history_ids:
             return
 
         rows = [
-            {"feature_uuid": feature_id, "history_id": str(history_id)}
+            {"feature_uuid": feature_id, "history_id": history_id}
             for history_id in history_ids
         ]
         async with self._create_session() as session, session.begin():
@@ -485,11 +474,9 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
     async def add_history_to_set(
         self,
         set_id: SetIdT,
-        history_id: EpisodeIdT,
+        history_id: UUID,
     ) -> None:
-        stmt = insert(SetHistoryRow).values(
-            set_id=set_id, history_id=str(history_id)
-        )
+        stmt = insert(SetHistoryRow).values(set_id=set_id, history_id=history_id)
         async with self._create_session() as session, session.begin():
             await session.execute(stmt)
 
@@ -500,7 +487,7 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
         set_ids: Sequence[SetIdT] | None = None,
         limit: int | None = None,
         is_ingested: bool | None = None,
-    ) -> AsyncIterator[EpisodeIdT]:
+    ) -> AsyncIterator[UUID]:
         stmt: Select[Any] = select(SetHistoryRow.history_id).order_by(
             SetHistoryRow.history_id.asc()
         )
@@ -510,7 +497,7 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
         async with self._create_session() as session:
             result = await session.stream(stmt)
             async for history_id in result.scalars():
-                yield EpisodeIdT(history_id)
+                yield history_id
 
     @override
     async def get_history_messages_count(
@@ -531,7 +518,7 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
         self,
         *,
         set_id: SetIdT,
-        history_ids: Sequence[EpisodeIdT],
+        history_ids: Sequence[UUID],
     ) -> None:
         if not history_ids:
             raise ValueError("No history ids provided")
@@ -539,7 +526,7 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
         stmt = (
             update(SetHistoryRow)
             .where(SetHistoryRow.set_id == set_id)
-            .where(SetHistoryRow.history_id.in_([str(h) for h in history_ids]))
+            .where(SetHistoryRow.history_id.in_(history_ids))
             .values(ingested=True)
         )
         async with self._create_session() as session, session.begin():
@@ -548,12 +535,12 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
     @override
     async def delete_history(
         self,
-        history_ids: Sequence[EpisodeIdT],
+        history_ids: Sequence[UUID],
     ) -> None:
         if not history_ids:
             return
 
-        hids = [str(h) for h in history_ids]
+        hids = list(history_ids)
         async with self._create_session() as session, session.begin():
             await session.execute(
                 delete(CitationRow).where(CitationRow.history_id.in_(hids))
@@ -648,9 +635,7 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
     @override
     async def get_set_ids_starts_with(self, prefix: str) -> AsyncIterator[SetIdT]:
         stmt = union(
-            select(SetHistoryRow.set_id).where(
-                SetHistoryRow.set_id.startswith(prefix)
-            ),
+            select(SetHistoryRow.set_id).where(SetHistoryRow.set_id.startswith(prefix)),
             select(FeatureRow.set_id).where(FeatureRow.set_id.startswith(prefix)),
         )
         async with self._create_session() as session:
@@ -666,7 +651,7 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
         self,
         session: AsyncSession,
         feature_uuids: Sequence[UUID],
-    ) -> Mapping[UUID, Sequence[EpisodeIdT]]:
+    ) -> Mapping[UUID, Sequence[UUID]]:
         if not feature_uuids:
             return {}
 
@@ -675,11 +660,11 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
         )
         result = await session.execute(stmt)
 
-        citations: MutableMapping[UUID, list[EpisodeIdT]] = {
+        citations: MutableMapping[UUID, list[UUID]] = {
             feature_uuid: [] for feature_uuid in feature_uuids
         }
         for feature_uuid, history_id in result:
-            citations.setdefault(feature_uuid, []).append(EpisodeIdT(history_id))
+            citations.setdefault(feature_uuid, []).append(history_id)
         return citations
 
     def _apply_history_filter(
@@ -711,6 +696,8 @@ class SQLAlchemyFeatureStore(SemanticFeatureStore):
         )
         if clause is None:
             return stmt
+        if isinstance(stmt, Select):
+            return stmt.where(clause)
         return stmt.where(clause)
 
     @staticmethod
