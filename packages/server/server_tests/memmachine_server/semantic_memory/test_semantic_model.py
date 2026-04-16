@@ -148,10 +148,12 @@ class TestHistoryMessage:
 
     def test_history_message_with_minimal_fields(self):
         from datetime import datetime
+        from uuid import uuid4
 
+        uid = uuid4()
         now = datetime.now(UTC)
         msg = Episode(
-            uid="123",
+            uid=uid,
             content="Test message",
             created_at=now,
             session_key="session_key",
@@ -161,17 +163,19 @@ class TestHistoryMessage:
 
         assert msg.content == "Test message"
         assert msg.created_at == now
-        assert msg.uid == "123"
+        assert msg.uid == uid
         assert msg.metadata is None
 
     def test_history_message_with_metadata(self):
         from datetime import datetime
+        from uuid import uuid4
 
+        uid = uuid4()
         now = datetime.now(UTC)
         msg = Episode(
             content="Test message",
             created_at=now,
-            uid="123",
+            uid=uid,
             metadata={"source": "test", "priority": "high"},
             session_key="session_key",
             producer_id="profile_id",
@@ -180,7 +184,7 @@ class TestHistoryMessage:
 
         assert msg.content == "Test message"
         assert msg.created_at == now
-        assert msg.uid == "123"
+        assert msg.uid == uid
         assert msg.metadata == {"source": "test", "priority": "high"}
 
 
@@ -206,12 +210,15 @@ class TestSemanticFeature:
 
     def test_semantic_feature_with_all_fields(self):
         from datetime import datetime
+        from uuid import uuid4
 
+        citation_uid = uuid4()
+        feature_id = "a789"
         now = datetime.now(UTC)
         citation = Episode(
             content="I love pasta",
             created_at=now,
-            uid="456aw3w",
+            uid=citation_uid,
             session_key="session_key",
             producer_id="profile_id",
             producer_role="user_role",
@@ -224,7 +231,7 @@ class TestSemanticFeature:
             feature_name="favorite_meal",
             value="pasta",
             metadata=SemanticFeature.Metadata(
-                id="a789",
+                id=feature_id,
                 citations=[citation.uid],
                 other={"confidence": 0.95},
             ),
@@ -235,10 +242,10 @@ class TestSemanticFeature:
         assert feature.tag == "food"
         assert feature.feature_name == "favorite_meal"
         assert feature.value == "pasta"
-        assert feature.metadata.id == "a789"
+        assert feature.metadata.id == feature_id
         assert feature.metadata.citations is not None
         assert len(feature.metadata.citations) == 1
-        assert feature.metadata.citations[0] == "456aw3w"
+        assert feature.metadata.citations[0] == citation_uid
         assert feature.metadata.other == {"confidence": 0.95}
 
 

@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable
 from typing import cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, InstanceOf, JsonValue
 
@@ -92,7 +92,7 @@ class LongTermMemory:
     async def add_episodes(self, episodes: Iterable[Episode]) -> None:
         declarative_memory_episodes = [
             DeclarativeMemoryEpisode(
-                uid=episode.uid or str(uuid4()),
+                uid=str(episode.uid) if episode.uid else str(uuid4()),
                 timestamp=episode.created_at,
                 source=episode.producer_id,
                 content_type=LongTermMemory._declarative_memory_content_type_from_episode(
@@ -252,7 +252,7 @@ class LongTermMemory:
         declarative_memory_episode: DeclarativeMemoryEpisode,
     ) -> Episode:
         return Episode(
-            uid=declarative_memory_episode.uid,
+            uid=UUID(declarative_memory_episode.uid),
             sequence_num=cast(
                 "int",
                 declarative_memory_episode.filterable_properties.get("sequence_num", 0),

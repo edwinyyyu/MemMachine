@@ -4,11 +4,10 @@ import logging
 import socket
 from datetime import UTC
 from typing import Any, TypeVar, overload
+from uuid import UUID, uuid4
 
 from pydantic import (
     AwareDatetime,
-    TypeAdapter,
-    ValidationError,
     validate_call,
 )
 from sqlalchemy import (
@@ -16,8 +15,8 @@ from sqlalchemy import (
     DateTime,
     Delete,
     Index,
-    Integer,
     String,
+    Uuid,
     delete,
     func,
     insert,
@@ -38,13 +37,11 @@ from memmachine_server.common.episode_store.episode_model import (
     EpisodeType,
 )
 from memmachine_server.common.episode_store.episode_storage import (
-    EpisodeIdT,
     EpisodeStorage,
 )
 from memmachine_server.common.errors import (
     ConfigurationError,
     InvalidArgumentError,
-    ResourceNotFoundError,
 )
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
@@ -74,7 +71,7 @@ class Episode(BaseEpisodeStore):
     """SQLAlchemy mapping for stored conversation messages."""
 
     __tablename__ = "episodestore"
-    id = mapped_column(Integer, primary_key=True)
+    id = mapped_column(Uuid, primary_key=True, default=uuid4)
 
     content = mapped_column(String, nullable=False)
 
@@ -121,7 +118,7 @@ class Episode(BaseEpisodeStore):
             else self.created_at
         )
         return EpisodeE(
-            uid=EpisodeIdT(self.id),
+            uid=self.id,
             content=self.content,
             session_key=self.session_key,
             producer_id=self.producer_id,
@@ -186,6 +183,7 @@ class SqlAlchemyEpisodeStore(EpisodeStorage):
         values_to_insert: list[dict[str, Any]] = []
         for entry in episodes:
             entry_values: dict[str, Any] = {
+                "id": uuid4(),
                 "content": entry.content,
                 "session_key": session_key,
                 "producer_id": entry.producer_id,
@@ -219,15 +217,10 @@ class SqlAlchemyEpisodeStore(EpisodeStorage):
         return res_episodes
 
     @validate_call
-    async def get_episode(self, episode_id: EpisodeIdT) -> EpisodeE | None:
-        try:
-            int_episode_id = int(episode_id)
-        except (TypeError, ValueError) as e:
-            raise ResourceNotFoundError("Invalid episode ID") from e
-
+    async def get_episode(self, episode_id: UUID) -> EpisodeE | None:
         stmt = (
             select(Episode)
-            .where(Episode.id == int_episode_id)
+            .where(Episode.id == episode_id)
             .order_by(Episode.created_at.asc())
         )
 
@@ -377,7 +370,7 @@ class SqlAlchemyEpisodeStore(EpisodeStorage):
         *,
         page_size: int,
         filter_expr: FilterExpr | None = None,
-    ) -> list[EpisodeIdT]:
+    ) -> list[UUID]:
         stmt = select(Episode.id)
 
         stmt = self._apply_episode_filter(
@@ -391,16 +384,13 @@ class SqlAlchemyEpisodeStore(EpisodeStorage):
             result = await session.execute(stmt)
             rows = result.scalars().all()
 
-        return [EpisodeIdT(row) for row in rows]
+        return list(rows)
 
     @validate_call
-    async def delete_episodes(self, episode_ids: list[EpisodeIdT]) -> None:
-        try:
-            int_episode_ids = TypeAdapter(list[int]).validate_python(episode_ids)
-        except ValidationError as e:
-            raise ResourceNotFoundError("Invalid episode IDs") from e
-
-        stmt = delete(Episode).where(Episode.id.in_(int_episode_ids))
+    async def delete_episodes(self, episode_ids: list[UUID]) -> None:
+        if not episode_ids:
+            return
+        stmt = delete(Episode).where(Episode.id.in_(episode_ids))
 
         async with self._create_session() as session:
             await session.execute(stmt)

@@ -4,13 +4,12 @@ import datetime
 import json
 from collections.abc import Iterable
 from enum import Enum
+from uuid import UUID
 
 from memmachine_common.api import EpisodeType
 from pydantic import AwareDatetime, BaseModel, JsonValue
 
 from memmachine_server.common.data_types import PropertyValue
-
-EpisodeIdT = str
 
 
 class ContentType(Enum):
@@ -37,14 +36,14 @@ class EpisodeEntry(BaseModel):
 class EpisodeResponse(EpisodeEntry):
     """Episode data returned in responses."""
 
-    uid: EpisodeIdT
+    uid: UUID
     score: float | None = None
 
 
 class Episode(BaseModel):
     """Conversation message stored in history together with persistence metadata."""
 
-    uid: EpisodeIdT
+    uid: UUID
     content: str
     session_key: str
     created_at: AwareDatetime

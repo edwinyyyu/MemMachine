@@ -380,7 +380,7 @@ class TestMemory:
         with patch.object(
             client, "request", return_value=mock_response
         ) as mock_request:
-            result = memory.list(
+            result = memory.list_memories(
                 memory_type=MemoryType.Episodic,
                 page_size=10,
                 page_num=0,

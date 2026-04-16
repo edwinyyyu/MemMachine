@@ -22,6 +22,7 @@ import time
 from collections.abc import Coroutine, Iterable
 from enum import StrEnum
 from typing import cast, get_args
+from uuid import UUID
 
 from pydantic import BaseModel, Field, InstanceOf, model_validator
 
@@ -258,21 +259,21 @@ class EpisodicMemory:
             tasks.append(self._long_term_memory.close())
         await asyncio.gather(*tasks)
 
-    async def delete_episodes(self, uids: Iterable[str]) -> None:
+    async def delete_episodes(self, uids: Iterable[UUID]) -> None:
         """Delete episodes by UID."""
         if not self._enabled:
             return
 
-        uids = list(uids)
+        str_uids = [str(uid) for uid in uids]
 
         delete_episodes_coroutines: list[Coroutine] = []
         if self._short_term_memory:
             delete_episodes_coroutines.extend(
-                self._short_term_memory.delete_episode(uid) for uid in uids
+                self._short_term_memory.delete_episode(uid) for uid in str_uids
             )
         if self._long_term_memory:
             delete_episodes_coroutines.append(
-                self._long_term_memory.delete_episodes(uids)
+                self._long_term_memory.delete_episodes(str_uids)
             )
         await asyncio.gather(*delete_episodes_coroutines)
 

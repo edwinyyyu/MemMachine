@@ -132,8 +132,10 @@ def query_policy() -> QueryPolicy:
 
 
 def _build_episode(*, uid: str, content: str, created_at: datetime) -> Episode:
+    from uuid import NAMESPACE_DNS, uuid5
+
     return Episode(
-        uid=uid,
+        uid=uuid5(NAMESPACE_DNS, uid),
         content=content,
         session_key="test-session",
         created_at=created_at,
@@ -358,7 +360,7 @@ async def test_chain_of_query_agent_rewrites_and_accumulates_evidence(
         QueryParam(query="original_query?", limit=10, memory=memory),
     )
 
-    assert {episode.uid for episode in results} == {"fact1", "fact2", "fact3"}
+    assert {episode.uid for episode in results} == {fact1.uid, fact2.uid, fact3.uid}
     assert coq_model.call_count == 3
     assert memory.queries == ["original_query?", "sub_query_1", "sub_query_2"]
     assert metrics["queries"] == ["original_query?", "sub_query_1", "sub_query_2"]

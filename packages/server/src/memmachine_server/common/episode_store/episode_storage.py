@@ -1,13 +1,13 @@
 """Abstract storage interface for episodic history."""
 
 from abc import ABC, abstractmethod
+from uuid import UUID
 
 from pydantic import AwareDatetime
 
 from memmachine_server.common.episode_store.episode_model import (
     Episode,
     EpisodeEntry,
-    EpisodeIdT,
 )
 from memmachine_server.common.filter.filter_parser import FilterExpr
 
@@ -34,7 +34,7 @@ class EpisodeStorage(ABC):
     @abstractmethod
     async def get_episode(
         self,
-        episode_id: EpisodeIdT,
+        episode_id: UUID,
     ) -> Episode | None:
         raise NotImplementedError
 
@@ -66,13 +66,13 @@ class EpisodeStorage(ABC):
         *,
         page_size: int,
         filter_expr: FilterExpr | None = None,
-    ) -> list[EpisodeIdT]:
+    ) -> list[UUID]:
         raise NotImplementedError
 
     @abstractmethod
     async def delete_episodes(
         self,
-        episode_ids: list[EpisodeIdT],
+        episode_ids: list[UUID],
     ) -> None:
         raise NotImplementedError
 

@@ -7,10 +7,10 @@ operations for a specific context.
 
 from __future__ import annotations
 
-import builtins
 import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 import requests
 from memmachine_common.api import EpisodeType, MemoryType
@@ -257,11 +257,11 @@ class Memory:
         producer: str | None = None,
         produced_for: str | None = None,
         episode_type: EpisodeType | None = None,
-        memory_types: builtins.list[MemoryType] | None = None,
+        memory_types: list[MemoryType] | None = None,
         metadata: dict[str, str] | None = None,
         timestamp: datetime | None = None,
         timeout: int | None = None,
-    ) -> builtins.list[AddMemoryResult]:
+    ) -> list[AddMemoryResult]:
         """
         Add a memory episode.
 
@@ -451,7 +451,7 @@ class Memory:
         else:
             return search_result
 
-    def list(
+    def list_memories(
         self,
         memory_type: MemoryType = MemoryType.Episodic,
         page_size: int = 100,
@@ -572,8 +572,8 @@ class Memory:
 
     def delete_episodic(
         self,
-        episodic_id: str = "",
-        episodic_ids: builtins.list[str] | None = None,
+        episodic_id: UUID | None = None,
+        episodic_ids: list[UUID] | None = None,
         timeout: int | None = None,
     ) -> bool:
         """
@@ -621,7 +621,7 @@ class Memory:
     def delete_semantic(
         self,
         semantic_id: str = "",
-        semantic_ids: builtins.list[str] | None = None,
+        semantic_ids: list[str] | None = None,
         timeout: int | None = None,
     ) -> bool:
         """
@@ -675,7 +675,7 @@ class Memory:
         feature: str,
         value: str,
         feature_metadata: dict[str, JsonValue] | None = None,
-        citations: builtins.list[str] | None = None,
+        citations: list[UUID] | None = None,
         timeout: int | None = None,
     ) -> str:
         """
@@ -933,7 +933,7 @@ class Memory:
     def create_semantic_set_type(
         self,
         *,
-        metadata_tags: builtins.list[str],
+        metadata_tags: list[str],
         is_org_level: bool = False,
         name: str | None = None,
         description: str | None = None,
@@ -993,7 +993,7 @@ class Memory:
     def list_semantic_set_types(
         self,
         timeout: int | None = None,
-    ) -> builtins.list[SemanticSetTypeEntry]:
+    ) -> list[SemanticSetTypeEntry]:
         """
         List all semantic set types.
 
@@ -1082,7 +1082,7 @@ class Memory:
     def get_semantic_set_id(
         self,
         *,
-        metadata_tags: builtins.list[str],
+        metadata_tags: list[str],
         is_org_level: bool = False,
         set_metadata: dict[str, JsonValue] | None = None,
         timeout: int | None = None,
@@ -1137,7 +1137,7 @@ class Memory:
         self,
         set_metadata: dict[str, JsonValue] | None = None,
         timeout: int | None = None,
-    ) -> builtins.list[SemanticSetEntry]:
+    ) -> list[SemanticSetEntry]:
         """
         List all semantic sets.
 
@@ -1411,7 +1411,7 @@ class Memory:
         self,
         set_type_id: str,
         timeout: int | None = None,
-    ) -> builtins.list[SemanticCategoryTemplateEntry]:
+    ) -> list[SemanticCategoryTemplateEntry]:
         """
         List all category templates for a set type.
 
@@ -1513,7 +1513,7 @@ class Memory:
         self,
         category_id: str,
         timeout: int | None = None,
-    ) -> builtins.list[str]:
+    ) -> list[str]:
         """
         Get the set IDs that use a specific category.
 

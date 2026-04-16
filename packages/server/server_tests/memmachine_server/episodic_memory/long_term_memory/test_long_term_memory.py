@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import NAMESPACE_DNS, UUID, uuid4, uuid5
 
 import pytest
 import pytest_asyncio
@@ -37,6 +37,11 @@ from server_tests.memmachine_server.conftest import (
     is_docker_available,
     requires_sentence_transformers,
 )
+
+
+def _uid(label: str) -> UUID:
+    return uuid5(NAMESPACE_DNS, label)
+
 
 pytestmark = pytest.mark.integration
 
@@ -201,7 +206,7 @@ async def test_add_episodes(long_term_memory):
     now = datetime.now(tz=UTC)
     episodes = [
         Episode(
-            uid="episode1",
+            uid=_uid("episode1"),
             content="The mitochondria is the powerhouse of the cell.",
             session_key="session1",
             created_at=now,
@@ -212,7 +217,7 @@ async def test_add_episodes(long_term_memory):
             metadata={"chapter": 5, "page": 42},
         ),
         Episode(
-            uid="episode2",
+            uid=_uid("episode2"),
             content="Who was the first president of the United States?",
             session_key="session2",
             created_at=now,
@@ -222,7 +227,7 @@ async def test_add_episodes(long_term_memory):
             filterable_metadata={"project": "history", "category": "question"},
         ),
         Episode(
-            uid="episode3",
+            uid=_uid("episode3"),
             content="George Washington was the first president of the United States.",
             session_key="session2",
             created_at=now + timedelta(seconds=10),
@@ -246,7 +251,7 @@ async def test_search(long_term_memory):
     now = datetime.now(tz=UTC)
     episodes = [
         Episode(
-            uid=str(uuid4()),
+            uid=uuid4(),
             session_key="search_session",
             content=str(uuid4())
             + str(uuid4())
@@ -262,7 +267,7 @@ async def test_search(long_term_memory):
     ]
     episodes += [
         Episode(
-            uid=str(uuid4()),
+            uid=uuid4(),
             session_key="search_session",
             content=str(uuid4())
             + str(uuid4())
@@ -278,7 +283,7 @@ async def test_search(long_term_memory):
     ]
     episodes += [
         Episode(
-            uid="episode1",
+            uid=_uid("episode1"),
             session_key="search_session",
             content="This test is broken. Who wrote this test?",
             created_at=now,
@@ -288,7 +293,7 @@ async def test_search(long_term_memory):
             metadata={"some_key": "some_value"},
         ),
         Episode(
-            uid="episode2",
+            uid=_uid("episode2"),
             session_key="search_session",
             content="Charlie.",
             created_at=now + timedelta(seconds=10),
@@ -298,7 +303,7 @@ async def test_search(long_term_memory):
             metadata={"some_other_key": "some_other_value"},
         ),
         Episode(
-            uid="episode3",
+            uid=_uid("episode3"),
             session_key="search_session",
             content="The mitochondria is the powerhouse of the cell.",
             created_at=now + timedelta(seconds=20),
@@ -306,7 +311,7 @@ async def test_search(long_term_memory):
             producer_role="document",
         ),
         Episode(
-            uid="episode4",
+            uid=_uid("episode4"),
             session_key="search_session",
             content="",
             created_at=now + timedelta(seconds=30),
@@ -314,7 +319,7 @@ async def test_search(long_term_memory):
             producer_role="pet",
         ),
         Episode(
-            uid="episode5",
+            uid=_uid("episode5"),
             session_key="search_session",
             content="Edwin Yu: https://github.com/edwinyyyu\n",
             created_at=now + timedelta(seconds=40),
@@ -323,7 +328,7 @@ async def test_search(long_term_memory):
             filterable_metadata={"project": "memmachine"},
         ),
         Episode(
-            uid="episode6",
+            uid=_uid("episode6"),
             session_key="search_session",
             content="I wrote this test.",
             created_at=now + timedelta(seconds=50),
@@ -334,7 +339,7 @@ async def test_search(long_term_memory):
     ]
     episodes += [
         Episode(
-            uid=str(uuid4()),
+            uid=uuid4(),
             session_key="search_session",
             content=str(uuid4())
             + str(uuid4())
@@ -350,7 +355,7 @@ async def test_search(long_term_memory):
     ]
     episodes += [
         Episode(
-            uid=str(uuid4()),
+            uid=uuid4(),
             session_key="search_session",
             content=str(uuid4())
             + str(uuid4())
@@ -373,7 +378,7 @@ async def test_search(long_term_memory):
     )
 
     assert len(results) == 1
-    assert results[0].uid == "episode1" or results[0].uid == "episode6"
+    assert results[0].uid == _uid("episode1") or results[0].uid == _uid("episode6")
 
     results = await long_term_memory.search(
         query="Who wrote the test?",
@@ -458,7 +463,7 @@ async def test_get_episodes(long_term_memory):
     now = datetime.now(tz=UTC)
     episodes = [
         Episode(
-            uid="episode1",
+            uid=_uid("episode1"),
             content="The mitochondria is the powerhouse of the cell.",
             session_key="session1",
             created_at=now,
@@ -469,7 +474,7 @@ async def test_get_episodes(long_term_memory):
             metadata={"chapter": 5, "page": 42},
         ),
         Episode(
-            uid="episode2",
+            uid=_uid("episode2"),
             content="Who was the first president of the United States?",
             session_key="session2",
             created_at=now,
@@ -479,7 +484,7 @@ async def test_get_episodes(long_term_memory):
             filterable_metadata={"project": "history", "category": "question"},
         ),
         Episode(
-            uid="episode3",
+            uid=_uid("episode3"),
             content="George Washington was the first president of the United States.",
             session_key="session2",
             created_at=now + timedelta(seconds=10),
@@ -503,7 +508,7 @@ async def test_get_matching_episodes(long_term_memory):
     now = datetime.now(tz=UTC)
     episodes = [
         Episode(
-            uid="episode1",
+            uid=_uid("episode1"),
             content="The mitochondria is the powerhouse of the cell.",
             session_key="session1",
             created_at=now,
@@ -514,7 +519,7 @@ async def test_get_matching_episodes(long_term_memory):
             metadata={"chapter": 5, "page": 42},
         ),
         Episode(
-            uid="episode2",
+            uid=_uid("episode2"),
             content="Who was the first president of the United States?",
             session_key="session2",
             created_at=now,
@@ -524,7 +529,7 @@ async def test_get_matching_episodes(long_term_memory):
             filterable_metadata={"project": "history", "category": "question"},
         ),
         Episode(
-            uid="episode3",
+            uid=_uid("episode3"),
             content="George Washington was the first president of the United States.",
             session_key="session2",
             created_at=now + timedelta(seconds=10),
@@ -643,7 +648,7 @@ async def test_delete_episodes(long_term_memory):
     now = datetime.now(tz=UTC)
     episodes = [
         Episode(
-            uid="episode1",
+            uid=_uid("episode1"),
             content="The mitochondria is the powerhouse of the cell.",
             session_key="session1",
             created_at=now,
@@ -654,7 +659,7 @@ async def test_delete_episodes(long_term_memory):
             metadata={"chapter": 5, "page": 42},
         ),
         Episode(
-            uid="episode2",
+            uid=_uid("episode2"),
             content="Who was the first president of the United States?",
             session_key="session2",
             created_at=now,
@@ -664,7 +669,7 @@ async def test_delete_episodes(long_term_memory):
             filterable_metadata={"project": "history", "category": "question"},
         ),
         Episode(
-            uid="episode3",
+            uid=_uid("episode3"),
             content="George Washington was the first president of the United States.",
             session_key="session2",
             created_at=now + timedelta(seconds=10),
@@ -691,7 +696,7 @@ async def test_delete_matching_episodes(long_term_memory):
     now = datetime.now(tz=UTC)
     episodes = [
         Episode(
-            uid="episode1",
+            uid=_uid("episode1"),
             content="The mitochondria is the powerhouse of the cell.",
             session_key="session1",
             created_at=now,
@@ -702,7 +707,7 @@ async def test_delete_matching_episodes(long_term_memory):
             metadata={"chapter": 5, "page": 42},
         ),
         Episode(
-            uid="episode2",
+            uid=_uid("episode2"),
             content="Who was the first president of the United States?",
             session_key="session2",
             created_at=now,
@@ -712,7 +717,7 @@ async def test_delete_matching_episodes(long_term_memory):
             filterable_metadata={"project": "history", "category": "question"},
         ),
         Episode(
-            uid="episode3",
+            uid=_uid("episode3"),
             content="George Washington was the first president of the United States.",
             session_key="session2",
             created_at=now + timedelta(seconds=10),
@@ -763,7 +768,7 @@ async def test_get_matching_episodes_extended_filters(long_term_memory):
     now = datetime.now(tz=UTC)
     episodes = [
         Episode(
-            uid="episode1",
+            uid=_uid("episode1"),
             content="The mitochondria is the powerhouse of the cell.",
             session_key="session1",
             created_at=now,
@@ -774,7 +779,7 @@ async def test_get_matching_episodes_extended_filters(long_term_memory):
             metadata={"chapter": 5, "page": 42},
         ),
         Episode(
-            uid="episode2",
+            uid=_uid("episode2"),
             content="Who was the first president of the United States?",
             session_key="session2",
             created_at=now,
@@ -784,7 +789,7 @@ async def test_get_matching_episodes_extended_filters(long_term_memory):
             filterable_metadata={"project": "history", "category": "question"},
         ),
         Episode(
-            uid="episode3",
+            uid=_uid("episode3"),
             content="George Washington was the first president of the United States.",
             session_key="session2",
             created_at=now + timedelta(seconds=10),
