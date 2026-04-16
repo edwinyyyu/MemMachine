@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -138,7 +139,7 @@ async def test_add_message_records_history_and_uningested_counts(
     episode_ids = [episode.uid for episode in episodes]
 
     # Then the history is recorded for both set ids and marked as uningested
-    assert len(episodes[0].uid) > 0
+    assert episodes[0].uid is not None
     assert list(profile_messages) == episode_ids
     assert list(session_messages) == episode_ids
     assert await semantic_service.number_of_uningested([profile_id]) == 1
@@ -289,7 +290,7 @@ async def test_add_message_uses_all_isolations(
     mock_semantic_service: MagicMock,
     session_data,
 ):
-    history_id = "abc"
+    history_id = uuid4()
     await mock_session_manager.add_message(
         session_data=session_data,
         episodes=[
@@ -337,7 +338,7 @@ async def test_add_message_with_session_only_isolation(
     await mock_session_manager.add_message(
         episodes=[
             Episode(
-                uid="abc",
+                uid=uuid4(),
                 content="Alpha memory",
                 producer_id="profile_id",
                 producer_role="dev",
@@ -441,6 +442,8 @@ async def test_add_feature_translates_to_single_set(
 ):
     set_id = "test_set_id"
 
+    citation_a = uuid4()
+    citation_b = uuid4()
     feature_id = await mock_session_manager.add_feature(
         set_id=set_id,
         category_name="Profile",
@@ -448,7 +451,7 @@ async def test_add_feature_translates_to_single_set(
         value="Alpha calm",
         tag="writing_style",
         feature_metadata={"source": "test"},
-        citations=["1", "2"],
+        citations=[citation_a, citation_b],
     )
 
     mock_semantic_service.add_new_feature.assert_awaited_once()
@@ -460,7 +463,7 @@ async def test_add_feature_translates_to_single_set(
         "value": "Alpha calm",
         "tag": "writing_style",
         "metadata": {"source": "test"},
-        "citations": ["1", "2"],
+        "citations": [citation_a, citation_b],
     }
     assert feature_id == 101
 

@@ -2,6 +2,7 @@
 
 from typing import cast
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import numpy as np
 import pytest
@@ -10,7 +11,6 @@ import pytest_asyncio
 from memmachine_server.common.data_types import ExternalServiceAPIError
 from memmachine_server.common.episode_store import (
     EpisodeEntry,
-    EpisodeIdT,
     EpisodeStorage,
 )
 from memmachine_server.common.filter.filter_parser import parse_filter
@@ -65,7 +65,7 @@ def llm_model(mock_llm_model):
     return mock_llm_model
 
 
-async def add_history(history_storage: EpisodeStorage, content: str) -> EpisodeIdT:
+async def add_history(history_storage: EpisodeStorage, content: str) -> UUID:
     episode = EpisodeEntry(
         content=content,
         producer_id="profile_id",
@@ -538,9 +538,11 @@ async def test_process_single_set_deletes_invalid_episode_ids(
     """When some episode_ids resolve to None, the service deletes them from
     semantic storage and continues processing the valid ones."""
     valid_id = await add_history(episode_storage, content="valid message")
-    # Use a numeric string so the episode store doesn't reject the format,
-    # but one that doesn't correspond to any real episode (returns None).
-    invalid_id = "99999"
+    # A syntactically valid UUID that doesn't correspond to any real episode
+    # (the episode store will return None for it).
+    from uuid import uuid4
+
+    invalid_id = uuid4()
 
     await semantic_storage.add_history_to_set(set_id="user-999", history_id=valid_id)
     await semantic_storage.add_history_to_set(set_id="user-999", history_id=invalid_id)
@@ -594,7 +596,9 @@ async def test_process_single_set_raises_in_debug_mode_for_invalid_ids(
     """When debug_fail_loudly is True and invalid episode_ids are found,
     the service raises a ValueError with set_id and invalid ids in the message."""
     valid_id = await add_history(episode_storage, content="valid message")
-    invalid_id = "99999"
+    from uuid import uuid4
+
+    invalid_id = uuid4()
 
     await semantic_storage.add_history_to_set(set_id="user-888", history_id=valid_id)
     await semantic_storage.add_history_to_set(set_id="user-888", history_id=invalid_id)

@@ -2,6 +2,7 @@
 
 from typing import cast
 from unittest.mock import Mock
+from uuid import NAMESPACE_DNS, UUID, uuid5
 
 import pytest
 import requests
@@ -9,6 +10,10 @@ from memmachine_common.api import EpisodeType
 from memmachine_common.api.spec import AddMemoryResult, SearchResult
 
 from memmachine_client import MemMachineClient, Memory
+
+
+def _uid(label: str) -> UUID:
+    return uuid5(NAMESPACE_DNS, label)
 
 
 class TestMemory:
@@ -102,7 +107,10 @@ class TestMemory:
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
         mock_response.json.return_value = {
-            "results": [{"uid": "memory_123"}, {"uid": "memory_456"}]
+            "results": [
+                {"uid": "00000000-0000-0000-0000-000000000123"},
+                {"uid": "00000000-0000-0000-0000-000000000456"},
+            ]
         }
         mock_client.request.return_value = mock_response
 
@@ -122,7 +130,7 @@ class TestMemory:
         assert isinstance(result, list)
         assert len(result) > 0
         assert isinstance(result[0], AddMemoryResult)
-        assert result[0].uid == "memory_123"
+        assert result[0].uid == UUID("00000000-0000-0000-0000-000000000123")
         mock_client.request.assert_called_once()
         call_args = mock_client.request.call_args
         assert call_args[0][0] == "POST"
@@ -151,7 +159,9 @@ class TestMemory:
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
-        mock_response.json.return_value = {"results": [{"uid": "memory_123"}]}
+        mock_response.json.return_value = {
+            "results": [{"uid": "00000000-0000-0000-0000-000000000123"}]
+        }
         mock_client.request.return_value = mock_response
 
         memory = Memory(
@@ -167,7 +177,7 @@ class TestMemory:
         assert isinstance(result, list)
         assert len(result) > 0
         assert isinstance(result[0], AddMemoryResult)
-        assert result[0].uid == "memory_123"
+        assert result[0].uid == UUID("00000000-0000-0000-0000-000000000123")
 
         call_args = mock_client.request.call_args
         json_data = call_args[1]["json"]
@@ -183,7 +193,9 @@ class TestMemory:
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
-        mock_response.json.return_value = {"results": [{"uid": "memory_123"}]}
+        mock_response.json.return_value = {
+            "results": [{"uid": "00000000-0000-0000-0000-000000000123"}]
+        }
         mock_client.request.return_value = mock_response
 
         memory = Memory(
@@ -213,7 +225,9 @@ class TestMemory:
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
-        mock_response.json.return_value = {"results": [{"uid": "memory_123"}]}
+        mock_response.json.return_value = {
+            "results": [{"uid": "00000000-0000-0000-0000-000000000123"}]
+        }
         mock_client.request.return_value = mock_response
 
         memory = Memory(
@@ -236,7 +250,9 @@ class TestMemory:
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
-        mock_response.json.return_value = {"results": [{"uid": "memory_123"}]}
+        mock_response.json.return_value = {
+            "results": [{"uid": "00000000-0000-0000-0000-000000000123"}]
+        }
         mock_client.request.return_value = mock_response
 
         memory = Memory(
@@ -266,7 +282,9 @@ class TestMemory:
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
-        mock_response.json.return_value = {"results": [{"uid": "memory_123"}]}
+        mock_response.json.return_value = {
+            "results": [{"uid": "00000000-0000-0000-0000-000000000123"}]
+        }
         mock_client.request.return_value = mock_response
 
         memory = Memory(
@@ -828,7 +846,7 @@ class TestMemory:
             project_id="test_project",
         )
 
-        memory.list(set_metadata={"user_id": "user456", "region": "us-east"})
+        memory.list_memories(set_metadata={"user_id": "user456", "region": "us-east"})
 
         call_args = mock_client.request.call_args
         json_data = call_args[1]["json"]
@@ -851,7 +869,7 @@ class TestMemory:
             project_id="test_project",
         )
 
-        memory.list()
+        memory.list_memories()
 
         call_args = mock_client.request.call_args
         json_data = call_args[1]["json"]
@@ -975,7 +993,7 @@ class TestMemory:
             project_id="test_project",
         )
 
-        episodic_id = "episode_123"
+        episodic_id = _uid("episode_123")
         result = memory.delete_episodic(episodic_id=episodic_id)
 
         assert result is True
@@ -986,7 +1004,7 @@ class TestMemory:
         json_data = call_args[1]["json"]
         assert json_data["org_id"] == "test_org"
         assert json_data["project_id"] == "test_project"
-        assert json_data["episodic_id"] == episodic_id
+        assert json_data["episodic_id"] == str(episodic_id)
 
     def test_delete_episodic_with_timeout(self, mock_client):
         """Test delete_episodic with custom timeout."""
@@ -1001,7 +1019,7 @@ class TestMemory:
             project_id="test_project",
         )
 
-        result = memory.delete_episodic(episodic_id="episode_123", timeout=60)
+        result = memory.delete_episodic(episodic_id=_uid("episode_123"), timeout=60)
 
         assert result is True
         call_args = mock_client.request.call_args
@@ -1022,7 +1040,7 @@ class TestMemory:
         )
 
         with pytest.raises(requests.RequestException):
-            memory.delete_episodic(episodic_id="episode_123")
+            memory.delete_episodic(episodic_id=_uid("episode_123"))
 
     def test_delete_episodic_client_closed(self, mock_client):
         """Test delete_episodic raises RuntimeError when client is closed."""
@@ -1036,7 +1054,7 @@ class TestMemory:
         with pytest.raises(
             RuntimeError, match="Cannot delete episodic memory: client has been closed"
         ):
-            memory.delete_episodic(episodic_id="episode_123")
+            memory.delete_episodic(episodic_id=_uid("episode_123"))
 
     def test_delete_semantic_success(self, mock_client):
         """Test successful deletion of semantic memory."""
@@ -1172,14 +1190,20 @@ class TestMemory:
             feature="favorite_food",
             value="pizza",
             feature_metadata={"source": "conversation"},
-            citations=["ep1", "ep2"],
+            citations=[
+                UUID("00000000-0000-0000-0000-0000000000e1"),
+                UUID("00000000-0000-0000-0000-0000000000e2"),
+            ],
         )
 
         assert result == "feature_456"
         call_args = mock_client.request.call_args
         json_data = call_args[1]["json"]
         assert json_data["feature_metadata"] == {"source": "conversation"}
-        assert json_data["citations"] == ["ep1", "ep2"]
+        assert json_data["citations"] == [
+            "00000000-0000-0000-0000-0000000000e1",
+            "00000000-0000-0000-0000-0000000000e2",
+        ]
 
     def test_add_feature_http_error(self, mock_client):
         """Test add_feature handles HTTP errors correctly."""
@@ -1274,7 +1298,10 @@ class TestMemory:
             "value": "pizza",
             "metadata": {
                 "id": "feature_123",
-                "citations": ["ep1", "ep2"],
+                "citations": [
+                    "00000000-0000-0000-0000-0000000000e1",
+                    "00000000-0000-0000-0000-0000000000e2",
+                ],
                 "other": None,
             },
         }
@@ -1289,7 +1316,10 @@ class TestMemory:
         result = memory.get_feature(feature_id="feature_123", load_citations=True)
 
         assert result is not None
-        assert result.metadata.citations == ["ep1", "ep2"]
+        assert result.metadata.citations == [
+            UUID("00000000-0000-0000-0000-0000000000e1"),
+            UUID("00000000-0000-0000-0000-0000000000e2"),
+        ]
         call_args = mock_client.request.call_args
         json_data = call_args[1]["json"]
         assert json_data["load_citations"] is True

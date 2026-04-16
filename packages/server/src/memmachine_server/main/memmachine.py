@@ -5,6 +5,7 @@ import logging
 from asyncio import Task
 from collections.abc import Callable, Coroutine, Iterable, Mapping
 from typing import Any, Final, Protocol
+from uuid import UUID
 
 from memmachine_common.api import MemoryType
 from pydantic import BaseModel, InstanceOf, JsonValue, ValidationError
@@ -20,7 +21,6 @@ from memmachine_server.common.configuration.retrieval_config import RetrievalAge
 from memmachine_server.common.episode_store import (
     Episode,
     EpisodeEntry,
-    EpisodeIdT,
     EpisodeResponse,
 )
 from memmachine_server.common.errors import (
@@ -456,7 +456,7 @@ class MemMachine:
 
     async def _cleanup_semantic_history(
         self,
-        episode_ids: list[EpisodeIdT],
+        episode_ids: list[UUID],
     ) -> None:
         """Remove semantic history and citations for the given episode IDs."""
         try:
@@ -609,7 +609,7 @@ class MemMachine:
         episode_entries: list[EpisodeEntry],
         *,
         target_memories: list[MemoryType] = ALL_MEMORY_TYPES,
-    ) -> list[EpisodeIdT]:
+    ) -> list[UUID]:
         """
         Append episodes to storage and selected memory backends.
 
@@ -1056,7 +1056,7 @@ class MemMachine:
 
     async def delete_episodes(
         self,
-        episode_ids: list[EpisodeIdT],
+        episode_ids: list[UUID],
         session_data: InstanceOf[SessionData] | None = None,
     ) -> None:
         """
@@ -1089,7 +1089,7 @@ class MemMachine:
         tasks.append(semantic_service.delete_history(episode_ids))
         await asyncio.gather(*tasks)
 
-    async def _cleanup_semantic_history(self, episode_ids: list[str]) -> None:
+    async def _cleanup_semantic_history(self, episode_ids: list[UUID]) -> None:
         """Delete semantic history entries for the given episode IDs.
 
         Args:
@@ -1128,7 +1128,7 @@ class MemMachine:
         feature: str,
         value: str,
         feature_metadata: dict[str, JsonValue] | None = None,
-        citations: list[EpisodeIdT] | None = None,
+        citations: list[UUID] | None = None,
     ) -> FeatureIdT:
         """
         Add a semantic feature to the current semantic set.

@@ -1,6 +1,7 @@
 """Test for the Episode models."""
 
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 from memmachine_common.api import EpisodeType
@@ -16,7 +17,7 @@ from memmachine_server.common.episode_store.episode_model import (
 def base_episode_data():
     """Provides common data for creating Episode instances."""
     return {
-        "uid": "msg_123",
+        "uid": uuid4(),
         "content": "Hello world",
         "session_key": "session_abc",
         "created_at": datetime(2026, 1, 14, 13, 30, tzinfo=UTC),  # Wednesday
@@ -35,7 +36,7 @@ def test_episodes_to_string_multiple_mixed(base_episode_data):
     """Verify that multiple episodes are concatenated with newlines."""
     ep1 = Episode(**base_episode_data)
 
-    base_episode_data["uid"] = "msg_456"
+    base_episode_data["uid"] = uuid4()
     base_episode_data["episode_type"] = EpisodeType.MESSAGE
     base_episode_data["content"] = "Brief summary"
     ep2 = Episode(**base_episode_data)

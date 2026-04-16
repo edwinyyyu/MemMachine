@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from typing import cast
+from uuid import UUID
 
 import pytest
 from dateutil.tz import tzoffset
@@ -184,8 +185,9 @@ def test_add_memory_response():
         AddMemoriesResponse.model_validate({})
     assert_pydantic_errors(exc_info, {"results": "missing"})
 
-    result = AddMemoryResult.model_validate({"uid": "memory-123"})
-    assert result.uid == "memory-123"
+    uid_str = "00000000-0000-0000-0000-000000000123"
+    result = AddMemoryResult.model_validate({"uid": uid_str})
+    assert result.uid == UUID(uid_str)
     response = AddMemoriesResponse.model_validate({"results": [result]})
     assert response.results == [result]
 
@@ -263,10 +265,11 @@ def test_delete_episodic_memory_spec():
     with pytest.raises(ValidationError):
         DeleteEpisodicMemorySpec.model_validate({})
 
-    spec = DeleteEpisodicMemorySpec.model_validate({"episodic_id": "ep-123"})
+    ep_id = "00000000-0000-0000-0000-000000000123"
+    spec = DeleteEpisodicMemorySpec.model_validate({"episodic_id": ep_id})
     assert spec.org_id == DEFAULT_ORG_AND_PROJECT_ID
     assert spec.project_id == DEFAULT_ORG_AND_PROJECT_ID
-    assert spec.episodic_id == "ep-123"
+    assert spec.episodic_id == UUID(ep_id)
 
 
 def test_delete_semantic_memory_spec():
@@ -290,13 +293,17 @@ def test_get_semantic_ids():
 
 
 def test_get_episodic_ids():
-    spec = DeleteEpisodicMemorySpec.model_validate({"episodic_ids": ["2", "1"]})
-    assert spec.get_ids() == ["1", "2"]
+    uid1 = UUID("00000000-0000-0000-0000-000000000001")
+    uid2 = UUID("00000000-0000-0000-0000-000000000002")
+    spec = DeleteEpisodicMemorySpec.model_validate(
+        {"episodic_ids": [str(uid2), str(uid1)]}
+    )
+    assert spec.get_ids() == [uid1, uid2]
 
     spec = DeleteEpisodicMemorySpec.model_validate(
-        {"episodic_id": "1", "episodic_ids": ["2", "1"]}
+        {"episodic_id": str(uid1), "episodic_ids": [str(uid2), str(uid1)]}
     )
-    assert spec.get_ids() == ["1", "2"]
+    assert spec.get_ids() == [uid1, uid2]
 
 
 def test_search_result_model():

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 import pytest_asyncio
@@ -9,7 +10,6 @@ from pydantic import JsonValue
 
 from memmachine_server.common.episode_store import (
     EpisodeEntry,
-    EpisodeIdT,
     EpisodeStorage,
     EpisodeType,
 )
@@ -34,7 +34,7 @@ async def create_history_entry(
     metadata: dict[str, JsonValue] | None = None,
     created_at: datetime | None = None,
     episode_type: EpisodeType | None = None,
-) -> EpisodeIdT:
+) -> UUID:
     params = {
         "producer_id": producer_id or DEFAULT_HISTORY_ARGS["producer_id"],
         "producer_role": producer_role or DEFAULT_HISTORY_ARGS["producer_role"],
@@ -91,7 +91,7 @@ async def test_add_and_get_history(episode_storage: EpisodeStorage):
         episode_type=EpisodeType.MESSAGE,
     )
 
-    assert type(history_id) is EpisodeIdT
+    assert type(history_id) is UUID
 
     history = await episode_storage.get_episode(history_id)
     assert history is not None
@@ -201,18 +201,34 @@ async def test_history_identity_filters(episode_storage: EpisodeStorage):
 
 @pytest.mark.asyncio
 async def test_history_comparison_filters(episode_storage: EpisodeStorage):
-    first = await create_history_entry(episode_storage, content="first")
-    second = await create_history_entry(episode_storage, content="second")
-    third = await create_history_entry(episode_storage, content="third")
+    base = datetime.now(tz=UTC) - timedelta(hours=1)
+    first = await create_history_entry(
+        episode_storage, content="first", created_at=base
+    )
+    second = await create_history_entry(
+        episode_storage, content="second", created_at=base + timedelta(minutes=1)
+    )
+    third = await create_history_entry(
+        episode_storage, content="third", created_at=base + timedelta(minutes=2)
+    )
 
     try:
+        first_msg = await episode_storage.get_episode(first)
+        second_msg = await episode_storage.get_episode(second)
+        assert first_msg is not None
+        assert second_msg is not None
+
         greater_than_first = await episode_storage.get_episode_messages(
-            filter_expr=_filter(f"id > {first}"),
+            filter_expr=_filter(
+                f"created_at > date('{first_msg.created_at.isoformat()}')"
+            ),
         )
         assert {entry.uid for entry in greater_than_first} == {second, third}
 
         up_to_second = await episode_storage.get_episode_messages(
-            filter_expr=_filter(f"id <= {second}"),
+            filter_expr=_filter(
+                f"created_at <= date('{second_msg.created_at.isoformat()}')"
+            ),
         )
         assert {entry.uid for entry in up_to_second} == {first, second}
     finally:

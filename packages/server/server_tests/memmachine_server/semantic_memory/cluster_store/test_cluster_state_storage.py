@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from uuid import NAMESPACE_DNS, UUID, uuid5
 
 import pytest
 import pytest_asyncio
@@ -18,6 +19,10 @@ from memmachine_server.semantic_memory.cluster_store.cluster_store_sqlalchemy im
 from memmachine_server.semantic_memory.cluster_store.in_memory_cluster_store import (
     InMemoryClusterStateStorage,
 )
+
+
+def _uid(label: str) -> UUID:
+    return uuid5(NAMESPACE_DNS, label)
 
 
 @pytest_asyncio.fixture
@@ -82,12 +87,12 @@ def _sample_state(now: datetime) -> ClusterState:
             ),
         },
         event_to_cluster={
-            "event-a": "cluster_0",
-            "event-b": "cluster_1",
+            _uid("event-a"): "cluster_0",
+            _uid("event-b"): "cluster_1",
         },
         pending_events={
-            "cluster_0": {"event-a": now - timedelta(minutes=2)},
-            "cluster_1": {"event-b": now - timedelta(minutes=1)},
+            "cluster_0": {_uid("event-a"): now - timedelta(minutes=2)},
+            "cluster_1": {_uid("event-b"): now - timedelta(minutes=1)},
         },
         next_cluster_id=2,
     )
@@ -153,8 +158,8 @@ async def test_save_overwrites_state(
                 last_ts=now + timedelta(minutes=5),
             )
         },
-        event_to_cluster={"event-c": "cluster_2"},
-        pending_events={"cluster_2": {"event-c": now + timedelta(minutes=4)}},
+        event_to_cluster={_uid("event-c"): "cluster_2"},
+        pending_events={"cluster_2": {_uid("event-c"): now + timedelta(minutes=4)}},
         next_cluster_id=3,
     )
 
@@ -180,9 +185,9 @@ async def test_save_reload_and_update_state(
         count=1,
         last_ts=now + timedelta(minutes=10),
     )
-    loaded.event_to_cluster["event-c"] = "cluster_2"
-    loaded.pending_events.setdefault("cluster_2", {})["event-c"] = now + timedelta(
-        minutes=9
+    loaded.event_to_cluster[_uid("event-c")] = "cluster_2"
+    loaded.pending_events.setdefault("cluster_2", {})[_uid("event-c")] = (
+        now + timedelta(minutes=9)
     )
     loaded.next_cluster_id = 3
 
@@ -211,12 +216,12 @@ async def test_round_trip_state_with_split_records(
             ),
         },
         event_to_cluster={
-            "event-a": "cluster_0",
-            "event-b": "cluster_1",
+            _uid("event-a"): "cluster_0",
+            _uid("event-b"): "cluster_1",
         },
         pending_events={
-            "cluster_0": {"event-a": now - timedelta(minutes=2)},
-            "cluster_1": {"event-b": now - timedelta(minutes=1)},
+            "cluster_0": {_uid("event-a"): now - timedelta(minutes=2)},
+            "cluster_1": {_uid("event-b"): now - timedelta(minutes=1)},
         },
         next_cluster_id=2,
         split_records={
@@ -247,8 +252,8 @@ async def test_overwrite_state_replaces_split_records(
                 last_ts=now,
             )
         },
-        event_to_cluster={"event-a": "cluster_0"},
-        pending_events={"cluster_0": {"event-a": now}},
+        event_to_cluster={_uid("event-a"): "cluster_0"},
+        pending_events={"cluster_0": {_uid("event-a"): now}},
         next_cluster_id=1,
         split_records={
             "cluster_0": ClusterSplitRecord(
@@ -271,8 +276,8 @@ async def test_overwrite_state_replaces_split_records(
                 last_ts=now + timedelta(minutes=5),
             )
         },
-        event_to_cluster={"event-b": "cluster_1"},
-        pending_events={"cluster_1": {"event-b": now + timedelta(minutes=4)}},
+        event_to_cluster={_uid("event-b"): "cluster_1"},
+        pending_events={"cluster_1": {_uid("event-b"): now + timedelta(minutes=4)}},
         next_cluster_id=2,
         split_records={
             "cluster_1": ClusterSplitRecord(
@@ -301,8 +306,8 @@ async def test_delete_state_removes_split_records(
                 last_ts=now,
             )
         },
-        event_to_cluster={"event-a": "cluster_0"},
-        pending_events={"cluster_0": {"event-a": now}},
+        event_to_cluster={_uid("event-a"): "cluster_0"},
+        pending_events={"cluster_0": {_uid("event-a"): now}},
         next_cluster_id=1,
         split_records={
             "cluster_0": ClusterSplitRecord(
@@ -333,8 +338,8 @@ async def test_round_trip_empty_split_records(
                 last_ts=now,
             )
         },
-        event_to_cluster={"event-a": "cluster_0"},
-        pending_events={"cluster_0": {"event-a": now}},
+        event_to_cluster={_uid("event-a"): "cluster_0"},
+        pending_events={"cluster_0": {_uid("event-a"): now}},
         next_cluster_id=1,
         split_records={},
     )

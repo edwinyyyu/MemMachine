@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from uuid import UUID
 
-from sqlalchemy import DateTime, Integer, String, delete, select
+from sqlalchemy import DateTime, Integer, String, Uuid, delete, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.sql.sqltypes import JSON
@@ -52,7 +53,7 @@ class ClusterEventRow(BaseClusterStore):
     __tablename__ = "semantic_cluster_event"
 
     set_id: Mapped[str] = mapped_column(String, primary_key=True, nullable=False)
-    event_id: Mapped[str] = mapped_column(String, primary_key=True, nullable=False)
+    event_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, nullable=False)
     cluster_id: Mapped[str] = mapped_column(String, nullable=False)
 
 
@@ -63,7 +64,7 @@ class ClusterPendingRow(BaseClusterStore):
 
     set_id: Mapped[str] = mapped_column(String, primary_key=True, nullable=False)
     cluster_id: Mapped[str] = mapped_column(String, primary_key=True, nullable=False)
-    event_id: Mapped[str] = mapped_column(String, primary_key=True, nullable=False)
+    event_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -154,7 +155,7 @@ class ClusterStateStorageSqlAlchemy(ClusterStateStorage):
             for row in cluster_rows
         }
         event_to_cluster = {row.event_id: row.cluster_id for row in event_rows}
-        pending_events: dict[str, dict[str, datetime]] = {}
+        pending_events: dict[str, dict[UUID, datetime]] = {}
         for row in pending_rows:
             pending_events.setdefault(row.cluster_id, {})[row.event_id] = (
                 self._normalize_timestamp(row.created_at)

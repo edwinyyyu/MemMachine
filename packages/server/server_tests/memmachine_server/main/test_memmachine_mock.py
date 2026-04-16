@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
+from uuid import NAMESPACE_DNS, UUID, uuid5
 
 import pytest
 
@@ -30,6 +31,10 @@ from memmachine_server.episodic_memory import EpisodicMemory
 from memmachine_server.main.memmachine import MemMachine, MemoryType
 from memmachine_server.retrieval_agent.common.agent_api import AgentToolBase
 from memmachine_server.semantic_memory.semantic_model import SemanticFeature
+
+
+def _uid(label: str) -> UUID:
+    return uuid5(NAMESPACE_DNS, label)
 
 
 class DummySessionData:
@@ -149,9 +154,9 @@ def patched_resource_manager(monkeypatch):
     return fake_manager
 
 
-def _make_episode(uid: str, session_key: str) -> Episode:
+def _make_episode(label: str, session_key: str) -> Episode:
     return Episode(
-        uid=uid,
+        uid=uuid5(NAMESPACE_DNS, label),
         content="content",
         session_key=session_key,
         created_at=datetime.now(UTC),
@@ -456,9 +461,11 @@ async def test_query_episodic_with_retrieval_agent_searches_long_then_short(
     )
 
     assert response is not None
-    assert [episode.uid for episode in response.long_term_memory.episodes] == ["long-1"]
+    assert [episode.uid for episode in response.long_term_memory.episodes] == [
+        long_episode.uid
+    ]
     assert [episode.uid for episode in response.short_term_memory.episodes] == [
-        "short-1"
+        short_episode.uid
     ]
     assert response.short_term_memory.episode_summary == ["short-summary"]
     assert episodic_session.query_memory.await_count == 2
@@ -532,7 +539,9 @@ async def test_query_episodic_with_retrieval_agent_skips_short_term_when_disable
     )
 
     assert response is not None
-    assert [episode.uid for episode in response.long_term_memory.episodes] == ["long-2"]
+    assert [episode.uid for episode in response.long_term_memory.episodes] == [
+        long_episode.uid
+    ]
     assert response.short_term_memory.episodes == []
     assert episodic_session.query_memory.await_count == 1
     await_args = episodic_session.query_memory.await_args
@@ -795,10 +804,11 @@ async def test_delete_episodes_forwards_to_storage_and_memories(
         return_value=episodic_manager
     )
 
-    await memmachine.delete_episodes(["ep1", "ep2"], session_data=session)
+    ep1, ep2 = _uid("ep1"), _uid("ep2")
+    await memmachine.delete_episodes([ep1, ep2], session_data=session)
 
-    episode_storage.delete_episodes.assert_awaited_once_with(["ep1", "ep2"])
-    episodic_session.delete_episodes.assert_awaited_once_with(["ep1", "ep2"])
+    episode_storage.delete_episodes.assert_awaited_once_with([ep1, ep2])
+    episodic_session.delete_episodes.assert_awaited_once_with([ep1, ep2])
 
 
 @pytest.mark.asyncio
@@ -819,9 +829,10 @@ async def test_delete_episodes_without_session_only_hits_storage(
         return_value=episodic_manager
     )
 
-    await memmachine.delete_episodes(["ep1"], session_data=None)
+    ep1 = _uid("ep1")
+    await memmachine.delete_episodes([ep1], session_data=None)
 
-    episode_storage.delete_episodes.assert_awaited_once_with(["ep1"])
+    episode_storage.delete_episodes.assert_awaited_once_with([ep1])
     episodic_manager.open_episodic_memory.assert_not_called()
 
 
