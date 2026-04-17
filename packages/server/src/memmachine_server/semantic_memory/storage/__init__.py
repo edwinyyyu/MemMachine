@@ -1,15 +1,5 @@
-"""Storage backends for semantic memory."""
+"""Legacy storage backends for the old SemanticStorage monolith.
 
-from memmachine_server.semantic_memory.storage.feature_store import (
-    SemanticFeatureStore,
-)
-from memmachine_server.semantic_memory.storage.sqlalchemy_feature_store import (
-    SQLAlchemyFeatureStore,
-    SQLAlchemyFeatureStoreParams,
-)
-
-__all__ = [
-    "SQLAlchemyFeatureStore",
-    "SQLAlchemyFeatureStoreParams",
-    "SemanticFeatureStore",
-]
+New code should use
+:mod:`memmachine_server.semantic_memory.attribute_memory`.
+"""
