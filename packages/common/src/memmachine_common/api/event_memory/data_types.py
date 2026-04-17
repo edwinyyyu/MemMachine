@@ -220,12 +220,30 @@ class EventMemoryQueryResult(BaseModel):
 
     def to_string(
         self,
-        max_num_segments: int,
+        *,
+        max_num_segments: int | None = None,
         format_options: EventMemoryFormatOptions | None = None,
     ) -> str:
-        """Build context and format as a string."""
-        segments = self.build_context(max_num_segments)
-        return format_segment_context(segments, format_options=format_options)
+        """Format the query result as a string with breaks between disconnected contexts.
+
+        If ``max_num_segments`` is provided, segments outside the budget
+        selected by :meth:`build_context` are filtered out before formatting.
+        """
+        contexts: list[list[EventMemorySegment]] = [
+            list(scored_context.segments)
+            for scored_context in self.scored_segment_contexts
+        ]
+
+        if max_num_segments is not None:
+            included = {
+                segment.uuid for segment in self.build_context(max_num_segments)
+            }
+            contexts = [
+                [segment for segment in context if segment.uuid in included]
+                for context in contexts
+            ]
+
+        return format_segment_contexts(contexts, format_options=format_options)
 
 
 # Formatting utilities
@@ -271,6 +289,64 @@ def format_segment_context(
         context_string += json.dumps(accumulated_text) + "\n"
 
     return context_string.strip()
+
+
+def format_segment_contexts(
+    segment_contexts: Iterable[Iterable[EventMemorySegment]],
+    *,
+    format_options: EventMemoryFormatOptions | None = None,
+) -> str:
+    """Format multiple segment contexts as a string, separating disconnected components."""
+    contexts = [list(context) for context in segment_contexts]
+
+    # Deduplicate segments and build union-find over their UUIDs in one pass.
+    segments_by_uuid: dict[UUID, EventMemorySegment] = {}
+    component_parent: dict[UUID, UUID] = {}
+
+    def find(uuid: UUID) -> UUID:
+        component_parent.setdefault(uuid, uuid)
+        root = uuid
+        while component_parent[root] != root:
+            root = component_parent[root]
+        while component_parent[uuid] != root:
+            parent = component_parent[uuid]
+            component_parent[uuid] = root
+            uuid = parent
+        return root
+
+    for context in contexts:
+        first_segment_root: UUID | None = None
+        for segment in context:
+            segments_by_uuid.setdefault(segment.uuid, segment)
+            if first_segment_root is None:
+                first_segment_root = find(segment.uuid)
+            else:
+                segment_root = find(segment.uuid)
+                component_parent[segment_root] = first_segment_root
+
+    # Group unique segments by component root.
+    segments_by_root: dict[UUID, list[EventMemorySegment]] = {}
+    for segment_uuid, segment in segments_by_uuid.items():
+        segments_by_root.setdefault(find(segment_uuid), []).append(segment)
+
+    # Sort segments within each component, then order components chronologically.
+    def segment_key(segment: EventMemorySegment) -> tuple:
+        return (
+            segment.timestamp,
+            segment.event_uuid,
+            segment.index,
+            segment.offset,
+        )
+
+    components = list(segments_by_root.values())
+    for component in components:
+        component.sort(key=segment_key)
+    components.sort(key=lambda segments: segment_key(segments[0]))
+
+    return "\n\n".join(
+        format_segment_context(segments, format_options=format_options)
+        for segments in components
+    )
 
 
 def _extract_text(block: EventMemoryBlock) -> str | None:

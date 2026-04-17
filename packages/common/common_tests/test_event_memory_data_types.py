@@ -14,6 +14,7 @@ from memmachine_common.api.event_memory.data_types import (
     EventMemorySegment,
     EventMemoryText,
     format_segment_context,
+    format_segment_contexts,
 )
 
 
@@ -246,6 +247,79 @@ class TestToString:
         result = qr.to_string(max_num_segments=10)
         assert "alice:" in result
         assert "hello" in result
+
+    def test_to_string_no_limit(self):
+        seg = _make_segment(
+            context=EventMemoryMessageContext(source="alice"),
+            text="hello",
+        )
+        ctx = EventMemoryScoredSegmentContext(
+            seed_segment_uuid=seg.uuid,
+            score=0.9,
+            segments=[seg],
+        )
+        qr = EventMemoryQueryResult(scored_segment_contexts=[ctx])
+        result = qr.to_string()
+        assert "alice:" in result
+        assert "hello" in result
+
+    def test_to_string_separates_disconnected_contexts(self):
+        seg_a = _make_segment(
+            context=EventMemoryMessageContext(source="alice"),
+            text="first",
+        )
+        seg_b = _make_segment(
+            context=EventMemoryMessageContext(source="bob"),
+            text="second",
+            timestamp=datetime(2026, 1, 16, 10, 30, tzinfo=timezone.utc),
+        )
+        ctx_a = EventMemoryScoredSegmentContext(
+            seed_segment_uuid=seg_a.uuid, score=0.9, segments=[seg_a]
+        )
+        ctx_b = EventMemoryScoredSegmentContext(
+            seed_segment_uuid=seg_b.uuid, score=0.8, segments=[seg_b]
+        )
+        qr = EventMemoryQueryResult(scored_segment_contexts=[ctx_a, ctx_b])
+        result = qr.to_string()
+        assert "\n\n" in result
+        assert "alice:" in result
+        assert "bob:" in result
+
+
+class TestFormatSegmentContexts:
+    def test_overlapping_contexts_merged(self):
+        shared = _make_segment(text="shared")
+        other = _make_segment(text="other")
+        ctx1 = [shared, other]
+        ctx2 = [shared]
+        result = format_segment_contexts([ctx1, ctx2])
+        # Single component since they share `shared`; no separator.
+        assert "\n\n" not in result
+        assert "shared" in result
+        assert "other" in result
+
+    def test_disconnected_contexts_separated(self):
+        seg_a = _make_segment(text="alpha")
+        seg_b = _make_segment(
+            text="beta",
+            timestamp=datetime(2026, 2, 1, 10, 30, tzinfo=timezone.utc),
+        )
+        result = format_segment_contexts([[seg_a], [seg_b]])
+        assert "\n\n" in result
+
+    def test_components_ordered_chronologically(self):
+        seg_late = _make_segment(
+            context=EventMemoryMessageContext(source="late"),
+            text="L",
+            timestamp=datetime(2026, 3, 1, 10, 30, tzinfo=timezone.utc),
+        )
+        seg_early = _make_segment(
+            context=EventMemoryMessageContext(source="early"),
+            text="E",
+            timestamp=datetime(2026, 1, 1, 10, 30, tzinfo=timezone.utc),
+        )
+        result = format_segment_contexts([[seg_late], [seg_early]])
+        assert result.index("early:") < result.index("late:")
 
 
 class TestPropertiesRoundTrip:
