@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timezone
+from uuid import UUID
 
 from memmachine_common.api.spec import (
     Episode,
@@ -29,7 +30,7 @@ class TestFormatEpisodes:
 
     def test_single_episode_response(self):
         ep = EpisodeResponse(
-            uid="1",
+            uid=UUID("00000000-0000-0000-0000-000000000001"),
             content="Hello world",
             producer_id="user_1",
             producer_role="user",
@@ -43,14 +44,14 @@ class TestFormatEpisodes:
     def test_multiple_episodes(self):
         eps = [
             EpisodeResponse(
-                uid="1",
+                uid=UUID("00000000-0000-0000-0000-000000000001"),
                 content="First message",
                 producer_id="user_1",
                 producer_role="user",
                 created_at=datetime(2024, 3, 5, 9, 0, tzinfo=timezone.utc),
             ),
             EpisodeResponse(
-                uid="2",
+                uid=UUID("00000000-0000-0000-0000-000000000002"),
                 content="Second message",
                 producer_id="assistant_1",
                 producer_role="assistant",
@@ -65,7 +66,7 @@ class TestFormatEpisodes:
 
     def test_episode_without_created_at(self):
         ep = EpisodeResponse(
-            uid="1",
+            uid=UUID("00000000-0000-0000-0000-000000000001"),
             content="No timestamp",
             producer_id="user_1",
             producer_role="user",
@@ -76,7 +77,7 @@ class TestFormatEpisodes:
 
     def test_list_episode_type(self):
         ep = Episode(
-            uid="1",
+            uid=UUID("00000000-0000-0000-0000-000000000001"),
             content="Listed episode",
             session_key="sess_1",
             producer_id="user_1",
@@ -90,7 +91,7 @@ class TestFormatEpisodes:
 
     def test_content_json_escaped(self):
         ep = EpisodeResponse(
-            uid="1",
+            uid=UUID("00000000-0000-0000-0000-000000000001"),
             content='She said "hello"',
             producer_id="user_1",
             producer_role="user",
@@ -155,7 +156,10 @@ class TestFormatSemanticMemories:
             value="Alice",
             metadata=SemanticFeature.Metadata(
                 id="feat_1",
-                citations=["ep_1", "ep_2"],
+                citations=[
+                    UUID("00000000-0000-0000-0000-0000000000e1"),
+                    UUID("00000000-0000-0000-0000-0000000000e2"),
+                ],
                 other={"source": "conversation"},
             ),
         )
@@ -183,7 +187,7 @@ class TestFormatSearchResult:
 
     def test_episodic_only(self):
         ep = EpisodeResponse(
-            uid="1",
+            uid=UUID("00000000-0000-0000-0000-000000000001"),
             content="Hello",
             producer_id="user_1",
             producer_role="user",
@@ -229,7 +233,7 @@ class TestFormatSearchResult:
 
     def test_combined(self):
         ep = EpisodeResponse(
-            uid="1",
+            uid=UUID("00000000-0000-0000-0000-000000000001"),
             content="I like pizza",
             producer_id="user_1",
             producer_role="user",

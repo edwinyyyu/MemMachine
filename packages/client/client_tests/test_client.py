@@ -353,6 +353,7 @@ class TestMemory:
             client=client, org_id="org1", project_id="proj1", metadata={"user_id": "u1"}
         )
 
+        episode_uid = "00000000-0000-0000-0000-0000000000e1"
         mock_response = Mock()
         mock_response.raise_for_status = Mock()
         mock_response.json.return_value = {
@@ -360,7 +361,7 @@ class TestMemory:
             "content": {
                 "episodic_memory": [
                     {
-                        "uid": "e1",
+                        "uid": episode_uid,
                         "content": "hello",
                         "session_key": "org1/proj1",
                         "created_at": "2025-01-01T00:00:00Z",
@@ -398,11 +399,13 @@ class TestMemory:
             # Built-in filters should include user_id when present
             assert "metadata.user_id='u1'" in sent.get("filter", "")
 
+            from uuid import UUID
+
             from memmachine_common.api.spec import ListResult
 
             assert isinstance(result, ListResult)
             assert result.content.episodic_memory is not None
-            assert result.content.episodic_memory[0].uid == "e1"
+            assert result.content.episodic_memory[0].uid == UUID(episode_uid)
             assert result.content.semantic_memory == []
 
 
