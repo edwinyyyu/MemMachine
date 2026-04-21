@@ -236,6 +236,14 @@ class AttributeMemory:
         ``state.event_to_cluster`` so repeated passes are idempotent.
         """
         events_list = list(events)
+        if not events_list:
+            return ()
+
+        if not self._config.enabled:
+            processed = await self._ingest_without_clustering(events_list)
+            await self._auto_consolidate()
+            return processed
+
         state = await self._partition.get_cluster_state() or ClusterState()
 
         await self._assign_new_events(events_list, state)
@@ -258,17 +266,39 @@ class AttributeMemory:
             await self._partition.save_cluster_state(state)
             return ()
 
+        cluster_embeddings = await self._embed_cluster_events(clustered)
+        clustered, state = await self._config.splitter.maybe_split_clusters(
+            cluster_events=clustered,
+            cluster_embeddings=cluster_embeddings,
+            state=state,
+            reranker=self._reranker,
+        )
+
         processed_uuids: list[UUID] = []
         for cluster_id, cluster_events in clustered:
             await self._process_cluster(cluster_id, cluster_events)
-            state.pending_events.pop(cluster_id, None)
             processed_uuids.extend(e.uuid for e in cluster_events)
+
+        for cluster_id in ready_cluster_ids:
+            state.pending_events.pop(cluster_id, None)
 
         _rebuild_event_to_cluster(state)
         self._apply_cluster_idle_gc(state, now)
         await self._partition.save_cluster_state(state)
         await self._auto_consolidate()
         return tuple(processed_uuids)
+
+    async def _ingest_without_clustering(
+        self,
+        events: Sequence[Event],
+    ) -> tuple[UUID, ...]:
+        """Process each event immediately against the topic-wide profile."""
+        ordered = sorted(events, key=lambda e: (e.timestamp, e.uuid))
+        processed: list[UUID] = []
+        for event in ordered:
+            await self._process_event(event)
+            processed.append(event.uuid)
+        return tuple(processed)
 
     async def _assign_new_events(
         self,
@@ -295,6 +325,29 @@ class AttributeMemory:
             )
         _rebuild_event_to_cluster(state)
 
+    async def _embed_cluster_events(
+        self,
+        clustered: Sequence[tuple[str, Sequence[Event]]],
+    ) -> Mapping[UUID, Sequence[float]]:
+        """Embed the events currently under consideration for split decisions."""
+        ordered_events: list[Event] = []
+        seen: set[UUID] = set()
+        for _cluster_id, events in clustered:
+            for event in events:
+                if event.uuid in seen:
+                    continue
+                seen.add(event.uuid)
+                ordered_events.append(event)
+        if not ordered_events:
+            return {}
+        vectors = await self._embedder.ingest_embed(
+            [_event_text(event) for event in ordered_events]
+        )
+        return {
+            event.uuid: vector
+            for event, vector in zip(ordered_events, vectors, strict=True)
+        }
+
     def _select_ready_clusters(
         self,
         state: ClusterState,
@@ -308,8 +361,8 @@ class AttributeMemory:
             count = len(events)
             oldest = min(events.values())
             size_ready = (
-                self._config.trigger_messages <= 0
-                or count >= self._config.trigger_messages
+                self._config.trigger_messages > 0
+                and count >= self._config.trigger_messages
             )
             age_ready = (
                 self._config.trigger_age is not None
@@ -363,10 +416,26 @@ class AttributeMemory:
         run, and the cluster is considered processed so its events
         won't loop back through ingest.
         """
+        await self._process_event_batch(events=events, cluster_id=cluster_id)
+
+    async def _process_event(
+        self,
+        event: Event,
+    ) -> None:
+        """Run LLM extraction for one event against the topic-wide profile."""
+        await self._process_event_batch(events=[event], cluster_id=None)
+
+    async def _process_event_batch(
+        self,
+        *,
+        events: Sequence[Event],
+        cluster_id: str | None,
+    ) -> None:
+        """Run LLM extraction for one batch against topic or cluster scope."""
         content = _format_cluster_content(events)
         citation_uuids = tuple(e.uuid for e in events)
         for topic_def in self._schema.topics:
-            existing = await self._list_cluster_attributes(topic_def, cluster_id)
+            existing = await self._list_context_attributes(topic_def, cluster_id)
             try:
                 commands = await self._llm_extract_commands(
                     existing=existing,
@@ -376,10 +445,11 @@ class AttributeMemory:
             except Exception as exc:
                 if _is_context_length_exceeded_error(exc):
                     logger.warning(
-                        "Skipping topic %s for cluster %s: LLM context "
+                        "Skipping topic %s for %s%s: LLM context "
                         "length exceeded (%d events, %d existing attributes)",
                         topic_def.name,
-                        cluster_id,
+                        "cluster " if cluster_id is not None else "topic ",
+                        cluster_id or topic_def.name,
                         len(events),
                         len(existing),
                     )
@@ -673,18 +743,22 @@ class AttributeMemory:
     # Ingest helpers
     # ------------------------------------------------------------------ #
 
-    async def _list_cluster_attributes(
+    async def _list_context_attributes(
         self,
         topic_def: TopicDefinition,
-        cluster_id: str,
+        cluster_id: str | None,
     ) -> list[SemanticAttribute]:
-        """Load attributes under (topic, cluster_id), capped for prompt safety."""
-        filter_expr = And(
-            left=Comparison(field="topic", op="=", value=topic_def.name),
-            right=Comparison(
-                field=f"m.{_CLUSTER_METADATA_KEY}", op="=", value=cluster_id
-            ),
+        """Load scoped attributes for prompt construction, capped for safety."""
+        filter_expr: FilterExpr = Comparison(
+            field="topic", op="=", value=topic_def.name
         )
+        if cluster_id is not None:
+            filter_expr = And(
+                left=filter_expr,
+                right=Comparison(
+                    field=f"m.{_CLUSTER_METADATA_KEY}", op="=", value=cluster_id
+                ),
+            )
         cap = self._config.max_features_per_update
         attrs: list[SemanticAttribute] = []
         async for attr in self._partition.list_attributes(filter_expr=filter_expr):
@@ -762,11 +836,11 @@ class AttributeMemory:
     async def _apply_commands(
         self,
         topic: str,
-        cluster_id: str,
+        cluster_id: str | None,
         commands: Iterable[Command],
         citation_uuids: Sequence[UUID],
     ) -> None:
-        """Apply LLM-emitted add/delete commands under (topic, cluster_id)."""
+        """Apply LLM-emitted add/delete commands under topic or cluster scope."""
         commands = tuple(commands)
         if not commands:
             return
@@ -788,7 +862,11 @@ class AttributeMemory:
                     category=cmd.category,
                     attribute=cmd.attribute,
                     value=cmd.value,
-                    properties={_CLUSTER_METADATA_KEY: cluster_id},
+                    properties=(
+                        {_CLUSTER_METADATA_KEY: cluster_id}
+                        if cluster_id is not None
+                        else None
+                    ),
                     citations=tuple(citation_uuids) or None,
                 )
                 for cmd in add_cmds
@@ -798,17 +876,20 @@ class AttributeMemory:
     async def _match_uuids(
         self,
         topic: str,
-        cluster_id: str,
+        cluster_id: str | None,
         cmd: Command,
     ) -> tuple[UUID, ...]:
-        """Resolve uuids matching a delete command, scoped to the cluster."""
+        """Resolve uuids matching a delete command in the current scope."""
         parts: list[FilterExpr] = [
             Comparison(field="topic", op="=", value=topic),
             Comparison(field="category", op="=", value=cmd.category),
             Comparison(field="attribute", op="=", value=cmd.attribute),
             Comparison(field="value", op="=", value=cmd.value),
-            Comparison(field=f"m.{_CLUSTER_METADATA_KEY}", op="=", value=cluster_id),
         ]
+        if cluster_id is not None:
+            parts.append(
+                Comparison(field=f"m.{_CLUSTER_METADATA_KEY}", op="=", value=cluster_id)
+            )
         filter_expr = functools.reduce(lambda a, b: And(left=a, right=b), parts)
         return await self._partition.list_attribute_uuids_matching(
             filter_expr=filter_expr

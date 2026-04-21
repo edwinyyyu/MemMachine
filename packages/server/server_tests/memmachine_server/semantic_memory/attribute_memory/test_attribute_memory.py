@@ -51,6 +51,30 @@ from .conftest import (
 PARTITION = "org_acme_42"
 
 
+class SplitPerEvent:
+    """Test splitter that deterministically breaks one cluster into singletons."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def maybe_split_clusters(
+        self,
+        *,
+        cluster_events,
+        cluster_embeddings,
+        state,
+        reranker,
+    ):
+        del cluster_embeddings, reranker
+        self.calls += 1
+        split: list[tuple[str, list[Event]]] = []
+        for cluster_id, events in cluster_events:
+            for index, event in enumerate(events):
+                child_id = cluster_id if index == 0 else f"{cluster_id}_split_{index}"
+                split.append((child_id, [event]))
+        return split, state
+
+
 # ---------------------------------------------------------------------------
 # Fixtures + helpers
 # ---------------------------------------------------------------------------
@@ -452,6 +476,61 @@ async def test_ingest_empty_returns_empty(
 
 
 @pytest.mark.asyncio
+async def test_ingest_without_clustering_uses_topic_wide_profile(
+    partition: SQLAlchemySemanticStorePartition,
+    fake_vector_collection: FakeVectorStoreCollection,
+    fake_embedder: FakeEmbedder,
+    fake_llm: FakeLanguageModel,
+) -> None:
+    memory = _memory(
+        partition,
+        fake_vector_collection,
+        fake_embedder,
+        fake_llm,
+        clustering_config=_config(enabled=False),
+    )
+    fake_llm.parsed_responses.extend(
+        [
+            _feature_update(
+                Command(
+                    command=CommandType.ADD,
+                    category="food",
+                    attribute="favorite_pizza",
+                    value="margherita",
+                )
+            ),
+            _feature_update(
+                Command(
+                    command=CommandType.DELETE,
+                    category="food",
+                    attribute="favorite_pizza",
+                    value="margherita",
+                ),
+                Command(
+                    command=CommandType.ADD,
+                    category="food",
+                    attribute="favorite_pizza",
+                    value="pepperoni",
+                ),
+            ),
+        ]
+    )
+
+    e1 = _event("first preference")
+    e2 = _event("updated preference")
+    processed = await memory.ingest([e1, e2])
+
+    assert processed == (e1.uuid, e2.uuid)
+    assert await partition.get_cluster_state() is None
+
+    uuids = await partition.list_attribute_uuids_matching()
+    got = list((await partition.get_attributes(uuids)).values())
+    assert len(got) == 1
+    assert got[0].value == "pepperoni"
+    assert got[0].properties is None
+
+
+@pytest.mark.asyncio
 async def test_ingest_below_trigger_stays_pending(
     partition: SQLAlchemySemanticStorePartition,
     fake_vector_collection: FakeVectorStoreCollection,
@@ -557,6 +636,39 @@ async def test_ingest_age_trigger_flushes(
     )
     processed = await memory.ingest([old])
     assert set(processed) == {old.uuid}
+
+
+@pytest.mark.asyncio
+async def test_ingest_does_not_flush_when_size_trigger_disabled_and_age_not_met(
+    partition: SQLAlchemySemanticStorePartition,
+    fake_vector_collection: FakeVectorStoreCollection,
+    fake_embedder: FakeEmbedder,
+    fake_llm: FakeLanguageModel,
+) -> None:
+    schema = _schema(
+        TopicDefinition(
+            name="Profile",
+            description="Profile",
+            categories=(CategoryDefinition(name="food"),),
+        )
+    )
+    memory = _memory(
+        partition,
+        fake_vector_collection,
+        fake_embedder,
+        fake_llm,
+        schema=schema,
+        clustering_config=_config(
+            trigger_messages=0,  # size trigger disabled
+            trigger_age=timedelta(days=1),
+        ),
+    )
+
+    recent = _event("recent message", timestamp=datetime.now(tz=UTC))
+    processed = await memory.ingest([recent])
+
+    assert processed == ()
+    assert fake_llm.parsed_calls == []
 
 
 @pytest.mark.asyncio
@@ -700,6 +812,68 @@ async def test_ingest_caps_existing_features_per_update(
     # Each preseeded feature shows up as a slot_N key in the JSON.
     slot_mentions = sum(f"slot_{i}" in prompt for i in range(5))
     assert slot_mentions == 3
+
+
+@pytest.mark.asyncio
+async def test_ingest_invokes_configured_splitter(
+    partition: SQLAlchemySemanticStorePartition,
+    fake_vector_collection: FakeVectorStoreCollection,
+    fake_embedder: FakeEmbedder,
+    fake_llm: FakeLanguageModel,
+) -> None:
+    splitter = SplitPerEvent()
+    memory = _memory(
+        partition,
+        fake_vector_collection,
+        fake_embedder,
+        fake_llm,
+        clustering_config=_config(
+            trigger_messages=2,
+            trigger_age=None,
+            splitter=splitter,
+        ),
+    )
+    fake_llm.parsed_responses.extend(
+        [
+            _feature_update(
+                Command(
+                    command=CommandType.ADD,
+                    category="food",
+                    attribute="favorite_pizza",
+                    value="margherita",
+                )
+            ),
+            _feature_update(
+                Command(
+                    command=CommandType.ADD,
+                    category="food",
+                    attribute="favorite_pasta",
+                    value="cacio_e_pepe",
+                )
+            ),
+        ]
+    )
+
+    e1 = _event("pizza note")
+    e2 = _event("pasta note")
+    processed = await memory.ingest([e1, e2])
+
+    assert set(processed) == {e1.uuid, e2.uuid}
+    assert splitter.calls == 1
+
+    stored = list(
+        (
+            await partition.get_attributes(
+                await partition.list_attribute_uuids_matching()
+            )
+        ).values()
+    )
+    cluster_ids = {
+        attr.properties["_cluster_id"]
+        for attr in stored
+        if attr.properties is not None and "_cluster_id" in attr.properties
+    }
+    assert cluster_ids == {"cluster_0", "cluster_0_split_1"}
 
 
 # ---------------------------------------------------------------------------

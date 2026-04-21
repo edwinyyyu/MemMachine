@@ -22,6 +22,10 @@ from memmachine_server.semantic_memory.attribute_memory.data_types import (
 class ClusteringConfig:
     """How :meth:`AttributeMemory.ingest` groups and flushes events.
 
+    * ``enabled`` — when ``False``, :meth:`AttributeMemory.ingest`
+      bypasses cluster assignment entirely and processes each event
+      immediately against the topic-wide profile.  When ``True``, the
+      remaining settings govern clustered ingestion.
     * ``cluster_params`` — similarity threshold and time-gap limits
       for :class:`ClusterManager.assign`.
     * ``splitter`` — optional per-cluster split strategy; defaults to
@@ -47,6 +51,7 @@ class ClusteringConfig:
       Set to ``0`` to disable auto-consolidation.
     """
 
+    enabled: bool = True
     cluster_params: ClusterParams = field(default_factory=ClusterParams)
     splitter: ClusterSplitterProtocol = field(default_factory=NoOpClusterSplitter)
     trigger_messages: int = 5
