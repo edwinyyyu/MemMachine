@@ -424,7 +424,7 @@ class SqlAlchemyPgVectorSemanticStorage(SemanticStorage):
         async with self._create_session() as session:
             result = await session.stream(stmt)
             async for history_id in result.scalars():
-                yield UUID(history_id)
+                yield UUID(str(history_id))
 
     async def get_history_messages_count(
         self,
@@ -680,7 +680,7 @@ class SqlAlchemyPgVectorSemanticStorage(SemanticStorage):
         }
 
         for feature_id, history_id in result:
-            citations.setdefault(feature_id, []).append(history_id)
+            citations.setdefault(feature_id, []).append(UUID(str(history_id)))
 
         return citations
 
