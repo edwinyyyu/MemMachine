@@ -2,13 +2,10 @@
 
 import logging
 from collections.abc import AsyncIterator, Mapping, MutableMapping, Sequence
-from pathlib import Path
 from typing import Any, cast, overload
 from uuid import UUID
 
 import numpy as np
-from alembic import command
-from alembic.config import Config
 from pgvector.sqlalchemy import Vector
 from pydantic import AwareDatetime, InstanceOf, TypeAdapter, ValidationError
 from sqlalchemy import (
@@ -30,7 +27,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.engine import Connection, CursorResult
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -169,28 +166,6 @@ class SetIngestedHistory(BaseSemanticStorage):
     )
 
 
-async def apply_alembic_migrations(engine: AsyncEngine) -> None:
-    """Run Alembic migrations for the semantic storage tables."""
-    script_location = Path(__file__).parent / "alembic_pg"
-    versions_location = script_location / "versions"
-
-    async with engine.begin() as conn:
-        await conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
-
-        def run_migrations(sync_conn: Connection) -> None:
-            config = Config()
-            script_path = str(script_location.resolve())
-            versions_path = str(versions_location.resolve())
-            config.set_main_option("script_location", script_path)
-            config.set_main_option("version_locations", versions_path)
-            config.set_main_option("path_separator", "os")
-            config.set_main_option("sqlalchemy.url", str(sync_conn.engine.url))
-            config.attributes["connection"] = sync_conn
-            command.upgrade(config, "head")
-
-        await conn.run_sync(run_migrations)
-
-
 class SqlAlchemyPgVectorSemanticStorage(SemanticStorage):
     """Concrete SemanticStorageBase backed by PostgreSQL with pgvector."""
 
@@ -205,11 +180,10 @@ class SqlAlchemyPgVectorSemanticStorage(SemanticStorage):
     def _create_session(self) -> AsyncSession:
         return self._session_factory()
 
-    async def _initialize_db(self) -> None:
-        await apply_alembic_migrations(self._engine)
-
     async def startup(self) -> None:
-        await self._initialize_db()
+        async with self._engine.begin() as conn:
+            await conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
+            await conn.run_sync(BaseSemanticStorage.metadata.create_all)
 
     async def cleanup(self) -> None:
         await self._engine.dispose()
