@@ -118,7 +118,7 @@ class Episode(BaseEpisodeStore):
             else self.created_at
         )
         return EpisodeE(
-            uid=UUID(int=self.id.int),
+            uid=self.id,
             content=self.content,
             session_key=self.session_key,
             producer_id=self.producer_id,
@@ -384,7 +384,7 @@ class SqlAlchemyEpisodeStore(EpisodeStorage):
             result = await session.execute(stmt)
             rows = result.scalars().all()
 
-        return [UUID(int=row.int) for row in rows]
+        return list(rows)
 
     @validate_call
     async def delete_episodes(self, episode_ids: list[UUID]) -> None:
