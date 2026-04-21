@@ -388,8 +388,8 @@ async def test_search(long_term_memory):
 
     assert len(results) == 4
     # Most relevant.
-    assert "episode1" in [result.uid for result in results]
-    assert "episode6" in [result.uid for result in results]
+    assert _uid("episode1") in [result.uid for result in results]
+    assert _uid("episode6") in [result.uid for result in results]
 
     results = await long_term_memory.search(
         query="Who wrote the test?",
@@ -400,8 +400,8 @@ async def test_search(long_term_memory):
 
     assert len(results) == 4
     # Most relevant.
-    assert "episode1" in [result.uid for result in results]
-    assert "episode6" in [result.uid for result in results]
+    assert _uid("episode1") in [result.uid for result in results]
+    assert _uid("episode6") in [result.uid for result in results]
 
     results = await long_term_memory.search(
         query="Who wrote the test?",
@@ -412,13 +412,13 @@ async def test_search(long_term_memory):
 
     assert len(results) == 4
     # Most relevant.
-    assert "episode1" in [result.uid for result in results] or "episode6" in [
-        result.uid for result in results
-    ]
+    assert _uid("episode1") in [result.uid for result in results] or _uid(
+        "episode6"
+    ) in [result.uid for result in results]
     # Relevant but first result consumes entire budget.
-    assert "episode1" not in [result.uid for result in results] or "episode6" not in [
-        result.uid for result in results
-    ]
+    assert _uid("episode1") not in [result.uid for result in results] or _uid(
+        "episode6"
+    ) not in [result.uid for result in results]
 
     results = await long_term_memory.search(
         query="Who wrote the test?",
@@ -438,8 +438,8 @@ async def test_search(long_term_memory):
         ),
     )
     assert len(results) == 10
-    assert "episode1" in [result.uid for result in results]
-    assert "episode5" in [result.uid for result in results]
+    assert _uid("episode1") in [result.uid for result in results]
+    assert _uid("episode5") in [result.uid for result in results]
 
     results = await long_term_memory.search(
         query="Who wrote the test?",
@@ -452,9 +452,9 @@ async def test_search(long_term_memory):
     )
 
     assert len(results) == 3
-    assert "episode1" in [result.uid for result in results]
-    assert "episode2" in [result.uid for result in results]
-    assert "episode6" in [result.uid for result in results]
+    assert _uid("episode1") in [result.uid for result in results]
+    assert _uid("episode2") in [result.uid for result in results]
+    assert _uid("episode6") in [result.uid for result in results]
 
 
 @requires_sentence_transformers
@@ -497,7 +497,9 @@ async def test_get_episodes(long_term_memory):
 
     await long_term_memory.add_episodes(episodes)
 
-    results = await long_term_memory.get_episodes(["episode1", "episode3"])
+    results = await long_term_memory.get_episodes(
+        [str(_uid("episode1")), str(_uid("episode3"))]
+    )
     assert len(results) == 2
     assert set(results) == {episodes[0], episodes[2]}
 
@@ -683,7 +685,11 @@ async def test_delete_episodes(long_term_memory):
     await long_term_memory.add_episodes(episodes)
 
     await long_term_memory.delete_episodes(
-        ["episode1", "episode3", "nonexistent_episode"]
+        [
+            str(_uid("episode1")),
+            str(_uid("episode3")),
+            str(_uid("nonexistent_episode")),
+        ]
     )
     all_episodes = await long_term_memory.get_matching_episodes()
     assert len(all_episodes) == 1
