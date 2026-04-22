@@ -69,8 +69,6 @@ def _make_resources(conf):
     mock_collection.config.properties_schema = {
         "_segment_uuid": str,
         "_timestamp": datetime,
-        "_context_type": str,
-        "_context_source": str,
     }
     mock_vector_store = AsyncMock()
     mock_vector_store.open_collection = AsyncMock(return_value=mock_collection)
@@ -206,8 +204,6 @@ async def test_open_event_memory_creates_new():
     mock_collection_new.config.properties_schema = {
         "_segment_uuid": str,
         "_timestamp": datetime,
-        "_context_type": str,
-        "_context_source": str,
     }
     # After create, open returns the collection
     mock_vs.open_collection = AsyncMock(side_effect=[None, mock_collection_new])
