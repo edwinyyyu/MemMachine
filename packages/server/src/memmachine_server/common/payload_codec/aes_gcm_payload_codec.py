@@ -29,13 +29,13 @@ class AESGCMPayloadCodec(PayloadCodec):
         self._associated_data = associated_data
 
     @override
-    async def encode(self, value: bytes) -> bytes:
+    def encode(self, value: bytes) -> bytes:
         nonce = token_bytes(self._nonce_size)
         ciphertext = self._aead.encrypt(nonce, value, self._associated_data)
         return nonce + ciphertext
 
     @override
-    async def decode(self, value: bytes) -> bytes:
+    def decode(self, value: bytes) -> bytes:
         if len(value) < self._nonce_size:
             raise ValueError("Encrypted payload is too short")
         nonce = value[: self._nonce_size]
