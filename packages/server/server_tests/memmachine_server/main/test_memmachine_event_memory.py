@@ -22,6 +22,7 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
 )
 from memmachine_server.episodic_memory.event_memory.segment_store import (
     SegmentStorePartition,
+    SegmentStorePartitionConfig,
 )
 from memmachine_server.main.memmachine import MemMachine
 
@@ -212,6 +213,11 @@ async def test_open_event_memory_creates_new():
     result = await mm._open_event_memory("org/project")
     assert result is not None
     mock_vs.create_collection.assert_called_once()
+    mock_ss = await resources.get_segment_store("ss")
+    mock_ss.open_or_create_partition.assert_called_once_with(
+        "org/project",
+        SegmentStorePartitionConfig(),
+    )
 
 
 @pytest.mark.asyncio

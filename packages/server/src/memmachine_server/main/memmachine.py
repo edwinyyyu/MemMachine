@@ -75,6 +75,9 @@ from memmachine_server.episodic_memory.event_memory.event_memory import (
     EventMemory,
     EventMemoryParams,
 )
+from memmachine_server.episodic_memory.event_memory.segment_store import (
+    SegmentStorePartitionConfig,
+)
 from memmachine_server.retrieval_agent import create_retrieval_agent
 from memmachine_server.retrieval_agent.common.agent_api import (
     AgentToolBase,
@@ -856,7 +859,8 @@ class MemMachine:
                     raise RuntimeError(msg)
 
             segment_store_partition = await segment_store.open_or_create_partition(
-                partition_key
+                partition_key,
+                SegmentStorePartitionConfig(),
             )
 
         return EventMemory(
