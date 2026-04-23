@@ -1,0 +1,930 @@
+"""Extra memory system with cluster eviction for HNSW index poisoning prevention."""
+
+import asyncio
+import datetime
+import json
+import logging
+from collections.abc import Iterable, Sequence
+from contextlib import AbstractAsyncContextManager, nullcontext
+from typing import cast
+from uuid import UUID, uuid4
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from pydantic import BaseModel, Field, InstanceOf
+
+from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_server.common.embedder import Embedder
+from memmachine_server.common.filter.filter_parser import (
+    FilterExpr,
+)
+from memmachine_server.common.reranker import Reranker
+from memmachine_server.common.utils import (
+    extract_sentences,
+)
+from memmachine_server.common.vector_store import (
+    Collection,
+    Record,
+)
+from memmachine_server.common.vector_store.data_types import (
+    QueryResult as VectorStoreQueryResult,
+)
+
+from .data_types import (
+    Block,
+    CitationContext,
+    Content,
+    Context,
+    Derivative,
+    Episode,
+    FileRef,
+    MessageContext,
+    QueryResult,
+    ReadFile,
+    Segment,
+    Text,
+)
+from .segment_store import SegmentStorePartition
+
+logger = logging.getLogger(__name__)
+
+# System-defined metadata keys.
+# Underscore prefix is reserved.
+_SEGMENT_UUID_KEY = "_segment_uuid"
+_TIMESTAMP_KEY = "_timestamp"
+_CONTEXT_TYPE_KEY = "_context_type"
+_CONTEXT_SOURCE_KEY = "_context_source"
+
+
+class ExtraMemoryParams(BaseModel):
+    """
+    Parameters for ExtraMemory.
+
+    Attributes:
+        partition_key (str):
+            Partition key for scoping the memory.
+        collection (Collection):
+            Collection instance in a vector store.
+        segment_store_partition (SegmentStorePartition):
+            Segment store partition handle for managing segments.
+        embedder (Embedder):
+            Embedder instance for creating embeddings.
+        reranker (Reranker):
+            Reranker instance for reranking search results.
+        derive_sentences (bool):
+            Whether to derive sentence-level derivatives from content (default: False).
+        max_text_chunk_length (int):
+            Max code-point length for text chunking in segment creation (default: 2000).
+        eviction_similarity_threshold (float | None):
+            Similarity threshold above which vectors are considered part of the same
+            cluster. None disables eviction (default: None).
+        eviction_search_limit (int):
+            Maximum number of similar vectors to retrieve per derivative for eviction
+            evaluation (default: 50).
+        eviction_target_size (int):
+            Target cluster size; eviction starts when the number of similar vectors
+            exceeds this (default: 40).
+    """
+
+    partition_key: str = Field(
+        ...,
+        description="Partition key for scoping the memory",
+    )
+    collection: InstanceOf[Collection] = Field(
+        ...,
+        description="Collection instance in a vector store",
+    )
+    segment_store_partition: InstanceOf[SegmentStorePartition] = Field(
+        ...,
+        description="Segment store partition handle for managing segments",
+    )
+    embedder: InstanceOf[Embedder] = Field(
+        ...,
+        description="Embedder instance for creating embeddings",
+    )
+    reranker: InstanceOf[Reranker] = Field(
+        ...,
+        description="Reranker instance for reranking search results",
+    )
+    derive_sentences: bool = Field(
+        False,
+        description="Whether to derive sentence-level derivatives from content",
+    )
+    max_text_chunk_length: int = Field(
+        2000,
+        description="Max code-point length for text chunking in segment creation",
+    )
+    eviction_similarity_threshold: float | None = Field(
+        None,
+        description="Similarity threshold above which vectors are considered part of the same cluster. None disables eviction.",
+    )
+    eviction_search_limit: int = Field(
+        20,
+        description="Maximum number of similar vectors to retrieve per derivative for eviction evaluation.",
+    )
+    eviction_target_size: int = Field(
+        15,
+        description="Target cluster size; eviction starts when the number of similar vectors exceeds this.",
+    )
+    serialize_encode: bool = Field(
+        False,
+        description="Serialize encode_episodes calls with an async lock.",
+    )
+
+
+class ExtraMemory:
+    """Extra memory system with cluster eviction."""
+
+    def __init__(self, params: ExtraMemoryParams) -> None:
+        """
+        Initialize an ExtraMemory with the provided parameters.
+
+        Args:
+            params (ExtraMemoryParams):
+                Parameters for the ExtraMemory.
+
+        """
+        self._partition_key = params.partition_key
+
+        self._collection = params.collection
+        self._segment_store_partition = params.segment_store_partition
+
+        self._embedder = params.embedder
+        self._reranker = params.reranker
+
+        self._derive_sentences = params.derive_sentences
+
+        self._eviction_similarity_threshold = params.eviction_similarity_threshold
+        self._eviction_search_limit = params.eviction_search_limit
+        self._eviction_target_size = params.eviction_target_size
+        self._encode_lock = asyncio.Lock() if params.serialize_encode else None
+
+        self._text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=params.max_text_chunk_length,
+            chunk_overlap=0,
+            separators=[
+                "\n\n",
+                "],\n",
+                "},\n",
+                "),\n",
+                "]\n",
+                "}\n",
+                ")\n",
+                ",\n",
+                "\uff1f\n",  # Fullwidth question mark
+                "?\n",
+                "\uff01\n",  # Fullwidth exclamation mark
+                "!\n",
+                "\u3002\n",  # Ideographic full stop
+                ".\n",
+                "\uff1f",  # Fullwidth question mark
+                "? ",
+                "\uff01",  # Fullwidth exclamation mark
+                "! ",
+                "\u3002",  # Ideographic full stop
+                ". ",
+                "; ",
+                ": ",
+                "—",
+                "--",
+                "\uff0c",  # Fullwidth comma
+                "\u3001",  # Ideographic comma
+                ", ",
+                "\u200b",  # Zero-width space
+                " ",
+                "",
+            ],
+            keep_separator="end",
+        )
+
+    def _acquire_encode_lock(self) -> AbstractAsyncContextManager[None]:
+        """Return the encode lock if configured, otherwise a no-op."""
+        if self._encode_lock is not None:
+            return self._encode_lock
+        return nullcontext()
+
+    async def encode_episodes(
+        self,
+        episodes: Iterable[Episode],
+    ) -> None:
+        """
+        Encode episodes.
+
+        Args:
+            episodes (Iterable[Episode]): The episodes to encode.
+
+        """
+        # Prepare segments, derivatives, and embeddings outside the lock —
+        # these are pure computation and external API calls with no DB reads.
+        episodes = sorted(
+            episodes,
+            key=lambda episode: (episode.timestamp, episode.uuid),
+        )
+
+        segments = [
+            segment
+            for episode in episodes
+            for segment in self._create_segments(episode)
+        ]
+
+        segments_to_derivatives: dict[Segment, list[Derivative]] = {
+            segment: self._derive_derivatives(segment) for segment in segments
+        }
+
+        derivatives = [
+            derivative
+            for segment_derivatives in segments_to_derivatives.values()
+            for derivative in segment_derivatives
+        ]
+
+        derivative_embeddings = await self._embedder.ingest_embed(
+            [derivative.text for derivative in derivatives],
+            max_attempts=3,
+        )
+
+        # Pre-compute intra-batch similarity outside the lock (CPU-only,
+        # does not depend on DB state).
+        batch_predecessors: list[set[int]] | None = None
+        if self._eviction_similarity_threshold is not None and derivative_embeddings:
+            batch_predecessors = ExtraMemory._compute_batch_predecessors(
+                derivative_embeddings,
+                self._eviction_similarity_threshold,
+                self._embedder.similarity_metric,
+            )
+
+        # Acquire the lock for the DB-touching portion:
+        # eviction query → eviction decision → delete → add_segments → upsert.
+        async with self._acquire_encode_lock():
+            skipped_uuids: set[UUID] = set()
+            if batch_predecessors is not None:
+                eviction_query_results = await self._collection.query(
+                    query_vectors=derivative_embeddings,
+                    score_threshold=self._eviction_similarity_threshold,
+                    limit=self._eviction_search_limit,
+                    return_vector=False,
+                    return_properties=True,
+                )
+
+                db_eviction_uuids, skipped_uuids = ExtraMemory._select_eviction_targets(
+                    derivatives=derivatives,
+                    query_results=eviction_query_results,
+                    batch_predecessors=batch_predecessors,
+                    eviction_target_size=self._eviction_target_size,
+                )
+
+                if db_eviction_uuids:
+                    await self._collection.delete(record_uuids=db_eviction_uuids)
+
+            await self._segment_store_partition.add_segments(
+                {
+                    segment: [
+                        derivative.uuid
+                        for derivative in segment_derivatives
+                        if derivative.uuid not in skipped_uuids
+                    ]
+                    for segment, segment_derivatives in segments_to_derivatives.items()
+                }
+            )
+
+            derivative_records = [
+                ExtraMemory._build_derivative_record(derivative, derivative_embedding)
+                for derivative, derivative_embedding in zip(
+                    derivatives,
+                    derivative_embeddings,
+                    strict=True,
+                )
+                if derivative.uuid not in skipped_uuids
+            ]
+
+            if derivative_records:
+                await self._collection.upsert(records=derivative_records)
+
+    @staticmethod
+    def _select_eviction_targets(
+        derivatives: Iterable[Derivative],
+        query_results: Iterable[VectorStoreQueryResult],
+        batch_predecessors: list[set[int]],
+        eviction_target_size: int,
+    ) -> tuple[set[UUID], set[UUID]]:
+        """
+        Select eviction targets considering both DB and intra-batch similarity.
+
+        Uses pre-computed intra-batch predecessors and processes derivatives
+        serially. For each derivative, the effective cluster is the union
+        of DB neighbors (not yet evicted), similar batch derivatives (not
+        yet skipped), and the derivative itself. When the cluster exceeds
+        ``eviction_target_size``, excess members are selected from the
+        temporal middle for eviction.
+
+        Returns:
+            A tuple of ``(db_uuids_to_delete, batch_uuids_to_skip)``.
+
+        """
+        derivatives = list(derivatives)
+        query_results = list(query_results)
+
+        db_eviction_uuids: set[UUID] = set()
+        batch_skip_uuids: set[UUID] = set()
+
+        for i, (derivative, query_result) in enumerate(
+            zip(derivatives, query_results, strict=True)
+        ):
+            ExtraMemory._evict_for_derivative(
+                i,
+                derivative,
+                query_result,
+                derivatives,
+                batch_predecessors,
+                eviction_target_size,
+                db_eviction_uuids,
+                batch_skip_uuids,
+            )
+
+        return db_eviction_uuids, batch_skip_uuids
+
+    @staticmethod
+    def _compute_batch_predecessors(
+        derivative_embeddings: Iterable[Sequence[float]],
+        eviction_similarity_threshold: float,
+        similarity_metric: SimilarityMetric,
+    ) -> list[set[int]]:
+        """Pre-compute intra-batch similarity (lower triangle only).
+
+        ``batch_predecessors[i]`` contains indices ``j < i`` that are
+        similar to ``i``. Only predecessors are included to simulate
+        serial ingestion.
+
+        Uses a single matrix multiplication for the full cosine similarity
+        matrix, then thresholds the lower triangle.
+        """
+        import numpy as np
+
+        embeddings = np.asarray(list(derivative_embeddings), dtype=np.float64)
+        n = len(embeddings)
+        if n <= 1:
+            return [set() for _ in range(n)]
+
+        match similarity_metric:
+            case SimilarityMetric.COSINE | None:
+                norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+                norms[norms == 0] = 1.0
+                normalized = embeddings / norms
+                sim_matrix = normalized @ normalized.T
+                mask = np.tril(sim_matrix, k=-1) > eviction_similarity_threshold
+            case SimilarityMetric.DOT:
+                sim_matrix = embeddings @ embeddings.T
+                mask = np.tril(sim_matrix, k=-1) > eviction_similarity_threshold
+            case SimilarityMetric.EUCLIDEAN:
+                # Lower distance = more similar; threshold inverted.
+                diff = embeddings[:, np.newaxis, :] - embeddings[np.newaxis, :, :]
+                dist_matrix = np.linalg.norm(diff, axis=2)
+                mask = np.tril(dist_matrix, k=-1) < eviction_similarity_threshold
+            case SimilarityMetric.MANHATTAN:
+                diff = embeddings[:, np.newaxis, :] - embeddings[np.newaxis, :, :]
+                dist_matrix = np.sum(np.abs(diff), axis=2)
+                mask = np.tril(dist_matrix, k=-1) < eviction_similarity_threshold
+            case _:
+                norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+                norms[norms == 0] = 1.0
+                normalized = embeddings / norms
+                sim_matrix = normalized @ normalized.T
+                mask = np.tril(sim_matrix, k=-1) > eviction_similarity_threshold
+
+        return [set(np.where(mask[i])[0].tolist()) for i in range(n)]
+
+    @staticmethod
+    def _evict_for_derivative(
+        i: int,
+        derivative: Derivative,
+        query_result: VectorStoreQueryResult,
+        derivatives: list[Derivative],
+        batch_predecessors: list[set[int]],
+        eviction_target_size: int,
+        db_eviction_uuids: set[UUID],
+        batch_skip_uuids: set[UUID],
+    ) -> None:
+        """Evaluate and apply eviction for a single derivative."""
+        # DB cluster members, excluding already-evicted.
+        db_cluster: list[tuple[UUID, datetime.datetime]] = []
+        for match in query_result.matches:
+            if match.record.uuid not in db_eviction_uuids:
+                raw_timestamp = cast(dict[str, PropertyValue], match.record.properties)[
+                    _TIMESTAMP_KEY
+                ]
+                if isinstance(raw_timestamp, str):
+                    raw_timestamp = datetime.datetime.fromisoformat(raw_timestamp)
+                db_cluster.append(
+                    (match.record.uuid, cast(datetime.datetime, raw_timestamp))
+                )
+
+        # Intra-batch predecessors (j < i), excluding already-skipped.
+        batch_cluster: list[tuple[UUID, datetime.datetime]] = []
+        for j in batch_predecessors[i]:
+            neighbor = derivatives[j]
+            if neighbor.uuid not in batch_skip_uuids:
+                batch_cluster.append((neighbor.uuid, neighbor.timestamp))
+
+        total_size = len(db_cluster) + len(batch_cluster) + 1  # +1 for self
+
+        if total_size <= eviction_target_size:
+            return
+
+        # Cluster is oversized — evict from the temporal middle.
+        all_members: list[tuple[UUID, datetime.datetime, str]] = (
+            [(uuid, ts, "db") for uuid, ts in db_cluster]
+            + [(uuid, ts, "batch") for uuid, ts in batch_cluster]
+            + [
+                (derivative.uuid, derivative.timestamp, "self"),
+            ]
+        )
+        all_members.sort(key=lambda m: m[1])
+
+        protected_count = eviction_target_size // 2
+        middle = all_members[protected_count : len(all_members) - protected_count]
+        excess_count = total_size - eviction_target_size
+
+        for uuid, _, source in middle[:excess_count]:
+            if source == "db":
+                db_eviction_uuids.add(uuid)
+            else:  # "batch" or "self"
+                batch_skip_uuids.add(uuid)
+
+    @staticmethod
+    def _build_derivative_record(
+        derivative: Derivative,
+        derivative_embedding: Sequence[float],
+    ) -> Record:
+        """Build a vector record from a derivative and its embedding."""
+        properties: dict[str, PropertyValue] = {}
+
+        # System-defined metadata (underscore-prefixed).
+        properties[_SEGMENT_UUID_KEY] = str(derivative.segment_uuid)
+        properties[_TIMESTAMP_KEY] = derivative.timestamp
+
+        match derivative.context:
+            case MessageContext(source=source):
+                properties[_CONTEXT_TYPE_KEY] = "message"
+                properties[_CONTEXT_SOURCE_KEY] = source
+            case CitationContext(source=source):
+                properties[_CONTEXT_TYPE_KEY] = "citation"
+                properties[_CONTEXT_SOURCE_KEY] = source
+
+        # User-defined properties.
+        properties.update(derivative.properties)
+
+        return Record(
+            uuid=derivative.uuid,
+            vector=list(derivative_embedding),
+            properties=properties,
+        )
+
+    def _create_segments(
+        self,
+        episode: Episode,
+    ) -> list[Segment]:
+        """
+        Create segments from an episode.
+
+        Args:
+            episode (Episode):
+                The episode from which to create segments.
+
+        Returns:
+            list[Segment]: A list of created segments.
+
+        """
+        match episode.body:
+            case Content(context=context, items=primitives):
+                return self._segment_episode_content_items(
+                    episode=episode,
+                    items=primitives,
+                    context=context,
+                )
+            case ReadFile(file=file_ref):
+                return [
+                    Segment(
+                        uuid=uuid4(),
+                        episode_uuid=episode.uuid,
+                        index=0,
+                        offset=0,
+                        timestamp=episode.timestamp,
+                        block=file_ref,
+                        properties=episode.properties,
+                    )
+                ]
+            case _:
+                logger.warning("Unsupported body type: %s", type(episode.body))
+                return []
+
+    def _segment_episode_content_items(
+        self,
+        episode: Episode,
+        items: Iterable[Block],
+        context: Context | None,
+    ) -> list[Segment]:
+        """Split content items into single-block segments, propagating context."""
+        segments: list[Segment] = []
+        for index, item in enumerate(items):
+            match item:
+                case Text(text=text):
+                    chunks = self._text_splitter.split_text(text)
+                    segments.extend(
+                        Segment(
+                            uuid=uuid4(),
+                            episode_uuid=episode.uuid,
+                            index=index,
+                            offset=offset,
+                            timestamp=episode.timestamp,
+                            block=Text(text=chunk),
+                            context=context,
+                            properties=episode.properties,
+                        )
+                        for offset, chunk in enumerate(chunks)
+                    )
+                case _:
+                    segments.append(
+                        Segment(
+                            uuid=uuid4(),
+                            episode_uuid=episode.uuid,
+                            index=index,
+                            offset=0,
+                            timestamp=episode.timestamp,
+                            block=item,
+                            context=context,
+                            properties=episode.properties,
+                        )
+                    )
+        return segments
+
+    def _derive_derivatives(
+        self,
+        segment: Segment,
+    ) -> list[Derivative]:
+        """
+        Derive derivatives from a segment.
+
+        Args:
+            segment (Segment):
+                The segment from which to derive derivatives.
+
+        Returns:
+            list[Derivative]: A list of derived derivatives.
+
+        """
+        match segment.block:
+            case Text(text=text):
+                derivative_texts = self._extract_derivative_texts(
+                    context=segment.context, text=text
+                )
+            case FileRef():
+                return []
+            case _:
+                logger.warning("Non-text primitive derivatives are not yet supported")
+                return []
+
+        return [
+            Derivative(
+                uuid=uuid4(),
+                segment_uuid=segment.uuid,
+                timestamp=segment.timestamp,
+                context=segment.context,
+                text=text,
+                properties=segment.properties,
+            )
+            for text in derivative_texts
+        ]
+
+    @staticmethod
+    def _format_with_context(text: str, context: Context | None) -> str:
+        """Format text within its context."""
+        match context:
+            case MessageContext(source=source):
+                return f"{source}: {text}"
+            case CitationContext(source=source):
+                return f"From '{source}': {text}"
+            case _:
+                return text
+
+    def _extract_derivative_texts(
+        self,
+        *,
+        context: Context | None,
+        text: str,
+    ) -> list[str]:
+        """Derive formatted text strings from a text block."""
+        if not self._derive_sentences:
+            return [ExtraMemory._format_with_context(text, context)]
+        return [
+            ExtraMemory._format_with_context(sentence, context)
+            for sentence in extract_sentences(text)
+        ]
+
+    async def query(
+        self,
+        query: str,
+        *,
+        max_num_segments: int = 20,
+        expand_context: int = 0,
+        property_filter: FilterExpr | None = None,
+    ) -> QueryResult:
+        """
+        Query extra memory for segments relevant to the query.
+
+        Args:
+            query (str):
+                The search query.
+            max_num_segments (int):
+                The maximum number of segments to return
+                (default: 20).
+            expand_context (int):
+                The number of additional segments to include
+                around each matched segment for additional context
+                (default: 0).
+            property_filter (FilterExpr | None):
+                Attribute keys and values
+                to use for filtering segments
+                (default: None).
+
+        Returns:
+            QueryResult:
+                Query result containing segments relevant to the query, ordered chronologically.
+
+        """
+        query_embedding = (
+            await self._embedder.search_embed(
+                [query],
+            )
+        )[0]
+
+        # Search derivative collection for matches.
+        [query_result] = await self._collection.query(
+            query_vectors=[query_embedding],
+            limit=min(5 * max_num_segments, 200),
+            property_filter=property_filter,
+            return_vector=False,
+            return_properties=True,
+        )
+
+        # Extract seed segment UUIDs from vector metadata, preserving similarity order.
+        # Deduplicate by first occurrence (multiple derivatives can map to the same segment).
+        seed_segment_uuids = list(
+            dict.fromkeys(
+                UUID(
+                    str(
+                        cast(
+                            dict[str, PropertyValue],
+                            match.record.properties,
+                        )[_SEGMENT_UUID_KEY]
+                    )
+                )
+                for match in query_result.matches
+            )
+        )
+
+        expand_context = min(max(0, expand_context), max_num_segments - 1)
+        max_backward_segments = expand_context // 3
+        max_forward_segments = expand_context - max_backward_segments
+
+        segment_contexts_by_seed = (
+            await self._segment_store_partition.get_segment_contexts(
+                seed_segment_uuids=seed_segment_uuids,
+                max_backward_segments=max_backward_segments,
+                max_forward_segments=max_forward_segments,
+                property_filter=property_filter,
+            )
+        )
+
+        # Filter to seeds with results, preserving similarity order.
+        kept_seed_segment_uuids = [
+            seed_segment_uuid
+            for seed_segment_uuid in seed_segment_uuids
+            if seed_segment_uuid in segment_contexts_by_seed
+        ]
+        segment_contexts: list[list[Segment]] = [
+            segment_contexts_by_seed[seed_segment_uuid]
+            for seed_segment_uuid in kept_seed_segment_uuids
+        ]
+
+        # Rerank segment contexts.
+        segment_context_scores = await self._score_segment_contexts(
+            query,
+            segment_contexts,
+        )
+
+        reranked_anchored_segment_contexts = [
+            (seed_segment_uuid, segment_context)
+            for _, seed_segment_uuid, segment_context in sorted(
+                zip(
+                    segment_context_scores,
+                    kept_seed_segment_uuids,
+                    segment_contexts,
+                    strict=True,
+                ),
+                key=lambda triple: triple[0],
+                reverse=True,
+            )
+        ]
+
+        # Unify segment contexts.
+        unified_segment_context = ExtraMemory._unify_anchored_segment_contexts(
+            reranked_anchored_segment_contexts,
+            max_num_segments=max_num_segments,
+        )
+
+        unified_segment_context_string = ExtraMemory.string_from_segment_context(
+            unified_segment_context
+        )
+
+        return QueryResult(
+            unified_segment_context=unified_segment_context,
+            unified_segment_context_string=unified_segment_context_string,
+        )
+
+    async def _score_segment_contexts(
+        self,
+        query: str,
+        segment_contexts: Iterable[Iterable[Segment]],
+    ) -> list[float]:
+        """Score segment contexts based on their relevance to the query."""
+        context_strings = []
+        for segment_context in segment_contexts:
+            context_string = ExtraMemory.string_from_segment_context(segment_context)
+            context_strings.append(context_string)
+
+        segment_context_scores = await self._reranker.score(query, context_strings)
+        return segment_context_scores
+
+    @staticmethod
+    def string_from_segment_context(segment_context: Iterable[Segment]) -> str:
+        """Format segment context as a string."""
+        context_string = ""
+        last_segment: Segment | None = None
+        accumulated_text = ""
+        first = True
+
+        for segment in segment_context:
+            is_continuation = (
+                last_segment is not None
+                and segment.episode_uuid == last_segment.episode_uuid
+                and segment.index == last_segment.index
+            )
+
+            if not is_continuation:
+                if not first:
+                    context_string += json.dumps(accumulated_text) + "\n"
+                first = False
+                accumulated_text = ""
+
+                context_date = ExtraMemory._format_date(
+                    segment.timestamp.date(),
+                )
+                context_time = ExtraMemory._format_time(
+                    segment.timestamp.time(),
+                )
+                timestamp = f"[{context_date} at {context_time}]"
+
+                match segment.context:
+                    case MessageContext(source=source):
+                        context_string += f"{timestamp} {source}: "
+                    case CitationContext(source=source):
+                        context_string += f"{timestamp} From '{source}': "
+                    case _:
+                        context_string += f"{timestamp} "
+
+            text = ExtraMemory._extract_text(segment.block)
+            if text is not None:
+                accumulated_text += text
+            elif not is_continuation:
+                context_string += f"[{segment.block.type}]\n"
+
+            last_segment = segment
+
+        if not first:
+            context_string += json.dumps(accumulated_text) + "\n"
+
+        return context_string.strip()
+
+    @staticmethod
+    def _extract_text(block: Block) -> str | None:
+        """Extract text from a block, if it contains text."""
+        match block:
+            case Text(text=text):
+                return text
+            case _:
+                return None
+
+    @staticmethod
+    def _format_date(date: datetime.date) -> str:
+        """Format the date as a string."""
+        return date.strftime("%A, %B %d, %Y")
+
+    @staticmethod
+    def _format_time(time: datetime.time) -> str:
+        """Format the time as a string."""
+        return time.strftime("%I:%M %p")
+
+    async def forget_episodes(self, episode_uuids: Iterable[UUID]) -> None:
+        """Forget episodes by their UUIDs."""
+        episode_uuids = set(episode_uuids)
+        if not episode_uuids:
+            return
+
+        # Snapshot segment UUIDs for these episodes.
+        segments_by_episode = (
+            await self._segment_store_partition.get_segment_uuids_by_episode_uuids(
+                episode_uuids=episode_uuids,
+            )
+        )
+        segment_uuids = {
+            segment_uuid
+            for episode_segment_uuids in segments_by_episode.values()
+            for segment_uuid in episode_segment_uuids
+        }
+        if not segment_uuids:
+            return
+
+        # Get derivative UUIDs for those segments.
+        derivatives_by_segment = (
+            await self._segment_store_partition.get_derivative_uuids_by_segment_uuids(
+                segment_uuids=segment_uuids,
+            )
+        )
+        derivative_uuids = {
+            derivative_uuid
+            for segment_derivative_uuids in derivatives_by_segment.values()
+            for derivative_uuid in segment_derivative_uuids
+        }
+
+        # Delete from vector DB first, then segment store.
+        if derivative_uuids:
+            await self._collection.delete(record_uuids=derivative_uuids)
+
+        await self._segment_store_partition.delete_segments(
+            segment_uuids=segment_uuids,
+        )
+
+    @staticmethod
+    def _unify_anchored_segment_contexts(
+        anchored_segment_contexts: Iterable[tuple[UUID, Iterable[Segment]]],
+        max_num_segments: int,
+    ) -> list[Segment]:
+        """Unify anchored segment contexts into a single list within the limit."""
+        unified_segment_context_set: set[Segment] = set()
+
+        for seed_segment_uuid, context in anchored_segment_contexts:
+            context = list(context)
+
+            if len(unified_segment_context_set) >= max_num_segments:
+                break
+            if (len(unified_segment_context_set) + len(context)) <= max_num_segments:
+                # It is impossible that the context exceeds the limit.
+                unified_segment_context_set.update(context)
+            else:
+                # It is possible that the context exceeds the limit.
+                # Prioritize segments near the seed segment.
+
+                # Sort chronological segments by weighted index-proximity to the seed segment.
+                seed_index = next(
+                    index
+                    for index, segment in enumerate(context)
+                    if segment.uuid == seed_segment_uuid
+                )
+
+                seed_context = sorted(
+                    context,
+                    key=lambda segment: ExtraMemory._weighted_index_proximity(
+                        segment=segment,
+                        context=context,
+                        seed_index=seed_index,
+                    ),
+                )
+
+                # Add segments to unified context until limit is reached,
+                # or until the context is exhausted.
+                for segment in seed_context:
+                    if len(unified_segment_context_set) >= max_num_segments:
+                        break
+                    unified_segment_context_set.add(segment)
+
+        unified_segment_context = sorted(
+            unified_segment_context_set,
+            key=lambda segment: (
+                segment.timestamp,
+                segment.episode_uuid,
+                segment.index,
+                segment.offset,
+            ),
+        )
+
+        return unified_segment_context
+
+    @staticmethod
+    def _weighted_index_proximity(
+        segment: Segment,
+        context: Sequence[Segment],
+        seed_index: int,
+    ) -> float:
+        proximity = context.index(segment) - seed_index
+        if proximity >= 0:
+            # Forward recall is better than backward recall.
+            return (proximity - 0.5) / 2
+        return -proximity
