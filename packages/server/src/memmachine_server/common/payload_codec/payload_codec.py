@@ -9,7 +9,7 @@ class PayloadCodec(ABC):
     """Byte-level codec for payloads."""
 
     @abstractmethod
-    async def encode(
+    def encode(
         self,
         value: bytes,
     ) -> bytes:
@@ -26,7 +26,7 @@ class PayloadCodec(ABC):
         """
 
     @abstractmethod
-    async def decode(
+    def decode(
         self,
         value: bytes,
     ) -> bytes:

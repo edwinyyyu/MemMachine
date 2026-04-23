@@ -76,8 +76,8 @@ async def test_loader_returns_aes_gcm_codec() -> None:
         ("partition_key", b"wrapped-dek-bytes", b"partition:context")
     ]
 
-    encoded = await codec.encode(b"payload")
-    decoded = await codec.decode(encoded)
+    encoded = codec.encode(b"payload")
+    decoded = codec.decode(encoded)
 
     assert decoded == b"payload"
 
@@ -87,7 +87,7 @@ async def test_loader_returns_aes_gcm_codec() -> None:
         associated_data=b"partition:block",
     )
     with pytest.raises(InvalidTag):
-        await wrong_codec.decode(encoded)
+        wrong_codec.decode(encoded)
 
 
 @pytest.mark.asyncio
