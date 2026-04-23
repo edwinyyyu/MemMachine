@@ -1,22 +1,18 @@
-"""Tests for the KMS-backed payload codec loader."""
+"""Tests for the KMS envelope payload codec loader."""
 
-from typing import cast, override
+from typing import override
 
 import pytest
 from cryptography.exceptions import InvalidTag
 
 from memmachine_server.common.kms.kms_crypto_client import KMSCryptoClient
-from memmachine_server.common.payload_codec import KMSCryptoPayloadCodecLoader
+from memmachine_server.common.payload_codec import KMSEnvelopePayloadCodecLoader
 from memmachine_server.common.payload_codec.aes_gcm_payload_codec import (
     AESGCMPayloadCodec,
 )
 from memmachine_server.common.payload_codec.payload_codec_config import (
     AESGCMPayloadCodecConfig,
-    PayloadCodecConfig,
-    PlaintextPayloadCodecConfig,
-)
-from memmachine_server.common.payload_codec.plaintext_payload_codec import (
-    PlaintextPayloadCodec,
+    KMSEnvelopePayloadCodecConfig,
 )
 
 
@@ -50,18 +46,9 @@ class FakeKMSCryptoClient(KMSCryptoClient):
 
 
 @pytest.mark.asyncio
-async def test_loader_returns_plaintext_codec() -> None:
-    loader = KMSCryptoPayloadCodecLoader(FakeKMSCryptoClient(b"0" * 32))
-
-    codec = await loader.load(PlaintextPayloadCodecConfig())
-
-    assert isinstance(codec, PlaintextPayloadCodec)
-
-
-@pytest.mark.asyncio
 async def test_loader_returns_aes_gcm_codec() -> None:
     kms_client = FakeKMSCryptoClient(b"0" * 32)
-    loader = KMSCryptoPayloadCodecLoader(kms_client)
+    loader = KMSEnvelopePayloadCodecLoader(kms_client)
     config = AESGCMPayloadCodecConfig(
         key_ref="partition_key",
         wrapped_dek=b"wrapped-dek-bytes",
@@ -90,9 +77,21 @@ async def test_loader_returns_aes_gcm_codec() -> None:
         wrong_codec.decode(encoded)
 
 
+class UnknownKMSEnvelopePayloadCodecConfig(KMSEnvelopePayloadCodecConfig):
+    """Envelope config whose concrete type the loader does not handle."""
+
+
 @pytest.mark.asyncio
 async def test_loader_rejects_unsupported_codec_config() -> None:
-    loader = KMSCryptoPayloadCodecLoader(FakeKMSCryptoClient(b"0" * 32))
+    loader = KMSEnvelopePayloadCodecLoader(FakeKMSCryptoClient(b"0" * 32))
 
-    with pytest.raises(NotImplementedError, match="Unsupported payload codec config"):
-        await loader.load(cast(PayloadCodecConfig, object()))
+    with pytest.raises(
+        NotImplementedError,
+        match="Unsupported KMS envelope payload codec config",
+    ):
+        await loader.load(
+            UnknownKMSEnvelopePayloadCodecConfig(
+                key_ref="partition_key",
+                wrapped_dek=b"wrapped-dek-bytes",
+            ),
+        )

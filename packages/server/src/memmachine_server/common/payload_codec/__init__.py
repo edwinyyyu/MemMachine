@@ -1,18 +1,19 @@
 """Payload codec exports."""
 
-from .kms_crypto_payload_codec_loader import KMSCryptoPayloadCodecLoader
-from .payload_codec import PayloadCodec, PayloadCodecLoader
+from .kms_envelope_payload_codec_loader import KMSEnvelopePayloadCodecLoader
+from .payload_codec import PayloadCodec
 from .payload_codec_config import (
+    KMSEnvelopePayloadCodecConfig,
     PayloadCodecConfig,
     decode_payload_codec_config,
     encode_payload_codec_config,
 )
 
 __all__ = [
-    "KMSCryptoPayloadCodecLoader",
+    "KMSEnvelopePayloadCodecConfig",
+    "KMSEnvelopePayloadCodecLoader",
     "PayloadCodec",
     "PayloadCodecConfig",
-    "PayloadCodecLoader",
     "decode_payload_codec_config",
     "encode_payload_codec_config",
 ]

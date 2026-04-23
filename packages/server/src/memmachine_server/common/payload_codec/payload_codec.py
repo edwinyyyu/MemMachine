@@ -2,8 +2,6 @@
 
 from abc import ABC, abstractmethod
 
-from .payload_codec_config import PayloadCodecConfig
-
 
 class PayloadCodec(ABC):
     """Byte-level codec for payloads."""
@@ -40,22 +38,4 @@ class PayloadCodec(ABC):
         Returns:
             bytes:
                 Payload bytes.
-        """
-
-
-class PayloadCodecLoader(ABC):
-    """Payload codec loader."""
-
-    @abstractmethod
-    async def load(self, config: PayloadCodecConfig) -> PayloadCodec:
-        """
-        Materialize a live codec from configuration.
-
-        Args:
-            config (PayloadCodecConfig):
-                Codec configuration.
-
-        Returns:
-            PayloadCodec:
-                A live codec instance.
         """

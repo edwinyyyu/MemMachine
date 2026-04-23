@@ -20,13 +20,11 @@ class PlaintextPayloadCodecConfig(BaseModel):
     type: Literal["plaintext"] = "plaintext"
 
 
-class AESGCMPayloadCodecConfig(BaseModel):
-    """Codec config for AES-GCM payload encryption."""
+class KMSEnvelopePayloadCodecConfig(BaseModel):
+    """Shared fields for codec configs that rely on KMS envelope encryption."""
 
-    type: Literal["aes_gcm"] = "aes_gcm"
     key_ref: str
     wrapped_dek: bytes
-    nonce_size: int = 12
     associated_data: bytes | None = None
 
     @field_validator("wrapped_dek", mode="before")
@@ -58,6 +56,13 @@ class AESGCMPayloadCodecConfig(BaseModel):
         if value is None:
             return None
         return urlsafe_b64encode(value).decode("ascii")
+
+
+class AESGCMPayloadCodecConfig(KMSEnvelopePayloadCodecConfig):
+    """Codec config for AES-GCM payload encryption."""
+
+    type: Literal["aes_gcm"] = "aes_gcm"
+    nonce_size: int = 12
 
 
 PayloadCodecConfigUnion = PlaintextPayloadCodecConfig | AESGCMPayloadCodecConfig
