@@ -9,9 +9,9 @@ class PlaintextPayloadCodec(PayloadCodec):
     """Codec for plaintext-serialized payloads."""
 
     @override
-    async def encode(self, value: bytes) -> bytes:
+    def encode(self, value: bytes) -> bytes:
         return value
 
     @override
-    async def decode(self, value: bytes) -> bytes:
+    def decode(self, value: bytes) -> bytes:
         return value
