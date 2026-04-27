@@ -106,7 +106,9 @@ class SentenceTransformerEmbedder(Embedder):
             for input_text in inputs
         ]
 
-        chunks = [chunk for input_chunks in inputs_chunks for chunk in input_chunks]
+        chunks: list[str] = [
+            chunk for input_chunks in inputs_chunks for chunk in input_chunks
+        ]
 
         embed_call_uuid = uuid4()
 
