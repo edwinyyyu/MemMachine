@@ -16,6 +16,7 @@ from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
 from memmachine_server.common.data_types import (
+    OrderedValue,
     PropertyValue,
     SimilarityMetric,
 )
@@ -84,13 +85,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     }
 
     @staticmethod
-    def _to_range_value(value: PropertyValue) -> int | float | str:
-        """Convert a filter value for Qdrant Range."""
-        if isinstance(value, datetime):
-            return value.isoformat()
-        return value
-
-    @staticmethod
     def _build_qdrant_filter(expr: FilterExpr) -> models.Filter:
         """Convert a FilterExpr tree into a Qdrant Filter."""
         if isinstance(expr, FilterComparison):
@@ -135,6 +129,12 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                 field, value, negate=negate
             )
         if operator in QdrantVectorStoreCollection._RANGE_OPERATORS:
+            if not isinstance(value, OrderedValue):
+                message = (
+                    f"Range filter on '{field}' requires a numeric or datetime value, "
+                    f"got {type(value).__name__}"
+                )
+                raise TypeError(message)
             return QdrantVectorStoreCollection._range_filter(
                 field, value, QdrantVectorStoreCollection._RANGE_OPERATORS[operator]
             )
@@ -196,7 +196,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     @staticmethod
     def _range_filter(
         field: str,
-        value: PropertyValue,
+        value: OrderedValue,
         range_parameter: str,
     ) -> models.Filter:
         if isinstance(value, datetime):
@@ -210,12 +210,11 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                 ],
             )
 
-        range_value = QdrantVectorStoreCollection._to_range_value(value)
         return models.Filter(
             must=[
                 models.FieldCondition(
                     key=field,
-                    range=models.Range(**{range_parameter: range_value}),  # type: ignore[arg-type]
+                    range=models.Range(**{range_parameter: value}),
                 ),
             ],
         )
@@ -258,7 +257,9 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         properties: dict[str, PropertyValue] | None,
     ) -> dict[str, PropertyValue]:
         """Build Qdrant-compatible payload from record properties."""
-        payload = {_PAYLOAD_PARTITION_KEY: self._partition_key}
+        payload: dict[str, PropertyValue] = {
+            _PAYLOAD_PARTITION_KEY: self._partition_key,
+        }
         if properties:
             for key, value in properties.items():
                 if value is None:
@@ -388,13 +389,11 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
 
                     properties: dict[str, PropertyValue] | None = None
                     if return_properties and point.payload is not None:
-                        properties = self._parse_payload(
-                            cast(dict[str, Any], point.payload),
-                        )
+                        properties = self._parse_payload(point.payload)
 
                     matches.append(
                         QueryMatch(
-                            score=cast(float, point.score),
+                            score=point.score,
                             record=Record(
                                 uuid=UUID(str(point.id)),
                                 vector=vector,
