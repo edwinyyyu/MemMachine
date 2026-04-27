@@ -7,7 +7,7 @@ by the attribute-memory pipeline).
 """
 
 from collections.abc import Mapping
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import StrEnum
 from typing import (
     Annotated,
@@ -182,89 +182,3 @@ class Command(BaseModel):
         if "\x00" in v:
             return v.replace("\x00", "")
         return v
-
-
-# ---------------------------------------------------------------------- #
-# Clustering data models
-# ---------------------------------------------------------------------- #
-
-
-class ClusterInfo(BaseModel):
-    """Centroid stats for a single cluster."""
-
-    centroid: list[float]
-    count: int
-    last_ts: datetime
-
-
-class ClusterAssignment(BaseModel):
-    """Result of assigning an event to a cluster."""
-
-    cluster_id: str
-    similarity: float | None = None
-    created_new: bool
-
-
-class ClusterSplitRecord(BaseModel):
-    """Records a completed split so it is not re-run on re-ingestion."""
-
-    original_cluster_id: str
-    resulting_cluster_ids: list[str]
-    input_hash: str
-
-
-class ClusterState(BaseModel):
-    """Mutable clustering state for one partition.
-
-    :class:`ClusterManager` mutates these fields in place during
-    :meth:`ClusterManager.assign`; the surrounding code treats the
-    object as a value and persists it whole.
-    """
-
-    clusters: dict[str, ClusterInfo] = Field(default_factory=dict)
-    event_to_cluster: dict[UUID, str] = Field(default_factory=dict)
-    pending_events: dict[str, dict[UUID, datetime]] = Field(default_factory=dict)
-    next_cluster_id: int = 0
-    split_records: dict[str, ClusterSplitRecord] = Field(default_factory=dict)
-
-
-class ClusterParams(BaseModel):
-    """Configuration for cluster assignment decisions."""
-
-    similarity_threshold: float = 0.3
-    max_time_gap: timedelta | None = None
-    id_prefix: str = "cluster_"
-
-    @field_validator("similarity_threshold")
-    @classmethod
-    def _check_threshold(cls, v: float) -> float:
-        if not 0.0 <= v <= 1.0:
-            raise ValueError("similarity_threshold must be between 0 and 1")
-        return v
-
-    @field_validator("id_prefix")
-    @classmethod
-    def _check_prefix(cls, v: str) -> str:
-        if not v:
-            raise ValueError("id_prefix must be non-empty")
-        return v
-
-
-class ClusterSplitParams(BaseModel):
-    """Tuning parameters for the cluster split phase."""
-
-    min_cluster_size: int = 6
-    max_messages_in_prompt: int = 20
-    low_similarity_threshold: float = 0.5
-    time_gap_seconds: float | None = None
-    cohesion_drop_zscore: float = 2.0
-    debug_fail_loudly: bool = False
-
-
-class ContinuitySignals(BaseModel):
-    """Pre-computed similarity and time-gap metrics for a cluster."""
-
-    adjacent_similarities: list[float]
-    time_gaps_seconds: list[float]
-    min_adjacent_similarity: float
-    max_time_gap_seconds: float

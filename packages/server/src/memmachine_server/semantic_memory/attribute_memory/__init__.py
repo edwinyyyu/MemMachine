@@ -8,7 +8,7 @@ from there directly.
 """
 
 from .attribute_memory import AttributeMemory
-from .clustering_config import ClusteringConfig
+from .ingest_config import IngestConfig
 from .semantic_store import (
     SemanticAttribute,
     SemanticStore,
@@ -18,7 +18,7 @@ from .semantic_store import (
 
 __all__ = [
     "AttributeMemory",
-    "ClusteringConfig",
+    "IngestConfig",
     "SemanticAttribute",
     "SemanticStore",
     "SemanticStorePartition",

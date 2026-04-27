@@ -59,9 +59,6 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from memmachine_server.common.filter.filter_parser import FilterExpr
-from memmachine_server.semantic_memory.attribute_memory.data_types import (
-    ClusterState,
-)
 
 
 class SemanticAttribute(BaseModel):
@@ -188,20 +185,6 @@ class SemanticStorePartition(ABC):
         history_uuids: Iterable[UUID],
     ) -> None:
         """Associate source message uuids as citations for an attribute."""
-        raise NotImplementedError
-
-    # ------------------------------------------------------------------ #
-    # Cluster state (ingestion-pipeline scratch)
-    # ------------------------------------------------------------------ #
-
-    @abstractmethod
-    async def get_cluster_state(self) -> ClusterState | None:
-        """Load the partition's persisted :class:`ClusterState`, or ``None``."""
-        raise NotImplementedError
-
-    @abstractmethod
-    async def save_cluster_state(self, state: ClusterState) -> None:
-        """Persist the partition's :class:`ClusterState`."""
         raise NotImplementedError
 
 

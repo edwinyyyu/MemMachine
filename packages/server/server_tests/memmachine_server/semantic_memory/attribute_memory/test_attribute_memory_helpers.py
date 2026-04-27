@@ -2,8 +2,6 @@
 
 from uuid import uuid4
 
-import pytest
-
 from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
@@ -17,7 +15,6 @@ from memmachine_server.semantic_memory.attribute_memory import (
     SemanticAttribute,
 )
 from memmachine_server.semantic_memory.attribute_memory.attribute_memory import (
-    _CLUSTER_METADATA_KEY,
     _is_context_length_exceeded_error,
 )
 
@@ -39,9 +36,8 @@ def test_system_fields_match_hierarchy() -> None:
     )
 
 
-def test_reserved_property_keys_contains_cluster_id() -> None:
-    assert frozenset({_CLUSTER_METADATA_KEY}) == AttributeMemory._RESERVED_PROPERTY_KEYS
-    assert _CLUSTER_METADATA_KEY == "_cluster_id"
+def test_reserved_property_keys_are_empty() -> None:
+    assert frozenset() == AttributeMemory._RESERVED_PROPERTY_KEYS
 
 
 def test_expected_vector_store_collection_schema() -> None:
@@ -50,7 +46,6 @@ def test_expected_vector_store_collection_schema() -> None:
         "_category": str,
         "_attribute": str,
         "_value": str,
-        "_cluster_id": str,
     }
 
 
@@ -71,20 +66,12 @@ def test_validate_accepts_application_underscore_keys() -> None:
     """Applications can set their own ``_``-prefixed keys — reservation
     is narrow (specific names only), not the whole prefix."""
     AttributeMemory._validate_attribute_properties(
-        {"_app_internal": "x", "_session_started_at": 1, "regular": "ok"}
+        {
+            "_app_internal": "x",
+            "_session_started_at": 1,
+            "regular": "ok",
+        }
     )
-
-
-def test_validate_rejects_cluster_id_key() -> None:
-    with pytest.raises(ValueError, match="reserved"):
-        AttributeMemory._validate_attribute_properties({"_cluster_id": "c_0"})
-
-
-def test_validate_rejects_reports_the_reserved_key() -> None:
-    with pytest.raises(ValueError, match="_cluster_id"):
-        AttributeMemory._validate_attribute_properties(
-            {"_cluster_id": "c_0", "ok": "fine"}
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -123,12 +110,12 @@ def test_build_vector_record_merges_user_metadata() -> None:
     assert record.properties["_topic"] == "Profile"
 
 
-def test_build_vector_record_passes_through_system_property_keys() -> None:
-    """``_cluster_id`` set by ingest() flows into the vector record."""
-    attribute = _attribute(properties={"_cluster_id": "cluster_3"})
+def test_build_vector_record_passes_through_underscore_property_keys() -> None:
+    """Underscore metadata is preserved in the vector record."""
+    attribute = _attribute(properties={"_app_internal": "value"})
     record = AttributeMemory._build_vector_record(attribute, [0.1, 0.2, 0.3])
     assert record.properties is not None
-    assert record.properties["_cluster_id"] == "cluster_3"
+    assert record.properties["_app_internal"] == "value"
 
 
 def test_build_vector_record_uses_attribute_id_as_uuid() -> None:
@@ -161,12 +148,12 @@ def test_translate_user_metadata_m_prefix_stripped() -> None:
     assert translated.field == "color"
 
 
-def test_translate_user_metadata_cluster_id_key() -> None:
-    """``m._cluster_id`` demangles to ``_cluster_id`` — the storage key."""
-    expr = Comparison(field="m._cluster_id", op="=", value="cluster_0")
+def test_translate_user_metadata_underscore_key() -> None:
+    """``m._app_internal`` demangles to ``_app_internal`` like any user key."""
+    expr = Comparison(field="m._app_internal", op="=", value="value")
     translated = AttributeMemory._translate_filter_for_vector_store(expr)
     assert isinstance(translated, Comparison)
-    assert translated.field == "_cluster_id"
+    assert translated.field == "_app_internal"
 
 
 def test_translate_recurses_into_combinators() -> None:

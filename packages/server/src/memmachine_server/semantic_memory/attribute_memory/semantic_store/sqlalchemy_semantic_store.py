@@ -8,10 +8,6 @@ Four tables live under a single :class:`DeclarativeBase`:
   :class:`~memmachine_server.common.vector_store.VectorStoreCollection`.
 * ``semantic_store_ct`` — citation links between an attribute and the
   source-message ids it was extracted from.
-* ``semantic_store_cs`` — ingestion-pipeline scratch: one row per
-  partition holding the serialized :class:`ClusterState` that
-  :meth:`AttributeMemory.ingest` reads and writes.
-
 On Postgres every data table uses ``LIST`` partitioning on
 ``partition_key``; each :meth:`SQLAlchemySemanticStore.create_partition`
 call allocates child tables per partition, and
@@ -25,7 +21,7 @@ from datetime import datetime
 from typing import Any, override
 from uuid import UUID
 
-from pydantic import BaseModel, Field, InstanceOf, TypeAdapter, field_validator
+from pydantic import BaseModel, Field, InstanceOf, field_validator
 from sqlalchemy import (
     JSON,
     DateTime,
@@ -68,9 +64,6 @@ from memmachine_server.common.filter.sql_filter_util import (
     FieldEncoding,
     compile_sql_filter,
 )
-from memmachine_server.semantic_memory.attribute_memory.data_types import (
-    ClusterState,
-)
 from memmachine_server.semantic_memory.attribute_memory.prompts import (
     build_consolidation_prompt,
     build_update_prompt,
@@ -84,8 +77,6 @@ from memmachine_server.semantic_memory.attribute_memory.semantic_store.semantic_
     SemanticStorePartition,
 )
 from memmachine_server.semantic_memory.storage.text_sanitizer import sanitize_pg_text
-
-_CLUSTER_STATE_ADAPTER = TypeAdapter(ClusterState)
 
 logger = logging.getLogger(__name__)
 
@@ -179,28 +170,6 @@ class AttributeRow(BaseSemanticStore):
             properties=dict(self.properties) if self.properties else None,
             citations=citations,
         )
-
-
-class ClusterStateRow(BaseSemanticStore):
-    """Serialized :class:`ClusterState` for one partition (ingestion scratch)."""
-
-    __tablename__ = "semantic_store_cs"
-
-    partition_key: MappedColumn[str] = mapped_column(String(255), primary_key=True)
-    state: MappedColumn[dict[str, Any]] = mapped_column(
-        _JSON_AUTO,
-        nullable=False,
-        default=dict,
-    )
-
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["partition_key"],
-            ["semantic_store_pt.partition_key"],
-            ondelete="CASCADE",
-        ),
-        {"postgresql_partition_by": "LIST (partition_key)"},
-    )
 
 
 class CitationRow(BaseSemanticStore):
@@ -428,41 +397,6 @@ class SQLAlchemySemanticStorePartition(SemanticStorePartition):
         async with self._create_session() as session, session.begin():
             await self._lock_partition_for_write(session)
             await session.execute(insert(CitationRow), rows)
-
-    # ------------------------------------------------------------------ #
-    # Cluster state
-    # ------------------------------------------------------------------ #
-
-    @override
-    async def get_cluster_state(self) -> ClusterState | None:
-        async with self._create_session() as session:
-            row = (
-                await session.execute(
-                    select(ClusterStateRow).where(
-                        ClusterStateRow.partition_key == self._partition_key,
-                    )
-                )
-            ).scalar_one_or_none()
-        if row is None:
-            return None
-        return _CLUSTER_STATE_ADAPTER.validate_python(row.state)
-
-    @override
-    async def save_cluster_state(self, state: ClusterState) -> None:
-        payload = _CLUSTER_STATE_ADAPTER.dump_python(state, mode="json")
-        async with self._create_session() as session, session.begin():
-            await self._lock_partition_for_write(session)
-            await session.execute(
-                delete(ClusterStateRow).where(
-                    ClusterStateRow.partition_key == self._partition_key,
-                )
-            )
-            await session.execute(
-                insert(ClusterStateRow).values(
-                    partition_key=self._partition_key,
-                    state=payload,
-                )
-            )
 
     # ------------------------------------------------------------------ #
     # Internal helpers
@@ -730,7 +664,6 @@ class SQLAlchemySemanticStore(SemanticStore):
         """Create PostgreSQL child partition tables for the given key."""
         attributes_child = f'"semantic_store_at_p_{partition_key}"'
         citations_child = f'"semantic_store_ct_p_{partition_key}"'
-        cluster_state_child = f'"semantic_store_cs_p_{partition_key}"'
         await connection.execute(
             text(
                 f"CREATE TABLE {attributes_child} PARTITION OF"
@@ -743,12 +676,6 @@ class SQLAlchemySemanticStore(SemanticStore):
                 f" semantic_store_ct FOR VALUES IN ('{partition_key}')"
             )
         )
-        await connection.execute(
-            text(
-                f"CREATE TABLE {cluster_state_child} PARTITION OF"
-                f" semantic_store_cs FOR VALUES IN ('{partition_key}')"
-            )
-        )
 
     @staticmethod
     async def _drop_pg_child_tables(
@@ -757,7 +684,6 @@ class SQLAlchemySemanticStore(SemanticStore):
         """Drop PostgreSQL child partition tables for the given key."""
         citations_child = f'"semantic_store_ct_p_{partition_key}"'
         attributes_child = f'"semantic_store_at_p_{partition_key}"'
-        cluster_state_child = f'"semantic_store_cs_p_{partition_key}"'
 
         # CASCADE drops cross-partition FK constraint dependencies.
         await connection.execute(
@@ -765,9 +691,6 @@ class SQLAlchemySemanticStore(SemanticStore):
         )
         await connection.execute(
             text(f"DROP TABLE IF EXISTS {attributes_child} CASCADE")
-        )
-        await connection.execute(
-            text(f"DROP TABLE IF EXISTS {cluster_state_child} CASCADE")
         )
 
 

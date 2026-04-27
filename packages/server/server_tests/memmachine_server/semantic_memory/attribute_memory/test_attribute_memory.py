@@ -20,11 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from memmachine_server.common.filter.filter_parser import Comparison
 from memmachine_server.semantic_memory.attribute_memory import (
     AttributeMemory,
-    ClusteringConfig,
+    IngestConfig,
     SemanticAttribute,
 )
 from memmachine_server.semantic_memory.attribute_memory.data_types import (
-    ClusterParams,
     Command,
     CommandType,
     Content,
@@ -49,30 +48,6 @@ from .conftest import (
 )
 
 PARTITION = "org_acme_42"
-
-
-class SplitPerEvent:
-    """Test splitter that deterministically breaks one cluster into singletons."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def maybe_split_clusters(
-        self,
-        *,
-        cluster_events,
-        cluster_embeddings,
-        state,
-        reranker,
-    ):
-        del cluster_embeddings, reranker
-        self.calls += 1
-        split: list[tuple[str, list[Event]]] = []
-        for cluster_id, events in cluster_events:
-            for index, event in enumerate(events):
-                child_id = cluster_id if index == 0 else f"{cluster_id}_split_{index}"
-                split.append((child_id, [event]))
-        return split, state
 
 
 # ---------------------------------------------------------------------------
@@ -112,15 +87,8 @@ def _schema(*topics: TopicDefinition) -> PartitionSchema:
     return PartitionSchema(topics=topics)
 
 
-def _config(**overrides) -> ClusteringConfig:
-    # threshold=0 + FakeEmbedder's non-negative vectors → every event
-    # clusters together (cosine similarity ≥ 0).
-    base = ClusteringConfig(
-        cluster_params=ClusterParams(similarity_threshold=0.0),
-        trigger_messages=1,  # flush on every call by default
-        trigger_age=None,
-        idle_ttl=None,
-        max_clusters_per_run=10,
+def _config(**overrides) -> IngestConfig:
+    base = IngestConfig(
         max_features_per_update=50,
         consolidation_threshold=0,  # disable auto-consolidate by default
     )
@@ -134,7 +102,7 @@ def _memory(
     llm: FakeLanguageModel,
     *,
     schema: PartitionSchema | None = None,
-    clustering_config: ClusteringConfig | None = None,
+    ingest_config: IngestConfig | None = None,
     reranker: FakeReranker | None = None,
 ) -> AttributeMemory:
     return AttributeMemory(
@@ -143,7 +111,7 @@ def _memory(
         embedder=embedder,
         language_model=llm,
         schema=schema or _schema(),
-        clustering_config=clustering_config or _config(),
+        ingest_config=ingest_config or _config(),
         reranker=reranker,
     )
 
@@ -239,17 +207,18 @@ async def test_add_attributes_persists_to_both_stores(
 
 
 @pytest.mark.asyncio
-async def test_add_attributes_rejects_reserved_keys(
+async def test_add_attributes_accepts_underscore_keys(
     partition: SQLAlchemySemanticStorePartition,
     fake_vector_collection: FakeVectorStoreCollection,
     fake_embedder: FakeEmbedder,
     fake_llm: FakeLanguageModel,
 ) -> None:
     memory = _memory(partition, fake_vector_collection, fake_embedder, fake_llm)
-    a = _attr(properties={"_cluster_id": "c_0"})
-    with pytest.raises(ValueError, match="reserved"):
-        await memory.add_attributes([a])
-    assert await partition.get_attributes([a.id]) == {}
+    a = _attr(properties={"_app_internal": "value"})
+    await memory.add_attributes([a])
+    got = (await partition.get_attributes([a.id])).get(a.id)
+    assert got is not None
+    assert got.properties == {"_app_internal": "value"}
 
 
 @pytest.mark.asyncio
@@ -476,19 +445,13 @@ async def test_ingest_empty_returns_empty(
 
 
 @pytest.mark.asyncio
-async def test_ingest_without_clustering_uses_topic_wide_profile(
+async def test_ingest_processes_events_in_timestamp_order(
     partition: SQLAlchemySemanticStorePartition,
     fake_vector_collection: FakeVectorStoreCollection,
     fake_embedder: FakeEmbedder,
     fake_llm: FakeLanguageModel,
 ) -> None:
-    memory = _memory(
-        partition,
-        fake_vector_collection,
-        fake_embedder,
-        fake_llm,
-        clustering_config=_config(enabled=False),
-    )
+    memory = _memory(partition, fake_vector_collection, fake_embedder, fake_llm)
     fake_llm.parsed_responses.extend(
         [
             _feature_update(
@@ -516,13 +479,13 @@ async def test_ingest_without_clustering_uses_topic_wide_profile(
         ]
     )
 
-    e1 = _event("first preference")
-    e2 = _event("updated preference")
-    processed = await memory.ingest([e1, e2])
+    old = _event(
+        "first preference", timestamp=datetime.now(tz=UTC) - timedelta(minutes=5)
+    )
+    new = _event("updated preference", timestamp=datetime.now(tz=UTC))
+    processed = await memory.ingest([new, old])
 
-    assert processed == (e1.uuid, e2.uuid)
-    assert await partition.get_cluster_state() is None
-
+    assert processed == (old.uuid, new.uuid)
     uuids = await partition.list_attribute_uuids_matching()
     got = list((await partition.get_attributes(uuids)).values())
     assert len(got) == 1
@@ -531,80 +494,7 @@ async def test_ingest_without_clustering_uses_topic_wide_profile(
 
 
 @pytest.mark.asyncio
-async def test_ingest_below_trigger_stays_pending(
-    partition: SQLAlchemySemanticStorePartition,
-    fake_vector_collection: FakeVectorStoreCollection,
-    fake_embedder: FakeEmbedder,
-    fake_llm: FakeLanguageModel,
-) -> None:
-    memory = _memory(
-        partition,
-        fake_vector_collection,
-        fake_embedder,
-        fake_llm,
-        clustering_config=_config(trigger_messages=5, trigger_age=None),
-    )
-    processed = await memory.ingest([_event("hi"), _event("there")])
-    assert processed == ()
-    # Cluster state is persisted with the two pending events.
-    state = await partition.get_cluster_state()
-    assert state is not None
-    assert sum(len(events) for events in state.pending_events.values()) == 2
-
-
-@pytest.mark.asyncio
-async def test_ingest_size_trigger_flushes(
-    partition: SQLAlchemySemanticStorePartition,
-    fake_vector_collection: FakeVectorStoreCollection,
-    fake_embedder: FakeEmbedder,
-    fake_llm: FakeLanguageModel,
-) -> None:
-    # One-topic schema keeps LLM call count predictable.
-    schema = _schema(
-        TopicDefinition(
-            name="Profile",
-            description="Profile",
-            categories=(CategoryDefinition(name="food"),),
-        )
-    )
-    memory = _memory(
-        partition,
-        fake_vector_collection,
-        fake_embedder,
-        fake_llm,
-        schema=schema,
-        clustering_config=_config(trigger_messages=2, trigger_age=None),
-    )
-    fake_llm.parsed_responses.append(
-        _feature_update(
-            Command(
-                command=CommandType.ADD,
-                category="food",
-                attribute="favorite_pizza",
-                value="margherita",
-            )
-        )
-    )
-
-    e1 = _event("I love margherita pizza")
-    e2 = _event("Thin crust, lots of basil")
-    processed = await memory.ingest([e1, e2])
-    assert set(processed) == {e1.uuid, e2.uuid}
-
-    # One new attribute written with _cluster_id metadata.
-    uuids = await partition.list_attribute_uuids_matching()
-    assert len(uuids) == 1
-    got = (await partition.get_attributes(uuids)).get(uuids[0])
-    assert got is not None
-    assert got.topic == "Profile"
-    assert got.category == "food"
-    assert got.value == "margherita"
-    assert got.properties is not None
-    assert got.properties.get("_cluster_id") is not None
-
-
-@pytest.mark.asyncio
-async def test_ingest_age_trigger_flushes(
+async def test_ingest_caps_existing_features_per_update(
     partition: SQLAlchemySemanticStorePartition,
     fake_vector_collection: FakeVectorStoreCollection,
     fake_embedder: FakeEmbedder,
@@ -623,87 +513,19 @@ async def test_ingest_age_trigger_flushes(
         fake_embedder,
         fake_llm,
         schema=schema,
-        clustering_config=_config(
-            trigger_messages=0,  # size trigger disabled
-            trigger_age=timedelta(seconds=10),
-        ),
+        ingest_config=_config(max_features_per_update=3),
     )
+
+    preseed_attrs = [_attr(attribute=f"slot_{i}", value=f"val_{i}") for i in range(5)]
+    await memory.add_attributes(preseed_attrs)
+
     fake_llm.parsed_responses.append(_feature_update())
+    await memory.ingest([_event("something")])
 
-    old = _event(
-        "ancient message",
-        timestamp=datetime.now(tz=UTC) - timedelta(minutes=5),
-    )
-    processed = await memory.ingest([old])
-    assert set(processed) == {old.uuid}
-
-
-@pytest.mark.asyncio
-async def test_ingest_does_not_flush_when_size_trigger_disabled_and_age_not_met(
-    partition: SQLAlchemySemanticStorePartition,
-    fake_vector_collection: FakeVectorStoreCollection,
-    fake_embedder: FakeEmbedder,
-    fake_llm: FakeLanguageModel,
-) -> None:
-    schema = _schema(
-        TopicDefinition(
-            name="Profile",
-            description="Profile",
-            categories=(CategoryDefinition(name="food"),),
-        )
-    )
-    memory = _memory(
-        partition,
-        fake_vector_collection,
-        fake_embedder,
-        fake_llm,
-        schema=schema,
-        clustering_config=_config(
-            trigger_messages=0,  # size trigger disabled
-            trigger_age=timedelta(days=1),
-        ),
-    )
-
-    recent = _event("recent message", timestamp=datetime.now(tz=UTC))
-    processed = await memory.ingest([recent])
-
-    assert processed == ()
-    assert fake_llm.parsed_calls == []
-
-
-@pytest.mark.asyncio
-async def test_ingest_persists_cluster_state_across_calls(
-    partition: SQLAlchemySemanticStorePartition,
-    fake_vector_collection: FakeVectorStoreCollection,
-    fake_embedder: FakeEmbedder,
-    fake_llm: FakeLanguageModel,
-) -> None:
-    schema = _schema(
-        TopicDefinition(
-            name="Profile",
-            description="Profile",
-            categories=(CategoryDefinition(name="food"),),
-        )
-    )
-    memory = _memory(
-        partition,
-        fake_vector_collection,
-        fake_embedder,
-        fake_llm,
-        schema=schema,
-        clustering_config=_config(trigger_messages=3, trigger_age=None),
-    )
-
-    e1 = _event("one")
-    e2 = _event("two")
-    processed = await memory.ingest([e1, e2])
-    assert processed == ()
-
-    # Second call carries the first pair forward: trigger fires at 3.
-    fake_llm.parsed_responses.append(_feature_update())
-    e3 = _event("three")
-    processed = await memory.ingest([e1, e2, e3])
-    assert set(processed) == {e1.uuid, e2.uuid, e3.uuid}
+    assert len(fake_llm.parsed_calls) == 1
+    prompt = fake_llm.parsed_calls[0]["user_prompt"]
+    slot_mentions = sum(f"slot_{i}" in prompt for i in range(5))
+    assert slot_mentions == 3
 
 
 @pytest.mark.asyncio
@@ -726,154 +548,13 @@ async def test_ingest_skips_topic_on_context_length(
         fake_embedder,
         fake_llm,
         schema=schema,
-        clustering_config=_config(trigger_messages=1, trigger_age=None),
     )
     fake_llm.raise_on_parsed = RuntimeError("context_length_exceeded")
 
     e = _event("too long")
     processed = await memory.ingest([e])
-    # Cluster is still flushed (uid returned) so caller can ack; no
-    # attributes written because the LLM failed.
-    assert set(processed) == {e.uuid}
+    assert processed == (e.uuid,)
     assert await partition.list_attribute_uuids_matching() == ()
-
-
-@pytest.mark.asyncio
-async def test_ingest_caps_existing_features_per_update(
-    partition: SQLAlchemySemanticStorePartition,
-    fake_vector_collection: FakeVectorStoreCollection,
-    fake_embedder: FakeEmbedder,
-    fake_llm: FakeLanguageModel,
-) -> None:
-    schema = _schema(
-        TopicDefinition(
-            name="Profile",
-            description="Profile",
-            categories=(CategoryDefinition(name="food"),),
-        )
-    )
-    config = _config(
-        trigger_messages=1,
-        trigger_age=None,
-        max_features_per_update=3,
-    )
-    memory = _memory(
-        partition,
-        fake_vector_collection,
-        fake_embedder,
-        fake_llm,
-        schema=schema,
-        clustering_config=config,
-    )
-
-    # Pre-seed 5 attrs under the same cluster id so _list_features_for_cluster
-    # has them to return.
-    cluster_id = "cluster_0"
-    preseed_attrs = [
-        SemanticAttribute(
-            id=uuid4(),
-            topic="Profile",
-            category="food",
-            attribute=f"slot_{i}",
-            value=f"val_{i}",
-            properties={"_cluster_id": cluster_id},
-        )
-        for i in range(5)
-    ]
-    # Use the internal write path to bypass reserved-key validation.
-    await memory._write_attributes(preseed_attrs)
-    # Save a matching cluster state so ingest assigns new episodes to
-    # the same cluster id on trigger.
-    from memmachine_server.semantic_memory.attribute_memory.data_types import (
-        ClusterInfo,
-        ClusterState,
-    )
-
-    await partition.save_cluster_state(
-        ClusterState(
-            clusters={
-                cluster_id: ClusterInfo(
-                    centroid=[0.0, 0.0, 0.0],
-                    count=1,
-                    last_ts=datetime.now(tz=UTC),
-                )
-            },
-            next_cluster_id=1,
-        )
-    )
-
-    fake_llm.parsed_responses.append(_feature_update())
-    await memory.ingest([_event("something")])
-
-    # Inspect the user_prompt the LLM saw — it should include at most
-    # max_features_per_update (=3) features in the "old profile".
-    assert len(fake_llm.parsed_calls) == 1
-    prompt = fake_llm.parsed_calls[0]["user_prompt"]
-    # Each preseeded feature shows up as a slot_N key in the JSON.
-    slot_mentions = sum(f"slot_{i}" in prompt for i in range(5))
-    assert slot_mentions == 3
-
-
-@pytest.mark.asyncio
-async def test_ingest_invokes_configured_splitter(
-    partition: SQLAlchemySemanticStorePartition,
-    fake_vector_collection: FakeVectorStoreCollection,
-    fake_embedder: FakeEmbedder,
-    fake_llm: FakeLanguageModel,
-) -> None:
-    splitter = SplitPerEvent()
-    memory = _memory(
-        partition,
-        fake_vector_collection,
-        fake_embedder,
-        fake_llm,
-        clustering_config=_config(
-            trigger_messages=2,
-            trigger_age=None,
-            splitter=splitter,
-        ),
-    )
-    fake_llm.parsed_responses.extend(
-        [
-            _feature_update(
-                Command(
-                    command=CommandType.ADD,
-                    category="food",
-                    attribute="favorite_pizza",
-                    value="margherita",
-                )
-            ),
-            _feature_update(
-                Command(
-                    command=CommandType.ADD,
-                    category="food",
-                    attribute="favorite_pasta",
-                    value="cacio_e_pepe",
-                )
-            ),
-        ]
-    )
-
-    e1 = _event("pizza note")
-    e2 = _event("pasta note")
-    processed = await memory.ingest([e1, e2])
-
-    assert set(processed) == {e1.uuid, e2.uuid}
-    assert splitter.calls == 1
-
-    stored = list(
-        (
-            await partition.get_attributes(
-                await partition.list_attribute_uuids_matching()
-            )
-        ).values()
-    )
-    cluster_ids = {
-        attr.properties["_cluster_id"]
-        for attr in stored
-        if attr.properties is not None and "_cluster_id" in attr.properties
-    }
-    assert cluster_ids == {"cluster_0", "cluster_0_split_1"}
 
 
 # ---------------------------------------------------------------------------
@@ -974,11 +655,7 @@ async def test_auto_consolidate_triggers_at_threshold(
         fake_embedder,
         fake_llm,
         schema=schema,
-        clustering_config=_config(
-            trigger_messages=1,
-            trigger_age=None,
-            consolidation_threshold=2,
-        ),
+        ingest_config=_config(consolidation_threshold=2),
     )
 
     # Seed two attributes so the (Profile, food) count reaches 2.
@@ -1031,11 +708,7 @@ async def test_auto_consolidate_skipped_below_threshold(
         fake_embedder,
         fake_llm,
         schema=schema,
-        clustering_config=_config(
-            trigger_messages=1,
-            trigger_age=None,
-            consolidation_threshold=10,
-        ),
+        ingest_config=_config(consolidation_threshold=10),
     )
     # Single extraction call; no consolidation call should be made.
     fake_llm.parsed_responses.append(_feature_update())

@@ -1,1 +1,0 @@
-"""Cluster state storage implementations."""

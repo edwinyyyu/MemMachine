@@ -1,7 +1,6 @@
 """Tests for :class:`SQLAlchemySemanticStore` against SQLite."""
 
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -13,10 +12,6 @@ from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
     In,
-)
-from memmachine_server.semantic_memory.attribute_memory.data_types import (
-    ClusterInfo,
-    ClusterState,
 )
 from memmachine_server.semantic_memory.attribute_memory.semantic_store import (
     SemanticAttribute,
@@ -276,15 +271,15 @@ async def test_list_attributes_filter_by_user_metadata(
 async def test_list_attributes_filter_by_system_underscore_metadata(
     partition: SQLAlchemySemanticStorePartition,
 ) -> None:
-    """``m._cluster_id`` maps to properties key ``_cluster_id``."""
-    a = _attr(properties={"_cluster_id": "c_0"})
-    b = _attr(properties={"_cluster_id": "c_1"}, category="music")
+    """``m._app_internal`` maps to the same properties key."""
+    a = _attr(properties={"_app_internal": "v_0"})
+    b = _attr(properties={"_app_internal": "v_1"}, category="music")
     await partition.add_attributes([a, b])
 
     result = [
         x
         async for x in partition.list_attributes(
-            filter_expr=Comparison(field="m._cluster_id", op="=", value="c_0")
+            filter_expr=Comparison(field="m._app_internal", op="=", value="v_0")
         )
     ]
     assert [x.id for x in result] == [a.id]
@@ -460,114 +455,6 @@ async def test_add_citations_empty_is_noop(
     a = _attr()
     await partition.add_attributes([a])
     await partition.add_citations(a.id, [])
-
-
-# ---------------------------------------------------------------------------
-# Cluster state persistence
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_get_cluster_state_returns_none_when_absent(
-    partition: SQLAlchemySemanticStorePartition,
-) -> None:
-    assert await partition.get_cluster_state() is None
-
-
-@pytest.mark.asyncio
-async def test_save_and_get_cluster_state_round_trip(
-    partition: SQLAlchemySemanticStorePartition,
-) -> None:
-    now = datetime(2024, 1, 1, tzinfo=UTC)
-    event_id = uuid4()
-    state = ClusterState(
-        clusters={
-            "cluster_0": ClusterInfo(centroid=[0.1, 0.2, 0.3], count=1, last_ts=now),
-        },
-        event_to_cluster={event_id: "cluster_0"},
-        pending_events={"cluster_0": {event_id: now}},
-        next_cluster_id=1,
-    )
-    await partition.save_cluster_state(state)
-
-    loaded = await partition.get_cluster_state()
-    assert loaded is not None
-    assert set(loaded.clusters.keys()) == {"cluster_0"}
-    assert loaded.clusters["cluster_0"].count == 1
-    assert loaded.clusters["cluster_0"].centroid == [0.1, 0.2, 0.3]
-    assert loaded.event_to_cluster == {event_id: "cluster_0"}
-    assert loaded.pending_events == {"cluster_0": {event_id: now}}
-    assert loaded.next_cluster_id == 1
-
-
-@pytest.mark.asyncio
-async def test_save_cluster_state_overwrites(
-    partition: SQLAlchemySemanticStorePartition,
-) -> None:
-    now = datetime(2024, 1, 1, tzinfo=UTC)
-    first = ClusterState(
-        clusters={
-            "cluster_0": ClusterInfo(centroid=[1.0, 0.0, 0.0], count=1, last_ts=now)
-        },
-        next_cluster_id=1,
-    )
-    await partition.save_cluster_state(first)
-
-    second = ClusterState(
-        clusters={
-            "cluster_1": ClusterInfo(
-                centroid=[0.0, 1.0, 0.0], count=2, last_ts=now + timedelta(minutes=1)
-            )
-        },
-        next_cluster_id=2,
-    )
-    await partition.save_cluster_state(second)
-
-    loaded = await partition.get_cluster_state()
-    assert loaded is not None
-    assert set(loaded.clusters.keys()) == {"cluster_1"}
-    assert loaded.next_cluster_id == 2
-
-
-@pytest.mark.asyncio
-async def test_cluster_state_isolated_per_partition(
-    store: SQLAlchemySemanticStore,
-) -> None:
-    p1 = await store.open_or_create_partition(PARTITION)
-    p2 = await store.open_or_create_partition(OTHER_PARTITION)
-
-    now = datetime(2024, 1, 1, tzinfo=UTC)
-    await p1.save_cluster_state(
-        ClusterState(
-            clusters={
-                "cluster_0": ClusterInfo(centroid=[1.0, 0.0, 0.0], count=1, last_ts=now)
-            },
-            next_cluster_id=1,
-        )
-    )
-
-    assert await p2.get_cluster_state() is None
-    assert (await p1.get_cluster_state()) is not None
-
-
-@pytest.mark.asyncio
-async def test_delete_partition_drops_cluster_state(
-    store: SQLAlchemySemanticStore,
-    partition: SQLAlchemySemanticStorePartition,
-) -> None:
-    now = datetime(2024, 1, 1, tzinfo=UTC)
-    await partition.save_cluster_state(
-        ClusterState(
-            clusters={
-                "cluster_0": ClusterInfo(centroid=[0.1, 0.2, 0.3], count=1, last_ts=now)
-            },
-            next_cluster_id=1,
-        )
-    )
-
-    await store.delete_partition(PARTITION)
-    reopened = await store.open_or_create_partition(PARTITION)
-    assert await reopened.get_cluster_state() is None
 
 
 # ---------------------------------------------------------------------------

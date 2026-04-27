@@ -10,21 +10,20 @@ and the consolidation helpers, deduplicated into a single class.
 
 Public surface
 --------------
-* :meth:`ingest` — cluster-aware LLM extraction from conversation
-  episodes.  Loads cluster state, assigns new episodes to clusters,
-  flushes ready clusters (by size or age) to the LLM, writes
-  extracted attributes with citations, garbage-collects idle
-  clusters, and persists updated state.  Returns the uuids that were
-  actually flushed so callers can ack them on their message queue.
-* :meth:`add_attributes` — write caller-supplied attributes (no LLM,
-  no clustering); the memory embeds values internally.
+* :meth:`ingest` — event-by-event LLM extraction from conversation
+  episodes, processed in timestamp order.  Writes extracted
+  attributes with citations and auto-runs consolidation afterward.
+  Returns the uuids that were processed so callers can ack them on
+  their message queue.
+* :meth:`add_attributes` — write caller-supplied attributes (no LLM);
+  the memory embeds values internally.
 * :meth:`retrieve` — text query → embed → vector search → enrich.
 * :meth:`get_attributes`, :meth:`list_attributes` — low-level reads.
 * :meth:`delete_attributes`, :meth:`delete_attributes_matching` —
   low-level + filter-based deletes.
 * :meth:`consolidate` — LLM-driven dedup within one topic or one
   ``(topic, category)``.  Auto-runs at the end of :meth:`ingest` for
-  any ``(topic, category)`` over ``ClusteringConfig.consolidation_threshold``.
+  any ``(topic, category)`` over ``IngestConfig.consolidation_threshold``.
 
 Ordering rules
 --------------
@@ -41,22 +40,14 @@ Keys in ``SemanticAttribute.properties`` that begin with ``_`` denote
 **system metadata**.  "System" here is broad — it includes both this
 library and any application building on top of it; only an end-user
 entering free-form metadata is outside the system.  The library
-claims a **specific named set** of ``_``-prefixed keys for itself
-(see :attr:`AttributeMemory._RESERVED_PROPERTY_KEYS`) and rejects
-those from :meth:`add_attributes`; every other ``_``-prefixed key is
-available for applications to use.
+currently reserves no property keys; applications may use any
+``_``-prefixed keys they need.
 
-The one key the memory currently reserves is ``_cluster_id``: every
-attribute produced by :meth:`ingest` carries the id of the cluster
-it was extracted from, so subsequent LLM calls for the same cluster
-see only that cluster's attributes as their "current profile".
 """
 
-import functools
 import json
 import logging
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
-from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -74,21 +65,16 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.language_model import LanguageModel
 from memmachine_server.common.reranker import Reranker
 from memmachine_server.common.vector_store import Record, VectorStoreCollection
-from memmachine_server.semantic_memory.attribute_memory.clustering import (
-    ClusterManager,
-    NoOpClusterSplitter,
-)
-from memmachine_server.semantic_memory.attribute_memory.clustering_config import (
-    ClusteringConfig,
-)
 from memmachine_server.semantic_memory.attribute_memory.data_types import (
-    ClusterState,
     Command,
     CommandType,
     Content,
     Event,
     MessageContext,
     Text,
+)
+from memmachine_server.semantic_memory.attribute_memory.ingest_config import (
+    IngestConfig,
 )
 from memmachine_server.semantic_memory.attribute_memory.semantic_store.semantic_store import (
     SemanticAttribute,
@@ -100,8 +86,6 @@ from memmachine_server.semantic_memory.attribute_memory.semantic_store.sqlalchem
 )
 
 logger = logging.getLogger(__name__)
-
-_CLUSTER_METADATA_KEY = "_cluster_id"
 
 # Rerank over-fetch tuning (mirrors DeclarativeMemory.retrieve_episodes):
 # when a reranker is available, pull a bigger candidate window from the
@@ -169,13 +153,9 @@ class AttributeMemory:
         "attribute",
         "value",
     )
-    # Property-dict keys that the memory reserves for its own use.
-    # Applications may set their own ``_``-prefixed keys in
-    # ``SemanticAttribute.properties`` (they are part of "the system"
-    # too); this set names the specific keys the memory library itself
-    # owns, which user-facing API is not allowed to set via
-    # :meth:`add_attributes`.
-    _RESERVED_PROPERTY_KEYS: frozenset[str] = frozenset({_CLUSTER_METADATA_KEY})
+    # The memory currently reserves no property keys; applications may
+    # set their own ``_``-prefixed keys in ``SemanticAttribute.properties``.
+    _RESERVED_PROPERTY_KEYS: frozenset[str] = frozenset()
 
     # ------------------------------------------------------------------ #
     # Construction
@@ -189,7 +169,7 @@ class AttributeMemory:
         embedder: Embedder,
         language_model: LanguageModel,
         schema: PartitionSchema,
-        clustering_config: ClusteringConfig | None = None,
+        ingest_config: IngestConfig | None = None,
         reranker: Reranker | None = None,
     ) -> None:
         """Bind to partition-scoped storages and LLM/embedder handles."""
@@ -198,9 +178,8 @@ class AttributeMemory:
         self._embedder = embedder
         self._llm = language_model
         self._schema = schema
-        self._config = clustering_config or ClusteringConfig()
+        self._config = ingest_config or IngestConfig()
         self._reranker = reranker
-        self._cluster_manager = ClusterManager(self._config.cluster_params)
 
     @classmethod
     def expected_vector_store_collection_schema(
@@ -219,76 +198,20 @@ class AttributeMemory:
         }
 
     # ------------------------------------------------------------------ #
-    # Ingest (high-level, cluster-aware)
+    # Ingest (high-level)
     # ------------------------------------------------------------------ #
 
     async def ingest(self, events: Iterable[Event]) -> tuple[UUID, ...]:
-        """Cluster-aware LLM extraction from events.
-
-        Loads persisted cluster state, assigns any new events to
-        clusters, and flushes ready clusters (size or age trigger) to
-        the LLM.  Returns the uuids that were flushed.  Events whose
-        clusters aren't yet ready remain in persisted ``pending_events``
-        and will be flushed on a future call when the trigger fires.
-
-        Callers should pass every event that is still ``pending`` on
-        their upstream queue — the memory dedupes via
-        ``state.event_to_cluster`` so repeated passes are idempotent.
-        """
+        """LLM extraction from events, processed in timestamp order."""
         events_list = list(events)
         if not events_list:
             return ()
 
-        if not self._config.enabled:
-            processed = await self._ingest_without_clustering(events_list)
-            await self._auto_consolidate()
-            return processed
-
-        state = await self._partition.get_cluster_state() or ClusterState()
-
-        await self._assign_new_events(events_list, state)
-
-        now = datetime.now(tz=UTC)
-        ready_cluster_ids = self._select_ready_clusters(state, now)
-        if not ready_cluster_ids:
-            self._apply_cluster_idle_gc(state, now)
-            await self._partition.save_cluster_state(state)
-            return ()
-
-        ready_cluster_ids = ready_cluster_ids[: self._config.max_clusters_per_run]
-
-        events_by_uuid = {e.uuid: e for e in events_list}
-        clustered = self._collect_ready_clusters(
-            ready_cluster_ids, state, events_by_uuid
-        )
-        if not clustered:
-            self._apply_cluster_idle_gc(state, now)
-            await self._partition.save_cluster_state(state)
-            return ()
-
-        cluster_embeddings = await self._embed_cluster_events(clustered)
-        clustered, state = await self._config.splitter.maybe_split_clusters(
-            cluster_events=clustered,
-            cluster_embeddings=cluster_embeddings,
-            state=state,
-            reranker=self._reranker,
-        )
-
-        processed_uuids: list[UUID] = []
-        for cluster_id, cluster_events in clustered:
-            await self._process_cluster(cluster_id, cluster_events)
-            processed_uuids.extend(e.uuid for e in cluster_events)
-
-        for cluster_id in ready_cluster_ids:
-            state.pending_events.pop(cluster_id, None)
-
-        _rebuild_event_to_cluster(state)
-        self._apply_cluster_idle_gc(state, now)
-        await self._partition.save_cluster_state(state)
+        processed = await self._ingest_events(events_list)
         await self._auto_consolidate()
-        return tuple(processed_uuids)
+        return processed
 
-    async def _ingest_without_clustering(
+    async def _ingest_events(
         self,
         events: Sequence[Event],
     ) -> tuple[UUID, ...]:
@@ -300,142 +223,23 @@ class AttributeMemory:
             processed.append(event.uuid)
         return tuple(processed)
 
-    async def _assign_new_events(
-        self,
-        events: Sequence[Event],
-        state: ClusterState,
-    ) -> None:
-        """Embed unseen events and assign them to clusters in ``state``."""
-        new_events = [e for e in events if e.uuid not in state.event_to_cluster]
-        if not new_events:
-            return
-        new_events.sort(key=lambda e: (e.timestamp, e.uuid))
-        vectors = await self._embedder.ingest_embed(
-            [_event_text(e) for e in new_events]
-        )
-        for event, vector in zip(new_events, vectors, strict=True):
-            assignment = self._cluster_manager.assign(
-                event_id=event.uuid,
-                embedding=vector,
-                timestamp=event.timestamp,
-                state=state,
-            )
-            state.pending_events.setdefault(assignment.cluster_id, {})[event.uuid] = (
-                event.timestamp
-            )
-        _rebuild_event_to_cluster(state)
-
-    async def _embed_cluster_events(
-        self,
-        clustered: Sequence[tuple[str, Sequence[Event]]],
-    ) -> Mapping[UUID, Sequence[float]]:
-        """Embed the events currently under consideration for split decisions."""
-        ordered_events: list[Event] = []
-        seen: set[UUID] = set()
-        for _cluster_id, events in clustered:
-            for event in events:
-                if event.uuid in seen:
-                    continue
-                seen.add(event.uuid)
-                ordered_events.append(event)
-        if not ordered_events:
-            return {}
-        vectors = await self._embedder.ingest_embed(
-            [_event_text(event) for event in ordered_events]
-        )
-        return {
-            event.uuid: vector
-            for event, vector in zip(ordered_events, vectors, strict=True)
-        }
-
-    def _select_ready_clusters(
-        self,
-        state: ClusterState,
-        now: datetime,
-    ) -> list[str]:
-        """Return cluster_ids whose pending events have tripped a trigger."""
-        ready: list[tuple[datetime, str]] = []
-        for cluster_id, events in state.pending_events.items():
-            if not events:
-                continue
-            count = len(events)
-            oldest = min(events.values())
-            size_ready = (
-                self._config.trigger_messages > 0
-                and count >= self._config.trigger_messages
-            )
-            age_ready = (
-                self._config.trigger_age is not None
-                and (now - oldest) >= self._config.trigger_age
-            )
-            if size_ready or age_ready:
-                ready.append((oldest, cluster_id))
-        return [cluster_id for _oldest, cluster_id in sorted(ready)]
-
-    def _collect_ready_clusters(
-        self,
-        cluster_ids: Sequence[str],
-        state: ClusterState,
-        events_by_uuid: Mapping[UUID, Event],
-    ) -> list[tuple[str, list[Event]]]:
-        """Pair ready cluster ids with their events from the current batch.
-
-        Skips any cluster whose pending event set isn't fully present
-        in the caller-provided batch — processing a cluster without
-        all its content would corrupt the LLM's view of it.
-        """
-        clustered: list[tuple[str, list[Event]]] = []
-        for cluster_id in cluster_ids:
-            event_uuids = list(state.pending_events.get(cluster_id, {}).keys())
-            if not event_uuids:
-                continue
-            cluster_events = [
-                events_by_uuid[uid] for uid in event_uuids if uid in events_by_uuid
-            ]
-            if len(cluster_events) < len(event_uuids):
-                logger.warning(
-                    "Skipping ready cluster %s: %d of %d events missing from batch",
-                    cluster_id,
-                    len(event_uuids) - len(cluster_events),
-                    len(event_uuids),
-                )
-                continue
-            cluster_events.sort(key=lambda e: (e.timestamp, e.uuid))
-            clustered.append((cluster_id, cluster_events))
-        return clustered
-
-    async def _process_cluster(
-        self,
-        cluster_id: str,
-        events: Sequence[Event],
-    ) -> None:
-        """Run LLM extraction for one ready cluster across every topic.
-
-        Context-length failures from the LLM are logged and skipped
-        for the topic in question — the cluster's other topics still
-        run, and the cluster is considered processed so its events
-        won't loop back through ingest.
-        """
-        await self._process_event_batch(events=events, cluster_id=cluster_id)
-
     async def _process_event(
         self,
         event: Event,
     ) -> None:
         """Run LLM extraction for one event against the topic-wide profile."""
-        await self._process_event_batch(events=[event], cluster_id=None)
+        await self._process_event_batch(events=[event])
 
     async def _process_event_batch(
         self,
         *,
         events: Sequence[Event],
-        cluster_id: str | None,
     ) -> None:
-        """Run LLM extraction for one batch against topic or cluster scope."""
-        content = _format_cluster_content(events)
+        """Run LLM extraction for one batch against the topic-wide profile."""
+        content = _format_event_content(events)
         citation_uuids = tuple(e.uuid for e in events)
         for topic_def in self._schema.topics:
-            existing = await self._list_context_attributes(topic_def, cluster_id)
+            existing = await self._list_context_attributes(topic_def)
             try:
                 commands = await self._llm_extract_commands(
                     existing=existing,
@@ -445,11 +249,9 @@ class AttributeMemory:
             except Exception as exc:
                 if _is_context_length_exceeded_error(exc):
                     logger.warning(
-                        "Skipping topic %s for %s%s: LLM context "
+                        "Skipping topic %s: LLM context "
                         "length exceeded (%d events, %d existing attributes)",
                         topic_def.name,
-                        "cluster " if cluster_id is not None else "topic ",
-                        cluster_id or topic_def.name,
                         len(events),
                         len(existing),
                     )
@@ -457,24 +259,12 @@ class AttributeMemory:
                 raise
             await self._apply_commands(
                 topic_def.name,
-                cluster_id,
                 commands,
                 citation_uuids,
             )
 
-    def _apply_cluster_idle_gc(self, state: ClusterState, now: datetime) -> None:
-        """Drop clusters inactive longer than ``idle_ttl`` with no pending events."""
-        if self._config.idle_ttl is None:
-            return
-        for cluster_id, info in list(state.clusters.items()):
-            if cluster_id in state.pending_events:
-                continue
-            if (now - info.last_ts) > self._config.idle_ttl:
-                state.clusters.pop(cluster_id, None)
-                state.split_records.pop(cluster_id, None)
-
     # ------------------------------------------------------------------ #
-    # Mid-level write (no LLM, no clustering)
+    # Mid-level write (no LLM)
     # ------------------------------------------------------------------ #
 
     async def add_attributes(
@@ -493,8 +283,7 @@ class AttributeMemory:
         bugs.  Leave ``citations=None``.
 
         Rejects any ``properties`` key in
-        :attr:`_RESERVED_PROPERTY_KEYS` (system-defined keys like
-        ``_cluster_id`` are the memory's to set, not the caller's).
+        :attr:`_RESERVED_PROPERTY_KEYS`.
         """
         attrs = list(attributes)
         if not attrs:
@@ -515,9 +304,7 @@ class AttributeMemory:
     ) -> None:
         """Internal write path.
 
-        Skips reserved-key validation and honors ``attr.citations`` —
-        both are required for :meth:`ingest` to attach ``_cluster_id``
-        and link source-event uuids.
+        Skips reserved-key validation and honors ``attr.citations``.
         """
         if not attrs:
             return
@@ -669,12 +456,12 @@ class AttributeMemory:
         if topic_def is None:
             raise ValueError(f"Topic {topic!r} is not in the schema")
 
-        filter_parts: list[FilterExpr] = [
-            Comparison(field="topic", op="=", value=topic),
-        ]
+        filter_expr: FilterExpr = Comparison(field="topic", op="=", value=topic)
         if category is not None:
-            filter_parts.append(Comparison(field="category", op="=", value=category))
-        filter_expr = functools.reduce(lambda a, b: And(left=a, right=b), filter_parts)
+            filter_expr = And(
+                left=filter_expr,
+                right=Comparison(field="category", op="=", value=category),
+            )
 
         existing = [
             attr
@@ -709,11 +496,7 @@ class AttributeMemory:
             await self.add_attributes(new_attrs)
 
     async def _auto_consolidate(self) -> None:
-        """Run :meth:`consolidate` on every ``(topic, category)`` over threshold.
-
-        Called at the end of :meth:`ingest` once clusters are flushed.
-        Matches the legacy's ingestion-time auto-sweep semantics.
-        """
+        """Run :meth:`consolidate` on every ``(topic, category)`` over threshold."""
         threshold = self._config.consolidation_threshold
         if threshold <= 0:
             return
@@ -746,19 +529,11 @@ class AttributeMemory:
     async def _list_context_attributes(
         self,
         topic_def: TopicDefinition,
-        cluster_id: str | None,
     ) -> list[SemanticAttribute]:
         """Load scoped attributes for prompt construction, capped for safety."""
         filter_expr: FilterExpr = Comparison(
             field="topic", op="=", value=topic_def.name
         )
-        if cluster_id is not None:
-            filter_expr = And(
-                left=filter_expr,
-                right=Comparison(
-                    field=f"m.{_CLUSTER_METADATA_KEY}", op="=", value=cluster_id
-                ),
-            )
         cap = self._config.max_features_per_update
         attrs: list[SemanticAttribute] = []
         async for attr in self._partition.list_attributes(filter_expr=filter_expr):
@@ -836,11 +611,10 @@ class AttributeMemory:
     async def _apply_commands(
         self,
         topic: str,
-        cluster_id: str | None,
         commands: Iterable[Command],
         citation_uuids: Sequence[UUID],
     ) -> None:
-        """Apply LLM-emitted add/delete commands under topic or cluster scope."""
+        """Apply LLM-emitted add/delete commands under topic scope."""
         commands = tuple(commands)
         if not commands:
             return
@@ -850,7 +624,7 @@ class AttributeMemory:
 
         delete_uuids: set[UUID] = set()
         for cmd in delete_cmds:
-            delete_uuids.update(await self._match_uuids(topic, cluster_id, cmd))
+            delete_uuids.update(await self._match_uuids(topic, cmd))
         if delete_uuids:
             await self.delete_attributes(delete_uuids)
 
@@ -862,11 +636,6 @@ class AttributeMemory:
                     category=cmd.category,
                     attribute=cmd.attribute,
                     value=cmd.value,
-                    properties=(
-                        {_CLUSTER_METADATA_KEY: cluster_id}
-                        if cluster_id is not None
-                        else None
-                    ),
                     citations=tuple(citation_uuids) or None,
                 )
                 for cmd in add_cmds
@@ -876,21 +645,16 @@ class AttributeMemory:
     async def _match_uuids(
         self,
         topic: str,
-        cluster_id: str | None,
         cmd: Command,
     ) -> tuple[UUID, ...]:
-        """Resolve uuids matching a delete command in the current scope."""
-        parts: list[FilterExpr] = [
-            Comparison(field="topic", op="=", value=topic),
+        """Resolve uuids matching a delete command in the current topic."""
+        filter_expr: FilterExpr = Comparison(field="topic", op="=", value=topic)
+        for part in (
             Comparison(field="category", op="=", value=cmd.category),
             Comparison(field="attribute", op="=", value=cmd.attribute),
             Comparison(field="value", op="=", value=cmd.value),
-        ]
-        if cluster_id is not None:
-            parts.append(
-                Comparison(field=f"m.{_CLUSTER_METADATA_KEY}", op="=", value=cluster_id)
-            )
-        filter_expr = functools.reduce(lambda a, b: And(left=a, right=b), parts)
+        ):
+            filter_expr = And(left=filter_expr, right=part)
         return await self._partition.list_attribute_uuids_matching(
             filter_expr=filter_expr
         )
@@ -968,8 +732,8 @@ def _event_text(event: Event) -> str:
     return "\n".join(item.text for item in body.items if isinstance(item, Text))
 
 
-def _format_cluster_content(events: Sequence[Event]) -> str:
-    """Format a cluster's events as a single prompt string.
+def _format_event_content(events: Sequence[Event]) -> str:
+    """Format a batch of events as a single prompt string.
 
     Each event's text is prefixed with its source (from
     :class:`MessageContext`) when available, matching the legacy
@@ -988,13 +752,4 @@ def _format_cluster_content(events: Sequence[Event]) -> str:
     return "\n\n".join(parts)
 
 
-def _rebuild_event_to_cluster(state: ClusterState) -> None:
-    """Recompute ``event_to_cluster`` from the authoritative ``pending_events``."""
-    state.event_to_cluster = {
-        event_id: cluster_id
-        for cluster_id, events in state.pending_events.items()
-        for event_id in events
-    }
-
-
-__all__ = ["AttributeMemory", "NoOpClusterSplitter"]
+__all__ = ["AttributeMemory"]
