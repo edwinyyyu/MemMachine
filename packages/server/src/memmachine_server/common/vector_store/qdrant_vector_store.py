@@ -343,6 +343,10 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     ) -> list[QueryResult]:
         """Query for records matching the criteria by query vectors."""
         async with self._tracker("query"):
+            query_vectors = [list(query_vector) for query_vector in query_vectors]
+            if not query_vectors:
+                return []
+
             partition_key_filter = _partition_filter(self._partition_key)
             if property_filter:
                 if not validate_filter(property_filter):
@@ -361,7 +365,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
             requests = [
                 models.QueryRequest(
                     shard_key=self._shard_key,
-                    query=list(query_vector),
+                    query=query_vector,
                     filter=qdrant_filter,
                     score_threshold=score_threshold,
                     limit=effective_limit,
@@ -370,9 +374,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                 )
                 for query_vector in query_vectors
             ]
-
-            if not requests:
-                return []
 
             batch_results = await self._client.query_batch_points(
                 collection_name=self._collection_name,
