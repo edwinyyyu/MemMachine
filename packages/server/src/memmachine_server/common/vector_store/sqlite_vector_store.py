@@ -701,7 +701,7 @@ class SQLiteVectorStore(VectorStore):
         if config is None:
             return
 
-        search_engine = self._get_or_create_vector_search_engine(
+        search_engine = await self._get_or_create_vector_search_engine(
             namespace, name, config
         )
 
@@ -859,7 +859,7 @@ class SQLiteVectorStore(VectorStore):
             return None
 
         records_table = self._records_table(namespace, name)
-        search_engine = self._get_or_create_vector_search_engine(
+        search_engine = await self._get_or_create_vector_search_engine(
             namespace, name, existing
         )
 
@@ -963,7 +963,7 @@ class SQLiteVectorStore(VectorStore):
             return None
         return VectorStoreCollectionConfig.model_validate(row)
 
-    def _get_or_create_vector_search_engine(
+    async def _get_or_create_vector_search_engine(
         self,
         namespace: str,
         name: str,
@@ -977,7 +977,7 @@ class SQLiteVectorStore(VectorStore):
 
             path = self._index_path(namespace, name)
             if path is not None and path.exists():
-                search_engine.load(str(path))
+                await search_engine.load(str(path))
 
             self._search_engines[cache_key] = search_engine
 
@@ -991,7 +991,7 @@ class SQLiteVectorStore(VectorStore):
         config: VectorStoreCollectionConfig,
     ) -> tuple[Table, VectorSearchEngine]:
         records_table = self._records_table(namespace, name)
-        search_engine = self._get_or_create_vector_search_engine(
+        search_engine = await self._get_or_create_vector_search_engine(
             namespace, name, config
         )
 
