@@ -278,12 +278,14 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         if payload is None:
             return None
 
-        properties_schema = self._config.properties_schema
+        indexed_properties_schema = self._config.indexed_properties_schema
         result: dict[str, PropertyValue] = {}
         for key, value in payload.items():
             if key == _PAYLOAD_PARTITION_KEY or value is None:
                 continue
-            if properties_schema.get(key) is datetime and isinstance(value, str):
+            if indexed_properties_schema.get(key) is datetime and isinstance(
+                value, str
+            ):
                 result[key] = datetime.fromisoformat(value)
             else:
                 result[key] = cast(PropertyValue, value)
@@ -335,8 +337,8 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         self,
         *,
         query_vectors: Iterable[Sequence[float]],
+        limit: int,
         score_threshold: float | None = None,
-        limit: int | None = None,
         property_filter: FilterExpr | None = None,
         return_vector: bool = False,
         return_properties: bool = True,
@@ -360,15 +362,13 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
             else:
                 qdrant_filter = partition_key_filter
 
-            effective_limit = limit if limit is not None else 10000
-
             requests = [
                 models.QueryRequest(
                     shard_key=self._shard_key,
                     query=query_vector,
                     filter=qdrant_filter,
                     score_threshold=score_threshold,
-                    limit=effective_limit,
+                    limit=limit,
                     with_vector=return_vector,
                     with_payload=return_properties,
                 )
@@ -569,7 +569,7 @@ class QdrantVectorStore(VectorStore):
     _REGISTRY_NAME: ClassVar[str] = "name"
     _REGISTRY_VECTOR_DIMENSIONS: ClassVar[str] = "vector_dimensions"
     _REGISTRY_SIMILARITY_METRIC: ClassVar[str] = "similarity_metric"
-    _REGISTRY_PROPERTIES_SCHEMA: ClassVar[str] = "properties_schema"
+    _REGISTRY_INDEXED_PROPERTIES_SCHEMA: ClassVar[str] = "indexed_properties_schema"
 
     # Fixed UUID namespace for deterministic registry point IDs.
     _REGISTRY_UUID_NAMESPACE: ClassVar[UUID] = UUID(
@@ -712,7 +712,9 @@ class QdrantVectorStore(VectorStore):
         return VectorStoreCollectionConfig(
             vector_dimensions=entry[QdrantVectorStore._REGISTRY_VECTOR_DIMENSIONS],
             similarity_metric=entry[QdrantVectorStore._REGISTRY_SIMILARITY_METRIC],
-            properties_schema=entry[QdrantVectorStore._REGISTRY_PROPERTIES_SCHEMA],
+            indexed_properties_schema=entry[
+                QdrantVectorStore._REGISTRY_INDEXED_PROPERTIES_SCHEMA
+            ],
         )
 
     def _build_collection_handle(
@@ -762,7 +764,7 @@ class QdrantVectorStore(VectorStore):
                     is_tenant=True,
                 ),
             )
-            for prop_name, prop_type in config.properties_schema.items():
+            for prop_name, prop_type in config.indexed_properties_schema.items():
                 index_type = QdrantVectorStore._PROPERTY_TYPE_TO_INDEX_TYPE.get(
                     prop_type
                 )
@@ -804,9 +806,9 @@ class QdrantVectorStore(VectorStore):
                         QdrantVectorStore._REGISTRY_NAME: name,
                         QdrantVectorStore._REGISTRY_VECTOR_DIMENSIONS: config.vector_dimensions,
                         QdrantVectorStore._REGISTRY_SIMILARITY_METRIC: config.similarity_metric.value,
-                        QdrantVectorStore._REGISTRY_PROPERTIES_SCHEMA: config.model_dump(
+                        QdrantVectorStore._REGISTRY_INDEXED_PROPERTIES_SCHEMA: config.model_dump(
                             mode="json"
-                        )["properties_schema"],
+                        )["indexed_properties_schema"],
                     },
                 ),
             ],

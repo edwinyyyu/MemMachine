@@ -68,7 +68,7 @@ async def collection(store):
         config=VectorStoreCollectionConfig(
             vector_dimensions=VECTOR_DIM,
             similarity_metric=SimilarityMetric.COSINE,
-            properties_schema={
+            indexed_properties_schema={
                 "name": str,
                 "age": int,
                 "score": float,
@@ -130,7 +130,7 @@ class TestCollectionLifecycle:
                 config=VectorStoreCollectionConfig(
                     vector_dimensions=VECTOR_DIM,
                     similarity_metric=SimilarityMetric.COSINE,
-                    properties_schema={
+                    indexed_properties_schema={
                         "name": str,
                         "age": int,
                         "score": float,
@@ -187,7 +187,7 @@ class TestCollectionLifecycle:
         config = VectorStoreCollectionConfig(
             vector_dimensions=VECTOR_DIM,
             similarity_metric=SimilarityMetric.COSINE,
-            properties_schema=schema,
+            indexed_properties_schema=schema,
         )
         await store.create_collection(namespace=NAMESPACE, name="coll_a", config=config)
         await store.create_collection(namespace=NAMESPACE, name="coll_b", config=config)
@@ -238,7 +238,7 @@ class TestUpsertAndQuery:
         await collection.upsert(records=[r1, r2])
 
         query_results = list(
-            await collection.query(query_vectors=[v1], score_threshold=0.9)
+            await collection.query(query_vectors=[v1], limit=10, score_threshold=0.9)
         )
         matches = query_results[0].matches
 
@@ -257,24 +257,13 @@ class TestUpsertAndQuery:
         assert len(query_results[0].matches) == 2
 
     @pytest.mark.asyncio
-    async def test_query_with_limit_none(self, collection):
-        vectors = [_normalize([1.0, float(i) * 0.01, 0.0]) for i in range(5)]
-        records = [_make_record(vector=v) for v in vectors]
-        await collection.upsert(records=records)
-
-        query_results = list(
-            await collection.query(query_vectors=[vectors[0]], limit=None)
-        )
-        assert len(query_results[0].matches) == 5
-
-    @pytest.mark.asyncio
     async def test_query_return_vector_false(self, collection):
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1, properties={"name": "test"})
         await collection.upsert(records=[r1])
 
         query_results = list(
-            await collection.query(query_vectors=[v1], return_vector=False)
+            await collection.query(query_vectors=[v1], limit=10, return_vector=False)
         )
         matches = query_results[0].matches
         assert len(matches) == 1
@@ -290,6 +279,7 @@ class TestUpsertAndQuery:
         query_results = list(
             await collection.query(
                 query_vectors=[v1],
+                limit=10,
                 return_vector=True,
                 return_properties=False,
             )
@@ -316,7 +306,7 @@ class TestUpsertAndQuery:
 
     @pytest.mark.asyncio
     async def test_query_empty_vectors(self, collection):
-        all_results = list(await collection.query(query_vectors=[]))
+        all_results = list(await collection.query(query_vectors=[], limit=10))
         assert len(all_results) == 0
 
 
@@ -376,6 +366,7 @@ class TestFilters:
         all_results = list(
             await collection.query(
                 query_vectors=[query_vec],
+                limit=10,
                 property_filter=Comparison(field=field, op=op, value=value),
             )
         )
@@ -389,6 +380,7 @@ class TestFilters:
         query_results = list(
             await collection.query(
                 query_vectors=[v1],
+                limit=10,
                 property_filter=Comparison(field="name", op="=", value="alice"),
             )
         )
@@ -410,6 +402,7 @@ class TestFilters:
         query_results = list(
             await collection.query(
                 query_vectors=[v1],
+                limit=10,
                 property_filter=Comparison(field="age", op=">", value=30),
             )
         )
@@ -431,6 +424,7 @@ class TestFilters:
         query_results = list(
             await collection.query(
                 query_vectors=[v1],
+                limit=10,
                 property_filter=Comparison(field="age", op="<", value=30),
             )
         )
@@ -816,6 +810,7 @@ class TestFilters:
         query_results = list(
             await collection.query(
                 query_vectors=[v1],
+                limit=10,
                 property_filter=IsNull(field="name"),
             )
         )
@@ -842,6 +837,7 @@ class TestFilters:
         query_results = list(
             await collection.query(
                 query_vectors=[v1],
+                limit=10,
                 property_filter=Not(expr=IsNull(field="name")),
             )
         )
@@ -859,6 +855,7 @@ class TestFilters:
         query_results = list(
             await collection.query(
                 query_vectors=[v1],
+                limit=10,
                 property_filter=In(field="name", values=["alice", "carol"]),
             )
         )
@@ -874,6 +871,7 @@ class TestFilters:
         query_results = list(
             await collection.query(
                 query_vectors=[v1],
+                limit=10,
                 property_filter=And(
                     left=Comparison(field="active", op="=", value=True),
                     right=Comparison(field="age", op=">", value=30),
@@ -890,6 +888,7 @@ class TestFilters:
         query_results = list(
             await collection.query(
                 query_vectors=[v1],
+                limit=10,
                 property_filter=Or(
                     left=Comparison(field="name", op="=", value="alice"),
                     right=Comparison(field="name", op="=", value="carol"),
@@ -908,6 +907,7 @@ class TestFilters:
         query_results = list(
             await collection.query(
                 query_vectors=[v1],
+                limit=10,
                 property_filter=Not(expr=Comparison(field="age", op=">", value=30)),
             )
         )
@@ -1185,7 +1185,7 @@ class TestDistributedSharding:
             config=VectorStoreCollectionConfig(
                 vector_dimensions=VECTOR_DIM,
                 similarity_metric=SimilarityMetric.COSINE,
-                properties_schema={"name": str},
+                indexed_properties_schema={"name": str},
             ),
         )
         coll = await store.open_collection(namespace=ns, name=name)
