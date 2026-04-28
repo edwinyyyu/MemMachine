@@ -86,7 +86,7 @@ class USearchVectorSearchEngine(VectorSearchEngine):
         self,
         vectors: Iterable[Sequence[float]],
         *,
-        limit: int | None = None,
+        limit: int,
         allowed_keys: Container[int] | None = None,
     ) -> list[SearchResult]:
         vectors = list(vectors)
@@ -101,13 +101,12 @@ class USearchVectorSearchEngine(VectorSearchEngine):
     def _sync_search(
         self,
         vectors: Sequence[Sequence[float]],
-        limit: int | None,
+        limit: int,
         allowed_keys: Container[int] | None,
     ) -> list[SearchResult]:
         query = np.array(vectors, dtype=np.float32)
         num_queries = query.shape[0]
 
-        effective_limit = limit if limit is not None else self._index.size
         overfetch_factor = (
             1 if allowed_keys is None else USearchVectorSearchEngine._OVERFETCH_BASE
         )
@@ -117,7 +116,7 @@ class USearchVectorSearchEngine(VectorSearchEngine):
 
         while pending_indices:
             pending_query = query[pending_indices]
-            fetch_limit = min(effective_limit * overfetch_factor, self._index.size)
+            fetch_limit = min(limit * overfetch_factor, self._index.size)
 
             results = self._index.search(pending_query, fetch_limit)
             all_keys = np.atleast_2d(results.keys)
@@ -142,10 +141,10 @@ class USearchVectorSearchEngine(VectorSearchEngine):
                             score=self._distance_to_score(float(dist)),
                         )
                     )
-                    if len(matches) >= effective_limit:
+                    if len(matches) >= limit:
                         break
 
-                if len(matches) >= effective_limit or fetch_limit >= self._index.size:
+                if len(matches) >= limit or fetch_limit >= self._index.size:
                     final_results[original_idx] = SearchResult(matches=matches)
                 else:
                     still_pending.append(original_idx)

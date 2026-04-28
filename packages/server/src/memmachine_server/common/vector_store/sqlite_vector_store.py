@@ -325,8 +325,8 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         self,
         *,
         query_vectors: Iterable[Sequence[float]],
+        limit: int,
         score_threshold: float | None = None,
-        limit: int | None = None,
         property_filter: FilterExpr | None = None,
         return_vector: bool = False,
         return_properties: bool = True,
@@ -335,7 +335,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         if not query_vectors:
             return []
 
-        if limit is not None and limit <= 0:
+        if limit <= 0:
             return [QueryResult(matches=[]) for _ in query_vectors]
 
         if property_filter is not None and not validate_filter(property_filter):

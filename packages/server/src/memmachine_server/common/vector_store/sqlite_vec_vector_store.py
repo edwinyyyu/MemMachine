@@ -189,13 +189,16 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
                 vector_params,
             )
 
+    # sqlite-vec hard-caps k at 4096; larger values raise an OperationalError.
+    _MAX_K: ClassVar[int] = 4096
+
     @override
     async def query(
         self,
         *,
         query_vectors: Iterable[Sequence[float]],
+        limit: int,
         score_threshold: float | None = None,
-        limit: int | None = None,
         property_filter: FilterExpr | None = None,
         return_vector: bool = False,
         return_properties: bool = True,
@@ -204,12 +207,13 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         if not query_vectors:
             return []
 
-        effective_limit = min(limit, 4096) if limit is not None else 4096
-        if effective_limit <= 0:
+        if limit <= 0:
             return [QueryResult(matches=[]) for _ in query_vectors]
 
         if property_filter is not None and not validate_filter(property_filter):
             raise ValueError("Filter contains invalid field names")
+
+        k = min(limit, self._MAX_K)
 
         results: list[QueryResult] = []
         async with self._create_session() as session:
@@ -223,7 +227,7 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
                             f"WHERE vector MATCH :query AND k = :k "
                             f"ORDER BY distance"
                         ),
-                        {"query": query_blob, "k": effective_limit},
+                        {"query": query_blob, "k": k},
                     )
                 ).all()
 
@@ -698,7 +702,7 @@ class SQLiteVecVectorStore(VectorStore):
         )
 
         properties_column = Column("properties", JSON)
-        for field_name in config.properties_schema:
+        for field_name in config.indexed_properties_schema:
             value_expr = properties_column[field_name]["v"].as_string()
             compiled_expr = value_expr.compile(
                 dialect=session.bind.dialect,

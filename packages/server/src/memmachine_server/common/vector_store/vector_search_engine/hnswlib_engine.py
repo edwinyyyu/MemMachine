@@ -106,7 +106,7 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
         self,
         vectors: Iterable[Sequence[float]],
         *,
-        limit: int | None = None,
+        limit: int,
         allowed_keys: Container[int] | None = None,
     ) -> list[SearchResult]:
         vectors = list(vectors)
@@ -121,7 +121,7 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
     def _sync_search(
         self,
         vectors: Iterable[Sequence[float]],
-        limit: int | None,
+        limit: int,
         allowed_keys: Container[int] | None,
     ) -> list[SearchResult]:
         vectors = list(vectors)
@@ -130,11 +130,7 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
 
         query = np.array(vectors, dtype=np.float32)
 
-        effective_limit = (
-            min(limit, self._index.element_count)
-            if limit is not None
-            else self._index.element_count
-        )
+        effective_limit = min(limit, self._index.element_count)
         if effective_limit <= 0:
             return [SearchResult(matches=[]) for _ in vectors]
 
