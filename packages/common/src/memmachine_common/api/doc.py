@@ -170,16 +170,6 @@ class SpecDoc:
     EVENT_MEMORY_MAX_TEXT_CHUNK_LENGTH = (
         "Max code-point length for text chunking in segment creation"
     )
-    EVENT_MEMORY_EVICTION_SIMILARITY_THRESHOLD = (
-        "Similarity threshold for eviction clustering; None disables eviction"
-    )
-    EVENT_MEMORY_EVICTION_SEARCH_LIMIT = (
-        "Max similar vectors to retrieve per derivative for eviction evaluation"
-    )
-    EVENT_MEMORY_EVICTION_TARGET_SIZE = (
-        "Target cluster size; eviction starts when similar vectors exceed this"
-    )
-    EVENT_MEMORY_SERIALIZE_ENCODE = "Serialize encode_events calls with an async lock"
 
     LIST_EPISODIC_MEMORY = "Listed episodic memory entries."
 

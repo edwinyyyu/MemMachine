@@ -1865,11 +1865,7 @@ class Memory:
         reranker: str | None = None,
         properties_schema: dict[str, str] | None = None,
         derive_sentences: bool = False,
-        max_text_chunk_length: int = 2000,
-        eviction_similarity_threshold: float | None = None,
-        eviction_search_limit: int = 20,
-        eviction_target_size: int = 15,
-        serialize_encode: bool = False,
+        max_text_chunk_length: int = 500,
         timeout: int | None = None,
     ) -> bool:
         """
@@ -1881,10 +1877,6 @@ class Memory:
             properties_schema: User-defined filterable properties and their types.
             derive_sentences: Whether to derive sentence-level derivatives.
             max_text_chunk_length: Max code-point length for text chunking.
-            eviction_similarity_threshold: Similarity threshold for eviction; None disables.
-            eviction_search_limit: Max similar vectors per derivative for eviction.
-            eviction_target_size: Target cluster size for eviction.
-            serialize_encode: Serialize encode_events calls with an async lock.
             timeout: Request timeout in seconds (uses client default if not provided).
 
         Returns:
@@ -1906,10 +1898,6 @@ class Memory:
             properties_schema=properties_schema or {},
             derive_sentences=derive_sentences,
             max_text_chunk_length=max_text_chunk_length,
-            eviction_similarity_threshold=eviction_similarity_threshold,
-            eviction_search_limit=eviction_search_limit,
-            eviction_target_size=eviction_target_size,
-            serialize_encode=serialize_encode,
         )
         v2_data = spec.model_dump(mode="json", exclude_none=True)
 

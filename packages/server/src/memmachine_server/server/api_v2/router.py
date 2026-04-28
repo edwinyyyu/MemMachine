@@ -949,10 +949,6 @@ async def configure_event_memory(
         properties_schema=spec.properties_schema,
         derive_sentences=spec.derive_sentences,
         max_text_chunk_length=spec.max_text_chunk_length,
-        eviction_similarity_threshold=spec.eviction_similarity_threshold,
-        eviction_search_limit=spec.eviction_search_limit,
-        eviction_target_size=spec.eviction_target_size,
-        serialize_encode=spec.serialize_encode,
     )
     try:
         await memmachine.configure_event_memory(session_data, conf)

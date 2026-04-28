@@ -28,22 +28,6 @@ class EventMemoryConf(BaseModel):
         description="Whether to derive sentence-level derivatives from content",
     )
     max_text_chunk_length: int = Field(
-        2000,
+        500,
         description="Max code-point length for text chunking in segment creation",
-    )
-    eviction_similarity_threshold: float | None = Field(
-        None,
-        description="Similarity threshold for eviction clustering; None disables eviction",
-    )
-    eviction_search_limit: int = Field(
-        20,
-        description="Max similar vectors to retrieve per derivative for eviction evaluation",
-    )
-    eviction_target_size: int = Field(
-        15,
-        description="Target cluster size; eviction starts when similar vectors exceed this",
-    )
-    serialize_encode: bool = Field(
-        False,
-        description="Serialize encode_events calls with an async lock",
     )

@@ -1587,34 +1587,9 @@ class EventMemoryConfigEntry(BaseModel):
     max_text_chunk_length: Annotated[
         int,
         Field(
-            default=2000,
+            default=500,
             description=SpecDoc.EVENT_MEMORY_MAX_TEXT_CHUNK_LENGTH,
         ),
-    ]
-    eviction_similarity_threshold: Annotated[
-        float | None,
-        Field(
-            default=None,
-            description=SpecDoc.EVENT_MEMORY_EVICTION_SIMILARITY_THRESHOLD,
-        ),
-    ]
-    eviction_search_limit: Annotated[
-        int,
-        Field(
-            default=20,
-            description=SpecDoc.EVENT_MEMORY_EVICTION_SEARCH_LIMIT,
-        ),
-    ]
-    eviction_target_size: Annotated[
-        int,
-        Field(
-            default=15,
-            description=SpecDoc.EVENT_MEMORY_EVICTION_TARGET_SIZE,
-        ),
-    ]
-    serialize_encode: Annotated[
-        bool,
-        Field(default=False, description=SpecDoc.EVENT_MEMORY_SERIALIZE_ENCODE),
     ]
 
 
@@ -1643,34 +1618,9 @@ class ConfigureEventMemorySpec(_WithOrgAndProj):
     max_text_chunk_length: Annotated[
         int,
         Field(
-            default=2000,
+            default=500,
             description=SpecDoc.EVENT_MEMORY_MAX_TEXT_CHUNK_LENGTH,
         ),
-    ]
-    eviction_similarity_threshold: Annotated[
-        float | None,
-        Field(
-            default=None,
-            description=SpecDoc.EVENT_MEMORY_EVICTION_SIMILARITY_THRESHOLD,
-        ),
-    ]
-    eviction_search_limit: Annotated[
-        int,
-        Field(
-            default=20,
-            description=SpecDoc.EVENT_MEMORY_EVICTION_SEARCH_LIMIT,
-        ),
-    ]
-    eviction_target_size: Annotated[
-        int,
-        Field(
-            default=15,
-            description=SpecDoc.EVENT_MEMORY_EVICTION_TARGET_SIZE,
-        ),
-    ]
-    serialize_encode: Annotated[
-        bool,
-        Field(default=False, description=SpecDoc.EVENT_MEMORY_SERIALIZE_ENCODE),
     ]
 
 
