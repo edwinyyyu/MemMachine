@@ -64,6 +64,20 @@ from .vector_store import VectorStore, VectorStoreCollection
 logger = logging.getLogger(__name__)
 
 
+class IndexLoadError(RuntimeError):
+    """Raised when a collection's on-disk index file cannot be loaded."""
+
+    def __init__(self, namespace: str, name: str, path: Path) -> None:
+        """Initialize with the collection namespace, name, and index file path."""
+        self.namespace = namespace
+        self.name = name
+        self.path = path
+        super().__init__(
+            f"Index for collection ({namespace!r}, {name!r}) "
+            f"at {path} could not be loaded"
+        )
+
+
 class BaseSQLiteVectorStore(DeclarativeBase):
     """Base class for SQLiteVectorStore ORM models."""
 
@@ -75,6 +89,12 @@ class _CollectionRow(BaseSQLiteVectorStore):
     name: MappedColumn[str] = mapped_column(String(255), primary_key=True)
     config_json: MappedColumn[dict[str, JsonValue]] = mapped_column(
         JSON, nullable=False
+    )
+    # Flips to True after the first successful index save.
+    # Once True, the on-disk index file is part of the durable contract:
+    # missing or corrupt is treated as an error rather than silently rebuilt empty.
+    index_saved: MappedColumn[bool] = mapped_column(
+        Boolean, nullable=False, default=False
     )
 
 
@@ -110,6 +130,38 @@ class _PendingOperationRow(BaseSQLiteVectorStore):
     )  # "upsert" or "delete"
     vector: MappedColumn[bytes | None] = mapped_column(LargeBinary, nullable=True)
     applied: MappedColumn[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+async def _save_collection_index(
+    *,
+    create_session: async_sessionmaker[AsyncSession],
+    namespace: str,
+    name: str,
+    search_engine: VectorSearchEngine,
+    path: str,
+) -> None:
+    """Save a collection's index to disk."""
+    # Write index to path.
+    await search_engine.save(path)
+
+    # Delete applied pending operations and flip index_saved to True.
+    async with create_session() as session, session.begin():
+        await session.execute(
+            delete(_PendingOperationRow).where(
+                _PendingOperationRow.namespace == namespace,
+                _PendingOperationRow.name == name,
+                _PendingOperationRow.applied.is_(True),
+            )
+        )
+        await session.execute(
+            update(_CollectionRow)
+            .where(
+                _CollectionRow.namespace == namespace,
+                _CollectionRow.name == name,
+                _CollectionRow.index_saved.is_(False),
+            )
+            .values(index_saved=True)
+        )
 
 
 class SQLiteVectorStoreCollection(VectorStoreCollection):
@@ -194,8 +246,8 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
     def config(self) -> VectorStoreCollectionConfig:
         return self._config
 
-    async def _maybe_save_engine(self) -> None:
-        """Save the engine index to disk if applied pending operations exceed the threshold."""
+    async def _maybe_save_index(self) -> None:
+        """Save the index to disk if applied pending operations exceed the threshold."""
         if self._index_path is None:
             return
 
@@ -211,16 +263,13 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
             ).scalar_one()
 
         if count >= self._save_threshold:
-            await self._search_engine.save(self._index_path)
-
-            async with self._create_session() as session, session.begin():
-                await session.execute(
-                    delete(_PendingOperationRow).where(
-                        _PendingOperationRow.namespace == self._namespace,
-                        _PendingOperationRow.name == self._name,
-                        _PendingOperationRow.applied.is_(True),
-                    )
-                )
+            await _save_collection_index(
+                create_session=self._create_session,
+                namespace=self._namespace,
+                name=self._name,
+                search_engine=self._search_engine,
+                path=self._index_path,
+            )
 
     @override
     async def upsert(self, *, records: Iterable[Record]) -> None:
@@ -318,7 +367,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                     .values(applied=True)
                 )
 
-            await self._maybe_save_engine()
+            await self._maybe_save_index()
 
     @override
     async def query(
@@ -546,7 +595,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                 )
                 .values(applied=True)
             )
-        await self._maybe_save_engine()
+        await self._maybe_save_index()
 
 
 VectorSearchEngineFactory = Callable[[int, SimilarityMetric], VectorSearchEngine]
@@ -737,21 +786,16 @@ class SQLiteVectorStore(VectorStore):
     async def shutdown(self) -> None:
         self._require_started()
         if self._index_directory is not None:
-            saved_collections: list[tuple[str, str]] = []
             for (namespace, name), search_engine in self._search_engines.items():
                 path = self._index_path(namespace, name)
                 assert path is not None
-                await search_engine.save(str(path))
-                saved_collections.append((namespace, name))
-            for namespace, name in saved_collections:
-                async with self._create_session() as session, session.begin():
-                    await session.execute(
-                        delete(_PendingOperationRow).where(
-                            _PendingOperationRow.namespace == namespace,
-                            _PendingOperationRow.name == name,
-                            _PendingOperationRow.applied.is_(True),
-                        )
-                    )
+                await _save_collection_index(
+                    create_session=self._create_session,
+                    namespace=namespace,
+                    name=name,
+                    search_engine=search_engine,
+                    path=str(path),
+                )
         self._search_engines.clear()
         self._started = False
 
@@ -970,18 +1014,35 @@ class SQLiteVectorStore(VectorStore):
         config: VectorStoreCollectionConfig,
     ) -> VectorSearchEngine:
         cache_key = (namespace, name)
-        if cache_key not in self._search_engines:
-            search_engine = self._vector_search_engine_factory(
-                config.vector_dimensions, config.similarity_metric
-            )
+        if cache_key in self._search_engines:
+            return self._search_engines[cache_key]
 
-            path = self._index_path(namespace, name)
-            if path is not None and path.exists():
-                await search_engine.load(str(path))
+        search_engine = self._vector_search_engine_factory(
+            config.vector_dimensions, config.similarity_metric
+        )
 
-            self._search_engines[cache_key] = search_engine
+        index_path = self._index_path(namespace, name)
+        if index_path is not None:
+            async with self._create_session() as session:
+                saved = (
+                    await session.execute(
+                        select(_CollectionRow.index_saved).where(
+                            _CollectionRow.namespace == namespace,
+                            _CollectionRow.name == name,
+                        )
+                    )
+                ).scalar_one_or_none()
 
-        return self._search_engines[cache_key]
+            if saved:
+                # The engine just propagates whatever its backend raises.
+                # Wrap any failure as IndexLoadError so callers see one type.
+                try:
+                    await search_engine.load(str(index_path))
+                except Exception as e:
+                    raise IndexLoadError(namespace, name, index_path) from e
+
+        self._search_engines[cache_key] = search_engine
+        return search_engine
 
     async def _ensure_collection_resources(
         self,

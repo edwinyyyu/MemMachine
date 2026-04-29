@@ -24,9 +24,11 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStoreCollectionConfigMismatchError,
 )
 from memmachine_server.common.vector_store.sqlite_vector_store import (
+    IndexLoadError,
     SQLiteVectorStore,
     SQLiteVectorStoreCollection,
     SQLiteVectorStoreParams,
+    _CollectionRow,
     _PendingOperationRow,
 )
 from memmachine_server.common.vector_store.vector_search_engine.usearch_engine import (
@@ -1319,3 +1321,165 @@ class TestCrashRecovery:
             await store.delete_collection(namespace=NAMESPACE, name=NAME)
 
         await engine.dispose()
+
+
+# ── Index file durability contract ──
+
+
+async def _get_index_saved(engine, namespace, name) -> bool | None:
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        return (
+            await session.execute(
+                select(_CollectionRow.index_saved).where(
+                    _CollectionRow.namespace == namespace,
+                    _CollectionRow.name == name,
+                )
+            )
+        ).scalar_one_or_none()
+
+
+class TestIndexFileDurability:
+    """Once the index has been saved, the file is part of the durable contract."""
+
+    @pytest.mark.asyncio
+    async def test_saved_flag_starts_false(self, tmp_path):
+        """A freshly created collection has index_saved=False."""
+        db_path = tmp_path / "test.db"
+        store, engine = await _fresh_store(db_path, tmp_path)
+        await store.open_or_create_collection(
+            namespace=NAMESPACE, name=NAME, config=CONFIG
+        )
+
+        assert await _get_index_saved(engine, NAMESPACE, NAME) is False
+
+        await store.shutdown()
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_saved_flag_flips_on_save_threshold(self, tmp_path):
+        """Crossing the save threshold flips index_saved to True."""
+        db_path = tmp_path / "test.db"
+        store, engine = await _fresh_store(db_path, tmp_path, save_threshold=1)
+
+        coll = await store.open_or_create_collection(
+            namespace=NAMESPACE, name=NAME, config=CONFIG
+        )
+        await coll.upsert(records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))])
+
+        assert await _get_index_saved(engine, NAMESPACE, NAME) is True
+
+        await store.shutdown()
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_saved_flag_flips_on_clean_shutdown(self, tmp_path):
+        """Clean shutdown flips index_saved to True even below save_threshold."""
+        db_path = tmp_path / "test.db"
+        store, engine = await _fresh_store(db_path, tmp_path, save_threshold=1000)
+
+        coll = await store.open_or_create_collection(
+            namespace=NAMESPACE, name=NAME, config=CONFIG
+        )
+        await coll.upsert(records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))])
+
+        # Below save_threshold, so _maybe_save_index has not flipped the flag yet.
+        assert await _get_index_saved(engine, NAMESPACE, NAME) is False
+
+        await store.shutdown()
+        assert await _get_index_saved(engine, NAMESPACE, NAME) is True
+
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_missing_file_when_saved_raises(self, tmp_path):
+        """If the index has been saved, a missing file is loud, not silent."""
+        db_path = tmp_path / "test.db"
+        store1, engine1 = await _fresh_store(db_path, tmp_path)
+
+        coll = await store1.open_or_create_collection(
+            namespace=NAMESPACE, name=NAME, config=CONFIG
+        )
+        await coll.upsert(records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))])
+        await store1.shutdown()
+        await engine1.dispose()
+
+        # Operator deletes the index file out from under us.
+        index_dir = tmp_path / "indexes"
+        idx_files = list(index_dir.glob("*.idx"))
+        assert len(idx_files) == 1
+        idx_files[0].unlink()
+
+        # Restart: open_collection must surface the failure, not return an
+        # engine silently rebuilt empty.
+        store2, engine2 = await _fresh_store(db_path, tmp_path)
+        with pytest.raises(IndexLoadError) as exc_info:
+            await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        assert exc_info.value.namespace == NAMESPACE
+        assert exc_info.value.name == NAME
+        assert exc_info.value.__cause__ is not None
+
+        await store2.shutdown()
+        await engine2.dispose()
+
+    @pytest.mark.asyncio
+    async def test_corrupt_file_when_saved_raises(self, tmp_path):
+        """If the index has been saved, a corrupt file is loud, not silent."""
+        db_path = tmp_path / "test.db"
+        store1, engine1 = await _fresh_store(db_path, tmp_path)
+
+        coll = await store1.open_or_create_collection(
+            namespace=NAMESPACE, name=NAME, config=CONFIG
+        )
+        await coll.upsert(records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))])
+        await store1.shutdown()
+        await engine1.dispose()
+
+        index_dir = tmp_path / "indexes"
+        idx_files = list(index_dir.glob("*.idx"))
+        assert len(idx_files) == 1
+        idx_files[0].write_bytes(b"not a valid index file")
+
+        store2, engine2 = await _fresh_store(db_path, tmp_path)
+        with pytest.raises(IndexLoadError) as exc_info:
+            await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        assert exc_info.value.namespace == NAMESPACE
+        assert exc_info.value.name == NAME
+        assert exc_info.value.__cause__ is not None
+
+        await store2.shutdown()
+        await engine2.dispose()
+
+    @pytest.mark.asyncio
+    async def test_missing_file_before_saved_recovers(self, tmp_path):
+        """Crash before the first save: empty engine + WAL replay is correct."""
+        db_path = tmp_path / "test.db"
+        store1, engine1 = await _fresh_store(db_path, tmp_path, save_threshold=1000)
+
+        coll = await store1.open_or_create_collection(
+            namespace=NAMESPACE, name=NAME, config=CONFIG
+        )
+        await coll.upsert(
+            records=[
+                _make_record(vector=_normalize([1.0, 0.0, 0.0])),
+                _make_record(vector=_normalize([0.0, 1.0, 0.0])),
+            ]
+        )
+
+        # Crash without shutdown: index_saved stays False, no file on disk.
+        await engine1.dispose()
+        assert not (tmp_path / "indexes").exists() or not list(
+            (tmp_path / "indexes").glob("*.idx")
+        )
+
+        store2, engine2 = await _fresh_store(db_path, tmp_path)
+        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        assert coll2 is not None
+
+        results = await coll2.query(
+            query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=10
+        )
+        assert len(results[0].matches) == 2
+
+        await store2.shutdown()
+        await engine2.dispose()
