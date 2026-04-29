@@ -9,6 +9,7 @@ import numpy as np
 from usearch.index import Index, MetricKind
 
 from memmachine_server.common.data_types import SimilarityMetric
+from memmachine_server.common.rw_locks import AsyncRWLock
 
 from .vector_search_engine import SearchMatch, SearchResult, VectorSearchEngine
 
@@ -57,7 +58,7 @@ class USearchVectorSearchEngine(VectorSearchEngine):
         )
         self._similarity_metric = similarity_metric
 
-        self._lock = asyncio.Lock()
+        self._lock = AsyncRWLock()
 
     def _distance_to_score(self, distance: float) -> float:
         """Convert a USearch distance to a pure metric score."""
@@ -73,7 +74,7 @@ class USearchVectorSearchEngine(VectorSearchEngine):
     async def add(self, vectors: Mapping[int, Sequence[float]]) -> None:
         if not vectors:
             return
-        async with self._lock:
+        async with self._lock.write_lock():
             await asyncio.to_thread(self._sync_add, vectors)
 
     def _sync_add(self, vectors: Mapping[int, Sequence[float]]) -> None:
@@ -93,7 +94,7 @@ class USearchVectorSearchEngine(VectorSearchEngine):
         if self._index.size == 0 or not vectors:
             return [SearchResult(matches=[]) for _ in vectors]
 
-        async with self._lock:
+        async with self._lock.read_lock():
             return await asyncio.to_thread(
                 self._sync_search, vectors, limit, allowed_keys
             )
@@ -161,7 +162,8 @@ class USearchVectorSearchEngine(VectorSearchEngine):
             return {}
 
         keys_array = np.array(keys, dtype=np.int64)
-        vectors = await asyncio.to_thread(self._index.get, keys_array)
+        async with self._lock.read_lock():
+            vectors = await asyncio.to_thread(self._index.get, keys_array)
 
         result: dict[int, list[float]] = {}
         for i, key in enumerate(keys):
@@ -173,7 +175,7 @@ class USearchVectorSearchEngine(VectorSearchEngine):
 
     @override
     async def remove(self, keys: Iterable[int]) -> None:
-        async with self._lock:
+        async with self._lock.write_lock():
             await asyncio.to_thread(self._sync_remove, keys)
 
     def _sync_remove(self, keys: Iterable[int]) -> None:
@@ -183,10 +185,10 @@ class USearchVectorSearchEngine(VectorSearchEngine):
 
     @override
     async def save(self, path: str) -> None:
-        async with self._lock:
+        async with self._lock.write_lock():
             await asyncio.to_thread(self._index.save, path)
 
     @override
     async def load(self, path: str) -> None:
-        async with self._lock:
+        async with self._lock.write_lock():
             await asyncio.to_thread(self._index.load, path)

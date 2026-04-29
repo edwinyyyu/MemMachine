@@ -10,6 +10,7 @@ import hnswlib  # ty: ignore[unresolved-import]  # C extension, no py.typed
 import numpy as np
 
 from memmachine_server.common.data_types import SimilarityMetric
+from memmachine_server.common.rw_locks import AsyncRWLock
 
 from .vector_search_engine import SearchMatch, SearchResult, VectorSearchEngine
 
@@ -85,7 +86,7 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
         # which does not affect correctness (but may be suboptimal).
         self._known_labels: set[int] = set()
 
-        self._lock = asyncio.Lock()
+        self._lock = AsyncRWLock()
 
     def _distance_to_score(self, distance: float) -> float:
         """Convert an hnswlib distance to a pure metric score."""
@@ -115,7 +116,7 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
     async def add(self, vectors: Mapping[int, Sequence[float]]) -> None:
         if not vectors:
             return
-        async with self._lock:
+        async with self._lock.write_lock():
             await asyncio.to_thread(self._sync_add, vectors)
 
     def _sync_add(self, vectors: Mapping[int, Sequence[float]]) -> None:
@@ -168,7 +169,7 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
         if self._index.element_count == 0 or not vectors:
             return [SearchResult(matches=[]) for _ in vectors]
 
-        async with self._lock:
+        async with self._lock.read_lock():
             return await asyncio.to_thread(
                 self._sync_search, vectors, limit, allowed_keys
             )
@@ -310,7 +311,8 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
 
     @override
     async def get_vectors(self, keys: Iterable[int]) -> dict[int, list[float]]:
-        return await asyncio.to_thread(self._sync_get_vectors, keys)
+        async with self._lock.read_lock():
+            return await asyncio.to_thread(self._sync_get_vectors, keys)
 
     def _sync_get_vectors(self, keys: Iterable[int]) -> dict[int, list[float]]:
         keys = list(keys)
@@ -332,7 +334,7 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
 
     @override
     async def remove(self, keys: Iterable[int]) -> None:
-        async with self._lock:
+        async with self._lock.write_lock():
             await asyncio.to_thread(self._sync_remove, keys)
 
     def _sync_remove(self, keys: Iterable[int]) -> None:
@@ -342,7 +344,7 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
 
     @override
     async def save(self, path: str) -> None:
-        async with self._lock:
+        async with self._lock.write_lock():
             await asyncio.to_thread(self._sync_save, path)
 
     def _sync_save(self, path: str) -> None:
@@ -353,7 +355,7 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
 
     @override
     async def load(self, path: str) -> None:
-        async with self._lock:
+        async with self._lock.write_lock():
             await asyncio.to_thread(self._sync_load, path)
 
     def _sync_load(self, path: str) -> None:
