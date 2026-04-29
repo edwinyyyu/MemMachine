@@ -63,8 +63,8 @@ class AsyncRWLock:
         """Acquire a read lock; multiple readers may hold it simultaneously."""
         await self._read_gate.acquire()
         try:
-            # Acquire _writer_lock before incrementing the counter so that
-            # a cancellation at this await leaves state consistent.
+            # Increment the counter only after _writer_lock is acquired,
+            # so cancellation during the await leaves _readers unchanged.
             if self._readers == 0:
                 await self._writer_lock.acquire()
             self._readers += 1
