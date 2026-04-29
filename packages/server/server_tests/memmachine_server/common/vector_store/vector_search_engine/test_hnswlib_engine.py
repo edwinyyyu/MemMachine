@@ -4,6 +4,7 @@ import math
 import os
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 # hnswlib ships sdist only and hardcodes -march=native, so a wheel built on one
@@ -360,6 +361,324 @@ class TestPersistence:
 
         result = await _search_one(engine2, _normalize([1, 0, 0]), limit=3)
         assert {m.key for m in result.matches} == {1, 3}
+
+
+# -- allow_replace_deleted=True (slot reclamation) --
+
+
+def _rand_unit(rng, dim: int) -> list[float]:
+    v = rng.standard_normal(dim).astype("float32")
+    n = float(np.linalg.norm(v))
+    return (v / max(n, 1e-10)).tolist()
+
+
+def _no_corruption(engine: HnswlibVectorSearchEngine) -> None:
+    """Verify label_lookup_ is internally consistent.
+
+    Corruption indicators:
+      - knn_query returns a label that get_items can't fetch (zombie).
+      - A label in get_ids_list() raises "Label not found" from get_items
+        (would indicate a label_lookup_ entry pointing nowhere or wrong).
+
+    NOT corruption: hnswlib's "Cannot return ... Probably ef or M is too
+    small" when k exceeds reachable live count — that's a known knn_query
+    capacity limit, not a label-table issue.
+    """
+    import contextlib
+
+    idx = engine._index
+    label_set = {int(x) for x in idx.get_ids_list()}
+    if not label_set or idx.element_count == 0:
+        return
+
+    # Probe with a small k that even a heavily-tombstoned index can fill.
+    rng = np.random.default_rng(0)
+    probe = rng.standard_normal((3, engine._num_dimensions)).astype("float32")
+    k = min(3, idx.element_count)
+    try:
+        labels, _ = idx.knn_query(probe, k=k)
+        for row in labels:
+            for lab in row:
+                lab_i = int(lab)
+                try:
+                    idx.get_items([lab_i])
+                except RuntimeError as exc:
+                    raise AssertionError(
+                        f"zombie label {lab_i}: returned by knn but get_items raised: {exc}"
+                    ) from exc
+    except RuntimeError as exc:
+        # "Cannot return ... Probably ef or M is too small" is a capacity
+        # problem, not corruption. Anything else (e.g., "Label not found"
+        # surfacing from inside knn) IS corruption.
+        if "Cannot return" not in str(exc):
+            raise AssertionError(f"unexpected knn_query failure: {exc}") from exc
+
+    # For live (non-tombstoned) labels, get_items must succeed. For
+    # tombstoned labels, get_items raises with a "deleted"/"not found" msg
+    # and that's expected. The corruption signature would be a label that
+    # appears in get_ids_list() but get_items raises for a reason OTHER
+    # than tombstoning — i.e., the label_lookup_ entry doesn't actually
+    # resolve to a real slot. Since hnswlib uses one shared message, we
+    # can't distinguish here; this loop is informational only.
+    for lab in list(label_set)[:50]:
+        with contextlib.suppress(RuntimeError):
+            idx.get_items([int(lab)])
+
+
+class TestReplaceDeletedSlotReclamation:
+    @pytest.mark.asyncio
+    async def test_basic_parity_with_no_replace(self):
+        """Same workload, both modes produce searchable correct results."""
+        rng = np.random.default_rng(42)
+        for allow in (False, True):
+            engine = HnswlibVectorSearchEngine(
+                num_dimensions=8,
+                similarity_metric=SimilarityMetric.COSINE,
+                allow_replace_deleted=allow,
+            )
+            vecs = {i: _rand_unit(rng, 8) for i in range(20)}
+            await engine.add(vecs)
+            result = await _search_one(engine, vecs[0], limit=5)
+            assert result.matches[0].key == 0
+            _no_corruption(engine)
+
+    @pytest.mark.asyncio
+    async def test_remove_then_readd_same_label_in_place(self):
+        """Re-adding a deleted label must preserve the label and update vector."""
+        rng = np.random.default_rng(1)
+        engine = HnswlibVectorSearchEngine(
+            num_dimensions=8,
+            similarity_metric=SimilarityMetric.COSINE,
+            allow_replace_deleted=True,
+        )
+        v_old = _rand_unit(rng, 8)
+        v_new = _rand_unit(rng, 8)
+        await engine.add({42: v_old})
+        await engine.remove([42])
+        await engine.add({42: v_new})
+
+        result = await _search_one(engine, v_new, limit=1)
+        assert result.matches[0].key == 42
+        assert result.matches[0].score == pytest.approx(1.0, abs=0.01)
+        _no_corruption(engine)
+
+    @pytest.mark.asyncio
+    async def test_batch_remove_then_readd_same_labels_no_corruption(self):
+        """Case C scenario: batch remove + batch re-add of same labels.
+
+        Naive (T,T) corrupts label_lookup_ here. The smart-partition
+        wrapper must keep all labels intact via the in-place upsert path.
+        """
+        rng = np.random.default_rng(2)
+        engine = HnswlibVectorSearchEngine(
+            num_dimensions=16,
+            similarity_metric=SimilarityMetric.COSINE,
+            allow_replace_deleted=True,
+        )
+        vecs = {i: _rand_unit(rng, 16) for i in range(50)}
+        await engine.add(vecs)
+
+        await engine.remove(list(range(50)))
+        new_vecs = {i: _rand_unit(rng, 16) for i in range(50)}
+        await engine.add(new_vecs)
+
+        # Every label must be lookup-able with its NEW vector.
+        for i in range(50):
+            result = await _search_one(engine, new_vecs[i], limit=1)
+            assert result.matches[0].key == i, f"label {i} missing or wrong"
+            assert result.matches[0].score == pytest.approx(1.0, abs=0.01)
+        _no_corruption(engine)
+
+    @pytest.mark.asyncio
+    async def test_accumulated_tombstones_then_single_readd(self):
+        """Case D scenario: many tombstones present, then re-add one label.
+
+        Naive (T,T) creates an orphan that arms a future corruption.
+        The smart-partition wrapper takes the in-place path for the re-add.
+        """
+        rng = np.random.default_rng(3)
+        engine = HnswlibVectorSearchEngine(
+            num_dimensions=16,
+            similarity_metric=SimilarityMetric.COSINE,
+            allow_replace_deleted=True,
+        )
+        vecs = {i: _rand_unit(rng, 16) for i in range(20)}
+        await engine.add(vecs)
+
+        # Mark 10 deleted, leaving labels 0-9 tombstoned, 10-19 live.
+        await engine.remove(list(range(10)))
+
+        # Re-add label 5 with new vector.
+        v_new = _rand_unit(rng, 16)
+        await engine.add({5: v_new})
+
+        result = await _search_one(engine, v_new, limit=1)
+        assert result.matches[0].key == 5
+        # Other tombstoned labels should remain non-returnable in queries.
+        # And label 5's position in the lookup should be live & queryable.
+        _no_corruption(engine)
+
+    @pytest.mark.asyncio
+    async def test_slot_reclamation_actually_happens(self):
+        """Tombstoned slots get reused by brand-new labels (the point of T,T)."""
+        rng = np.random.default_rng(4)
+        engine = HnswlibVectorSearchEngine(
+            num_dimensions=8,
+            similarity_metric=SimilarityMetric.COSINE,
+            allow_replace_deleted=True,
+            initial_capacity=200,
+        )
+
+        await engine.add({i: _rand_unit(rng, 8) for i in range(100)})
+        count_before = engine._index.element_count
+
+        await engine.remove(list(range(50)))
+        await engine.add({100 + i: _rand_unit(rng, 8) for i in range(50)})
+
+        # Slots reused: count should not have grown.
+        count_after = engine._index.element_count
+        assert count_after == count_before, (
+            f"expected slot reuse to keep element_count flat, got {count_before} → {count_after}"
+        )
+        _no_corruption(engine)
+
+        # All 100 currently-intended labels must be queryable.
+        for lab in [50, 75, 99, 100, 125, 149]:
+            result = await _search_one(engine, _rand_unit(rng, 8), limit=100)
+            keys = {m.key for m in result.matches}
+            assert lab in keys, f"label {lab} missing from search results"
+
+    @pytest.mark.asyncio
+    async def test_no_reclamation_when_disabled(self):
+        """With allow_replace_deleted=False, deleted slots accumulate."""
+        rng = np.random.default_rng(5)
+        engine = HnswlibVectorSearchEngine(
+            num_dimensions=8,
+            similarity_metric=SimilarityMetric.COSINE,
+            allow_replace_deleted=False,
+            initial_capacity=200,
+        )
+
+        await engine.add({i: _rand_unit(rng, 8) for i in range(100)})
+        count_before = engine._index.element_count
+
+        await engine.remove(list(range(50)))
+        await engine.add({100 + i: _rand_unit(rng, 8) for i in range(50)})
+
+        count_after = engine._index.element_count
+        assert count_after == count_before + 50, (
+            f"expected new appends without reuse, got {count_before} → {count_after}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_heavy_churn_no_corruption(self):
+        """Many delete/insert cycles must not produce zombies or missing labels."""
+        rng = np.random.default_rng(6)
+        engine = HnswlibVectorSearchEngine(
+            num_dimensions=16,
+            similarity_metric=SimilarityMetric.COSINE,
+            allow_replace_deleted=True,
+            initial_capacity=500,
+        )
+
+        next_label = 0
+        live: dict[int, list[float]] = {}
+        for _ in range(200):
+            new_vecs = {next_label + i: _rand_unit(rng, 16) for i in range(10)}
+            next_label += 10
+            await engine.add(new_vecs)
+            live.update(new_vecs)
+
+            if len(live) > 50:
+                victims = rng.choice(list(live.keys()), size=10, replace=False)
+                await engine.remove([int(x) for x in victims])
+                for v in victims:
+                    live.pop(int(v), None)
+
+            if next_label % 50 == 0:
+                _no_corruption(engine)
+
+        _no_corruption(engine)
+
+        # Every live label must be findable.
+        sample = list(live.keys())[:20]
+        for lab in sample:
+            v = live[lab]
+            result = await _search_one(engine, v, limit=1)
+            assert result.matches[0].key == lab, f"label {lab} not findable"
+
+    @pytest.mark.asyncio
+    async def test_save_load_preserves_replace_state(self, tmp_path: Path):
+        """Save/load round trip preserves correct (T,T) behavior.
+
+        Loading an index reconstructs label_lookup_ from per-slot stored
+        labels and (when allow_replace_deleted=True) deleted_elements from
+        tombstone bits. _known_labels must be rebuilt from get_ids_list().
+        """
+        rng = np.random.default_rng(7)
+        engine = HnswlibVectorSearchEngine(
+            num_dimensions=16,
+            similarity_metric=SimilarityMetric.COSINE,
+            allow_replace_deleted=True,
+            initial_capacity=100,
+        )
+        vecs = {i: _rand_unit(rng, 16) for i in range(40)}
+        await engine.add(vecs)
+        await engine.remove([5, 15, 25])
+
+        path = str(tmp_path / "engine.bin")
+        await engine.save(path)
+
+        engine2 = HnswlibVectorSearchEngine(
+            num_dimensions=16,
+            similarity_metric=SimilarityMetric.COSINE,
+            allow_replace_deleted=True,
+        )
+        await engine2.load(path)
+
+        # _known_labels rebuilt from get_ids_list (includes tombstoned).
+        assert 5 in engine2._known_labels
+        assert 15 in engine2._known_labels
+        assert 0 in engine2._known_labels
+
+        # Re-add a deleted label in the loaded engine — known path → unmark + in-place.
+        v_new = _rand_unit(rng, 16)
+        await engine2.add({5: v_new})
+        result = await _search_one(engine2, v_new, limit=1)
+        assert result.matches[0].key == 5
+        _no_corruption(engine2)
+
+        # Insert a brand-new label — should reuse one of the remaining tombstones.
+        count_before = engine2._index.element_count
+        await engine2.add({200: _rand_unit(rng, 16)})
+        count_after = engine2._index.element_count
+        assert count_after == count_before, "expected slot reuse after load"
+        _no_corruption(engine2)
+
+    @pytest.mark.asyncio
+    async def test_row_id_reuse_pattern(self):
+        """SQLite autoincrement may reassign a row_id to a new uuid.
+
+        Engine sees: delete(X), then later add(X) with a different vector.
+        With (T,T) and the smart-partition wrapper, X is still in
+        _known_labels after the delete, so the add takes the in-place path.
+        """
+        rng = np.random.default_rng(8)
+        engine = HnswlibVectorSearchEngine(
+            num_dimensions=8,
+            similarity_metric=SimilarityMetric.COSINE,
+            allow_replace_deleted=True,
+        )
+        v_orig = _rand_unit(rng, 8)
+        v_reused = _rand_unit(rng, 8)
+        await engine.add({100: v_orig})
+        await engine.remove([100])
+        await engine.add({100: v_reused})  # same row_id, different content
+
+        result = await _search_one(engine, v_reused, limit=1)
+        assert result.matches[0].key == 100
+        assert result.matches[0].score == pytest.approx(1.0, abs=0.01)
+        _no_corruption(engine)
 
 
 # -- SearchResult types --

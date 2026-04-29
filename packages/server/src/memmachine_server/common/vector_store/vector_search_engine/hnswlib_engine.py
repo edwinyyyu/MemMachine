@@ -39,8 +39,19 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
         ef_construction: int = _DEFAULT_EF_CONSTRUCTION,
         ef_search: int = _DEFAULT_EF_SEARCH,
         initial_capacity: int = _DEFAULT_INITIAL_CAPACITY,
+        allow_replace_deleted: bool = True,
     ) -> None:
-        """Initialize."""
+        """
+        Initialize.
+
+        When allow_replace_deleted=True (default),
+        tombstoned slots from remove() are reclaimed by future inserts of brand-new labels,
+        bounding index growth under churn, but mixed operations workloads may be many times slower.
+        The add() path partitions inputs into known (in-place upsert)
+        and new (slot reuse via replace_deleted=True) to sidestep an upstream label_lookup_ corruption bug;
+        see https://github.com/nmslib/hnswlib/blob/v0.8.0/hnswlib/hnswalg.h#L981-L987.
+        Set to False if you'd rather pay memory growth than the per-replacement updatePoint cost.
+        """
         hnswlib_space = self._SPACE_MAP.get(similarity_metric)
         if hnswlib_space is None:
             supported = ", ".join(
@@ -55,12 +66,24 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
 
         self._space = hnswlib_space
         self._ef_search = ef_search
+        self._allow_replace_deleted = allow_replace_deleted
 
         self._index = hnswlib.Index(space=hnswlib_space, dim=num_dimensions)
         self._index.init_index(
-            max_elements=initial_capacity, ef_construction=ef_construction, M=m
+            max_elements=initial_capacity,
+            ef_construction=ef_construction,
+            M=m,
+            allow_replace_deleted=allow_replace_deleted,
         )
         self._index.set_ef(ef_search)
+
+        # Mirrors hnswlib's label_lookup_ keys (live + tombstoned).
+        # Used to partition adds into known (in-place upsert) vs new (slot reuse).
+        # May contain stale entries after a brand-new add evicts a previously tombstoned label;
+        # staleness causes a re-add of the evicted label to take the in-place upsert path,
+        # resulting in appending a new slot instead of reusing a tombstone,
+        # which does not affect correctness (but may be suboptimal).
+        self._known_labels: set[int] = set()
 
         self._lock = asyncio.Lock()
 
@@ -88,18 +111,50 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
         )
         self._index.resize_index(new_max)
 
-    def _sync_add(self, vectors: Mapping[int, Sequence[float]]) -> None:
-        keys_array = np.array(list(vectors.keys()), dtype=np.int64)
-        vectors_array = np.array(list(vectors.values()), dtype=np.float32)
-        self._ensure_capacity(len(keys_array))
-        self._index.add_items(vectors_array, keys_array)
-
     @override
     async def add(self, vectors: Mapping[int, Sequence[float]]) -> None:
         if not vectors:
             return
         async with self._lock:
             await asyncio.to_thread(self._sync_add, vectors)
+
+    def _sync_add(self, vectors: Mapping[int, Sequence[float]]) -> None:
+        if not self._allow_replace_deleted:
+            keys_array = np.array(list(vectors.keys()), dtype=np.int64)
+            vectors_array = np.array(list(vectors.values()), dtype=np.float32)
+            self._ensure_capacity(len(keys_array))
+            self._index.add_items(vectors_array, keys_array)
+            self._known_labels.update(vectors.keys())
+            return
+
+        # Smart-partition path: route known labels through in-place upsert
+        # and brand-new labels through slot reuse.
+        # Mixing replace_deleted=True with any label currently in hnswlib's label_lookup_ corrupts the lookup map.
+        known_pairs = [(k, v) for k, v in vectors.items() if k in self._known_labels]
+        new_pairs = [(k, v) for k, v in vectors.items() if k not in self._known_labels]
+
+        if known_pairs:
+            for key, _ in known_pairs:
+                # Tombstoned labels must be unmarked first.
+                with contextlib.suppress(RuntimeError):
+                    self._index.unmark_deleted(int(key))
+
+            # Reserve worst-case capacity.
+            self._ensure_capacity(len(known_pairs))
+            keys_array = np.fromiter(
+                (k for k, _ in known_pairs), dtype=np.int64, count=len(known_pairs)
+            )
+            vectors_array = np.array([v for _, v in known_pairs], dtype=np.float32)
+            self._index.add_items(vectors_array, keys_array, replace_deleted=False)
+
+        if new_pairs:
+            self._ensure_capacity(len(new_pairs))
+            keys_array = np.fromiter(
+                (k for k, _ in new_pairs), dtype=np.int64, count=len(new_pairs)
+            )
+            vectors_array = np.array([v for _, v in new_pairs], dtype=np.float32)
+            self._index.add_items(vectors_array, keys_array, replace_deleted=True)
+            self._known_labels.update(k for k, _ in new_pairs)
 
     @override
     async def search(
@@ -288,14 +343,23 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
     @override
     async def save(self, path: str) -> None:
         async with self._lock:
-            await asyncio.to_thread(self._index.save_index, path)
+            await asyncio.to_thread(self._sync_save, path)
 
-    def _load(self, path: str) -> None:
-        self._index = hnswlib.Index(space=self._space, dim=self._num_dimensions)
-        self._index.load_index(path)
-        self._index.set_ef(self._ef_search)
+    def _sync_save(self, path: str) -> None:
+        self._index.save_index(path)
+        # Reconcile _known_labels with hnswlib's label_lookup_.
+        if self._allow_replace_deleted:
+            self._known_labels = {int(k) for k in self._index.get_ids_list()}
 
     @override
     async def load(self, path: str) -> None:
         async with self._lock:
-            await asyncio.to_thread(self._load, path)
+            await asyncio.to_thread(self._sync_load, path)
+
+    def _sync_load(self, path: str) -> None:
+        self._index = hnswlib.Index(space=self._space, dim=self._num_dimensions)
+        self._index.load_index(path, allow_replace_deleted=self._allow_replace_deleted)
+        self._index.set_ef(self._ef_search)
+        # Reconcile _known_labels with hnswlib's label_lookup_.
+        if self._allow_replace_deleted:
+            self._known_labels = {int(k) for k in self._index.get_ids_list()}
