@@ -1,9 +1,20 @@
 """Tests for HnswlibVectorSearchEngine."""
 
 import math
+import os
 from pathlib import Path
 
 import pytest
+
+# hnswlib ships sdist only and hardcodes -march=native, so a wheel built on one
+# GitHub-hosted runner CPU can SIGILL on another (uv caches built wheels keyed
+# by OS + lockfile, not CPU microarch). Skip on CI before importing hnswlib so
+# the SIGILL doesn't fire during pytest collection.
+if os.getenv("CI") == "true":
+    pytest.skip(
+        "hnswlib build cache mismatches CPU across GitHub-hosted runners",
+        allow_module_level=True,
+    )
 
 from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.vector_store.vector_search_engine.hnswlib_engine import (
