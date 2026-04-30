@@ -681,6 +681,155 @@ class TestReplaceDeletedSlotReclamation:
         _no_corruption(engine)
 
 
+# -- allow_replace_deleted=False (id reuse via in-place upsert path) --
+
+
+class TestAllowReplaceDeletedFalse:
+    """When allow_replace_deleted=False, hnswlib routes id reuse through the
+    inner addPoint path (hnswalg.h:1158-1175): existing labels (live OR
+    tombstoned) get an in-place updatePoint; the corruption-prone smart-swap
+    path at lines 980-990 is never taken because replace_deleted=False on
+    add_items. The engine MUST stay corruption-free for:
+      - repeated add() on the same id without remove (in-place update)
+      - add → remove → add on the same id (unmark + in-place update)
+      - heavy churn mixing the above
+    """
+
+    @pytest.mark.asyncio
+    async def test_repeat_add_same_label_no_remove(self):
+        """50 adds of the same label → 1 slot; final vector is the last one."""
+        rng = np.random.default_rng(101)
+        engine = HnswlibVectorSearchEngine(
+            num_dimensions=8,
+            similarity_metric=SimilarityMetric.COSINE,
+            allow_replace_deleted=False,
+        )
+        last_v: list[float] | None = None
+        for _ in range(50):
+            last_v = _rand_unit(rng, 8)
+            await engine.add({99: last_v})
+
+        assert engine._index.element_count == 1
+        assert last_v is not None
+        result = await _search_one(engine, last_v, limit=1)
+        assert result.matches[0].key == 99
+        assert result.matches[0].score == pytest.approx(1.0, abs=0.01)
+        _no_corruption(engine)
+
+    @pytest.mark.asyncio
+    async def test_remove_then_readd_same_label_reuses_slot(self):
+        """add → remove → add of same label reuses the slot via in-place upsert.
+
+        Note: this is DIFFERENT from brand-new label slot reclamation, which
+        requires allow_replace_deleted=True. Here the slot is "reused" only
+        because addPoint finds the label already in label_lookup_, unmarks it,
+        and updatePoints in place — see hnswalg.h:1169-1174.
+        """
+        rng = np.random.default_rng(102)
+        engine = HnswlibVectorSearchEngine(
+            num_dimensions=8,
+            similarity_metric=SimilarityMetric.COSINE,
+            allow_replace_deleted=False,
+        )
+        v_old = _rand_unit(rng, 8)
+        v_new = _rand_unit(rng, 8)
+        await engine.add({7: v_old})
+        count_before = engine._index.element_count
+        await engine.remove([7])
+        await engine.add({7: v_new})
+        count_after = engine._index.element_count
+        assert count_after == count_before, (
+            f"slot not reused for same-label re-add: {count_before} → {count_after}"
+        )
+        result = await _search_one(engine, v_new, limit=1)
+        assert result.matches[0].key == 7
+        assert result.matches[0].score == pytest.approx(1.0, abs=0.01)
+        _no_corruption(engine)
+
+    @pytest.mark.asyncio
+    async def test_batch_add_with_existing_and_new_keys(self):
+        """A single add() batch mixing existing (in-place) and brand-new keys
+        must place each correctly without corruption."""
+        rng = np.random.default_rng(103)
+        engine = HnswlibVectorSearchEngine(
+            num_dimensions=8,
+            similarity_metric=SimilarityMetric.COSINE,
+            allow_replace_deleted=False,
+        )
+        first = {i: _rand_unit(rng, 8) for i in range(20)}
+        await engine.add(first)
+        count_before = engine._index.element_count
+
+        # Mix: keys 0-9 existing (update in place), keys 20-29 brand new.
+        updated = {i: _rand_unit(rng, 8) for i in range(10)}
+        added = {20 + i: _rand_unit(rng, 8) for i in range(10)}
+        await engine.add({**updated, **added})
+        count_after = engine._index.element_count
+        # Existing 20 + 10 new = 30 slots; updates take no new slot.
+        assert count_after == count_before + 10, (
+            f"expected only 10 new slots, got {count_before} → {count_after}"
+        )
+
+        # Updated keys carry the new vectors.
+        for k, v in updated.items():
+            result = await _search_one(engine, v, limit=1)
+            assert result.matches[0].key == k
+            assert result.matches[0].score == pytest.approx(1.0, abs=0.01)
+        # Brand-new keys queryable.
+        for k, v in added.items():
+            result = await _search_one(engine, v, limit=1)
+            assert result.matches[0].key == k
+            assert result.matches[0].score == pytest.approx(1.0, abs=0.01)
+        # Untouched keys 10-19 still queryable.
+        for k in range(10, 20):
+            result = await _search_one(engine, first[k], limit=1)
+            assert result.matches[0].key == k
+        _no_corruption(engine)
+
+    @pytest.mark.asyncio
+    async def test_heavy_churn_no_corruption(self):
+        """add/remove/re-add cycles, mixing id-reuse and new ids; no zombies."""
+        rng = np.random.default_rng(104)
+        engine = HnswlibVectorSearchEngine(
+            num_dimensions=16,
+            similarity_metric=SimilarityMetric.COSINE,
+            allow_replace_deleted=False,
+            initial_capacity=256,
+        )
+        next_label = 0
+        live: dict[int, list[float]] = {}
+        for cycle in range(50):
+            new = {next_label + i: _rand_unit(rng, 16) for i in range(10)}
+            next_label += 10
+            await engine.add(new)
+            live.update(new)
+
+            if len(live) >= 5:
+                victims = rng.choice(list(live.keys()), size=5, replace=False)
+                await engine.remove([int(x) for x in victims])
+                for v in victims:
+                    live.pop(int(v), None)
+
+            # Re-add an existing live id (id reuse without delete).
+            if live:
+                k = int(next(iter(live.keys())))
+                v = _rand_unit(rng, 16)
+                live[k] = v
+                await engine.add({k: v})
+
+            if cycle % 10 == 0:
+                _no_corruption(engine)
+
+        _no_corruption(engine)
+
+        sample = list(live.keys())[:30]
+        for k in sample:
+            v = live[k]
+            result = await _search_one(engine, v, limit=1)
+            assert result.matches[0].key == k, f"label {k} not findable"
+            assert result.matches[0].score == pytest.approx(1.0, abs=0.01)
+
+
 # -- SearchResult types --
 
 

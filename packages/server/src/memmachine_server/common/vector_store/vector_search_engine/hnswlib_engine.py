@@ -201,26 +201,34 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
         k: int,
         filter_fn: Callable[[int], bool] | None,
     ) -> list[SearchResult]:
-        # Fast path: requested k works for the full batch.
+        # Fast path: hnswlib filled k for the entire batch in one call.
         result = self._try_knn_query(query, k, filter_fn)
         if result is not None:
             return self._build_search_results_from_knn(result)
 
-        # Binary search with a single probe to find max fillable k.
-        max_k = self._find_max_k(query[0:1], k, filter_fn)
-        if max_k == 0:
-            return [SearchResult(matches=[]) for _ in query]
+        # Slow path: each query vector gets its own search and its own max fillable k.
+        # The bottom-level graph is not guaranteed to be connected,
+        # so a single probe's candidate set is not a valid stand-in
+        # for other query vectors' candidate sets.
+        results: list[SearchResult] = []
+        for query_vector in query:
+            single = query_vector[np.newaxis, :]
+            single_result = self._try_knn_query(single, k, filter_fn)
 
-        # Get candidate keys from the probe (these are all passing vectors).
-        probe_result = self._try_knn_query(query[0:1], max_k, filter_fn)
-        if probe_result is None:
-            return [SearchResult(matches=[]) for _ in query]
+            if single_result is None:
+                max_k = self._find_max_k(single, k, filter_fn)
+                if max_k == 0:
+                    results.append(SearchResult(matches=[]))
+                    continue
 
-        candidate_keys = [int(label) for label in probe_result[0][0] if label >= 0]
-        if not candidate_keys:
-            return [SearchResult(matches=[]) for _ in query]
+                single_result = self._try_knn_query(single, max_k, filter_fn)
+                if single_result is None:
+                    results.append(SearchResult(matches=[]))
+                    continue
 
-        return self._build_search_results_from_candidates(query, candidate_keys)
+            results.extend(self._build_search_results_from_knn(single_result))
+
+        return results
 
     def _try_knn_query(
         self,
@@ -267,47 +275,6 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
                 high = mid - 1
 
         return max_fillable
-
-    def _build_search_results_from_candidates(
-        self, query_vectors: np.ndarray, candidate_keys: list[int]
-    ) -> list[SearchResult]:
-        candidate_vectors = np.array(
-            self._index.get_items(candidate_keys), dtype=np.float32
-        )
-
-        # Precompute normalized candidate vectors once for cosine.
-        normalized_candidates: np.ndarray | None = None
-        if self._similarity_metric == SimilarityMetric.COSINE:
-            candidate_norms = np.linalg.norm(candidate_vectors, axis=1, keepdims=True)
-            candidate_norms = np.maximum(candidate_norms, 1e-10)
-            normalized_candidates = candidate_vectors / candidate_norms
-
-        results: list[SearchResult] = []
-        for query_vector in query_vectors:
-            match self._similarity_metric:
-                case SimilarityMetric.COSINE:
-                    assert normalized_candidates is not None
-                    query_norm = max(float(np.linalg.norm(query_vector)), 1e-10)
-                    normalized_query = query_vector / query_norm
-                    distances = 1.0 - normalized_candidates @ normalized_query
-                case SimilarityMetric.DOT:
-                    distances = 1.0 - candidate_vectors @ query_vector
-                case SimilarityMetric.EUCLIDEAN:
-                    difference = candidate_vectors - query_vector
-                    distances = np.einsum("ij,ij->i", difference, difference)
-                case _:
-                    raise NotImplementedError(self._similarity_metric)
-
-            sorted_indices = np.argsort(distances)
-            matches = [
-                SearchMatch(
-                    key=candidate_keys[int(index)],
-                    score=self._distance_to_score(float(distances[index])),
-                )
-                for index in sorted_indices
-            ]
-            results.append(SearchResult(matches=matches))
-        return results
 
     @override
     async def get_vectors(self, keys: Iterable[int]) -> dict[int, list[float]]:
