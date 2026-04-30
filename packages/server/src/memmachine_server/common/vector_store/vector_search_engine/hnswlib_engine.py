@@ -216,12 +216,10 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
             single_result = self._try_knn_query(single, k, filter_fn)
 
             if single_result is None:
-                max_k = self._find_max_k(single, k, filter_fn)
-                if max_k == 0:
-                    results.append(SearchResult(matches=[]))
-                    continue
-
-                single_result = self._try_knn_query(single, max_k, filter_fn)
+                # k is already known to fail for this query, so search strictly below it.
+                single_result = self._largest_fillable_knn_query(
+                    single, k - 1, filter_fn
+                )
                 if single_result is None:
                     results.append(SearchResult(matches=[]))
                     continue
@@ -236,7 +234,7 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
         k: int,
         filter_fn: Callable[[int], bool] | None,
     ) -> tuple[np.ndarray, np.ndarray] | None:
-        """Run knn_query, returning None if hnswlib throws."""
+        """Run knn_query, returning None if hnswlib raises."""
         try:
             kwargs: dict = {"k": k, "num_threads": 1}
             if filter_fn is not None:
@@ -260,21 +258,29 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
             results.append(SearchResult(matches=matches))
         return results
 
-    def _find_max_k(
-        self, probe: np.ndarray, k: int, filter_fn: Callable[[int], bool] | None
-    ) -> int:
-        """Binary search for the max k that hnswlib can fill, using a single probe."""
-        low, high = 1, k
-        max_fillable = 0
+    def _largest_fillable_knn_query(
+        self,
+        query: np.ndarray,
+        limit: int,
+        filter_fn: Callable[[int], bool] | None,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """
+        Binary search for the largest k in [1, limit] that hnswlib can fill, for a single query.
+
+        Returns the knn_query result at that k, or None if even k=1 fails.
+        """
+        low, high = 1, limit
+        best: tuple[np.ndarray, np.ndarray] | None = None
         while low <= high:
             mid = (low + high) // 2
-            if self._try_knn_query(probe, mid, filter_fn) is not None:
-                max_fillable = mid
+            result = self._try_knn_query(query, mid, filter_fn)
+            if result is not None:
+                best = result
                 low = mid + 1
             else:
                 high = mid - 1
 
-        return max_fillable
+        return best
 
     @override
     async def get_vectors(self, keys: Iterable[int]) -> dict[int, list[float]]:
