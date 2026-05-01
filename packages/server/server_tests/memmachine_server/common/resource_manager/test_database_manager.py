@@ -557,7 +557,11 @@ async def test_sqlite_vector_store_creates_store_and_engine():
 
 @pytest.mark.asyncio
 async def test_sqlite_vector_store_default_engine_is_usearch():
-    """When no engine is configured, the factory uses USearch (the default)."""
+    """When no engine is configured, the factory uses USearch (the default).
+
+    Avoids touching the hnswlib import path so the test runs on CI, where
+    hnswlib build caches mismatch CPU across GitHub-hosted runners.
+    """
     conf = _sqlite_vector_store_only_conf(
         sqlite_vector_store_confs={"vs1": SQLiteVectorStoreConf(path="vs.db")}
     )
@@ -579,9 +583,6 @@ async def test_sqlite_vector_store_default_engine_is_usearch():
         patch(
             "memmachine_server.common.vector_store.vector_search_engine.usearch_engine.USearchVectorSearchEngine",
         ) as mock_usearch_cls,
-        patch(
-            "memmachine_server.common.vector_store.vector_search_engine.hnswlib_engine.HnswlibVectorSearchEngine",
-        ) as mock_hnswlib_cls,
     ):
         mock_store_cls.return_value.startup = AsyncMock()
         mock_store_cls.return_value.shutdown = AsyncMock()
@@ -589,14 +590,13 @@ async def test_sqlite_vector_store_default_engine_is_usearch():
         await builder.async_get_sqlite_vector_store("vs1")
 
         # Invoke the factory the manager passed into params and confirm it
-        # routes to the USearch engine, not hnswlib.
+        # routes to the USearch engine.
         from memmachine_server.common.data_types import SimilarityMetric
 
         factory = mock_params_cls.call_args.kwargs["vector_search_engine_factory"]
         factory(8, SimilarityMetric.COSINE)
 
     mock_usearch_cls.assert_called_once()
-    mock_hnswlib_cls.assert_not_called()
 
 
 @pytest.mark.asyncio
