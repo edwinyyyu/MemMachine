@@ -10,25 +10,21 @@ For each architecture:
 import json
 import sys
 import time
-from collections import defaultdict
 from pathlib import Path
 
-import numpy as np
-
-from associative_recall import SegmentStore, EmbeddingCache
 from architectures import (
-    ARCHITECTURES,
-    BaseArchitecture,
-    SegmentAsQuery,
-    ClusterDiversify,
-    MultiQueryFusion,
-    RetrieveSummarizeRetrieve,
     AgentWorkingSet,
-    HybridGapFill,
+    BaseArchitecture,
     CentroidWalk,
-    NegativeSpace,
+    ClusterDiversify,
+    HybridGapFill,
     MMRDiversified,
+    MultiQueryFusion,
+    NegativeSpace,
+    RetrieveSummarizeRetrieve,
+    SegmentAsQuery,
 )
+from associative_recall import SegmentStore
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
@@ -85,7 +81,9 @@ def evaluate_architecture(
         arch_recalls[f"r@{budget}"] = compute_recall(arch_ids, source_ids)
 
     # At actual retrieval size (normalized comparison)
-    baseline_ids_actual = {s.turn_id for s in baseline_result.segments[:total_retrieved]}
+    baseline_ids_actual = {
+        s.turn_id for s in baseline_result.segments[:total_retrieved]
+    }
     arch_ids_actual = {s.turn_id for s in arch_segments}
     baseline_recalls["r@actual"] = compute_recall(baseline_ids_actual, source_ids)
     arch_recalls["r@actual"] = compute_recall(arch_ids_actual, source_ids)
@@ -108,11 +106,13 @@ def evaluate_architecture(
 
     if verbose:
         print(f"  Source IDs: {sorted(source_ids)} ({len(source_ids)} turns)")
-        print(f"  Retrieved: {total_retrieved}, Embed: {arch.embed_calls}, LLM: {arch.llm_calls}")
+        print(
+            f"  Retrieved: {total_retrieved}, Embed: {arch.embed_calls}, LLM: {arch.llm_calls}"
+        )
         for budget in BUDGETS:
             b = baseline_recalls[f"r@{budget}"]
             a = arch_recalls[f"r@{budget}"]
-            print(f"  @{budget:3d}: baseline={b:.3f} arch={a:.3f} delta={a-b:+.3f}")
+            print(f"  @{budget:3d}: baseline={b:.3f} arch={a:.3f} delta={a - b:+.3f}")
 
     return result
 
@@ -129,10 +129,18 @@ def print_summary(results: list[dict], arch_name: str, benchmark: str) -> dict:
         a_mean = sum(r["arch_recalls"][budget_label] for r in results) / n
         delta = a_mean - b_mean
 
-        wins = sum(1 for r in results
-                   if r["arch_recalls"][budget_label] > r["baseline_recalls"][budget_label] + 0.001)
-        losses = sum(1 for r in results
-                     if r["baseline_recalls"][budget_label] > r["arch_recalls"][budget_label] + 0.001)
+        wins = sum(
+            1
+            for r in results
+            if r["arch_recalls"][budget_label]
+            > r["baseline_recalls"][budget_label] + 0.001
+        )
+        losses = sum(
+            1
+            for r in results
+            if r["baseline_recalls"][budget_label]
+            > r["arch_recalls"][budget_label] + 0.001
+        )
         ties = n - wins - losses
 
         summary[f"baseline_{budget_label}"] = round(b_mean, 4)
@@ -143,15 +151,9 @@ def print_summary(results: list[dict], arch_name: str, benchmark: str) -> dict:
     summary["avg_total_retrieved"] = round(
         sum(r["total_retrieved"] for r in results) / n, 1
     )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1
-    )
-    summary["avg_time_s"] = round(
-        sum(r["time_s"] for r in results) / n, 2
-    )
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
+    summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
 
     return summary
 
@@ -163,14 +165,19 @@ def run_evaluation(
     benchmark_label: str,
     verbose: bool = False,
 ) -> tuple[list[dict], dict]:
-    print(f"\n{'='*70}")
-    print(f"ARCH: {arch_name} | BENCHMARK: {benchmark_label} | {len(questions)} questions")
-    print(f"{'='*70}")
+    print(f"\n{'=' * 70}")
+    print(
+        f"ARCH: {arch_name} | BENCHMARK: {benchmark_label} | {len(questions)} questions"
+    )
+    print(f"{'=' * 70}")
 
     results = []
     for i, question in enumerate(questions):
-        print(f"  [{i+1}/{len(questions)}] {question['category']}: "
-              f"{question['question'][:50]}...", flush=True)
+        print(
+            f"  [{i + 1}/{len(questions)}] {question['category']}: "
+            f"{question['question'][:50]}...",
+            flush=True,
+        )
         try:
             result = evaluate_architecture(arch, question, verbose=verbose)
             results.append(result)
@@ -187,13 +194,17 @@ def run_evaluation(
     print(f"\n--- {arch_name} on {benchmark_label} ---")
     for budget in BUDGETS:
         lbl = f"r@{budget}"
-        print(f"  {lbl}: baseline={summary[f'baseline_{lbl}']:.3f} "
-              f"arch={summary[f'arch_{lbl}']:.3f} "
-              f"delta={summary[f'delta_{lbl}']:+.3f} "
-              f"W/T/L={summary[f'W/T/L_{lbl}']}")
-    print(f"  Avg retrieved: {summary['avg_total_retrieved']:.0f}, "
-          f"Embed calls: {summary['avg_embed_calls']:.1f}, "
-          f"LLM calls: {summary['avg_llm_calls']:.1f}")
+        print(
+            f"  {lbl}: baseline={summary[f'baseline_{lbl}']:.3f} "
+            f"arch={summary[f'arch_{lbl}']:.3f} "
+            f"delta={summary[f'delta_{lbl}']:+.3f} "
+            f"W/T/L={summary[f'W/T/L_{lbl}']}"
+        )
+    print(
+        f"  Avg retrieved: {summary['avg_total_retrieved']:.0f}, "
+        f"Embed calls: {summary['avg_embed_calls']:.1f}, "
+        f"LLM calls: {summary['avg_llm_calls']:.1f}"
+    )
 
     return results, summary
 
@@ -230,9 +241,7 @@ def main() -> None:
         "agent_working_set": lambda: AgentWorkingSet(
             store, max_tool_calls=5, per_search_k=10
         ),
-        "hybrid_gap_fill": lambda: HybridGapFill(
-            store, baseline_k=20, gap_fill_k=10
-        ),
+        "hybrid_gap_fill": lambda: HybridGapFill(store, baseline_k=20, gap_fill_k=10),
         "centroid_walk": lambda: CentroidWalk(
             store, initial_top_k=10, hops=3, per_hop_k=10, drift_alpha=0.3
         ),
@@ -279,18 +288,22 @@ def main() -> None:
     print(f"\nSaved summaries to {summary_file}")
 
     # Print grand summary table
-    print(f"\n{'='*100}")
+    print(f"\n{'=' * 100}")
     print("GRAND SUMMARY TABLE")
-    print(f"{'='*100}")
-    print(f"{'Architecture':<30s} {'Bench':>10s} {'B-r@20':>8s} {'A-r@20':>8s} "
-          f"{'Delta':>8s} {'W/T/L':>10s} {'#Ret':>6s} {'Emb':>5s} {'LLM':>5s}")
+    print(f"{'=' * 100}")
+    print(
+        f"{'Architecture':<30s} {'Bench':>10s} {'B-r@20':>8s} {'A-r@20':>8s} "
+        f"{'Delta':>8s} {'W/T/L':>10s} {'#Ret':>6s} {'Emb':>5s} {'LLM':>5s}"
+    )
     print("-" * 100)
     for s in all_summaries:
-        print(f"{s['arch']:<30s} {s['benchmark']:>10s} "
-              f"{s['baseline_r@20']:>8.3f} {s['arch_r@20']:>8.3f} "
-              f"{s['delta_r@20']:>+8.3f} {s['W/T/L_r@20']:>10s} "
-              f"{s['avg_total_retrieved']:>6.0f} "
-              f"{s['avg_embed_calls']:>5.1f} {s['avg_llm_calls']:>5.0f}")
+        print(
+            f"{s['arch']:<30s} {s['benchmark']:>10s} "
+            f"{s['baseline_r@20']:>8.3f} {s['arch_r@20']:>8.3f} "
+            f"{s['delta_r@20']:>+8.3f} {s['W/T/L_r@20']:>10s} "
+            f"{s['avg_total_retrieved']:>6.0f} "
+            f"{s['avg_embed_calls']:>5.1f} {s['avg_llm_calls']:>5.0f}"
+        )
 
     # Reference: v15 baseline
     print("-" * 100)

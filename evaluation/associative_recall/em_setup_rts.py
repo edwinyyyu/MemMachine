@@ -25,12 +25,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-import numpy as np
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -57,7 +53,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -82,9 +79,9 @@ LOCOMO10_PATH = ROOT / "evaluation" / "data" / "locomo10.json"
 
 def datetime_from_locomo_time(locomo_time_str: str) -> datetime:
     """User-mandated parser. Format: '4:00 pm on 30 April, 2023'."""
-    return datetime.strptime(
-        locomo_time_str, "%I:%M %p on %d %B, %Y"
-    ).replace(tzinfo=UTC)
+    return datetime.strptime(locomo_time_str, "%I:%M %p on %d %B, %Y").replace(
+        tzinfo=UTC
+    )
 
 
 def _conv_short(conv_id: str) -> str:
@@ -284,8 +281,12 @@ async def ingest_conversation(
         "user_name": user_name,
         "assistant_name": asst_name,
         "n_sessions": len(unique_sessions),
-        "first_session_dt": unique_sessions[0]["parsed_iso"] if unique_sessions else None,
-        "last_session_dt": unique_sessions[-1]["parsed_iso"] if unique_sessions else None,
+        "first_session_dt": unique_sessions[0]["parsed_iso"]
+        if unique_sessions
+        else None,
+        "last_session_dt": unique_sessions[-1]["parsed_iso"]
+        if unique_sessions
+        else None,
         "parse_samples": parse_samples,
         "sessions": unique_sessions,
     }
@@ -317,7 +318,7 @@ async def main() -> None:
             engine = create_async_engine(sql_url)
         async with engine.connect() as conn:
             await conn.exec_driver_sql("SELECT 1")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"[em_setup_rts] SQL_URL {sql_url!r} not reachable: {exc!r}")
         sql_url = f"sqlite+aiosqlite:///{sqlite_path}"
         print(f"[em_setup_rts] falling back to SQLite at {sqlite_path}")
@@ -388,7 +389,7 @@ async def main() -> None:
         "## Parser",
         "",
         "```",
-        "datetime.strptime(s, \"%I:%M %p on %d %B, %Y\").replace(tzinfo=UTC)",
+        'datetime.strptime(s, "%I:%M %p on %d %B, %Y").replace(tzinfo=UTC)',
         "```",
         "",
         "## Per-conversation summary",

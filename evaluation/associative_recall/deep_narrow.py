@@ -17,11 +17,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -30,6 +27,7 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from openai import OpenAI
 
 MODEL = "gpt-5-mini"
 
@@ -258,12 +256,16 @@ def _format_segments(
     # Show up to max_items but prefer evenly spaced if there are many
     if len(sorted_segs) > max_items:
         # Keep first + last + evenly spaced middle
-        idxs = sorted(set(
-            list(range(min(5, len(sorted_segs))))
-            + list(range(len(sorted_segs) - 5, len(sorted_segs)))
-            + [int(i * (len(sorted_segs) - 1) / (max_items - 1))
-               for i in range(max_items)]
-        ))
+        idxs = sorted(
+            set(
+                list(range(min(5, len(sorted_segs))))
+                + list(range(len(sorted_segs) - 5, len(sorted_segs)))
+                + [
+                    int(i * (len(sorted_segs) - 1) / (max_items - 1))
+                    for i in range(max_items)
+                ]
+            )
+        )
         sorted_segs = [sorted_segs[i] for i in idxs][:max_items]
     return "\n".join(
         f"[Turn {s.turn_id}, {s.role}]: {s.text[:max_chars]}" for s in sorted_segs
@@ -374,16 +376,24 @@ class DeepNarrowBase:
                 exclude.add(s.index)
 
         stop_reason = ""
-        prompt_tmpl = DEEP_NARROW_PROMPT if self.allow_stop else DEEP_NARROW_PROMPT_NO_STOP
+        prompt_tmpl = (
+            DEEP_NARROW_PROMPT if self.allow_stop else DEEP_NARROW_PROMPT_NO_STOP
+        )
 
         for hop in range(1, self.max_hops + 1):
             if len(all_segs) >= self.segment_cap:
                 stop_reason = f"segment cap {self.segment_cap} reached"
-                hop_records.append(HopRecord(
-                    hop=hop, gap="", cue="",
-                    stopped=True, stop_reason=stop_reason,
-                    new_found=0, total_after=len(all_segs),
-                ))
+                hop_records.append(
+                    HopRecord(
+                        hop=hop,
+                        gap="",
+                        cue="",
+                        stopped=True,
+                        stop_reason=stop_reason,
+                        new_found=0,
+                        total_after=len(all_segs),
+                    )
+                )
                 break
 
             context = _format_segments(all_segs, max_items=14)
@@ -401,37 +411,57 @@ class DeepNarrowBase:
 
             if self.allow_stop and stop_msg:
                 stop_reason = f"self-stop: {stop_msg}"
-                hop_records.append(HopRecord(
-                    hop=hop, gap=gap, cue="",
-                    stopped=True, stop_reason=stop_reason,
-                    new_found=0, total_after=len(all_segs),
-                ))
+                hop_records.append(
+                    HopRecord(
+                        hop=hop,
+                        gap=gap,
+                        cue="",
+                        stopped=True,
+                        stop_reason=stop_reason,
+                        new_found=0,
+                        total_after=len(all_segs),
+                    )
+                )
                 break
 
             if not cue:
                 stop_reason = "no cue parsed"
-                hop_records.append(HopRecord(
-                    hop=hop, gap=gap, cue="",
-                    stopped=True, stop_reason=stop_reason,
-                    new_found=0, total_after=len(all_segs),
-                ))
+                hop_records.append(
+                    HopRecord(
+                        hop=hop,
+                        gap=gap,
+                        cue="",
+                        stopped=True,
+                        stop_reason=stop_reason,
+                        new_found=0,
+                        total_after=len(all_segs),
+                    )
+                )
                 break
 
             # De-duplicate cues
             if cue in explored:
                 stop_reason = "duplicate cue generated"
-                hop_records.append(HopRecord(
-                    hop=hop, gap=gap, cue=cue,
-                    stopped=True, stop_reason=stop_reason,
-                    new_found=0, total_after=len(all_segs),
-                ))
+                hop_records.append(
+                    HopRecord(
+                        hop=hop,
+                        gap=gap,
+                        cue=cue,
+                        stopped=True,
+                        stop_reason=stop_reason,
+                        new_found=0,
+                        total_after=len(all_segs),
+                    )
+                )
                 break
 
             explored.append(cue)
             cue_emb = self.embed_text(cue)
             res = self.store.search(
-                cue_emb, top_k=self.top_k_per_hop,
-                conversation_id=conversation_id, exclude_indices=exclude,
+                cue_emb,
+                top_k=self.top_k_per_hop,
+                conversation_id=conversation_id,
+                exclude_indices=exclude,
             )
             new_found = 0
             for s in res.segments:
@@ -440,11 +470,17 @@ class DeepNarrowBase:
                     exclude.add(s.index)
                     new_found += 1
 
-            hop_records.append(HopRecord(
-                hop=hop, gap=gap, cue=cue,
-                stopped=False, stop_reason="",
-                new_found=new_found, total_after=len(all_segs),
-            ))
+            hop_records.append(
+                HopRecord(
+                    hop=hop,
+                    gap=gap,
+                    cue=cue,
+                    stopped=False,
+                    stop_reason="",
+                    new_found=new_found,
+                    total_after=len(all_segs),
+                )
+            )
 
             if new_found == 0:
                 stop_reason = "saturation: 0 new segments"
@@ -476,29 +512,44 @@ class DeepNarrowBase:
 
 class DeepNarrowV1(DeepNarrowBase):
     """max_hops=18, top_k_per_hop=5, STOP allowed."""
+
     def __init__(self, store: SegmentStore, client: OpenAI | None = None) -> None:
         super().__init__(
-            store, client,
-            max_hops=18, top_k_per_hop=5,
-            initial_k=10, segment_cap=80, allow_stop=True,
+            store,
+            client,
+            max_hops=18,
+            top_k_per_hop=5,
+            initial_k=10,
+            segment_cap=80,
+            allow_stop=True,
         )
 
 
 class DeepNarrowWideProbe(DeepNarrowBase):
     """max_hops=18, top_k_per_hop=10, STOP allowed."""
+
     def __init__(self, store: SegmentStore, client: OpenAI | None = None) -> None:
         super().__init__(
-            store, client,
-            max_hops=18, top_k_per_hop=10,
-            initial_k=10, segment_cap=120, allow_stop=True,
+            store,
+            client,
+            max_hops=18,
+            top_k_per_hop=10,
+            initial_k=10,
+            segment_cap=120,
+            allow_stop=True,
         )
 
 
 class DeepNarrowNoStop(DeepNarrowBase):
     """max_hops=18, top_k_per_hop=5, STOP disabled — forced 18 hops."""
+
     def __init__(self, store: SegmentStore, client: OpenAI | None = None) -> None:
         super().__init__(
-            store, client,
-            max_hops=18, top_k_per_hop=5,
-            initial_k=10, segment_cap=120, allow_stop=False,
+            store,
+            client,
+            max_hops=18,
+            top_k_per_hop=5,
+            initial_k=10,
+            segment_cap=120,
+            allow_stop=False,
         )

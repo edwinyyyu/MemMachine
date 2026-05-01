@@ -40,10 +40,26 @@ from pathlib import Path
 
 import numpy as np
 import openai
+from active_steering import EmbeddingCache, _query_em_by_vector, cached_embed
+from active_steering_v2 import (
+    STEER_V2_PROMPT,
+    _format_retrieved_snippet_indexed,
+    _parse_v2_json,
+)
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    V2F_MODEL,
+    EMHit,
+    _dedupe_by_turn_id,
+    _MergedLLMCache,
+    _query_em,
+    format_primer_context,
+)
+from em_lme_tuned_cues import (
+    LMETUNE_V2F_MIXED7030_CACHE,
+    V2F_LME_MIXED_7030_PROMPT,
+    parse_speaker_cues,
+)
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -60,27 +76,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from active_steering import EmbeddingCache, _query_em_by_vector, cached_embed
-from active_steering_v2 import (
-    STEER_V2_PROMPT,
-    _format_retrieved_snippet_indexed,
-    _parse_v2_json,
-)
-from em_architectures import (
-    EMHit,
-    V2F_MODEL,
-    _MergedLLMCache,
-    _dedupe_by_turn_id,
-    _query_em,
-    format_primer_context,
-)
-from em_lme_tuned_cues import (
-    LMETUNE_V2F_MIXED7030_CACHE,
-    V2F_LME_MIXED_7030_PROMPT,
-    parse_speaker_cues,
-)
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -152,8 +149,8 @@ VARIANTS: list[Variant] = [
     Variant("add_a0.01_1r", "arithmetic", alpha=0.01, rounds=1),
     Variant("add_a0.03_1r", "arithmetic", alpha=0.03, rounds=1),
     Variant("add_a0.05_1r", "arithmetic", alpha=0.05, rounds=1),
-    Variant("add_a0.1_1r",  "arithmetic", alpha=0.10, rounds=1),
-    Variant("add_a0.2_1r",  "arithmetic", alpha=0.20, rounds=1),
+    Variant("add_a0.1_1r", "arithmetic", alpha=0.10, rounds=1),
+    Variant("add_a0.2_1r", "arithmetic", alpha=0.20, rounds=1),
     Variant("add_a0.05_3r", "arithmetic", alpha=0.05, rounds=3),
     Variant("add_score_merge", "score_merge", rounds=1),
 ]
@@ -263,13 +260,15 @@ async def run_add_arithmetic(
         r0_recall[f"r@{K}"] = round(
             compute_recall({h.turn_id for h in r0_hits[:K]}, gold), 4
         )
-    trajectory.append({
-        "round": 0,
-        "add_magnitude": 0.0,
-        "probe_drift": 1.0,
-        "add_phrases": [],
-        **r0_recall,
-    })
+    trajectory.append(
+        {
+            "round": 0,
+            "add_magnitude": 0.0,
+            "probe_drift": 1.0,
+            "add_phrases": [],
+            **r0_recall,
+        }
+    )
 
     current_hits = r0_hits
     last_hits = r0_hits
@@ -305,18 +304,18 @@ async def run_add_arithmetic(
         last_hits = next_hits
 
         rnd_recall = {
-            f"r@{K}": round(
-                compute_recall({h.turn_id for h in next_hits[:K]}, gold), 4
-            )
+            f"r@{K}": round(compute_recall({h.turn_id for h in next_hits[:K]}, gold), 4)
             for K in BUDGETS
         }
-        trajectory.append({
-            "round": rnd,
-            "add_magnitude": round(add_mag, 4),
-            "probe_drift": round(drift, 4),
-            "add_phrases": list(add_phrases),
-            **rnd_recall,
-        })
+        trajectory.append(
+            {
+                "round": rnd,
+                "add_magnitude": round(add_mag, 4),
+                "probe_drift": round(drift, 4),
+                "add_phrases": list(add_phrases),
+                **rnd_recall,
+            }
+        )
 
         if not add_phrases:
             break
@@ -324,9 +323,7 @@ async def run_add_arithmetic(
         current_hits = next_hits
 
     final = {
-        f"r@{K}": round(
-            compute_recall({h.turn_id for h in last_hits[:K]}, gold), 4
-        )
+        f"r@{K}": round(compute_recall({h.turn_id for h in last_hits[:K]}, gold), 4)
         for K in BUDGETS
     }
     return {
@@ -360,15 +357,18 @@ async def run_baseline(
         )
     )
     final = {
-        f"r@{K}": round(
-            compute_recall({h.turn_id for h in r0_hits[:K]}, gold), 4
-        )
+        f"r@{K}": round(compute_recall({h.turn_id for h in r0_hits[:K]}, gold), 4)
         for K in BUDGETS
     }
     return {
         "trajectory": [
-            {"round": 0, "add_magnitude": 0.0, "probe_drift": 1.0,
-             "add_phrases": [], **final}
+            {
+                "round": 0,
+                "add_magnitude": 0.0,
+                "probe_drift": 1.0,
+                "add_phrases": [],
+                **final,
+            }
         ],
         "final_hits": r0_hits,
         **final,
@@ -448,22 +448,30 @@ async def run_score_merge(
     )
 
     final = {
-        f"r@{K}": round(
-            compute_recall({h.turn_id for h in merged[:K]}, gold), 4
-        )
+        f"r@{K}": round(compute_recall({h.turn_id for h in merged[:K]}, gold), 4)
         for K in BUDGETS
     }
     return {
         "trajectory": [
-            {"round": 0, "add_magnitude": 0.0, "probe_drift": 1.0,
-             "add_phrases": [], **{
-                 f"r@{K}": round(
-                     compute_recall({h.turn_id for h in base_hits[:K]}, gold), 4
-                 )
-                 for K in BUDGETS
-             }},
-            {"round": 1, "add_magnitude": 0.0, "probe_drift": 1.0,
-             "add_phrases": list(add_phrases), **final},
+            {
+                "round": 0,
+                "add_magnitude": 0.0,
+                "probe_drift": 1.0,
+                "add_phrases": [],
+                **{
+                    f"r@{K}": round(
+                        compute_recall({h.turn_id for h in base_hits[:K]}, gold), 4
+                    )
+                    for K in BUDGETS
+                },
+            },
+            {
+                "round": 1,
+                "add_magnitude": 0.0,
+                "probe_drift": 1.0,
+                "add_phrases": list(add_phrases),
+                **final,
+            },
         ],
         "final_hits": merged,
         "n_phrases_merged": len(add_phrases),
@@ -635,9 +643,7 @@ async def main() -> None:
         else:
             engine = create_async_engine(sql_url, pool_size=20, max_overflow=20)
         engines.append(engine)
-        seg_store = SQLAlchemySegmentStore(
-            SQLAlchemySegmentStoreParams(engine=engine)
-        )
+        seg_store = SQLAlchemySegmentStore(SQLAlchemySegmentStoreParams(engine=engine))
         await seg_store.startup()
         segment_stores.append(seg_store)
 
@@ -833,7 +839,7 @@ def write_report(results: dict) -> None:
             continue
         traj = per["trajectory"]
         cells = []
-        for rnd in range(0, 4):
+        for rnd in range(4):
             entry = traj.get(str(rnd))
             if entry and "mean_r@50" in entry:
                 cells.append(f"{entry['mean_r@50']:.4f}")

@@ -13,18 +13,13 @@ Usage:
     uv run python proactive_experiment.py            # runs all variants on 4 proactive Qs
 """
 
-import hashlib
 import json
 import re
-import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -33,6 +28,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -240,16 +237,26 @@ ADAPTIVE_QUESTION_PROMPT = V2F_PROMPT  # direct questions -> standard V2f
 
 
 TASK_VERB_PATTERNS = [
-    r"\bcook\b", r"\bdraft\b", r"\bprepare\b",
+    r"\bcook\b",
+    r"\bdraft\b",
+    r"\bprepare\b",
     r"\bhelp me (with|prepare|plan|set|write|draft|get|make|build|create)\b",
-    r"\bset up\b", r"\bsetup\b",
+    r"\bset up\b",
+    r"\bsetup\b",
     r"\bwhat (should i|do i need|needs to)\b",
     r"\bwhat needs to happen\b",
-    r"\bwrite (me|a|an|the)\b", r"\bcompose (me|a|an)\b", r"\bbuild me\b",
-    r"\bi want to\b", r"\bi'd like to\b",
-    r"\bcreate (me|a|an|the)\b", r"\bmake (me|a|an)\b.*\bfor\b",
-    r"\bkeep in mind\b", r"\bplease consider\b",
-    r"\blist of topics\b", r"\bchecklist\b", r"\bto-?do list\b",
+    r"\bwrite (me|a|an|the)\b",
+    r"\bcompose (me|a|an)\b",
+    r"\bbuild me\b",
+    r"\bi want to\b",
+    r"\bi'd like to\b",
+    r"\bcreate (me|a|an|the)\b",
+    r"\bmake (me|a|an)\b.*\bfor\b",
+    r"\bkeep in mind\b",
+    r"\bplease consider\b",
+    r"\blist of topics\b",
+    r"\bchecklist\b",
+    r"\bto-?do list\b",
     r"\bstatus update\b",
     r"\bremaining (tasks|phases|steps)\b",
 ]
@@ -293,8 +300,9 @@ class VariantResult:
     variant: str
 
 
-def _format_segments(segments: list[Segment], max_items: int = 12,
-                     max_chars: int = 250) -> str:
+def _format_segments(
+    segments: list[Segment], max_items: int = 12, max_chars: int = 250
+) -> str:
     if not segments:
         return "(no content retrieved yet)"
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
@@ -351,15 +359,15 @@ class ProactiveRunner:
         self.emb_cache.save()
         self.llm_cache.save()
 
-    def run_variant(self, variant: str, question: str, conversation_id: str) -> VariantResult:
+    def run_variant(
+        self, variant: str, question: str, conversation_id: str
+    ) -> VariantResult:
         is_task = detect_task(question)
         if variant == "v15":
             prompt_tpl = V15_PROMPT
         elif variant == "v2f":
             prompt_tpl = V2F_PROMPT
-        elif variant == "v2f_no_antiq":
-            prompt_tpl = V2F_NO_ANTIQ_PROMPT
-        elif variant == "v15_completeness":
+        elif variant == "v2f_no_antiq" or variant == "v15_completeness":
             prompt_tpl = V2F_NO_ANTIQ_PROMPT
         elif variant == "adaptive":
             prompt_tpl = ADAPTIVE_TASK_PROMPT if is_task else ADAPTIVE_QUESTION_PROMPT
@@ -372,7 +380,9 @@ class ProactiveRunner:
         all_segments: list[Segment] = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
-        ctx = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
+        ctx = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(
+            all_segments
+        )
         prompt = prompt_tpl.format(question=question, context_section=ctx)
         output = self.llm(prompt)
         cues = _parse_cues(output)
@@ -380,7 +390,9 @@ class ProactiveRunner:
         for cue in cues[:2]:
             cue_emb = self.embed(cue)
             res = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in res.segments:
@@ -399,7 +411,9 @@ class ProactiveRunner:
         )
 
 
-def compute_recall(retrieved_turn_ids: list[int], source_turn_ids: list[int], k: int) -> float:
+def compute_recall(
+    retrieved_turn_ids: list[int], source_turn_ids: list[int], k: int
+) -> float:
     retrieved_k = set(retrieved_turn_ids[:k])
     src = set(source_turn_ids)
     if not src:
@@ -422,7 +436,7 @@ def main():
     all_cues: dict[str, dict[str, list[str]]] = {v: {} for v in variants}
 
     for v in variants:
-        print(f"\n{'='*70}\nVARIANT: {v}\n{'='*70}")
+        print(f"\n{'=' * 70}\nVARIANT: {v}\n{'=' * 70}")
         for q in proactive:
             t0 = time.time()
             res = runner.run_variant(v, q["question"], q["conversation_id"])
@@ -448,14 +462,16 @@ def main():
             all_results[v].append(row)
             all_cues[v][q["question"][:50]] = res.cues
             print(f"  [{v}] Q: {q['question'][:60]}...")
-            print(f"    is_task={res.is_task}, r@20={r20:.3f}, r@50={r50:.3f}, |src|={len(q['source_chat_ids'])}")
+            print(
+                f"    is_task={res.is_task}, r@20={r20:.3f}, r@50={r50:.3f}, |src|={len(q['source_chat_ids'])}"
+            )
             for c in res.cues:
                 print(f"    CUE: {c[:120]}")
             runner.save()
         runner.save()
 
     # Summary
-    print(f"\n{'='*70}\nSUMMARY — mean recall over 4 proactive questions\n{'='*70}")
+    print(f"\n{'=' * 70}\nSUMMARY — mean recall over 4 proactive questions\n{'=' * 70}")
     print(f"{'variant':<20s} {'mean_r@20':>11s} {'mean_r@50':>11s}")
     summary = {}
     for v in variants:

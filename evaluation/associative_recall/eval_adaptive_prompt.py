@@ -21,28 +21,22 @@ import json
 import sys
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
-    EMBED_MODEL,
     EmbeddingCache,
     LLMCache,
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 from prompt_optimization import (
-    META_V2F_PROMPT,
     BUDGETS,
+    META_V2F_PROMPT,
     MetaV2Variant,
-    OptimResult,
-    _format_segments,
-    _parse_cues,
     compute_recall,
 )
 
@@ -216,8 +210,9 @@ class AdaptiveLLMCache(LLMCache):
 class AdaptiveMetaV2Variant(MetaV2Variant):
     """MetaV2Variant that uses adaptive caches."""
 
-    def __init__(self, store: SegmentStore, prompt_template: str,
-                 client: OpenAI | None = None):
+    def __init__(
+        self, store: SegmentStore, prompt_template: str, client: OpenAI | None = None
+    ):
         super().__init__(store, prompt_template, client)
         self.embedding_cache = AdaptiveEmbeddingCache()
         self.llm_cache = AdaptiveLLMCache()
@@ -339,12 +334,8 @@ def summarize(results: list[dict], variant_name: str, benchmark: str) -> dict:
     summary["avg_total_retrieved"] = round(
         sum(r["total_retrieved"] for r in results) / n, 1
     )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1
-    )
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
     summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
 
     return summary
@@ -383,19 +374,18 @@ def run_variant(
     verbose: bool = False,
 ) -> tuple[list[dict], dict]:
     """Run one variant, return (results, summary)."""
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(
         f"VARIANT: {variant_name} | BENCHMARK: {benchmark_label} | "
         f"{len(questions)} questions"
     )
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     results = []
     for i, question in enumerate(questions):
         q_short = question["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {question['category']}: "
-            f"{q_short}...",
+            f"  [{i + 1}/{len(questions)}] {question['category']}: {q_short}...",
             flush=True,
         )
         try:
@@ -404,6 +394,7 @@ def run_variant(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -430,7 +421,7 @@ def run_variant(
     )
 
     cat_summaries = summarize_by_category(results)
-    print(f"\n  Per-category (r@20):")
+    print("\n  Per-category (r@20):")
     for cat, cs in cat_summaries.items():
         print(
             f"    {cat}: baseline={cs['baseline_r@20']:.3f} "
@@ -546,7 +537,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Test adaptive V2f prompt variants across datasets"
     )
-    parser.add_argument("--force", action="store_true", help="Overwrite existing results")
+    parser.add_argument(
+        "--force", action="store_true", help="Overwrite existing results"
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -559,9 +552,9 @@ def main() -> None:
         ds_name = dataset["name"]
         ds_label = dataset["label"]
 
-        print(f"\n{'#'*80}")
+        print(f"\n{'#' * 80}")
         print(f"# DATASET: {ds_label}")
-        print(f"{'#'*80}")
+        print(f"{'#' * 80}")
 
         # Load data
         store = SegmentStore(data_dir=DATA_DIR, npz_name=dataset["npz"])
@@ -571,13 +564,14 @@ def main() -> None:
         # Filter by benchmark if needed
         if dataset["filter_benchmark"]:
             questions = [
-                q for q in questions
+                q
+                for q in questions
                 if q.get("benchmark") == dataset["filter_benchmark"]
             ]
 
         # Limit questions if needed
         if dataset["max_questions"]:
-            questions = questions[:dataset["max_questions"]]
+            questions = questions[: dataset["max_questions"]]
 
         # Ensure all questions have question_index
         for i, q in enumerate(questions):
@@ -603,7 +597,7 @@ def main() -> None:
                     f"W/T/L={summary.get('W/T/L_r@20', '?')}"
                 )
                 cat_summaries = summarize_by_category(results)
-                print(f"  Per-category (r@20):")
+                print("  Per-category (r@20):")
                 for cat, cs in cat_summaries.items():
                     print(
                         f"    {cat}: baseline={cs['baseline_r@20']:.3f} "
@@ -651,13 +645,15 @@ def main() -> None:
     # ===========================================================================
     # Grand summary
     # ===========================================================================
-    print(f"\n\n{'='*100}")
+    print(f"\n\n{'=' * 100}")
     print("ADAPTIVE V2f — Grand Summary")
-    print(f"{'='*100}")
+    print(f"{'=' * 100}")
 
     # Summary table: all variants x all datasets
-    print(f"\n{'Variant':<20s} {'Dataset':<20s} {'B-r@20':>8s} {'A-r@20':>8s} "
-          f"{'Delta':>8s} {'W/T/L':>10s}")
+    print(
+        f"\n{'Variant':<20s} {'Dataset':<20s} {'B-r@20':>8s} {'A-r@20':>8s} "
+        f"{'Delta':>8s} {'W/T/L':>10s}"
+    )
     print("-" * 76)
     for s in all_summaries:
         if not s:
@@ -672,26 +668,28 @@ def main() -> None:
         )
 
     # Head-to-head comparisons
-    print(f"\n\n{'='*100}")
+    print(f"\n\n{'=' * 100}")
     print("HEAD-TO-HEAD COMPARISONS (r@20)")
-    print(f"{'='*100}")
+    print(f"{'=' * 100}")
 
     for comp_label, comp in all_comparisons:
         ref_name = comp["ref_name"]
         test_name = comp["test_name"]
-        print(f"\n--- {test_name} vs {ref_name} on {comp['dataset']} "
-              f"({comp['n']} questions) ---")
+        print(
+            f"\n--- {test_name} vs {ref_name} on {comp['dataset']} "
+            f"({comp['n']} questions) ---"
+        )
         print(
             f"  Overall: {ref_name}={comp[f'{ref_name}_r@20']:.3f}  "
             f"{test_name}={comp[f'{test_name}_r@20']:.3f}  "
             f"delta={comp['delta_r@20']:+.4f}  W/T/L={comp['W/T/L']}"
         )
-        print(f"  Per-category:")
+        print("  Per-category:")
         print(
             f"    {'Category':<28s} {'n':>3s} {'Base':>7s} "
             f"{'Ref':>7s} {'Test':>7s} {'Delta':>8s} {'W/T/L':>7s}"
         )
-        print(f"    {'-'*70}")
+        print(f"    {'-' * 70}")
         for cat, cs in comp["per_category"].items():
             print(
                 f"    {cat:<28s} {cs['n']:>3d} {cs['baseline_r@20']:>7.3f} "
@@ -702,9 +700,9 @@ def main() -> None:
             )
 
     # Key question: does adaptive match original on LoCoMo?
-    print(f"\n\n{'='*100}")
+    print(f"\n\n{'=' * 100}")
     print("KEY QUESTIONS")
-    print(f"{'='*100}")
+    print(f"{'=' * 100}")
 
     locomo_adaptive = None
     synth_adaptive = None
@@ -732,50 +730,71 @@ def main() -> None:
     print("\n1. Does V2f_adaptive match V2f on LoCoMo? (register inference works)")
     if locomo_adaptive:
         delta = locomo_adaptive["delta_r@20"]
-        verdict = "YES" if abs(delta) < 0.02 else ("BETTER" if delta > 0.02 else "NO - regression")
+        verdict = (
+            "YES"
+            if abs(delta) < 0.02
+            else ("BETTER" if delta > 0.02 else "NO - regression")
+        )
         print(f"   Delta: {delta:+.4f}, W/T/L: {locomo_adaptive['W/T/L']} => {verdict}")
 
     print("\n2. Does V2f_adaptive avoid regression on Synthetic?")
     if synth_adaptive:
         delta = synth_adaptive["delta_r@20"]
-        verdict = "YES - improved" if delta > 0.01 else ("YES - matched" if delta > -0.01 else "NO - still regresses")
+        verdict = (
+            "YES - improved"
+            if delta > 0.01
+            else ("YES - matched" if delta > -0.01 else "NO - still regresses")
+        )
         print(f"   Delta: {delta:+.4f}, W/T/L: {synth_adaptive['W/T/L']} => {verdict}")
 
     print("\n3. Does V2f_adaptive avoid regression on Advanced?")
     if advanced_adaptive:
         delta = advanced_adaptive["delta_r@20"]
-        verdict = "YES - improved" if delta > 0.01 else ("YES - matched" if delta > -0.01 else "NO - still regresses")
-        print(f"   Delta: {delta:+.4f}, W/T/L: {advanced_adaptive['W/T/L']} => {verdict}")
+        verdict = (
+            "YES - improved"
+            if delta > 0.01
+            else ("YES - matched" if delta > -0.01 else "NO - still regresses")
+        )
+        print(
+            f"   Delta: {delta:+.4f}, W/T/L: {advanced_adaptive['W/T/L']} => {verdict}"
+        )
 
     print("\n4. Is register-matching instruction load-bearing? (adaptive vs minimal)")
     if locomo_adaptive and locomo_minimal:
         adaptive_delta = locomo_adaptive["delta_r@20"]
         minimal_delta = locomo_minimal["delta_r@20"]
         diff = adaptive_delta - minimal_delta
-        print(f"   LoCoMo: adaptive delta={adaptive_delta:+.4f}, "
-              f"minimal delta={minimal_delta:+.4f}, "
-              f"difference={diff:+.4f}")
+        print(
+            f"   LoCoMo: adaptive delta={adaptive_delta:+.4f}, "
+            f"minimal delta={minimal_delta:+.4f}, "
+            f"difference={diff:+.4f}"
+        )
     if synth_adaptive and synth_minimal:
         adaptive_delta = synth_adaptive["delta_r@20"]
         minimal_delta = synth_minimal["delta_r@20"]
         diff = adaptive_delta - minimal_delta
-        print(f"   Synthetic: adaptive delta={adaptive_delta:+.4f}, "
-              f"minimal delta={minimal_delta:+.4f}, "
-              f"difference={diff:+.4f}")
+        print(
+            f"   Synthetic: adaptive delta={adaptive_delta:+.4f}, "
+            f"minimal delta={minimal_delta:+.4f}, "
+            f"difference={diff:+.4f}"
+        )
     if advanced_adaptive and advanced_minimal:
         adaptive_delta = advanced_adaptive["delta_r@20"]
         minimal_delta = advanced_minimal["delta_r@20"]
         diff = adaptive_delta - minimal_delta
-        print(f"   Advanced: adaptive delta={adaptive_delta:+.4f}, "
-              f"minimal delta={minimal_delta:+.4f}, "
-              f"difference={diff:+.4f}")
+        print(
+            f"   Advanced: adaptive delta={adaptive_delta:+.4f}, "
+            f"minimal delta={minimal_delta:+.4f}, "
+            f"difference={diff:+.4f}"
+        )
 
     # Save all comparisons
     comp_file = RESULTS_DIR / "adaptive_comparison.json"
     with open(comp_file, "w") as f:
         json.dump(
             [{"label": label, "data": data} for label, data in all_comparisons],
-            f, indent=2,
+            f,
+            indent=2,
         )
     print(f"\nSaved comparison to {comp_file}")
 

@@ -38,9 +38,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -49,6 +46,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -161,7 +160,7 @@ def _parse_cues(text: str, key: str = "CUE:") -> list[str]:
     for line in text.strip().split("\n"):
         line = line.strip()
         if line.upper().startswith(key.upper()):
-            val = line[len(key):].strip()
+            val = line[len(key) :].strip()
             if val:
                 out.append(val)
     return out
@@ -340,9 +339,7 @@ class SelfDispatchV2:
         if cached is not None:
             self.embed_calls += 1
             return cached
-        response = self.client.embeddings.create(
-            model=EMBED_MODEL, input=[text]
-        )
+        response = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
         embedding = np.array(response.data[0].embedding, dtype=np.float32)
         self.embedding_cache.put(text, embedding)
         self.embed_calls += 1
@@ -385,8 +382,9 @@ class SelfDispatchV2:
                 question=question,
                 all_segs=_format_segments(all_segs, max_items=14),
                 num_segs=len(all_segs),
-                explored=("\n".join(f"- {c}" for c in explored)
-                          if explored else "(none yet)"),
+                explored=(
+                    "\n".join(f"- {c}" for c in explored) if explored else "(none yet)"
+                ),
                 num_cues=self.num_cues_complex,
             )
             response = self.llm_call(prompt)
@@ -399,7 +397,7 @@ class SelfDispatchV2:
             for line in response.strip().split("\n"):
                 line = line.strip()
                 if line.upper().startswith("ASSESSMENT:"):
-                    assessment = line[len("ASSESSMENT:"):].strip()
+                    assessment = line[len("ASSESSMENT:") :].strip()
                     break
 
             if classification == "SIMPLE":
@@ -410,12 +408,14 @@ class SelfDispatchV2:
                 per_cue_k = self.per_cue_k_complex
             cues = _parse_cues(response, "CUE:")[:cap]
 
-            round_log.append({
-                "round": round_i,
-                "classification": classification,
-                "assessment": assessment,
-                "cues": cues,
-            })
+            round_log.append(
+                {
+                    "round": round_i,
+                    "classification": classification,
+                    "assessment": assessment,
+                    "cues": cues,
+                }
+            )
             if not cues:
                 break
             for cue in cues:
@@ -424,8 +424,10 @@ class SelfDispatchV2:
                 explored.append(cue)
                 cue_emb = self.embed_text(cue)
                 result = self.store.search(
-                    cue_emb, top_k=per_cue_k,
-                    conversation_id=conversation_id, exclude_indices=exclude,
+                    cue_emb,
+                    top_k=per_cue_k,
+                    conversation_id=conversation_id,
+                    exclude_indices=exclude,
                 )
                 for s in result.segments:
                     if s.index not in exclude:
@@ -434,8 +436,8 @@ class SelfDispatchV2:
 
         final_class = (
             "SIMPLE"
-            if classifications and classifications.count("SIMPLE")
-            > classifications.count("COMPLEX")
+            if classifications
+            and classifications.count("SIMPLE") > classifications.count("COMPLEX")
             else "COMPLEX"
         )
 
@@ -456,15 +458,13 @@ class SelfDispatchV2:
 # ---------------------------------------------------------------------------
 # Fair K-budget evaluation
 # ---------------------------------------------------------------------------
-def compute_recall(retrieved_turn_ids: set[int],
-                   source_turn_ids: set[int]) -> float:
+def compute_recall(retrieved_turn_ids: set[int], source_turn_ids: set[int]) -> float:
     if not source_turn_ids:
         return 1.0
     return len(retrieved_turn_ids & source_turn_ids) / len(source_turn_ids)
 
 
-def evaluate_one(arch: SelfDispatchV2, question: dict,
-                 verbose: bool = False) -> dict:
+def evaluate_one(arch: SelfDispatchV2, question: dict, verbose: bool = False) -> dict:
     q_text = question["question"]
     conv_id = question["conversation_id"]
     source_ids = set(question["source_chat_ids"])
@@ -483,9 +483,7 @@ def evaluate_one(arch: SelfDispatchV2, question: dict,
 
     q_emb = arch.embed_text(q_text)
     max_b = max(BUDGETS)
-    baseline = arch.store.search(
-        q_emb, top_k=max_b, conversation_id=conv_id
-    )
+    baseline = arch.store.search(q_emb, top_k=max_b, conversation_id=conv_id)
 
     arch_idx = {s.index for s in arch_segments}
     backfilled = list(arch_segments) + [
@@ -574,9 +572,7 @@ def load_dataset(key: str) -> tuple[list[dict], SegmentStore]:
 # ---------------------------------------------------------------------------
 # Load prior results for comparison
 # ---------------------------------------------------------------------------
-def load_budget_recall_by_qkey(
-    arch_name: str, dataset_key: str
-) -> dict[tuple, float]:
+def load_budget_recall_by_qkey(arch_name: str, dataset_key: str) -> dict[tuple, float]:
     path = RESULTS_DIR / f"budget_{arch_name}_{dataset_key}.json"
     if not path.exists():
         return {}
@@ -644,7 +640,7 @@ def self_v2_run(
     for i, q in enumerate(qs):
         q_short = q["question"][:60].replace("\n", " ")
         print(
-            f"  [{i+1}/{len(qs)}] {q['category']}: {q_short}...",
+            f"  [{i + 1}/{len(qs)}] {q['category']}: {q_short}...",
             flush=True,
         )
         try:
@@ -653,6 +649,7 @@ def self_v2_run(
         except Exception as e:
             print(f"    ERROR: {type(e).__name__}: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -669,14 +666,11 @@ def self_v2_run(
 # ---------------------------------------------------------------------------
 # Per-category summary
 # ---------------------------------------------------------------------------
-def compare_per_category(
-    dataset_key: str, self_rows: list[dict]
-) -> list[dict]:
+def compare_per_category(dataset_key: str, self_rows: list[dict]) -> list[dict]:
     budget_by_arch: dict[str, dict[int, dict]] = {}
     for arch in ("baseline", "v2f_tight"):
         budget_by_arch[arch] = {
-            K: load_budget_recall_by_qkey(f"{arch}_{K}", dataset_key)
-            for K in BUDGETS
+            K: load_budget_recall_by_qkey(f"{arch}_{K}", dataset_key) for K in BUDGETS
         }
     cot_by_q = load_cot_recall_by_qkey(dataset_key)
     scv1_by_q = load_self_cot_v1_recall_by_qkey(dataset_key)
@@ -729,18 +723,10 @@ def compare_per_category(
                 "cot": cot_mean,
                 "self_cot_v1": scv1_mean,
                 "self_v2": self_mean,
-                "vs_v2f": (
-                    self_mean - v2f_mean if v2f_mean is not None else None
-                ),
-                "vs_cot": (
-                    self_mean - cot_mean if cot_mean is not None else None
-                ),
-                "vs_scv1": (
-                    self_mean - scv1_mean if scv1_mean is not None else None
-                ),
-                "vs_baseline": (
-                    self_mean - b_mean if b_mean is not None else None
-                ),
+                "vs_v2f": (self_mean - v2f_mean if v2f_mean is not None else None),
+                "vs_cot": (self_mean - cot_mean if cot_mean is not None else None),
+                "vs_scv1": (self_mean - scv1_mean if scv1_mean is not None else None),
+                "vs_baseline": (self_mean - b_mean if b_mean is not None else None),
                 "simple_n": simple_n,
                 "complex_n": complex_n,
             }
@@ -759,9 +745,9 @@ def print_overall_by_dataset(all_rows: list[dict], K: int) -> None:
     rows_k = [r for r in all_rows if r["K"] == K]
     if not rows_k:
         return
-    print(f"\n{'-'*124}")
+    print(f"\n{'-' * 124}")
     print(f"OVERALL per DATASET at K={K}")
-    print(f"{'-'*124}")
+    print(f"{'-' * 124}")
     by_ds: dict[str, list[dict]] = defaultdict(list)
     for r in rows_k:
         by_ds[r["dataset"]].append(r)
@@ -807,7 +793,8 @@ def print_overall_by_dataset(all_rows: list[dict], K: int) -> None:
 
 
 def print_per_category_table(
-    all_rows: list[dict], K: int,
+    all_rows: list[dict],
+    K: int,
     focus_categories: list[str] | None = None,
 ) -> None:
     rows = [r for r in all_rows if r["K"] == K]
@@ -815,12 +802,10 @@ def print_per_category_table(
         rows = [r for r in rows if r["category"] in focus_categories]
     if not rows:
         return
-    title = (
-        "PER-CATEGORY (hardest)" if focus_categories else "PER-CATEGORY"
-    )
-    print(f"\n{'='*136}")
+    title = "PER-CATEGORY (hardest)" if focus_categories else "PER-CATEGORY"
+    print(f"\n{'=' * 136}")
     print(f"{title} at K={K}")
-    print(f"{'='*136}")
+    print(f"{'=' * 136}")
     hdr = (
         f"{'Dataset':<14s} {'Category':<26s} {'n':>3s} {'S/C':>7s} "
         f"{'Base':>6s} {'v2f':>6s} {'CoT':>6s} {'SCv1':>6s} {'SelfV2':>7s}  "
@@ -831,7 +816,7 @@ def print_per_category_table(
     last_ds = None
     for r in sorted(rows, key=lambda x: (x["dataset"], x["category"])):
         if last_ds is not None and r["dataset"] != last_ds:
-            print("")
+            print()
         last_ds = r["dataset"]
         sc_str = f"{r['simple_n']}/{r['complex_n']}"
         print(
@@ -848,9 +833,9 @@ def print_per_category_table(
 
 
 def print_classification_spotcheck(all_self_rows: dict[str, list[dict]]) -> None:
-    print(f"\n{'='*108}")
+    print(f"\n{'=' * 108}")
     print("CLASSIFICATION SPOT-CHECK")
-    print(f"{'='*108}")
+    print(f"{'=' * 108}")
     for ds, rows in all_self_rows.items():
         print(f"\n-- {ds} --")
         by_cat: dict[str, list[dict]] = defaultdict(list)
@@ -860,9 +845,11 @@ def print_classification_spotcheck(all_self_rows: dict[str, list[dict]]) -> None
             s_n = sum(1 for r in rs if r["classification"] == "SIMPLE")
             c_n = len(rs) - s_n
             pct_simple = 100 * s_n / len(rs)
-            print(f"  {cat:<28s} n={len(rs):>2d}  "
-                  f"SIMPLE={s_n:>2d}  COMPLEX={c_n:>2d}  "
-                  f"({pct_simple:.0f}% simple)")
+            print(
+                f"  {cat:<28s} n={len(rs):>2d}  "
+                f"SIMPLE={s_n:>2d}  COMPLEX={c_n:>2d}  "
+                f"({pct_simple:.0f}% simple)"
+            )
             simples = [r for r in rs if r["classification"] == "SIMPLE"][:2]
             complexes = [r for r in rs if r["classification"] == "COMPLEX"][:2]
             for r in simples:
@@ -878,28 +865,39 @@ def print_classification_spotcheck(all_self_rows: dict[str, list[dict]]) -> None
 # ---------------------------------------------------------------------------
 HARDEST_CATEGORIES = {
     "locomo_30q": ["locomo_single_hop"],
-    "synthetic_19q": ["control", "single_hop", "inference",
-                      "completeness", "conjunction"],
+    "synthetic_19q": [
+        "control",
+        "single_hop",
+        "inference",
+        "completeness",
+        "conjunction",
+    ],
     "puzzle_16q": ["sequential_chain", "logic_constraint", "procedural"],
-    "advanced_23q": ["evolving_terminology", "adversarial_distractor",
-                     "logic_constraint"],
+    "advanced_23q": [
+        "evolving_terminology",
+        "adversarial_distractor",
+        "logic_constraint",
+    ],
 }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--force", action="store_true",
-                        help="Rerun even if result file exists")
+    parser.add_argument(
+        "--force", action="store_true", help="Rerun even if result file exists"
+    )
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--dataset", type=str, default=None,
-                        choices=list(DATASETS.keys()),
-                        help="Restrict to a single dataset")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        choices=list(DATASETS.keys()),
+        help="Restrict to a single dataset",
+    )
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    dataset_keys = (
-        [args.dataset] if args.dataset else list(DATASETS.keys())
-    )
+    dataset_keys = [args.dataset] if args.dataset else list(DATASETS.keys())
 
     all_rows: list[dict] = []
     all_self_rows: dict[str, list[dict]] = {}

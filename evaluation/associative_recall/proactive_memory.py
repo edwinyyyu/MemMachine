@@ -39,17 +39,15 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
-
 from em_architectures import (
     V2F_MODEL,
     EMHit,
-    _MergedLLMCache,
     _dedupe_by_turn_id,
     _merge_by_max_score,
+    _MergedLLMCache,
     _query_em,
 )
-
+from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
 
@@ -183,7 +181,7 @@ def _extract_json(text: str) -> dict | None:
     if start < 0 or end <= start:
         return None
     try:
-        return json.loads(t[start:end + 1])
+        return json.loads(t[start : end + 1])
     except Exception:
         return None
 
@@ -198,12 +196,18 @@ def parse_needs(response: str) -> list[dict]:
         need = str(n.get("need") or "").strip()
         if not need:
             continue
-        out.append({
-            "need": need,
-            "why": str(n.get("why") or "").strip(),
-            "priority": str(n.get("priority") or "medium").strip().lower(),
-            "expected_vocab": [str(x).strip() for x in (n.get("expected_vocab") or []) if str(x).strip()],
-        })
+        out.append(
+            {
+                "need": need,
+                "why": str(n.get("why") or "").strip(),
+                "priority": str(n.get("priority") or "medium").strip().lower(),
+                "expected_vocab": [
+                    str(x).strip()
+                    for x in (n.get("expected_vocab") or [])
+                    if str(x).strip()
+                ],
+            }
+        )
     return out
 
 
@@ -218,11 +222,13 @@ def parse_sufficiency(response: str) -> list[dict]:
         coverage = str(item.get("coverage") or "").strip().lower()
         fp = item.get("followup_probe")
         followup = str(fp).strip() if fp else ""
-        out.append({
-            "need": need,
-            "coverage": coverage,
-            "followup_probe": followup or None,
-        })
+        out.append(
+            {
+                "need": need,
+                "coverage": coverage,
+                "followup_probe": followup or None,
+            }
+        )
     return out
 
 
@@ -253,7 +259,9 @@ async def _llm_call(
 # --------------------------------------------------------------------------
 
 
-def _format_hits_for_judge(hits: list[EMHit], max_items: int = 8, max_len: int = 160) -> str:
+def _format_hits_for_judge(
+    hits: list[EMHit], max_items: int = 8, max_len: int = 160
+) -> str:
     if not hits:
         return "(none)"
     top = sorted(hits, key=lambda h: -h.score)[:max_items]
@@ -314,7 +322,9 @@ async def run_single_shot(
 ) -> ProactiveResult:
     p1, p2 = participants
     prompt = SINGLE_SHOT_PROMPT.format(
-        task_prompt=task_prompt, participant_1=p1, participant_2=p2,
+        task_prompt=task_prompt,
+        participant_1=p1,
+        participant_2=p2,
     )
     raw, cache_hit = await _llm_call(openai_client, prompt, cuegen_cache)
     cues = parse_cues(raw, max_cues=2)
@@ -368,7 +378,9 @@ async def run_proactive(
 
     # ----- Call 1: DECOMPOSE -----
     decompose_prompt = DECOMPOSE_PROMPT.format(
-        participant_1=p1, participant_2=p2, task_prompt=task_prompt,
+        participant_1=p1,
+        participant_2=p2,
+        task_prompt=task_prompt,
     )
     decompose_raw, decompose_cache_hit = await _llm_call(
         openai_client, decompose_prompt, decompose_cache
@@ -376,12 +388,14 @@ async def run_proactive(
     needs = parse_needs(decompose_raw)
     if not needs:
         # Degenerate fallback: treat entire task as one need.
-        needs = [{
-            "need": task_prompt.strip().split("\n")[0][:120],
-            "why": "fallback: parser failed",
-            "priority": "high",
-            "expected_vocab": [],
-        }]
+        needs = [
+            {
+                "need": task_prompt.strip().split("\n")[0][:120],
+                "why": "fallback: parser failed",
+                "priority": "high",
+                "expected_vocab": [],
+            }
+        ]
 
     n_llm_calls = 1  # decompose
 
@@ -393,8 +407,11 @@ async def run_proactive(
     for need in needs:
         vocab_str = ", ".join(need.get("expected_vocab") or []) or "(none)"
         cue_prompt = CUEGEN_PROMPT.format(
-            participant_1=p1, participant_2=p2, task_prompt=task_prompt,
-            need=need["need"], expected_vocab=vocab_str,
+            participant_1=p1,
+            participant_2=p2,
+            task_prompt=task_prompt,
+            need=need["need"],
+            expected_vocab=vocab_str,
             prior_section="",
         )
         cue_raw, cue_hit = await _llm_call(openai_client, cue_prompt, cuegen_cache)
@@ -415,13 +432,15 @@ async def run_proactive(
         merged_this_need = _merge_by_max_score(batches_this_need)
         merged_this_need = _dedupe_by_turn_id(merged_this_need)
 
-        per_need_state.append({
-            "need": need,
-            "cues": cues,
-            "cue_cache_hit": cue_hit,
-            "hits": merged_this_need,
-            "followup_probes": [],
-        })
+        per_need_state.append(
+            {
+                "need": need,
+                "cues": cues,
+                "cue_cache_hit": cue_hit,
+                "hits": merged_this_need,
+                "followup_probes": [],
+            }
+        )
         all_batches.extend(batches_this_need)
 
     # ----- Rounds: sufficiency audit + follow-ups -----
@@ -453,6 +472,7 @@ async def run_proactive(
         # Match report entries to needs by textual proximity (fall back to
         # positional if mismatch).
         need_texts = [st["need"]["need"] for st in per_need_state]
+
         # Build a simple lookup by case-insensitive substring.
         def _match_idx(entry_need: str) -> int | None:
             en = entry_need.strip().lower()
@@ -480,9 +500,7 @@ async def run_proactive(
             )
             per_need_state[idx]["followup_probes"].append(probe)
             # Merge into this need's hits.
-            merged_this_need = _merge_by_max_score(
-                [per_need_state[idx]["hits"], hits]
-            )
+            merged_this_need = _merge_by_max_score([per_need_state[idx]["hits"], hits])
             per_need_state[idx]["hits"] = _dedupe_by_turn_id(merged_this_need)
             all_batches.append(hits)
             any_probe_issued = True
@@ -522,7 +540,10 @@ async def run_proactive(
                     "cue_cache_hit": st["cue_cache_hit"],
                     "followup_probes": st["followup_probes"],
                     "n_hits_for_need": len(st["hits"]),
-                    "top_turn_ids": [h.turn_id for h in sorted(st["hits"], key=lambda h: -h.score)[:10]],
+                    "top_turn_ids": [
+                        h.turn_id
+                        for h in sorted(st["hits"], key=lambda h: -h.score)[:10]
+                    ],
                 }
                 for st in per_need_state
             ],

@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
 R = Path(__file__).resolve().parent / "results"
 
 VARIANTS = [
@@ -30,17 +29,30 @@ DATASETS = ["locomo_30q", "synthetic_19q", "puzzle_16q", "advanced_23q"]
 INTERESTING = {
     "locomo_30q": ["locomo_temporal", "locomo_single_hop", "locomo_multi_hop"],
     "synthetic_19q": [
-        "proactive", "completeness", "conjunction", "inference", "procedural",
+        "proactive",
+        "completeness",
+        "conjunction",
+        "inference",
+        "procedural",
         "control",
     ],
     "puzzle_16q": [
-        "logic_constraint", "absence_inference", "state_change", "contradiction",
-        "open_exploration", "sequential_chain",
+        "logic_constraint",
+        "absence_inference",
+        "state_change",
+        "contradiction",
+        "open_exploration",
+        "sequential_chain",
     ],
     "advanced_23q": [
-        "evolving_terminology", "proactive", "perspective_separation",
-        "unfinished_business", "negation", "frequency_detection",
-        "constraint_propagation", "consistency_checking",
+        "evolving_terminology",
+        "proactive",
+        "perspective_separation",
+        "unfinished_business",
+        "negation",
+        "frequency_detection",
+        "constraint_propagation",
+        "consistency_checking",
         "quantitative_aggregation",
     ],
 }
@@ -126,9 +138,13 @@ def print_head_to_head() -> None:
             if not data:
                 continue
             s = data["summary"]
-            rows.append((v, s["delta_r@20"], s["delta_r@50"], s["W/T/L_r@20"], s["W/T/L_r@50"]))
+            rows.append(
+                (v, s["delta_r@20"], s["delta_r@50"], s["W/T/L_r@20"], s["W/T/L_r@50"])
+            )
         rows.sort(key=lambda r: r[2], reverse=True)  # sort by d@50
-        print(f"  {'variant':<24s} {'d@20':>7s} {'W/T/L@20':>10s} {'d@50':>7s} {'W/T/L@50':>10s}")
+        print(
+            f"  {'variant':<24s} {'d@20':>7s} {'W/T/L@20':>10s} {'d@50':>7s} {'W/T/L@50':>10s}"
+        )
         for name, d20, d50, w20, w50 in rows:
             print(f"  {name:<24s} {d20:>+7.3f} {w20:>10s} {d50:>+7.3f} {w50:>10s}")
 

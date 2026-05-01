@@ -23,13 +23,9 @@ Usage:
 import json
 import sys
 import time
-from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -37,8 +33,9 @@ from associative_recall import (
     LLMCache,
     Segment,
     SegmentStore,
-    RetrievalResult,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -197,8 +194,9 @@ def save_caches():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def format_segments(segments: list[Segment], max_items: int = 16,
-                    max_chars: int = 300) -> str:
+def format_segments(
+    segments: list[Segment], max_items: int = 16, max_chars: int = 300
+) -> str:
     if not segments:
         return "(no content retrieved yet)"
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
@@ -388,8 +386,11 @@ Nothing else."""
 # Retrieval approaches
 # ===========================================================================
 
+
 def run_v2f_baseline(
-    store: SegmentStore, question: str, conv_id: str,
+    store: SegmentStore,
+    question: str,
+    conv_id: str,
 ) -> tuple[list[Segment], dict]:
     """Standard v2f: 1 LLM call, 2 cues."""
     query_emb = embed_text(question)
@@ -397,20 +398,19 @@ def run_v2f_baseline(
     all_segments = list(hop0.segments)
     exclude = {s.index for s in all_segments}
 
-    context_section = (
-        "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-        + format_segments(all_segments, max_items=12, max_chars=250)
+    context_section = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + format_segments(
+        all_segments, max_items=12, max_chars=250
     )
-    prompt = V2F_PROMPT.format(
-        question=question, context_section=context_section
-    )
+    prompt = V2F_PROMPT.format(question=question, context_section=context_section)
     output = llm_call(prompt)
     cues = parse_cues(output)
 
     for cue in cues[:2]:
         cue_emb = embed_text(cue)
         result = store.search(
-            cue_emb, top_k=10, conversation_id=conv_id,
+            cue_emb,
+            top_k=10,
+            conversation_id=conv_id,
             exclude_indices=exclude,
         )
         for seg in result.segments:
@@ -422,7 +422,9 @@ def run_v2f_baseline(
 
 
 def run_iterative_constraint(
-    store: SegmentStore, question: str, conv_id: str,
+    store: SegmentStore,
+    question: str,
+    conv_id: str,
     prompt_template: str,
     max_rounds: int = 4,
 ) -> tuple[list[Segment], dict]:
@@ -466,7 +468,9 @@ def run_iterative_constraint(
         for cue in cues[:2]:
             cue_emb = embed_text(cue)
             result = store.search(
-                cue_emb, top_k=10, conversation_id=conv_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conv_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -485,6 +489,7 @@ def run_iterative_constraint(
 # ===========================================================================
 # Evaluation
 # ===========================================================================
+
 
 def evaluate_question(
     store: SegmentStore,
@@ -519,7 +524,8 @@ def evaluate_question(
     # Baseline at various budgets
     query_emb = embed_text(q_text)
     baseline_result = store.search(
-        query_emb, top_k=max(50, total_retrieved),
+        query_emb,
+        top_k=max(50, total_retrieved),
         conversation_id=conv_id,
     )
 
@@ -559,10 +565,14 @@ def evaluate_question(
         print(f"    Hits: {result['hits']}")
         print(f"    Misses: {result['misses']}")
         for budget in [20, 50]:
-            print(f"    r@{budget}: method={result[f'method_r@{budget}']:.2f} "
-                  f"baseline={result[f'baseline_r@{budget}']:.2f}")
-        print(f"    r@all={result['method_r@all']:.2f} "
-              f"(retrieved {total_retrieved} segs, {metadata.get('llm_calls', '?')} LLM calls)")
+            print(
+                f"    r@{budget}: method={result[f'method_r@{budget}']:.2f} "
+                f"baseline={result[f'baseline_r@{budget}']:.2f}"
+            )
+        print(
+            f"    r@all={result['method_r@all']:.2f} "
+            f"(retrieved {total_retrieved} segs, {metadata.get('llm_calls', '?')} LLM calls)"
+        )
 
     return result
 
@@ -599,7 +609,9 @@ def main():
         # Iterative constraint
         print("    --- iterative_constraint ---")
         ic_result = evaluate_question(
-            synth_store, q, "iterative_constraint",
+            synth_store,
+            q,
+            "iterative_constraint",
             run_iterative_constraint,
             method_kwargs={"prompt_template": COMPLETENESS_CONSTRAINT_PROMPT},
             verbose=verbose,
@@ -612,8 +624,10 @@ def main():
             ic_r = ic_result[f"method_r@{budget}"]
             bl_r = v2f_result[f"baseline_r@{budget}"]
             delta = ic_r - v_r
-            print(f"    r@{budget}: baseline={bl_r:.2f} v2f={v_r:.2f} "
-                  f"constraint={ic_r:.2f} delta={delta:+.2f}")
+            print(
+                f"    r@{budget}: baseline={bl_r:.2f} v2f={v_r:.2f} "
+                f"constraint={ic_r:.2f} delta={delta:+.2f}"
+            )
 
     save_caches()
 
@@ -642,7 +656,9 @@ def main():
         # Iterative constraint
         print("    --- iterative_constraint ---")
         ic_result = evaluate_question(
-            synth_store, q, "iterative_constraint",
+            synth_store,
+            q,
+            "iterative_constraint",
             run_iterative_constraint,
             method_kwargs={"prompt_template": PROCEDURAL_CONSTRAINT_PROMPT},
             verbose=verbose,
@@ -654,8 +670,10 @@ def main():
             ic_r = ic_result[f"method_r@{budget}"]
             bl_r = v2f_result[f"baseline_r@{budget}"]
             delta = ic_r - v_r
-            print(f"    r@{budget}: baseline={bl_r:.2f} v2f={v_r:.2f} "
-                  f"constraint={ic_r:.2f} delta={delta:+.2f}")
+            print(
+                f"    r@{budget}: baseline={bl_r:.2f} v2f={v_r:.2f} "
+                f"constraint={ic_r:.2f} delta={delta:+.2f}"
+            )
 
     save_caches()
 
@@ -685,7 +703,9 @@ def main():
         # Iterative constraint
         print("    --- iterative_constraint ---")
         ic_result = evaluate_question(
-            adv_store, q, "iterative_constraint",
+            adv_store,
+            q,
+            "iterative_constraint",
             run_iterative_constraint,
             method_kwargs={"prompt_template": QUANTITATIVE_CONSTRAINT_PROMPT},
             verbose=verbose,
@@ -697,8 +717,10 @@ def main():
             ic_r = ic_result[f"method_r@{budget}"]
             bl_r = v2f_result[f"baseline_r@{budget}"]
             delta = ic_r - v_r
-            print(f"    r@{budget}: baseline={bl_r:.2f} v2f={v_r:.2f} "
-                  f"constraint={ic_r:.2f} delta={delta:+.2f}")
+            print(
+                f"    r@{budget}: baseline={bl_r:.2f} v2f={v_r:.2f} "
+                f"constraint={ic_r:.2f} delta={delta:+.2f}"
+            )
 
     save_caches()
 
@@ -742,8 +764,10 @@ def main():
         ("quant_aggregation", quant_results),
     ]
 
-    print(f"\n{'Category':<22} {'N':>3} {'Budget':>6} {'Baseline':>8} "
-          f"{'V2f':>6} {'Constraint':>10} {'delta':>7}")
+    print(
+        f"\n{'Category':<22} {'N':>3} {'Budget':>6} {'Baseline':>8} "
+        f"{'V2f':>6} {'Constraint':>10} {'delta':>7}"
+    )
     print("-" * 72)
 
     for cat_name, results in all_paired:
@@ -754,8 +778,10 @@ def main():
             v = summary[f"v2f_r@{budget}"]
             c = summary[f"constraint_r@{budget}"]
             d = c - v
-            print(f"{cat_name:<22} {n:>3} {'r@'+str(budget):>6} {bl:>8.2f} "
-                  f"{v:>6.2f} {c:>10.2f} {d:>+7.2f}")
+            print(
+                f"{cat_name:<22} {n:>3} {'r@' + str(budget):>6} {bl:>8.2f} "
+                f"{v:>6.2f} {c:>10.2f} {d:>+7.2f}"
+            )
 
 
 def _summarize_paired(results: list[dict]) -> dict:

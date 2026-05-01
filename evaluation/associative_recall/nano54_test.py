@@ -27,9 +27,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -37,23 +34,25 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 from prompt_optimization import META_V2F_PROMPT, _format_segments
 from type_enumerated import (
+    BUDGETS,
+    DATASETS,
     TYPE_ENUMERATED_PROMPT,
-    _parse_cues,
-    _build_context_section,
     TypeEnumEmbeddingCache,
+    _build_context_section,
+    _parse_cues,
     fair_backfill_evaluate,
+    load_dataset,
     summarize,
     summarize_by_category,
-    DATASETS,
-    load_dataset,
-    BUDGETS,
 )
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
-MINI_MODEL = "gpt-5-mini"   # baseline (not called — read from files)
+MINI_MODEL = "gpt-5-mini"  # baseline (not called — read from files)
 NANO54_MODEL = "gpt-5.4-nano"
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -188,15 +187,12 @@ class V2fArch(ModelAwareBase):
 
     def retrieve(self, question: str, conversation_id: str) -> Nano54Result:
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
         prompt = META_V2F_PROMPT.format(
             question=question, context_section=context_section
@@ -207,7 +203,9 @@ class V2fArch(ModelAwareBase):
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -242,15 +240,12 @@ class V2fPlusTypesArch(ModelAwareBase):
     def retrieve(self, question: str, conversation_id: str) -> Nano54Result:
         # Stage 1: v2f
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
         v2f_context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
         v2f_prompt = META_V2F_PROMPT.format(
             question=question, context_section=v2f_context_section
@@ -261,7 +256,9 @@ class V2fPlusTypesArch(ModelAwareBase):
         for cue in v2f_cues:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -280,8 +277,10 @@ class V2fPlusTypesArch(ModelAwareBase):
         for cue in type_cues:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_cue_top_k,
-                conversation_id=conversation_id, exclude_indices=exclude,
+                cue_emb,
+                top_k=self.per_cue_top_k,
+                conversation_id=conversation_id,
+                exclude_indices=exclude,
             )
             for seg in result.segments:
                 if seg.index not in exclude:
@@ -311,15 +310,27 @@ class V2fPlusTypesArch(ModelAwareBase):
 # ---------------------------------------------------------------------------
 QUICK_TEST_SPECS = [
     # (dataset, category, question_substring_match)
-    ("locomo_30q", "locomo_temporal",
-     "When did Caroline go to the LGBTQ support group?"),
+    (
+        "locomo_30q",
+        "locomo_temporal",
+        "When did Caroline go to the LGBTQ support group?",
+    ),
     ("locomo_30q", "locomo_single_hop", "What did Caroline research?"),
-    ("synthetic_19q", "completeness",
-     "List ALL dietary restrictions and food preferences"),
-    ("puzzle_16q", "logic_constraint",
-     "Based on all constraints discussed, what is the final valid desk"),
-    ("advanced_23q", "evolving_terminology",
-     "What is the current status of Project Phoenix"),
+    (
+        "synthetic_19q",
+        "completeness",
+        "List ALL dietary restrictions and food preferences",
+    ),
+    (
+        "puzzle_16q",
+        "logic_constraint",
+        "Based on all constraints discussed, what is the final valid desk",
+    ),
+    (
+        "advanced_23q",
+        "evolving_terminology",
+        "What is the current status of Project Phoenix",
+    ),
 ]
 
 
@@ -356,9 +367,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -431,8 +440,9 @@ def run_quick_test(datasets_cached: dict) -> dict:
         store, questions = datasets_cached[ds_name]
         q = _find_question(questions, cat, substr)
         if q is None:
-            print(f"  [WARN] could not find question: {ds_name} / {cat} / "
-                  f"{substr[:40]!r}")
+            print(
+                f"  [WARN] could not find question: {ds_name} / {cat} / {substr[:40]!r}"
+            )
             continue
 
         print(f"\n  [{ds_name}/{cat}] {q['question'][:70]}")
@@ -444,7 +454,7 @@ def run_quick_test(datasets_cached: dict) -> dict:
             continue
         mini_row = _find_mini_row(mini_full, cat, q["question"])
         if mini_row is None:
-            print(f"    [WARN] no mini baseline row matching question")
+            print("    [WARN] no mini baseline row matching question")
             continue
         mini_r20 = mini_row["fair_backfill"]["arch_r@20"]
         mini_r50 = mini_row["fair_backfill"]["arch_r@50"]
@@ -498,20 +508,14 @@ def run_quick_test(datasets_cached: dict) -> dict:
             f"d@50={pair['delta_nano54_vs_mini_r@50']:+.3f}"
         )
         for i, c in enumerate(pair["mini"]["cues"][:2]):
-            print(f"      mini    cue {i+1}: {c[:110]}")
+            print(f"      mini    cue {i + 1}: {c[:110]}")
         for i, c in enumerate(pair["nano54"]["cues"][:2]):
-            print(f"      nano5.4 cue {i+1}: {c[:110]}")
+            print(f"      nano5.4 cue {i + 1}: {c[:110]}")
 
     n = len(pairs)
-    n_within_5pp = sum(
-        1 for p in pairs if abs(p["delta_nano54_vs_mini_r@20"]) <= 0.05
-    )
-    n_worse_5pp = sum(
-        1 for p in pairs if p["delta_nano54_vs_mini_r@20"] < -0.05
-    )
-    n_worse_10pp = sum(
-        1 for p in pairs if p["delta_nano54_vs_mini_r@20"] < -0.10
-    )
+    n_within_5pp = sum(1 for p in pairs if abs(p["delta_nano54_vs_mini_r@20"]) <= 0.05)
+    n_worse_5pp = sum(1 for p in pairs if p["delta_nano54_vs_mini_r@20"] < -0.05)
+    n_worse_10pp = sum(1 for p in pairs if p["delta_nano54_vs_mini_r@20"] < -0.10)
     avg_mini_r20 = sum(p["mini"]["r@20"] for p in pairs) / max(n, 1)
     avg_nano_r20 = sum(p["nano54"]["r@20"] for p in pairs) / max(n, 1)
     avg_mini_r50 = sum(p["mini"]["r@50"] for p in pairs) / max(n, 1)
@@ -544,9 +548,11 @@ def run_quick_test(datasets_cached: dict) -> dict:
     print(f"    within 5pp:       {n_within_5pp}/{n}")
     print(f"    >5pp worse:       {n_worse_5pp}/{n}")
     print(f"    >10pp worse:      {n_worse_10pp}/{n}")
-    print(f"    gate:             "
-          f"{'PASS' if gate['passes'] else 'FAIL'}"
-          f"{'  (ABANDON)' if gate['abandon'] else ''}")
+    print(
+        f"    gate:             "
+        f"{'PASS' if gate['passes'] else 'FAIL'}"
+        f"{'  (ABANDON)' if gate['abandon'] else ''}"
+    )
 
     return {"pairs": pairs, "gate": gate}
 
@@ -557,20 +563,33 @@ def run_quick_test(datasets_cached: dict) -> dict:
 def cue_quality_inspection(quick: dict) -> dict:
     pairs = quick["pairs"]
     import re
+
     stats = {
         "mini": {
-            "avg_cue_len": 0, "n_cues": 0,
-            "n_questions": 0, "n_boolean": 0, "n_meta": 0,
+            "avg_cue_len": 0,
+            "n_cues": 0,
+            "n_questions": 0,
+            "n_boolean": 0,
+            "n_meta": 0,
             "n_first_person": 0,
         },
         "nano54": {
-            "avg_cue_len": 0, "n_cues": 0,
-            "n_questions": 0, "n_boolean": 0, "n_meta": 0,
+            "avg_cue_len": 0,
+            "n_cues": 0,
+            "n_questions": 0,
+            "n_boolean": 0,
+            "n_meta": 0,
             "n_first_person": 0,
         },
     }
-    meta_markers = ["think about", "what would", "consider", "search for",
-                    "based on", "as an ai"]
+    meta_markers = [
+        "think about",
+        "what would",
+        "consider",
+        "search for",
+        "based on",
+        "as an ai",
+    ]
     for side in ("mini", "nano54"):
         lens = []
         for p in pairs:
@@ -588,9 +607,7 @@ def cue_quality_inspection(quick: dict) -> dict:
                     stats[side]["n_meta"] += 1
                 if re.search(r"\b(i|my|me|we|our)\b", low):
                     stats[side]["n_first_person"] += 1
-        stats[side]["avg_cue_len"] = (
-            round(sum(lens) / len(lens), 1) if lens else 0
-        )
+        stats[side]["avg_cue_len"] = round(sum(lens) / len(lens), 1) if lens else 0
 
     print("\n" + "=" * 78)
     print("CUE QUALITY INSPECTION")
@@ -634,8 +651,7 @@ def run_nano54_on_dataset(
     for i, q in enumerate(questions):
         q_short = q["question"][:60]
         print(
-            f"    [{i + 1}/{len(questions)}] {q.get('category', '?')}: "
-            f"{q_short}...",
+            f"    [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -649,11 +665,14 @@ def run_nano54_on_dataset(
                         "dataset": ds_name,
                         "results": results,
                     },
-                    f, indent=2, default=str,
+                    f,
+                    indent=2,
+                    default=str,
                 )
         except Exception as e:
             print(f"    ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
 
         if (i + 1) % 5 == 0:
@@ -726,9 +745,7 @@ def run_full_eval(datasets_cached: dict, force: bool) -> dict:
                     "mini_arch": mini_s.get(f"arch_r@{K}"),
                     "nano54_arch": nano_s.get(f"arch_r@{K}"),
                     "delta_nano54_vs_mini": (
-                        round(
-                            nano_s[f"arch_r@{K}"] - mini_s[f"arch_r@{K}"], 4
-                        )
+                        round(nano_s[f"arch_r@{K}"] - mini_s[f"arch_r@{K}"], 4)
                         if f"arch_r@{K}" in nano_s and f"arch_r@{K}" in mini_s
                         else None
                     ),
@@ -748,9 +765,7 @@ def run_full_eval(datasets_cached: dict, force: bool) -> dict:
                         "mini_arch": m_c.get(f"arch_r@{K}"),
                         "nano54_arch": n_c.get(f"arch_r@{K}"),
                         "delta_nano54_vs_mini": (
-                            round(
-                                n_c[f"arch_r@{K}"] - m_c[f"arch_r@{K}"], 4
-                            )
+                            round(n_c[f"arch_r@{K}"] - m_c[f"arch_r@{K}"], 4)
                             if f"arch_r@{K}" in n_c and f"arch_r@{K}" in m_c
                             else None
                         ),
@@ -772,12 +787,14 @@ def print_full_eval_table(full: dict) -> None:
             ov = entry["overall"]
             for K in BUDGETS:
                 o = ov[f"r@{K}"]
+
                 def _fmt(x):
-                    return (f"{x:.3f}" if isinstance(x, (int, float))
-                            else "  n/a")
+                    return f"{x:.3f}" if isinstance(x, (int, float)) else "  n/a"
+
                 delta_s = (
                     f"{o['delta_nano54_vs_mini']:+.4f}"
-                    if o["delta_nano54_vs_mini"] is not None else "   n/a"
+                    if o["delta_nano54_vs_mini"] is not None
+                    else "   n/a"
                 )
                 print(
                     f"  r@{K}: baseline={_fmt(o['baseline'])} "
@@ -827,16 +844,17 @@ def main() -> None:
         description="gpt-5.4-nano vs gpt-5-mini replacement test"
     )
     parser.add_argument(
-        "--full", action="store_true",
-        help="After quick-test, run full eval on all 4 datasets"
+        "--full",
+        action="store_true",
+        help="After quick-test, run full eval on all 4 datasets",
     )
     parser.add_argument(
-        "--force", action="store_true",
-        help="Overwrite existing nano5.4 result files"
+        "--force", action="store_true", help="Overwrite existing nano5.4 result files"
     )
     parser.add_argument(
-        "--skip-gate", action="store_true",
-        help="Run full eval even if quick-test fails gate"
+        "--skip-gate",
+        action="store_true",
+        help="Run full eval even if quick-test fails gate",
     )
     args = parser.parse_args()
 
@@ -844,8 +862,7 @@ def main() -> None:
 
     datasets_cached = _load_datasets_cached()
     for ds, (store, qs) in datasets_cached.items():
-        print(f"  loaded {ds}: {len(qs)} questions, "
-              f"{len(store.segments)} segs")
+        print(f"  loaded {ds}: {len(qs)} questions, {len(store.segments)} segs")
 
     quick = run_quick_test(datasets_cached)
     cue_stats = cue_quality_inspection(quick)

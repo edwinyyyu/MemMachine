@@ -38,25 +38,22 @@ import time
 from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
     EmbeddingCache,
     LLMCache,
-    Segment,
     SegmentStore,
 )
 from best_shot import (
     MODEL,
+    V2F_PROMPT,
     BestshotBase,
     BestshotResult,
-    V2F_PROMPT,
     _format_segments,
     _parse_cues,
 )
-
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Dedicated caches
@@ -309,9 +306,7 @@ class AliasTracker:
                     key=lambda a: (per_alias[a]["count"], len(a)),
                 )
 
-                all_turns = [
-                    t for info in per_alias.values() for t in info["turns"]
-                ]
+                all_turns = [t for info in per_alias.values() for t in info["turns"]]
                 if all_turns:
                     first_seen = min(all_turns)
                     last_seen = max(all_turns)
@@ -374,9 +369,7 @@ def _whole_word_find(needle: str, haystack: str) -> tuple[int, int] | None:
         start = idx + 1
 
 
-def find_alias_matches(
-    query: str, groups: list[dict]
-) -> list[dict]:
+def find_alias_matches(query: str, groups: list[dict]) -> list[dict]:
     """Find occurrences of any alias-group member in the query. One match per
     group (longest-first preference). Returns list of dicts:
       {
@@ -416,7 +409,7 @@ def find_alias_matches(
         consumed_spans.append(pos)
         matched_groups.add(gi)
         group = groups[gi]
-        matched_form = query[pos[0]: pos[1]]
+        matched_form = query[pos[0] : pos[1]]
         siblings = [a for a in group["aliases"] if a.lower() != alias.lower()]
         matches.append(
             {
@@ -635,15 +628,12 @@ class _AliasTrackerV2fBase(BestshotBase):
 
         # Hop 0: cosine search with original query embedding.
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
 
         # Build prompt with alias-context note inserted at the top (between the

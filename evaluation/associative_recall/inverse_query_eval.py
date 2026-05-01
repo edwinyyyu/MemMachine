@@ -22,12 +22,11 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
+from antipara_cue_gen import MetaV2fDedicated
+from associative_recall import Segment
 from dotenv import load_dotenv
-
-from associative_recall import Segment, SegmentStore
 from fair_backfill_eval import (
     BUDGETS,
-    DATA_DIR,
     DATASETS,
     RESULTS_DIR,
     fair_backfill_evaluate,
@@ -36,12 +35,10 @@ from fair_backfill_eval import (
     summarize_by_category,
 )
 from inverse_query import (
-    ARCH_CLASSES as INV_ARCH_CLASSES,
     InverseQuery,
     InverseQueryTop3,
     InverseQueryV2f,
 )
-from antipara_cue_gen import MetaV2fDedicated
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -78,9 +75,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -136,7 +131,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -321,9 +316,7 @@ def main() -> None:
         for arch_name in arch_names:
             cls = ARCH_CLASSES[arch_name]
             arch = cls(store)
-            results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(arch_name, arch, ds_name, questions)
             all_results[arch_name][ds_name] = {
                 "summary": summary,
                 "category_breakdown": by_cat,
@@ -369,10 +362,7 @@ def main() -> None:
     # Top categories gaining/losing for inverse_query on locomo_30q
     top_gaining: list = []
     top_losing: list = []
-    if (
-        "inverse_query" in all_results
-        and "locomo_30q" in all_results["inverse_query"]
-    ):
+    if "inverse_query" in all_results and "locomo_30q" in all_results["inverse_query"]:
         top_gaining, top_losing = top_categories_delta(
             all_results["inverse_query"]["locomo_30q"]["category_breakdown"], K=50
         )
@@ -413,9 +403,7 @@ def main() -> None:
                         "arch": a,
                         "dataset": d,
                         "summary": all_results[a][d]["summary"],
-                        "category_breakdown": all_results[a][d][
-                            "category_breakdown"
-                        ],
+                        "category_breakdown": all_results[a][d]["category_breakdown"],
                         "results": all_results[a][d]["results"],
                     },
                     f,
@@ -439,9 +427,7 @@ def main() -> None:
     md_lines.append(
         "| Arch | Dataset | base@20 | arch@20 | Δ@20 | base@50 | arch@50 | Δ@50 | llm/q |"
     )
-    md_lines.append(
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|"
-    )
+    md_lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|")
     for a in arch_names:
         for d in ds_names:
             if d not in all_results.get(a, {}):
@@ -489,9 +475,7 @@ def main() -> None:
 
     # Top gaining / losing categories
     if top_gaining or top_losing:
-        md_lines.append(
-            "\n## Top categories by Δr@50 (inverse_query on LoCoMo-30)\n"
-        )
+        md_lines.append("\n## Top categories by Δr@50 (inverse_query on LoCoMo-30)\n")
         md_lines.append("Gaining:")
         for g in top_gaining:
             md_lines.append(
@@ -522,9 +506,9 @@ def main() -> None:
             "inverse_query_v2f" in all_results
             and "locomo_30q" in all_results["inverse_query_v2f"]
         ):
-            inv_v2f50 = all_results["inverse_query_v2f"]["locomo_30q"][
-                "summary"
-            ]["arch_r@50"]
+            inv_v2f50 = all_results["inverse_query_v2f"]["locomo_30q"]["summary"][
+                "arch_r@50"
+            ]
 
         if inv50 > v2f50 + 0.005:
             verdict = (
@@ -541,11 +525,7 @@ def main() -> None:
             verdict = (
                 f"**ABANDON**: neither variant beats v2f on LoCoMo-30 @K=50 "
                 f"(v2f={v2f50:.3f}, inv={inv50:.3f}"
-                + (
-                    f", inv+v2f={inv_v2f50:.3f}"
-                    if inv_v2f50 is not None
-                    else ""
-                )
+                + (f", inv+v2f={inv_v2f50:.3f}" if inv_v2f50 is not None else "")
                 + ")."
             )
     md_lines.append(verdict + "\n")

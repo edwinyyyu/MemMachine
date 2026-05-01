@@ -13,7 +13,6 @@ Variants:
   V5: v15 + strategist post-assessment (additive on top of proven v15)
 """
 
-import hashlib
 import json
 import sys
 import time
@@ -22,9 +21,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -32,8 +28,9 @@ from associative_recall import (
     LLMCache,
     Segment,
     SegmentStore,
-    RetrievalResult,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -382,20 +379,16 @@ def format_context_section_v15(
     context_lines = []
     display_limit = 12 if hop_number <= 2 else 16
     for seg in sorted_segs[:display_limit]:
-        context_lines.append(
-            f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:250]}"
-        )
-    context_section = (
-        "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + "\n".join(context_lines)
+        context_lines.append(f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:250]}")
+    context_section = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + "\n".join(
+        context_lines
     )
     if new_segments and hop_number > 1:
         latest_lines = []
         for seg in sorted(new_segments, key=lambda s: s.turn_id)[:6]:
-            latest_lines.append(
-                f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:200]}"
-            )
-        context_section += (
-            "\n\nMOST RECENTLY FOUND (last hop):\n" + "\n".join(latest_lines)
+            latest_lines.append(f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:200]}")
+        context_section += "\n\nMOST RECENTLY FOUND (last hop):\n" + "\n".join(
+            latest_lines
         )
     if previous_cues:
         context_section += (
@@ -565,9 +558,7 @@ class MetaV1StrategistSearcher(MetaBase):
             )
 
         # Retrieve with cues
-        new_segments = self.search_with_cues(
-            cues, conversation_id, exclude_indices
-        )
+        new_segments = self.search_with_cues(cues, conversation_id, exclude_indices)
         all_segments.extend(new_segments)
 
         return MetaResult(
@@ -601,9 +592,7 @@ class MetaV2StrategistOnly(MetaBase):
 
         # Single strategist call that also produces cues
         seg_text = format_segments(all_segments)
-        prompt = STRATEGIST_V2_PROMPT.format(
-            question=question, segments=seg_text
-        )
+        prompt = STRATEGIST_V2_PROMPT.format(question=question, segments=seg_text)
         output = self.llm_call(prompt)
         cues = parse_cues(output)
 
@@ -613,9 +602,7 @@ class MetaV2StrategistOnly(MetaBase):
                 metadata={"output": output, "cues": []},
             )
 
-        new_segments = self.search_with_cues(
-            cues, conversation_id, exclude_indices
-        )
+        new_segments = self.search_with_cues(cues, conversation_id, exclude_indices)
         all_segments.extend(new_segments)
 
         return MetaResult(
@@ -648,9 +635,7 @@ class MetaV2bImprovedStrategist(MetaBase):
         exclude_indices = {s.index for s in all_segments}
 
         seg_text = format_segments(all_segments)
-        prompt = STRATEGIST_V2B_PROMPT.format(
-            question=question, segments=seg_text
-        )
+        prompt = STRATEGIST_V2B_PROMPT.format(question=question, segments=seg_text)
         output = self.llm_call(prompt)
         cues = parse_cues(output)
 
@@ -660,9 +645,7 @@ class MetaV2bImprovedStrategist(MetaBase):
                 metadata={"output": output, "cues": []},
             )
 
-        new_segments = self.search_with_cues(
-            cues, conversation_id, exclude_indices
-        )
+        new_segments = self.search_with_cues(cues, conversation_id, exclude_indices)
         all_segments.extend(new_segments)
 
         return MetaResult(
@@ -718,9 +701,7 @@ class MetaV3DomainKnowledge(MetaBase):
                 },
             )
 
-        new_segments = self.search_with_cues(
-            cues, conversation_id, exclude_indices
-        )
+        new_segments = self.search_with_cues(cues, conversation_id, exclude_indices)
         all_segments.extend(new_segments)
 
         return MetaResult(
@@ -756,9 +737,7 @@ class MetaV4IterativeStrategist(MetaBase):
 
         # Round 1: Strategist + Searcher
         seg_text = format_segments(all_segments)
-        strat1_prompt = STRATEGIST_PROMPT.format(
-            question=question, segments=seg_text
-        )
+        strat1_prompt = STRATEGIST_PROMPT.format(question=question, segments=seg_text)
         strat1_output = self.llm_call(strat1_prompt)
 
         search1_prompt = SEARCHER_PROMPT.format(
@@ -770,9 +749,7 @@ class MetaV4IterativeStrategist(MetaBase):
         cues1 = parse_cues(search1_output)
 
         if cues1:
-            new_segs = self.search_with_cues(
-                cues1, conversation_id, exclude_indices
-            )
+            new_segs = self.search_with_cues(cues1, conversation_id, exclude_indices)
             all_segments.extend(new_segs)
 
         # Round 2: Strategist sees ALL content, generates new instructions
@@ -791,9 +768,7 @@ class MetaV4IterativeStrategist(MetaBase):
         cues2 = parse_cues(search2_output)
 
         if cues2:
-            new_segs2 = self.search_with_cues(
-                cues2, conversation_id, exclude_indices
-            )
+            new_segs2 = self.search_with_cues(cues2, conversation_id, exclude_indices)
             all_segments.extend(new_segs2)
 
         return MetaResult(
@@ -844,9 +819,7 @@ class MetaV5AdditiveTov15(MetaBase):
 
         # Phase 2: Strategist gap-filling
         all_seg_text = format_segments(all_segments, max_items=16)
-        gap_prompt = V5_GAP_FILL_PROMPT.format(
-            question=question, segments=all_seg_text
-        )
+        gap_prompt = V5_GAP_FILL_PROMPT.format(question=question, segments=all_seg_text)
         gap_output = self.llm_call(gap_prompt)
         gap_cues = parse_cues(gap_output)
 
@@ -1002,12 +975,8 @@ def summarize(results: list[dict], variant_name: str, benchmark: str) -> dict:
     summary["avg_total_retrieved"] = round(
         sum(r["total_retrieved"] for r in results) / n, 1
     )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1
-    )
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
     summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
 
     return summary
@@ -1046,19 +1015,18 @@ def run_variant(
     verbose: bool = False,
 ) -> tuple[list[dict], dict]:
     """Run one variant, return (results, summary)."""
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(
         f"VARIANT: {variant_name} | BENCHMARK: {benchmark_label} | "
         f"{len(questions)} questions"
     )
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     results = []
     for i, question in enumerate(questions):
         q_short = question["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {question['category']}: "
-            f"{q_short}...",
+            f"  [{i + 1}/{len(questions)}] {question['category']}: {q_short}...",
             flush=True,
         )
         try:
@@ -1094,7 +1062,7 @@ def run_variant(
     )
 
     cat_summaries = summarize_by_category(results)
-    print(f"\n  Per-category (r@20):")
+    print("\n  Per-category (r@20):")
     for cat, cs in cat_summaries.items():
         print(
             f"    {cat}: delta={cs['delta_r@20']:+.3f} "
@@ -1107,9 +1075,7 @@ def run_variant(
 def main() -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Meta-prompting retrieval experiments"
-    )
+    parser = argparse.ArgumentParser(description="Meta-prompting retrieval experiments")
     parser.add_argument(
         "--variant",
         type=str,
@@ -1160,7 +1126,9 @@ def main() -> None:
             print(f"Unknown variant: {variant_name}")
             continue
 
-        results_file = RESULTS_DIR / f"meta_{variant_name}_locomo_{args.num_questions}q.json"
+        results_file = (
+            RESULTS_DIR / f"meta_{variant_name}_locomo_{args.num_questions}q.json"
+        )
 
         if results_file.exists() and not args.force:
             print(f"\nSkipping {variant_name} (exists, use --force to overwrite)")
@@ -1195,9 +1163,9 @@ def main() -> None:
         json.dump(all_summaries, f, indent=2)
 
     # Grand summary table
-    print(f"\n{'='*110}")
+    print(f"\n{'=' * 110}")
     print("GRAND SUMMARY TABLE — Meta-Prompting Variants")
-    print(f"{'='*110}")
+    print(f"{'=' * 110}")
     print(
         f"{'Variant':<30s} {'Bench':>12s} {'B-r@20':>8s} {'A-r@20':>8s} "
         f"{'Delta':>8s} {'W/T/L':>10s} {'#Ret':>6s} {'Emb':>5s} "
@@ -1219,9 +1187,7 @@ def main() -> None:
             f"{s.get('avg_time_s', 0):>6.1f}"
         )
     print("-" * 110)
-    print(
-        "Reference v15 (1 hop, 2 cues, nr=1): LoCoMo +0.339 (13W/17T/0L)"
-    )
+    print("Reference v15 (1 hop, 2 cues, nr=1): LoCoMo +0.339 (13W/17T/0L)")
 
 
 if __name__ == "__main__":

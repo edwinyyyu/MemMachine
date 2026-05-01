@@ -54,8 +54,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -65,14 +63,13 @@ from associative_recall import (
     SegmentStore,
 )
 from best_shot import (
-    MODEL,
+    V2F_PROMPT,
     BestshotBase,
     BestshotResult,
-    V2F_PROMPT,
     _format_segments,
     _parse_cues,
 )
-
+from openai import OpenAI
 
 SEP = " [SEP] "
 
@@ -228,6 +225,7 @@ def _enrich_turn(
     ``variant`` one of: ``window_1``, ``window_2``, ``prev_only``.
     Missing neighbors (start/end of conversation) are silently dropped.
     """
+
     def fmt(i: int) -> str | None:
         if 0 <= i < len(segs_by_turn) and segs_by_turn[i] is not None:
             return _format_turn(segs_by_turn[i], max_chars_per_turn)
@@ -280,9 +278,7 @@ class ContextIndex:
         self.enriched_texts: list[str] = []
         self.parent_indices: np.ndarray = np.zeros(0, dtype=np.int64)
         self.conversation_ids: np.ndarray = np.zeros(0, dtype=object)
-        self.normalized_embeddings: np.ndarray = np.zeros(
-            (0, 1536), dtype=np.float32
-        )
+        self.normalized_embeddings: np.ndarray = np.zeros((0, 1536), dtype=np.float32)
 
     @property
     def n(self) -> int:
@@ -296,9 +292,7 @@ class ContextIndex:
         """``entries``: list of (parent_index, conversation_id, enriched_text)."""
         self.enriched_texts = [t[2] for t in entries]
         self.parent_indices = np.array([t[0] for t in entries], dtype=np.int64)
-        self.conversation_ids = np.array(
-            [t[1] for t in entries], dtype=object
-        )
+        self.conversation_ids = np.array([t[1] for t in entries], dtype=object)
         if len(entries) == 0:
             self.normalized_embeddings = np.zeros((0, 1536), dtype=np.float32)
             return
@@ -340,7 +334,7 @@ class _ContextEmbBase(BestshotBase):
     """
 
     arch_name: str = "contextemb"
-    variant: str = "window_1"   # override in subclasses
+    variant: str = "window_1"  # override in subclasses
     top_m: int = 10
     max_appended: int = 40
     # Bonus added to context-hit scores when sorting (0.0 = pure stacked).
@@ -502,19 +496,14 @@ class _ContextEmbBase(BestshotBase):
         self, question: str, conversation_id: str
     ) -> tuple[list[Segment], dict]:
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments: list[Segment] = list(hop0.segments)
         exclude: set[int] = {s.index for s in all_segments}
 
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
-        prompt = V2F_PROMPT.format(
-            question=question, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=question, context_section=context_section)
         output = self.llm_call(prompt)
         cues = _parse_cues(output)[:2]
 

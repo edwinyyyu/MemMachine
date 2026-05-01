@@ -38,12 +38,9 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EmbeddingCache,
@@ -52,19 +49,16 @@ from associative_recall import (
     SegmentStore,
 )
 from best_shot import (
-    MODEL,
+    V2F_PROMPT,
     BestshotBase,
     BestshotResult,
-    V2F_PROMPT,
     _format_segments,
     _parse_cues,
 )
+from openai import OpenAI
 from speaker_attributed import (
-    _NAME_STOPWORDS,
-    _RE_NAME_TOKEN,
     extract_name_mentions,
 )
-
 
 # ---------------------------------------------------------------------------
 # Dedicated caches
@@ -72,9 +66,7 @@ from speaker_attributed import (
 _TS_EMB_FILE = CACHE_DIR / "two_speaker_embedding_cache.json"
 _TS_LLM_FILE = CACHE_DIR / "two_speaker_llm_cache.json"
 _CONV_TWO_SPEAKERS_FILE = (
-    Path(__file__).resolve().parent
-    / "results"
-    / "conversation_two_speakers.json"
+    Path(__file__).resolve().parent / "results" / "conversation_two_speakers.json"
 )
 _CONV_ONE_SPEAKER_FILE = (
     Path(__file__).resolve().parent / "results" / "conversation_speakers.json"
@@ -144,9 +136,7 @@ class TwoSpeakerEmbeddingCache(EmbeddingCache):
             except (json.JSONDecodeError, OSError):
                 existing = {}
         existing.update(self._new_entries)
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         try:
             with open(tmp, "w") as f:
                 json.dump(existing, f)
@@ -196,9 +186,7 @@ class TwoSpeakerLLMCache(LLMCache):
             except (json.JSONDecodeError, OSError):
                 existing = {}
         existing.update(self._new_entries)
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         try:
             with open(tmp, "w") as f:
                 json.dump(existing, f)
@@ -263,7 +251,7 @@ def _normalize_name(raw: str) -> str:
     if not raw:
         return "UNKNOWN"
     # Take the first token, strip punctuation.
-    tok = raw.split()[0] if raw.split() else ""
+    tok = raw.split(maxsplit=1)[0] if raw.split() else ""
     tok = tok.strip(".,:;\"'!?()[]<>")
     if not tok or tok.lower() == "unknown":
         return "UNKNOWN"
@@ -316,18 +304,14 @@ class _TwoSpeakerAttributedBase(BestshotBase):
         self.role_masks: dict[str, np.ndarray] = self._role_masks_cache[key]
 
         if key not in self._conv_two_speakers_cache:
-            self._conv_two_speakers_cache[key] = self._identify_all_speakers(
-                store
-            )
+            self._conv_two_speakers_cache[key] = self._identify_all_speakers(store)
         # dict: conv_id -> {"user": name, "assistant": name}
         self.conv_two_speakers: dict[str, dict[str, str]] = (
             self._conv_two_speakers_cache[key]
         )
 
     # --- Speaker ID over all conversations in the store ---
-    def _identify_all_speakers(
-        self, store: SegmentStore
-    ) -> dict[str, dict[str, str]]:
+    def _identify_all_speakers(self, store: SegmentStore) -> dict[str, dict[str, str]]:
         # Load persisted two-speaker results first (disk cache).
         persisted: dict[str, dict[str, str]] = {}
         if _CONV_TWO_SPEAKERS_FILE.exists():
@@ -339,8 +323,7 @@ class _TwoSpeakerAttributedBase(BestshotBase):
                     if isinstance(pair, dict):
                         persisted[cid] = {
                             "user": pair.get("user", "UNKNOWN") or "UNKNOWN",
-                            "assistant": pair.get("assistant", "UNKNOWN")
-                            or "UNKNOWN",
+                            "assistant": pair.get("assistant", "UNKNOWN") or "UNKNOWN",
                         }
             except (json.JSONDecodeError, OSError):
                 persisted = {}
@@ -370,9 +353,7 @@ class _TwoSpeakerAttributedBase(BestshotBase):
                 # Have at least partial info; don't re-call LLM.
                 continue
 
-            conv_segs = [
-                s for s in store.segments if s.conversation_id == cid
-            ]
+            conv_segs = [s for s in store.segments if s.conversation_id == cid]
             if not conv_segs:
                 out[cid] = {"user": "UNKNOWN", "assistant": "UNKNOWN"}
                 continue
@@ -386,30 +367,21 @@ class _TwoSpeakerAttributedBase(BestshotBase):
             # (it was derived under a slightly different prompt but should
             # agree; be conservative).
             prior_user = one_side.get(cid, "UNKNOWN")
-            if (
-                prior_user
-                and prior_user != "UNKNOWN"
-                and user_name == "UNKNOWN"
-            ):
+            if prior_user and prior_user != "UNKNOWN" and user_name == "UNKNOWN":
                 user_name = prior_user
 
             out[cid] = {"user": user_name, "assistant": asst_name}
             any_new = True
             print(
-                f"  [two_speaker_id] {cid}: user={user_name} "
-                f"assistant={asst_name}",
+                f"  [two_speaker_id] {cid}: user={user_name} assistant={asst_name}",
                 flush=True,
             )
 
         if any_new:
             try:
-                _CONV_TWO_SPEAKERS_FILE.parent.mkdir(
-                    parents=True, exist_ok=True
-                )
+                _CONV_TWO_SPEAKERS_FILE.parent.mkdir(parents=True, exist_ok=True)
                 with open(_CONV_TWO_SPEAKERS_FILE, "w") as f:
-                    json.dump(
-                        {"speakers": out}, f, indent=2, default=str
-                    )
+                    json.dump({"speakers": out}, f, indent=2, default=str)
             except OSError:
                 pass
 
@@ -435,12 +407,8 @@ class _TwoSpeakerAttributedBase(BestshotBase):
         tokens = extract_name_mentions(query)
         tlow = {t.lower() for t in tokens}
 
-        hit_user = (
-            user_name != "UNKNOWN" and user_name.lower() in tlow
-        )
-        hit_asst = (
-            asst_name != "UNKNOWN" and asst_name.lower() in tlow
-        )
+        hit_user = user_name != "UNKNOWN" and user_name.lower() in tlow
+        hit_asst = asst_name != "UNKNOWN" and asst_name.lower() in tlow
         if hit_user and hit_asst:
             side = "both"
         elif hit_user:
@@ -465,9 +433,7 @@ class _TwoSpeakerAttributedBase(BestshotBase):
         q = q / qn
         sims = self.store.normalized_embeddings @ q
         conv_mask = self.store.conversation_ids == conversation_id
-        role_mask = self.role_masks.get(
-            role, np.zeros_like(conv_mask, dtype=bool)
-        )
+        role_mask = self.role_masks.get(role, np.zeros_like(conv_mask, dtype=bool))
         combined_mask = conv_mask & role_mask
         sims = np.where(combined_mask, sims, -1.0)
         if exclude_indices:
@@ -487,19 +453,14 @@ class _TwoSpeakerAttributedBase(BestshotBase):
         self, question: str, conversation_id: str
     ) -> tuple[list[Segment], dict]:
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments: list[Segment] = list(hop0.segments)
         exclude: set[int] = {s.index for s in all_segments}
 
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
-        prompt = V2F_PROMPT.format(
-            question=question, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=question, context_section=context_section)
         output = self.llm_call(prompt)
         cues = _parse_cues(output)[:2]
 
@@ -536,9 +497,7 @@ class _TwoSpeakerAttributedBase(BestshotBase):
             "matched_side": side,
             "applied_speaker_transform": False,
             "appended_role_only_indices": [],
-            "n_user_in_v2f": int(
-                sum(1 for s in v2f_segments if s.role == "user")
-            ),
+            "n_user_in_v2f": int(sum(1 for s in v2f_segments if s.role == "user")),
             "n_assistant_in_v2f": int(
                 sum(1 for s in v2f_segments if s.role == "assistant")
             ),
@@ -546,9 +505,7 @@ class _TwoSpeakerAttributedBase(BestshotBase):
 
         # No transform if: nothing mentioned, both mentioned, or names unknown.
         if side in ("none", "both"):
-            return BestshotResult(
-                segments=list(v2f_segments), metadata=metadata
-            )
+            return BestshotResult(segments=list(v2f_segments), metadata=metadata)
 
         # side in ("user", "assistant") -> filter/boost that role.
         matched_role = side
@@ -569,9 +526,7 @@ class _TwoSpeakerAttributedBase(BestshotBase):
 
         if self.filter_mode:
             # Drop role != matched_role from the v2f output.
-            filtered_v2f = [
-                s for s in v2f_segments if s.role == matched_role
-            ]
+            filtered_v2f = [s for s in v2f_segments if s.role == matched_role]
             merged = list(filtered_v2f)
             seen = {s.index for s in merged}
             for s in appended_segments:
@@ -587,8 +542,7 @@ class _TwoSpeakerAttributedBase(BestshotBase):
 
         def _cosine(idx: int) -> float:
             return float(
-                self.store.normalized_embeddings[idx]
-                @ qnorm.astype(np.float32)
+                self.store.normalized_embeddings[idx] @ qnorm.astype(np.float32)
             )
 
         scored: list[tuple[Segment, float, int]] = []

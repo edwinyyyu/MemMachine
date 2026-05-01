@@ -35,9 +35,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -46,6 +43,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -154,7 +153,7 @@ def _parse_cues(text: str, key: str = "CUE:") -> list[str]:
     for line in text.strip().split("\n"):
         line = line.strip()
         if line.upper().startswith(key.upper()):
-            val = line[len(key):].strip()
+            val = line[len(key) :].strip()
             if val:
                 out.append(val)
     return out
@@ -250,9 +249,7 @@ class ChainOfThoughtArch:
         if cached is not None:
             self.embed_calls += 1
             return cached
-        response = self.client.embeddings.create(
-            model=EMBED_MODEL, input=[text]
-        )
+        response = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
         embedding = np.array(response.data[0].embedding, dtype=np.float32)
         self.embedding_cache.put(text, embedding)
         self.embed_calls += 1
@@ -293,8 +290,9 @@ class ChainOfThoughtArch:
                 question=question,
                 all_segs=_format_segments(all_segs, max_items=14),
                 num_segs=len(all_segs),
-                explored=("\n".join(f"- {c}" for c in explored)
-                          if explored else "(none yet)"),
+                explored=(
+                    "\n".join(f"- {c}" for c in explored) if explored else "(none yet)"
+                ),
                 num_cues=self.num_cues,
             )
             response = self.llm_call(prompt)
@@ -314,8 +312,10 @@ class ChainOfThoughtArch:
                 explored.append(cue)
                 cue_emb = self.embed_text(cue)
                 result = self.store.search(
-                    cue_emb, top_k=self.per_cue_k,
-                    conversation_id=conversation_id, exclude_indices=exclude,
+                    cue_emb,
+                    top_k=self.per_cue_k,
+                    conversation_id=conversation_id,
+                    exclude_indices=exclude,
                 )
                 for s in result.segments:
                     if s.index not in exclude:
@@ -337,15 +337,15 @@ class ChainOfThoughtArch:
 # ---------------------------------------------------------------------------
 # Fair K-budget evaluation
 # ---------------------------------------------------------------------------
-def compute_recall(retrieved_turn_ids: set[int],
-                   source_turn_ids: set[int]) -> float:
+def compute_recall(retrieved_turn_ids: set[int], source_turn_ids: set[int]) -> float:
     if not source_turn_ids:
         return 1.0
     return len(retrieved_turn_ids & source_turn_ids) / len(source_turn_ids)
 
 
-def evaluate_one(arch: ChainOfThoughtArch, question: dict,
-                 verbose: bool = False) -> dict:
+def evaluate_one(
+    arch: ChainOfThoughtArch, question: dict, verbose: bool = False
+) -> dict:
     q_text = question["question"]
     conv_id = question["conversation_id"]
     source_ids = set(question["source_chat_ids"])
@@ -366,9 +366,7 @@ def evaluate_one(arch: ChainOfThoughtArch, question: dict,
     # Baseline cosine top-max(BUDGETS) on question embedding
     q_emb = arch.embed_text(q_text)
     max_b = max(BUDGETS)
-    baseline = arch.store.search(
-        q_emb, top_k=max_b, conversation_id=conv_id
-    )
+    baseline = arch.store.search(q_emb, top_k=max_b, conversation_id=conv_id)
 
     # FAIR backfill: arch pool + baseline segments not already in pool, in order
     arch_idx = {s.index for s in arch_segments}
@@ -456,9 +454,7 @@ def load_dataset(key: str) -> tuple[list[dict], SegmentStore]:
 # ---------------------------------------------------------------------------
 # Comparison: load existing budget results for baseline/v15/v2f
 # ---------------------------------------------------------------------------
-def load_budget_recall_by_qkey(
-    arch_name: str, dataset_key: str
-) -> dict[tuple, float]:
+def load_budget_recall_by_qkey(arch_name: str, dataset_key: str) -> dict[tuple, float]:
     """Load recall per question from a budget_*.json result file.
 
     Keyed by (conversation_id, question_index) -> recall.
@@ -475,9 +471,7 @@ def load_budget_recall_by_qkey(
     return out
 
 
-def cot_run(
-    dataset_key: str, force: bool = False, verbose: bool = False
-) -> list[dict]:
+def cot_run(dataset_key: str, force: bool = False, verbose: bool = False) -> list[dict]:
     """Run CoT on a dataset. Caches raw per-question results to
     results/cot_chain_of_thought_<dataset>.json for reuse.
     """
@@ -496,7 +490,7 @@ def cot_run(
     for i, q in enumerate(qs):
         q_short = q["question"][:60].replace("\n", " ")
         print(
-            f"  [{i+1}/{len(qs)}] {q['category']}: {q_short}...",
+            f"  [{i + 1}/{len(qs)}] {q['category']}: {q_short}...",
             flush=True,
         )
         try:
@@ -505,6 +499,7 @@ def cot_run(
         except Exception as e:
             print(f"    ERROR: {type(e).__name__}: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -521,9 +516,7 @@ def cot_run(
 # ---------------------------------------------------------------------------
 # Per-category summary table
 # ---------------------------------------------------------------------------
-def compare_per_category(
-    dataset_key: str, cot_rows: list[dict]
-) -> list[dict]:
+def compare_per_category(dataset_key: str, cot_rows: list[dict]) -> list[dict]:
     """Build per-category summary rows for K=20 and K=50.
 
     Returns list of dicts:
@@ -537,8 +530,7 @@ def compare_per_category(
     budget_by_arch: dict[str, dict[str, dict]] = {}
     for arch in ("baseline", "v15_tight", "v2f_tight"):
         budget_by_arch[arch] = {
-            K: load_budget_recall_by_qkey(f"{arch}_{K}", dataset_key)
-            for K in BUDGETS
+            K: load_budget_recall_by_qkey(f"{arch}_{K}", dataset_key) for K in BUDGETS
         }
 
     # Group CoT rows by category
@@ -606,9 +598,9 @@ def print_table(all_rows: list[dict], K: int) -> None:
     rows = [r for r in all_rows if r["K"] == K]
     if not rows:
         return
-    print(f"\n{'='*108}")
+    print(f"\n{'=' * 108}")
     print(f"PER-CATEGORY RESULTS at K={K} (recall, fair backfill)")
-    print(f"{'='*108}")
+    print(f"{'=' * 108}")
     hdr = (
         f"{'Dataset':<14s} {'Category':<26s} {'n':>3s} "
         f"{'Base':>7s} {'v15':>7s} {'v2f':>7s} {'CoT':>7s}  "
@@ -619,7 +611,7 @@ def print_table(all_rows: list[dict], K: int) -> None:
     last_ds = None
     for r in rows:
         if last_ds is not None and r["dataset"] != last_ds:
-            print("")
+            print()
         last_ds = r["dataset"]
         print(
             f"{r['dataset']:<14s} {r['category']:<26s} {r['n']:>3d} "
@@ -634,9 +626,9 @@ def print_table(all_rows: list[dict], K: int) -> None:
 def print_overall_by_dataset(all_rows: list[dict], K: int) -> None:
     """Overall mean recall per dataset at K, aggregated across all
     questions (weighted by per-category n)."""
-    print(f"\n{'-'*108}")
+    print(f"\n{'-' * 108}")
     print(f"OVERALL per DATASET at K={K}")
-    print(f"{'-'*108}")
+    print(f"{'-' * 108}")
     by_ds: dict[str, list[dict]] = defaultdict(list)
     for r in all_rows:
         if r["K"] == K:
@@ -651,12 +643,14 @@ def print_overall_by_dataset(all_rows: list[dict], K: int) -> None:
     print("-" * len(hdr))
     for ds, rows in by_ds.items():
         total_n = sum(r["n"] for r in rows)
+
         def _weighted(key: str) -> float | None:
             vals = [(r[key], r["n"]) for r in rows if r[key] is not None]
             if not vals:
                 return None
             tot = sum(n for _, n in vals)
             return sum(v * n for v, n in vals) / tot
+
         b = _weighted("baseline")
         v15 = _weighted("v15")
         v2f = _weighted("v2f")
@@ -676,18 +670,21 @@ def print_overall_by_dataset(all_rows: list[dict], K: int) -> None:
 # ---------------------------------------------------------------------------
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--force", action="store_true",
-                        help="Rerun CoT even if result file exists")
+    parser.add_argument(
+        "--force", action="store_true", help="Rerun CoT even if result file exists"
+    )
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--dataset", type=str, default=None,
-                        choices=list(DATASETS.keys()),
-                        help="Restrict to a single dataset (default: all)")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        choices=list(DATASETS.keys()),
+        help="Restrict to a single dataset (default: all)",
+    )
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    dataset_keys = (
-        [args.dataset] if args.dataset else list(DATASETS.keys())
-    )
+    dataset_keys = [args.dataset] if args.dataset else list(DATASETS.keys())
 
     all_rows: list[dict] = []
     for ds in dataset_keys:
@@ -705,12 +702,12 @@ def main() -> None:
         print_overall_by_dataset(all_rows, K)
 
     # Headline table: concise CoT delta vs v2f summary
-    print(f"\n{'='*108}")
+    print(f"\n{'=' * 108}")
     print(
         "HEADLINE TABLE (CoT delta vs v2f per category; +=CoT better, "
         "meaningful = >=+2pp or <=-2pp)"
     )
-    print(f"{'='*108}")
+    print(f"{'=' * 108}")
     print(
         f"{'Dataset':<14s} {'Category':<26s} "
         f"{'K':>3s} {'v2f':>7s} {'CoT':>7s} {'delta':>7s} "

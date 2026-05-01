@@ -27,27 +27,22 @@ Usage:
 
 import concurrent.futures as cf
 import json
-import sys
 import threading
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
-    EMBED_MODEL,
     EmbeddingCache,
     LLMCache,
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 from prompt_optimization import (
-    BUDGETS,
     OptimBase,
     OptimResult,
     _format_segments,
@@ -407,9 +402,7 @@ class DomainAgnosticVariant(OptimBase):
 
     def retrieve(self, question: str, conversation_id: str) -> OptimResult:
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
@@ -427,7 +420,9 @@ class DomainAgnosticVariant(OptimBase):
                 continue
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -469,9 +464,7 @@ def build_variant(store: SegmentStore, name: str) -> DomainAgnosticVariant:
     if name not in VARIANT_SPECS:
         raise KeyError(f"Unknown variant: {name}")
     prompt, header = VARIANT_SPECS[name]
-    return DomainAgnosticVariant(
-        store, prompt_template=prompt, context_header=header
-    )
+    return DomainAgnosticVariant(store, prompt_template=prompt, context_header=header)
 
 
 # ===========================================================================
@@ -580,9 +573,7 @@ def evaluate_question(
 
     query_emb = arch.embed_text(q_text)
     max_K = max(budgets)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -635,15 +626,11 @@ def summarize_results(
         sum(r["total_arch_retrieved"] for r in results) / n, 1
     )
     out["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
-    out["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
+    out["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
     return out
 
 
-def summarize_by_category(
-    results: list[dict], budgets: list[int]
-) -> dict[str, dict]:
+def summarize_by_category(results: list[dict], budgets: list[int]) -> dict[str, dict]:
     by_cat: dict[str, list[dict]] = defaultdict(list)
     for r in results:
         by_cat[r["category"]].append(r)
@@ -656,9 +643,7 @@ def summarize_by_category(
             a_vals = [r["fair_backfill"][f"arch_r@{K}"] for r in rs]
             entry[f"baseline_r@{K}"] = round(sum(b_vals) / n, 4)
             entry[f"arch_r@{K}"] = round(sum(a_vals) / n, 4)
-            entry[f"delta_r@{K}"] = round(
-                sum(a_vals) / n - sum(b_vals) / n, 4
-            )
+            entry[f"delta_r@{K}"] = round(sum(a_vals) / n - sum(b_vals) / n, 4)
             wins = sum(1 for b, a in zip(b_vals, a_vals) if a > b + 0.001)
             losses = sum(1 for b, a in zip(b_vals, a_vals) if b > a + 0.001)
             entry[f"W/T/L_r@{K}"] = f"{wins}/{n - wins - losses}/{losses}"
@@ -690,15 +675,16 @@ def run_variant_parallel(
             row = evaluate_question(arch, q, budgets)
         except Exception as e:
             with print_lock:
-                print(f"  [{i+1}/{len(questions)}] ERROR: {e}", flush=True)
+                print(f"  [{i + 1}/{len(questions)}] ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
             return (i, None)
         with print_lock:
             cat = q.get("category", "?")
             q_short = q["question"][:55]
             print(
-                f"  [{i+1}/{len(questions)}] {cat}: {q_short}... "
+                f"  [{i + 1}/{len(questions)}] {cat}: {q_short}... "
                 f"d@20={row['fair_backfill'].get(f'delta_r@{budgets[0]}', 0):+.2f} "
                 f"({row['time_s']:.1f}s)",
                 flush=True,
@@ -726,11 +712,11 @@ def run_variant_parallel(
 # ===========================================================================
 QUICK_QUESTIONS_SPEC = [
     # (dataset, conversation_id, question_index)
-    ("locomo_30q", "locomo_conv-26", 0),             # temporal, Caroline LGBTQ group
-    ("locomo_30q", "locomo_conv-26", 3),             # single_hop, Caroline research
-    ("synthetic_19q", "synth_personal", 0),          # control, Bob allergic
-    ("puzzle_16q", "puzzle_logic_1", 0),             # logic_constraint, desk arrangement
-    ("advanced_23q", "adv_evolving_term_1", 0),      # evolving_terminology, Phoenix
+    ("locomo_30q", "locomo_conv-26", 0),  # temporal, Caroline LGBTQ group
+    ("locomo_30q", "locomo_conv-26", 3),  # single_hop, Caroline research
+    ("synthetic_19q", "synth_personal", 0),  # control, Bob allergic
+    ("puzzle_16q", "puzzle_logic_1", 0),  # logic_constraint, desk arrangement
+    ("advanced_23q", "adv_evolving_term_1", 0),  # evolving_terminology, Phoenix
 ]
 
 
@@ -747,8 +733,7 @@ def load_quick_questions() -> list[tuple[str, dict]]:
         _, questions = seen_datasets[ds_name]
         matched = None
         for q in questions:
-            if (q.get("conversation_id") == conv_id
-                    and q.get("question_index") == q_idx):
+            if q.get("conversation_id") == conv_id and q.get("question_index") == q_idx:
                 matched = q
                 break
         if matched is None:
@@ -798,9 +783,7 @@ def run_quick_test(variants_to_run: list[str]) -> dict:
     # Print comparison table
     print(
         f"\n{'Variant':<28s} "
-        + " ".join(
-            f"Q{i+1}@20" for i in range(len(quick_qs))
-        )
+        + " ".join(f"Q{i + 1}@20" for i in range(len(quick_qs)))
         + "   mean_delta"
     )
     print("-" * 100)
@@ -814,24 +797,18 @@ def run_quick_test(variants_to_run: list[str]) -> dict:
             cells.append(f"{a:.2f}({d:+.2f})")
             deltas.append(d)
         mean_d = sum(deltas) / len(deltas) if deltas else 0.0
-        print(
-            f"{variant_name:<28s} "
-            + "  ".join(cells)
-            + f"   {mean_d:+.3f}"
-        )
+        print(f"{variant_name:<28s} " + "  ".join(cells) + f"   {mean_d:+.3f}")
 
     # Print baseline (cosine) row for reference — same per question regardless
     # of variant, take from first variant
     ref_rows = all_rows[variants_to_run[0]]
-    b_cells = [
-        f"{r['fair_backfill']['baseline_r@20']:.2f}" for r in ref_rows
-    ]
+    b_cells = [f"{r['fair_backfill']['baseline_r@20']:.2f}" for r in ref_rows]
     print(f"\n{'(cosine baseline)':<28s} " + "  ".join(b_cells))
 
     print(
         "\nQuestions:\n"
         + "\n".join(
-            f"  Q{i+1} [{q['category']}] {q['question'][:80]}"
+            f"  Q{i + 1} [{q['category']}] {q['question'][:80]}"
             for i, (_, q) in enumerate(quick_qs)
         )
     )
@@ -851,14 +828,14 @@ def run_quick_test(variants_to_run: list[str]) -> dict:
             continue
         rows = all_rows[variant_name]
         beats = sum(
-            1 for v, b in zip(rows, base_rows)
-            if v["fair_backfill"]["arch_r@20"]
-            > b["fair_backfill"]["arch_r@20"] + 0.001
+            1
+            for v, b in zip(rows, base_rows)
+            if v["fair_backfill"]["arch_r@20"] > b["fair_backfill"]["arch_r@20"] + 0.001
         )
         losses = sum(
-            1 for v, b in zip(rows, base_rows)
-            if v["fair_backfill"]["arch_r@20"]
-            < b["fair_backfill"]["arch_r@20"] - 0.001
+            1
+            for v, b in zip(rows, base_rows)
+            if v["fair_backfill"]["arch_r@20"] < b["fair_backfill"]["arch_r@20"] - 0.001
         )
         locomo_diffs = [
             v2f_ref_rows[i]["fair_backfill"]["arch_r@20"]
@@ -866,9 +843,9 @@ def run_quick_test(variants_to_run: list[str]) -> dict:
             for i in (0, 1)
         ]
         max_locomo_gap = max(locomo_diffs)
-        mean_delta = sum(
-            r["fair_backfill"]["delta_r@20"] for r in rows
-        ) / max(len(rows), 1)
+        mean_delta = sum(r["fair_backfill"]["delta_r@20"] for r in rows) / max(
+            len(rows), 1
+        )
         base_mean_delta = sum(
             r["fair_backfill"]["delta_r@20"] for r in base_rows
         ) / max(len(base_rows), 1)
@@ -930,14 +907,14 @@ def run_full_eval(variants_to_run: list[str]) -> dict:
             print(f"\n--- {variant_name} on {ds_name} ---")
             arch = build_variant(store, variant_name)
             results = run_variant_parallel(
-                arch, questions, BUDGETS_FULL,
+                arch,
+                questions,
+                BUDGETS_FULL,
                 workers=8,
             )
             arch.save_caches()
 
-            summary = summarize_results(
-                results, variant_name, ds_name, BUDGETS_FULL
-            )
+            summary = summarize_results(results, variant_name, ds_name, BUDGETS_FULL)
             by_cat = summarize_by_category(results, BUDGETS_FULL)
 
             per_variant_per_dataset_results[variant_name][ds_name] = {
@@ -948,13 +925,13 @@ def run_full_eval(variants_to_run: list[str]) -> dict:
             summary_table[variant_name][ds_name] = summary
 
             # Save per-run json
-            out_path = (
-                RESULTS_DIR / f"domain_agnostic_{variant_name}_{ds_name}.json"
-            )
+            out_path = RESULTS_DIR / f"domain_agnostic_{variant_name}_{ds_name}.json"
             with open(out_path, "w") as f:
                 json.dump(
                     per_variant_per_dataset_results[variant_name][ds_name],
-                    f, indent=2, default=str,
+                    f,
+                    indent=2,
+                    default=str,
                 )
             print(f"  Saved: {out_path}")
 
@@ -1041,7 +1018,9 @@ def run_full_eval(variants_to_run: list[str]) -> dict:
                 "summary_table": summary_table,
                 "cross_dataset_avg_delta": cross_avg,
             },
-            f, indent=2, default=str,
+            f,
+            indent=2,
+            default=str,
         )
     print(f"\nSaved aggregate summary: {agg_path}")
 
@@ -1060,11 +1039,14 @@ def main():
     parser.add_argument("--quick", action="store_true", help="Run 5-question gate test")
     parser.add_argument("--full", action="store_true", help="Run full 4-dataset eval")
     parser.add_argument(
-        "--all", action="store_true",
+        "--all",
+        action="store_true",
         help="Run quick test; if any new variant passes the gate, run full eval on survivors",
     )
     parser.add_argument(
-        "--variants", type=str, default=None,
+        "--variants",
+        type=str,
+        default=None,
         help="Comma-separated variant names (default: all)",
     )
     parser.add_argument("--list", action="store_true", help="List variants")
@@ -1119,7 +1101,9 @@ def main():
                         for v, rows in quick_result["all_rows"].items()
                     },
                 },
-                f, indent=2, default=str,
+                f,
+                indent=2,
+                default=str,
             )
         print(f"\nSaved quick results: {qpath}")
         print(f"Gate-passing variants: {quick_result['gate_pass']}")
@@ -1130,9 +1114,7 @@ def main():
             survivors = ["v2f", "v2f_minimal"] + quick_result["gate_pass"]
             # dedupe preserving order
             seen = set()
-            survivors = [
-                v for v in survivors if not (v in seen or seen.add(v))
-            ]
+            survivors = [v for v in survivors if not (v in seen or seen.add(v))]
             run_full_eval(survivors)
         else:
             run_full_eval(variants)

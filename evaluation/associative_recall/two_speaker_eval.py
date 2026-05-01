@@ -20,9 +20,9 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
+from antipara_cue_gen import MetaV2fDedicated
 from associative_recall import Segment
+from dotenv import load_dotenv
 from fair_backfill_eval import (
     BUDGETS,
     RESULTS_DIR,
@@ -31,11 +31,12 @@ from fair_backfill_eval import (
     summarize,
     summarize_by_category,
 )
-from antipara_cue_gen import MetaV2fDedicated
 from speaker_attributed import SpeakerUserFilter
 from two_speaker_filter import (
-    ARCH_CLASSES as TS_ARCH_CLASSES,
     _CONV_TWO_SPEAKERS_FILE,
+)
+from two_speaker_filter import (
+    ARCH_CLASSES as TS_ARCH_CLASSES,
 )
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -76,9 +77,7 @@ def evaluate_question(arch, question: dict, arch_name: str) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     md = result.metadata or {}
@@ -100,9 +99,7 @@ def evaluate_question(arch, question: dict, arch_name: str) -> dict:
         # Unified metadata projection for reporting.
         row["conv_user_name"] = md.get("conv_user_name")
         row["query_name_tokens"] = md.get("query_name_tokens", [])
-        row["applied_speaker_transform"] = md.get(
-            "applied_speaker_transform", False
-        )
+        row["applied_speaker_transform"] = md.get("applied_speaker_transform", False)
         row["n_user_in_v2f"] = md.get("n_user_in_v2f")
         if arch_name == "speaker_user_filter":
             row["matched_side"] = (
@@ -143,8 +140,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] "
-            f"{q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -153,6 +149,7 @@ def run_one(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -198,14 +195,10 @@ def coverage_by_side(speaker_results: list[dict]) -> dict:
         ),
     }
     # Per-category breakdown.
-    cat_sides: dict[str, dict[str, int]] = defaultdict(
-        lambda: defaultdict(int)
-    )
+    cat_sides: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for r in speaker_results:
         cat_sides[r.get("category", "?")][r.get("matched_side", "none")] += 1
-    out["by_category"] = {
-        c: dict(s) for c, s in cat_sides.items()
-    }
+    out["by_category"] = {c: dict(s) for c, s in cat_sides.items()}
     return out
 
 
@@ -216,9 +209,7 @@ def subset_delta_table(
     subset_name: str,
 ) -> dict:
     """Per-K recall on a SUBSET (defined by subset_filter on arch_results)."""
-    ref_by_key = {
-        (r["conversation_id"], r["question_index"]): r for r in ref_results
-    }
+    ref_by_key = {(r["conversation_id"], r["question_index"]): r for r in ref_results}
     subset = [r for r in arch_results if subset_filter(r)]
     n = len(subset)
     out: dict[str, object] = {"subset": subset_name, "n": n}
@@ -258,12 +249,14 @@ def two_speaker_id_summary() -> dict:
         pairs = {}
     n = len(pairs)
     both_known = sum(
-        1 for p in pairs.values()
+        1
+        for p in pairs.values()
         if p.get("user", "UNKNOWN") != "UNKNOWN"
         and p.get("assistant", "UNKNOWN") != "UNKNOWN"
     )
     one_known = sum(
-        1 for p in pairs.values()
+        1
+        for p in pairs.values()
         if (p.get("user", "UNKNOWN") != "UNKNOWN")
         ^ (p.get("assistant", "UNKNOWN") != "UNKNOWN")
     )
@@ -274,9 +267,7 @@ def two_speaker_id_summary() -> dict:
         "n_one_identified": one_known,
         "n_none_identified": none_known,
         "both_hit_rate": round(both_known / n, 4) if n else 0.0,
-        "any_hit_rate": (
-            round((both_known + one_known) / n, 4) if n else 0.0
-        ),
+        "any_hit_rate": (round((both_known + one_known) / n, 4) if n else 0.0),
         "pairs": pairs,
     }
 
@@ -294,9 +285,7 @@ def main() -> None:
 
         for arch_name, cls in ARCH_CLASSES.items():
             arch = cls(store)
-            results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(arch_name, arch, ds_name, questions)
             all_results[arch_name][ds_name] = {
                 "summary": summary,
                 "category_breakdown": by_cat,
@@ -310,24 +299,20 @@ def main() -> None:
     primary_arch = "two_speaker_filter"
     coverage: dict[str, dict] = {}
     for ds_name in EVAL_DATASETS:
-        rs = all_results.get(primary_arch, {}).get(ds_name, {}).get(
-            "results", []
-        )
+        rs = all_results.get(primary_arch, {}).get(ds_name, {}).get("results", [])
         coverage[ds_name] = coverage_by_side(rs)
 
     # --- Subset delta tables (two-speaker arches) ---
     subset_tables: dict[str, dict] = defaultdict(dict)
     for ds_name in EVAL_DATASETS:
-        v2f_rs = all_results.get("meta_v2f", {}).get(ds_name, {}).get(
-            "results", []
-        )
-        sp_rs = all_results.get("speaker_user_filter", {}).get(ds_name, {}).get(
-            "results", []
+        v2f_rs = all_results.get("meta_v2f", {}).get(ds_name, {}).get("results", [])
+        sp_rs = (
+            all_results.get("speaker_user_filter", {})
+            .get(ds_name, {})
+            .get("results", [])
         )
         for arch_name in TWO_SPEAKER_ARCHES:
-            rs = all_results.get(arch_name, {}).get(ds_name, {}).get(
-                "results", []
-            )
+            rs = all_results.get(arch_name, {}).get(ds_name, {}).get("results", [])
             if not rs:
                 continue
             # 1. user-only subset vs v2f.
@@ -350,21 +335,20 @@ def main() -> None:
             )
             # 3. assistant-only subset vs speaker_user_filter (does the NEW
             #    coverage add wins beyond the single-speaker baseline?).
-            subset_tables[arch_name][
-                f"{ds_name}__assistant_only_vs_spf"
-            ] = subset_delta_table(
-                rs,
-                sp_rs,
-                lambda r: r.get("matched_side") == "assistant",
-                "mentions_assistant_only",
+            subset_tables[arch_name][f"{ds_name}__assistant_only_vs_spf"] = (
+                subset_delta_table(
+                    rs,
+                    sp_rs,
+                    lambda r: r.get("matched_side") == "assistant",
+                    "mentions_assistant_only",
+                )
             )
             # 4. Full transform-fired subset (user|assistant) vs v2f.
             subset_tables[arch_name][f"{ds_name}__transform_fired_vs_v2f"] = (
                 subset_delta_table(
                     rs,
                     v2f_rs,
-                    lambda r: r.get("matched_side")
-                    in ("user", "assistant"),
+                    lambda r: r.get("matched_side") in ("user", "assistant"),
                     "transform_fired",
                 )
             )
@@ -380,9 +364,7 @@ def main() -> None:
             a: {
                 d: {
                     "summary": all_results[a][d]["summary"],
-                    "category_breakdown": all_results[a][d][
-                        "category_breakdown"
-                    ],
+                    "category_breakdown": all_results[a][d]["category_breakdown"],
                 }
                 for d in all_results[a]
             }
@@ -404,9 +386,7 @@ def main() -> None:
                         "arch": a,
                         "dataset": d,
                         "summary": all_results[a][d]["summary"],
-                        "category_breakdown": all_results[a][d][
-                            "category_breakdown"
-                        ],
+                        "category_breakdown": all_results[a][d]["category_breakdown"],
                         "results": all_results[a][d]["results"],
                     },
                     f,
@@ -428,29 +408,18 @@ def main() -> None:
 
     # Two-speaker IDs
     md.append("## Two-speaker identification\n")
-    md.append(
-        f"- Conversations scanned: {sid_summary['n_conversations']}"
-    )
+    md.append(f"- Conversations scanned: {sid_summary['n_conversations']}")
     md.append(
         f"- Both identified: {sid_summary['n_both_identified']} "
         f"({sid_summary['both_hit_rate']:.1%})"
     )
-    md.append(
-        f"- One side identified: {sid_summary['n_one_identified']}"
-    )
-    md.append(
-        f"- Neither identified: {sid_summary['n_none_identified']}"
-    )
-    md.append(
-        f"- Any-side hit rate: {sid_summary['any_hit_rate']:.1%}\n"
-    )
+    md.append(f"- One side identified: {sid_summary['n_one_identified']}")
+    md.append(f"- Neither identified: {sid_summary['n_none_identified']}")
+    md.append(f"- Any-side hit rate: {sid_summary['any_hit_rate']:.1%}\n")
     md.append("| Conversation | user | assistant |")
     md.append("|---|---|---|")
     for cid, pair in sorted(sid_summary["pairs"].items()):
-        md.append(
-            f"| {cid} | {pair.get('user', '?')} | "
-            f"{pair.get('assistant', '?')} |"
-        )
+        md.append(f"| {cid} | {pair.get('user', '?')} | {pair.get('assistant', '?')} |")
     md.append("")
 
     # Query coverage by side
@@ -527,9 +496,7 @@ def main() -> None:
         for d in EVAL_DATASETS:
             if d not in all_results["two_speaker_filter"]:
                 continue
-            by_cat = all_results["two_speaker_filter"][d][
-                "category_breakdown"
-            ]
+            by_cat = all_results["two_speaker_filter"][d]["category_breakdown"]
             md.append(f"### {d}\n")
             md.append("| category | n | Δ@20 | Δ@50 | W/T/L@50 |")
             md.append("|---|---:|---:|---:|---:|")
@@ -543,16 +510,14 @@ def main() -> None:
     # Verdict
     md.append("## Verdict\n")
     verdict_lines: list[str] = []
-    v2f_lc = all_results.get("meta_v2f", {}).get("locomo_30q", {}).get(
-        "summary", {}
+    v2f_lc = all_results.get("meta_v2f", {}).get("locomo_30q", {}).get("summary", {})
+    spf_lc = (
+        all_results.get("speaker_user_filter", {})
+        .get("locomo_30q", {})
+        .get("summary", {})
     )
-    spf_lc = all_results.get("speaker_user_filter", {}).get(
-        "locomo_30q", {}
-    ).get("summary", {})
 
-    verdict_lines.append(
-        f"- Both-side ID hit rate: {sid_summary['both_hit_rate']:.1%}"
-    )
+    verdict_lines.append(f"- Both-side ID hit rate: {sid_summary['both_hit_rate']:.1%}")
     for ds_name in EVAL_DATASETS:
         cov = coverage.get(ds_name, {})
         verdict_lines.append(
@@ -564,9 +529,11 @@ def main() -> None:
         )
 
     # Compare two_speaker_filter vs speaker_user_filter on LoCoMo.
-    tsf_lc = all_results.get("two_speaker_filter", {}).get(
-        "locomo_30q", {}
-    ).get("summary", {})
+    tsf_lc = (
+        all_results.get("two_speaker_filter", {})
+        .get("locomo_30q", {})
+        .get("summary", {})
+    )
     if tsf_lc and spf_lc:
         d20 = tsf_lc.get("arch_r@20", 0) - spf_lc.get("arch_r@20", 0)
         d50 = tsf_lc.get("arch_r@50", 0) - spf_lc.get("arch_r@50", 0)
@@ -595,12 +562,8 @@ def main() -> None:
             )
         else:
             # Is the assistant-only subset bringing any real wins?
-            asst_key = (
-                "locomo_30q__assistant_only_vs_v2f"
-            )
-            asst_row = subset_tables.get(
-                "two_speaker_filter", {}
-            ).get(asst_key, {})
+            asst_key = "locomo_30q__assistant_only_vs_v2f"
+            asst_row = subset_tables.get("two_speaker_filter", {}).get(asst_key, {})
             n_asst = asst_row.get("n", 0)
             if n_asst == 0:
                 verdict = (

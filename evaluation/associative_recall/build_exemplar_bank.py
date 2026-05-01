@@ -13,14 +13,11 @@ Usage:
 """
 
 import json
-import sys
 from pathlib import Path
-
-import numpy as np
-from dotenv import load_dotenv
 
 from associative_recall import SegmentStore
 from best_shot import MetaV2f
+from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -84,8 +81,7 @@ def main():
         with open(fb_path) as f:
             fb_data = json.load(f)
         fb_results = {
-            (r["conversation_id"], r["question_index"]): r
-            for r in fb_data["results"]
+            (r["conversation_id"], r["question_index"]): r for r in fb_data["results"]
         }
 
         store, questions = load_dataset(ds_name)
@@ -132,17 +128,19 @@ def main():
             if after_llm - before_llm > 0:
                 new_llm_calls += after_llm - before_llm
 
-            exemplars.append({
-                "dataset": ds_name,
-                "conversation_id": conv_id,
-                "question_index": qi,
-                "question": q_text,
-                "category": category,
-                "cues": cues,
-                "delta_r@20": delta_20,
-                "delta_r@50": delta_50,
-                "arch_r@50": arch_50,
-            })
+            exemplars.append(
+                {
+                    "dataset": ds_name,
+                    "conversation_id": conv_id,
+                    "question_index": qi,
+                    "question": q_text,
+                    "category": category,
+                    "cues": cues,
+                    "delta_r@20": delta_20,
+                    "delta_r@50": delta_50,
+                    "arch_r@50": arch_50,
+                }
+            )
             bank_questions_to_embed.append(q_text)
 
         arch.save_caches()
@@ -162,14 +160,19 @@ def main():
     # Save exemplar bank
     bank_path = RESULTS_DIR / "fewshot_exemplar_bank.json"
     with open(bank_path, "w") as f:
-        json.dump({
-            "exemplars": exemplars,
-            "total": len(exemplars),
-            "by_dataset": {
-                ds: sum(1 for e in exemplars if e["dataset"] == ds)
-                for ds in DATASETS
+        json.dump(
+            {
+                "exemplars": exemplars,
+                "total": len(exemplars),
+                "by_dataset": {
+                    ds: sum(1 for e in exemplars if e["dataset"] == ds)
+                    for ds in DATASETS
+                },
             },
-        }, f, indent=2, default=str)
+            f,
+            indent=2,
+            default=str,
+        )
     print(f"Saved: {bank_path}")
 
 

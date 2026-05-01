@@ -15,7 +15,7 @@ import json
 import math
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 RESULTS_DIR = Path(__file__).parent / "results"
 
@@ -106,8 +106,13 @@ class Collector:
         if have_old and not have_new:
             return
         # Prefer the one with cost info.
-        new_has_cost = rec.get("llm_calls") is not None and rec.get("embed_calls") is not None
-        old_has_cost = existing.get("llm_calls") is not None and existing.get("embed_calls") is not None
+        new_has_cost = (
+            rec.get("llm_calls") is not None and rec.get("embed_calls") is not None
+        )
+        old_has_cost = (
+            existing.get("llm_calls") is not None
+            and existing.get("embed_calls") is not None
+        )
         if new_has_cost and not old_has_cost:
             self.records[key] = rec
             return
@@ -125,9 +130,13 @@ class Collector:
 # -----------------------------------------------------------------------------
 
 
-def parse_summary_block(block: dict, arch_hint: str | None = None, dataset_hint: str | None = None) -> Record | None:
+def parse_summary_block(
+    block: dict, arch_hint: str | None = None, dataset_hint: str | None = None
+) -> Record | None:
     """Parse a dict that looks like {... 'arch_r@20':..., 'avg_llm_calls':..., ...}."""
-    arch = block.get("arch") or block.get("variant") or block.get("arch_name") or arch_hint
+    arch = (
+        block.get("arch") or block.get("variant") or block.get("arch_name") or arch_hint
+    )
     dataset = block.get("dataset") or block.get("benchmark") or dataset_hint
     if not arch:
         return None
@@ -179,7 +188,9 @@ def parse_bestshot(data: Any, collector: Collector, file_stem: str) -> None:
                 continue
             for dataset, block in by_ds.items():
                 if isinstance(block, dict):
-                    rec = parse_summary_block(block, arch_hint=variant, dataset_hint=dataset)
+                    rec = parse_summary_block(
+                        block, arch_hint=variant, dataset_hint=dataset
+                    )
                     if rec:
                         collector.add(f"bestshot:{variant}", dataset, rec)
         return
@@ -261,7 +272,7 @@ def collect_all() -> Collector:
         stem = path.stem
         try:
             data = load_json(path)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             print(f"skip {path.name}: {exc}")
             continue
 
@@ -312,8 +323,12 @@ def collect_all() -> Collector:
                             "dataset": canonical_dataset(dataset),
                             "r@20": safe_num(block.get("r@20")),
                             "r@50": safe_num(block.get("r@50")),
-                            "llm_calls": safe_num(block.get("avg_llm@20") or block.get("avg_llm@50")),
-                            "embed_calls": safe_num(block.get("avg_embed@20") or block.get("avg_embed@50")),
+                            "llm_calls": safe_num(
+                                block.get("avg_llm@20") or block.get("avg_llm@50")
+                            ),
+                            "embed_calls": safe_num(
+                                block.get("avg_embed@20") or block.get("avg_embed@50")
+                            ),
                             "total_retrieved": None,
                             "n": block.get("n"),
                         }
@@ -323,14 +338,26 @@ def collect_all() -> Collector:
         if stem == "cot_universal_summary":
             # No cost data in this file; per-dataset cot_ files cover it.
             continue
-        if stem == "self_cot_summary" or stem == "self_v2_summary" or stem == "self_v3_summary":
+        if (
+            stem == "self_cot_summary"
+            or stem == "self_v2_summary"
+            or stem == "self_v3_summary"
+        ):
             # Category-level recall-only; per-dataset files have cost info.
             continue
         if stem == "summaries":
             continue
-        if stem == "arch_report" or stem == "overnight_summary" or stem == "research_summary":
+        if (
+            stem == "arch_report"
+            or stem == "overnight_summary"
+            or stem == "research_summary"
+        ):
             continue
-        if stem == "constraint_completeness" or stem == "constraint_investigation" or stem == "constraint_procedural":
+        if (
+            stem == "constraint_completeness"
+            or stem == "constraint_investigation"
+            or stem == "constraint_procedural"
+        ):
             continue
         if stem == "adaptive_comparison":
             continue
@@ -342,7 +369,11 @@ def collect_all() -> Collector:
             continue
 
         # ----- Per-dataset files: aggregate from the list of per-question records -----
-        if isinstance(data, dict) and "summary" in data and isinstance(data["summary"], dict):
+        if (
+            isinstance(data, dict)
+            and "summary" in data
+            and isinstance(data["summary"], dict)
+        ):
             summary = data["summary"]
             rec = parse_summary_block(summary)
             if rec:
@@ -362,7 +393,14 @@ def collect_all() -> Collector:
 
 
 def _extract_dataset_from_stem(stem: str) -> str | None:
-    for ds in ("locomo_30q", "synthetic_19q", "puzzle_16q", "advanced_23q", "beam_30q", "beam_ext_30q"):
+    for ds in (
+        "locomo_30q",
+        "synthetic_19q",
+        "puzzle_16q",
+        "advanced_23q",
+        "beam_30q",
+        "beam_ext_30q",
+    ):
         if stem.endswith(ds):
             return canonical_dataset(ds)
     # stem-level heuristics
@@ -408,7 +446,11 @@ def _recall_mean(entries: list[dict], recall_key: str) -> float | None:
             "lite_recalls",
             "arch",
         ):
-            if parent_key in e and isinstance(e[parent_key], dict) and recall_key in e[parent_key]:
+            if (
+                parent_key in e
+                and isinstance(e[parent_key], dict)
+                and recall_key in e[parent_key]
+            ):
                 v = safe_num(e[parent_key][recall_key])
                 if v is not None:
                     values.append(v)
@@ -441,7 +483,9 @@ def summarize_per_question_list(entries: list[dict], stem: str) -> Record | None
     emb_vals = [safe_num(e.get("embed_calls")) for e in entries]
     emb_vals = [v for v in emb_vals if v is not None]
     # total retrieved from pool_size or num_cue_segments or similar
-    tot_vals = [safe_num(e.get("pool_size") or e.get("num_cue_segments")) for e in entries]
+    tot_vals = [
+        safe_num(e.get("pool_size") or e.get("num_cue_segments")) for e in entries
+    ]
     tot_vals = [v for v in tot_vals if v is not None]
 
     # Derive architecture name from file stem
@@ -509,7 +553,14 @@ def dominates(a: Record, b: Record) -> bool:
 def compute_pareto(records: list[Record]) -> list[Record]:
     """Annotate each record with 'dominated_by' list and return the list."""
     # Only compare records that have both r@20 and r@50 and cost info
-    usable = [r for r in records if r.get("r@20") is not None and r.get("r@50") is not None and r.get("llm_calls") is not None and r.get("embed_calls") is not None]
+    usable = [
+        r
+        for r in records
+        if r.get("r@20") is not None
+        and r.get("r@50") is not None
+        and r.get("llm_calls") is not None
+        and r.get("embed_calls") is not None
+    ]
     for r in usable:
         r["dominated_by"] = []
     for i, a in enumerate(usable):
@@ -547,16 +598,26 @@ def build_outputs() -> None:
         usable = compute_pareto(by_ds[ds])
         usable_sorted = sorted(
             usable,
-            key=lambda r: (-(r.get("r@20") or 0.0), -(r.get("r@50") or 0.0), cost_scalar(r)),
+            key=lambda r: (
+                -(r.get("r@20") or 0.0),
+                -(r.get("r@50") or 0.0),
+                cost_scalar(r),
+            ),
         )
         pareto_json[ds] = [
             {
                 "arch": r["arch"],
                 "r@20": round(r["r@20"], 4) if r["r@20"] is not None else None,
                 "r@50": round(r["r@50"], 4) if r["r@50"] is not None else None,
-                "llm_calls": round(r["llm_calls"], 2) if r["llm_calls"] is not None else None,
-                "embed_calls": round(r["embed_calls"], 2) if r["embed_calls"] is not None else None,
-                "total_retrieved": round(r["total_retrieved"], 1) if r.get("total_retrieved") is not None else None,
+                "llm_calls": round(r["llm_calls"], 2)
+                if r["llm_calls"] is not None
+                else None,
+                "embed_calls": round(r["embed_calls"], 2)
+                if r["embed_calls"] is not None
+                else None,
+                "total_retrieved": round(r["total_retrieved"], 1)
+                if r.get("total_retrieved") is not None
+                else None,
                 "n": r.get("n"),
                 "dominated_by": sorted(set(r.get("dominated_by") or [])),
             }
@@ -577,9 +638,16 @@ def build_outputs() -> None:
     md_lines: list[str] = []
     md_lines.append("# Pareto Frontier Summary (Recall vs Cost)")
     md_lines.append("")
-    md_lines.append("Cost metric used for Pareto analysis: `embed_calls + 5 * llm_calls`.")
-    md_lines.append("Dominance: architecture A dominates B iff A has >= r@20, >= r@50, and <= cost, with strict inequality somewhere.")
-    md_lines.append("Only architectures with complete recall + cost data are included (n=%d total (arch,dataset) pairs)." % sum(len(v) for v in all_usable_per_ds.values()))
+    md_lines.append(
+        "Cost metric used for Pareto analysis: `embed_calls + 5 * llm_calls`."
+    )
+    md_lines.append(
+        "Dominance: architecture A dominates B iff A has >= r@20, >= r@50, and <= cost, with strict inequality somewhere."
+    )
+    md_lines.append(
+        "Only architectures with complete recall + cost data are included (n=%d total (arch,dataset) pairs)."
+        % sum(len(v) for v in all_usable_per_ds.values())
+    )
     md_lines.append("")
 
     for ds in sorted(pareto_json):
@@ -595,7 +663,11 @@ def build_outputs() -> None:
                 status = "**PARETO**"
             else:
                 # Show up to 2 dominators
-                status = f"dominated by {dom[0]}" + (f", {dom[1]}" if len(dom) > 1 else "") + (f", +{len(dom) - 2} more" if len(dom) > 2 else "")
+                status = (
+                    f"dominated by {dom[0]}"
+                    + (f", {dom[1]}" if len(dom) > 1 else "")
+                    + (f", +{len(dom) - 2} more" if len(dom) > 2 else "")
+                )
             md_lines.append(
                 f"| {i} | {r['arch']} | {r['r@20']:.3f} | {r['r@50']:.3f} | {r['llm_calls']:.1f} | {r['embed_calls']:.1f} | {cost:.1f} | {status} |"
             )
@@ -631,19 +703,27 @@ def build_outputs() -> None:
 
     # Always-Pareto section
     n_datasets = len(pareto_optimal_per_ds)
-    md_lines.append("### Architectures on the Pareto Frontier for ALL Datasets They Were Tested On")
+    md_lines.append(
+        "### Architectures on the Pareto Frontier for ALL Datasets They Were Tested On"
+    )
     md_lines.append("")
     always_pareto = [
-        a for a, pareto in arch_counts.items()
-        if pareto and len(set(arch_datasets.get(a, []))) == len(pareto)
+        a
+        for a, pareto in arch_counts.items()
+        if pareto
+        and len(set(arch_datasets.get(a, []))) == len(pareto)
         and len(pareto) >= 2  # require at least two datasets
     ]
     for a in sorted(always_pareto, key=lambda x: (-len(arch_counts[x]), x)):
-        md_lines.append(f"- **{a}** — Pareto on {len(arch_counts[a])} datasets: {', '.join(sorted(arch_counts[a]))}")
+        md_lines.append(
+            f"- **{a}** — Pareto on {len(arch_counts[a])} datasets: {', '.join(sorted(arch_counts[a]))}"
+        )
     md_lines.append("")
 
     # Strictly-dominated-everywhere architectures
-    md_lines.append("### Architectures Strictly Dominated On Every Dataset They Were Tested On")
+    md_lines.append(
+        "### Architectures Strictly Dominated On Every Dataset They Were Tested On"
+    )
     md_lines.append("")
     dominated_everywhere: list[str] = []
     for a, tested in arch_datasets.items():
@@ -656,13 +736,17 @@ def build_outputs() -> None:
         # arch was tested but never Pareto-optimal
         dominated_everywhere.append(a)
     for a in sorted(dominated_everywhere):
-        md_lines.append(f"- {a} (tested on: {', '.join(sorted(set(arch_datasets[a])))})")
+        md_lines.append(
+            f"- {a} (tested on: {', '.join(sorted(set(arch_datasets[a])))})"
+        )
     md_lines.append("")
 
     # Cost tiers analysis (locomo_30q as canonical)
     md_lines.append("## Cost-Tier Recall Plateau Analysis")
     md_lines.append("")
-    md_lines.append("For each dataset, best r@20 and best r@50 achievable at each cost tier.")
+    md_lines.append(
+        "For each dataset, best r@20 and best r@50 achievable at each cost tier."
+    )
     md_lines.append("")
     for ds in sorted(all_usable_per_ds):
         md_lines.append(f"### {ds}")
@@ -670,9 +754,18 @@ def build_outputs() -> None:
         md_lines.append("| Cost tier | Best r@20 | Best r@50 | Example arch |")
         md_lines.append("|-----------|-----------|-----------|--------------|")
         tiers = [
-            ("<=1 LLM, <=4 embed (v2f/v15 class)", lambda r: (r["llm_calls"] or 0) <= 1 and (r["embed_calls"] or 0) <= 4),
-            ("<=2 LLM, <=8 embed", lambda r: (r["llm_calls"] or 0) <= 2 and (r["embed_calls"] or 0) <= 8),
-            ("<=3 LLM, <=12 embed", lambda r: (r["llm_calls"] or 0) <= 3 and (r["embed_calls"] or 0) <= 12),
+            (
+                "<=1 LLM, <=4 embed (v2f/v15 class)",
+                lambda r: (r["llm_calls"] or 0) <= 1 and (r["embed_calls"] or 0) <= 4,
+            ),
+            (
+                "<=2 LLM, <=8 embed",
+                lambda r: (r["llm_calls"] or 0) <= 2 and (r["embed_calls"] or 0) <= 8,
+            ),
+            (
+                "<=3 LLM, <=12 embed",
+                lambda r: (r["llm_calls"] or 0) <= 3 and (r["embed_calls"] or 0) <= 12,
+            ),
             ("<=5 LLM, any embed", lambda r: (r["llm_calls"] or 0) <= 5),
             ("any cost", lambda r: True),
         ]

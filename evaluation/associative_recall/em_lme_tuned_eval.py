@@ -27,9 +27,26 @@ from pathlib import Path
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    V2F_MODEL,
+    EMHit,
+    _dedupe_by_turn_id,
+    _merge_by_max_score,
+    _MergedLLMCache,
+    _query_em,
+    format_primer_context,
+)
+from em_lme_tuned_cues import (
+    LMETUNE_TE_RETUNED_CACHE,
+    LMETUNE_V2F_MIXED7030_CACHE,
+    LMETUNE_V2F_USERFORMAT_CACHE,
+    LMETUNE_V2F_USERONLY_CACHE,
+    TYPE_ENUM_LME_RETUNED_PROMPT,
+    V2F_LME_MIXED_7030_PROMPT,
+    V2F_LME_USER_ONLY_PROMPT,
+    V2F_LME_USERFORMAT_PROMPT,
+    parse_speaker_cues,
+)
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -46,28 +63,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import (
-    EMHit,
-    V2F_MODEL,
-    _MergedLLMCache,
-    _dedupe_by_turn_id,
-    _merge_by_max_score,
-    _query_em,
-    format_primer_context,
-)
-from em_lme_tuned_cues import (
-    V2F_LME_USERFORMAT_PROMPT,
-    V2F_LME_USER_ONLY_PROMPT,
-    V2F_LME_MIXED_7030_PROMPT,
-    TYPE_ENUM_LME_RETUNED_PROMPT,
-    parse_speaker_cues,
-    LMETUNE_V2F_USERFORMAT_CACHE,
-    LMETUNE_V2F_USERONLY_CACHE,
-    LMETUNE_V2F_MIXED7030_CACHE,
-    LMETUNE_TE_RETUNED_CACHE,
-)
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -88,10 +85,10 @@ EXPAND_CONTEXT = 3
 ARCH_CONCURRENCY = 8
 
 # Reference points from prior runs (for report).
-REF_EM_V2F_USERPREFIX = 0.780       # em_v2f_userprefix K=50 R overall
-REF_EM_V2F_EXPAND_3 = 0.832         # em_v2f_expand_3 K=50 R overall (current leader)
-REF_EM_ENS_2_USERPREFIX = 0.735     # em_ens_2_userprefix K=50 (regressed)
-REF_SS_V2F = 0.817                  # SegmentStore v2f K=50 overall
+REF_EM_V2F_USERPREFIX = 0.780  # em_v2f_userprefix K=50 R overall
+REF_EM_V2F_EXPAND_3 = 0.832  # em_v2f_expand_3 K=50 R overall (current leader)
+REF_EM_ENS_2_USERPREFIX = 0.735  # em_ens_2_userprefix K=50 (regressed)
+REF_SS_V2F = 0.817  # SegmentStore v2f K=50 overall
 
 
 def _ensure_user_prefix(text: str) -> str:
@@ -106,13 +103,10 @@ async def _primer_and_context(memory: EventMemory, question: str) -> str:
     """Build the primer context section (matches em_v2f_userprefix)."""
     prefixed_q = _ensure_user_prefix(question)
     primer_hits = _dedupe_by_turn_id(
-        await _query_em(
-            memory, prefixed_q, vector_search_limit=10, expand_context=0
-        )
+        await _query_em(memory, prefixed_q, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer_hits
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer_hits
     ]
     return format_primer_context(primer_segments)
 
@@ -201,9 +195,7 @@ async def _retrieve_with_cues(
 # -------------------- Variant wrappers --------------------
 
 
-async def em_v2f_lme_userformat(
-    memory, question, *, K, cache, openai_client
-):
+async def em_v2f_lme_userformat(memory, question, *, K, cache, openai_client):
     context_section = await _primer_and_context(memory, question)
     prompt = V2F_LME_USERFORMAT_PROMPT.format(
         question=question, context_section=context_section
@@ -222,9 +214,7 @@ async def em_v2f_lme_userformat(
     return hits, {"cues": cues, "cache_hit": cache_hit}
 
 
-async def em_v2f_lme_user_only(
-    memory, question, *, K, cache, openai_client
-):
+async def em_v2f_lme_user_only(memory, question, *, K, cache, openai_client):
     context_section = await _primer_and_context(memory, question)
     prompt = V2F_LME_USER_ONLY_PROMPT.format(
         question=question, context_section=context_section
@@ -244,9 +234,7 @@ async def em_v2f_lme_user_only(
     return hits, {"cues": cues, "cache_hit": cache_hit}
 
 
-async def em_v2f_lme_mixed_7030(
-    memory, question, *, K, cache, openai_client
-):
+async def em_v2f_lme_mixed_7030(memory, question, *, K, cache, openai_client):
     context_section = await _primer_and_context(memory, question)
     prompt = V2F_LME_MIXED_7030_PROMPT.format(
         question=question, context_section=context_section
@@ -265,9 +253,7 @@ async def em_v2f_lme_mixed_7030(
     return hits, {"cues": cues, "cache_hit": cache_hit}
 
 
-async def em_type_enumerated_lme_retuned(
-    memory, question, *, K, cache, openai_client
-):
+async def em_type_enumerated_lme_retuned(memory, question, *, K, cache, openai_client):
     context_section = await _primer_and_context(memory, question)
     prompt = TYPE_ENUM_LME_RETUNED_PROMPT.format(
         question=question, context_section=context_section
@@ -357,27 +343,41 @@ async def evaluate_one(
     meta: dict = {}
     if arch_name == "em_v2f_lme_userformat":
         hits, meta = await em_v2f_lme_userformat(
-            memory, q_text, K=max_K,
-            cache=caches["v2f_userformat"], openai_client=openai_client,
+            memory,
+            q_text,
+            K=max_K,
+            cache=caches["v2f_userformat"],
+            openai_client=openai_client,
         )
     elif arch_name == "em_v2f_lme_user_only":
         hits, meta = await em_v2f_lme_user_only(
-            memory, q_text, K=max_K,
-            cache=caches["v2f_useronly"], openai_client=openai_client,
+            memory,
+            q_text,
+            K=max_K,
+            cache=caches["v2f_useronly"],
+            openai_client=openai_client,
         )
     elif arch_name == "em_v2f_lme_mixed_7030":
         hits, meta = await em_v2f_lme_mixed_7030(
-            memory, q_text, K=max_K,
-            cache=caches["v2f_mixed7030"], openai_client=openai_client,
+            memory,
+            q_text,
+            K=max_K,
+            cache=caches["v2f_mixed7030"],
+            openai_client=openai_client,
         )
     elif arch_name == "em_type_enumerated_lme_retuned":
         hits, meta = await em_type_enumerated_lme_retuned(
-            memory, q_text, K=max_K,
-            cache=caches["te_retuned"], openai_client=openai_client,
+            memory,
+            q_text,
+            K=max_K,
+            cache=caches["te_retuned"],
+            openai_client=openai_client,
         )
     elif arch_name == "em_ens_2_lme_retuned":
         hits, meta = await em_ens_2_lme_retuned(
-            memory, q_text, K=max_K,
+            memory,
+            q_text,
+            K=max_K,
             v2f_cache=caches["v2f_userformat"],
             te_cache=caches["te_retuned"],
             openai_client=openai_client,
@@ -644,7 +644,9 @@ def write_markdown_report(results: dict) -> None:
         v = data["summary"]["mean_r@50"]
         if v > best_r50:
             best_name, best_r50 = arch, v
-    ens_v = archs.get("em_ens_2_lme_retuned", {}).get("summary", {}).get("mean_r@50", 0.0)
+    ens_v = (
+        archs.get("em_ens_2_lme_retuned", {}).get("summary", {}).get("mean_r@50", 0.0)
+    )
     ens_delta = ens_v - REF_EM_ENS_2_USERPREFIX
 
     md += [
@@ -659,7 +661,7 @@ def write_markdown_report(results: dict) -> None:
         "## Outputs",
         "",
         f"- JSON: `{RESULTS_JSON.relative_to(ASSOC_DIR)}`",
-        f"- Sources: `em_lme_tuned_cues.py`, `em_lme_tuned_eval.py`",
+        "- Sources: `em_lme_tuned_cues.py`, `em_lme_tuned_eval.py`",
         "- Caches: `cache/lmetune_v2f_userformat_cache.json`, "
         "`cache/lmetune_v2f_useronly_cache.json`, "
         "`cache/lmetune_v2f_mixed7030_cache.json`, "

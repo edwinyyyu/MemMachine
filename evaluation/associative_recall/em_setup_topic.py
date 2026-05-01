@@ -21,15 +21,12 @@ import hashlib
 import json
 import os
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -56,6 +53,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -185,9 +184,7 @@ def _truncate(s: str, max_chars: int = 400) -> str:
     return s[: max_chars - 3] + "..."
 
 
-def _build_topic_prompt(
-    turn_text: str, speaker: str, prev_turn: str | None
-) -> str:
+def _build_topic_prompt(turn_text: str, speaker: str, prev_turn: str | None) -> str:
     prev_display = (
         _truncate(prev_turn) if prev_turn else "(none; this is the first turn)"
     )
@@ -209,7 +206,7 @@ def _normalize_topic(raw: str) -> str:
     # If gpt-5-mini sometimes responds "Topic: X", strip leading label.
     for prefix in ("Topic:", "topic:", "Output:", "output:", "-", "*"):
         if candidate.startswith(prefix):
-            candidate = candidate[len(prefix):].strip().strip('"').strip("'").strip()
+            candidate = candidate[len(prefix) :].strip().strip('"').strip("'").strip()
     # Cap absurd lengths
     if len(candidate) > 80:
         candidate = candidate[:80].rstrip()
@@ -265,9 +262,7 @@ async def extract_topics_for_conversation(
     prev_text: str | None = None
     for turn_id, role, text in segments:
         speaker = user_name if role == "user" else asst_name
-        tasks.append(
-            (turn_id, role, text, speaker, prev_text)
-        )
+        tasks.append((turn_id, role, text, speaker, prev_text))
         prev_text = text
 
     # Kick off extractions in parallel (semaphore limits concurrency).
@@ -415,7 +410,7 @@ async def main() -> None:
             engine = create_async_engine(sql_url)
         async with engine.connect() as conn:
             await conn.exec_driver_sql("SELECT 1")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"[em_setup_topic] SQL_URL {sql_url!r} not reachable: {exc!r}")
         sql_url = f"sqlite+aiosqlite:///{sqlite_path}"
         print(f"[em_setup_topic] falling back to SQLite at {sqlite_path}")

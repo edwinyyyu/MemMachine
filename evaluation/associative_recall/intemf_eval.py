@@ -31,9 +31,20 @@ from pathlib import Path
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    BESTSHOT_LLM_CACHE,
+    EM_V2F_LLM_CACHE,
+    _MergedLLMCache,
+)
+from intent_em import (
+    IntentEMResult,
+    intent_em_filter_no_cues,
+    intent_em_full_filter,
+    intent_em_speaker_only,
+    intent_em_with_speakerformat_cues,
+    load_intent_parse_cache,
+    load_two_speaker_map,
+)
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -50,23 +61,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import (
-    BESTSHOT_LLM_CACHE,
-    EM_V2F_LLM_CACHE,
-    EMHit,
-    _MergedLLMCache,
-)
-from intent_em import (
-    IntentEMResult,
-    intent_em_filter_no_cues,
-    intent_em_full_filter,
-    intent_em_speaker_only,
-    intent_em_with_speakerformat_cues,
-    load_intent_parse_cache,
-    load_two_speaker_map,
-)
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -136,27 +132,46 @@ async def evaluate_question(
 
     if variant == "intent_em_speaker_only":
         result: IntentEMResult = await intent_em_speaker_only(
-            memory, q_text, conv_id,
-            K=max_K, plan=plan, speaker_map=speaker_map,
-            llm_cache=v2f_cache, openai_client=openai_client,
+            memory,
+            q_text,
+            conv_id,
+            K=max_K,
+            plan=plan,
+            speaker_map=speaker_map,
+            llm_cache=v2f_cache,
+            openai_client=openai_client,
         )
     elif variant == "intent_em_full_filter":
         result = await intent_em_full_filter(
-            memory, q_text, conv_id,
-            K=max_K, plan=plan, speaker_map=speaker_map,
-            llm_cache=v2f_cache, openai_client=openai_client,
+            memory,
+            q_text,
+            conv_id,
+            K=max_K,
+            plan=plan,
+            speaker_map=speaker_map,
+            llm_cache=v2f_cache,
+            openai_client=openai_client,
         )
     elif variant == "intent_em_filter_no_cues":
         result = await intent_em_filter_no_cues(
-            memory, q_text, conv_id,
-            K=max_K, plan=plan, speaker_map=speaker_map,
+            memory,
+            q_text,
+            conv_id,
+            K=max_K,
+            plan=plan,
+            speaker_map=speaker_map,
         )
     elif variant == "intent_em_with_speakerformat_cues":
         result = await intent_em_with_speakerformat_cues(
-            memory, q_text, conv_id,
-            K=max_K, plan=plan, speaker_map=speaker_map,
+            memory,
+            q_text,
+            conv_id,
+            K=max_K,
+            plan=plan,
+            speaker_map=speaker_map,
             participants=participants,
-            llm_cache=speakerfmt_cache, openai_client=openai_client,
+            llm_cache=speakerfmt_cache,
+            openai_client=openai_client,
         )
     else:
         raise KeyError(variant)
@@ -318,13 +333,18 @@ async def run() -> None:
             cid = q["conversation_id"]
             mem = memories[cid]
             plan = parse_cache.get(q["question"].strip(), {}) or {
-                "intent_type": "other", "constraints": {}, "entities": [],
-                "primary_topic": None, "needs_aggregation": False,
+                "intent_type": "other",
+                "constraints": {},
+                "entities": [],
+                "primary_topic": None,
+                "needs_aggregation": False,
                 "parse_ok": False,
             }
             participants = participants_by_conv[cid]
             row = await evaluate_question(
-                variant, mem, q,
+                variant,
+                mem,
+                q,
                 plan=plan,
                 speaker_map=speaker_map,
                 participants=participants,
@@ -435,8 +455,13 @@ def build_markdown_report(results: dict) -> list[str]:
         "| Constraint | Fired | % |",
         "| --- | --- | --- |",
     ]
-    for k in ("speaker", "temporal_relation", "negation",
-              "answer_form", "needs_aggregation"):
+    for k in (
+        "speaker",
+        "temporal_relation",
+        "negation",
+        "answer_form",
+        "needs_aggregation",
+    ):
         c = firing.get(k, 0)
         pct = round(100 * c / max(n_q, 1), 1)
         lines.append(f"| `{k}` | {c} | {pct}% |")
@@ -493,7 +518,9 @@ def build_markdown_report(results: dict) -> list[str]:
     best_r50 = 0.0
     best_variant = None
     for variant in VARIANTS:
-        r50 = results["variants"].get(variant, {}).get("summary", {}).get("mean_r@50", 0)
+        r50 = (
+            results["variants"].get(variant, {}).get("summary", {}).get("mean_r@50", 0)
+        )
         if r50 > best_r50:
             best_r50 = r50
             best_variant = variant
@@ -527,12 +554,18 @@ def build_markdown_report(results: dict) -> list[str]:
         )
 
     # Cue-composition check
-    no_cues = results["variants"].get("intent_em_filter_no_cues", {}).get(
-        "summary", {}
-    ).get("mean_r@50", 0)
-    full = results["variants"].get("intent_em_full_filter", {}).get(
-        "summary", {}
-    ).get("mean_r@50", 0)
+    no_cues = (
+        results["variants"]
+        .get("intent_em_filter_no_cues", {})
+        .get("summary", {})
+        .get("mean_r@50", 0)
+    )
+    full = (
+        results["variants"]
+        .get("intent_em_full_filter", {})
+        .get("summary", {})
+        .get("mean_r@50", 0)
+    )
     lines.append("")
     if no_cues > full + 0.005:
         lines.append(

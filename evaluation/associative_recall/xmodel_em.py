@@ -30,14 +30,12 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
-
 from em_architectures import (
     V2F_PROMPT,
     EMHit,
-    _MergedLLMCache,
     _dedupe_by_turn_id,
     _merge_by_max_score,
+    _MergedLLMCache,
     _query_em,
     format_primer_context,
     parse_v2f_cues,
@@ -48,9 +46,11 @@ from em_hyde_orient import (
 )
 from em_retuned_cue_gen import (
     V2F_SPEAKERFORMAT_PROMPT,
+)
+from em_retuned_cue_gen import (
     parse_cues as parse_retuned_cues,
 )
-
+from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
 
@@ -167,8 +167,7 @@ async def _primer(
         await _query_em(memory, question, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer_hits
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer_hits
     ]
     context_section = format_primer_context(primer_segments)
     primer_full = await _query_em(

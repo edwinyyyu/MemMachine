@@ -19,36 +19,29 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import sys
 import time
-from collections import Counter, defaultdict
-from dataclasses import dataclass
+from collections import defaultdict
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
     EmbeddingCache,
-    LLMCache,
     Segment,
     SegmentStore,
-    RetrievalResult,
 )
 from best_shot import (
     BestshotBase,
-    BestshotEmbeddingCache,
-    BestshotLLMCache,
-    V15Control,
     MetaV2f,
+    V15Control,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -405,9 +398,7 @@ def eval_cosine(
     # Retrieve more than max(BUDGETS) because multiple sentences can share turns.
     # 5x buffer is safe since avg sentences per turn stays below 4 in all our
     # datasets other than BEAM (not in scope here).
-    raw = store.search(
-        vec, top_k=max(BUDGETS) * 5, conversation_id=conv_id
-    )
+    raw = store.search(vec, top_k=max(BUDGETS) * 5, conversation_id=conv_id)
     out: dict = {
         "category": question.get("category"),
         "num_source": len(source_ids),
@@ -584,9 +575,7 @@ def run_dataset(
     )
 
     print("Building combined store...", flush=True)
-    combined_store = build_combined_store(
-        raw_turn_store, sentence_store, conv_filter
-    )
+    combined_store = build_combined_store(raw_turn_store, sentence_store, conv_filter)
     print(
         f"  combined rows: {len(combined_store.texts)}",
         flush=True,
@@ -606,7 +595,11 @@ def run_dataset(
     }
 
     # Cosine + architectures on each granularity
-    arch_classes = [("cosine", None), ("v15_control", V15Control), ("meta_v2f", MetaV2f)]
+    arch_classes = [
+        ("cosine", None),
+        ("v15_control", V15Control),
+        ("meta_v2f", MetaV2f),
+    ]
 
     # For each granularity, run all architectures (cosine + v15 + meta_v2f)
     rows_by_granularity: dict[str, dict[str, list[dict]]] = {}
@@ -688,18 +681,13 @@ def print_final_table(all_results: dict) -> None:
     print("\n" + "=" * 100)
     print("CHUNK-LEVEL vs TURN-LEVEL SUMMARY (recall@K, deduped by turn)")
     print("=" * 100)
-    header = (
-        f"{'Dataset':<14s} {'Arch':<14s} {'Gran':<10s} "
-        f"{'r@20':>8s} {'r@50':>8s}"
-    )
+    header = f"{'Dataset':<14s} {'Arch':<14s} {'Gran':<10s} {'r@20':>8s} {'r@50':>8s}"
     print(header)
     print("-" * len(header))
     for ds_name, res in all_results.items():
         for arch_name in ["cosine", "v15_control", "meta_v2f"]:
             for gname in ["turn", "sentence", "combined"]:
-                s = res["per_granularity"][gname]["architectures"][arch_name][
-                    "summary"
-                ]
+                s = res["per_granularity"][gname]["architectures"][arch_name]["summary"]
                 print(
                     f"{ds_name:<14s} {arch_name:<14s} {gname:<10s} "
                     f"{s['r@20']:>8.3f} {s['r@50']:>8.3f}"

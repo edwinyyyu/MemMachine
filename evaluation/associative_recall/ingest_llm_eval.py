@@ -22,46 +22,33 @@ import json
 import random
 import time
 from collections import defaultdict
-from dataclasses import dataclass, asdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
-    EMBED_MODEL,
-    Segment,
     SegmentStore,
-    RetrievalResult,
 )
-from best_shot import (
-    BestshotEmbeddingCache,
-    BestshotLLMCache,
-    MetaV2f,
+from dotenv import load_dotenv
+
+# The LLM pipeline itself.
+from ingest_llm_altkeys import (
+    LLMAltKeyGenerator,
+    decisions_to_altkeys,
+    generate_altkeys_for_all,
 )
+from ingest_regex_altkeys import AltKey
 
 # Reuse regex-side augmented index + cosine/v2f condition runners + embed util.
 from ingest_regex_eval import (
+    BUDGETS,
     AugmentedSegmentStore,
     ConditionResult,
     Embedder,
     embed_texts_cached,
     run_cosine_condition,
     run_v2f_condition,
-    compute_recall,
-    fair_backfill_turn_ids,
-    BUDGETS,
 )
-
-# The LLM pipeline itself.
-from ingest_llm_altkeys import (
-    LLMAltKeyGenerator,
-    LLMTurnDecision,
-    generate_altkeys_for_all,
-    decisions_to_altkeys,
-)
-from ingest_regex_altkeys import AltKey
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -156,11 +143,13 @@ def precision_audit(
         "alt_hits_total": int(alt_hits_total),
         "alt_hits_gold": int(alt_hits_gold),
         "alt_precision_gold": round(alt_hits_gold / alt_hits_total, 4)
-            if alt_hits_total else 0.0,
+        if alt_hits_total
+        else 0.0,
         "orig_hits_total": int(orig_hits_total),
         "orig_hits_gold": int(orig_hits_gold),
         "orig_precision_gold": round(orig_hits_gold / orig_hits_total, 4)
-            if orig_hits_total else 0.0,
+        if orig_hits_total
+        else 0.0,
     }
 
 
@@ -204,7 +193,7 @@ def render_markdown(
         L.append(
             f"- **{it['version']}**: {it['rationale']} — "
             f"SKIP rate on {it['n_sample']}-turn sample: "
-            f"{it['skip_rate']*100:.0f}%; alt-keys emitted: {it['n_alts']}."
+            f"{it['skip_rate'] * 100:.0f}%; alt-keys emitted: {it['n_alts']}."
         )
     L.append("")
     L.append(
@@ -216,27 +205,20 @@ def render_markdown(
     # Phase 2: ingestion stats
     L.append("## 2. Ingestion statistics (Phase 2)")
     L.append("")
-    L.append(
-        f"- Total turns ingested: **{ingestion_stats['n_turns']}**"
-    )
+    L.append(f"- Total turns ingested: **{ingestion_stats['n_turns']}**")
     L.append(
         f"- SKIP turns: **{ingestion_stats['n_skip']}** "
-        f"({ingestion_stats['skip_rate']*100:.1f}%)"
+        f"({ingestion_stats['skip_rate'] * 100:.1f}%)"
     )
     L.append(
         f"- Turns with alt-keys: **{ingestion_stats['n_with_alts']}** "
-        f"({(1-ingestion_stats['skip_rate'])*100:.1f}%)"
+        f"({(1 - ingestion_stats['skip_rate']) * 100:.1f}%)"
     )
     L.append(
-        f"- Total alt-keys emitted (pre-dedup): "
-        f"**{ingestion_stats['n_alts_raw']}**"
+        f"- Total alt-keys emitted (pre-dedup): **{ingestion_stats['n_alts_raw']}**"
     )
-    L.append(
-        f"- Alt-keys after dedup by text: **{bloat['n_altkeys']}**"
-    )
-    L.append(
-        f"- Bloat factor (alt / original): **{bloat['bloat_factor']:.2f}x**"
-    )
+    L.append(f"- Alt-keys after dedup by text: **{bloat['n_altkeys']}**")
+    L.append(f"- Bloat factor (alt / original): **{bloat['bloat_factor']:.2f}x**")
     L.append(
         f"- Mean alt-keys per non-SKIP turn: "
         f"**{ingestion_stats['mean_alts_per_with_alts']:.2f}**"
@@ -256,8 +238,10 @@ def render_markdown(
     L.append("| condition | mean r@20 | mean r@50 |")
     L.append("|---|---:|---:|")
     for cond_name in [
-        "cosine_no_altkeys", "cosine_llm_altkeys",
-        "v2f_no_altkeys", "v2f_llm_altkeys",
+        "cosine_no_altkeys",
+        "cosine_llm_altkeys",
+        "v2f_no_altkeys",
+        "v2f_llm_altkeys",
     ]:
         s = ov.get(cond_name, {})
         L.append(
@@ -279,8 +263,10 @@ def render_markdown(
         row = f"| {cat} | {n_cat} "
         for K in BUDGETS:
             for cond in [
-                "cosine_no_altkeys", "cosine_llm_altkeys",
-                "v2f_no_altkeys", "v2f_llm_altkeys",
+                "cosine_no_altkeys",
+                "cosine_llm_altkeys",
+                "v2f_no_altkeys",
+                "v2f_llm_altkeys",
             ]:
                 v = d.get(cond, {}).get(f"mean_r@{K}", 0.0)
                 row += f"| {v:.3f} "
@@ -317,21 +303,19 @@ def render_markdown(
     )
     L.append(
         f"- Of those, fraction whose parent turn is gold: "
-        f"**{precision_info['alt_precision_gold']*100:.1f}%**"
+        f"**{precision_info['alt_precision_gold'] * 100:.1f}%**"
     )
     L.append(
         f"- Hits where the ORIGINAL embedding won: "
         f"**{precision_info['orig_hits_total']}**, "
-        f"gold share {precision_info['orig_precision_gold']*100:.1f}%"
+        f"gold share {precision_info['orig_precision_gold'] * 100:.1f}%"
     )
     L.append("")
 
     # Comparison to regex
     L.append("## 7. Comparison to pure-regex run")
     L.append("")
-    L.append(
-        "| metric | regex | llm |"
-    )
+    L.append("| metric | regex | llm |")
     L.append("|---|---:|---:|")
     cr = comparison_to_regex
     L.append(
@@ -339,12 +323,10 @@ def render_markdown(
         f"{cr['llm']['bloat_factor']:.2f}x |"
     )
     L.append(
-        f"| v2f r@20 | {cr['regex']['v2f_at_20']:.4f} | "
-        f"{cr['llm']['v2f_at_20']:.4f} |"
+        f"| v2f r@20 | {cr['regex']['v2f_at_20']:.4f} | {cr['llm']['v2f_at_20']:.4f} |"
     )
     L.append(
-        f"| v2f r@50 | {cr['regex']['v2f_at_50']:.4f} | "
-        f"{cr['llm']['v2f_at_50']:.4f} |"
+        f"| v2f r@50 | {cr['regex']['v2f_at_50']:.4f} | {cr['llm']['v2f_at_50']:.4f} |"
     )
     L.append(
         f"| Δ vs no-altkeys @20 | {cr['regex']['delta_20']:+.4f} | "
@@ -364,10 +346,14 @@ def render_markdown(
     L.append(f"- Cached LLM calls: **{cost['n_cached']}**")
     L.append(f"- Input tokens: **{cost['prompt_tokens']}**")
     L.append(f"- Output tokens: **{cost['completion_tokens']}**")
-    L.append(f"- Est. LLM cost (gpt-5-mini @ $0.25/1M in, $2/1M out): "
-             f"**${cost['est_usd']:.2f}**")
-    L.append(f"- Alt-key embedding calls: **{cost['embed_uncached']}** "
-             f"new embeddings (~${cost['embed_usd']:.2f} at $0.02/1M @ ada-002 size)")
+    L.append(
+        f"- Est. LLM cost (gpt-5-mini @ $0.25/1M in, $2/1M out): "
+        f"**${cost['est_usd']:.2f}**"
+    )
+    L.append(
+        f"- Alt-key embedding calls: **{cost['embed_uncached']}** "
+        f"new embeddings (~${cost['embed_usd']:.2f} at $0.02/1M @ ada-002 size)"
+    )
     L.append("")
 
     L.append("## 9. Caveats")
@@ -383,8 +369,7 @@ def render_markdown(
 # ---------------------------------------------------------------------------
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--prompt", default="v3",
-                        choices=["v1", "v2", "v3"])
+    parser.add_argument("--prompt", default="v3", choices=["v1", "v2", "v3"])
     parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
 
@@ -397,17 +382,24 @@ def main() -> None:
     with open(DATA_DIR / "questions_extended.json") as f:
         all_qs = json.load(f)
     locomo_qs = [q for q in all_qs if q.get("benchmark") == "locomo"][:30]
-    locomo_conv_ids = {s.conversation_id for s in store.segments
-                       if s.conversation_id.startswith("locomo_")}
-    locomo_segments = [s for s in store.segments
-                       if s.conversation_id in locomo_conv_ids]
-    print(f"  LoCoMo sub-corpus: {len(locomo_segments)} turns, "
-          f"{len(locomo_conv_ids)} conversations, {len(locomo_qs)} questions",
-          flush=True)
+    locomo_conv_ids = {
+        s.conversation_id
+        for s in store.segments
+        if s.conversation_id.startswith("locomo_")
+    }
+    locomo_segments = [
+        s for s in store.segments if s.conversation_id in locomo_conv_ids
+    ]
+    print(
+        f"  LoCoMo sub-corpus: {len(locomo_segments)} turns, "
+        f"{len(locomo_conv_ids)} conversations, {len(locomo_qs)} questions",
+        flush=True,
+    )
 
     # Phase 2: LLM alt-key ingestion
-    print(f"\n[Phase 2] LLM alt-key ingestion with prompt={args.prompt} ...",
-          flush=True)
+    print(
+        f"\n[Phase 2] LLM alt-key ingestion with prompt={args.prompt} ...", flush=True
+    )
     client = OpenAI(timeout=60.0)
     generator = LLMAltKeyGenerator(
         client=client,
@@ -427,10 +419,13 @@ def main() -> None:
         + llm_cost["completion_tokens"] * 2.0 / 1e6,
         4,
     )
-    print(f"  LLM calls: uncached={llm_cost['n_uncached']} "
-          f"cached={llm_cost['n_cached']} "
-          f"in={llm_cost['prompt_tokens']} out={llm_cost['completion_tokens']} "
-          f"~${llm_cost['est_usd']:.3f}", flush=True)
+    print(
+        f"  LLM calls: uncached={llm_cost['n_uncached']} "
+        f"cached={llm_cost['n_cached']} "
+        f"in={llm_cost['prompt_tokens']} out={llm_cost['completion_tokens']} "
+        f"~${llm_cost['est_usd']:.3f}",
+        flush=True,
+    )
 
     n_turns = len(decisions)
     n_skip = sum(1 for d in decisions if d.skipped)
@@ -444,8 +439,11 @@ def main() -> None:
         "n_alts_raw": n_alts_raw,
         "mean_alts_per_with_alts": n_alts_raw / max(n_with_alts, 1),
     }
-    print(f"  turns={n_turns} SKIP={n_skip} ({ingestion_stats['skip_rate']*100:.1f}%) "
-          f"alts_raw={n_alts_raw}", flush=True)
+    print(
+        f"  turns={n_turns} SKIP={n_skip} ({ingestion_stats['skip_rate'] * 100:.1f}%) "
+        f"alts_raw={n_alts_raw}",
+        flush=True,
+    )
 
     # Convert to AltKey objects, dedup by text.
     alt_keys_raw = decisions_to_altkeys(decisions, source_tag=f"llm:{args.prompt}")
@@ -464,43 +462,45 @@ def main() -> None:
     samples_out = []
     for si in sample_ids:
         d = decisions[si]
-        samples_out.append({
-            "conversation_id": d.conversation_id,
-            "turn_id": d.turn_id,
-            "role": d.role,
-            "text": d.text,
-            "prev_context": d.prev_context,
-            "skipped": d.skipped,
-            "alt_keys": d.alt_keys,
-            "raw_response": d.raw_response,
-        })
+        samples_out.append(
+            {
+                "conversation_id": d.conversation_id,
+                "turn_id": d.turn_id,
+                "role": d.role,
+                "text": d.text,
+                "prev_context": d.prev_context,
+                "skipped": d.skipped,
+                "alt_keys": d.alt_keys,
+                "raw_response": d.raw_response,
+            }
+        )
     samples_path = RESULTS_DIR / "ingestion_llm_samples.json"
     with open(samples_path, "w") as f:
-        json.dump({"prompt_version": args.prompt, "samples": samples_out},
-                  f, indent=2)
+        json.dump({"prompt_version": args.prompt, "samples": samples_out}, f, indent=2)
     print(f"  wrote {samples_path}", flush=True)
 
     # Phase 3: augmented index + retrieval eval
-    print("\n[Phase 3] Embedding alt-keys and building augmented store ...",
-          flush=True)
+    print("\n[Phase 3] Embedding alt-keys and building augmented store ...", flush=True)
     embedder = Embedder(client)
     alt_embeddings = embed_texts_cached(
-        client, embedder.embedding_cache, [k.text for k in alt_keys],
+        client,
+        embedder.embedding_cache,
+        [k.text for k in alt_keys],
     )
     embedder.save()
     embed_uncached_count = getattr(embedder.embedding_cache, "_new_entries", {})
     embed_uncached_n = len(embed_uncached_count) if embed_uncached_count else 0
 
     aug_store = AugmentedSegmentStore(store, alt_keys, alt_embeddings)
-    print(f"  augmented store built: base={len(store.segments)} "
-          f"alts={len(alt_keys)}", flush=True)
+    print(
+        f"  augmented store built: base={len(store.segments)} alts={len(alt_keys)}",
+        flush=True,
+    )
 
     # Four conditions
     conditions: dict[str, ConditionResult] = {}
     print("\n  [1/4] cosine_no_altkeys ...", flush=True)
-    conditions["cosine_no_altkeys"] = run_cosine_condition(
-        store, embedder, locomo_qs
-    )
+    conditions["cosine_no_altkeys"] = run_cosine_condition(store, embedder, locomo_qs)
     conditions["cosine_no_altkeys"].name = "cosine_no_altkeys"
 
     print("  [2/4] cosine_llm_altkeys ...", flush=True)
@@ -575,7 +575,7 @@ def main() -> None:
             "skip_rate": 0.60,
             "n_alts": 22,
             "rationale": "Initial spec prompt (verbose), over-generates alt-keys "
-                         "for questions and acknowledgements.",
+            "for questions and acknowledgements.",
         },
         {
             "version": "v2",
@@ -583,7 +583,7 @@ def main() -> None:
             "skip_rate": 0.87,
             "n_alts": 4,
             "rationale": "Tightened with explicit DO-NOT list and default-SKIP; "
-                         "slightly under-generates (misses some facts).",
+            "slightly under-generates (misses some facts).",
         },
         {
             "version": "v3",
@@ -591,8 +591,8 @@ def main() -> None:
             "skip_rate": 0.83,
             "n_alts": 5,
             "rationale": "Four named cases (anaphora / correction / alias / "
-                         "personal fact) with strict 5-20 word output format; "
-                         "chosen as the ingestion prompt.",
+            "personal fact) with strict 5-20 word output format; "
+            "chosen as the ingestion prompt.",
         },
     ]
 
@@ -643,12 +643,18 @@ def main() -> None:
     ]
 
     md = render_markdown(
-        summary=summary, bloat=bloat, ingestion_stats=ingestion_stats,
-        verdict=verdict, n_questions=len(locomo_qs),
+        summary=summary,
+        bloat=bloat,
+        ingestion_stats=ingestion_stats,
+        verdict=verdict,
+        n_questions=len(locomo_qs),
         n_source_segments=len(locomo_segments),
-        precision_info=precision_info, prompt_version=args.prompt,
-        prompt_iterations=prompt_iterations, cost=cost,
-        comparison_to_regex=comparison, caveats=caveats,
+        precision_info=precision_info,
+        prompt_version=args.prompt,
+        prompt_iterations=prompt_iterations,
+        cost=cost,
+        comparison_to_regex=comparison,
+        caveats=caveats,
     )
     md_path = RESULTS_DIR / "ingestion_llm_empirical.md"
     with open(md_path, "w") as f:
@@ -673,9 +679,7 @@ def main() -> None:
         "precision": precision_info,
         "comparison_to_regex": comparison,
         "prompt_iterations": prompt_iterations,
-        "per_question": {
-            name: cond.per_question for name, cond in conditions.items()
-        },
+        "per_question": {name: cond.per_question for name, cond in conditions.items()},
     }
     json_path = RESULTS_DIR / "ingestion_llm_empirical.json"
     with open(json_path, "w") as f:
@@ -686,15 +690,23 @@ def main() -> None:
     print("\n" + "=" * 70)
     print("RESULTS")
     print("=" * 70)
-    for cond in ["cosine_no_altkeys", "cosine_llm_altkeys",
-                 "v2f_no_altkeys", "v2f_llm_altkeys"]:
+    for cond in [
+        "cosine_no_altkeys",
+        "cosine_llm_altkeys",
+        "v2f_no_altkeys",
+        "v2f_llm_altkeys",
+    ]:
         s = ov[cond]
         print(f"  {cond:28s} r@20={s['mean_r@20']:.4f}  r@50={s['mean_r@50']:.4f}")
-    print(f"\n  SKIP rate: {ingestion_stats['skip_rate']*100:.1f}%  "
-          f"alt-keys emitted: {len(alt_keys)}  bloat: {bloat['bloat_factor']:.2f}x")
+    print(
+        f"\n  SKIP rate: {ingestion_stats['skip_rate'] * 100:.1f}%  "
+        f"alt-keys emitted: {len(alt_keys)}  bloat: {bloat['bloat_factor']:.2f}x"
+    )
     print(f"  v2f Δr@20={v2f_delta_20:+.4f}  v2f Δr@50={v2f_delta_50:+.4f}")
-    print(f"  alt-key precision (gold share): {precision_info['alt_precision_gold']*100:.1f}% "
-          f"on {precision_info['alt_hits_total']} alt-won hits")
+    print(
+        f"  alt-key precision (gold share): {precision_info['alt_precision_gold'] * 100:.1f}% "
+        f"on {precision_info['alt_hits_total']} alt-won hits"
+    )
     print(f"  verdict: {one_liner}")
     print(f"  LLM cost: ~${cost['est_usd']:.3f}")
 

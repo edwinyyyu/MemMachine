@@ -11,19 +11,14 @@ Variants:
   V5: Retrieval-grounded decomposition (linear chain, purely reactive)
 """
 
-import hashlib
 import heapq
 import json
 import sys
 import time
-from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -31,8 +26,9 @@ from associative_recall import (
     LLMCache,
     Segment,
     SegmentStore,
-    RetrievalResult,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -52,8 +48,12 @@ class FrontierEmbeddingCache(EmbeddingCache):
         self.cache_dir = CACHE_DIR
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, list[float]] = {}
-        for name in ("embedding_cache.json", "arch_embedding_cache.json",
-                     "agent_embedding_cache.json", "frontier_embedding_cache.json"):
+        for name in (
+            "embedding_cache.json",
+            "arch_embedding_cache.json",
+            "agent_embedding_cache.json",
+            "frontier_embedding_cache.json",
+        ):
             p = self.cache_dir / name
             if p.exists():
                 with open(p) as f:
@@ -87,9 +87,13 @@ class FrontierLLMCache(LLMCache):
         self.cache_dir = CACHE_DIR
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, str] = {}
-        for name in ("llm_cache.json", "arch_llm_cache.json",
-                     "agent_llm_cache.json", "tree_llm_cache.json",
-                     "frontier_llm_cache.json"):
+        for name in (
+            "llm_cache.json",
+            "arch_llm_cache.json",
+            "agent_llm_cache.json",
+            "tree_llm_cache.json",
+            "frontier_llm_cache.json",
+        ):
             p = self.cache_dir / name
             if p.exists():
                 with open(p) as f:
@@ -126,6 +130,7 @@ class FrontierLLMCache(LLMCache):
 @dataclass
 class Gap:
     """A gap in retrieval — something still missing."""
+
     query: str
     priority: float = 0.0  # higher = explore first
     source: str = ""  # which reflect call generated this
@@ -138,6 +143,7 @@ class Gap:
 @dataclass
 class FrontierResult:
     """Result from a frontier retrieval."""
+
     segments: list[Segment]
     embed_calls: int = 0
     llm_calls: int = 0
@@ -202,8 +208,9 @@ class FrontierBase:
 # ---------------------------------------------------------------------------
 # Helper: format segments for LLM context
 # ---------------------------------------------------------------------------
-def _format_segments(segments: list[Segment], max_items: int = 12,
-                     max_chars: int = 250) -> str:
+def _format_segments(
+    segments: list[Segment], max_items: int = 12, max_chars: int = 250
+) -> str:
     """Format segments chronologically for LLM context.
 
     Matches agent_architectures._format_segments exactly (12 items, 250 chars)
@@ -273,9 +280,7 @@ def _v15_retrieve(
 
     # Hop 0: question embedding
     query_emb = base.embed_text(question)
-    result = base.store.search(
-        query_emb, top_k=10, conversation_id=conversation_id
-    )
+    result = base.store.search(query_emb, top_k=10, conversation_id=conversation_id)
     all_segments: list[Segment] = list(result.segments)
     for s in all_segments:
         exclude.add(s.index)
@@ -289,7 +294,9 @@ def _v15_retrieve(
     for cue in cues[:2]:
         cue_emb = base.embed_text(cue)
         result = base.store.search(
-            cue_emb, top_k=10, conversation_id=conversation_id,
+            cue_emb,
+            top_k=10,
+            conversation_id=conversation_id,
             exclude_indices=exclude,
         )
         for seg in result.segments:
@@ -311,9 +318,7 @@ class SimpleFrontier(FrontierBase):
     """
 
     def retrieve(self, question: str, conversation_id: str) -> FrontierResult:
-        all_segments, exclude, cues = _v15_retrieve(
-            self, question, conversation_id
-        )
+        all_segments, exclude, cues = _v15_retrieve(self, question, conversation_id)
 
         return FrontierResult(
             segments=all_segments,
@@ -338,9 +343,14 @@ class IterativeFrontier(FrontierBase):
     Max 4 reflect calls total (cost control).
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 max_reflects: int = 4, gaps_per_reflect: int = 2,
-                 segment_budget: int = 80):
+    def __init__(
+        self,
+        store: SegmentStore,
+        client: OpenAI | None = None,
+        max_reflects: int = 4,
+        gaps_per_reflect: int = 2,
+        segment_budget: int = 80,
+    ):
         super().__init__(store, client)
         self.max_reflects = max_reflects
         self.gaps_per_reflect = gaps_per_reflect
@@ -354,9 +364,7 @@ class IterativeFrontier(FrontierBase):
 
         # Phase 0: initial probe
         query_emb = self.embed_text(question)
-        result = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        result = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments.extend(result.segments)
         for s in result.segments:
             exclude.add(s.index)
@@ -418,23 +426,27 @@ DONE"""
                 elif line.strip().upper() == "DONE":
                     done = True
 
-            reflect_log.append({
-                "reflect": reflect_i,
-                "assessment": assessment,
-                "gaps": [g.query for g in gaps],
-                "done": done,
-            })
+            reflect_log.append(
+                {
+                    "reflect": reflect_i,
+                    "assessment": assessment,
+                    "gaps": [g.query for g in gaps],
+                    "done": done,
+                }
+            )
 
             if done or not gaps:
                 break
 
             # Explore gaps from this reflect
-            for gap in gaps[:self.gaps_per_reflect]:
+            for gap in gaps[: self.gaps_per_reflect]:
                 if len(all_segments) >= self.segment_budget:
                     break
                 gap_emb = self.embed_text(gap.query)
                 result = self.store.search(
-                    gap_emb, top_k=10, conversation_id=conversation_id,
+                    gap_emb,
+                    top_k=10,
+                    conversation_id=conversation_id,
                     exclude_indices=exclude,
                 )
                 for seg in result.segments:
@@ -465,8 +477,13 @@ class PriorityFrontier(FrontierBase):
     Tests whether the model can usefully prioritize.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 max_reflects: int = 4, segment_budget: int = 80):
+    def __init__(
+        self,
+        store: SegmentStore,
+        client: OpenAI | None = None,
+        max_reflects: int = 4,
+        segment_budget: int = 80,
+    ):
         super().__init__(store, client)
         self.max_reflects = max_reflects
         self.segment_budget = segment_budget
@@ -480,32 +497,32 @@ class PriorityFrontier(FrontierBase):
 
         # Phase 0: initial probe
         query_emb = self.embed_text(question)
-        result = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        result = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments.extend(result.segments)
         for s in result.segments:
             exclude.add(s.index)
 
         # Initial reflect to seed the frontier
-        new_gaps = self._reflect(
-            question, all_segments, explored_gaps, reflect_log, 0
-        )
+        new_gaps = self._reflect(question, all_segments, explored_gaps, reflect_log, 0)
         for g in new_gaps:
             heapq.heappush(priority_queue, g)
 
         # Iterative exploration
         reflect_count = 1
-        while (priority_queue
-               and len(all_segments) < self.segment_budget
-               and reflect_count < self.max_reflects):
+        while (
+            priority_queue
+            and len(all_segments) < self.segment_budget
+            and reflect_count < self.max_reflects
+        ):
             # Pop best gap
             gap = heapq.heappop(priority_queue)
             explored_gaps.append(gap.query)
 
             gap_emb = self.embed_text(gap.query)
             result = self.store.search(
-                gap_emb, top_k=10, conversation_id=conversation_id,
+                gap_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -527,7 +544,9 @@ class PriorityFrontier(FrontierBase):
             explored_gaps.append(gap.query)
             gap_emb = self.embed_text(gap.query)
             result = self.store.search(
-                gap_emb, top_k=10, conversation_id=conversation_id,
+                gap_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -559,9 +578,8 @@ class PriorityFrontier(FrontierBase):
         context = _format_segments(all_segments)
         explored_text = ""
         if explored_gaps:
-            explored_text = (
-                "\n\nALREADY SEARCHED FOR (do NOT repeat):\n"
-                + "\n".join(f"- {g}" for g in explored_gaps)
+            explored_text = "\n\nALREADY SEARCHED FOR (do NOT repeat):\n" + "\n".join(
+                f"- {g}" for g in explored_gaps
             )
 
         prompt = f"""\
@@ -608,21 +626,28 @@ DONE"""
                             priority = float(rest[1:bracket_end])
                         except ValueError:
                             pass
-                        query = rest[bracket_end + 1:].strip()
+                        query = rest[bracket_end + 1 :].strip()
                         if query.startswith(":"):
                             query = query[1:].strip()
                 if query:
-                    gaps.append(Gap(query=query, priority=priority,
-                                    source=f"reflect_{reflect_i}"))
+                    gaps.append(
+                        Gap(
+                            query=query,
+                            priority=priority,
+                            source=f"reflect_{reflect_i}",
+                        )
+                    )
             elif line.strip().upper() == "DONE":
                 done = True
 
-        reflect_log.append({
-            "reflect": reflect_i,
-            "assessment": assessment,
-            "gaps": [(g.query, g.priority) for g in gaps],
-            "done": done,
-        })
+        reflect_log.append(
+            {
+                "reflect": reflect_i,
+                "assessment": assessment,
+                "gaps": [(g.query, g.priority) for g in gaps],
+                "done": done,
+            }
+        )
 
         if done:
             return []
@@ -643,16 +668,18 @@ class HybridV15Frontier(FrontierBase):
     Frontier results only affect r@50+ positions, so r@20 is preserved.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 max_frontier_gaps: int = 2):
+    def __init__(
+        self,
+        store: SegmentStore,
+        client: OpenAI | None = None,
+        max_frontier_gaps: int = 2,
+    ):
         super().__init__(store, client)
         self.max_frontier_gaps = max_frontier_gaps
 
     def retrieve(self, question: str, conversation_id: str) -> FrontierResult:
         # === Phase 1: exact v15 retrieval (shared code with V1) ===
-        all_segments, exclude, v15_cues = _v15_retrieve(
-            self, question, conversation_id
-        )
+        all_segments, exclude, v15_cues = _v15_retrieve(self, question, conversation_id)
         v15_segment_count = len(all_segments)
 
         # === Phase 2: frontier reflection ===
@@ -698,10 +725,12 @@ class HybridV15Frontier(FrontierBase):
         # === Phase 3: explore frontier gaps ===
         explored_gaps: list[str] = []
         if not done:
-            for gap in frontier_gaps[:self.max_frontier_gaps]:
+            for gap in frontier_gaps[: self.max_frontier_gaps]:
                 gap_emb = self.embed_text(gap.query)
                 result = self.store.search(
-                    gap_emb, top_k=10, conversation_id=conversation_id,
+                    gap_emb,
+                    top_k=10,
+                    conversation_id=conversation_id,
                     exclude_indices=exclude,
                 )
                 for seg in result.segments:
@@ -748,9 +777,7 @@ class HybridV15FrontierDeep(FrontierBase):
 
     def retrieve(self, question: str, conversation_id: str) -> FrontierResult:
         # Phase 1: v15
-        all_segments, exclude, v15_cues = _v15_retrieve(
-            self, question, conversation_id
-        )
+        all_segments, exclude, v15_cues = _v15_retrieve(self, question, conversation_id)
 
         all_explored: list[str] = list(v15_cues)
         reflect_log: list[dict] = []
@@ -795,12 +822,14 @@ class HybridV15FrontierDeep(FrontierBase):
                 elif line.strip().upper() == "DONE":
                     done = True
 
-            reflect_log.append({
-                "round": round_i,
-                "assessment": assessment,
-                "gaps": [g.query for g in gaps],
-                "done": done,
-            })
+            reflect_log.append(
+                {
+                    "round": round_i,
+                    "assessment": assessment,
+                    "gaps": [g.query for g in gaps],
+                    "done": done,
+                }
+            )
 
             if done or not gaps:
                 break
@@ -808,7 +837,9 @@ class HybridV15FrontierDeep(FrontierBase):
             for gap in gaps[:2]:
                 gap_emb = self.embed_text(gap.query)
                 result = self.store.search(
-                    gap_emb, top_k=10, conversation_id=conversation_id,
+                    gap_emb,
+                    top_k=10,
+                    conversation_id=conversation_id,
                     exclude_indices=exclude,
                 )
                 for seg in result.segments:
@@ -842,9 +873,7 @@ class V15BackfillOnly(FrontierBase):
     """
 
     def retrieve(self, question: str, conversation_id: str) -> FrontierResult:
-        all_segments, exclude, cues = _v15_retrieve(
-            self, question, conversation_id
-        )
+        all_segments, exclude, cues = _v15_retrieve(self, question, conversation_id)
         return FrontierResult(
             segments=all_segments,
             embed_calls=self.embed_calls,
@@ -871,9 +900,7 @@ class HybridV15FrontierConstrained(FrontierBase):
 
     def retrieve(self, question: str, conversation_id: str) -> FrontierResult:
         # Phase 1: v15
-        all_segments, exclude, v15_cues = _v15_retrieve(
-            self, question, conversation_id
-        )
+        all_segments, exclude, v15_cues = _v15_retrieve(self, question, conversation_id)
 
         # Phase 2: second v15-style reflect (same prompt structure that works)
         context = _format_segments(all_segments)
@@ -913,7 +940,9 @@ Nothing else."""
         for cue in frontier_cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -950,9 +979,7 @@ class DoubleV15(FrontierBase):
 
     def retrieve(self, question: str, conversation_id: str) -> FrontierResult:
         # Round 1: standard v15
-        all_segments, exclude, cues_r1 = _v15_retrieve(
-            self, question, conversation_id
-        )
+        all_segments, exclude, cues_r1 = _v15_retrieve(self, question, conversation_id)
 
         # Round 2: v15 again with accumulated context + don't repeat
         context = _format_segments(all_segments)
@@ -988,7 +1015,9 @@ Nothing else."""
         for cue in cues_r2[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -1019,8 +1048,13 @@ class RetrievalGroundedDecomp(FrontierBase):
     No branching. Tests whether depth alone is enough.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 max_rounds: int = 4, segment_budget: int = 80):
+    def __init__(
+        self,
+        store: SegmentStore,
+        client: OpenAI | None = None,
+        max_rounds: int = 4,
+        segment_budget: int = 80,
+    ):
         super().__init__(store, client)
         self.max_rounds = max_rounds
         self.segment_budget = segment_budget
@@ -1032,9 +1066,7 @@ class RetrievalGroundedDecomp(FrontierBase):
 
         # Initial probe
         query_emb = self.embed_text(question)
-        result = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        result = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments.extend(result.segments)
         for s in result.segments:
             exclude.add(s.index)
@@ -1048,9 +1080,8 @@ class RetrievalGroundedDecomp(FrontierBase):
             if round_log:
                 prev_items = [entry["gap"] for entry in round_log if entry.get("gap")]
                 if prev_items:
-                    prev_text = (
-                        "\n\nPREVIOUS SEARCHES (do NOT repeat):\n"
-                        + "\n".join(f"- {p}" for p in prev_items)
+                    prev_text = "\n\nPREVIOUS SEARCHES (do NOT repeat):\n" + "\n".join(
+                        f"- {p}" for p in prev_items
                     )
 
             prompt = f"""\
@@ -1089,19 +1120,23 @@ DONE"""
                 elif line.strip().upper() == "DONE":
                     done = True
 
-            round_log.append({
-                "round": round_i,
-                "assessment": assessment,
-                "gap": gap_query,
-                "done": done,
-            })
+            round_log.append(
+                {
+                    "round": round_i,
+                    "assessment": assessment,
+                    "gap": gap_query,
+                    "done": done,
+                }
+            )
 
             if done or not gap_query:
                 break
 
             gap_emb = self.embed_text(gap_query)
             result = self.store.search(
-                gap_emb, top_k=10, conversation_id=conversation_id,
+                gap_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -1168,8 +1203,7 @@ def evaluate_one(
     if backfill:
         arch_indices = {seg.index for seg in arch_segments}
         backfill_segs = [
-            seg for seg in baseline_result.segments
-            if seg.index not in arch_indices
+            seg for seg in baseline_result.segments if seg.index not in arch_indices
         ]
         arch_with_backfill = list(arch_segments) + backfill_segs
     else:
@@ -1186,7 +1220,9 @@ def evaluate_one(
         arch_recalls[f"r@{budget}"] = compute_recall(arch_ids, source_ids)
 
     # Also at actual retrieval count
-    baseline_ids_actual = {s.turn_id for s in baseline_result.segments[:total_retrieved]}
+    baseline_ids_actual = {
+        s.turn_id for s in baseline_result.segments[:total_retrieved]
+    }
     arch_ids_actual = {s.turn_id for s in arch_segments}
     baseline_recalls["r@actual"] = compute_recall(baseline_ids_actual, source_ids)
     arch_recalls["r@actual"] = compute_recall(arch_ids_actual, source_ids)
@@ -1209,15 +1245,19 @@ def evaluate_one(
 
     if verbose:
         print(f"  Source: {sorted(source_ids)} ({len(source_ids)} turns)")
-        print(f"  Retrieved: {total_retrieved}, Embed: {arch.embed_calls}, "
-              f"LLM: {arch.llm_calls}, Time: {elapsed:.1f}s")
+        print(
+            f"  Retrieved: {total_retrieved}, Embed: {arch.embed_calls}, "
+            f"LLM: {arch.llm_calls}, Time: {elapsed:.1f}s"
+        )
         for budget in BUDGETS:
             b = baseline_recalls[f"r@{budget}"]
             a = arch_recalls[f"r@{budget}"]
             delta = a - b
             marker = "W" if delta > 0.001 else ("L" if delta < -0.001 else "T")
-            print(f"  @{budget:3d}: baseline={b:.3f} arch={a:.3f} "
-                  f"delta={delta:+.3f} [{marker}]")
+            print(
+                f"  @{budget:3d}: baseline={b:.3f} arch={a:.3f} "
+                f"delta={delta:+.3f} [{marker}]"
+            )
 
     return result_dict
 
@@ -1246,13 +1286,11 @@ def summarize(results: list[dict], arch_name: str, benchmark: str) -> dict:
         summary[f"W/T/L_{label}"] = f"{wins}/{ties}/{losses}"
 
     summary["avg_total_retrieved"] = round(
-        sum(r["total_retrieved"] for r in results) / n, 1)
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1)
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1)
-    summary["avg_time_s"] = round(
-        sum(r["time_s"] for r in results) / n, 2)
+        sum(r["total_retrieved"] for r in results) / n, 1
+    )
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
+    summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
 
     return summary
 
@@ -1264,14 +1302,18 @@ def print_summary(summary: dict) -> None:
     print(f"\n--- {summary['arch']} on {summary['benchmark']} ---")
     for budget in BUDGETS:
         lbl = f"r@{budget}"
-        print(f"  {lbl}: baseline={summary.get(f'baseline_{lbl}', 0):.3f} "
-              f"arch={summary.get(f'arch_{lbl}', 0):.3f} "
-              f"delta={summary.get(f'delta_{lbl}', 0):+.3f} "
-              f"W/T/L={summary.get(f'W/T/L_{lbl}', '?')}")
-    print(f"  Avg retrieved: {summary.get('avg_total_retrieved', 0):.0f}, "
-          f"Embed: {summary.get('avg_embed_calls', 0):.1f}, "
-          f"LLM: {summary.get('avg_llm_calls', 0):.1f}, "
-          f"Time: {summary.get('avg_time_s', 0):.1f}s")
+        print(
+            f"  {lbl}: baseline={summary.get(f'baseline_{lbl}', 0):.3f} "
+            f"arch={summary.get(f'arch_{lbl}', 0):.3f} "
+            f"delta={summary.get(f'delta_{lbl}', 0):+.3f} "
+            f"W/T/L={summary.get(f'W/T/L_{lbl}', '?')}"
+        )
+    print(
+        f"  Avg retrieved: {summary.get('avg_total_retrieved', 0):.0f}, "
+        f"Embed: {summary.get('avg_embed_calls', 0):.1f}, "
+        f"LLM: {summary.get('avg_llm_calls', 0):.1f}, "
+        f"Time: {summary.get('avg_time_s', 0):.1f}s"
+    )
 
 
 # ===================================================================
@@ -1288,9 +1330,7 @@ class TripleV15(FrontierBase):
 
     def retrieve(self, question: str, conversation_id: str) -> FrontierResult:
         # Round 1: standard v15
-        all_segments, exclude, cues_r1 = _v15_retrieve(
-            self, question, conversation_id
-        )
+        all_segments, exclude, cues_r1 = _v15_retrieve(self, question, conversation_id)
         all_cues = list(cues_r1)
 
         # Rounds 2-3
@@ -1328,7 +1368,9 @@ Nothing else."""
             for cue in new_cues[:2]:
                 cue_emb = self.embed_text(cue)
                 result = self.store.search(
-                    cue_emb, top_k=10, conversation_id=conversation_id,
+                    cue_emb,
+                    top_k=10,
+                    conversation_id=conversation_id,
                     exclude_indices=exclude,
                 )
                 for seg in result.segments:
@@ -1365,14 +1407,20 @@ FRONTIER_ARCHITECTURES = {
 
 def main() -> None:
     import argparse
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--arch", type=str, default=None,
-                        help="Run specific architecture (default: all)")
+    parser.add_argument(
+        "--arch",
+        type=str,
+        default=None,
+        help="Run specific architecture (default: all)",
+    )
     parser.add_argument("--num-questions", type=int, default=30)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("--no-backfill", action="store_true",
-                        help="Disable cosine backfill")
+    parser.add_argument(
+        "--no-backfill", action="store_true", help="Disable cosine backfill"
+    )
     args = parser.parse_args()
 
     # Load data
@@ -1382,8 +1430,9 @@ def main() -> None:
     store = SegmentStore(data_dir=DATA_DIR, npz_name="segments_extended.npz")
     print(f"Loaded {len(store.segments)} segments")
 
-    locomo_qs = [q for q in all_questions
-                 if q.get("benchmark") == "locomo"][:args.num_questions]
+    locomo_qs = [q for q in all_questions if q.get("benchmark") == "locomo"][
+        : args.num_questions
+    ]
     print(f"LoCoMo: {len(locomo_qs)} questions")
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1415,18 +1464,21 @@ def main() -> None:
         arch_cls = FRONTIER_ARCHITECTURES[arch_name]
         arch = arch_cls(store)
 
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print(f"ARCH: {arch_name} | LoCoMo | {len(locomo_qs)} questions")
-        print(f"{'='*70}")
+        print(f"{'=' * 70}")
 
         results = []
         for i, question in enumerate(locomo_qs):
             q_short = question["question"][:55]
-            print(f"  [{i+1}/{len(locomo_qs)}] {question['category']}: "
-                  f"{q_short}...", flush=True)
+            print(
+                f"  [{i + 1}/{len(locomo_qs)}] {question['category']}: {q_short}...",
+                flush=True,
+            )
             try:
                 result_dict = evaluate_one(
-                    arch, question,
+                    arch,
+                    question,
                     backfill=not args.no_backfill,
                     verbose=args.verbose,
                 )
@@ -1434,6 +1486,7 @@ def main() -> None:
             except Exception as e:
                 print(f"  ERROR: {e}", flush=True)
                 import traceback
+
                 traceback.print_exc()
             sys.stdout.flush()
             if (i + 1) % 5 == 0:
@@ -1449,29 +1502,33 @@ def main() -> None:
         print(f"Saved to {results_file}")
 
     # Grand summary table
-    print(f"\n{'='*120}")
+    print(f"\n{'=' * 120}")
     print("FRONTIER RETRIEVAL — GRAND SUMMARY TABLE")
-    print(f"{'='*120}")
-    print(f"{'Architecture':<30s} {'B-r@20':>8s} {'A-r@20':>8s} "
-          f"{'Delta':>8s} {'W/T/L':>10s} {'B-r@50':>8s} {'A-r@50':>8s} "
-          f"{'D-r@50':>8s} {'#Ret':>6s} {'Emb':>5s} "
-          f"{'LLM':>5s} {'Time':>6s}")
+    print(f"{'=' * 120}")
+    print(
+        f"{'Architecture':<30s} {'B-r@20':>8s} {'A-r@20':>8s} "
+        f"{'Delta':>8s} {'W/T/L':>10s} {'B-r@50':>8s} {'A-r@50':>8s} "
+        f"{'D-r@50':>8s} {'#Ret':>6s} {'Emb':>5s} "
+        f"{'LLM':>5s} {'Time':>6s}"
+    )
     print("-" * 120)
     for s in all_summaries:
         if not s:
             continue
-        print(f"{s['arch']:<30s} "
-              f"{s.get('baseline_r@20', 0):>8.3f} "
-              f"{s.get('arch_r@20', 0):>8.3f} "
-              f"{s.get('delta_r@20', 0):>+8.3f} "
-              f"{s.get('W/T/L_r@20', '?'):>10s} "
-              f"{s.get('baseline_r@50', 0):>8.3f} "
-              f"{s.get('arch_r@50', 0):>8.3f} "
-              f"{s.get('delta_r@50', 0):>+8.3f} "
-              f"{s.get('avg_total_retrieved', 0):>6.0f} "
-              f"{s.get('avg_embed_calls', 0):>5.1f} "
-              f"{s.get('avg_llm_calls', 0):>5.0f} "
-              f"{s.get('avg_time_s', 0):>6.1f}")
+        print(
+            f"{s['arch']:<30s} "
+            f"{s.get('baseline_r@20', 0):>8.3f} "
+            f"{s.get('arch_r@20', 0):>8.3f} "
+            f"{s.get('delta_r@20', 0):>+8.3f} "
+            f"{s.get('W/T/L_r@20', '?'):>10s} "
+            f"{s.get('baseline_r@50', 0):>8.3f} "
+            f"{s.get('arch_r@50', 0):>8.3f} "
+            f"{s.get('delta_r@50', 0):>+8.3f} "
+            f"{s.get('avg_total_retrieved', 0):>6.0f} "
+            f"{s.get('avg_embed_calls', 0):>5.1f} "
+            f"{s.get('avg_llm_calls', 0):>5.0f} "
+            f"{s.get('avg_time_s', 0):>6.1f}"
+        )
     print("-" * 120)
     print("Reference v15 (1 hop, 2 cues, backfill): LoCoMo delta r@20 = +0.339")
 

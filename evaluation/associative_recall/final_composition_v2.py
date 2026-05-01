@@ -33,24 +33,24 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
 
+# Narrow wins
+from alias_expansion import _ALIAS_GROUPS_FILE, AliasExpandV2fFull, find_alias_matches
 from associative_recall import (
     CACHE_DIR,
     Segment,
     SegmentStore,
 )
 from best_shot import MetaV2f
+from clause_decomposition import ClausePlusV2f, split_query_into_clauses
+from context_embedding import ContextEmbW1Stacked
 from critical_info_store import (
-    CriticalAltKey,
     CriticalInfoGenerator,
     CriticalInfoStore,
     classify_turns,
@@ -58,10 +58,11 @@ from critical_info_store import (
     merge_always_top_m,
 )
 from domain_agnostic import (
-    DomainAgnosticVariant,
-    V2F_STYLE_EXPLICIT_PROMPT,
     NEUTRAL_HEADER,
+    V2F_STYLE_EXPLICIT_PROMPT,
+    DomainAgnosticVariant,
 )
+from dotenv import load_dotenv
 from ensemble_retrieval import (
     SpecialistOutput,
     _attach_cosine_scores,
@@ -70,22 +71,17 @@ from ensemble_retrieval import (
 from goal_chain import GoalChainRetriever
 from ingest_regex_eval import (
     Embedder,
-    embed_texts_cached,
     compute_recall,
-    fair_backfill_turn_ids,
+    embed_texts_cached,
 )
+from openai import OpenAI
 from router_study import KEYWORD_RULES
-from type_enumerated import TypeEnumeratedVariant, V2fPlusTypesVariant
-
-# Narrow wins
-from alias_expansion import AliasExpandV2fFull, find_alias_matches, _ALIAS_GROUPS_FILE
-from clause_decomposition import ClausePlusV2f, split_query_into_clauses
-from context_embedding import ContextEmbW1Stacked
 from speaker_attributed import (
+    _CONV_SPEAKERS_FILE,
     SpeakerUserFilter,
     extract_name_mentions,
-    _CONV_SPEAKERS_FILE,
 )
+from type_enumerated import TypeEnumeratedVariant, V2fPlusTypesVariant
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -246,7 +242,9 @@ def run_specialists(
             segs = []
         scores = _attach_cosine_scores(store, segs, query_emb)
         out[name] = SpecialistOutput(
-            name=name, segments=segs, cosine_scores=scores,
+            name=name,
+            segments=segs,
+            cosine_scores=scores,
             llm_calls=arch.llm_calls,
         )
     return out
@@ -442,9 +440,7 @@ def build_contexts(
 
         # Use v2f's embed cache
         q_emb = specialists["v2f"].embed_text(q_text)
-        cos_res = store.search(
-            q_emb, top_k=max(BUDGETS), conversation_id=conv_id
-        )
+        cos_res = store.search(q_emb, top_k=max(BUDGETS), conversation_id=conv_id)
         cos_segs = list(cos_res.segments)
         cos_scores = list(cos_res.scores)
 
@@ -467,23 +463,25 @@ def build_contexts(
                 min_score=-1.0,
             )
 
-        ctxs.append(QContext(
-            question=q,
-            q_text=q_text,
-            conv_id=conv_id,
-            source_ids=source_ids,
-            category=cat,
-            query_emb=q_emb,
-            cosine_segments=cos_segs,
-            cosine_scores=cos_scores,
-            outputs=outputs,
-            router_label=label,
-            router_composition=comp,
-            speaker_fires=speaker_fires,
-            alias_fires=alias_fires,
-            multi_clause=multi_clause,
-            crit_ranked=crit,
-        ))
+        ctxs.append(
+            QContext(
+                question=q,
+                q_text=q_text,
+                conv_id=conv_id,
+                source_ids=source_ids,
+                category=cat,
+                query_emb=q_emb,
+                cosine_segments=cos_segs,
+                cosine_scores=cos_scores,
+                outputs=outputs,
+                router_label=label,
+                router_composition=comp,
+                speaker_fires=speaker_fires,
+                alias_fires=alias_fires,
+                multi_clause=multi_clause,
+                crit_ranked=crit,
+            )
+        )
     return ctxs
 
 
@@ -554,10 +552,16 @@ def var_speaker_plus_critical(ctx: QContext, K: int, crit_store_ok: bool) -> set
         segs = fair_backfill_segments(base, ctx.cosine_segments, K)
         return {s.turn_id for s in segs}
     main_ranked = _main_ranked_with_scores_from_seglist(
-        base, ctx.cosine_segments, ctx.cosine_scores,
+        base,
+        ctx.cosine_segments,
+        ctx.cosine_scores,
     )
     merged_segs = merge_always_top_m(
-        main_ranked, ctx.crit_ranked, K, top_m=5, min_score=0.2,
+        main_ranked,
+        ctx.crit_ranked,
+        K,
+        top_m=5,
+        min_score=0.2,
     )
     return {s.turn_id for s in merged_segs}
 
@@ -581,9 +585,7 @@ def var_speaker_all_in(ctx: QContext, K: int, crit_store_ok: bool) -> set[int]:
             segs_order.append(list(sp.segments))
 
     # ens_2
-    merged_2 = merge_by_score(
-        ctx.outputs, ("v2f", "type_enumerated"), scaling="sum"
-    )
+    merged_2 = merge_by_score(ctx.outputs, ("v2f", "type_enumerated"), scaling="sum")
     segs_order.append([seg for seg, _ in merged_2])
 
     # alias
@@ -609,10 +611,16 @@ def var_speaker_all_in(ctx: QContext, K: int, crit_store_ok: bool) -> set[int]:
         return {s.turn_id for s in segs}
 
     main_ranked = _main_ranked_with_scores_from_seglist(
-        base, ctx.cosine_segments, ctx.cosine_scores,
+        base,
+        ctx.cosine_segments,
+        ctx.cosine_scores,
     )
     merged_segs = merge_always_top_m(
-        main_ranked, ctx.crit_ranked, K, top_m=5, min_score=0.2,
+        main_ranked,
+        ctx.crit_ranked,
+        K,
+        top_m=5,
+        min_score=0.2,
     )
     return {s.turn_id for s in merged_segs}
 
@@ -622,8 +630,13 @@ def var_ens_all_plus_crit(ctx: QContext, K: int, crit_store_ok: bool) -> set[int
     """ens_5 sum_cosine + critical (prior max-effort reference)."""
     merged_5 = merge_by_score(
         ctx.outputs,
-        ("v2f", "v2f_plus_types", "type_enumerated",
-         "chain_with_scratchpad", "v2f_style_explicit"),
+        (
+            "v2f",
+            "v2f_plus_types",
+            "type_enumerated",
+            "chain_with_scratchpad",
+            "v2f_style_explicit",
+        ),
         scaling="sum",
     )
     base = [seg for seg, _ in merged_5]
@@ -631,10 +644,16 @@ def var_ens_all_plus_crit(ctx: QContext, K: int, crit_store_ok: bool) -> set[int
         segs = fair_backfill_segments(base, ctx.cosine_segments, K)
         return {s.turn_id for s in segs}
     main_ranked = _main_ranked_with_scores_from_seglist(
-        base, ctx.cosine_segments, ctx.cosine_scores,
+        base,
+        ctx.cosine_segments,
+        ctx.cosine_scores,
     )
     merged_segs = merge_always_top_m(
-        main_ranked, ctx.crit_ranked, K, top_m=5, min_score=0.2,
+        main_ranked,
+        ctx.crit_ranked,
+        K,
+        top_m=5,
+        min_score=0.2,
     )
     return {s.turn_id for s in merged_segs}
 
@@ -651,9 +670,7 @@ def var_composition_v1(ctx: QContext, K: int, crit_store_ok: bool) -> set[int]:
         m = merge_by_score(ctx.outputs, comp, scaling="sum")
         segs_order.append([seg for seg, _ in m])
     # ens_2
-    merged_2 = merge_by_score(
-        ctx.outputs, ("v2f", "type_enumerated"), scaling="sum"
-    )
+    merged_2 = merge_by_score(ctx.outputs, ("v2f", "type_enumerated"), scaling="sum")
     segs_order.append([seg for seg, _ in merged_2])
     # alias
     alias_so = ctx.outputs.get("alias_expand_v2f")
@@ -674,10 +691,16 @@ def var_composition_v1(ctx: QContext, K: int, crit_store_ok: bool) -> set[int]:
         segs = fair_backfill_segments(base, ctx.cosine_segments, K)
         return {s.turn_id for s in segs}
     main_ranked = _main_ranked_with_scores_from_seglist(
-        base, ctx.cosine_segments, ctx.cosine_scores,
+        base,
+        ctx.cosine_segments,
+        ctx.cosine_scores,
     )
     merged_segs = merge_always_top_m(
-        main_ranked, ctx.crit_ranked, K, top_m=5, min_score=0.2,
+        main_ranked,
+        ctx.crit_ranked,
+        K,
+        top_m=5,
+        min_score=0.2,
     )
     return {s.turn_id for s in merged_segs}
 
@@ -698,9 +721,7 @@ def var_composition_v2_all(ctx: QContext, K: int, crit_store_ok: bool) -> set[in
         m = merge_by_score(ctx.outputs, comp, scaling="sum")
         segs_order.append([seg for seg, _ in m])
     # ens_2
-    merged_2 = merge_by_score(
-        ctx.outputs, ("v2f", "type_enumerated"), scaling="sum"
-    )
+    merged_2 = merge_by_score(ctx.outputs, ("v2f", "type_enumerated"), scaling="sum")
     segs_order.append([seg for seg, _ in merged_2])
     # alias
     alias_so = ctx.outputs.get("alias_expand_v2f")
@@ -721,10 +742,16 @@ def var_composition_v2_all(ctx: QContext, K: int, crit_store_ok: bool) -> set[in
         segs = fair_backfill_segments(base, ctx.cosine_segments, K)
         return {s.turn_id for s in segs}
     main_ranked = _main_ranked_with_scores_from_seglist(
-        base, ctx.cosine_segments, ctx.cosine_scores,
+        base,
+        ctx.cosine_segments,
+        ctx.cosine_scores,
     )
     merged_segs = merge_always_top_m(
-        main_ranked, ctx.crit_ranked, K, top_m=5, min_score=0.2,
+        main_ranked,
+        ctx.crit_ranked,
+        K,
+        top_m=5,
+        min_score=0.2,
     )
     return {s.turn_id for s in merged_segs}
 
@@ -732,6 +759,7 @@ def var_composition_v2_all(ctx: QContext, K: int, crit_store_ok: bool) -> set[in
 # --- Ablations (drop one from v2_all) ------------------------------------
 def _var_drop(component: str):
     """Return a function that computes composition_v2_all minus `component`."""
+
     def f(ctx: QContext, K: int, crit_store_ok: bool) -> set[int]:
         segs_order: list[list[Segment]] = []
         if component != "speaker" and ctx.speaker_fires:
@@ -768,12 +796,19 @@ def _var_drop(component: str):
             segs = fair_backfill_segments(base, ctx.cosine_segments, K)
             return {s.turn_id for s in segs}
         main_ranked = _main_ranked_with_scores_from_seglist(
-            base, ctx.cosine_segments, ctx.cosine_scores,
+            base,
+            ctx.cosine_segments,
+            ctx.cosine_scores,
         )
         merged_segs = merge_always_top_m(
-            main_ranked, ctx.crit_ranked, K, top_m=5, min_score=0.2,
+            main_ranked,
+            ctx.crit_ranked,
+            K,
+            top_m=5,
+            min_score=0.2,
         )
         return {s.turn_id for s in merged_segs}
+
     return f
 
 
@@ -891,7 +926,12 @@ def evaluate_dataset(
     print("  building per-question contexts...", flush=True)
     t_ctx = time.time()
     ctxs = build_contexts(
-        store, specialists, qs, conv_speakers, conv_aliases, crit_store,
+        store,
+        specialists,
+        qs,
+        conv_speakers,
+        conv_aliases,
+        crit_store,
     )
     print(f"  contexts built in {time.time() - t_ctx:.1f}s", flush=True)
 
@@ -935,8 +975,7 @@ def evaluate_dataset(
 
     # Aggregate
     def _agg(rows: list[dict], key: str) -> float:
-        vals = [r["recall"].get(key, 0.0) for r in rows
-                if r["num_source_turns"] > 0]
+        vals = [r["recall"].get(key, 0.0) for r in rows if r["num_source_turns"] > 0]
         return round(sum(vals) / len(vals), 4) if vals else 0.0
 
     agg: dict[str, float] = {}
@@ -952,13 +991,9 @@ def evaluate_dataset(
             continue
         cat = r["category"]
         for var_name, _ in K20_VARIANTS:
-            by_cat[cat][f"{var_name}@20"].append(
-                r["recall"].get(f"{var_name}@20", 0.0)
-            )
+            by_cat[cat][f"{var_name}@20"].append(r["recall"].get(f"{var_name}@20", 0.0))
         for var_name, _ in K50_VARIANTS:
-            by_cat[cat][f"{var_name}@50"].append(
-                r["recall"].get(f"{var_name}@50", 0.0)
-            )
+            by_cat[cat][f"{var_name}@50"].append(r["recall"].get(f"{var_name}@50", 0.0))
     cat_counts: dict[str, int] = defaultdict(int)
     for r in per_q_rows:
         if r["num_source_turns"] == 0:
@@ -973,8 +1008,7 @@ def evaluate_dataset(
 
     # Per-subset: speaker fires, alias fires, neither
     def _subset_agg(filter_fn) -> dict:
-        subset = [r for r in per_q_rows
-                  if r["num_source_turns"] > 0 and filter_fn(r)]
+        subset = [r for r in per_q_rows if r["num_source_turns"] > 0 and filter_fn(r)]
         if not subset:
             return {"n": 0}
         res = {"n": len(subset)}
@@ -1026,9 +1060,7 @@ def render_markdown(all_results: dict, total_elapsed: float) -> str:
 
     # --- K=20 recall matrix ---
     L.append("\n## K=20 recall matrix\n")
-    L.append(
-        "| Variant | " + " | ".join(DATASETS) + " | overall |"
-    )
+    L.append("| Variant | " + " | ".join(DATASETS) + " | overall |")
     L.append("|---|" + "---|" * (len(DATASETS) + 1))
     for var_name, _ in K20_VARIANTS:
         row = [var_name]
@@ -1049,9 +1081,7 @@ def render_markdown(all_results: dict, total_elapsed: float) -> str:
 
     # --- K=50 recall matrix ---
     L.append("\n## K=50 recall matrix\n")
-    L.append(
-        "| Variant | " + " | ".join(DATASETS) + " | overall |"
-    )
+    L.append("| Variant | " + " | ".join(DATASETS) + " | overall |")
     L.append("|---|" + "---|" * (len(DATASETS) + 1))
     for var_name, _ in K50_VARIANTS:
         row = [var_name]
@@ -1077,9 +1107,15 @@ def render_markdown(all_results: dict, total_elapsed: float) -> str:
     L.append("| Drop | r@50 | Δ vs v2_all |")
     L.append("|---|---:|---:|")
     L.append(f"| (none: v2_all) | {v2_all:.4f} | — |")
-    for drop_name in ("drop_speaker", "drop_ens_2", "drop_alias",
-                       "drop_clause", "drop_context", "drop_critical",
-                       "drop_router"):
+    for drop_name in (
+        "drop_speaker",
+        "drop_ens_2",
+        "drop_alias",
+        "drop_clause",
+        "drop_context",
+        "drop_critical",
+        "drop_router",
+    ):
         r = loc.get(f"{drop_name}@50", 0.0)
         L.append(f"| {drop_name} | {r:.4f} | {r - v2_all:+.4f} |")
 
@@ -1092,8 +1128,13 @@ def render_markdown(all_results: dict, total_elapsed: float) -> str:
     loc_sub = all_results.get("locomo_30q", {}).get("subset_aggregates", {})
     L.append("| Subset | n | v2f@20 | speaker_all_in@20 | Δ |")
     L.append("|---|---:|---:|---:|---:|")
-    for sub_name in ("speaker_fires", "alias_fires", "speaker_and_alias",
-                      "speaker_not_alias", "neither"):
+    for sub_name in (
+        "speaker_fires",
+        "alias_fires",
+        "speaker_and_alias",
+        "speaker_not_alias",
+        "neither",
+    ):
         d = loc_sub.get(sub_name, {})
         n = d.get("n", 0)
         if n == 0:
@@ -1125,8 +1166,7 @@ def render_markdown(all_results: dict, total_elapsed: float) -> str:
                     best_r = r
                     best_var = var_name
             L.append(
-                f"| {ds} | {K} | {best_var} | {best_r:.4f} | "
-                f"{best_r - v2f_r:+.4f} |"
+                f"| {ds} | {K} | {best_var} | {best_r:.4f} | {best_r - v2f_r:+.4f} |"
             )
 
     # --- Decision rules ---
@@ -1144,8 +1184,8 @@ def render_markdown(all_results: dict, total_elapsed: float) -> str:
         )
     else:
         L.append(
-            f"  => speaker_all_in does NOT beat v2f by 5pp on LoCoMo K=20; "
-            f"look at speaker_filter_only or speaker_plus_critical."
+            "  => speaker_all_in does NOT beat v2f by 5pp on LoCoMo K=20; "
+            "look at speaker_filter_only or speaker_plus_critical."
         )
 
     v2_all_50 = loc.get("composition_v2_all@50", 0.0)
@@ -1156,8 +1196,8 @@ def render_markdown(all_results: dict, total_elapsed: float) -> str:
     L.append(f"- Δ composition_v2_all vs ens_all_plus_crit = {d2:+.4f}")
     if v2_all_50 > 0.922:
         L.append(
-            f"  => **NEW K=50 CEILING (LoCoMo): composition_v2_all** "
-            f"(beats prior 0.922)"
+            "  => **NEW K=50 CEILING (LoCoMo): composition_v2_all** "
+            "(beats prior 0.922)"
         )
     elif d2 > 0.01:
         L.append(
@@ -1197,11 +1237,17 @@ def main() -> None:
     for ds in DATASETS:
         try:
             all_results[ds] = evaluate_dataset(
-                ds, client, conv_speakers, conv_aliases, generator, embedder,
+                ds,
+                client,
+                conv_speakers,
+                conv_aliases,
+                generator,
+                embedder,
             )
         except Exception as e:
             print(f"[{ds}] FAILED: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
             all_results[ds] = {"error": str(e)}
 
@@ -1241,13 +1287,9 @@ def main() -> None:
             continue
         print(f"\n{ds}:")
         for var_name, _ in K20_VARIANTS:
-            print(
-                f"  K=20 {var_name:25s} = {agg.get(var_name + '@20', 0.0):.4f}"
-            )
+            print(f"  K=20 {var_name:25s} = {agg.get(var_name + '@20', 0.0):.4f}")
         for var_name, _ in K50_VARIANTS:
-            print(
-                f"  K=50 {var_name:25s} = {agg.get(var_name + '@50', 0.0):.4f}"
-            )
+            print(f"  K=50 {var_name:25s} = {agg.get(var_name + '@50', 0.0):.4f}")
 
 
 if __name__ == "__main__":

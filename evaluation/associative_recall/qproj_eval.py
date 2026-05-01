@@ -29,11 +29,10 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
+from antipara_cue_gen import MetaV2fDedicated
 from associative_recall import Segment, SegmentStore
 from best_shot import BestshotResult
+from dotenv import load_dotenv
 from fair_backfill_eval import (
     BUDGETS,
     DATASETS,
@@ -43,7 +42,7 @@ from fair_backfill_eval import (
     summarize,
     summarize_by_category,
 )
-from antipara_cue_gen import MetaV2fDedicated
+from openai import OpenAI
 from query_projection import (
     QUESTION_TEMPLATES,
     STATEMENT_TEMPLATES,
@@ -97,9 +96,7 @@ class CosineBaseline:
 
     def retrieve(self, question: str, conversation_id: str) -> BestshotResult:
         emb = self.embed_text(question)
-        result = self.store.search(
-            emb, top_k=50, conversation_id=conversation_id
-        )
+        result = self.store.search(emb, top_k=50, conversation_id=conversation_id)
         return BestshotResult(
             segments=list(result.segments),
             metadata={"name": self.arch_name},
@@ -133,9 +130,7 @@ def evaluate_question(arch, question: dict) -> dict:
     # Use the underlying embed_text (which returns the raw query embedding).
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -177,7 +172,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -235,6 +230,7 @@ def sanity_check_direction(
 
     def _embed(t: str) -> np.ndarray:
         from associative_recall import EMBED_MODEL
+
         c = cache.get(t)
         if c is not None:
             return c
@@ -287,6 +283,7 @@ def visualize_projection_effect(
 
     def _embed(t: str) -> np.ndarray:
         from associative_recall import EMBED_MODEL
+
         c = cache.get(t)
         if c is not None:
             return c
@@ -309,13 +306,19 @@ def visualize_projection_effect(
                 "conversation_id": cid,
                 "cosine_with_q_direction": round(cos_with_dir, 4),
                 "raw_top_turn_ids": [
-                    {"turn_id": s.turn_id, "score": round(sc, 4),
-                     "text_head": s.text[:80]}
+                    {
+                        "turn_id": s.turn_id,
+                        "score": round(sc, 4),
+                        "text_head": s.text[:80],
+                    }
                     for s, sc in zip(raw_res.segments, raw_res.scores)
                 ],
                 "proj_top_turn_ids": [
-                    {"turn_id": s.turn_id, "score": round(sc, 4),
-                     "text_head": s.text[:80]}
+                    {
+                        "turn_id": s.turn_id,
+                        "score": round(sc, 4),
+                        "text_head": s.text[:80],
+                    }
                     for s, sc in zip(proj_res.segments, proj_res.scores)
                 ],
             }
@@ -364,20 +367,24 @@ def qproj_arch_name(alpha: float, v2f: bool) -> str:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument(
-        "--alphas", default="0.5,1.0,1.5",
-        help="Comma-separated alpha values for projection strength."
+        "--alphas",
+        default="0.5,1.0,1.5",
+        help="Comma-separated alpha values for projection strength.",
     )
     p.add_argument(
-        "--datasets", default=",".join(EVAL_DATASETS),
-        help="Comma-separated dataset names."
+        "--datasets",
+        default=",".join(EVAL_DATASETS),
+        help="Comma-separated dataset names.",
     )
     p.add_argument(
-        "--skip-v2f", action="store_true",
-        help="Skip qproj_v2f run even if best qproj alpha beats cosine."
+        "--skip-v2f",
+        action="store_true",
+        help="Skip qproj_v2f run even if best qproj alpha beats cosine.",
     )
     p.add_argument(
-        "--skip-baselines", action="store_true",
-        help="Skip cosine_baseline and meta_v2f runs (use cached summaries)."
+        "--skip-baselines",
+        action="store_true",
+        help="Skip cosine_baseline and meta_v2f runs (use cached summaries).",
     )
     args = p.parse_args()
 
@@ -392,8 +399,10 @@ def main() -> None:
 
     # ---- Step 1: Learn the direction ----
     direction_path = RESULTS_DIR / "question_direction.npy"
-    print(f"Learning question-ness direction "
-          f"(n_q={len(QUESTION_TEMPLATES)}, n_s={len(STATEMENT_TEMPLATES)})")
+    print(
+        f"Learning question-ness direction "
+        f"(n_q={len(QUESTION_TEMPLATES)}, n_s={len(STATEMENT_TEMPLATES)})"
+    )
     direction, dir_stats = learn_question_direction(
         client=client, save_path=direction_path
     )
@@ -404,14 +413,16 @@ def main() -> None:
     # Use held-out samples (last few from each list as light sanity)
     heldout_q = QUESTION_TEMPLATES[-10:]
     heldout_s = STATEMENT_TEMPLATES[-10:]
-    sanity = sanity_check_direction(
-        direction, heldout_q, heldout_s, client
+    sanity = sanity_check_direction(direction, heldout_q, heldout_s, client)
+    print("\nSanity check:")
+    print(
+        f"  question samples mean cos with q_dir = "
+        f"{sanity['question_mean_cos_with_dir']:.4f}"
     )
-    print(f"\nSanity check:")
-    print(f"  question samples mean cos with q_dir = "
-          f"{sanity['question_mean_cos_with_dir']:.4f}")
-    print(f"  statement samples mean cos with q_dir = "
-          f"{sanity['statement_mean_cos_with_dir']:.4f}")
+    print(
+        f"  statement samples mean cos with q_dir = "
+        f"{sanity['statement_mean_cos_with_dir']:.4f}"
+    )
     print(f"  separation = {sanity['separation']:.4f}")
 
     # ---- Step 2: Run all qproj_only variants + baselines ----
@@ -431,9 +442,7 @@ def main() -> None:
                 ("meta_v2f", lambda s: MetaV2fDedicated(s)),
             ]:
                 arch = b_factory(store)
-                results, summary, by_cat = run_one(
-                    b_name, arch, ds_name, questions
-                )
+                results, summary, by_cat = run_one(b_name, arch, ds_name, questions)
                 all_results[b_name][ds_name] = {
                     "summary": summary,
                     "category_breakdown": by_cat,
@@ -444,9 +453,7 @@ def main() -> None:
         for alpha in alphas:
             name = qproj_arch_name(alpha, v2f=False)
             arch = QProjOnly(store, direction=direction, alpha=alpha)
-            results, summary, by_cat = run_one(
-                name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(name, arch, ds_name, questions)
             all_results[name][ds_name] = {
                 "summary": summary,
                 "category_breakdown": by_cat,
@@ -481,18 +488,12 @@ def main() -> None:
     )
 
     # ---- Step 4: Run qproj_v2f at best alpha if it beat cosine ----
-    if (
-        not args.skip_v2f
-        and best_alpha is not None
-        and best_score > 0.0
-    ):
+    if not args.skip_v2f and best_alpha is not None and best_score > 0.0:
         for ds_name in ds_names:
             store, questions = load_dataset(ds_name)
             name = qproj_arch_name(best_alpha, v2f=True)
             arch = QProjV2f(store, direction=direction, alpha=best_alpha)
-            results, summary, by_cat = run_one(
-                name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(name, arch, ds_name, questions)
             all_results[name][ds_name] = {
                 "summary": summary,
                 "category_breakdown": by_cat,
@@ -556,9 +557,7 @@ def main() -> None:
                         "arch": a,
                         "dataset": d,
                         "summary": all_results[a][d]["summary"],
-                        "category_breakdown": all_results[a][d][
-                            "category_breakdown"
-                        ],
+                        "category_breakdown": all_results[a][d]["category_breakdown"],
                         "results": all_results[a][d]["results"],
                     },
                     f,
@@ -575,8 +574,8 @@ def main() -> None:
         "from that direction before cosine retrieval.\n"
     )
     md.append(
-        f"- `q_dir = normalize(mean(question_embs) - mean(statement_embs))`\n"
-        f"- `q_emb' = normalize(q_emb - alpha * (q_emb . q_dir) * q_dir)`\n"
+        "- `q_dir = normalize(mean(question_embs) - mean(statement_embs))`\n"
+        "- `q_emb' = normalize(q_emb - alpha * (q_emb . q_dir) * q_dir)`\n"
     )
     md.append(
         f"**Direction stats**: "
@@ -631,9 +630,7 @@ def main() -> None:
                 f"{s['delta_r@50']:+.3f} | "
                 f"{s['avg_llm_calls']:.1f} |"
             )
-    md.append(
-        "\nNote: `base@K` in all rows is raw cosine top-K (same reference).\n"
-    )
+    md.append("\nNote: `base@K` in all rows is raw cosine top-K (same reference).\n")
 
     # Best alpha
     md.append("\n## Best alpha (sum of delta_r@50 vs cosine across datasets)\n")
@@ -643,17 +640,12 @@ def main() -> None:
     # Top categories for the best qproj_only on locomo
     if best_alpha is not None:
         best_name = qproj_arch_name(best_alpha, v2f=False)
-        if (
-            best_name in all_results
-            and "locomo_30q" in all_results[best_name]
-        ):
+        if best_name in all_results and "locomo_30q" in all_results[best_name]:
             g, l = top_categories_delta(
                 all_results[best_name]["locomo_30q"]["category_breakdown"],
                 K=50,
             )
-            md.append(
-                f"\n## Top categories by Δr@50 for {best_name} on LoCoMo-30\n"
-            )
+            md.append(f"\n## Top categories by Δr@50 for {best_name} on LoCoMo-30\n")
             md.append("Gaining:")
             for x in g:
                 md.append(
@@ -700,26 +692,21 @@ def main() -> None:
     qproj_v2f_name = (
         qproj_arch_name(best_alpha, v2f=True) if best_alpha is not None else None
     )
-    qproj_v2f_ok = (
-        qproj_v2f_name is not None and qproj_v2f_name in all_results
-    )
+    qproj_v2f_ok = qproj_v2f_name is not None and qproj_v2f_name in all_results
 
     # Aggregate deltas on locomo_30q (primary) for verdict
     if cos_ok and "locomo_30q" in all_results["cosine_baseline"]:
-        cos_loc50 = all_results["cosine_baseline"]["locomo_30q"][
-            "summary"
-        ]["arch_r@50"]
+        cos_loc50 = all_results["cosine_baseline"]["locomo_30q"]["summary"]["arch_r@50"]
         best_qproj_loc50 = None
         if best_alpha is not None:
             bn = qproj_arch_name(best_alpha, v2f=False)
             if bn in all_results and "locomo_30q" in all_results[bn]:
-                best_qproj_loc50 = all_results[bn]["locomo_30q"]["summary"][
-                    "arch_r@50"
-                ]
+                best_qproj_loc50 = all_results[bn]["locomo_30q"]["summary"]["arch_r@50"]
 
         v2f_loc50 = (
             all_results["meta_v2f"]["locomo_30q"]["summary"]["arch_r@50"]
-            if v2f_ok and "locomo_30q" in all_results["meta_v2f"] else None
+            if v2f_ok and "locomo_30q" in all_results["meta_v2f"]
+            else None
         )
         qproj_v2f_loc50 = (
             all_results[qproj_v2f_name]["locomo_30q"]["summary"]["arch_r@50"]
@@ -728,7 +715,7 @@ def main() -> None:
         )
 
         lines = [
-            f"LoCoMo-30 @K=50:",
+            "LoCoMo-30 @K=50:",
             f"  cosine        = {cos_loc50:.3f}",
         ]
         if best_qproj_loc50 is not None:
@@ -747,10 +734,7 @@ def main() -> None:
         md.append("\n".join(lines) + "\n")
 
         # Decision
-        if (
-            best_qproj_loc50 is not None
-            and best_qproj_loc50 > cos_loc50 + 0.005
-        ):
+        if best_qproj_loc50 is not None and best_qproj_loc50 > cos_loc50 + 0.005:
             if (
                 qproj_v2f_loc50 is not None
                 and v2f_loc50 is not None
@@ -768,8 +752,8 @@ def main() -> None:
                 )
         else:
             verdict = (
-                f"**ABANDON**: no qproj_only alpha beats cosine baseline on "
-                f"LoCoMo @K=50."
+                "**ABANDON**: no qproj_only alpha beats cosine baseline on "
+                "LoCoMo @K=50."
             )
     md.append("\n" + verdict + "\n")
 

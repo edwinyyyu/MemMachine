@@ -10,15 +10,13 @@ Output:
 """
 
 import json
-import sys
 import time
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-from associative_recall import SegmentStore, Segment
+from associative_recall import Segment, SegmentStore
 from best_shot import MetaV2f
-from generalized_cue_gen import GeneralizedV2f, PROMPT_VARIANTS
+from dotenv import load_dotenv
+from generalized_cue_gen import PROMPT_VARIANTS, GeneralizedV2f
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -145,9 +143,7 @@ def evaluate_arch_on_dataset(
         # cosine top-max_K baseline
         query_emb = arch.embed_text(q_text)
         max_K = max(BUDGETS)
-        cosine_result = store.search(
-            query_emb, top_k=max_K, conversation_id=conv_id
-        )
+        cosine_result = store.search(query_emb, top_k=max_K, conversation_id=conv_id)
         cosine_segments = list(cosine_result.segments)
 
         row = {
@@ -164,9 +160,7 @@ def evaluate_arch_on_dataset(
         }
 
         for K in BUDGETS:
-            b_rec, a_rec = fair_backfill(
-                arch_segments, cosine_segments, source_ids, K
-            )
+            b_rec, a_rec = fair_backfill(arch_segments, cosine_segments, source_ids, K)
             row["fair_backfill"][f"baseline_r@{K}"] = round(b_rec, 4)
             row["fair_backfill"][f"arch_r@{K}"] = round(a_rec, 4)
             row["fair_backfill"][f"delta_r@{K}"] = round(a_rec - b_rec, 4)
@@ -175,8 +169,10 @@ def evaluate_arch_on_dataset(
 
         if (i + 1) % 10 == 0:
             arch.save_caches()
-            print(f"  [{i+1}/{len(questions)}] done ({arch_name} on {dataset})",
-                  flush=True)
+            print(
+                f"  [{i + 1}/{len(questions)}] done ({arch_name} on {dataset})",
+                flush=True,
+            )
 
     arch.save_caches()
 
@@ -195,12 +191,8 @@ def evaluate_arch_on_dataset(
         summary[f"delta_r@{K}"] = round(a_mean - b_mean, 4)
         summary[f"W/T/L_r@{K}"] = f"{wins}/{ties}/{losses}"
 
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1
-    )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
     return results, summary
 
 
@@ -251,10 +243,14 @@ def task_shape_smoke_test(
 
             # cosine baselines for fair-backfill
             orig_emb = arch.embed_text(orig_q)
-            cos_orig = list(store.search(orig_emb, top_k=50, conversation_id=conv_id).segments)
+            cos_orig = list(
+                store.search(orig_emb, top_k=50, conversation_id=conv_id).segments
+            )
 
             task_emb = arch.embed_text(task_text)
-            cos_task = list(store.search(task_emb, top_k=50, conversation_id=conv_id).segments)
+            cos_task = list(
+                store.search(task_emb, top_k=50, conversation_id=conv_id).segments
+            )
 
             orig_rec: dict = {}
             task_rec: dict = {}
@@ -359,9 +355,7 @@ def build_report_md(regr: dict, smoke: dict) -> str:
             a = regr[arch_name][ds]
             d20 = a["arch_r@20"] - b["arch_r@20"]
             d50 = a["arch_r@50"] - b["arch_r@50"]
-            lines.append(
-                f"- {ds}: r@20 delta = {d20:+.4f}, r@50 delta = {d50:+.4f}"
-            )
+            lines.append(f"- {ds}: r@20 delta = {d20:+.4f}, r@50 delta = {d50:+.4f}")
         lines.append("")
 
     lines.append("## Task-shape smoke test")
@@ -374,9 +368,7 @@ def build_report_md(regr: dict, smoke: dict) -> str:
     lines.append(
         "| arch | orig_r@20 | task_r@20 | delta_r@20 | orig_r@50 | task_r@50 | delta_r@50 |"
     )
-    lines.append(
-        "| --- | --- | --- | --- | --- | --- | --- |"
-    )
+    lines.append("| --- | --- | --- | --- | --- | --- | --- |")
     for arch_name, s in smoke["summary"].items():
         lines.append(
             f"| {arch_name} | {s['orig_r@20']:.3f} | {s['task_r@20']:.3f} | "
@@ -446,8 +438,8 @@ def build_report_md(regr: dict, smoke: dict) -> str:
     lines.append("")
     for item in smoke["per_item"]:
         lines.append(f"#### Item {item['idx']}")
-        lines.append(f"- original: \"{item['original_question']}\"")
-        lines.append(f"- task:     \"{item['task_rewrite']}\"")
+        lines.append(f'- original: "{item["original_question"]}"')
+        lines.append(f'- task:     "{item["task_rewrite"]}"')
         lines.append(f"- gold turns: {item['source_chat_ids']}")
         for arch_name, pa in item["per_arch"].items():
             lines.append(
@@ -457,7 +449,7 @@ def build_report_md(regr: dict, smoke: dict) -> str:
             if pa.get("task_cues"):
                 for i, cue in enumerate(pa["task_cues"]):
                     preview = cue[:100] + ("..." if len(cue) > 100 else "")
-                    lines.append(f"    - cue {i+1}: {preview}")
+                    lines.append(f"    - cue {i + 1}: {preview}")
         lines.append("")
 
     return "\n".join(lines)
@@ -474,8 +466,11 @@ def main() -> None:
         store, questions = load_dataset(ds_name)
         stores_by_ds[ds_name] = store
         all_questions_by_ds[ds_name] = questions
-        print(f"\n=== dataset {ds_name}: {len(questions)} questions, "
-              f"{len(store.segments)} segments ===", flush=True)
+        print(
+            f"\n=== dataset {ds_name}: {len(questions)} questions, "
+            f"{len(store.segments)} segments ===",
+            flush=True,
+        )
 
         # meta_v2f baseline
         print("[arch] meta_v2f", flush=True)
@@ -484,8 +479,11 @@ def main() -> None:
             meta, "meta_v2f", ds_name, store, questions, metav2f_retrieve
         )
         regression.setdefault("meta_v2f", {})[ds_name] = sum_meta
-        print(f"  r@20={sum_meta['arch_r@20']:.4f} r@50={sum_meta['arch_r@50']:.4f} "
-              f"llm={sum_meta['avg_llm_calls']}", flush=True)
+        print(
+            f"  r@20={sum_meta['arch_r@20']:.4f} r@50={sum_meta['arch_r@50']:.4f} "
+            f"llm={sum_meta['avg_llm_calls']}",
+            flush=True,
+        )
 
         # v2f_general_v1
         print("[arch] v2f_general_v1", flush=True)
@@ -494,8 +492,11 @@ def main() -> None:
             g1, "v2f_general_v1", ds_name, store, questions, general_retrieve
         )
         regression.setdefault("v2f_general_v1", {})[ds_name] = sum_g1
-        print(f"  r@20={sum_g1['arch_r@20']:.4f} r@50={sum_g1['arch_r@50']:.4f} "
-              f"llm={sum_g1['avg_llm_calls']}", flush=True)
+        print(
+            f"  r@20={sum_g1['arch_r@20']:.4f} r@50={sum_g1['arch_r@50']:.4f} "
+            f"llm={sum_g1['avg_llm_calls']}",
+            flush=True,
+        )
 
         # v2f_general_v2
         print("[arch] v2f_general_v2", flush=True)
@@ -504,8 +505,11 @@ def main() -> None:
             g2, "v2f_general_v2", ds_name, store, questions, general_retrieve
         )
         regression.setdefault("v2f_general_v2", {})[ds_name] = sum_g2
-        print(f"  r@20={sum_g2['arch_r@20']:.4f} r@50={sum_g2['arch_r@50']:.4f} "
-              f"llm={sum_g2['avg_llm_calls']}", flush=True)
+        print(
+            f"  r@20={sum_g2['arch_r@20']:.4f} r@50={sum_g2['arch_r@50']:.4f} "
+            f"llm={sum_g2['avg_llm_calls']}",
+            flush=True,
+        )
 
     # Step 3: task-shape smoke test on LoCoMo subset
     print("\n=== task-shape smoke test ===", flush=True)
@@ -523,9 +527,7 @@ def main() -> None:
         "v2f_general_v2": (g2_smoke, general_retrieve),
     }
 
-    smoke_results = task_shape_smoke_test(
-        locomo_store, questions_by_idx, arches
-    )
+    smoke_results = task_shape_smoke_test(locomo_store, questions_by_idx, arches)
 
     # Save raw JSON
     raw = {

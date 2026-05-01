@@ -12,10 +12,20 @@ from pathlib import Path
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
 
-BUDGET_K20 = ["baseline_20", "v15_tight_20", "v2f_tight_20",
-              "pure_cue_20", "single_cue_20"]
-BUDGET_K50 = ["baseline_50", "v15_tight_50", "v2f_tight_50",
-              "wide_cue_50", "gencheck_50"]
+BUDGET_K20 = [
+    "baseline_20",
+    "v15_tight_20",
+    "v2f_tight_20",
+    "pure_cue_20",
+    "single_cue_20",
+]
+BUDGET_K50 = [
+    "baseline_50",
+    "v15_tight_50",
+    "v2f_tight_50",
+    "wide_cue_50",
+    "gencheck_50",
+]
 BUDGET_K100 = ["baseline_100", "v2f_100"]
 ALL_ARCHES = BUDGET_K20 + BUDGET_K50 + BUDGET_K100
 
@@ -38,7 +48,7 @@ def load() -> dict:
         for ds in DATASETS:
             suffix = f"_{ds}"
             if name.endswith(suffix):
-                arch = name[len("budget_"):-len(suffix)]
+                arch = name[len("budget_") : -len(suffix)]
                 data = json.load(open(f))
                 out[(arch, ds)] = data["summary"]
                 break
@@ -50,7 +60,9 @@ def print_abs_table(summaries: dict) -> None:
     print("ABSOLUTE RECALL @ K (exact budget)")
     print("=" * 110)
     for group_name, arch_list in [
-        ("K=20", BUDGET_K20), ("K=50", BUDGET_K50), ("K=100", BUDGET_K100),
+        ("K=20", BUDGET_K20),
+        ("K=50", BUDGET_K50),
+        ("K=100", BUDGET_K100),
     ]:
         print(f"\n--- Budget {group_name} ---")
         header = f"{'Architecture':<22s}" + "".join(
@@ -78,7 +90,9 @@ def print_delta_table(summaries: dict) -> None:
     print("=" * 110)
     baselines = {20: "baseline_20", 50: "baseline_50", 100: "baseline_100"}
     for group_name, arch_list in [
-        ("K=20", BUDGET_K20), ("K=50", BUDGET_K50), ("K=100", BUDGET_K100),
+        ("K=20", BUDGET_K20),
+        ("K=50", BUDGET_K50),
+        ("K=100", BUDGET_K100),
     ]:
         budget = int(group_name.split("=")[1])
         base = baselines[budget]
@@ -106,7 +120,9 @@ def print_winner_per_budget(summaries: dict) -> None:
     print("WINNER per budget (best arch averaged across datasets)")
     print("=" * 110)
     for group_name, arch_list in [
-        ("K=20", BUDGET_K20), ("K=50", BUDGET_K50), ("K=100", BUDGET_K100),
+        ("K=20", BUDGET_K20),
+        ("K=50", BUDGET_K50),
+        ("K=100", BUDGET_K100),
     ]:
         budget = int(group_name.split("=")[1])
         print(f"\n--- Budget {group_name} ---")

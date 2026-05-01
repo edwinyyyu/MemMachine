@@ -32,9 +32,20 @@ from pathlib import Path
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    V2F_MODEL,
+    EMHit,
+    _dedupe_by_turn_id,
+    _merge_by_max_score,
+    _MergedLLMCache,
+    _query_em,
+)
+from em_retuned_cue_gen import (
+    V2F_SPEAKERFORMAT_PROMPT,
+)
+from em_retuned_cue_gen import (
+    parse_cues as parse_speakerformat_cues,
+)
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -52,19 +63,6 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import (
-    V2F_MODEL,
-    EMHit,
-    _MergedLLMCache,
-    _dedupe_by_turn_id,
-    _merge_by_max_score,
-    _query_em,
-)
-from em_retuned_cue_gen import (
-    V2F_SPEAKERFORMAT_PROMPT,
-    parse_cues as parse_speakerformat_cues,
-)
 from proactive_memory import (
     PROACTIVE_CUEGEN_CACHE,
     PROACTIVE_DECOMPOSE_CACHE,
@@ -74,7 +72,8 @@ from proactive_memory import (
     run_proactive,
     run_single_shot,
 )
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -242,19 +241,31 @@ async def evaluate_retrieval_question(
         hits = await em_cosine_notes_v4(memory, q_text, K=max_K)
     elif arch == "em_v2f_notes_v4":
         hits, meta = await em_v2f_notes_v4(
-            memory, q_text, K=max_K, llm_cache=cache,
-            openai_client=openai_client, participants=participants,
+            memory,
+            q_text,
+            K=max_K,
+            llm_cache=cache,
+            openai_client=openai_client,
+            participants=participants,
         )
     elif arch == "em_v2f_notes_msgs_only_v4":
         hits, meta = await em_v2f_notes_v4(
-            memory, q_text, K=max_K, llm_cache=cache,
-            openai_client=openai_client, participants=participants,
+            memory,
+            q_text,
+            K=max_K,
+            llm_cache=cache,
+            openai_client=openai_client,
+            participants=participants,
             property_filter=_event_type_filter("message"),
         )
     elif arch == "em_v2f_notes_only_v4":
         hits, meta = await em_v2f_notes_v4(
-            memory, q_text, K=max_K, llm_cache=cache,
-            openai_client=openai_client, participants=participants,
+            memory,
+            q_text,
+            K=max_K,
+            llm_cache=cache,
+            openai_client=openai_client,
+            participants=participants,
             property_filter=_event_type_filter("model_note"),
         )
     else:
@@ -300,13 +311,20 @@ async def run_retrieval_phase(
             participants = participants_by_conv[q["conversation_id"]]
             t_q = time.monotonic()
             row = await evaluate_retrieval_question(
-                arch, mem, q,
-                max_K=max_K, cache=v2f_cache,
-                openai_client=openai_client, participants=participants,
+                arch,
+                mem,
+                q,
+                max_K=max_K,
+                cache=v2f_cache,
+                openai_client=openai_client,
+                participants=participants,
             )
             rows.append(row)
             if (i + 1) % 5 == 0 or i == len(questions) - 1:
-                print(f"  [{arch}] q {i+1}/{len(questions)} r@20={row['r@20']} r@50={row['r@50']} t={time.monotonic()-t_q:.1f}s", flush=True)
+                print(
+                    f"  [{arch}] q {i + 1}/{len(questions)} r@20={row['r@20']} r@50={row['r@50']} t={time.monotonic() - t_q:.1f}s",
+                    flush=True,
+                )
         v2f_cache.save()
         arch_elapsed = time.monotonic() - t_arch
 
@@ -396,6 +414,7 @@ def _format_hits_for_judge_labeled(
 
 def _extract_json(text: str) -> dict:
     import re as _re
+
     if not text:
         return {}
     t = text.strip()
@@ -463,7 +482,10 @@ async def run_sufficiency_phase(
         memA = memories_std[cid]
         tA = time.monotonic()
         resA = await run_single_shot(
-            memA, task_prompt, participants, K=K,
+            memA,
+            task_prompt,
+            participants,
+            K=K,
             cuegen_cache=caches["singleshot_std"],
             openai_client=openai_client,
         )
@@ -475,7 +497,10 @@ async def run_sufficiency_phase(
         memN = memories_notes[cid]
         tB = time.monotonic()
         resB = await run_single_shot(
-            memN, task_prompt, participants, K=K,
+            memN,
+            task_prompt,
+            participants,
+            K=K,
             cuegen_cache=caches["singleshot_notes"],
             openai_client=openai_client,
         )
@@ -486,8 +511,12 @@ async def run_sufficiency_phase(
 
         tC = time.monotonic()
         resC = await run_proactive(
-            memN, task_prompt, participants,
-            K_per_need=K_per_need, K_final=K, max_rounds=max_rounds,
+            memN,
+            task_prompt,
+            participants,
+            K_per_need=K_per_need,
+            K_final=K,
+            max_rounds=max_rounds,
             decompose_cache=caches["decompose"],
             cuegen_cache=caches["proactive_cuegen"],
             sufficiency_cache=caches["sufficiency"],
@@ -512,16 +541,18 @@ async def run_sufficiency_phase(
                 "hits_turn_ids": [h.turn_id for h in res.hits],
             }
 
-        rows.append({
-            "task_id": task["task_id"],
-            "conversation_id": cid,
-            "task_shape": task.get("task_shape", ""),
-            "task_prompt": task_prompt,
-            "required_info_categories": task.get("required_info_categories", []),
-            "A_std_singleshot": _summarize(resA, judgeA, tA),
-            "B_notes_singleshot": _summarize(resB, judgeB, tB),
-            "C_notes_proactive": _summarize(resC, judgeC, tC),
-        })
+        rows.append(
+            {
+                "task_id": task["task_id"],
+                "conversation_id": cid,
+                "task_shape": task.get("task_shape", ""),
+                "task_prompt": task_prompt,
+                "required_info_categories": task.get("required_info_categories", []),
+                "A_std_singleshot": _summarize(resA, judgeA, tA),
+                "B_notes_singleshot": _summarize(resB, judgeB, tB),
+                "C_notes_proactive": _summarize(resC, judgeC, tC),
+            }
+        )
         for c in caches.values():
             c.save()
         print(
@@ -555,14 +586,16 @@ async def _open_memories_from_meta(
             namespace=meta["namespace"], name=meta["collection_name"]
         )
         part = await segment_store.open_or_create_partition(meta["partition_key"])
-        mem = EventMemory(EventMemoryParams(
-            vector_store_collection=coll,
-            segment_store_partition=part,
-            embedder=embedder,
-            reranker=None,
-            derive_sentences=False,
-            max_text_chunk_length=500,
-        ))
+        mem = EventMemory(
+            EventMemoryParams(
+                vector_store_collection=coll,
+                segment_store_partition=part,
+                embedder=embedder,
+                reranker=None,
+                derive_sentences=False,
+                max_text_chunk_length=500,
+            )
+        )
         memories[cid] = mem
         participants_by_conv[cid] = (meta["user_name"], meta["assistant_name"])
         opened.append((coll, part))
@@ -576,8 +609,9 @@ async def _open_memories_from_meta(
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", choices=["retrieval", "sufficiency", "both"],
-                        default="both")
+    parser.add_argument(
+        "--phase", choices=["retrieval", "sufficiency", "both"], default="both"
+    )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--K", type=int, default=50)
     parser.add_argument("--K_per_need", type=int, default=15)
@@ -594,7 +628,8 @@ async def main() -> None:
 
     qdrant_client = AsyncQdrantClient(
         host=os.getenv("QDRANT_HOST", "localhost"),
-        prefer_grpc=True, timeout=300,
+        prefer_grpc=True,
+        timeout=300,
         port=int(os.getenv("QDRANT_PORT", "6333")),
         grpc_port=int(os.getenv("QDRANT_GRPC_PORT", "6334")),
     )
@@ -606,19 +641,27 @@ async def main() -> None:
         std_engine = create_async_engine(std_sql_url)
     else:
         std_engine = create_async_engine(std_sql_url, pool_size=20, max_overflow=20)
-    std_segment_store = SQLAlchemySegmentStore(SQLAlchemySegmentStoreParams(engine=std_engine))
+    std_segment_store = SQLAlchemySegmentStore(
+        SQLAlchemySegmentStoreParams(engine=std_engine)
+    )
     await std_segment_store.startup()
 
     notes_sql_url = notes_meta["sql_url"]
     notes_engine = create_async_engine(notes_sql_url)
-    notes_segment_store = SQLAlchemySegmentStore(SQLAlchemySegmentStoreParams(engine=notes_engine))
+    notes_segment_store = SQLAlchemySegmentStore(
+        SQLAlchemySegmentStoreParams(engine=notes_engine)
+    )
     await notes_segment_store.startup()
 
     openai_client = openai.AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    embedder = OpenAIEmbedder(OpenAIEmbedderParams(
-        client=openai_client, model="text-embedding-3-small",
-        dimensions=1536, max_input_length=8192,
-    ))
+    embedder = OpenAIEmbedder(
+        OpenAIEmbedderParams(
+            client=openai_client,
+            model="text-embedding-3-small",
+            dimensions=1536,
+            max_input_length=8192,
+        )
+    )
 
     # Warm v2f cache by reading from v3/v2 speakerformat caches (question-only
     # primers are question-dependent, not collection-dependent, so primer cues
@@ -721,17 +764,34 @@ async def main() -> None:
                 max_rounds=args.max_rounds,
             )
 
-            def _mean(xs): return sum(xs)/max(len(xs),1)
+            def _mean(xs):
+                return sum(xs) / max(len(xs), 1)
+
             def _agg(key):
                 return {
-                    "mean_sufficiency": round(_mean([r[key]["judge"]["sufficiency"] for r in suff_rows]), 3),
-                    "mean_coverage": round(_mean([r[key]["judge"]["coverage"] for r in suff_rows]), 3),
-                    "mean_depth": round(_mean([r[key]["judge"]["depth"] for r in suff_rows]), 3),
-                    "mean_noise": round(_mean([r[key]["judge"]["noise"] for r in suff_rows]), 3),
-                    "mean_llm_calls": round(_mean([r[key]["n_llm_calls"] for r in suff_rows]), 2),
-                    "mean_n_notes": round(_mean([r[key]["n_notes_retrieved"] for r in suff_rows]), 2),
-                    "mean_n_msgs": round(_mean([r[key]["n_msgs_retrieved"] for r in suff_rows]), 2),
+                    "mean_sufficiency": round(
+                        _mean([r[key]["judge"]["sufficiency"] for r in suff_rows]), 3
+                    ),
+                    "mean_coverage": round(
+                        _mean([r[key]["judge"]["coverage"] for r in suff_rows]), 3
+                    ),
+                    "mean_depth": round(
+                        _mean([r[key]["judge"]["depth"] for r in suff_rows]), 3
+                    ),
+                    "mean_noise": round(
+                        _mean([r[key]["judge"]["noise"] for r in suff_rows]), 3
+                    ),
+                    "mean_llm_calls": round(
+                        _mean([r[key]["n_llm_calls"] for r in suff_rows]), 2
+                    ),
+                    "mean_n_notes": round(
+                        _mean([r[key]["n_notes_retrieved"] for r in suff_rows]), 2
+                    ),
+                    "mean_n_msgs": round(
+                        _mean([r[key]["n_msgs_retrieved"] for r in suff_rows]), 2
+                    ),
                 }
+
             final["sufficiency"] = {
                 "n_tasks": len(suff_rows),
                 "A_std_singleshot": _agg("A_std_singleshot"),
@@ -776,9 +836,27 @@ async def main() -> None:
 # model_notes.md (R@20=0.8167, R@50=0.8917).
 V3_BASELINE_EM_V2F = {"r@20": 0.8167, "r@50": 0.8917}
 V3_SUFFICIENCY = {
-    "A_std_singleshot": {"mean_sufficiency": 4.85, "mean_coverage": 4.95, "mean_depth": 4.55, "mean_noise": 7.0, "mean_n_notes": 0.0},
-    "B_notes_singleshot": {"mean_sufficiency": 5.1, "mean_coverage": 5.6, "mean_depth": 4.45, "mean_noise": 7.85, "mean_n_notes": 48.75},
-    "C_notes_proactive": {"mean_sufficiency": 5.45, "mean_coverage": 5.85, "mean_depth": 4.75, "mean_noise": 7.5, "mean_n_notes": 42.95},
+    "A_std_singleshot": {
+        "mean_sufficiency": 4.85,
+        "mean_coverage": 4.95,
+        "mean_depth": 4.55,
+        "mean_noise": 7.0,
+        "mean_n_notes": 0.0,
+    },
+    "B_notes_singleshot": {
+        "mean_sufficiency": 5.1,
+        "mean_coverage": 5.6,
+        "mean_depth": 4.45,
+        "mean_noise": 7.85,
+        "mean_n_notes": 48.75,
+    },
+    "C_notes_proactive": {
+        "mean_sufficiency": 5.45,
+        "mean_coverage": 5.85,
+        "mean_depth": 4.75,
+        "mean_noise": 7.5,
+        "mean_n_notes": 42.95,
+    },
 }
 
 
@@ -818,8 +896,12 @@ def build_report(final: dict, notes_meta: dict) -> str:
     lines.append("")
     lines.append(f"- Turns ingested: {total_turns}")
     lines.append(f"- Notes ingested (non-PHATIC): {total_notes}")
-    lines.append(f"- PHATIC turns (note skipped): {total_phatic}  ({total_phatic/denom:.1%} of turns)")
-    lines.append(f"- Mean labels per non-PHATIC note: {total_labels/max(total_notes,1):.2f}")
+    lines.append(
+        f"- PHATIC turns (note skipped): {total_phatic}  ({total_phatic / denom:.1%} of turns)"
+    )
+    lines.append(
+        f"- Mean labels per non-PHATIC note: {total_labels / max(total_notes, 1):.2f}"
+    )
     if label_totals:
         lines.append("")
         lines.append("| Label | Count | % of labels |")
@@ -839,7 +921,9 @@ def build_report(final: dict, notes_meta: dict) -> str:
             f"R@20={V3_BASELINE_EM_V2F['r@20']}, R@50={V3_BASELINE_EM_V2F['r@50']}."
         )
         lines.append("")
-        lines.append("| Architecture | R@20 | delta vs em_v2f | R@50 | delta vs em_v2f | time (s) |")
+        lines.append(
+            "| Architecture | R@20 | delta vs em_v2f | R@50 | delta vs em_v2f | time (s) |"
+        )
         lines.append("| --- | --- | --- | --- | --- | --- |")
         for arch, data in final["retrieval"]["archs"].items():
             s = data["summary"]
@@ -861,7 +945,9 @@ def build_report(final: dict, notes_meta: dict) -> str:
         lines.append("")
         lines.append("### v4 results")
         lines.append("")
-        lines.append("| System | Suff | Cov | Depth | Noise | LLM calls | notes in retrieval |")
+        lines.append(
+            "| System | Suff | Cov | Depth | Noise | LLM calls | notes in retrieval |"
+        )
         lines.append("| --- | --- | --- | --- | --- | --- | --- |")
         for key, label in [
             ("A_std_singleshot", "A_std_singleshot"),
@@ -875,8 +961,14 @@ def build_report(final: dict, notes_meta: dict) -> str:
                 f"{a['mean_llm_calls']} | {a['mean_n_notes']} |"
             )
         lines.append("")
-        dBA = s["B_notes_singleshot"]["mean_sufficiency"] - s["A_std_singleshot"]["mean_sufficiency"]
-        dCA = s["C_notes_proactive"]["mean_sufficiency"] - s["A_std_singleshot"]["mean_sufficiency"]
+        dBA = (
+            s["B_notes_singleshot"]["mean_sufficiency"]
+            - s["A_std_singleshot"]["mean_sufficiency"]
+        )
+        dCA = (
+            s["C_notes_proactive"]["mean_sufficiency"]
+            - s["A_std_singleshot"]["mean_sufficiency"]
+        )
         lines.append(f"**v4 Delta vs baseline A**: B-A = {dBA:+.3f}, C-A = {dCA:+.3f}.")
         lines.append("")
 
@@ -896,7 +988,7 @@ def build_report(final: dict, notes_meta: dict) -> str:
         lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
         for r in s["per_task"]:
             lines.append(
-                f"| {r['task_id']} | {r['conversation_id'][-2:]} | {r.get('task_shape','')} | "
+                f"| {r['task_id']} | {r['conversation_id'][-2:]} | {r.get('task_shape', '')} | "
                 f"{r['A_std_singleshot']['judge']['sufficiency']} | "
                 f"{r['B_notes_singleshot']['judge']['sufficiency']} | "
                 f"{r['C_notes_proactive']['judge']['sufficiency']} | "
@@ -910,7 +1002,9 @@ def build_report(final: dict, notes_meta: dict) -> str:
     lines.append("")
     verdict_lines: list[str] = []
     if "retrieval" in final:
-        em_v2f = final["retrieval"]["archs"].get("em_v2f_notes_v4", {}).get("summary", {})
+        em_v2f = (
+            final["retrieval"]["archs"].get("em_v2f_notes_v4", {}).get("summary", {})
+        )
         if em_v2f:
             d50 = em_v2f["mean_r@50"] - V3_BASELINE_EM_V2F["r@50"]
             verdict_lines.append(
@@ -920,11 +1014,19 @@ def build_report(final: dict, notes_meta: dict) -> str:
             )
     if "sufficiency" in final:
         s = final["sufficiency"]
-        dBA = s["B_notes_singleshot"]["mean_sufficiency"] - s["A_std_singleshot"]["mean_sufficiency"]
-        dCA = s["C_notes_proactive"]["mean_sufficiency"] - s["A_std_singleshot"]["mean_sufficiency"]
+        dBA = (
+            s["B_notes_singleshot"]["mean_sufficiency"]
+            - s["A_std_singleshot"]["mean_sufficiency"]
+        )
+        dCA = (
+            s["C_notes_proactive"]["mean_sufficiency"]
+            - s["A_std_singleshot"]["mean_sufficiency"]
+        )
         v3_best = max(
-            V3_SUFFICIENCY["B_notes_singleshot"]["mean_sufficiency"] - V3_SUFFICIENCY["A_std_singleshot"]["mean_sufficiency"],
-            V3_SUFFICIENCY["C_notes_proactive"]["mean_sufficiency"] - V3_SUFFICIENCY["A_std_singleshot"]["mean_sufficiency"],
+            V3_SUFFICIENCY["B_notes_singleshot"]["mean_sufficiency"]
+            - V3_SUFFICIENCY["A_std_singleshot"]["mean_sufficiency"],
+            V3_SUFFICIENCY["C_notes_proactive"]["mean_sufficiency"]
+            - V3_SUFFICIENCY["A_std_singleshot"]["mean_sufficiency"],
         )
         v4_best = max(dBA, dCA)
         verdict_lines.append(
@@ -933,7 +1035,12 @@ def build_report(final: dict, notes_meta: dict) -> str:
         )
 
         if "retrieval" in final:
-            em_v2f_r50 = final["retrieval"]["archs"].get("em_v2f_notes_v4", {}).get("summary", {}).get("mean_r@50", 0.0)
+            em_v2f_r50 = (
+                final["retrieval"]["archs"]
+                .get("em_v2f_notes_v4", {})
+                .get("summary", {})
+                .get("mean_r@50", 0.0)
+            )
             retrieval_lift = em_v2f_r50 > V3_BASELINE_EM_V2F["r@50"]
         else:
             retrieval_lift = False
@@ -957,7 +1064,9 @@ def build_report(final: dict, notes_meta: dict) -> str:
     lines.append("- `results/model_notes_v4_retrieval.json`")
     lines.append("- `results/model_notes_v4_sufficiency.json`")
     lines.append("- `results/model_notes_v4.md`")
-    lines.append("- Notes collections manifest: `results/eventmemory_notes_v4_collections.json`")
+    lines.append(
+        "- Notes collections manifest: `results/eventmemory_notes_v4_collections.json`"
+    )
     lines.append("- Source: `em_setup_notes_v4.py`, `notes_eval_v4.py`")
     return "\n".join(lines)
 

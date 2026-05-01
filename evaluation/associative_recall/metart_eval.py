@@ -31,9 +31,6 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EmbeddingCache,
@@ -41,6 +38,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -149,9 +148,7 @@ class MetartEmbeddingCache(EmbeddingCache):
             except (json.JSONDecodeError, OSError):
                 existing = {}
         existing.update(self._new_entries)
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         with open(tmp, "w") as f:
             json.dump(existing, f)
         os.replace(tmp, self.cache_file)
@@ -194,9 +191,7 @@ class MetartLLMCache(LLMCache):
             except (json.JSONDecodeError, OSError):
                 existing = {}
         existing.update(self._new_entries)
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         with open(tmp, "w") as f:
             json.dump(existing, f)
         os.replace(tmp, self.cache_file)
@@ -229,12 +224,10 @@ _tsf.TwoSpeakerLLMCache.__init__ = _gated_llm_init  # type: ignore[method-assign
 from best_shot import MetaV2f  # noqa: E402
 from gated_overlay import GatedOverlay  # noqa: E402
 from meta_router import (  # noqa: E402
-    MetaRouter,
     ROUTE_GATED,
     ROUTE_TWO_SPEAKER,
     build_meta_router,
     load_speaker_pairs,
-    query_mentions_known_speaker,
 )
 from two_speaker_filter import TwoSpeakerFilter  # noqa: E402
 
@@ -293,9 +286,7 @@ def _cosine_topk(
     conversation_id: str,
     top_k: int,
 ) -> list[Segment]:
-    result = store.search(
-        query_emb, top_k=top_k, conversation_id=conversation_id
-    )
+    result = store.search(query_emb, top_k=top_k, conversation_id=conversation_id)
     return list(result.segments)
 
 
@@ -314,9 +305,7 @@ def _retrieve_with(arch, arch_name: str, question: str, conv_id: str, K: int):
         arch.reset_counters()
 
     t0 = time.time()
-    if arch_name in ("gated_threshold_0.7",):
-        res = arch.retrieve(question, conv_id, K=K)
-    elif arch_name in ("meta_router", "meta_router_inverted"):
+    if arch_name in ("gated_threshold_0.7",) or arch_name in ("meta_router", "meta_router_inverted"):
         res = arch.retrieve(question, conv_id, K=K)
     else:
         res = arch.retrieve(question, conv_id)
@@ -363,9 +352,7 @@ def evaluate_question(
         # Fallback: use store-level cosine only
         query_emb = None
     if query_emb is not None:
-        cosine_segments = _cosine_topk(
-            store, query_emb, conv_id, max(BUDGETS)
-        )
+        cosine_segments = _cosine_topk(store, query_emb, conv_id, max(BUDGETS))
     else:
         cosine_segments = []
 
@@ -447,12 +434,8 @@ def summarize(rows: list[dict], arch_name: str, dataset: str) -> dict:
         out[f"arch_r@{K}"] = round(a_mean, 4)
         out[f"delta_r@{K}"] = round(a_mean - b_mean, 4)
         out[f"W/T/L_r@{K}"] = f"{wins}/{ties}/{losses}"
-    out["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in rows) / n, 2
-    )
-    out["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in rows) / n, 2
-    )
+    out["avg_llm_calls"] = round(sum(r["llm_calls"] for r in rows) / n, 2)
+    out["avg_embed_calls"] = round(sum(r["embed_calls"] for r in rows) / n, 2)
     out["avg_time_s"] = round(sum(r["time_s"] for r in rows) / n, 2)
     return out
 
@@ -481,13 +464,9 @@ def per_route_recall(rows: list[dict]) -> dict:
     return out
 
 
-def head_to_head(
-    a_rows: list[dict], b_rows: list[dict], K: int
-) -> dict:
+def head_to_head(a_rows: list[dict], b_rows: list[dict], K: int) -> dict:
     """Per-question W/T/L of a_rows vs b_rows at budget K."""
-    b_map = {
-        (r["conversation_id"], r["question_index"]): r for r in b_rows
-    }
+    b_map = {(r["conversation_id"], r["question_index"]): r for r in b_rows}
     wins = losses = ties = 0
     for ar in a_rows:
         key = (ar["conversation_id"], ar["question_index"])
@@ -514,8 +493,7 @@ def run_primary_eval(client: OpenAI) -> dict:
     for ds_name in DATASETS:
         store, questions = load_dataset(ds_name)
         print(
-            f"\n[{ds_name}] {len(questions)} questions, "
-            f"{len(store.segments)} segments",
+            f"\n[{ds_name}] {len(questions)} questions, {len(store.segments)} segments",
             flush=True,
         )
 
@@ -527,8 +505,7 @@ def run_primary_eval(client: OpenAI) -> dict:
             for i, q in enumerate(questions):
                 q_short = q["question"][:55]
                 print(
-                    f"  [{i+1}/{len(questions)}] "
-                    f"{q.get('category', '?')}: {q_short}",
+                    f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}",
                     flush=True,
                 )
                 try:
@@ -537,6 +514,7 @@ def run_primary_eval(client: OpenAI) -> dict:
                 except Exception as e:
                     print(f"  ERROR: {e}", flush=True)
                     import traceback
+
                     traceback.print_exc()
                 sys.stdout.flush()
                 if (i + 1) % 5 == 0:
@@ -567,9 +545,7 @@ def run_primary_eval(client: OpenAI) -> dict:
     # Head-to-head tables for meta_router
     head_to_head_tables: dict[str, dict] = {}
     for ds_name in DATASETS:
-        mr_rows = all_results.get("meta_router", {}).get(ds_name, {}).get(
-            "results", []
-        )
+        mr_rows = all_results.get("meta_router", {}).get(ds_name, {}).get("results", [])
         if not mr_rows:
             continue
         h2h: dict = {}
@@ -578,14 +554,11 @@ def run_primary_eval(client: OpenAI) -> dict:
             "gated_threshold_0.7",
             "meta_router_inverted",
         ):
-            ref_rows = all_results.get(ref_name, {}).get(ds_name, {}).get(
-                "results", []
-            )
+            ref_rows = all_results.get(ref_name, {}).get(ds_name, {}).get("results", [])
             if not ref_rows:
                 continue
             h2h[ref_name] = {
-                f"K{K}": head_to_head(mr_rows, ref_rows, K)
-                for K in BUDGETS
+                f"K{K}": head_to_head(mr_rows, ref_rows, K) for K in BUDGETS
             }
         head_to_head_tables[ds_name] = h2h
 
@@ -606,12 +579,8 @@ def run_shape_eval(client: OpenAI, primary_locomo_rows: list[dict]) -> dict:
     """Run meta_router on 90 task-shape variants. Reuse primary locomo_30q
     rows as ORIGINAL shape.
     """
-    store = SegmentStore(
-        data_dir=DATA_DIR, npz_name="segments_extended.npz"
-    )
-    print(
-        f"\n[shape] {len(store.segments)} segments in store", flush=True
-    )
+    store = SegmentStore(data_dir=DATA_DIR, npz_name="segments_extended.npz")
+    print(f"\n[shape] {len(store.segments)} segments in store", flush=True)
 
     with open(SHAPE_VARIANTS_FILE) as f:
         variants = json.load(f)
@@ -631,21 +600,23 @@ def run_shape_eval(client: OpenAI, primary_locomo_rows: list[dict]) -> dict:
     originals: list[dict] = []
     for src in primary_locomo_rows:
         qi = src.get("question_index", -1)
-        originals.append({
-            "orig_row_index": qi,
-            "shape": ORIGINAL_SHAPE,
-            "conversation_id": src["conversation_id"],
-            "category": src["category"],
-            "question": src["question"],
-            "original_question": src["question"],
-            "source_chat_ids": src["source_chat_ids"],
-            "num_source_turns": src["num_source_turns"],
-            "embed_calls": src.get("embed_calls", 0),
-            "llm_calls": src.get("llm_calls", 0),
-            "time_s": src.get("time_s", 0.0),
-            "fair_backfill": src["fair_backfill"],
-            "metadata": src.get("metadata", {}),
-        })
+        originals.append(
+            {
+                "orig_row_index": qi,
+                "shape": ORIGINAL_SHAPE,
+                "conversation_id": src["conversation_id"],
+                "category": src["category"],
+                "question": src["question"],
+                "original_question": src["question"],
+                "source_chat_ids": src["source_chat_ids"],
+                "num_source_turns": src["num_source_turns"],
+                "embed_calls": src.get("embed_calls", 0),
+                "llm_calls": src.get("llm_calls", 0),
+                "time_s": src.get("time_s", 0.0),
+                "fair_backfill": src["fair_backfill"],
+                "metadata": src.get("metadata", {}),
+            }
+        )
 
     rows_by_shape: dict[str, list[dict]] = {
         ORIGINAL_SHAPE: originals,
@@ -661,7 +632,7 @@ def run_shape_eval(client: OpenAI, primary_locomo_rows: list[dict]) -> dict:
         print(f"\n  === shape {sh} ({len(qs)} q) ===", flush=True)
         for i, q in enumerate(qs):
             print(
-                f"  [{sh} {i+1}/{len(qs)}] "
+                f"  [{sh} {i + 1}/{len(qs)}] "
                 f"{q.get('category', '?')}: {q['question'][:60]}",
                 flush=True,
             )
@@ -670,13 +641,12 @@ def run_shape_eval(client: OpenAI, primary_locomo_rows: list[dict]) -> dict:
                 # Enrich with shape metadata.
                 row["orig_row_index"] = q.get("orig_row_index", -1)
                 row["shape"] = sh
-                row["original_question"] = q.get(
-                    "original_question", q["question"]
-                )
+                row["original_question"] = q.get("original_question", q["question"])
                 rows_by_shape[sh].append(row)
             except Exception as e:
                 print(f"  ERROR: {e}", flush=True)
                 import traceback
+
                 traceback.print_exc()
             sys.stdout.flush()
             if (i + 1) % 5 == 0:
@@ -684,12 +654,8 @@ def run_shape_eval(client: OpenAI, primary_locomo_rows: list[dict]) -> dict:
         arch.save_caches()
         n = len(rows_by_shape[sh])
         if n:
-            a20 = sum(
-                r["fair_backfill"]["arch_r@20"] for r in rows_by_shape[sh]
-            ) / n
-            a50 = sum(
-                r["fair_backfill"]["arch_r@50"] for r in rows_by_shape[sh]
-            ) / n
+            a20 = sum(r["fair_backfill"]["arch_r@20"] for r in rows_by_shape[sh]) / n
+            a50 = sum(r["fair_backfill"]["arch_r@50"] for r in rows_by_shape[sh]) / n
             print(
                 f"  {sh} (n={n}): a@20={a20:.4f} a@50={a50:.4f} "
                 f"({time.time() - t_sh:.1f}s)",
@@ -745,21 +711,15 @@ def render_report(
 
     # --- Route distribution ---
     L.append("\n## Route distribution\n")
-    L.append(
-        "| Dataset | n | two_speaker % | gated % |"
-    )
+    L.append("| Dataset | n | two_speaker % | gated % |")
     L.append("|---|---:|---:|---:|")
     for ds_name in DATASETS:
-        mr = primary["primary_results"].get("meta_router", {}).get(
-            ds_name, {}
-        )
+        mr = primary["primary_results"].get("meta_router", {}).get(ds_name, {})
         pr = mr.get("per_route", {}) if mr else {}
         ts_pct = pr.get(ROUTE_TWO_SPEAKER, {}).get("pct", 0.0)
         g_pct = pr.get(ROUTE_GATED, {}).get("pct", 0.0)
         n = (mr.get("summary", {}) or {}).get("n", 0)
-        L.append(
-            f"| {ds_name} | {n} | {ts_pct:.1f}% | {g_pct:.1f}% |"
-        )
+        L.append(f"| {ds_name} | {n} | {ts_pct:.1f}% | {g_pct:.1f}% |")
     L.append("")
 
     # --- Recall matrix ---
@@ -771,9 +731,12 @@ def render_report(
     L.append("|" + ("---|" * 9))
     for arch_name in PRIMARY_ARCHES:
         for ds_name in DATASETS:
-            s = primary["primary_results"].get(arch_name, {}).get(
-                ds_name, {}
-            ).get("summary")
+            s = (
+                primary["primary_results"]
+                .get(arch_name, {})
+                .get(ds_name, {})
+                .get("summary")
+            )
             if not s:
                 continue
             L.append(
@@ -788,17 +751,11 @@ def render_report(
 
     # --- Per-route recall ---
     L.append("\n## Per-route recall (meta_router slices)\n")
-    L.append(
-        "For each dataset, split meta_router results by which sub-arch ran.\n"
-    )
-    L.append(
-        "| Dataset | Route | n | pct | arch@20 | arch@50 | Δ@20 | Δ@50 |"
-    )
+    L.append("For each dataset, split meta_router results by which sub-arch ran.\n")
+    L.append("| Dataset | Route | n | pct | arch@20 | arch@50 | Δ@20 | Δ@50 |")
     L.append("|---|---|---:|---:|---:|---:|---:|---:|")
     for ds_name in DATASETS:
-        mr = primary["primary_results"].get("meta_router", {}).get(
-            ds_name, {}
-        )
+        mr = primary["primary_results"].get("meta_router", {}).get(ds_name, {})
         pr = mr.get("per_route", {}) if mr else {}
         for route in (ROUTE_TWO_SPEAKER, ROUTE_GATED):
             e = pr.get(route)
@@ -851,9 +808,7 @@ def render_report(
             d20 = orig.get("mean_arch_r@20", 0) - e.get("mean_arch_r@20", 0)
             d50 = orig.get("mean_arch_r@50", 0) - e.get("mean_arch_r@50", 0)
         rd = e.get("route_distribution", {})
-        route_str = ", ".join(
-            f"{r}={n}" for r, n in sorted(rd.items())
-        )
+        route_str = ", ".join(f"{r}={n}" for r, n in sorted(rd.items()))
         L.append(
             f"| {sh} | {e['n']} | {e['mean_arch_r@20']:.4f} | "
             f"{e['mean_arch_r@50']:.4f} | {d20:+.4f} | {d50:+.4f} | "
@@ -862,16 +817,12 @@ def render_report(
     L.append("")
 
     # Compare meta_router shape to known gated/two_speaker shape numbers.
-    L.append(
-        "\n### Comparison vs prior arches on shape-robustness (LoCoMo @K=50)\n"
-    )
+    L.append("\n### Comparison vs prior arches on shape-robustness (LoCoMo @K=50)\n")
     L.append(
         "Numbers for `two_speaker_filter` and `gated_threshold_0.7` lifted "
         "from `results/gated_shape.md`.\n"
     )
-    L.append(
-        "| Architecture | ORIG | CMD | DRAFT | META | Worst drop |"
-    )
+    L.append("| Architecture | ORIG | CMD | DRAFT | META | Worst drop |")
     L.append("|---|---:|---:|---:|---:|---:|")
     # meta_router
     o50 = ss.get(ORIGINAL_SHAPE, {}).get("mean_arch_r@50")
@@ -894,10 +845,7 @@ def render_report(
         ("meta_v2f", 0.8583, 0.7333, 0.8167, 0.7417, 0.1250),
     ]
     for name, o, c, d, m, w in prior_rows:
-        L.append(
-            f"| {name} | {o:.4f} | {c:.4f} | {d:.4f} | {m:.4f} | "
-            f"+{w:.4f} |"
-        )
+        L.append(f"| {name} | {o:.4f} | {c:.4f} | {d:.4f} | {m:.4f} | +{w:.4f} |")
     L.append("")
 
     # --- Speaker pairs used ---
@@ -911,18 +859,10 @@ def render_report(
     # --- Verdict ---
     L.append("\n## Verdict\n")
     pr = primary["primary_results"]
-    lc_mr = pr.get("meta_router", {}).get("locomo_30q", {}).get(
-        "summary", {}
-    )
-    lc_ts = pr.get("two_speaker_filter", {}).get("locomo_30q", {}).get(
-        "summary", {}
-    )
-    lc_g = pr.get("gated_threshold_0.7", {}).get("locomo_30q", {}).get(
-        "summary", {}
-    )
-    lc_inv = pr.get("meta_router_inverted", {}).get("locomo_30q", {}).get(
-        "summary", {}
-    )
+    lc_mr = pr.get("meta_router", {}).get("locomo_30q", {}).get("summary", {})
+    lc_ts = pr.get("two_speaker_filter", {}).get("locomo_30q", {}).get("summary", {})
+    lc_g = pr.get("gated_threshold_0.7", {}).get("locomo_30q", {}).get("summary", {})
+    lc_inv = pr.get("meta_router_inverted", {}).get("locomo_30q", {}).get("summary", {})
     if lc_mr and lc_ts and lc_g:
         mr50 = lc_mr.get("arch_r@50", 0)
         ts50 = lc_ts.get("arch_r@50", 0)
@@ -979,9 +919,12 @@ def main() -> None:
     print("\n" + "=" * 70, flush=True)
     print("SHAPE EVAL (LoCoMo task-shape 90 variants)", flush=True)
     print("=" * 70, flush=True)
-    primary_locomo_rows = primary["primary_results"].get(
-        "meta_router", {}
-    ).get("locomo_30q", {}).get("results", [])
+    primary_locomo_rows = (
+        primary["primary_results"]
+        .get("meta_router", {})
+        .get("locomo_30q", {})
+        .get("results", [])
+    )
     shape = run_shape_eval(client, primary_locomo_rows)
 
     pairs = load_speaker_pairs()
@@ -1010,9 +953,12 @@ def main() -> None:
     print("=" * 80)
     for arch_name in PRIMARY_ARCHES:
         for ds_name in DATASETS:
-            s = primary["primary_results"].get(arch_name, {}).get(
-                ds_name, {}
-            ).get("summary")
+            s = (
+                primary["primary_results"]
+                .get(arch_name, {})
+                .get(ds_name, {})
+                .get("summary")
+            )
             if not s:
                 continue
             print(

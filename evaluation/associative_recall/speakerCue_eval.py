@@ -19,9 +19,9 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
+from antipara_cue_gen import MetaV2fDedicated
 from associative_recall import Segment
+from dotenv import load_dotenv
 from fair_backfill_eval import (
     BUDGETS,
     RESULTS_DIR,
@@ -30,11 +30,10 @@ from fair_backfill_eval import (
     summarize,
     summarize_by_category,
 )
-from antipara_cue_gen import MetaV2fDedicated
-from two_speaker_filter import TwoSpeakerFilter
 from speaker_conditional_cue import (
     ARCH_CLASSES as SC_ARCH_CLASSES,
 )
+from two_speaker_filter import TwoSpeakerFilter
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -67,9 +66,7 @@ def evaluate_question(arch, question: dict, arch_name: str) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     md = result.metadata or {}
@@ -97,9 +94,7 @@ def evaluate_question(arch, question: dict, arch_name: str) -> dict:
         row["n_assistant_in_v2f"] = md.get("n_assistant_in_v2f")
     if arch_name in SPEAKER_COND_ARCHES:
         row["conditioned_on"] = md.get("conditioned_on")
-        row["applied_cue_conditioning"] = md.get(
-            "applied_cue_conditioning", False
-        )
+        row["applied_cue_conditioning"] = md.get("applied_cue_conditioning", False)
         row["applied_filter"] = md.get("applied_filter", False)
         row["v2f_cues"] = md.get("v2f_cues", [])
 
@@ -137,8 +132,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] "
-            f"{q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -147,6 +141,7 @@ def run_one(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -200,9 +195,7 @@ def collect_sample_cues(
 ) -> list[dict]:
     """For each query where cond conditioning fired, pair v2f cues with
     cond cues for side-by-side qualitative inspection."""
-    v2f_by_key = {
-        (r["conversation_id"], r["question_index"]): r for r in v2f_results
-    }
+    v2f_by_key = {(r["conversation_id"], r["question_index"]): r for r in v2f_results}
     out: list[dict] = []
     for r in cond_results:
         if not r.get("applied_cue_conditioning"):
@@ -236,9 +229,7 @@ def subset_delta_table(
     subset_filter,
     subset_name: str,
 ) -> dict:
-    ref_by_key = {
-        (r["conversation_id"], r["question_index"]): r for r in ref_results
-    }
+    ref_by_key = {(r["conversation_id"], r["question_index"]): r for r in ref_results}
     subset = [r for r in arch_results if subset_filter(r)]
     n = len(subset)
     out: dict[str, object] = {"subset": subset_name, "n": n}
@@ -257,12 +248,8 @@ def subset_delta_table(
             continue
         r_m = sum(ref_vals) / len(ref_vals)
         a_m = sum(arch_vals) / len(arch_vals)
-        wins = sum(
-            1 for v, a in zip(ref_vals, arch_vals) if a > v + 0.001
-        )
-        losses = sum(
-            1 for v, a in zip(ref_vals, arch_vals) if v > a + 0.001
-        )
+        wins = sum(1 for v, a in zip(ref_vals, arch_vals) if a > v + 0.001)
+        losses = sum(1 for v, a in zip(ref_vals, arch_vals) if v > a + 0.001)
         ties = len(ref_vals) - wins - losses
         out[f"ref_r@{K}"] = round(r_m, 4)
         out[f"arch_r@{K}"] = round(a_m, 4)
@@ -271,14 +258,10 @@ def subset_delta_table(
     return out
 
 
-def _fmt_delta_row(
-    summary_a: dict, summary_ref: dict, label: str
-) -> str:
+def _fmt_delta_row(summary_a: dict, summary_ref: dict, label: str) -> str:
     d20 = summary_a.get("arch_r@20", 0) - summary_ref.get("arch_r@20", 0)
     d50 = summary_a.get("arch_r@50", 0) - summary_ref.get("arch_r@50", 0)
-    return (
-        f"- {label}: Δ@20={d20:+.3f}, Δ@50={d50:+.3f}"
-    )
+    return f"- {label}: Δ@20={d20:+.3f}, Δ@50={d50:+.3f}"
 
 
 def main() -> None:
@@ -294,9 +277,7 @@ def main() -> None:
 
         for arch_name, cls in ARCH_CLASSES.items():
             arch = cls(store)
-            results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(arch_name, arch, ds_name, questions)
             all_results[arch_name][ds_name] = {
                 "summary": summary,
                 "category_breakdown": by_cat,
@@ -313,48 +294,39 @@ def main() -> None:
     # --- Subset delta tables (where conditioning fires) ---
     subset_tables: dict[str, dict] = defaultdict(dict)
     for ds_name in EVAL_DATASETS:
-        v2f_rs = (
-            all_results.get("meta_v2f", {}).get(ds_name, {}).get("results", [])
-        )
+        v2f_rs = all_results.get("meta_v2f", {}).get(ds_name, {}).get("results", [])
         tsf_rs = (
             all_results.get("two_speaker_filter", {})
-            .get(ds_name, {}).get("results", [])
+            .get(ds_name, {})
+            .get("results", [])
         )
         for arch_name in SPEAKER_COND_ARCHES:
-            rs = all_results.get(arch_name, {}).get(ds_name, {}).get(
-                "results", []
-            )
+            rs = all_results.get(arch_name, {}).get(ds_name, {}).get("results", [])
             if not rs:
                 continue
-            subset_tables[arch_name][
-                f"{ds_name}__conditioning_fired_vs_v2f"
-            ] = subset_delta_table(
-                rs,
-                v2f_rs,
-                lambda r: r.get("applied_cue_conditioning"),
-                "conditioning_fired",
+            subset_tables[arch_name][f"{ds_name}__conditioning_fired_vs_v2f"] = (
+                subset_delta_table(
+                    rs,
+                    v2f_rs,
+                    lambda r: r.get("applied_cue_conditioning"),
+                    "conditioning_fired",
+                )
             )
-            subset_tables[arch_name][
-                f"{ds_name}__conditioning_fired_vs_tsf"
-            ] = subset_delta_table(
-                rs,
-                tsf_rs,
-                lambda r: r.get("applied_cue_conditioning"),
-                "conditioning_fired",
+            subset_tables[arch_name][f"{ds_name}__conditioning_fired_vs_tsf"] = (
+                subset_delta_table(
+                    rs,
+                    tsf_rs,
+                    lambda r: r.get("applied_cue_conditioning"),
+                    "conditioning_fired",
+                )
             )
 
     # --- Sample cues for qualitative comparison ---
     sample_cues_by_arch: dict[str, list[dict]] = {}
-    v2f_rs = all_results.get("meta_v2f", {}).get("locomo_30q", {}).get(
-        "results", []
-    )
+    v2f_rs = all_results.get("meta_v2f", {}).get("locomo_30q", {}).get("results", [])
     for arch_name in SPEAKER_COND_ARCHES:
-        rs = all_results.get(arch_name, {}).get("locomo_30q", {}).get(
-            "results", []
-        )
-        sample_cues_by_arch[arch_name] = collect_sample_cues(
-            v2f_rs, rs, limit=3
-        )
+        rs = all_results.get(arch_name, {}).get("locomo_30q", {}).get("results", [])
+        sample_cues_by_arch[arch_name] = collect_sample_cues(v2f_rs, rs, limit=3)
 
     # --- Save raw JSON ---
     raw = {
@@ -367,9 +339,7 @@ def main() -> None:
             a: {
                 d: {
                     "summary": all_results[a][d]["summary"],
-                    "category_breakdown": all_results[a][d][
-                        "category_breakdown"
-                    ],
+                    "category_breakdown": all_results[a][d]["category_breakdown"],
                 }
                 for d in all_results[a]
             }
@@ -391,9 +361,7 @@ def main() -> None:
                         "arch": a,
                         "dataset": d,
                         "summary": all_results[a][d]["summary"],
-                        "category_breakdown": all_results[a][d][
-                            "category_breakdown"
-                        ],
+                        "category_breakdown": all_results[a][d]["category_breakdown"],
                         "results": all_results[a][d]["results"],
                     },
                     f,
@@ -430,10 +398,7 @@ def main() -> None:
 
     # Full-set recall
     md.append("## Fair-backfill recall (LoCoMo-30)\n")
-    md.append(
-        "| Arch | base@20 | arch@20 | Δ@20 | base@50 | arch@50 | Δ@50 | "
-        "llm/q |"
-    )
+    md.append("| Arch | base@20 | arch@20 | Δ@20 | base@50 | arch@50 | Δ@50 | llm/q |")
     md.append("|---|---:|---:|---:|---:|---:|---:|---:|")
     for a in ARCH_CLASSES:
         for d in EVAL_DATASETS:
@@ -487,9 +452,7 @@ def main() -> None:
             for d in EVAL_DATASETS:
                 if d not in all_results[arch_to_show]:
                     continue
-                by_cat = all_results[arch_to_show][d][
-                    "category_breakdown"
-                ]
+                by_cat = all_results[arch_to_show][d]["category_breakdown"]
                 md.append(f"### {d}\n")
                 md.append("| category | n | Δ@20 | Δ@50 | W/T/L@50 |")
                 md.append("|---|---:|---:|---:|---:|")
@@ -528,21 +491,25 @@ def main() -> None:
 
     # Verdict
     md.append("## Verdict\n")
-    v2f_lc = all_results.get("meta_v2f", {}).get("locomo_30q", {}).get(
-        "summary", {}
+    v2f_lc = all_results.get("meta_v2f", {}).get("locomo_30q", {}).get("summary", {})
+    tsf_lc = (
+        all_results.get("two_speaker_filter", {})
+        .get("locomo_30q", {})
+        .get("summary", {})
     )
-    tsf_lc = all_results.get("two_speaker_filter", {}).get(
-        "locomo_30q", {}
-    ).get("summary", {})
-    scc_lc = all_results.get("speaker_cond_cue_only", {}).get(
-        "locomo_30q", {}
-    ).get("summary", {})
-    scpf_lc = all_results.get("speaker_cond_plus_filter", {}).get(
-        "locomo_30q", {}
-    ).get("summary", {})
-    mtag_lc = all_results.get("v2f_mention_tag", {}).get(
-        "locomo_30q", {}
-    ).get("summary", {})
+    scc_lc = (
+        all_results.get("speaker_cond_cue_only", {})
+        .get("locomo_30q", {})
+        .get("summary", {})
+    )
+    scpf_lc = (
+        all_results.get("speaker_cond_plus_filter", {})
+        .get("locomo_30q", {})
+        .get("summary", {})
+    )
+    mtag_lc = (
+        all_results.get("v2f_mention_tag", {}).get("locomo_30q", {}).get("summary", {})
+    )
 
     verdict_lines: list[str] = []
     if v2f_lc:
@@ -552,9 +519,7 @@ def main() -> None:
             )
         if scpf_lc:
             verdict_lines.append(
-                _fmt_delta_row(
-                    scpf_lc, v2f_lc, "speaker_cond_plus_filter vs v2f"
-                )
+                _fmt_delta_row(scpf_lc, v2f_lc, "speaker_cond_plus_filter vs v2f")
             )
         if mtag_lc:
             verdict_lines.append(
@@ -588,12 +553,8 @@ def main() -> None:
         else:
             # Sub-decisions based on the other variants.
             if scc_lc and v2f_lc:
-                d_cue20 = scc_lc.get("arch_r@20", 0) - v2f_lc.get(
-                    "arch_r@20", 0
-                )
-                d_cue50 = scc_lc.get("arch_r@50", 0) - v2f_lc.get(
-                    "arch_r@50", 0
-                )
+                d_cue20 = scc_lc.get("arch_r@20", 0) - v2f_lc.get("arch_r@20", 0)
+                d_cue50 = scc_lc.get("arch_r@50", 0) - v2f_lc.get("arch_r@50", 0)
                 if d_cue20 > 0.005 or d_cue50 > 0.005:
                     verdict = (
                         f"**SUPPLEMENT / FLAT AT CEILING** — "
@@ -614,18 +575,10 @@ def main() -> None:
                     )
         # Hint-alone ablation.
         if mtag_lc and v2f_lc and scc_lc:
-            d_tag20 = mtag_lc.get("arch_r@20", 0) - v2f_lc.get(
-                "arch_r@20", 0
-            )
-            d_tag50 = mtag_lc.get("arch_r@50", 0) - v2f_lc.get(
-                "arch_r@50", 0
-            )
-            d_cue20 = scc_lc.get("arch_r@20", 0) - v2f_lc.get(
-                "arch_r@20", 0
-            )
-            d_cue50 = scc_lc.get("arch_r@50", 0) - v2f_lc.get(
-                "arch_r@50", 0
-            )
+            d_tag20 = mtag_lc.get("arch_r@20", 0) - v2f_lc.get("arch_r@20", 0)
+            d_tag50 = mtag_lc.get("arch_r@50", 0) - v2f_lc.get("arch_r@50", 0)
+            d_cue20 = scc_lc.get("arch_r@20", 0) - v2f_lc.get("arch_r@20", 0)
+            d_cue50 = scc_lc.get("arch_r@50", 0) - v2f_lc.get("arch_r@50", 0)
             if d_tag50 >= d_cue50 - 0.005 and d_tag20 >= d_cue20 - 0.005:
                 verdict_lines.append(
                     "- **Hint-alone matches conditioning** — first-person "

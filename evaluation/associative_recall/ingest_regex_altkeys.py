@@ -18,16 +18,37 @@ from dataclasses import dataclass
 # Token sets and regexes (compiled once)
 # ---------------------------------------------------------------------------
 ANAPHORIC_TOKENS = {
-    "that", "this", "those", "these",
-    "it", "they", "he", "she",
-    "him", "her", "his", "its",
-    "their", "them",
+    "that",
+    "this",
+    "those",
+    "these",
+    "it",
+    "they",
+    "he",
+    "she",
+    "him",
+    "her",
+    "his",
+    "its",
+    "their",
+    "them",
 }
 
 SHORT_RESPONSE_TOKENS = {
-    "yeah", "yes", "yep", "ok", "okay", "sure",
-    "no", "nope", "definitely", "exactly", "right",
-    "true", "false", "maybe",
+    "yeah",
+    "yes",
+    "yep",
+    "ok",
+    "okay",
+    "sure",
+    "no",
+    "nope",
+    "definitely",
+    "exactly",
+    "right",
+    "true",
+    "false",
+    "maybe",
 }
 
 UPDATE_MARKER_RE = re.compile(
@@ -61,13 +82,13 @@ CAP_TOKEN_RE = re.compile(r"\b[A-Z][a-zA-Z]{2,}\b")
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 # Number-like / version tokens (also used for rare_entity):
 NUM_VER_RE = re.compile(
-    r"\bv\d+(?:\.\d+)*\b"          # v1, v2.1
-    r"|\b\d+(?:\.\d+)+\b"           # 1.2.3
-    r"|\b[A-Z]+-\d+\b"              # JIRA-4521
-    r"|\$\d[\d,\.]*"                # $28K, $30
-    r"|\b\d+%\b"                    # 25%
+    r"\bv\d+(?:\.\d+)*\b"  # v1, v2.1
+    r"|\b\d+(?:\.\d+)+\b"  # 1.2.3
+    r"|\b[A-Z]+-\d+\b"  # JIRA-4521
+    r"|\$\d[\d,\.]*"  # $28K, $30
+    r"|\b\d+%\b"  # 25%
     r"|\b\d{1,2}:\d{2}\s*(am|pm)?\b"  # 9:00, 9:00am
-    r"|\b\d+[KkMm]\b",                # 28K
+    r"|\b\d+[KkMm]\b",  # 28K
     re.IGNORECASE,
 )
 
@@ -87,9 +108,9 @@ HEURISTIC_NAMES = (
 # ---------------------------------------------------------------------------
 @dataclass
 class AltKey:
-    parent_index: int          # index into SegmentStore.segments
-    heuristic: str             # which heuristic fired
-    text: str                  # the alt-key text to embed
+    parent_index: int  # index into SegmentStore.segments
+    heuristic: str  # which heuristic fired
+    text: str  # the alt-key text to embed
 
 
 # ---------------------------------------------------------------------------
@@ -198,55 +219,69 @@ def generate_alt_keys_for_turn(
     joined = (prev_text + " " + this_text).strip()
 
     if fires_anaphoric(this_text):
-        out.append(AltKey(
-            parent_index=parent_index,
-            heuristic="anaphoric",
-            text=joined,
-        ))
+        out.append(
+            AltKey(
+                parent_index=parent_index,
+                heuristic="anaphoric",
+                text=joined,
+            )
+        )
 
     if fires_short_response(this_text):
-        out.append(AltKey(
-            parent_index=parent_index,
-            heuristic="short_response",
-            text=joined,
-        ))
+        out.append(
+            AltKey(
+                parent_index=parent_index,
+                heuristic="short_response",
+                text=joined,
+            )
+        )
 
     if fires_update_marker(this_text):
-        out.append(AltKey(
-            parent_index=parent_index,
-            heuristic="update_marker",
-            text=joined,
-        ))
+        out.append(
+            AltKey(
+                parent_index=parent_index,
+                heuristic="update_marker",
+                text=joined,
+            )
+        )
 
     if fires_known_unknown(this_text):
-        out.append(AltKey(
-            parent_index=parent_index,
-            heuristic="known_unknown",
-            text="unresolved question pending check: " + this_text[:200],
-        ))
+        out.append(
+            AltKey(
+                parent_index=parent_index,
+                heuristic="known_unknown",
+                text="unresolved question pending check: " + this_text[:200],
+            )
+        )
 
     if fires_alias_evolution(this_text):
-        out.append(AltKey(
-            parent_index=parent_index,
-            heuristic="alias_evolution",
-            text=joined,
-        ))
+        out.append(
+            AltKey(
+                parent_index=parent_index,
+                heuristic="alias_evolution",
+                text=joined,
+            )
+        )
 
     if fires_structured_fact(this_text):
-        out.append(AltKey(
-            parent_index=parent_index,
-            heuristic="structured_fact",
-            text="structured fact: " + this_text,
-        ))
+        out.append(
+            AltKey(
+                parent_index=parent_index,
+                heuristic="structured_fact",
+                text="structured fact: " + this_text,
+            )
+        )
 
     tokens = _rare_entity_tokens(this_text)
     if tokens:
         entity_line = "entities: " + " ".join(tokens) + " | " + this_text[:150]
-        out.append(AltKey(
-            parent_index=parent_index,
-            heuristic="rare_entity",
-            text=entity_line,
-        ))
+        out.append(
+            AltKey(
+                parent_index=parent_index,
+                heuristic="rare_entity",
+                text=entity_line,
+            )
+        )
 
     return out
 
@@ -260,7 +295,7 @@ def generate_alt_keys_for_conversation(
     `segments` must be an iterable of objects with `.index` and `.text`.
     """
     alt_keys: list[AltKey] = []
-    fire_counts: dict[str, int] = {h: 0 for h in HEURISTIC_NAMES}
+    fire_counts: dict[str, int] = dict.fromkeys(HEURISTIC_NAMES, 0)
     prev_text = ""
     for seg in segments:
         keys = generate_alt_keys_for_turn(
@@ -287,7 +322,7 @@ def generate_all_alt_keys(
         by_conv.setdefault(s.conversation_id, []).append(s)
 
     all_keys: list[AltKey] = []
-    total_counts: dict[str, int] = {h: 0 for h in HEURISTIC_NAMES}
+    total_counts: dict[str, int] = dict.fromkeys(HEURISTIC_NAMES, 0)
     for cid, segs in by_conv.items():
         segs_sorted = sorted(segs, key=lambda s: s.turn_id)
         keys, counts = generate_alt_keys_for_conversation(segs_sorted)

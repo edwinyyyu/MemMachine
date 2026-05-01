@@ -35,24 +35,22 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import sys
-import time
 import threading
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -205,7 +203,7 @@ class MemoryIndex:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "MemoryIndex":
+    def from_dict(cls, d: dict) -> MemoryIndex:
         return cls(
             conversation_id=d["conversation_id"],
             topics=d.get("topics", []),
@@ -322,9 +320,7 @@ class MemIndexBuilder:
         if cached:
             return MemoryIndex.from_dict(cached)
         conv_text, n_used = _format_conversation(segments)
-        prompt = MEMINDEX_PROMPT.format(
-            n_turns=n_used, conversation_text=conv_text
-        )
+        prompt = MEMINDEX_PROMPT.format(n_turns=n_used, conversation_text=conv_text)
         raw = self._llm(prompt)
         idx = _parse_memindex(raw, conv_id)
         self.index_cache.put(conv_id, idx.to_dict())
@@ -633,9 +629,7 @@ class MemIndexRetriever:
         # Pass 0: primer retrieval (always done, regardless of whether the
         # prompt sees it — so that backfill never collides with arch picks).
         q_emb = self.embed_text(question)
-        primer = self.store.search(
-            q_emb, top_k=10, conversation_id=conversation_id
-        )
+        primer = self.store.search(q_emb, top_k=10, conversation_id=conversation_id)
         primer_segs = list(primer.segments)
         all_segs.extend(primer_segs)
         for s in primer_segs:
@@ -673,7 +667,9 @@ class MemIndexRetriever:
         for cue in cues:
             cue_emb = self.embed_text(cue)
             res = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in res.segments:
@@ -853,22 +849,10 @@ def print_qualitative(
     for cid in conv_ids:
         idx = indices[cid]
         print(f"\n--- {cid} ---")
-        print(
-            f"topics({len(idx.topics)}): "
-            + "; ".join(idx.topics[:10])
-        )
-        print(
-            f"entities({len(idx.entities)}): "
-            + "; ".join(idx.entities[:12])
-        )
-        print(
-            f"temporal({len(idx.temporal)}): "
-            + "; ".join(idx.temporal[:8])
-        )
-        print(
-            f"decisions({len(idx.decisions)}): "
-            + "; ".join(idx.decisions[:8])
-        )
+        print(f"topics({len(idx.topics)}): " + "; ".join(idx.topics[:10]))
+        print(f"entities({len(idx.entities)}): " + "; ".join(idx.entities[:12]))
+        print(f"temporal({len(idx.temporal)}): " + "; ".join(idx.temporal[:8]))
+        print(f"decisions({len(idx.decisions)}): " + "; ".join(idx.decisions[:8]))
 
     print("\n" + "=" * 80)
     print("QUALITATIVE: sample generated cues per variant")
@@ -877,10 +861,7 @@ def print_qualitative(
         print(f"\n--- {variant} ---")
         for row in rows[:num_cues]:
             cues = row["metadata"].get("cues", [])
-            print(
-                f"  Q: {row['question'][:90]} "
-                f"(cat={row['category']})"
-            )
+            print(f"  Q: {row['question'][:90]} (cat={row['category']})")
             for c in cues:
                 print(f"    CUE: {c[:150]}")
 
@@ -890,18 +871,31 @@ def print_qualitative(
 # ---------------------------------------------------------------------------
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--variant", default=None,
-                        help="Run only this variant (default: all)")
-    parser.add_argument("--dataset", default=None,
-                        help="Run only this dataset (default: all)")
-    parser.add_argument("--indices-only", action="store_true",
-                        help="Build (and cache) memory indices, then exit.")
-    parser.add_argument("--qualitative", action="store_true",
-                        help="After eval, print sample indices + cues.")
-    parser.add_argument("--force", action="store_true",
-                        help="Re-run even if results file exists.")
-    parser.add_argument("--workers", type=int, default=8,
-                        help="Thread-pool workers for per-question calls.")
+    parser.add_argument(
+        "--variant", default=None, help="Run only this variant (default: all)"
+    )
+    parser.add_argument(
+        "--dataset", default=None, help="Run only this dataset (default: all)"
+    )
+    parser.add_argument(
+        "--indices-only",
+        action="store_true",
+        help="Build (and cache) memory indices, then exit.",
+    )
+    parser.add_argument(
+        "--qualitative",
+        action="store_true",
+        help="After eval, print sample indices + cues.",
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="Re-run even if results file exists."
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="Thread-pool workers for per-question calls.",
+    )
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -970,6 +964,7 @@ def main() -> None:
                 except Exception as e:
                     print(f"  [q{i}] ERROR: {e}", flush=True)
                     import traceback
+
                     traceback.print_exc()
                     return i, None
 
@@ -988,8 +983,7 @@ def main() -> None:
 
             with ThreadPoolExecutor(max_workers=args.workers) as ex:
                 futures = {
-                    ex.submit(_work, (i, q)): (i, q)
-                    for i, q in enumerate(questions)
+                    ex.submit(_work, (i, q)): (i, q) for i, q in enumerate(questions)
                 }
                 for f in as_completed(futures):
                     i, q = futures[f]

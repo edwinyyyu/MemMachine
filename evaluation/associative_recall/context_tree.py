@@ -22,19 +22,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
+    AssociativeRecallEngine,
     EmbeddingCache,
-    LLMCache,
     Segment,
     SegmentStore,
-    RetrievalResult,
-    AssociativeRecallEngine,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -134,7 +131,8 @@ class TreeEngine:
             neighbor_segs = []
             for seg in segments:
                 neighbors = self.store.get_neighbors(
-                    seg, radius=self.neighbor_radius,
+                    seg,
+                    radius=self.neighbor_radius,
                     exclude_indices=exclude_indices,
                 )
                 for n in neighbors:
@@ -313,12 +311,17 @@ class TreeEngine:
 
             if verbose:
                 indent = "  " * depth
-                print(f"  {indent}[d{depth}] '{description[:60]}...' → +{len(segs)} segs")
+                print(
+                    f"  {indent}[d{depth}] '{description[:60]}...' → +{len(segs)} segs"
+                )
 
-            step_log.append({
-                "depth": depth, "description": description[:100],
-                "num_retrieved": len(segs),
-            })
+            step_log.append(
+                {
+                    "depth": depth,
+                    "description": description[:100],
+                    "num_retrieved": len(segs),
+                }
+            )
 
             if depth >= max_depth:
                 # Can't go deeper — done with this branch
@@ -326,7 +329,12 @@ class TreeEngine:
 
             # Ask the model: go deeper or done?
             decision = self._deepen_or_pop(
-                question, context_path, segs, all_segments, depth, max_depth,
+                question,
+                context_path,
+                segs,
+                all_segments,
+                depth,
+                max_depth,
             )
 
             if decision["action"] == "PUSH" and decision.get("sub_questions"):
@@ -524,7 +532,9 @@ class TreeEngine:
         # Phase 2: Grounded decomposition — show what we found, ask for gaps
         sub_questions = self._grounded_decompose(question, initial_segs)
         if verbose:
-            print(f"  Phase 2: decomposed into {len(sub_questions)} gap-based sub-questions:")
+            print(
+                f"  Phase 2: decomposed into {len(sub_questions)} gap-based sub-questions:"
+            )
             for sq in sub_questions:
                 print(f"    - {sq[:80]}")
 
@@ -541,7 +551,9 @@ class TreeEngine:
                 more_segs = self._retrieve(followup_cue, conversation_id, exclude)
                 all_segments.extend(more_segs)
                 if verbose:
-                    print(f"    Assessment cue: '{followup_cue[:60]}...' → +{len(more_segs)}")
+                    print(
+                        f"    Assessment cue: '{followup_cue[:60]}...' → +{len(more_segs)}"
+                    )
 
         elapsed = time.time() - t0
         return TreeResult(
@@ -562,7 +574,8 @@ class TreeEngine:
     ) -> list[str]:
         context = self._format_segments(found_segments, limit=10)
         prompt = GROUNDED_DECOMPOSE_PROMPT.format(
-            question=question, retrieved_context=context,
+            question=question,
+            retrieved_context=context,
         )
         text = self._llm_call(prompt)
         sub_questions = []
@@ -662,9 +675,7 @@ class TreeEngine:
             },
         )
 
-    def _v15_style_cue(
-        self, question: str, retrieved: list[Segment]
-    ) -> str | None:
+    def _v15_style_cue(self, question: str, retrieved: list[Segment]) -> str | None:
         context = self._format_segments(retrieved, limit=10)
         prompt = V15_STYLE_CUE_PROMPT.format(
             question=question,
@@ -727,7 +738,9 @@ class TreeEngine:
                 assess_segs = self._retrieve(assess_cue, conversation_id, exclude)
                 all_segments.extend(assess_segs)
                 if verbose:
-                    print(f"    Assessment: '{assess_cue[:60]}...' → +{len(assess_segs)}")
+                    print(
+                        f"    Assessment: '{assess_cue[:60]}...' → +{len(assess_segs)}"
+                    )
 
         elapsed = time.time() - t0
         return TreeResult(
@@ -785,7 +798,9 @@ class TreeEngine:
                 more_segs = self._retrieve(followup_cue, conversation_id, exclude)
                 gap_segments.extend(more_segs)
                 if verbose:
-                    print(f"    Assessment cue: '{followup_cue[:60]}...' → +{len(more_segs)}")
+                    print(
+                        f"    Assessment cue: '{followup_cue[:60]}...' → +{len(more_segs)}"
+                    )
 
         # Priority ordering: initial segments first, then gap-filling
         all_segments = initial_segs + gap_segments
@@ -898,7 +913,9 @@ class TreeEngine:
         # ---- V15 HOP 0: question → top-10, no neighbors ----
         q_emb = self.embed_text(question)
         hop0_result = self.store.search(
-            q_emb, top_k=self.top_k, conversation_id=conversation_id,
+            q_emb,
+            top_k=self.top_k,
+            conversation_id=conversation_id,
         )
         hop0_segs = list(hop0_result.segments)
         exclude.update(s.index for s in hop0_segs)
@@ -925,7 +942,8 @@ class TreeEngine:
         for cue in cues:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.top_k,
+                cue_emb,
+                top_k=self.top_k,
                 conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
@@ -939,7 +957,8 @@ class TreeEngine:
             neighbors = []
             for seg in hop1_segs:
                 nbrs = self.store.get_neighbors(
-                    seg, radius=self.neighbor_radius,
+                    seg,
+                    radius=self.neighbor_radius,
                     exclude_indices=exclude,
                 )
                 for n in nbrs:
@@ -1015,7 +1034,9 @@ class TreeEngine:
             neighbor_radius=1,
         )
         v15_result = v15_engine.associative_retrieve(
-            question, conversation_id, top_k_initial=10,
+            question,
+            conversation_id,
+            top_k_initial=10,
         )
         v15_segs = v15_result.all_retrieved_segments
         v15_engine.save_caches()
@@ -1133,7 +1154,9 @@ class TreeEngine:
             neighbor_radius=1,
         )
         v15_result = v15_engine.associative_retrieve(
-            question, conversation_id, top_k_initial=10,
+            question,
+            conversation_id,
+            top_k_initial=10,
         )
         v15_segs = v15_result.all_retrieved_segments
         v15_engine.save_caches()
@@ -1187,7 +1210,9 @@ class TreeEngine:
             neighbor_radius=1,
         )
         v15_result = v15_engine.associative_retrieve(
-            question, conversation_id, top_k_initial=10,
+            question,
+            conversation_id,
+            top_k_initial=10,
         )
         v15_segs = v15_result.all_retrieved_segments
         v15_engine.save_caches()
@@ -1218,7 +1243,8 @@ class TreeEngine:
         for cue in cues:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.top_k,
+                cue_emb,
+                top_k=self.top_k,
                 conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
@@ -1232,7 +1258,8 @@ class TreeEngine:
             neighbors = []
             for seg in hop2_segs:
                 nbrs = self.store.get_neighbors(
-                    seg, radius=self.neighbor_radius,
+                    seg,
+                    radius=self.neighbor_radius,
                     exclude_indices=exclude,
                 )
                 for n in nbrs:
@@ -1293,7 +1320,9 @@ class TreeEngine:
             neighbor_radius=1,
         )
         v15_result = v15_engine.associative_retrieve(
-            question, conversation_id, top_k_initial=10,
+            question,
+            conversation_id,
+            top_k_initial=10,
         )
         v15_segs = v15_result.all_retrieved_segments
         v15_engine.save_caches()
@@ -1365,7 +1394,9 @@ class TreeEngine:
             neighbor_radius=1,
         )
         v15_result = v15_engine.associative_retrieve(
-            question, conversation_id, top_k_initial=10,
+            question,
+            conversation_id,
+            top_k_initial=10,
         )
         v15_segs = v15_result.all_retrieved_segments
         v15_engine.save_caches()
@@ -1456,7 +1487,9 @@ class TreeEngine:
             neighbor_radius=1,
         )
         v15_result = v15_engine.associative_retrieve(
-            question, conversation_id, top_k_initial=10,
+            question,
+            conversation_id,
+            top_k_initial=10,
         )
         v15_segs = v15_result.all_retrieved_segments
         v15_engine.save_caches()
@@ -1510,7 +1543,9 @@ class TreeEngine:
         unique_pool.sort(key=lambda s: rrf_scores[s.index], reverse=True)
 
         if verbose:
-            print(f"  V15: {len(v15_segs)}, Gaps: {len(gap_segs)}, Pool: {len(unique_pool)}")
+            print(
+                f"  V15: {len(v15_segs)}, Gaps: {len(gap_segs)}, Pool: {len(unique_pool)}"
+            )
             print(f"  Queries: {len(all_queries)}")
 
         elapsed = time.time() - t0
@@ -1560,7 +1595,9 @@ class TreeEngine:
             neighbor_radius=1,
         )
         v15_result = v15_engine.associative_retrieve(
-            question, conversation_id, top_k_initial=10,
+            question,
+            conversation_id,
+            top_k_initial=10,
         )
         v15_segs = v15_result.all_retrieved_segments
         v15_engine.save_caches()
@@ -1656,7 +1693,9 @@ class TreeEngine:
             neighbor_radius=1,
         )
         v15_result = v15_engine.associative_retrieve(
-            question, conversation_id, top_k_initial=10,
+            question,
+            conversation_id,
+            top_k_initial=10,
         )
         v15_segs = v15_result.all_retrieved_segments
         v15_engine.save_caches()
@@ -1691,7 +1730,8 @@ class TreeEngine:
                 # Retrieve with this focused cue
                 cue_emb = self.embed_text(cue)
                 result = self.store.search(
-                    cue_emb, top_k=self.top_k,
+                    cue_emb,
+                    top_k=self.top_k,
                     conversation_id=conversation_id,
                     exclude_indices=exclude,
                 )
@@ -1702,9 +1742,10 @@ class TreeEngine:
 
                 # Neighbor expansion
                 if self.neighbor_radius > 0:
-                    for seg in list(branch_segs[-len(result.segments):]):
+                    for seg in list(branch_segs[-len(result.segments) :]):
                         nbrs = self.store.get_neighbors(
-                            seg, radius=self.neighbor_radius,
+                            seg,
+                            radius=self.neighbor_radius,
                             exclude_indices=exclude,
                         )
                         for n in nbrs:
@@ -2008,6 +2049,7 @@ CUE: <search text with specific vocabulary>"""
 # Evaluation harness
 # ---------------------------------------------------------------------------
 
+
 def compute_recall(retrieved_turn_ids: set[int], source_turn_ids: set[int]) -> float:
     if not source_turn_ids:
         return 1.0
@@ -2073,7 +2115,7 @@ def evaluate(
             baseline_recalls[f"r@{b}"] = compute_recall(b_ids, source_ids)
             tree_recalls[f"r@{b}"] = compute_recall(t_ids, source_ids)
 
-        b_ids_actual = {s.turn_id for s in baseline.segments[:len(tree_segments)]}
+        b_ids_actual = {s.turn_id for s in baseline.segments[: len(tree_segments)]}
         t_ids_actual = {s.turn_id for s in tree_segments}
         baseline_recalls["r@actual"] = compute_recall(b_ids_actual, source_ids)
         tree_recalls["r@actual"] = compute_recall(t_ids_actual, source_ids)
@@ -2096,9 +2138,9 @@ def evaluate(
         delta20 = tree_recalls.get("r@20", 0) - baseline_recalls.get("r@20", 0)
         marker = "+" if delta20 > 0.001 else ("-" if delta20 < -0.001 else "=")
         print(
-            f"[{i+1}/{len(questions)}] {marker} "
-            f"B={baseline_recalls.get('r@20',0):.3f} "
-            f"T={tree_recalls.get('r@20',0):.3f} "
+            f"[{i + 1}/{len(questions)}] {marker} "
+            f"B={baseline_recalls.get('r@20', 0):.3f} "
+            f"T={tree_recalls.get('r@20', 0):.3f} "
             f"d={delta20:+.3f} "
             f"segs={tree_result.total_retrieved} "
             f"llm={tree_result.llm_calls} "
@@ -2118,9 +2160,9 @@ def summarize(results: list[dict], label: str) -> dict:
 
     budgets = [k for k in results[0]["baseline_recalls"] if k.startswith("r@")]
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"{label} ({n} questions)")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     summary = {"label": label, "n": n}
     for b in budgets:
@@ -2133,7 +2175,9 @@ def summarize(results: list[dict], label: str) -> dict:
         avg_b = sum(b_vals) / n
         avg_t = sum(t_vals) / n
         avg_d = sum(deltas) / n
-        print(f"  {b:>10s}: B={avg_b:.3f} T={avg_t:.3f} Δ={avg_d:+.3f} W/T/L={w}/{t}/{l}")
+        print(
+            f"  {b:>10s}: B={avg_b:.3f} T={avg_t:.3f} Δ={avg_d:+.3f} W/T/L={w}/{t}/{l}"
+        )
         summary[f"baseline_{b}"] = avg_b
         summary[f"tree_{b}"] = avg_t
         summary[f"delta_{b}"] = avg_d
@@ -2142,7 +2186,9 @@ def summarize(results: list[dict], label: str) -> dict:
     avg_ret = sum(r["total_arch_retrieved"] for r in results) / n
     avg_llm = sum(r["llm_calls"] for r in results) / n
     avg_emb = sum(r["embed_calls"] for r in results) / n
-    print(f"\n  Avg retrieved: {avg_ret:.1f}, LLM calls: {avg_llm:.1f}, Embed calls: {avg_emb:.1f}")
+    print(
+        f"\n  Avg retrieved: {avg_ret:.1f}, LLM calls: {avg_llm:.1f}, Embed calls: {avg_emb:.1f}"
+    )
     summary["avg_retrieved"] = avg_ret
     summary["avg_llm_calls"] = avg_llm
     summary["avg_embed_calls"] = avg_emb
@@ -2155,13 +2201,26 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     all_archs = [
-        "decompose_then_retrieve", "iterative_deepen", "flat_multi_cue",
-        "rerank_pool", "interleaved", "retrieve_then_decompose",
-        "branch_assess", "rerank_interleaved", "rerank_retrieve_then_decompose",
-        "interleaved_prioritized", "v15_then_gaps", "v15_plus_tree",
-        "actual_v15_plus_gaps", "actual_v15_plus_gaps_reranked",
-        "actual_v15_control", "v15_targeted_second_hop", "v15_multi_sub",
-        "v15_maxsim_rerank", "v15_rrf_rerank", "v15_boosted_tail",
+        "decompose_then_retrieve",
+        "iterative_deepen",
+        "flat_multi_cue",
+        "rerank_pool",
+        "interleaved",
+        "retrieve_then_decompose",
+        "branch_assess",
+        "rerank_interleaved",
+        "rerank_retrieve_then_decompose",
+        "interleaved_prioritized",
+        "v15_then_gaps",
+        "v15_plus_tree",
+        "actual_v15_plus_gaps",
+        "actual_v15_plus_gaps_reranked",
+        "actual_v15_control",
+        "v15_targeted_second_hop",
+        "v15_multi_sub",
+        "v15_maxsim_rerank",
+        "v15_rrf_rerank",
+        "v15_boosted_tail",
         "v15_branch_cues",
     ]
     parser.add_argument("--arch", default="decompose_then_retrieve", choices=all_archs)
@@ -2175,7 +2234,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     store = SegmentStore(npz_name=f"segments{args.data_suffix}.npz")
-    questions_path = Path(__file__).resolve().parent / "data" / f"questions{args.data_suffix}.json"
+    questions_path = (
+        Path(__file__).resolve().parent / "data" / f"questions{args.data_suffix}.json"
+    )
     with open(questions_path) as f:
         questions = json.load(f)
 
@@ -2184,7 +2245,7 @@ if __name__ == "__main__":
     if args.category:
         questions = [q for q in questions if args.category in q["category"]]
     if args.max_questions:
-        questions = questions[:args.max_questions]
+        questions = questions[: args.max_questions]
 
     print(f"Loaded {len(questions)} questions, {len(store.segments)} segments")
 

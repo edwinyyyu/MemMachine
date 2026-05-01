@@ -18,7 +18,6 @@ Usage:
     uv run python best_shot.py --all --verbose
 """
 
-import hashlib
 import json
 import sys
 import time
@@ -27,9 +26,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -37,8 +33,9 @@ from associative_recall import (
     LLMCache,
     Segment,
     SegmentStore,
-    RetrievalResult,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -451,8 +448,9 @@ class BestshotBase:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _format_segments(segments: list[Segment], max_items: int = 12,
-                     max_chars: int = 250) -> str:
+def _format_segments(
+    segments: list[Segment], max_items: int = 12, max_chars: int = 250
+) -> str:
     """Format segments chronologically. Matches v15 control format."""
     if not segments:
         return "(no content retrieved yet)"
@@ -515,20 +513,16 @@ def _build_context_section(
     context_lines = []
     display_limit = 12 if hop_number <= 2 else 16
     for seg in sorted_segs[:display_limit]:
-        context_lines.append(
-            f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:250]}"
-        )
-    context_section = (
-        "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + "\n".join(context_lines)
+        context_lines.append(f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:250]}")
+    context_section = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + "\n".join(
+        context_lines
     )
     if new_segments and hop_number > 1:
         latest_lines = []
         for seg in sorted(new_segments, key=lambda s: s.turn_id)[:6]:
-            latest_lines.append(
-                f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:200]}"
-            )
-        context_section += (
-            "\n\nMOST RECENTLY FOUND (last hop):\n" + "\n".join(latest_lines)
+            latest_lines.append(f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:200]}")
+        context_section += "\n\nMOST RECENTLY FOUND (last hop):\n" + "\n".join(
+            latest_lines
         )
     if previous_cues:
         context_section += (
@@ -553,16 +547,13 @@ class V15Control(BestshotBase):
     def retrieve(self, question: str, conversation_id: str) -> BestshotResult:
         # Hop 0: embed question, retrieve top-10
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
         # Build context section
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
 
         # LLM call
@@ -575,7 +566,9 @@ class V15Control(BestshotBase):
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -597,27 +590,24 @@ class MetaV2f(BestshotBase):
 
     def retrieve(self, question: str, conversation_id: str) -> BestshotResult:
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
 
-        prompt = V2F_PROMPT.format(
-            question=question, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=question, context_section=context_section)
         output = self.llm_call(prompt)
         cues = _parse_cues(output)
 
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -643,9 +633,7 @@ class DecomposeThenRetrieve(BestshotBase):
 
         # Primer: retrieve top-10 with raw query to give decomposer context
         query_emb = self.embed_text(question)
-        primer = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        primer = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         primer_segs = list(primer.segments)
         all_segments.extend(primer_segs)
         for s in primer_segs:
@@ -667,7 +655,9 @@ class DecomposeThenRetrieve(BestshotBase):
         for sq in sub_questions:
             sq_emb = self.embed_text(sq)
             result = self.store.search(
-                sq_emb, top_k=10, conversation_id=conversation_id,
+                sq_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             branch_segs = []
@@ -691,7 +681,9 @@ class DecomposeThenRetrieve(BestshotBase):
                 cues_used.append(cue)
                 cue_emb = self.embed_text(cue)
                 result = self.store.search(
-                    cue_emb, top_k=10, conversation_id=conversation_id,
+                    cue_emb,
+                    top_k=10,
+                    conversation_id=conversation_id,
                     exclude_indices=exclude,
                 )
                 for seg in result.segments:
@@ -722,9 +714,7 @@ class Interleaved(BestshotBase):
 
         # Phase 1: initial retrieval
         query_emb = self.embed_text(question)
-        result = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        result = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         initial_segs = list(result.segments)
         all_segments.extend(initial_segs)
         for s in initial_segs:
@@ -746,7 +736,9 @@ class Interleaved(BestshotBase):
         for sq in sub_questions:
             sq_emb = self.embed_text(sq)
             result = self.store.search(
-                sq_emb, top_k=10, conversation_id=conversation_id,
+                sq_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             branch_segs = []
@@ -772,7 +764,9 @@ class Interleaved(BestshotBase):
                     cues_used.append(cue)
                     cue_emb = self.embed_text(cue)
                     result = self.store.search(
-                        cue_emb, top_k=10, conversation_id=conversation_id,
+                        cue_emb,
+                        top_k=10,
+                        conversation_id=conversation_id,
                         exclude_indices=exclude,
                     )
                     for seg in result.segments:
@@ -797,8 +791,13 @@ class FrontierV2Iterative(BestshotBase):
     """Iterative frontier: initial probe, then reflect-explore loops.
     1 gap per reflect round, max 4 reflects. v15-quality prompts."""
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 max_reflects: int = 4, segment_budget: int = 80):
+    def __init__(
+        self,
+        store: SegmentStore,
+        client: OpenAI | None = None,
+        max_reflects: int = 4,
+        segment_budget: int = 80,
+    ):
         super().__init__(store, client)
         self.max_reflects = max_reflects
         self.segment_budget = segment_budget
@@ -810,9 +809,7 @@ class FrontierV2Iterative(BestshotBase):
 
         # Phase 0: initial probe
         query_emb = self.embed_text(question)
-        result = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        result = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments.extend(result.segments)
         for s in result.segments:
             exclude.add(s.index)
@@ -855,12 +852,14 @@ class FrontierV2Iterative(BestshotBase):
                 elif line.strip().upper() == "DONE":
                     done = True
 
-            reflect_log.append({
-                "reflect": reflect_i,
-                "assessment": assessment,
-                "gaps": gaps,
-                "done": done,
-            })
+            reflect_log.append(
+                {
+                    "reflect": reflect_i,
+                    "assessment": assessment,
+                    "gaps": gaps,
+                    "done": done,
+                }
+            )
 
             if done or not gaps:
                 break
@@ -871,7 +870,9 @@ class FrontierV2Iterative(BestshotBase):
                     break
                 gap_emb = self.embed_text(gap)
                 result = self.store.search(
-                    gap_emb, top_k=10, conversation_id=conversation_id,
+                    gap_emb,
+                    top_k=10,
+                    conversation_id=conversation_id,
                     exclude_indices=exclude,
                 )
                 for seg in result.segments:
@@ -903,9 +904,7 @@ class FlatMultiCue(BestshotBase):
 
         # Primer: retrieve top-10 with raw query
         query_emb = self.embed_text(question)
-        primer = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        primer = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         primer_segs = list(primer.segments)
         all_segments.extend(primer_segs)
         for s in primer_segs:
@@ -926,7 +925,9 @@ class FlatMultiCue(BestshotBase):
         for sq in sub_questions:
             sq_emb = self.embed_text(sq)
             result = self.store.search(
-                sq_emb, top_k=10, conversation_id=conversation_id,
+                sq_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -957,9 +958,7 @@ class RetrieveThenDecompose(BestshotBase):
 
         # Phase 1a: initial retrieval
         query_emb = self.embed_text(question)
-        result = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        result = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         initial_segs = list(result.segments)
         all_segments.extend(initial_segs)
         for s in initial_segs:
@@ -977,7 +976,9 @@ class RetrieveThenDecompose(BestshotBase):
             cue = v15_cues[0]
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -1002,7 +1003,9 @@ class RetrieveThenDecompose(BestshotBase):
         for sq in sub_questions:
             sq_emb = self.embed_text(sq)
             result = self.store.search(
-                sq_emb, top_k=10, conversation_id=conversation_id,
+                sq_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -1159,12 +1162,8 @@ def summarize(results: list[dict], variant_name: str, benchmark: str) -> dict:
     summary["avg_total_retrieved"] = round(
         sum(r["total_retrieved"] for r in results) / n, 1
     )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1
-    )
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
     summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
 
     return summary
@@ -1203,19 +1202,18 @@ def run_architecture(
     verbose: bool = False,
 ) -> tuple[list[dict], dict]:
     """Run one architecture, return (results, summary)."""
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(
         f"ARCHITECTURE: {arch_name} | BENCHMARK: {benchmark_label} | "
         f"{len(questions)} questions"
     )
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     results = []
     for i, question in enumerate(questions):
         q_short = question["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {question['category']}: "
-            f"{q_short}...",
+            f"  [{i + 1}/{len(questions)}] {question['category']}: {q_short}...",
             flush=True,
         )
         try:
@@ -1224,6 +1222,7 @@ def run_architecture(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -1250,7 +1249,7 @@ def run_architecture(
     )
 
     cat_summaries = summarize_by_category(results)
-    print(f"\n  Per-category (r@20):")
+    print("\n  Per-category (r@20):")
     for cat, cs in cat_summaries.items():
         print(
             f"    {cat}: delta={cs['delta_r@20']:+.3f} "
@@ -1281,10 +1280,17 @@ def spot_check_outputs(results: list[dict], arch_name: str, num_checks: int = 5)
         for cue in cues:
             cue_lower = cue.lower()
             # Check for meta-instructions
-            if any(p in cue_lower for p in [
-                "search for", "find the", "look for", "show me",
-                "retrieve", "locate the",
-            ]):
+            if any(
+                p in cue_lower
+                for p in [
+                    "search for",
+                    "find the",
+                    "look for",
+                    "show me",
+                    "retrieve",
+                    "locate the",
+                ]
+            ):
                 issues.append(f"  META-INSTRUCTION: '{cue[:100]}'")
             # Check for boolean queries
             if " OR " in cue or " AND " in cue:
@@ -1303,9 +1309,8 @@ def spot_check_outputs(results: list[dict], arch_name: str, num_checks: int = 5)
         for issue in issues[:10]:
             print(f"    {issue}")
         return False
-    else:
-        print(f"  All {checked} outputs clean.")
-        return True
+    print(f"  All {checked} outputs clean.")
+    return True
 
 
 def print_final_table(all_summaries: dict[str, dict[str, dict]]):
@@ -1353,31 +1358,35 @@ def main() -> None:
         description="Best-shot comparison of all retrieval architectures"
     )
     parser.add_argument(
-        "--arch", type=str, default=None,
+        "--arch",
+        type=str,
+        default=None,
         help="Run specific architecture (use --list to see available)",
     )
     parser.add_argument("--all", action="store_true", help="Run all architectures")
     parser.add_argument("--list", action="store_true", help="List all architectures")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
-        "--locomo-only", action="store_true",
+        "--locomo-only",
+        action="store_true",
         help="Skip synthetic benchmark",
     )
     parser.add_argument(
-        "--synthetic-only", action="store_true",
+        "--synthetic-only",
+        action="store_true",
         help="Skip LoCoMo benchmark",
     )
     parser.add_argument(
-        "--force", action="store_true", help="Overwrite existing results",
+        "--force",
+        action="store_true",
+        help="Overwrite existing results",
     )
     args = parser.parse_args()
 
     # Load LoCoMo data
     with open(DATA_DIR / "questions_extended.json") as f:
         all_questions = json.load(f)
-    locomo_store = SegmentStore(
-        data_dir=DATA_DIR, npz_name="segments_extended.npz"
-    )
+    locomo_store = SegmentStore(data_dir=DATA_DIR, npz_name="segments_extended.npz")
     locomo_qs = [q for q in all_questions if q.get("benchmark") == "locomo"][:30]
     print(f"LoCoMo: {len(locomo_qs)} questions, {len(locomo_store.segments)} segments")
 
@@ -1388,10 +1397,10 @@ def main() -> None:
     if synth_path.exists():
         with open(synth_path) as f:
             synth_qs = json.load(f)
-        synth_store = SegmentStore(
-            data_dir=DATA_DIR, npz_name="segments_synthetic.npz"
+        synth_store = SegmentStore(data_dir=DATA_DIR, npz_name="segments_synthetic.npz")
+        print(
+            f"Synthetic: {len(synth_qs)} questions, {len(synth_store.segments)} segments"
         )
-        print(f"Synthetic: {len(synth_qs)} questions, {len(synth_store.segments)} segments")
     else:
         print("Synthetic data not found, skipping.")
 
@@ -1427,7 +1436,9 @@ def main() -> None:
         for arch_name in arch_names:
             result_file = RESULTS_DIR / f"bestshot_{arch_name}_locomo_30q.json"
             if result_file.exists() and not args.force:
-                print(f"\nSkipping {arch_name} on LoCoMo (exists). Use --force to rerun.")
+                print(
+                    f"\nSkipping {arch_name} on LoCoMo (exists). Use --force to rerun."
+                )
                 with open(result_file) as f:
                     saved = json.load(f)
                 results = saved["results"]
@@ -1435,20 +1446,27 @@ def main() -> None:
             else:
                 arch = locomo_archs[arch_name]
                 results, summary = run_architecture(
-                    arch_name, arch, locomo_qs, "locomo_30q",
+                    arch_name,
+                    arch,
+                    locomo_qs,
+                    "locomo_30q",
                     verbose=args.verbose,
                 )
 
                 # Spot-check
                 clean = spot_check_outputs(results, arch_name)
                 if not clean:
-                    print(f"  WARNING: {arch_name} has prompt quality issues on LoCoMo!")
+                    print(
+                        f"  WARNING: {arch_name} has prompt quality issues on LoCoMo!"
+                    )
 
                 # Save
                 with open(result_file, "w") as f:
                     json.dump(
                         {"results": results, "summary": summary},
-                        f, indent=2, default=str,
+                        f,
+                        indent=2,
+                        default=str,
                     )
                 print(f"  Saved: {result_file}")
 
@@ -1463,7 +1481,9 @@ def main() -> None:
         for arch_name in arch_names:
             result_file = RESULTS_DIR / f"bestshot_{arch_name}_synthetic_19q.json"
             if result_file.exists() and not args.force:
-                print(f"\nSkipping {arch_name} on synthetic (exists). Use --force to rerun.")
+                print(
+                    f"\nSkipping {arch_name} on synthetic (exists). Use --force to rerun."
+                )
                 with open(result_file) as f:
                     saved = json.load(f)
                 results = saved["results"]
@@ -1471,20 +1491,27 @@ def main() -> None:
             else:
                 arch = synth_archs[arch_name]
                 results, summary = run_architecture(
-                    arch_name, arch, synth_qs, "synthetic_19q",
+                    arch_name,
+                    arch,
+                    synth_qs,
+                    "synthetic_19q",
                     verbose=args.verbose,
                 )
 
                 # Spot-check
                 clean = spot_check_outputs(results, arch_name)
                 if not clean:
-                    print(f"  WARNING: {arch_name} has prompt quality issues on synthetic!")
+                    print(
+                        f"  WARNING: {arch_name} has prompt quality issues on synthetic!"
+                    )
 
                 # Save
                 with open(result_file, "w") as f:
                     json.dump(
                         {"results": results, "summary": summary},
-                        f, indent=2, default=str,
+                        f,
+                        indent=2,
+                        default=str,
                     )
                 print(f"  Saved: {result_file}")
 

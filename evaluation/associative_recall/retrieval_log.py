@@ -44,9 +44,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -55,6 +52,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -100,6 +99,7 @@ class RetLogEmbeddingCache(EmbeddingCache):
                 existing = {}
         existing.update(self._new)
         import os
+
         tmp = self.cache_file.with_suffix(f".json.tmp.{os.getpid()}")
         try:
             with open(tmp, "w") as f:
@@ -151,6 +151,7 @@ class RetLogLLMCache(LLMCache):
                 existing = {}
         existing.update(self._new)
         import os
+
         tmp = self.cache_file.with_suffix(f".json.tmp.{os.getpid()}")
         try:
             with open(tmp, "w") as f:
@@ -170,8 +171,7 @@ def _format_segments(
 ) -> str:
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
     return "\n".join(
-        f"[Turn {s.turn_id}, {s.role}]: {s.text[:max_chars]}"
-        for s in sorted_segs
+        f"[Turn {s.turn_id}, {s.role}]: {s.text[:max_chars]}" for s in sorted_segs
     )
 
 
@@ -180,7 +180,7 @@ def _parse_cues(text: str, key: str = "CUE:") -> list[str]:
     for line in text.strip().split("\n"):
         line = line.strip()
         if line.upper().startswith(key.upper()):
-            val = line[len(key):].strip()
+            val = line[len(key) :].strip()
             if val:
                 out.append(val)
     return out
@@ -189,6 +189,7 @@ def _parse_cues(text: str, key: str = "CUE:") -> list[str]:
 @dataclass
 class CueRecord:
     """Tracks the effectiveness of a single cue in the retrieval log."""
+
     round: int
     cue: str
     all_retrieved_indices: set[int]
@@ -445,7 +446,7 @@ class VariantConfig:
     prompt: str
     uses_retrieval_log: bool
     initial_k: int
-    max_cues: int        # cap per round
+    max_cues: int  # cap per round
     per_cue_k: int
     rounds: int
 
@@ -536,9 +537,7 @@ class RetrievalLogArch:
         if cached is not None:
             self.embed_calls += 1
             return cached
-        response = self.client.embeddings.create(
-            model=EMBED_MODEL, input=[text]
-        )
+        response = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
         embedding = np.array(response.data[0].embedding, dtype=np.float32)
         self.embedding_cache.put(text, embedding)
         self.embed_calls += 1
@@ -586,8 +585,7 @@ class RetrievalLogArch:
                 "all_segs": _format_segments(all_segs, max_items=14),
                 "num_segs": len(all_segs),
                 "explored": (
-                    "\n".join(f"- {c}" for c in explored)
-                    if explored else "(none yet)"
+                    "\n".join(f"- {c}" for c in explored) if explored else "(none yet)"
                 ),
                 "retrieval_log": _format_retrieval_log(initial_n, records),
                 "num_cues": cfg.max_cues,
@@ -597,9 +595,7 @@ class RetrievalLogArch:
             try:
                 prompt = cfg.prompt.format(**fmt_kwargs)
             except KeyError as e:
-                raise RuntimeError(
-                    f"Prompt for variant {cfg.name} missing field: {e}"
-                )
+                raise RuntimeError(f"Prompt for variant {cfg.name} missing field: {e}")
 
             response = self.llm_call(prompt)
             cues = _parse_cues(response, "CUE:")[: cfg.max_cues]
@@ -609,17 +605,21 @@ class RetrievalLogArch:
             for line in response.strip().split("\n"):
                 ls = line.strip()
                 upper = ls.upper()
-                if (upper.startswith("ASSESSMENT:")
-                        or upper.startswith("STRATEGY:")
-                        or upper.startswith("REASON:")):
+                if (
+                    upper.startswith("ASSESSMENT:")
+                    or upper.startswith("STRATEGY:")
+                    or upper.startswith("REASON:")
+                ):
                     meta_line = ls
                     break
 
-            round_log.append({
-                "round": round_i,
-                "meta": meta_line,
-                "cues": cues,
-            })
+            round_log.append(
+                {
+                    "round": round_i,
+                    "meta": meta_line,
+                    "cues": cues,
+                }
+            )
             if not cues:
                 break
 
@@ -637,12 +637,14 @@ class RetrievalLogArch:
                 )
                 all_idx_set = {s.index for s in result.segments}
                 new_idx_set = all_idx_set - exclude
-                records.append(CueRecord(
-                    round=round_i,
-                    cue=cue,
-                    all_retrieved_indices=all_idx_set,
-                    new_indices=new_idx_set,
-                ))
+                records.append(
+                    CueRecord(
+                        round=round_i,
+                        cue=cue,
+                        all_retrieved_indices=all_idx_set,
+                        new_indices=new_idx_set,
+                    )
+                )
                 # Update pool with only the NEW segments
                 for s in result.segments:
                     if s.index not in exclude:
@@ -674,15 +676,13 @@ class RetrievalLogArch:
 # ---------------------------------------------------------------------------
 # Fair K-budget evaluation (mirrors cot_universal.py / self_dispatch_v2.py)
 # ---------------------------------------------------------------------------
-def compute_recall(retrieved_turn_ids: set[int],
-                   source_turn_ids: set[int]) -> float:
+def compute_recall(retrieved_turn_ids: set[int], source_turn_ids: set[int]) -> float:
     if not source_turn_ids:
         return 1.0
     return len(retrieved_turn_ids & source_turn_ids) / len(source_turn_ids)
 
 
-def evaluate_one(arch: RetrievalLogArch, question: dict,
-                 verbose: bool = False) -> dict:
+def evaluate_one(arch: RetrievalLogArch, question: dict, verbose: bool = False) -> dict:
     q_text = question["question"]
     conv_id = question["conversation_id"]
     source_ids = set(question["source_chat_ids"])
@@ -701,9 +701,7 @@ def evaluate_one(arch: RetrievalLogArch, question: dict,
 
     q_emb = arch.embed_text(q_text)
     max_b = max(BUDGETS)
-    baseline = arch.store.search(
-        q_emb, top_k=max_b, conversation_id=conv_id
-    )
+    baseline = arch.store.search(q_emb, top_k=max_b, conversation_id=conv_id)
 
     arch_idx = {s.index for s in arch_segments}
     backfilled = list(arch_segments) + [
@@ -721,7 +719,8 @@ def evaluate_one(arch: RetrievalLogArch, question: dict,
     cue_records = result.metadata.get("cue_records", [])
     avg_dup_rate = (
         sum(c["duplicate_rate"] for c in cue_records) / len(cue_records)
-        if cue_records else 0.0
+        if cue_records
+        else 0.0
     )
 
     row = {
@@ -800,9 +799,7 @@ def load_dataset(key: str) -> tuple[list[dict], SegmentStore]:
 # ---------------------------------------------------------------------------
 # Loading prior baselines for comparison
 # ---------------------------------------------------------------------------
-def load_budget_recall_by_qkey(
-    arch_name: str, dataset_key: str
-) -> dict[tuple, float]:
+def load_budget_recall_by_qkey(arch_name: str, dataset_key: str) -> dict[tuple, float]:
     path = RESULTS_DIR / f"budget_{arch_name}_{dataset_key}.json"
     if not path.exists():
         return {}
@@ -867,13 +864,14 @@ def run_variant_on_dataset(
         with open(result_file) as f:
             existing = json.load(f)
 
-    done_keys = {
-        (r["conversation_id"], r.get("question_index")) for r in existing
-    }
+    done_keys = {(r["conversation_id"], r.get("question_index")) for r in existing}
 
     qs, store = load_dataset(dataset_key)
-    to_run = [q for q in qs if (q["conversation_id"], q.get("question_index"))
-              not in done_keys]
+    to_run = [
+        q
+        for q in qs
+        if (q["conversation_id"], q.get("question_index")) not in done_keys
+    ]
     if not to_run:
         print(f">>> [{variant_name}] {dataset_key}: all {len(qs)} done.")
         return existing
@@ -888,7 +886,7 @@ def run_variant_on_dataset(
     for i, q in enumerate(to_run):
         q_short = q["question"][:60].replace("\n", " ")
         print(
-            f"  [{i+1}/{len(to_run)}] {q['category']}: {q_short}...",
+            f"  [{i + 1}/{len(to_run)}] {q['category']}: {q_short}...",
             flush=True,
         )
         try:
@@ -897,6 +895,7 @@ def run_variant_on_dataset(
         except Exception as e:
             print(f"    ERROR: {type(e).__name__}: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
             # Save what we have so far before moving on
             with open(result_file, "w") as f:
@@ -936,8 +935,7 @@ def compare_per_category(
     budget_by_arch: dict[str, dict[int, dict]] = {}
     for arch in ("baseline", "v2f_tight"):
         budget_by_arch[arch] = {
-            K: load_budget_recall_by_qkey(f"{arch}_{K}", dataset_key)
-            for K in BUDGETS
+            K: load_budget_recall_by_qkey(f"{arch}_{K}", dataset_key) for K in BUDGETS
         }
     cot_by_q = load_cot_recall_by_qkey(dataset_key)
     sv2_by_q = load_self_v2_recall_by_qkey(dataset_key)
@@ -952,12 +950,11 @@ def compare_per_category(
                 n = len(cat_rows)
                 if n == 0:
                     continue
-                var_recalls = [r["retlog_recalls"][f"r@{K}"]
-                               for r in cat_rows]
+                var_recalls = [r["retlog_recalls"][f"r@{K}"] for r in cat_rows]
                 var_mean = sum(var_recalls) / n
-                avg_dup = sum(
-                    r.get("avg_cue_duplicate_rate", 0.0) for r in cat_rows
-                ) / n
+                avg_dup = (
+                    sum(r.get("avg_cue_duplicate_rate", 0.0) for r in cat_rows) / n
+                )
 
                 b_vals, v2f_vals, cot_vals, sv2_vals = [], [], [], []
                 for r in cat_rows:
@@ -976,32 +973,34 @@ def compare_per_category(
                 cot_mean = _mean(cot_vals)
                 sv2_mean = _mean(sv2_vals)
 
-                out.append({
-                    "variant": variant,
-                    "dataset": dataset_key,
-                    "category": cat,
-                    "K": K,
-                    "n": n,
-                    "baseline": b_mean,
-                    "v2f": v2f_mean,
-                    "cot": cot_mean,
-                    "self_v2": sv2_mean,
-                    variant: var_mean,
-                    "mean": var_mean,
-                    "avg_cue_duplicate_rate": round(avg_dup, 3),
-                    "vs_v2f": (
-                        var_mean - v2f_mean if v2f_mean is not None else None
-                    ),
-                    "vs_cot": (
-                        var_mean - cot_mean if cot_mean is not None else None
-                    ),
-                    "vs_self_v2": (
-                        var_mean - sv2_mean if sv2_mean is not None else None
-                    ),
-                    "vs_baseline": (
-                        var_mean - b_mean if b_mean is not None else None
-                    ),
-                })
+                out.append(
+                    {
+                        "variant": variant,
+                        "dataset": dataset_key,
+                        "category": cat,
+                        "K": K,
+                        "n": n,
+                        "baseline": b_mean,
+                        "v2f": v2f_mean,
+                        "cot": cot_mean,
+                        "self_v2": sv2_mean,
+                        variant: var_mean,
+                        "mean": var_mean,
+                        "avg_cue_duplicate_rate": round(avg_dup, 3),
+                        "vs_v2f": (
+                            var_mean - v2f_mean if v2f_mean is not None else None
+                        ),
+                        "vs_cot": (
+                            var_mean - cot_mean if cot_mean is not None else None
+                        ),
+                        "vs_self_v2": (
+                            var_mean - sv2_mean if sv2_mean is not None else None
+                        ),
+                        "vs_baseline": (
+                            var_mean - b_mean if b_mean is not None else None
+                        ),
+                    }
+                )
     return out
 
 
@@ -1016,9 +1015,9 @@ def print_overall_by_dataset(all_rows: list[dict], K: int) -> None:
     rows_k = [r for r in all_rows if r["K"] == K]
     if not rows_k:
         return
-    print(f"\n{'-'*140}")
+    print(f"\n{'-' * 140}")
     print(f"OVERALL per (variant, dataset) at K={K}")
-    print(f"{'-'*140}")
+    print(f"{'-' * 140}")
     hdr = (
         f"{'Variant':<24s} {'Dataset':<14s} {'n':>3s} "
         f"{'Base':>6s} {'v2f':>6s} {'CoT':>6s} {'SV2':>6s} {'Mean':>6s}  "
@@ -1033,7 +1032,7 @@ def print_overall_by_dataset(all_rows: list[dict], K: int) -> None:
     last_variant = None
     for (variant, ds), rows in sorted(by_vd.items()):
         if last_variant is not None and variant != last_variant:
-            print("")
+            print()
         last_variant = variant
         total_n = sum(r["n"] for r in rows)
 
@@ -1060,8 +1059,9 @@ def print_overall_by_dataset(all_rows: list[dict], K: int) -> None:
             f"{fmt_cell(sv2)} {fmt_cell(mean)}  "
             f"{fmt_cell(vv, True)} {fmt_cell(vc, True)} "
             f"{fmt_cell(vs, True)} {fmt_cell(vb, True)}  "
-            f"{dup:>5.2f}" if dup is not None else
-            f"{variant:<24s} {ds:<14s} {total_n:>3d} "
+            f"{dup:>5.2f}"
+            if dup is not None
+            else f"{variant:<24s} {ds:<14s} {total_n:>3d} "
             f"{fmt_cell(b)} {fmt_cell(v2f)} {fmt_cell(cot)} "
             f"{fmt_cell(sv2)} {fmt_cell(mean)}  "
             f"{fmt_cell(vv, True)} {fmt_cell(vc, True)} "
@@ -1075,9 +1075,9 @@ def print_variant_ranking(all_rows: list[dict], K: int) -> None:
     rows_k = [r for r in all_rows if r["K"] == K]
     if not rows_k:
         return
-    print(f"\n{'='*100}")
+    print(f"\n{'=' * 100}")
     print(f"VARIANT RANKING at K={K} (weighted across all datasets)")
-    print(f"{'='*100}")
+    print(f"{'=' * 100}")
 
     by_var: dict[str, list[dict]] = defaultdict(list)
     for r in rows_k:
@@ -1123,21 +1123,34 @@ def print_variant_ranking(all_rows: list[dict], K: int) -> None:
         )
 
     variant_scores.sort(key=lambda x: -x[1])
-    print(f"\n  Ranking (by weighted mean recall): "
-          f"{', '.join(f'{v}={s:.3f}' for v, s in variant_scores)}")
+    print(
+        f"\n  Ranking (by weighted mean recall): "
+        f"{', '.join(f'{v}={s:.3f}' for v, s in variant_scores)}"
+    )
 
 
 HARDEST_CATEGORIES = [
-    "completeness", "logic_constraint", "procedural", "conjunction",
-    "inference", "proactive", "evolving_terminology",
-    "constraint_propagation", "sequential_chain", "absence_inference",
-    "contradiction", "negation", "quantitative_aggregation",
-    "unfinished_business", "locomo_single_hop",
+    "completeness",
+    "logic_constraint",
+    "procedural",
+    "conjunction",
+    "inference",
+    "proactive",
+    "evolving_terminology",
+    "constraint_propagation",
+    "sequential_chain",
+    "absence_inference",
+    "contradiction",
+    "negation",
+    "quantitative_aggregation",
+    "unfinished_business",
+    "locomo_single_hop",
 ]
 
 
 def print_per_category_table(
-    all_rows: list[dict], K: int,
+    all_rows: list[dict],
+    K: int,
     focus_categories: list[str] | None = None,
 ) -> None:
     rows = [r for r in all_rows if r["K"] == K]
@@ -1146,9 +1159,9 @@ def print_per_category_table(
     if not rows:
         return
     title = "PER-CATEGORY (hardest)" if focus_categories else "PER-CATEGORY"
-    print(f"\n{'='*148}")
+    print(f"\n{'=' * 148}")
     print(f"{title} at K={K}")
-    print(f"{'='*148}")
+    print(f"{'=' * 148}")
     hdr = (
         f"{'Variant':<24s} {'Dataset':<14s} {'Category':<24s} {'n':>3s} "
         f"{'Base':>6s} {'v2f':>6s} {'CoT':>6s} {'SV2':>6s} {'Mean':>6s}  "
@@ -1158,11 +1171,9 @@ def print_per_category_table(
     print(hdr)
     print("-" * len(hdr))
     last_variant = None
-    for r in sorted(
-        rows, key=lambda x: (x["variant"], x["dataset"], x["category"])
-    ):
+    for r in sorted(rows, key=lambda x: (x["variant"], x["dataset"], x["category"])):
         if last_variant is not None and r["variant"] != last_variant:
-            print("")
+            print()
         last_variant = r["variant"]
         dup = r.get("avg_cue_duplicate_rate")
         dup_str = f"{dup:>5.2f}" if dup is not None else "    -"
@@ -1185,27 +1196,34 @@ def print_per_category_table(
 # ---------------------------------------------------------------------------
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--force", action="store_true",
-                        help="Rerun even if result file exists")
+    parser.add_argument(
+        "--force", action="store_true", help="Rerun even if result file exists"
+    )
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--dataset", type=str, default=None,
-                        choices=list(DATASETS.keys()),
-                        help="Restrict to a single dataset")
-    parser.add_argument("--variant", type=str, default=None,
-                        choices=list(VARIANTS.keys()),
-                        help="Restrict to a single variant")
-    parser.add_argument("--summary", action="store_true",
-                        help="Recompute summary from existing result files, "
-                             "no new LLM calls")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        choices=list(DATASETS.keys()),
+        help="Restrict to a single dataset",
+    )
+    parser.add_argument(
+        "--variant",
+        type=str,
+        default=None,
+        choices=list(VARIANTS.keys()),
+        help="Restrict to a single variant",
+    )
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="Recompute summary from existing result files, no new LLM calls",
+    )
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    dataset_keys = (
-        [args.dataset] if args.dataset else list(DATASETS.keys())
-    )
-    variant_keys = (
-        [args.variant] if args.variant else list(VARIANTS.keys())
-    )
+    dataset_keys = [args.dataset] if args.dataset else list(DATASETS.keys())
+    variant_keys = [args.variant] if args.variant else list(VARIANTS.keys())
 
     all_rows: list[dict] = []
     for ds in dataset_keys:
@@ -1235,8 +1253,7 @@ def main() -> None:
         print_overall_by_dataset(all_rows, K)
 
     for K in BUDGETS:
-        print_per_category_table(all_rows, K,
-                                 focus_categories=HARDEST_CATEGORIES)
+        print_per_category_table(all_rows, K, focus_categories=HARDEST_CATEGORIES)
 
 
 if __name__ == "__main__":

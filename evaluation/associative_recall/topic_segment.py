@@ -19,17 +19,12 @@ and the retrieval class (TopicSegRetriever) used by topic_segment_eval.py.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -38,6 +33,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -134,10 +131,11 @@ class TopicSegLLMCache(LLMCache):
 @dataclass
 class TopicSegment:
     """A topic-coherent chunk of consecutive turns in a conversation."""
+
     conversation_id: str
-    segment_idx: int                # per-conversation index
-    turn_ids: list[int]             # constituent turn_ids (sorted)
-    summary: str                    # short summary (1-3 sentences)
+    segment_idx: int  # per-conversation index
+    turn_ids: list[int]  # constituent turn_ids (sorted)
+    summary: str  # short summary (1-3 sentences)
     embedding: list[float] | None = None  # summary embedding
 
 
@@ -239,13 +237,15 @@ class TopicSegBuilder:
                 turn_ids = [t.turn_id for t in chunk]
                 summary = self._summarize_fixed(chunk)
                 emb = self._embed(summary)
-                segs.append(TopicSegment(
-                    conversation_id=cid,
-                    segment_idx=seg_i,
-                    turn_ids=turn_ids,
-                    summary=summary,
-                    embedding=emb.tolist(),
-                ))
+                segs.append(
+                    TopicSegment(
+                        conversation_id=cid,
+                        segment_idx=seg_i,
+                        turn_ids=turn_ids,
+                        summary=summary,
+                        embedding=emb.tolist(),
+                    )
+                )
             result.conversations[cid] = segs
         return result
 
@@ -292,8 +292,7 @@ class TopicSegBuilder:
             start_tid = window_turns[0].turn_id
             end_tid = window_turns[-1].turn_id
             conv_text = "\n".join(
-                f"[{t.turn_id}] {t.role}: {t.text[:300]}"
-                for t in window_turns
+                f"[{t.turn_id}] {t.role}: {t.text[:300]}" for t in window_turns
             )
             prompt = LLM_SEGMENT_PROMPT.format(
                 start_tid=start_tid,
@@ -307,15 +306,15 @@ class TopicSegBuilder:
             window_tids = {t.turn_id for t in window_turns}
             valid_segs: list[tuple[list[int], str]] = []
             for tids, summary in window_segs:
-                tids_clean = [t for t in tids if t in window_tids
-                              and t not in covered_tids]
+                tids_clean = [
+                    t for t in tids if t in window_tids and t not in covered_tids
+                ]
                 if not tids_clean or not summary.strip():
                     continue
                 covered_tids.update(tids_clean)
                 valid_segs.append((tids_clean, summary.strip()))
             # Any uncovered turns: put into a fallback segment
-            missing = [t.turn_id for t in window_turns
-                       if t.turn_id not in covered_tids]
+            missing = [t.turn_id for t in window_turns if t.turn_id not in covered_tids]
             if missing:
                 fallback_text = " | ".join(
                     f"{tid_to_seg[t].role}: {tid_to_seg[t].text[:80]}"
@@ -326,13 +325,15 @@ class TopicSegBuilder:
             for tids, summary in valid_segs:
                 tids_sorted = sorted(tids)
                 emb = self._embed(summary)
-                all_segs.append(TopicSegment(
-                    conversation_id=cid,
-                    segment_idx=seg_i,
-                    turn_ids=tids_sorted,
-                    summary=summary,
-                    embedding=emb.tolist(),
-                ))
+                all_segs.append(
+                    TopicSegment(
+                        conversation_id=cid,
+                        segment_idx=seg_i,
+                        turn_ids=tids_sorted,
+                        summary=summary,
+                        embedding=emb.tolist(),
+                    )
+                )
                 seg_i += 1
             i += window_size
         return all_segs
@@ -359,7 +360,7 @@ class TopicSegBuilder:
                             pass
                     current_tids = tids
             elif line.upper().startswith("SUMMARY:"):
-                summary = line[len("SUMMARY:"):].strip()
+                summary = line[len("SUMMARY:") :].strip()
                 if current_tids is not None:
                     segs.append((current_tids, summary))
                     current_tids = None
@@ -419,7 +420,7 @@ def load_segmentation(path: Path) -> SegmentationResult:
 # ---------------------------------------------------------------------------
 @dataclass
 class TopicSegRetrievalResult:
-    segments: list[Segment]                # ordered, deduped by Segment.index
+    segments: list[Segment]  # ordered, deduped by Segment.index
     metadata: dict = field(default_factory=dict)
 
 
@@ -435,9 +436,7 @@ class TopicSegStore:
         for cid, segs in seg_result.conversations.items():
             if not segs:
                 continue
-            embs = np.array(
-                [s.embedding for s in segs], dtype=np.float32
-            )
+            embs = np.array([s.embedding for s in segs], dtype=np.float32)
             norms = np.linalg.norm(embs, axis=1, keepdims=True)
             norms = np.maximum(norms, 1e-10)
             self.conv_embeddings[cid] = embs / norms
@@ -527,13 +526,17 @@ class TopicSegRetriever:
         self.llm_cache.save()
 
     def retrieve(
-        self, question: str, conversation_id: str,
+        self,
+        question: str,
+        conversation_id: str,
     ) -> TopicSegRetrievalResult:
         q_emb = self.embed_text(question)
 
         # Turn-layer: cosine top-Kt
         turn_result = self.store.search(
-            q_emb, top_k=self.top_kt_turns, conversation_id=conversation_id,
+            q_emb,
+            top_k=self.top_kt_turns,
+            conversation_id=conversation_id,
         )
 
         # Score turns by cosine
@@ -545,16 +548,16 @@ class TopicSegRetriever:
 
         # Summary-layer: top-Ms summaries
         summary_hits = self.topic_store.search_summaries(
-            q_emb, conversation_id, self.top_m_summaries,
+            q_emb,
+            conversation_id,
+            self.top_m_summaries,
         )
 
         # Expand each hit to its constituent turns
         for tseg, summary_score in summary_hits:
             parent_boost = self.alpha * summary_score
             for tid in tseg.turn_ids:
-                raw_idx = self.topic_store.turn_to_raw_idx.get(
-                    (conversation_id, tid)
-                )
+                raw_idx = self.topic_store.turn_to_raw_idx.get((conversation_id, tid))
                 if raw_idx is None:
                     continue
                 if raw_idx not in turn_idx_to_seg:
@@ -566,7 +569,9 @@ class TopicSegRetriever:
 
         # Rank merged by score
         ranked_idx = sorted(
-            turn_scores.keys(), key=lambda i: turn_scores[i], reverse=True,
+            turn_scores.keys(),
+            key=lambda i: turn_scores[i],
+            reverse=True,
         )
         segments = [turn_idx_to_seg[i] for i in ranked_idx]
         return TopicSegRetrievalResult(
@@ -634,14 +639,10 @@ def main() -> None:
             builder = TopicSegBuilder(store)
             t0 = time.time()
             if variant == "fixed":
-                result = builder.build_fixed(
-                    conv_ids, chunk_size=args.chunk_size
-                )
+                result = builder.build_fixed(conv_ids, chunk_size=args.chunk_size)
                 suffix = f"fixed_n{args.chunk_size}"
             else:
-                result = builder.build_llm(
-                    conv_ids, window_size=args.window_size
-                )
+                result = builder.build_llm(conv_ids, window_size=args.window_size)
                 suffix = f"llm_w{args.window_size}"
             elapsed = time.time() - t0
             builder.save_caches()
@@ -650,10 +651,9 @@ def main() -> None:
             out = RESULTS_DIR / f"topic_segments_{ds_name}_{suffix}.json"
             save_segmentation(result, out)
             total_segs = sum(len(v) for v in result.conversations.values())
-            avg_turns = (
-                sum(len(s.turn_ids) for v in result.conversations.values()
-                    for s in v) / max(total_segs, 1)
-            )
+            avg_turns = sum(
+                len(s.turn_ids) for v in result.conversations.values() for s in v
+            ) / max(total_segs, 1)
             avg_segs_per_conv = total_segs / max(len(conv_ids), 1)
             print(
                 f"    built {total_segs} segments across {len(conv_ids)} convs "
@@ -666,8 +666,10 @@ def main() -> None:
             first_cid = conv_ids[0]
             first_segs = result.conversations[first_cid][:3]
             for s in first_segs:
-                print(f"    [{first_cid} seg{s.segment_idx} tids={s.turn_ids[:3]}...]:"
-                      f" {s.summary[:150]}")
+                print(
+                    f"    [{first_cid} seg{s.segment_idx} tids={s.turn_ids[:3]}...]:"
+                    f" {s.summary[:150]}"
+                )
 
 
 if __name__ == "__main__":

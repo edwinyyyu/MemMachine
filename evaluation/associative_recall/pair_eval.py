@@ -22,9 +22,9 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-
+from antipara_cue_gen import MetaV2fDedicated
 from associative_recall import Segment
+from dotenv import load_dotenv
 from fair_backfill_eval import (
     BUDGETS,
     DATASETS,
@@ -37,7 +37,6 @@ from fair_backfill_eval import (
 from pair_embedding import (
     ARCH_CLASSES as PAIR_ARCH_CLASSES,
 )
-from antipara_cue_gen import MetaV2fDedicated
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -71,9 +70,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -127,8 +124,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: "
-            f"{q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -137,6 +133,7 @@ def run_one(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -178,9 +175,7 @@ def orthogonality(
     """For each question, compute fraction of arch's found gold that is NOT
     in v2f's found gold at budget K. Returns averages + counts."""
     # Index v2f rows by (conv_id, question_index)
-    v2f_by_q = {
-        (r["conversation_id"], r["question_index"]): r for r in v2f_rows
-    }
+    v2f_by_q = {(r["conversation_id"], r["question_index"]): r for r in v2f_rows}
     per_q: list[dict] = []
     fractions: list[float] = []
     arch_found_total = 0
@@ -224,9 +219,9 @@ def orthogonality(
         "pooled_v2f_found": v2f_found_total,
         "pooled_novel": novel_total,
         "pooled_intersect": intersect_total,
-        "pooled_frac_novel": round(
-            novel_total / arch_found_total, 4
-        ) if arch_found_total else 0.0,
+        "pooled_frac_novel": round(novel_total / arch_found_total, 4)
+        if arch_found_total
+        else 0.0,
         "per_question": per_q,
     }
 
@@ -343,9 +338,7 @@ def main() -> None:
         for arch_name in arch_names:
             cls = ARCH_CLASSES[arch_name]
             arch = cls(store)
-            results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(arch_name, arch, ds_name, questions)
             all_results[arch_name][ds_name] = {
                 "summary": summary,
                 "category_breakdown": by_cat,
@@ -354,9 +347,7 @@ def main() -> None:
 
             # Dump pair index (once per dataset, from any pair-variant)
             if arch_name != "meta_v2f" and ds_name not in pair_dumped:
-                pair_path = (
-                    RESULTS_DIR / f"conversation_pairs_{ds_name}.json"
-                )
+                pair_path = RESULTS_DIR / f"conversation_pairs_{ds_name}.json"
                 try:
                     dump_conversation_pairs(arch, pair_path)
                     print(f"  Saved pair index: {pair_path}")
@@ -386,22 +377,16 @@ def main() -> None:
     orth: dict[str, dict] = {}
     for ds_name in ds_names:
         orth[ds_name] = {}
-        v2f_rows = (
-            all_results.get("meta_v2f", {}).get(ds_name, {}).get("results")
-        )
+        v2f_rows = all_results.get("meta_v2f", {}).get(ds_name, {}).get("results")
         if not v2f_rows:
             continue
         for arch_name in arch_names:
             if arch_name == "meta_v2f":
                 continue
-            arch_rows = (
-                all_results.get(arch_name, {}).get(ds_name, {}).get("results")
-            )
+            arch_rows = all_results.get(arch_name, {}).get(ds_name, {}).get("results")
             if not arch_rows:
                 continue
-            orth[ds_name][arch_name] = orthogonality(
-                arch_rows, v2f_rows, K=50
-            )
+            orth[ds_name][arch_name] = orthogonality(arch_rows, v2f_rows, K=50)
 
     # Top gaining/losing categories per pair variant on LoCoMo
     top_cats: dict[str, dict] = {}
@@ -425,9 +410,7 @@ def main() -> None:
             a: {
                 d: {
                     "summary": all_results[a][d]["summary"],
-                    "category_breakdown": all_results[a][d][
-                        "category_breakdown"
-                    ],
+                    "category_breakdown": all_results[a][d]["category_breakdown"],
                 }
                 for d in all_results[a]
             }
@@ -452,9 +435,7 @@ def main() -> None:
                         "arch": a,
                         "dataset": d,
                         "summary": all_results[a][d]["summary"],
-                        "category_breakdown": all_results[a][d][
-                            "category_breakdown"
-                        ],
+                        "category_breakdown": all_results[a][d]["category_breakdown"],
                         "results": all_results[a][d]["results"],
                     },
                     f,
@@ -488,11 +469,7 @@ def main() -> None:
         for arch_name in arch_names:
             if arch_name == "meta_v2f":
                 continue
-            rows = (
-                all_results.get(arch_name, {})
-                .get(ds_name, {})
-                .get("results", [])
-            )
+            rows = all_results.get(arch_name, {}).get(ds_name, {}).get("results", [])
             if rows:
                 size = rows[0].get("pair_index_size")
                 break
@@ -562,7 +539,7 @@ def main() -> None:
         md.append(f"\n### {k}")
         for i, sp in enumerate(samples):
             md.append(
-                f"\n{i+1}. conv={sp['conversation_id']} "
+                f"\n{i + 1}. conv={sp['conversation_id']} "
                 f"turns=({sp['turn_a']}/{sp['role_a']}, "
                 f"{sp['turn_b']}/{sp['role_b']})"
             )

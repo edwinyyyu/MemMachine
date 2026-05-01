@@ -31,19 +31,16 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
-
+from alias_expansion import build_expanded_queries, find_alias_matches
 from em_architectures import (
     EMHit,
-    _MergedLLMCache,
     _dedupe_by_turn_id,
+    _MergedLLMCache,
     _query_em,
     em_v2f,
 )
-from alias_expansion import build_expanded_queries, find_alias_matches
-from em_alias_expand import load_alias_groups
+from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 from multichannel_weighted import extract_query_entities
-
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
 EMDEF_GATED_LLM_CACHE = CACHE_DIR / "emdef_gated_llm_cache.json"
@@ -97,12 +94,16 @@ _RE_DATE_WORDS = re.compile(
     r"recently|earlier|later|ago|after|before|during|by)\b",
     re.IGNORECASE,
 )
-_RE_TIME = re.compile(r"\b\d{1,2}(?::\d{2})?\s?(?:am|pm|a\.m\.|p\.m\.)\b", re.IGNORECASE)
-_RE_DATE_DIGIT = re.compile(r"\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b|\b\d{4}-\d{1,2}-\d{1,2}\b")
+_RE_TIME = re.compile(
+    r"\b\d{1,2}(?::\d{2})?\s?(?:am|pm|a\.m\.|p\.m\.)\b", re.IGNORECASE
+)
+_RE_DATE_DIGIT = re.compile(
+    r"\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b|\b\d{4}-\d{1,2}-\d{1,2}\b"
+)
 
 
 def parse_confidences_nospeaker(raw: str) -> tuple[dict[str, float], str]:
-    default = {ch: 0.0 for ch in SUPPLEMENT_NAMES_NOSPEAKER}
+    default = dict.fromkeys(SUPPLEMENT_NAMES_NOSPEAKER, 0.0)
     fallback_reason = "parse_failed_no_supplements"
     if not raw:
         return default, fallback_reason
@@ -114,7 +115,7 @@ def parse_confidences_nospeaker(raw: str) -> tuple[dict[str, float], str]:
         start = text.find("{")
         end = text.rfind("}")
         if start >= 0 and end > start:
-            text = text[start:end + 1]
+            text = text[start : end + 1]
     try:
         obj = json.loads(text)
     except json.JSONDecodeError:
@@ -216,19 +217,23 @@ async def _ch_entity_exact_match(
             if re.search(r"\b" + re.escape(e) + r"\b", tl):
                 hits += 1
         if hits > 0:
-            scored.append(
-                (turn_id, float(hits) / float(len(ents_lower)), text)
-            )
+            scored.append((turn_id, float(hits) / float(len(ents_lower)), text))
     scored.sort(key=lambda t: -t[1])
     out: list[EMHit] = []
     # We don't have UUIDs for these synthetic hits; use a zero UUID.
     from uuid import UUID
+
     dummy_uuid = UUID("00000000-0000-0000-0000-000000000000")
     for turn_id, score, text in scored[:top_k]:
-        out.append(EMHit(
-            turn_id=turn_id, score=score, seed_segment_uuid=dummy_uuid,
-            role="", text=text,
-        ))
+        out.append(
+            EMHit(
+                turn_id=turn_id,
+                score=score,
+                seed_segment_uuid=dummy_uuid,
+                role="",
+                text=text,
+            )
+        )
     return out
 
 
@@ -304,9 +309,7 @@ async def em_gated_no_speaker(
                 top_k=per_channel_retrieval_k,
             )
         elif ch == "temporal_tokens":
-            h = await _ch_temporal(
-                memory, question, top_k=per_channel_retrieval_k
-            )
+            h = await _ch_temporal(memory, question, top_k=per_channel_retrieval_k)
         elif ch == "entity_exact_match":
             h = await _ch_entity_exact_match(
                 memory,
@@ -362,7 +365,9 @@ async def em_gated_no_speaker(
                 break
             if cand is None:
                 continue
-            channel_iters[ch] = [x for x in channel_iters[ch] if x.turn_id != cand.turn_id]
+            channel_iters[ch] = [
+                x for x in channel_iters[ch] if x.turn_id != cand.turn_id
+            ]
             used_turns.add(cand.turn_id)
             picked.append(cand)
             channel_picked_count[ch] += 1
@@ -370,7 +375,7 @@ async def em_gated_no_speaker(
                 break
             if channel_picked_count[ch] < cap and channel_iters[ch]:
                 new_active.append(ch)
-        order_active = new_active if new_active else []
+        order_active = new_active or []
 
     metadata["overlay"]["displacements"] = dict(channel_picked_count)
     metadata["overlay"]["channels_contributing"] = [

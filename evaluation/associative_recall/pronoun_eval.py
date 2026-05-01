@@ -24,23 +24,21 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
 import time
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import Segment, SegmentStore
 from best_shot import MetaV2f
+from dotenv import load_dotenv
 from ingest_regex_eval import (
     BUDGETS,
     Embedder,
     compute_recall,
     fair_backfill_turn_ids,
 )
+from openai import OpenAI
 from pronoun_resolution import (
     PronounEmbeddingCache,
     PronounLLMCache,
@@ -83,10 +81,10 @@ def v2f_main_ranked(
     q: dict,
 ) -> tuple[list[tuple[Segment, float]], list[Segment], list[Segment]]:
     """Run v2f + cosine backfill. Return:
-      - main_ranked: list of (seg, score) in fair-backfill order
-        (arch segments first, scored high-to-low; then cosine top-K by score)
-      - arch_segs  : v2f's raw output (pre-backfill)
-      - cos_segs   : cosine top-maxK on main index
+    - main_ranked: list of (seg, score) in fair-backfill order
+      (arch segments first, scored high-to-low; then cosine top-K by score)
+    - arch_segs  : v2f's raw output (pre-backfill)
+    - cos_segs   : cosine top-maxK on main index
     """
     q_text = q["question"]
     conv_id = q["conversation_id"]
@@ -221,7 +219,10 @@ def run_resolved_variant(
                 merged = stacked_merge(main_ranked, resolved_ranked, K)
             elif variant == "pronoun_resolve_with_bonus":
                 merged = stacked_merge_with_bonus(
-                    main_ranked, resolved_ranked, K, bonus=bonus,
+                    main_ranked,
+                    resolved_ranked,
+                    K,
+                    bonus=bonus,
                 )
             else:
                 raise ValueError(f"unknown variant: {variant}")
@@ -247,7 +248,8 @@ def run_resolved_variant(
             # v2f main_ranked[:K])?
             main_topK = {s.index for s, _ in main_ranked[:K]}
             resolved_gold_only = {
-                s.turn_id for s in merged[:K]
+                s.turn_id
+                for s in merged[:K]
                 if s.index not in main_topK and s.turn_id in source_ids
             }
             row[f"resolved_gold_contrib@{K}"] = sorted(resolved_gold_only)
@@ -325,7 +327,7 @@ def run_dataset(
     resolved_cache: PronounEmbeddingCache,
 ) -> tuple[dict, list[PronounTurnDecision]]:
     cfg = DATASETS[ds_name]
-    print(f"\n{'='*70}\nDataset: {ds_name}\n{'='*70}", flush=True)
+    print(f"\n{'=' * 70}\nDataset: {ds_name}\n{'=' * 70}", flush=True)
     store = SegmentStore(data_dir=DATA_DIR, npz_name=cfg["npz"])
     with open(DATA_DIR / cfg["questions"]) as f:
         all_qs = json.load(f)
@@ -335,9 +337,7 @@ def run_dataset(
     if cfg["max_questions"]:
         qs = qs[: cfg["max_questions"]]
     conv_ids_in_qs = {q["conversation_id"] for q in qs}
-    target_segments = [
-        s for s in store.segments if s.conversation_id in conv_ids_in_qs
-    ]
+    target_segments = [s for s in store.segments if s.conversation_id in conv_ids_in_qs]
     print(
         f"  questions: {len(qs)} | target segments: {len(target_segments)}",
         flush=True,
@@ -351,8 +351,8 @@ def run_dataset(
     n_resolved = sum(1 for d in decisions if d.resolved)
     skip_rate = 1.0 - (n_resolved / max(n_turns, 1))
     print(
-        f"  resolved={n_resolved}/{n_turns} ({n_resolved/max(n_turns,1)*100:.1f}%)  "
-        f"skip_rate={skip_rate*100:.1f}%",
+        f"  resolved={n_resolved}/{n_turns} ({n_resolved / max(n_turns, 1) * 100:.1f}%)  "
+        f"skip_rate={skip_rate * 100:.1f}%",
         flush=True,
     )
 
@@ -369,7 +369,10 @@ def run_dataset(
     else:
         resolved_embs = np.zeros((0, 1536), dtype=np.float32)
     resolved_idx = ResolvedTurnIndex(
-        store, resolved_parents, resolved_texts, resolved_embs,
+        store,
+        resolved_parents,
+        resolved_texts,
+        resolved_embs,
     )
 
     # ---- Baselines
@@ -386,7 +389,11 @@ def run_dataset(
     # ---- Variants
     print("  [3/4] pronoun_resolve_stacked ...", flush=True)
     stacked_rows = run_resolved_variant(
-        "pronoun_resolve_stacked", store, resolved_idx, embedder, qs,
+        "pronoun_resolve_stacked",
+        store,
+        resolved_idx,
+        embedder,
+        qs,
         top_m=10,
     )
     stacked_summary = summarize(stacked_rows)
@@ -396,8 +403,13 @@ def run_dataset(
 
     print("  [4/4] pronoun_resolve_with_bonus ...", flush=True)
     bonus_rows = run_resolved_variant(
-        "pronoun_resolve_with_bonus", store, resolved_idx, embedder, qs,
-        top_m=10, bonus=0.05,
+        "pronoun_resolve_with_bonus",
+        store,
+        resolved_idx,
+        embedder,
+        qs,
+        top_m=10,
+        bonus=0.05,
     )
     bonus_summary = summarize(bonus_rows)
     bonus_by_cat = summarize_by_category(bonus_rows)
@@ -411,18 +423,26 @@ def run_dataset(
             "n_target_segments": len(target_segments),
             "n_turns_resolved": n_resolved,
             "skip_rate": skip_rate,
-            "cosine_baseline": {"summary": cosine_summary, "by_category": cosine_by_cat,
-                                "per_question": cosine_rows},
-            "v2f": {"summary": v2f_summary, "by_category": v2f_by_cat,
-                    "per_question": v2f_rows},
+            "cosine_baseline": {
+                "summary": cosine_summary,
+                "by_category": cosine_by_cat,
+                "per_question": cosine_rows,
+            },
+            "v2f": {
+                "summary": v2f_summary,
+                "by_category": v2f_by_cat,
+                "per_question": v2f_rows,
+            },
             "pronoun_resolve_stacked": {
-                "summary": stacked_summary, "by_category": stacked_by_cat,
+                "summary": stacked_summary,
+                "by_category": stacked_by_cat,
                 "per_question": stacked_rows,
                 "orthogonality@20": stacked_ortho_20,
                 "orthogonality@50": stacked_ortho_50,
             },
             "pronoun_resolve_with_bonus": {
-                "summary": bonus_summary, "by_category": bonus_by_cat,
+                "summary": bonus_summary,
+                "by_category": bonus_by_cat,
                 "per_question": bonus_rows,
                 "orthogonality@20": bonus_ortho_20,
                 "orthogonality@50": bonus_ortho_50,
@@ -472,15 +492,14 @@ def render_markdown(
         n = res["n_target_segments"]
         r = res["n_turns_resolved"]
         sk = 1.0 - (r / max(n, 1))
-        L.append(f"| {ds_name} | {n} | {r} | {sk*100:.1f}% |")
+        L.append(f"| {ds_name} | {n} | {r} | {sk * 100:.1f}% |")
     L.append("")
 
     # Recall
     L.append("## 2. Recall (fair-backfill)")
     L.append("")
     L.append(
-        "| dataset | K | cosine | v2f | stacked | Δ vs v2f | with_bonus | "
-        "Δ vs v2f |"
+        "| dataset | K | cosine | v2f | stacked | Δ vs v2f | with_bonus | Δ vs v2f |"
     )
     L.append("|---|---:|---:|---:|---:|---:|---:|---:|")
     for ds_name, res in all_results.items():
@@ -491,7 +510,7 @@ def render_markdown(
             bo = res["pronoun_resolve_with_bonus"]["summary"][f"mean_r@{K}"]
             L.append(
                 f"| {ds_name} | {K} | {c:.4f} | {b:.4f} | {s:.4f} "
-                f"| {s-b:+.4f} | {bo:.4f} | {bo-b:+.4f} |"
+                f"| {s - b:+.4f} | {bo:.4f} | {bo - b:+.4f} |"
             )
     L.append("")
 
@@ -537,17 +556,15 @@ def render_markdown(
                     continue
                 L.append(
                     f"| {ds_name} | {var} | {K} "
-                    f"| {o['frac_gold_via_resolved']*100:.1f}% "
-                    f"| {o['frac_questions_with_resolved_gold']*100:.1f}% |"
+                    f"| {o['frac_gold_via_resolved'] * 100:.1f}% "
+                    f"| {o['frac_questions_with_resolved_gold'] * 100:.1f}% |"
                 )
     L.append("")
 
     # Cost
     L.append("## 5. Cost")
     L.append("")
-    L.append(
-        f"- LLM calls: uncached={cost['n_uncached']} cached={cost['n_cached']}"
-    )
+    L.append(f"- LLM calls: uncached={cost['n_uncached']} cached={cost['n_cached']}")
     L.append(f"- Input tokens: {cost['prompt_tokens']}")
     L.append(f"- Output tokens: {cost['completion_tokens']}")
     L.append(f"- Est. cost (gpt-5-mini): ${cost['est_usd']:.3f}")
@@ -608,7 +625,11 @@ def main() -> None:
 
     for ds_name in datasets:
         res, decisions = run_dataset(
-            ds_name, resolver, client, embedder, resolved_cache,
+            ds_name,
+            resolver,
+            client,
+            embedder,
+            resolved_cache,
         )
         all_results[ds_name] = res
         all_decisions[ds_name] = decisions
@@ -621,8 +642,7 @@ def main() -> None:
         "completion_tokens": resolver.total_completion_tokens,
     }
     cost["est_usd"] = round(
-        cost["prompt_tokens"] * 0.25 / 1e6
-        + cost["completion_tokens"] * 2.0 / 1e6,
+        cost["prompt_tokens"] * 0.25 / 1e6 + cost["completion_tokens"] * 2.0 / 1e6,
         4,
     )
 
@@ -649,17 +669,22 @@ def main() -> None:
     def strip_large(res: dict) -> dict:
         out = {k: v for k, v in res.items()}
         for key in (
-            "cosine_baseline", "v2f", "pronoun_resolve_stacked",
+            "cosine_baseline",
+            "v2f",
+            "pronoun_resolve_stacked",
             "pronoun_resolve_with_bonus",
         ):
             if key in out and isinstance(out[key], dict):
                 per_q = out[key].get("per_question", [])
                 pruned = []
                 for r in per_q:
-                    pruned.append({
-                        k: v for k, v in r.items()
-                        if not k.startswith("retrieved_ids")
-                    })
+                    pruned.append(
+                        {
+                            k: v
+                            for k, v in r.items()
+                            if not k.startswith("retrieved_ids")
+                        }
+                    )
                 out[key] = {**out[key], "per_question": pruned}
         return out
 
@@ -670,11 +695,11 @@ def main() -> None:
                 "prompt_version": args.prompt,
                 "elapsed_s": round(time.time() - t0, 2),
                 "cost": cost,
-                "results": {
-                    ds: strip_large(res) for ds, res in all_results.items()
-                },
+                "results": {ds: strip_large(res) for ds, res in all_results.items()},
             },
-            f, indent=2, default=str,
+            f,
+            indent=2,
+            default=str,
         )
     print(f"Wrote {json_path}", flush=True)
 
@@ -707,8 +732,8 @@ def main() -> None:
         n = res["n_target_segments"]
         r = res["n_turns_resolved"]
         print(
-            f"  resolved={r}/{n} ({r/max(n,1)*100:.1f}%)  "
-            f"skip_rate={(1.0 - r/max(n,1))*100:.1f}%"
+            f"  resolved={r}/{n} ({r / max(n, 1) * 100:.1f}%)  "
+            f"skip_rate={(1.0 - r / max(n, 1)) * 100:.1f}%"
         )
         for K in BUDGETS:
             c = res["cosine_baseline"]["summary"][f"mean_r@{K}"]
@@ -717,10 +742,10 @@ def main() -> None:
             bo = res["pronoun_resolve_with_bonus"]["summary"][f"mean_r@{K}"]
             print(
                 f"  K={K}: cosine={c:.4f} v2f={b:.4f} "
-                f"stacked={s:.4f} (Δ{s-b:+.4f}) bonus={bo:.4f} (Δ{bo-b:+.4f})"
+                f"stacked={s:.4f} (Δ{s - b:+.4f}) bonus={bo:.4f} (Δ{bo - b:+.4f})"
             )
     print(f"\nLLM cost: ~${cost['est_usd']:.3f}")
-    print(f"Elapsed: {time.time()-t0:.0f}s")
+    print(f"Elapsed: {time.time() - t0:.0f}s")
 
 
 if __name__ == "__main__":

@@ -15,28 +15,25 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
-import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
+# Safe patching of BestshotEmbeddingCache before importing anything that uses it.
+import best_shot as _best_shot_module
 from associative_recall import (
     Segment,
     SegmentStore,
 )
-
-# Safe patching of BestshotEmbeddingCache before importing anything that uses it.
-import best_shot as _best_shot_module  # noqa: E402
+from dotenv import load_dotenv
+from openai import OpenAI
 
 _ORIG_BEC_INIT = _best_shot_module.BestshotEmbeddingCache.__init__
 
 
 def _safe_bec_init(self):
     from associative_recall import CACHE_DIR as _CACHE_DIR
+
     self.cache_dir = _CACHE_DIR
     self.cache_dir.mkdir(parents=True, exist_ok=True)
     self._cache: dict = {}
@@ -103,8 +100,6 @@ def _safe_bec_save(self):
 _best_shot_module.BestshotEmbeddingCache.save = _safe_bec_save  # type: ignore[method-assign]
 
 
-from best_shot import MetaV2f  # noqa: E402
-from ingest_regex_eval import BUDGETS, Embedder, compute_recall  # noqa: E402
 from answer_type_rerank import (  # noqa: E402
     ANSWER_TYPES,
     AnswerTypeDecisionCache,
@@ -114,7 +109,8 @@ from answer_type_rerank import (  # noqa: E402
     rerank_hard_filter,
     turn_has_answer_type_tokens,
 )
-
+from best_shot import MetaV2f  # noqa: E402
+from ingest_regex_eval import BUDGETS, Embedder, compute_recall  # noqa: E402
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -280,12 +276,12 @@ def summarize_by_category(per_q: list[dict]) -> dict:
 
 
 def wtl_vs_baseline(
-    variant_rows: list[dict], baseline_rows: list[dict], K: int,
+    variant_rows: list[dict],
+    baseline_rows: list[dict],
+    K: int,
 ) -> tuple[int, int, int]:
     """Win/Tie/Loss count per question against baseline."""
-    by_key = {
-        (r["conversation_id"], r["question_index"]): r for r in baseline_rows
-    }
+    by_key = {(r["conversation_id"], r["question_index"]): r for r in baseline_rows}
     w = t = l = 0
     for r in variant_rows:
         k = (r["conversation_id"], r["question_index"])
@@ -327,8 +323,11 @@ def run_dataset(
     answer_types: dict[str, str] = {}
     for q in qs:
         at = classify_answer_type(
-            q["question"], llm_cache, decision_cache,
-            client=client, model="gpt-5-mini",
+            q["question"],
+            llm_cache,
+            decision_cache,
+            client=client,
+            model="gpt-5-mini",
         )
         answer_types[q["question"]] = at
     llm_cache.save()
@@ -352,15 +351,17 @@ def run_dataset(
         key = f"atr_bonus_{alpha}"
         print(f"  [{i}/5] {key} ...", flush=True)
         rows = run_variant(
-            "atr_bonus", store, embedder, qs, answer_types, alpha=alpha,
+            "atr_bonus",
+            store,
+            embedder,
+            qs,
+            answer_types,
+            alpha=alpha,
         )
         variant_results[key] = {
             "summary": summarize(rows),
             "by_category": summarize_by_category(rows),
-            "wtl": {
-                f"r@{K}": wtl_vs_baseline(rows, baseline_rows, K)
-                for K in BUDGETS
-            },
+            "wtl": {f"r@{K}": wtl_vs_baseline(rows, baseline_rows, K) for K in BUDGETS},
             "per_question": rows,
         }
 
@@ -369,10 +370,7 @@ def run_dataset(
     variant_results["atr_hard_filter"] = {
         "summary": summarize(hf_rows),
         "by_category": summarize_by_category(hf_rows),
-        "wtl": {
-            f"r@{K}": wtl_vs_baseline(hf_rows, baseline_rows, K)
-            for K in BUDGETS
-        },
+        "wtl": {f"r@{K}": wtl_vs_baseline(hf_rows, baseline_rows, K) for K in BUDGETS},
         "per_question": hf_rows,
     }
 
@@ -471,9 +469,7 @@ def render_markdown(results: dict) -> str:
     # Recall table
     L.append("## 2. Recall (fair-backfill)")
     L.append("")
-    variant_names = (
-        [f"atr_bonus_{a}" for a in ALPHAS] + ["atr_hard_filter"]
-    )
+    variant_names = [f"atr_bonus_{a}" for a in ALPHAS] + ["atr_hard_filter"]
     header = "| dataset | K | baseline v2f |"
     sep = "|---|---:|---:|"
     for v in variant_names:
@@ -489,9 +485,7 @@ def render_markdown(results: dict) -> str:
             for v in variant_names:
                 vv = res["variants"][v]["summary"].get(f"mean_r@{K}", 0.0)
                 wtl = res["variants"][v]["wtl"].get(f"r@{K}", (0, 0, 0))
-                row += (
-                    f" {vv:.4f} | {vv-b:+.4f} | {wtl[0]}/{wtl[1]}/{wtl[2]} |"
-                )
+                row += f" {vv:.4f} | {vv - b:+.4f} | {wtl[0]}/{wtl[1]}/{wtl[2]} |"
             L.append(row)
     L.append("")
 
@@ -502,21 +496,23 @@ def render_markdown(results: dict) -> str:
             continue
         L.append(f"## 3. Per-category — {ds}")
         L.append("")
-        hdr = ("| category | n | base@20 |"
-               + "".join(f" {v}@20 |" for v in variant_names)
-               + " base@50 |"
-               + "".join(f" {v}@50 |" for v in variant_names))
-        sep_ = ("|---|---:|---:|"
-                + "---:|" * len(variant_names)
-                + "---:|"
-                + "---:|" * len(variant_names))
+        hdr = (
+            "| category | n | base@20 |"
+            + "".join(f" {v}@20 |" for v in variant_names)
+            + " base@50 |"
+            + "".join(f" {v}@50 |" for v in variant_names)
+        )
+        sep_ = (
+            "|---|---:|---:|"
+            + "---:|" * len(variant_names)
+            + "---:|"
+            + "---:|" * len(variant_names)
+        )
         L.append(hdr)
         L.append(sep_)
         for cat in cats:
             bc = res["baseline"]["by_category"][cat]
-            row = (
-                f"| {cat} | {bc['n']} | {bc.get('mean_r@20', 0):.3f} |"
-            )
+            row = f"| {cat} | {bc['n']} | {bc.get('mean_r@20', 0):.3f} |"
             for v in variant_names:
                 vc = res["variants"][v]["by_category"].get(cat, {})
                 row += f" {vc.get('mean_r@20', 0):.3f} |"
@@ -576,8 +572,9 @@ def render_markdown(results: dict) -> str:
         best_label = ""
         for v in variant_names:
             for K in BUDGETS:
-                d = (res["variants"][v]["summary"].get(f"mean_r@{K}", 0.0)
-                     - b_sum.get(f"mean_r@{K}", 0.0))
+                d = res["variants"][v]["summary"].get(f"mean_r@{K}", 0.0) - b_sum.get(
+                    f"mean_r@{K}", 0.0
+                )
                 if d > best_delta + 1e-6:
                     best_delta = d
                     best_label = f"{v}@K={K}"
@@ -589,7 +586,9 @@ def render_markdown(results: dict) -> str:
                 f"(+{best_delta:.4f}). {'Ship/narrow-use' if best_delta > 0.01 else 'Marginal gain'}."
             )
         else:
-            verdict_lines.append(f"- {ds}: no variant beats baseline. Abandon on this dataset.")
+            verdict_lines.append(
+                f"- {ds}: no variant beats baseline. Abandon on this dataset."
+            )
     L.extend(verdict_lines)
     L.append("")
 
@@ -599,7 +598,8 @@ def render_markdown(results: dict) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--datasets", default="locomo_30q,synthetic_19q",
+        "--datasets",
+        default="locomo_30q,synthetic_19q",
         help="comma-separated list",
     )
     args = parser.parse_args()
@@ -617,7 +617,11 @@ def main() -> None:
 
     for ds_name in datasets:
         res = run_dataset(
-            ds_name, client, embedder, llm_cache, decision_cache,
+            ds_name,
+            client,
+            embedder,
+            llm_cache,
+            decision_cache,
         )
         all_results[ds_name] = res
 
@@ -646,7 +650,9 @@ def main() -> None:
                 "elapsed_s": round(time.time() - t0, 2),
                 "results": all_results,
             },
-            f, indent=2, default=str,
+            f,
+            indent=2,
+            default=str,
         )
     print(f"Wrote {json_path}", flush=True)
 
@@ -654,9 +660,7 @@ def main() -> None:
     print("\n" + "=" * 70)
     print("ANSWER-TYPE RERANK RESULTS")
     print("=" * 70)
-    variant_names = (
-        [f"atr_bonus_{a}" for a in ALPHAS] + ["atr_hard_filter"]
-    )
+    variant_names = [f"atr_bonus_{a}" for a in ALPHAS] + ["atr_hard_filter"]
     for ds, res in all_results.items():
         print(f"\n{ds}:")
         b = res["baseline"]["summary"]
@@ -665,10 +669,10 @@ def main() -> None:
             line = f"  K={K}: baseline={b_k:.4f}"
             for v in variant_names:
                 vk = res["variants"][v]["summary"].get(f"mean_r@{K}", 0.0)
-                line += f"  {v}={vk:.4f} (Δ{vk-b_k:+.4f})"
+                line += f"  {v}={vk:.4f} (Δ{vk - b_k:+.4f})"
             print(line)
 
-    print(f"\nElapsed: {time.time()-t0:.0f}s")
+    print(f"\nElapsed: {time.time() - t0:.0f}s")
 
 
 if __name__ == "__main__":

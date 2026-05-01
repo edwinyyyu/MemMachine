@@ -25,10 +25,9 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 from associative_recall import Segment, SegmentStore
 from best_shot import MetaV2f
+from dotenv import load_dotenv
 from gated_overlay import (
     SUPPLEMENT_DESCRIPTIONS,
     SUPPLEMENT_NAMES,
@@ -119,9 +118,7 @@ def evaluate_gated_question(arch, question: dict) -> dict:
     # Cosine baseline
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     # Pick metadata from the largest K run (more informative).
@@ -177,9 +174,7 @@ def evaluate_metav2f_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -231,21 +226,13 @@ def summarize(results: list[dict], arch_name: str, dataset: str) -> dict:
     summary["avg_total_retrieved"] = round(
         sum(r["total_arch_retrieved"] for r in results) / n, 1
     )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 2
-    )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 2
-    )
-    summary["avg_time_s"] = round(
-        sum(r["time_s"] for r in results) / n, 2
-    )
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 2)
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 2)
+    summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
     return summary
 
 
-def per_question_wtl(
-    gated_rows: list[dict], v2f_rows: list[dict], K: int
-) -> dict:
+def per_question_wtl(gated_rows: list[dict], v2f_rows: list[dict], K: int) -> dict:
     """W/T/L of gated vs v2f at budget K keyed by question_index."""
     v2f_map = {r["question_index"]: r for r in v2f_rows}
     wins = losses = ties = 0
@@ -261,31 +248,37 @@ def per_question_wtl(
         if g_rec > v_rec + 0.001:
             wins += 1
             if len(win_examples) < 3:
-                win_examples.append({
-                    "question": gr["question"][:120],
-                    "category": gr["category"],
-                    "v2f_recall": v_rec,
-                    "gated_recall": g_rec,
-                    "firing": gr["metadata"].get("firing_channels", []),
-                    "confidences": gr["metadata"].get("confidences", {}),
-                    "overlay": gr["metadata"].get("overlay", {}),
-                })
+                win_examples.append(
+                    {
+                        "question": gr["question"][:120],
+                        "category": gr["category"],
+                        "v2f_recall": v_rec,
+                        "gated_recall": g_rec,
+                        "firing": gr["metadata"].get("firing_channels", []),
+                        "confidences": gr["metadata"].get("confidences", {}),
+                        "overlay": gr["metadata"].get("overlay", {}),
+                    }
+                )
         elif v_rec > g_rec + 0.001:
             losses += 1
             if len(loss_examples) < 3:
-                loss_examples.append({
-                    "question": gr["question"][:120],
-                    "category": gr["category"],
-                    "v2f_recall": v_rec,
-                    "gated_recall": g_rec,
-                    "firing": gr["metadata"].get("firing_channels", []),
-                    "confidences": gr["metadata"].get("confidences", {}),
-                    "overlay": gr["metadata"].get("overlay", {}),
-                })
+                loss_examples.append(
+                    {
+                        "question": gr["question"][:120],
+                        "category": gr["category"],
+                        "v2f_recall": v_rec,
+                        "gated_recall": g_rec,
+                        "firing": gr["metadata"].get("firing_channels", []),
+                        "confidences": gr["metadata"].get("confidences", {}),
+                        "overlay": gr["metadata"].get("overlay", {}),
+                    }
+                )
         else:
             ties += 1
     return {
-        "wins": wins, "ties": ties, "losses": losses,
+        "wins": wins,
+        "ties": ties,
+        "losses": losses,
         "win_examples": win_examples,
         "loss_examples": loss_examples,
     }
@@ -293,10 +286,10 @@ def per_question_wtl(
 
 def summarize_firing(rows: list[dict]) -> dict:
     """Aggregate channel-fire statistics from gated rows."""
-    fire_counts: dict[str, int] = {ch: 0 for ch in SUPPLEMENT_NAMES}
-    contrib_counts: dict[str, int] = {ch: 0 for ch in SUPPLEMENT_NAMES}
+    fire_counts: dict[str, int] = dict.fromkeys(SUPPLEMENT_NAMES, 0)
+    contrib_counts: dict[str, int] = dict.fromkeys(SUPPLEMENT_NAMES, 0)
     per_q_firing_counts: list[int] = []
-    conf_sums: dict[str, float] = {ch: 0.0 for ch in SUPPLEMENT_NAMES}
+    conf_sums: dict[str, float] = dict.fromkeys(SUPPLEMENT_NAMES, 0.0)
     n = 0
     for r in rows:
         meta = r.get("metadata", {})
@@ -323,21 +316,16 @@ def summarize_firing(rows: list[dict]) -> dict:
 
     return {
         "n": n,
-        "avg_firing_per_query": round(
-            sum(per_q_firing_counts) / max(n, 1), 3
-        ),
+        "avg_firing_per_query": round(sum(per_q_firing_counts) / max(n, 1), 3),
         "firing_distribution": firing_dist,
         "fire_rate_per_channel": {
-            ch: round(fire_counts[ch] / max(n, 1), 3)
-            for ch in SUPPLEMENT_NAMES
+            ch: round(fire_counts[ch] / max(n, 1), 3) for ch in SUPPLEMENT_NAMES
         },
         "contribution_rate_per_channel": {
-            ch: round(contrib_counts[ch] / max(n, 1), 3)
-            for ch in SUPPLEMENT_NAMES
+            ch: round(contrib_counts[ch] / max(n, 1), 3) for ch in SUPPLEMENT_NAMES
         },
         "avg_confidence_per_channel": {
-            ch: round(conf_sums[ch] / max(n, 1), 3)
-            for ch in SUPPLEMENT_NAMES
+            ch: round(conf_sums[ch] / max(n, 1), 3) for ch in SUPPLEMENT_NAMES
         },
     }
 
@@ -376,7 +364,7 @@ def run_arch_on_dataset(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}",
             flush=True,
         )
         try:
@@ -388,6 +376,7 @@ def run_arch_on_dataset(
         except Exception as e:
             print(f"  ERROR on question {i}: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -487,10 +476,7 @@ def render_report(all_data: dict) -> str:
             ):
                 lines.append(f"- {k} channels: {c}")
             lines.append("")
-            lines.append(
-                "| channel | avg confidence | fire rate | contribution "
-                "rate |"
-            )
+            lines.append("| channel | avg confidence | fire rate | contribution rate |")
             lines.append("|---|---|---|---|")
             for ch in SUPPLEMENT_NAMES:
                 lines.append(
@@ -508,14 +494,12 @@ def render_report(all_data: dict) -> str:
         wtl50 = entry.get("wtl_vs_v2f", {}).get("K50", {})
         if not wtl50:
             continue
-        lines.append(f"\n### Sample W/L ({primary} vs meta_v2f @ K=50, "
-                     f"{ds})\n")
+        lines.append(f"\n### Sample W/L ({primary} vs meta_v2f @ K=50, {ds})\n")
         lines.append("Wins:")
         for ex in wtl50.get("win_examples", [])[:3]:
             lines.append(f"- **[{ex['category']}]** {ex['question']}")
             lines.append(
-                f"  - v2f={ex['v2f_recall']:.3f} -> gated="
-                f"{ex['gated_recall']:.3f}"
+                f"  - v2f={ex['v2f_recall']:.3f} -> gated={ex['gated_recall']:.3f}"
             )
             lines.append(f"  - fired: {ex['firing']}")
             lines.append(
@@ -526,8 +510,7 @@ def render_report(all_data: dict) -> str:
         for ex in wtl50.get("loss_examples", [])[:3]:
             lines.append(f"- **[{ex['category']}]** {ex['question']}")
             lines.append(
-                f"  - v2f={ex['v2f_recall']:.3f} -> gated="
-                f"{ex['gated_recall']:.3f}"
+                f"  - v2f={ex['v2f_recall']:.3f} -> gated={ex['gated_recall']:.3f}"
             )
             lines.append(f"  - fired: {ex['firing']}")
             lines.append(
@@ -539,9 +522,7 @@ def render_report(all_data: dict) -> str:
     # Verdict
     lines.append("\n## Verdict\n")
     for ds in DATASETS:
-        ref = all_data.get("meta_v2f", {}).get(ds, {}).get(
-            "summary", {}
-        )
+        ref = all_data.get("meta_v2f", {}).get(ds, {}).get("summary", {})
         if not ref:
             continue
         lines.append(f"### {ds}\n")
@@ -588,9 +569,7 @@ def main() -> None:
         }
 
         for v in VARIANTS:
-            rows, summary, by_cat = run_arch_on_dataset(
-                v, store, questions
-            )
+            rows, summary, by_cat = run_arch_on_dataset(v, store, questions)
             entry: dict = {
                 "arch": v,
                 "dataset": ds_name,

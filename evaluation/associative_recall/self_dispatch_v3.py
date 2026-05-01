@@ -36,9 +36,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -47,6 +44,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -166,9 +165,8 @@ def _build_v2f_context_section(all_segments: list[Segment]) -> str:
             "No conversation excerpts retrieved yet. Generate cues based on "
             "what you'd expect to find in a conversation about this topic."
         )
-    return (
-        "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-        + _format_segments_v2f(all_segments)
+    return "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments_v2f(
+        all_segments
     )
 
 
@@ -186,7 +184,7 @@ def _parse_cues(text: str, key: str = "CUE:") -> list[str]:
     for line in text.strip().split("\n"):
         line = line.strip()
         if line.upper().startswith(key.upper()):
-            val = line[len(key):].strip()
+            val = line[len(key) :].strip()
             if val:
                 out.append(val)
     return out
@@ -355,9 +353,7 @@ class SelfDispatchV3:
         if cached is not None:
             self.embed_calls += 1
             return cached
-        response = self.client.embeddings.create(
-            model=EMBED_MODEL, input=[text]
-        )
+        response = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
         embedding = np.array(response.data[0].embedding, dtype=np.float32)
         self.embedding_cache.put(text, embedding)
         self.embed_calls += 1
@@ -410,7 +406,7 @@ class SelfDispatchV3:
             for line in response.strip().split("\n"):
                 line = line.strip()
                 if line.upper().startswith("ASSESSMENT:"):
-                    assessment = line[len("ASSESSMENT:"):].strip()
+                    assessment = line[len("ASSESSMENT:") :].strip()
                     break
 
             if classification == "SIMPLE":
@@ -421,19 +417,23 @@ class SelfDispatchV3:
                 per_cue_k = self.per_cue_k_complex
             cues = _parse_cues(response, "CUE:")[:cap]
 
-            round_log.append({
-                "round": round_i,
-                "classification": classification,
-                "assessment": assessment,
-                "cues": cues,
-            })
+            round_log.append(
+                {
+                    "round": round_i,
+                    "classification": classification,
+                    "assessment": assessment,
+                    "cues": cues,
+                }
+            )
             if not cues:
                 break
             for cue in cues:
                 cue_emb = self.embed_text(cue)
                 result = self.store.search(
-                    cue_emb, top_k=per_cue_k,
-                    conversation_id=conversation_id, exclude_indices=exclude,
+                    cue_emb,
+                    top_k=per_cue_k,
+                    conversation_id=conversation_id,
+                    exclude_indices=exclude,
                 )
                 for s in result.segments:
                     if s.index not in exclude:
@@ -442,8 +442,8 @@ class SelfDispatchV3:
 
         final_class = (
             "SIMPLE"
-            if classifications and classifications.count("SIMPLE")
-            > classifications.count("COMPLEX")
+            if classifications
+            and classifications.count("SIMPLE") > classifications.count("COMPLEX")
             else "COMPLEX"
         )
 
@@ -464,15 +464,13 @@ class SelfDispatchV3:
 # ---------------------------------------------------------------------------
 # Fair K-budget evaluation
 # ---------------------------------------------------------------------------
-def compute_recall(retrieved_turn_ids: set[int],
-                   source_turn_ids: set[int]) -> float:
+def compute_recall(retrieved_turn_ids: set[int], source_turn_ids: set[int]) -> float:
     if not source_turn_ids:
         return 1.0
     return len(retrieved_turn_ids & source_turn_ids) / len(source_turn_ids)
 
 
-def evaluate_one(arch: SelfDispatchV3, question: dict,
-                 verbose: bool = False) -> dict:
+def evaluate_one(arch: SelfDispatchV3, question: dict, verbose: bool = False) -> dict:
     q_text = question["question"]
     conv_id = question["conversation_id"]
     source_ids = set(question["source_chat_ids"])
@@ -491,9 +489,7 @@ def evaluate_one(arch: SelfDispatchV3, question: dict,
 
     q_emb = arch.embed_text(q_text)
     max_b = max(BUDGETS)
-    baseline = arch.store.search(
-        q_emb, top_k=max_b, conversation_id=conv_id
-    )
+    baseline = arch.store.search(q_emb, top_k=max_b, conversation_id=conv_id)
 
     arch_idx = {s.index for s in arch_segments}
     backfilled = list(arch_segments) + [
@@ -582,9 +578,7 @@ def load_dataset(key: str) -> tuple[list[dict], SegmentStore]:
 # ---------------------------------------------------------------------------
 # Load prior results for comparison
 # ---------------------------------------------------------------------------
-def load_budget_recall_by_qkey(
-    arch_name: str, dataset_key: str
-) -> dict[tuple, float]:
+def load_budget_recall_by_qkey(arch_name: str, dataset_key: str) -> dict[tuple, float]:
     path = RESULTS_DIR / f"budget_{arch_name}_{dataset_key}.json"
     if not path.exists():
         return {}
@@ -652,7 +646,7 @@ def self_v3_run(
     for i, q in enumerate(qs):
         q_short = q["question"][:60].replace("\n", " ")
         print(
-            f"  [{i+1}/{len(qs)}] {q['category']}: {q_short}...",
+            f"  [{i + 1}/{len(qs)}] {q['category']}: {q_short}...",
             flush=True,
         )
         try:
@@ -661,6 +655,7 @@ def self_v3_run(
         except Exception as e:
             print(f"    ERROR: {type(e).__name__}: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -677,14 +672,11 @@ def self_v3_run(
 # ---------------------------------------------------------------------------
 # Per-dataset + per-category summary
 # ---------------------------------------------------------------------------
-def compare_per_category(
-    dataset_key: str, self_rows: list[dict]
-) -> list[dict]:
+def compare_per_category(dataset_key: str, self_rows: list[dict]) -> list[dict]:
     budget_by_arch: dict[str, dict[int, dict]] = {}
     for arch in ("baseline", "v2f_tight"):
         budget_by_arch[arch] = {
-            K: load_budget_recall_by_qkey(f"{arch}_{K}", dataset_key)
-            for K in BUDGETS
+            K: load_budget_recall_by_qkey(f"{arch}_{K}", dataset_key) for K in BUDGETS
         }
     cot_by_q = load_cot_recall_by_qkey(dataset_key)
     sv2_by_q = load_self_v2_recall_by_qkey(dataset_key)
@@ -737,18 +729,10 @@ def compare_per_category(
                 "cot": cot_mean,
                 "self_v2": sv2_mean,
                 "self_v3": self_mean,
-                "vs_v2f": (
-                    self_mean - v2f_mean if v2f_mean is not None else None
-                ),
-                "vs_cot": (
-                    self_mean - cot_mean if cot_mean is not None else None
-                ),
-                "vs_sv2": (
-                    self_mean - sv2_mean if sv2_mean is not None else None
-                ),
-                "vs_baseline": (
-                    self_mean - b_mean if b_mean is not None else None
-                ),
+                "vs_v2f": (self_mean - v2f_mean if v2f_mean is not None else None),
+                "vs_cot": (self_mean - cot_mean if cot_mean is not None else None),
+                "vs_sv2": (self_mean - sv2_mean if sv2_mean is not None else None),
+                "vs_baseline": (self_mean - b_mean if b_mean is not None else None),
                 "simple_n": simple_n,
                 "complex_n": complex_n,
             }
@@ -767,9 +751,9 @@ def print_overall_by_dataset(all_rows: list[dict], K: int) -> None:
     rows_k = [r for r in all_rows if r["K"] == K]
     if not rows_k:
         return
-    print(f"\n{'-'*124}")
+    print(f"\n{'-' * 124}")
     print(f"OVERALL per DATASET at K={K}")
-    print(f"{'-'*124}")
+    print(f"{'-' * 124}")
     by_ds: dict[str, list[dict]] = defaultdict(list)
     for r in rows_k:
         by_ds[r["dataset"]].append(r)
@@ -817,14 +801,16 @@ def print_overall_by_dataset(all_rows: list[dict], K: int) -> None:
 def print_locomo_breakdown(all_rows: list[dict], K: int) -> None:
     """LoCoMo single_hop / temporal breakdown where the K=20 gap is focused."""
     cats = {"locomo_single_hop", "locomo_temporal"}
-    rows = [r for r in all_rows
-            if r["K"] == K and r["dataset"] == "locomo_30q"
-            and r["category"] in cats]
+    rows = [
+        r
+        for r in all_rows
+        if r["K"] == K and r["dataset"] == "locomo_30q" and r["category"] in cats
+    ]
     if not rows:
         return
-    print(f"\n{'='*128}")
+    print(f"\n{'=' * 128}")
     print(f"LoCoMo BREAKDOWN at K={K}  (focus on residual K=20 gap)")
-    print(f"{'='*128}")
+    print(f"{'=' * 128}")
     hdr = (
         f"{'Category':<22s} {'n':>3s} {'S/C':>7s} "
         f"{'Base':>6s} {'v2f':>6s} {'CoT':>6s} {'SV2':>6s} {'SelfV3':>7s}  "
@@ -848,9 +834,9 @@ def print_locomo_breakdown(all_rows: list[dict], K: int) -> None:
 def print_classification_spotcheck(
     all_self_rows: dict[str, list[dict]],
 ) -> None:
-    print(f"\n{'='*108}")
+    print(f"\n{'=' * 108}")
     print("CLASSIFICATION SPOT-CHECK")
-    print(f"{'='*108}")
+    print(f"{'=' * 108}")
     for ds, rows in all_self_rows.items():
         print(f"\n-- {ds} --")
         by_cat: dict[str, list[dict]] = defaultdict(list)
@@ -860,9 +846,11 @@ def print_classification_spotcheck(
             s_n = sum(1 for r in rs if r["classification"] == "SIMPLE")
             c_n = len(rs) - s_n
             pct_simple = 100 * s_n / len(rs)
-            print(f"  {cat:<28s} n={len(rs):>2d}  "
-                  f"SIMPLE={s_n:>2d}  COMPLEX={c_n:>2d}  "
-                  f"({pct_simple:.0f}% simple)")
+            print(
+                f"  {cat:<28s} n={len(rs):>2d}  "
+                f"SIMPLE={s_n:>2d}  COMPLEX={c_n:>2d}  "
+                f"({pct_simple:.0f}% simple)"
+            )
             simples = [r for r in rs if r["classification"] == "SIMPLE"][:2]
             complexes = [r for r in rs if r["classification"] == "COMPLEX"][:2]
             for r in simples:
@@ -875,9 +863,9 @@ def print_classification_spotcheck(
 
 def print_universal_dominance_check(all_rows: list[dict]) -> None:
     """Key question: does v3 beat-or-tie v2f on EVERY dataset at K=20 AND K=50?"""
-    print(f"\n{'='*100}")
+    print(f"\n{'=' * 100}")
     print("UNIVERSAL DOMINANCE vs v2f (key question)")
-    print(f"{'='*100}")
+    print(f"{'=' * 100}")
     by_ds_k: dict[tuple, list[dict]] = defaultdict(list)
     for r in all_rows:
         by_ds_k[(r["dataset"], r["K"])].append(r)
@@ -909,8 +897,7 @@ def print_universal_dominance_check(all_rows: list[dict]) -> None:
                 f"v3={sv3:.3f}  v2f={v2f:.3f}  "
                 f"delta={delta:+.3f}   {tick}"
             )
-    print(f"\n  STRICT UNIVERSAL DOMINANCE over v2f: "
-          f"{'YES' if dominates else 'NO'}")
+    print(f"\n  STRICT UNIVERSAL DOMINANCE over v2f: {'YES' if dominates else 'NO'}")
 
 
 # ---------------------------------------------------------------------------
@@ -918,18 +905,21 @@ def print_universal_dominance_check(all_rows: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--force", action="store_true",
-                        help="Rerun even if result file exists")
+    parser.add_argument(
+        "--force", action="store_true", help="Rerun even if result file exists"
+    )
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--dataset", type=str, default=None,
-                        choices=list(DATASETS.keys()),
-                        help="Restrict to a single dataset")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        choices=list(DATASETS.keys()),
+        help="Restrict to a single dataset",
+    )
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    dataset_keys = (
-        [args.dataset] if args.dataset else list(DATASETS.keys())
-    )
+    dataset_keys = [args.dataset] if args.dataset else list(DATASETS.keys())
 
     all_rows: list[dict] = []
     all_self_rows: dict[str, list[dict]] = {}

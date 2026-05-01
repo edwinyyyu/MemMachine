@@ -25,9 +25,14 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
+from alias_expansion import (
+    AliasExpandCosine,
+    AliasExpandV2fCheap,
+    AliasExpandV2fFull,
+)
+from antipara_cue_gen import MetaV2fDedicated
 from associative_recall import Segment
+from dotenv import load_dotenv
 from fair_backfill_eval import (
     BUDGETS,
     DATASETS,
@@ -37,13 +42,6 @@ from fair_backfill_eval import (
     summarize,
     summarize_by_category,
 )
-from alias_expansion import (
-    ARCH_CLASSES as ALIAS_ARCH_CLASSES,
-    AliasExpandCosine,
-    AliasExpandV2fCheap,
-    AliasExpandV2fFull,
-)
-from antipara_cue_gen import MetaV2fDedicated
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -78,9 +76,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     md = result.metadata
@@ -137,7 +133,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -399,9 +395,7 @@ def main() -> None:
         for arch_name in arch_names:
             cls = ARCH_CLASSES[arch_name]
             arch = cls(store)
-            results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(arch_name, arch, ds_name, questions)
             all_results[arch_name][ds_name] = {
                 "summary": summary,
                 "category_breakdown": by_cat,
@@ -500,9 +494,7 @@ def main() -> None:
                         "arch": a,
                         "dataset": d,
                         "summary": all_results[a][d]["summary"],
-                        "category_breakdown": all_results[a][d][
-                            "category_breakdown"
-                        ],
+                        "category_breakdown": all_results[a][d]["category_breakdown"],
                         "results": all_results[a][d]["results"],
                     },
                     f,
@@ -527,8 +519,7 @@ def main() -> None:
         for cid in sorted(convs):
             v = alias_group_summary[cid]
             md.append(
-                f"- {cid}: {v['num_groups']} groups, "
-                f"{v['total_aliases']} aliases total"
+                f"- {cid}: {v['num_groups']} groups, {v['total_aliases']} aliases total"
             )
             for g in v.get("sample_groups", []):
                 md.append(f"  - {g}")
@@ -608,9 +599,7 @@ def main() -> None:
                     )
 
     if top_gaining or top_losing:
-        md.append(
-            f"\n## Top categories by Δr@50 ({primary_arch}, LoCoMo-30)\n"
-        )
+        md.append(f"\n## Top categories by Δr@50 ({primary_arch}, LoCoMo-30)\n")
         md.append("Gaining:")
         if not top_gaining:
             md.append("  - (none with Δ > 0.001)")

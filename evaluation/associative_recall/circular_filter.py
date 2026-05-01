@@ -37,9 +37,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import AsyncOpenAI, OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -48,6 +45,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import AsyncOpenAI, OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -290,17 +289,16 @@ FILTER_SYSTEM_PROMPT = (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _format_pool_for_cue(segments: list[Segment], max_items: int = 12,
-                         max_chars: int = 250) -> str:
+def _format_pool_for_cue(
+    segments: list[Segment], max_items: int = 12, max_chars: int = 250
+) -> str:
     if not segments:
         return (
             "No conversation excerpts retrieved yet. Generate cues based on "
             "what you'd expect to find in a conversation about this topic."
         )
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
-    lines = [
-        f"[Turn {s.turn_id}, {s.role}]: {s.text[:max_chars]}" for s in sorted_segs
-    ]
+    lines = [f"[Turn {s.turn_id}, {s.role}]: {s.text[:max_chars]}" for s in sorted_segs]
     return "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + "\n".join(lines)
 
 
@@ -476,7 +474,9 @@ class CircularFilterEngine:
         # One LLM call to generate 4 cues
         context_section = _format_pool_for_cue(pool)
         prompt = V2F_CUE_PROMPT.format(
-            question=question, context_section=context_section, num_cues=NUM_CUES,
+            question=question,
+            context_section=context_section,
+            num_cues=NUM_CUES,
         )
         output = self._llm_cue(prompt)
         cues = _parse_cues(output)[:NUM_CUES]
@@ -510,8 +510,10 @@ class CircularFilterEngine:
         )
         if not batches:
             return set(), {
-                "num_batches": 0, "useless_votes": {},
-                "removed_count": 0, "batch_sizes": [],
+                "num_batches": 0,
+                "useless_votes": {},
+                "removed_count": 0,
+                "batch_sizes": [],
             }
 
         # For each batch, build the prompt and call the LLM in parallel.
@@ -558,7 +560,11 @@ class CircularFilterEngine:
         if variant.vote_rule == "consensus_2":
             remove = {i for i, v in votes.items() if v >= 2}
         elif variant.vote_rule == "all_agree":
-            remove = {i for i, v in votes.items() if appearances[i] > 0 and v >= appearances[i]}
+            remove = {
+                i
+                for i, v in votes.items()
+                if appearances[i] > 0 and v >= appearances[i]
+            }
         elif variant.vote_rule == "single":
             remove = {i for i, v in votes.items() if v >= 1}
         else:
@@ -646,9 +652,7 @@ async def evaluate_one(
     # Cosine top-max(BUDGETS) for baseline + backfill
     q_emb = engine.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = engine.store.search(
-        q_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = engine.store.search(q_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -704,12 +708,8 @@ def summarize(results: list[dict], variant_name: str, dataset: str) -> dict:
         s[f"pool_delta_r@{K}"] = round(pm - bm, 4)
         s[f"W/T/L_r@{K}"] = f"{wins}/{ties}/{losses}"
 
-    s["avg_pool_size"] = round(
-        sum(r["pool_size"] for r in results) / n, 1
-    )
-    s["avg_survivors"] = round(
-        sum(r["survivor_count"] for r in results) / n, 1
-    )
+    s["avg_pool_size"] = round(sum(r["pool_size"] for r in results) / n, 1)
+    s["avg_survivors"] = round(sum(r["survivor_count"] for r in results) / n, 1)
     s["avg_removed"] = round(
         sum(r["filter_stats"].get("removed_count", 0) for r in results) / n, 1
     )
@@ -778,9 +778,7 @@ async def run_variant_dataset(
                 saved = json.load(f)
             existing_results = saved.get("results", [])
             for r in existing_results:
-                existing_keys.add(
-                    (r["conversation_id"], r["question_index"])
-                )
+                existing_keys.add((r["conversation_id"], r["question_index"]))
             print(
                 f"\nResuming {tag}: {len(existing_results)} already done",
                 flush=True,
@@ -807,7 +805,7 @@ async def run_variant_dataset(
             continue
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -826,6 +824,7 @@ async def run_variant_dataset(
         except Exception as e:
             print(f"    ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
             continue
 
@@ -942,15 +941,20 @@ async def main_async(variants: list[str], datasets: list[str], force: bool) -> N
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--variant", default="all",
+        "--variant",
+        default="all",
         help="A, B, C, or all (comma-separated also supported)",
     )
     parser.add_argument(
-        "--dataset", default="all",
+        "--dataset",
+        default="all",
         help="Dataset name or 'all' (comma-separated also supported)",
     )
-    parser.add_argument("--force", action="store_true",
-                        help="Overwrite existing results (default: resume)")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing results (default: resume)",
+    )
     args = parser.parse_args()
 
     # Parse variants

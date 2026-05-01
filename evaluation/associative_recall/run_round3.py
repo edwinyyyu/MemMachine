@@ -3,7 +3,6 @@
 Tests v19-v24 on both BEAM and LoCoMo at 30q, then scales up winners to 60q.
 """
 
-import json
 import subprocess
 import sys
 import time
@@ -25,9 +24,13 @@ PHASE1_CONFIGS = [
 BENCHMARKS = ["beam", "locomo"]
 
 
-def run_evaluation(version: str, benchmark: str, label: str,
-                   max_questions: int | None = None,
-                   extra_args: list[str] | None = None) -> bool:
+def run_evaluation(
+    version: str,
+    benchmark: str,
+    label: str,
+    max_questions: int | None = None,
+    extra_args: list[str] | None = None,
+) -> bool:
     """Run a single evaluation and return True if successful."""
     result_file = RESULTS_DIR / f"normalized_{label}.json"
     if result_file.exists():
@@ -35,13 +38,22 @@ def run_evaluation(version: str, benchmark: str, label: str,
         return True
 
     cmd = [
-        "uv", "run", "python", "evaluate_normalized.py",
-        "--prompt-version", version,
-        "--max-hops", "1",
-        "--neighbor-radius", "1",
-        "--data-suffix", "_extended",
-        "--benchmark-filter", benchmark,
-        "--label", label,
+        "uv",
+        "run",
+        "python",
+        "evaluate_normalized.py",
+        "--prompt-version",
+        version,
+        "--max-hops",
+        "1",
+        "--neighbor-radius",
+        "1",
+        "--data-suffix",
+        "_extended",
+        "--benchmark-filter",
+        benchmark,
+        "--label",
+        label,
     ]
     if max_questions:
         cmd.extend(["--max-questions", str(max_questions)])
@@ -62,7 +74,7 @@ def run_evaluation(version: str, benchmark: str, label: str,
         if "DELTAS" in line:
             idx = lines.index(line)
             if idx + 1 < len(lines):
-                print(f"  DELTAS: {lines[idx+1].strip()}")
+                print(f"  DELTAS: {lines[idx + 1].strip()}")
     print(f"  OK ({elapsed:.0f}s)")
     return True
 
@@ -143,13 +155,19 @@ def main() -> None:
                 # Rerank variant
                 label = f"{version}_nr1_h1_{benchmark}_ext_30q_rerank"
                 print(f"\n  [{benchmark.upper()}] {version} rerank -> {label}")
-                run_evaluation(version, benchmark, label,
-                               max_questions=30, extra_args=["--rerank"])
+                run_evaluation(
+                    version, benchmark, label, max_questions=30, extra_args=["--rerank"]
+                )
                 # Backfill variant
                 label = f"{version}_nr1_h1_{benchmark}_ext_30q_backfill"
                 print(f"\n  [{benchmark.upper()}] {version} backfill -> {label}")
-                run_evaluation(version, benchmark, label,
-                               max_questions=30, extra_args=["--backfill"])
+                run_evaluation(
+                    version,
+                    benchmark,
+                    label,
+                    max_questions=30,
+                    extra_args=["--backfill"],
+                )
 
     elif phase == "scratchpad":
         print("=" * 80)

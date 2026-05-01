@@ -29,14 +29,24 @@ import json
 import os
 import time
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    BESTSHOT_LLM_CACHE,
+    EM_V2F_LLM_CACHE,
+    _MergedLLMCache,
+)
+from em_setup_rts import datetime_from_locomo_time
+from intent_em import load_intent_parse_cache, load_two_speaker_map
+from intent_rts import (
+    IntentRTSResult,
+    intent_rts_full,
+    intent_rts_speaker_only,
+    intent_rts_temporal_only,
+)
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -54,21 +64,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import (
-    BESTSHOT_LLM_CACHE,
-    EM_V2F_LLM_CACHE,
-    _MergedLLMCache,
-)
-from em_setup_rts import datetime_from_locomo_time
-from intent_em import load_intent_parse_cache, load_two_speaker_map
-from intent_rts import (
-    IntentRTSResult,
-    intent_rts_full,
-    intent_rts_speaker_only,
-    intent_rts_temporal_only,
-)
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -130,9 +127,7 @@ def compute_anchor_now(meta: dict) -> datetime:
     return datetime(2024, 1, 1, tzinfo=UTC)
 
 
-async def smoke_test_temporal(
-    memory: EventMemory, conv_meta: dict
-) -> dict:
+async def smoke_test_temporal(memory: EventMemory, conv_meta: dict) -> dict:
     """Verify temporal property_filter narrows retrieval to a date window."""
     sessions = conv_meta.get("sessions", [])
     if len(sessions) < 4:
@@ -153,9 +148,7 @@ async def smoke_test_temporal(
         left=Comparison(field="timestamp", op=">=", value=start),
         right=Comparison(field="timestamp", op="<=", value=end),
     )
-    filtered = await memory.query(
-        q, vector_search_limit=30, property_filter=filt
-    )
+    filtered = await memory.query(q, vector_search_limit=30, property_filter=filt)
 
     def _extract(qr):
         rows = []
@@ -165,9 +158,7 @@ async def smoke_test_temporal(
                     {
                         "turn_id": int(seg.properties.get("turn_id", -1)),
                         "session_idx": seg.properties.get("session_idx"),
-                        "session_date_time": seg.properties.get(
-                            "session_date_time"
-                        ),
+                        "session_date_time": seg.properties.get("session_date_time"),
                     }
                 )
         return rows
@@ -220,24 +211,42 @@ async def evaluate_question(
     t0 = time.monotonic()
     if variant == "intent_rts_full":
         result: IntentRTSResult = await intent_rts_full(
-            memory, q_text, conv_id,
-            K=max_K, plan=plan, speaker_map=speaker_map,
-            participants=participants, anchor_now=anchor_now,
-            speakerfmt_cache=speakerfmt_cache, openai_client=openai_client,
+            memory,
+            q_text,
+            conv_id,
+            K=max_K,
+            plan=plan,
+            speaker_map=speaker_map,
+            participants=participants,
+            anchor_now=anchor_now,
+            speakerfmt_cache=speakerfmt_cache,
+            openai_client=openai_client,
         )
     elif variant == "intent_rts_temporal_only":
         result = await intent_rts_temporal_only(
-            memory, q_text, conv_id,
-            K=max_K, plan=plan, speaker_map=speaker_map,
-            participants=participants, anchor_now=anchor_now,
-            v2f_cache=v2f_cache, openai_client=openai_client,
+            memory,
+            q_text,
+            conv_id,
+            K=max_K,
+            plan=plan,
+            speaker_map=speaker_map,
+            participants=participants,
+            anchor_now=anchor_now,
+            v2f_cache=v2f_cache,
+            openai_client=openai_client,
         )
     elif variant == "intent_rts_speaker_only":
         result = await intent_rts_speaker_only(
-            memory, q_text, conv_id,
-            K=max_K, plan=plan, speaker_map=speaker_map,
-            participants=participants, anchor_now=anchor_now,
-            speakerfmt_cache=speakerfmt_cache, openai_client=openai_client,
+            memory,
+            q_text,
+            conv_id,
+            K=max_K,
+            plan=plan,
+            speaker_map=speaker_map,
+            participants=participants,
+            anchor_now=anchor_now,
+            speakerfmt_cache=speakerfmt_cache,
+            openai_client=openai_client,
         )
     else:
         raise KeyError(variant)
@@ -392,12 +401,17 @@ async def run() -> None:
             cid = q["conversation_id"]
             mem = memories[cid]
             plan = parse_cache.get(q["question"].strip(), {}) or {
-                "intent_type": "other", "constraints": {}, "entities": [],
-                "primary_topic": None, "needs_aggregation": False,
+                "intent_type": "other",
+                "constraints": {},
+                "entities": [],
+                "primary_topic": None,
+                "needs_aggregation": False,
                 "parse_ok": False,
             }
             row = await evaluate_question(
-                variant, mem, q,
+                variant,
+                mem,
+                q,
                 plan=plan,
                 speaker_map=speaker_map,
                 participants=participants_by_conv[cid],
@@ -433,7 +447,9 @@ async def run() -> None:
             r for r in rows if "temporal_relation" in r.get("applied_constraints", [])
         ]
         without_temporal = [
-            r for r in rows if "temporal_relation" not in r.get("applied_constraints", [])
+            r
+            for r in rows
+            if "temporal_relation" not in r.get("applied_constraints", [])
         ]
         firing_summary = {
             "n_with_filter": len(with_filter),
@@ -513,7 +529,7 @@ def build_markdown_report(results: dict) -> list[str]:
     ]
     for k in ("speaker", "temporal_relation", "negation", "answer_form"):
         c = firing.get(k, 0)
-        lines.append(f"| `{k}` | {c} | {round(100*c/max(n_q,1), 1)}% |")
+        lines.append(f"| `{k}` | {c} | {round(100 * c / max(n_q, 1), 1)}% |")
 
     lines += ["", "## Temporal-filter smoke test", ""]
     for cid, r in smoke.items():
@@ -527,7 +543,13 @@ def build_markdown_report(results: dict) -> list[str]:
             f"ok={r.get('ok')}, violations={len(r.get('violations', []))}."
         )
 
-    lines += ["", "## Recall matrix", "", "| Variant | R@20 | R@50 |", "| --- | --- | --- |"]
+    lines += [
+        "",
+        "## Recall matrix",
+        "",
+        "| Variant | R@20 | R@50 |",
+        "| --- | --- | --- |",
+    ]
     for ref_name, (r20, r50) in REFERENCE.items():
         lines.append(f"| {ref_name} (ref) | {r20:.4f} | {r50:.4f} |")
     for variant in VARIANTS:
@@ -593,7 +615,9 @@ def build_markdown_report(results: dict) -> list[str]:
     best_r50 = 0.0
     best_variant = None
     for variant in VARIANTS:
-        r50 = results["variants"].get(variant, {}).get("summary", {}).get("mean_r@50", 0)
+        r50 = (
+            results["variants"].get(variant, {}).get("summary", {}).get("mean_r@50", 0)
+        )
         if r50 > best_r50:
             best_r50 = r50
             best_variant = variant
@@ -620,9 +644,12 @@ def build_markdown_report(results: dict) -> list[str]:
             "is too narrow or too rarely resolvable; net negative."
         )
 
-    temp_only = results["variants"].get("intent_rts_temporal_only", {}).get(
-        "summary", {}
-    ).get("mean_r@50", 0)
+    temp_only = (
+        results["variants"]
+        .get("intent_rts_temporal_only", {})
+        .get("summary", {})
+        .get("mean_r@50", 0)
+    )
     if temp_only > v2fsf50 + 0.005:
         lines.append(
             f"- `intent_rts_temporal_only` R@50={temp_only:.4f} > "

@@ -117,6 +117,7 @@ Be specific and direct — include exact names, dates, numbers, and details from
 Question: {question}
 """
 
+
 async def main():
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--data-path", required=True, help="Path to BEAM JSON file")

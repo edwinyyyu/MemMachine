@@ -20,24 +20,22 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
-
+from alias_expansion import (
+    build_expanded_queries,
+    find_alias_matches,
+)
 from em_architectures import (
-    EMHit,
     V2F_MODEL,
     V2F_PROMPT,
-    _MergedLLMCache,
+    EMHit,
     _dedupe_by_turn_id,
+    _MergedLLMCache,
     _query_em,
     em_v2f,
     format_primer_context,
     parse_v2f_cues,
 )
-from alias_expansion import (
-    build_expanded_queries,
-    find_alias_matches,
-)
-
+from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 ALIAS_GROUPS_FILE = RESULTS_DIR / "conversation_alias_groups.json"
@@ -75,13 +73,10 @@ async def _run_v2f_cues_for(
         await _query_em(memory, question, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer_hits
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer_hits
     ]
     context_section = format_primer_context(primer_segments)
-    prompt = V2F_PROMPT.format(
-        question=question, context_section=context_section
-    )
+    prompt = V2F_PROMPT.format(question=question, context_section=context_section)
 
     cached = llm_cache.get(V2F_MODEL, prompt)
     if cached is None:
@@ -102,9 +97,7 @@ async def _run_v2f_cues_for(
     per_cue_hits: list[list[EMHit]] = []
     for cue in cues[:2]:
         per_cue_hits.append(
-            await _query_em(
-                memory, cue, vector_search_limit=K, expand_context=0
-            )
+            await _query_em(memory, cue, vector_search_limit=K, expand_context=0)
         )
     return cues, per_cue_hits, cache_hit
 
@@ -160,19 +153,24 @@ async def em_alias_expand_v2f(
     for variant in variants:
         # Primer (raw variant retrieval).
         variant_primary = await _query_em(
-            memory, variant, vector_search_limit=per_variant_top_k,
+            memory,
+            variant,
+            vector_search_limit=per_variant_top_k,
             expand_context=0,
         )
         batches.append(variant_primary)
 
         # V2f cues for this variant.
         cues, cue_batches, cache_hit = await _run_v2f_cues_for(
-            memory, variant, K=per_variant_top_k,
-            llm_cache=llm_cache, openai_client=openai_client,
+            memory,
+            variant,
+            K=per_variant_top_k,
+            llm_cache=llm_cache,
+            openai_client=openai_client,
         )
-        per_variant_cues.append({
-            "variant": variant, "cues": cues, "cache_hit": cache_hit
-        })
+        per_variant_cues.append(
+            {"variant": variant, "cues": cues, "cache_hit": cache_hit}
+        )
         batches.extend(cue_batches)
 
     # Sibling-only probes: each sibling alias as its own standalone query.
@@ -184,7 +182,9 @@ async def em_alias_expand_v2f(
     for sib_text in sibling_probes[:8]:
         batches.append(
             await _query_em(
-                memory, sib_text, vector_search_limit=per_variant_top_k,
+                memory,
+                sib_text,
+                vector_search_limit=per_variant_top_k,
                 expand_context=0,
             )
         )

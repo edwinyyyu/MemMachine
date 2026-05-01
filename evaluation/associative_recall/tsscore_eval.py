@@ -28,21 +28,13 @@ Usage:
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import json
-import os
-import re
 import time
-import traceback
 from collections import defaultdict
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -52,6 +44,8 @@ from associative_recall import (
     SegmentStore,
 )
 from best_shot import V2F_PROMPT, _format_segments, _parse_cues
+from dotenv import load_dotenv
+from openai import OpenAI
 from timestamp_scoring import (
     LMEHARD_LLM_CACHE,
     TemporalConstraint,
@@ -61,7 +55,6 @@ from timestamp_scoring import (
     parse_temporal_constraint,
     temporal_score,
 )
-
 
 # ---------------------------------------------------------------------------
 # Config
@@ -233,33 +226,32 @@ class V2fRunner:
         return text
 
     def run_v2f(
-        self, question: str, conversation_id: str,
+        self,
+        question: str,
+        conversation_id: str,
     ) -> tuple[np.ndarray, list[Segment], list[str]]:
         """Returns (query_emb, v2f_segments, cues).
 
         Mirrors TwoSpeakerFilter._run_v2f logic.
         """
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments: list[Segment] = list(hop0.segments)
         exclude: set[int] = {s.index for s in all_segments}
 
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
-        prompt = V2F_PROMPT.format(
-            question=question, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=question, context_section=context_section)
         output = self.llm_call(prompt)
         cues = _parse_cues(output)[:2]
 
         for cue in cues:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -350,7 +342,8 @@ def fair_backfill(
 
 
 def variant_cosine(
-    cosine_segs: list[Segment], K: int,
+    cosine_segs: list[Segment],
+    K: int,
 ) -> list[Segment]:
     return list(cosine_segs[:K])
 
@@ -406,7 +399,11 @@ def variant_tsscore_v2f(
 
     # Pool 2: rest of haystack compatible turns, sorted by temporal_score DESC.
     compat_all = get_temporally_compatible_haystack(
-        store, conv_id, turn_dates, constraint, question_date,
+        store,
+        conv_id,
+        turn_dates,
+        constraint,
+        question_date,
     )
     for idx, _ts in compat_all:
         if idx in seen:
@@ -560,8 +557,9 @@ def load_src_by_qid(hard_qids: set[str]) -> dict[str, dict]:
     t0 = time.time()
     with open(LONGMEM_SRC) as f:
         data = json.load(f)
-    print(f"  loaded {len(data)} source questions in {time.time()-t0:.1f}s",
-          flush=True)
+    print(
+        f"  loaded {len(data)} source questions in {time.time() - t0:.1f}s", flush=True
+    )
     out: dict[str, dict] = {}
     for q in data:
         qid = q.get("question_id")
@@ -647,11 +645,14 @@ def main() -> None:
         qd = q_date_map.get(conv_id, dt.date(2023, 1, 1))
         try:
             constraint = parse_temporal_constraint(
-                client, parse_cache, q_text, qd, model=MODEL,
+                client,
+                parse_cache,
+                q_text,
+                qd,
+                model=MODEL,
             )
         except Exception as e:
-            print(f"  [warn] parse failed q={q['question_id']}: {e}",
-                  flush=True)
+            print(f"  [warn] parse failed q={q['question_id']}: {e}", flush=True)
             constraint = TemporalConstraint()
         if constraint.has_temporal_constraint:
             temporal_fire_count += 1
@@ -662,8 +663,7 @@ def main() -> None:
         try:
             query_emb, v2f_segs, cues = runner.run_v2f(q_text, conv_id)
         except Exception as e:
-            print(f"  [warn] v2f failed q={q['question_id']}: {e}",
-                  flush=True)
+            print(f"  [warn] v2f failed q={q['question_id']}: {e}", flush=True)
             query_emb = runner.embed_text(q_text)
             v2f_segs = []
             cues = []
@@ -678,64 +678,79 @@ def main() -> None:
         for K in BUDGETS:
             # baseline_cosine
             tids = {s.turn_id for s in variant_cosine(cosine_segs, K)}
-            recalls[f"baseline_cosine@{K}"] = round(
-                compute_recall(tids, source_ids), 4
-            )
+            recalls[f"baseline_cosine@{K}"] = round(compute_recall(tids, source_ids), 4)
             # baseline_v2f
-            tids = {
-                s.turn_id for s in variant_v2f(v2f_segs, cosine_segs, K)
-            }
-            recalls[f"baseline_v2f@{K}"] = round(
-                compute_recall(tids, source_ids), 4
-            )
+            tids = {s.turn_id for s in variant_v2f(v2f_segs, cosine_segs, K)}
+            recalls[f"baseline_v2f@{K}"] = round(compute_recall(tids, source_ids), 4)
             # tsscore_v2f
             tids = {
-                s.turn_id for s in variant_tsscore_v2f(
-                    v2f_segs, cosine_segs, store, turn_dates, constraint,
-                    qd, conv_id, K,
+                s.turn_id
+                for s in variant_tsscore_v2f(
+                    v2f_segs,
+                    cosine_segs,
+                    store,
+                    turn_dates,
+                    constraint,
+                    qd,
+                    conv_id,
+                    K,
                 )
             }
-            recalls[f"tsscore_v2f@{K}"] = round(
-                compute_recall(tids, source_ids), 4
-            )
+            recalls[f"tsscore_v2f@{K}"] = round(compute_recall(tids, source_ids), 4)
             # tsscore_strict
             tids = {
-                s.turn_id for s in variant_tsscore_strict(
-                    cosine_segs, store, turn_dates, constraint, qd,
-                    conv_id, query_emb, K,
+                s.turn_id
+                for s in variant_tsscore_strict(
+                    cosine_segs,
+                    store,
+                    turn_dates,
+                    constraint,
+                    qd,
+                    conv_id,
+                    query_emb,
+                    K,
                 )
             }
-            recalls[f"tsscore_strict@{K}"] = round(
-                compute_recall(tids, source_ids), 4
-            )
+            recalls[f"tsscore_strict@{K}"] = round(compute_recall(tids, source_ids), 4)
             # tsscore_soft_boost
             tids = {
-                s.turn_id for s in variant_tsscore_soft_boost(
-                    v2f_segs, cosine_segs, store, turn_dates, constraint,
-                    qd, conv_id, query_emb, K, boost=0.05,
+                s.turn_id
+                for s in variant_tsscore_soft_boost(
+                    v2f_segs,
+                    cosine_segs,
+                    store,
+                    turn_dates,
+                    constraint,
+                    qd,
+                    conv_id,
+                    query_emb,
+                    K,
+                    boost=0.05,
                 )
             }
             recalls[f"tsscore_soft_boost@{K}"] = round(
                 compute_recall(tids, source_ids), 4
             )
 
-        per_q_rows.append({
-            "question_index": qi,
-            "question_id": q["question_id"],
-            "conversation_id": conv_id,
-            "category": category,
-            "question": q_text,
-            "num_source_turns": len(source_ids),
-            "question_date": qd.isoformat(),
-            "temporal_constraint": constraint.to_dict(),
-            "cues": cues,
-            "recall": recalls,
-            "time_s": round(time.time() - t_q, 2),
-        })
+        per_q_rows.append(
+            {
+                "question_index": qi,
+                "question_id": q["question_id"],
+                "conversation_id": conv_id,
+                "category": category,
+                "question": q_text,
+                "num_source_turns": len(source_ids),
+                "question_date": qd.isoformat(),
+                "temporal_constraint": constraint.to_dict(),
+                "cues": cues,
+                "recall": recalls,
+                "time_s": round(time.time() - t_q, 2),
+            }
+        )
 
         if (qi + 1) % 5 == 0 or qi == 0:
             print(
-                f"  [{qi+1}/{len(questions)}] cat={category[:20]:20s} "
+                f"  [{qi + 1}/{len(questions)}] cat={category[:20]:20s} "
                 f"t_fire={constraint.has_temporal_constraint} "
                 f"v2f@50={recalls.get('baseline_v2f@50', 0):.3f} "
                 f"ts_v2f@50={recalls.get('tsscore_v2f@50', 0):.3f} "
@@ -755,8 +770,7 @@ def main() -> None:
 
     # Aggregate.
     def mean_recall(rows: list[dict], key: str) -> float:
-        vs = [r["recall"].get(key, 0.0) for r in rows
-              if r["num_source_turns"] > 0]
+        vs = [r["recall"].get(key, 0.0) for r in rows if r["num_source_turns"] > 0]
         return round(sum(vs) / len(vs), 4) if vs else 0.0
 
     overall: dict[str, float] = {}
@@ -791,9 +805,7 @@ def main() -> None:
         "detection": {
             "total_temporal_fire": temporal_fire_count,
             "temporal_type_counts": dict(temporal_type_counts),
-            "fire_by_category": {
-                k: dict(v) for k, v in fired_by_cat.items()
-            },
+            "fire_by_category": {k: dict(v) for k, v in fired_by_cat.items()},
         },
         "overall": overall,
         "per_category": per_cat,
@@ -819,9 +831,12 @@ def main() -> None:
             f"r@50={overall[f'{arch}@50']:.4f}",
             flush=True,
         )
-    print(f"\nTemporal fire rate overall: {temporal_fire_count}/"
-          f"{len(questions)} "
-          f"({100*temporal_fire_count/len(questions):.1f}%)", flush=True)
+    print(
+        f"\nTemporal fire rate overall: {temporal_fire_count}/"
+        f"{len(questions)} "
+        f"({100 * temporal_fire_count / len(questions):.1f}%)",
+        flush=True,
+    )
     for cat, d in fired_by_cat.items():
         print(
             f"  {cat:30s} fired {d['fired']}/{d['total']}",
@@ -851,7 +866,7 @@ def render_markdown(out: dict) -> str:
     total = out["n_questions"]
     fire = det["total_temporal_fire"]
     L.append(
-        f"Overall: **{fire}/{total} = {100*fire/total:.1f}%** of queries "
+        f"Overall: **{fire}/{total} = {100 * fire / total:.1f}%** of queries "
         f"have a parsed temporal constraint.\n"
     )
     L.append("| Category | fired / total | fire rate |")
@@ -860,7 +875,7 @@ def render_markdown(out: dict) -> str:
         tot = d.get("total", 0) or 1
         L.append(
             f"| {cat} | {d.get('fired', 0)}/{d.get('total', 0)} | "
-            f"{100*d.get('fired', 0)/tot:.1f}% |"
+            f"{100 * d.get('fired', 0) / tot:.1f}% |"
         )
     L.append("\nTemporal-type counts (among fired):")
     for k, v in det["temporal_type_counts"].items():
@@ -905,13 +920,14 @@ def render_markdown(out: dict) -> str:
             for cat in cats:
                 base = out["per_category"][cat].get(f"baseline_v2f@{K}", 0.0)
                 a = out["per_category"][cat].get(f"{arch}@{K}", 0.0)
-                row += f" {a-base:+.4f} |"
+                row += f" {a - base:+.4f} |"
             L.append(row)
 
     # Sample temporal queries
     L.append("\n## Sample temporal queries (parse + retrieval effect)\n")
     temp_rows = [
-        r for r in out["per_question"]
+        r
+        for r in out["per_question"]
         if r["category"] == "temporal-reasoning"
         and r["temporal_constraint"].get("has_temporal_constraint")
     ]
@@ -937,11 +953,11 @@ def render_markdown(out: dict) -> str:
         )
         rec = r["recall"]
         L.append(
-            f"- **recall@50**: cosine={rec.get('baseline_cosine@50',0):.3f}  "
-            f"v2f={rec.get('baseline_v2f@50',0):.3f}  "
-            f"ts_v2f={rec.get('tsscore_v2f@50',0):.3f}  "
-            f"ts_strict={rec.get('tsscore_strict@50',0):.3f}  "
-            f"ts_boost={rec.get('tsscore_soft_boost@50',0):.3f}"
+            f"- **recall@50**: cosine={rec.get('baseline_cosine@50', 0):.3f}  "
+            f"v2f={rec.get('baseline_v2f@50', 0):.3f}  "
+            f"ts_v2f={rec.get('tsscore_v2f@50', 0):.3f}  "
+            f"ts_strict={rec.get('tsscore_strict@50', 0):.3f}  "
+            f"ts_boost={rec.get('tsscore_soft_boost@50', 0):.3f}"
         )
         L.append("")
 
@@ -997,18 +1013,21 @@ def render_markdown(out: dict) -> str:
         t2 = pc.get("tsscore_strict@50", 0.0)
         t3 = pc.get("tsscore_soft_boost@50", 0.0)
         L.append(
-            f"| {c} | {v:.3f} | {t1:.3f} | {t1-v:+.3f} | "
-            f"{t2:.3f} | {t2-v:+.3f} | {t3:.3f} | {t3-v:+.3f} |"
+            f"| {c} | {v:.3f} | {t1:.3f} | {t1 - v:+.3f} | "
+            f"{t2:.3f} | {t2 - v:+.3f} | {t3:.3f} | {t3 - v:+.3f} |"
         )
 
     # Fire-only analysis (only questions where the constraint fired).
     L.append("\n### Fire-only analysis (only queries where constraint fired)\n")
-    L.append("Recall@50 averaged over the subset of queries where the LLM "
-             "parser emitted a temporal constraint.\n")
+    L.append(
+        "Recall@50 averaged over the subset of queries where the LLM "
+        "parser emitted a temporal constraint.\n"
+    )
     L.append("| Category | n_fired | v2f | ts_v2f | Δ | ts_strict | Δ | ts_boost | Δ |")
     L.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
     fired_rows = [
-        r for r in out["per_question"]
+        r
+        for r in out["per_question"]
         if r["temporal_constraint"].get("has_temporal_constraint")
     ]
     cats = sorted({r["category"] for r in out["per_question"]})
@@ -1017,15 +1036,17 @@ def render_markdown(out: dict) -> str:
         if not sub:
             L.append(f"| {c} | 0 | — | — | — | — | — | — | — |")
             continue
+
         def _mean(k: str) -> float:
             return sum(r["recall"].get(k, 0.0) for r in sub) / len(sub)
+
         v = _mean("baseline_v2f@50")
         t1 = _mean("tsscore_v2f@50")
         t2 = _mean("tsscore_strict@50")
         t3 = _mean("tsscore_soft_boost@50")
         L.append(
-            f"| {c} | {len(sub)} | {v:.3f} | {t1:.3f} | {t1-v:+.3f} | "
-            f"{t2:.3f} | {t2-v:+.3f} | {t3:.3f} | {t3-v:+.3f} |"
+            f"| {c} | {len(sub)} | {v:.3f} | {t1:.3f} | {t1 - v:+.3f} | "
+            f"{t2:.3f} | {t2 - v:+.3f} | {t3:.3f} | {t3 - v:+.3f} |"
         )
 
     # Mechanism note.
@@ -1038,18 +1059,18 @@ def render_markdown(out: dict) -> str:
         "which often includes MULTIPLE past sessions where the user "
         "mentioned related events across a wide time range, not only the "
         "session(s) that literally match the temporal phrase. E.g. "
-        "`gpt4_d6585ce9`: \"Who did I go with to the music event last "
-        "Saturday?\" — the gold sessions span FIVE Saturdays (3/18, 3/25, "
+        '`gpt4_d6585ce9`: "Who did I go with to the music event last '
+        'Saturday?" — the gold sessions span FIVE Saturdays (3/18, 3/25, '
         "4/1, 4/8, 4/15); the temporal parser correctly narrows to 4/15 "
         "but v2f's broader retrieval hits more gold turns. The metadata "
-        "channel is \"too accurate\" for the metric — it correctly "
+        'channel is "too accurate" for the metric — it correctly '
         "identifies the primary session but the gold-recall target rewards "
         "breadth."
     )
     L.append(
         "\nThe three exceptions where tsscore_v2f lifts (gpt4_468eb064 "
-        "\"lunch last Tuesday\": v2f=0.75 → ts_v2f=1.00; 4dfccbf8 "
-        "\"Wednesday two months ago\": ts_strict=0.33 vs v2f=0.17; "
+        '"lunch last Tuesday": v2f=0.75 → ts_v2f=1.00; 4dfccbf8 '
+        '"Wednesday two months ago": ts_strict=0.33 vs v2f=0.17; '
         "a few wins on relative-past with window=30) are genuine, but the "
         "larger hits from narrowing on `during` with tight windows "
         "dominate the aggregate."

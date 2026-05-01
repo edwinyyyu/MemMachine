@@ -24,11 +24,10 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import EMBED_MODEL
 from best_shot import BestshotEmbeddingCache
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -65,7 +64,7 @@ def stratified_subsample(
     types_sorted = sorted(types, key=lambda t: len(by_type[t]))
 
     # Extra slots go to the types with the most questions (they have slack)
-    extra_targets = {t: 0 for t in types}
+    extra_targets = dict.fromkeys(types, 0)
     for t in sorted(types, key=lambda t: -len(by_type[t]))[:rem]:
         extra_targets[t] = 1
 
@@ -75,9 +74,7 @@ def stratified_subsample(
         # sort by "moderate" haystack size: closest to median of the pool
         sizes = [sum(len(s) for s in q["haystack_sessions"]) for q in pool]
         med = sorted(sizes)[len(sizes) // 2] if sizes else 0
-        pool_scored = [
-            (abs(sizes[i] - med), i) for i in range(len(pool))
-        ]
+        pool_scored = [(abs(sizes[i] - med), i) for i in range(len(pool))]
         # Shuffle ties, then sort so we pick close-to-median reliably
         rng.shuffle(pool_scored)
         pool_scored.sort(key=lambda x: x[0])
@@ -119,13 +116,15 @@ def flatten_to_segments(question: dict) -> tuple[list[dict], set[int]]:
             text = turn.get("content", "")
             if not isinstance(text, str):
                 text = str(text)
-            segs.append({
-                "conversation_id": qid,
-                "turn_id": turn_idx,
-                "role": role,
-                "text": text,
-                "session_id": sess_id,
-            })
+            segs.append(
+                {
+                    "conversation_id": qid,
+                    "turn_id": turn_idx,
+                    "role": role,
+                    "text": text,
+                    "session_id": sess_id,
+                }
+            )
             if sess_id in gold_sessions:
                 gold_tids.add(turn_idx)
             turn_idx += 1
@@ -164,7 +163,7 @@ def embed_all(
     done = 0
     save_every = max(1, total // 20)  # ~5% increments
     for start in range(0, total, batch_size):
-        batch = to_compute[start:start + batch_size]
+        batch = to_compute[start : start + batch_size]
         batch_texts = [t for _, t in batch]
         resp = client.embeddings.create(model=EMBED_MODEL, input=batch_texts)
         for (i, t), embed_data in zip(batch, resp.data):
@@ -221,30 +220,32 @@ def main() -> None:
         segs, gold_tids = flatten_to_segments(q)
         total_turns += len(segs)
         all_segments.extend(segs)
-        questions_out.append({
-            "question_id": q["question_id"],
-            "conversation_id": q["question_id"],
-            "question_index": qi,
-            "question": q["question"],
-            "answer": q["answer"],
-            "category": q["question_type"],
-            "question_type": q["question_type"],
-            "answer_session_ids": q["answer_session_ids"],
-            "source_chat_ids": sorted(gold_tids),
-            "source_ids": sorted(gold_tids),
-            "num_source_turns": len(gold_tids),
-            "num_haystack_turns": len(segs),
-        })
+        questions_out.append(
+            {
+                "question_id": q["question_id"],
+                "conversation_id": q["question_id"],
+                "question_index": qi,
+                "question": q["question"],
+                "answer": q["answer"],
+                "category": q["question_type"],
+                "question_type": q["question_type"],
+                "answer_session_ids": q["answer_session_ids"],
+                "source_chat_ids": sorted(gold_tids),
+                "source_ids": sorted(gold_tids),
+                "num_source_turns": len(gold_tids),
+                "num_haystack_turns": len(segs),
+            }
+        )
     turns_per_q = [qq["num_haystack_turns"] for qq in questions_out]
     gold_per_q = [qq["num_source_turns"] for qq in questions_out]
     print(
         f"Flattened: total_turns={total_turns} mean_turns_per_q="
-        f"{total_turns/len(chosen):.1f} min={min(turns_per_q)} "
+        f"{total_turns / len(chosen):.1f} min={min(turns_per_q)} "
         f"max={max(turns_per_q)}",
         flush=True,
     )
     print(
-        f"  gold turns per question: mean={sum(gold_per_q)/len(gold_per_q):.1f} "
+        f"  gold turns per question: mean={sum(gold_per_q) / len(gold_per_q):.1f} "
         f"min={min(gold_per_q)} max={max(gold_per_q)}",
         flush=True,
     )
@@ -265,9 +266,7 @@ def main() -> None:
     turn_ids = np.array([s["turn_id"] for s in all_segments], dtype=np.int64)
     roles = np.array([s["role"] for s in all_segments], dtype=object)
     texts_arr = np.array([s["text"] for s in all_segments], dtype=object)
-    session_ids = np.array(
-        [s["session_id"] for s in all_segments], dtype=object
-    )
+    session_ids = np.array([s["session_id"] for s in all_segments], dtype=object)
     np.savez(
         SEGMENTS_NPZ,
         embeddings=embeddings,
@@ -284,7 +283,7 @@ def main() -> None:
         json.dump(questions_out, f, indent=2)
     print(f"  saved questions: {QUESTIONS_JSON}", flush=True)
 
-    print(f"\nDone in {time.time()-t_all:.0f}s", flush=True)
+    print(f"\nDone in {time.time() - t_all:.0f}s", flush=True)
 
 
 if __name__ == "__main__":

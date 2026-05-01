@@ -24,24 +24,20 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 from uuid import UUID
 
 import numpy as np
-
+from em_architectures import (
+    V2F_MODEL,
+    EMHit,
+    _dedupe_by_turn_id,
+    _MergedLLMCache,
+)
 from memmachine_server.common.embedder.openai_embedder import OpenAIEmbedder
 from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
-
-from em_architectures import (
-    EMHit,
-    V2F_MODEL,
-    _MergedLLMCache,
-    _dedupe_by_turn_id,
-    _query_em,
-)
-
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
 
@@ -383,9 +379,7 @@ async def active_steer(
     if gold is not None:
         for K in K_budgets:
             r = {h.turn_id for h in r0_dedup[:K]}
-            initial_recall[f"r@{K}"] = (
-                len(r & gold) / len(gold) if gold else 1.0
-            )
+            initial_recall[f"r@{K}"] = len(r & gold) / len(gold) if gold else 1.0
     traces.append(
         RoundTrace(
             round_idx=0,
@@ -398,9 +392,7 @@ async def active_steer(
         )
     )
 
-    prompt_template = (
-        STEER_PROMPT_WEIGHTED if config.weighted_mode else STEER_PROMPT
-    )
+    prompt_template = STEER_PROMPT_WEIGHTED if config.weighted_mode else STEER_PROMPT
 
     current_hits = r0_dedup
     for rnd in range(1, config.max_rounds + 1):
@@ -463,9 +455,7 @@ async def active_steer(
         if gold is not None:
             for K in K_budgets:
                 r = {h.turn_id for h in next_dedup[:K]}
-                round_recall[f"r@{K}"] = (
-                    len(r & gold) / len(gold) if gold else 1.0
-                )
+                round_recall[f"r@{K}"] = len(r & gold) / len(gold) if gold else 1.0
 
         traces.append(
             RoundTrace(

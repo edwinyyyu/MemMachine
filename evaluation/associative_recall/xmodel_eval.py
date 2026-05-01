@@ -39,9 +39,9 @@ from pathlib import Path
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import _MergedLLMCache
+from em_two_speaker import load_two_speaker_map
+from hydeorient_eval import compose_with_speaker_filter
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -58,10 +58,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import EMHit, _MergedLLMCache
-from em_two_speaker import classify_speaker_side, load_two_speaker_map
-from hydeorient_eval import compose_with_speaker_filter
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 from xmodel_em import (
     NANO_HYDE_FP_CACHE,
     NANO_SF_CACHE,
@@ -70,7 +68,6 @@ from xmodel_em import (
     nano_v2f,
     nano_v2f_speakerformat,
 )
-
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -151,35 +148,52 @@ async def run_variant(
 ):
     if variant == "nano_v2f":
         return await nano_v2f(
-            memory, question, K=K,
-            cache=caches["nano_v2f"], openai_client=openai_client,
+            memory,
+            question,
+            K=K,
+            cache=caches["nano_v2f"],
+            openai_client=openai_client,
         )
     if variant == "nano_v2f_speakerformat":
         return await nano_v2f_speakerformat(
-            memory, question, participants,
-            K=K, cache=caches["nano_v2f_speakerformat"],
+            memory,
+            question,
+            participants,
+            K=K,
+            cache=caches["nano_v2f_speakerformat"],
             openai_client=openai_client,
         )
     if variant == "nano_hyde_first_person":
         return await nano_hyde_first_person(
-            memory, question, participants,
-            K=K, cache=caches["nano_hyde_first_person"],
+            memory,
+            question,
+            participants,
+            K=K,
+            cache=caches["nano_hyde_first_person"],
             openai_client=openai_client,
         )
     if variant == "nano_hyde_first_person_filter":
         # Stage 1: nano_hyde_first_person.
         base = await nano_hyde_first_person(
-            memory, question, participants,
-            K=K, cache=caches["nano_hyde_first_person"],
+            memory,
+            question,
+            participants,
+            K=K,
+            cache=caches["nano_hyde_first_person"],
             openai_client=openai_client,
         )
         # Stage 2: compose with speaker property_filter (same as mini recipe).
         merged, cmeta = await compose_with_speaker_filter(
-            memory, question, conversation_id, base.hits,
-            K=K, speaker_map=speaker_map,
+            memory,
+            question,
+            conversation_id,
+            base.hits,
+            K=K,
+            speaker_map=speaker_map,
         )
         # Merge metadata; wrap as XModelEMResult-alike.
         from xmodel_em import XModelEMResult
+
         return XModelEMResult(
             hits=merged,
             metadata={
@@ -204,7 +218,9 @@ async def main() -> None:
         help="Comma-separated variants to run",
     )
     parser.add_argument(
-        "--limit", type=int, default=None,
+        "--limit",
+        type=int,
+        default=None,
         help="Only run first N questions (smoke test)",
     )
     args = parser.parse_args()
@@ -250,13 +266,16 @@ async def main() -> None:
     # Dedicated nano caches.
     caches: dict[str, _MergedLLMCache] = {
         "nano_v2f": _MergedLLMCache(
-            reader_paths=[NANO_V2F_CACHE], writer_path=NANO_V2F_CACHE,
+            reader_paths=[NANO_V2F_CACHE],
+            writer_path=NANO_V2F_CACHE,
         ),
         "nano_v2f_speakerformat": _MergedLLMCache(
-            reader_paths=[NANO_SF_CACHE], writer_path=NANO_SF_CACHE,
+            reader_paths=[NANO_SF_CACHE],
+            writer_path=NANO_SF_CACHE,
         ),
         "nano_hyde_first_person": _MergedLLMCache(
-            reader_paths=[NANO_HYDE_FP_CACHE], writer_path=NANO_HYDE_FP_CACHE,
+            reader_paths=[NANO_HYDE_FP_CACHE],
+            writer_path=NANO_HYDE_FP_CACHE,
         ),
     }
 
@@ -304,8 +323,13 @@ async def main() -> None:
                 gold = set(q.get("source_chat_ids", []))
                 t0 = time.monotonic()
                 vr = await run_variant(
-                    variant, mem, q_text, cid, participants,
-                    K=max_K, caches=caches,
+                    variant,
+                    mem,
+                    q_text,
+                    cid,
+                    participants,
+                    K=max_K,
+                    caches=caches,
                     speaker_map=speaker_map,
                     openai_client=openai_client,
                 )
@@ -347,8 +371,7 @@ async def main() -> None:
                 d = {"n": len(cat_rows)}
                 for K in BUDGETS:
                     d[f"mean_r@{K}"] = round(
-                        sum(r[f"r@{K}"] for r in cat_rows)
-                        / max(len(cat_rows), 1), 4
+                        sum(r[f"r@{K}"] for r in cat_rows) / max(len(cat_rows), 1), 4
                     )
                 cat_summary[cat] = d
 
@@ -465,7 +488,7 @@ def build_markdown_report(
         "",
         f"- n_questions = {len(questions)} (benchmark=locomo, first 30)",
         "- EventMemory backend (arc_em_lc30_v1_{26,30,41}); "
-        "speaker-baked embedded format `\"{source}: {text}\"`",
+        'speaker-baked embedded format `"{source}: {text}"`',
         "- Embedder: text-embedding-3-small (fixed)",
         "- Cue-gen model: gpt-5-nano "
         "(`max_completion_tokens=6000`, 1-retry on empty parse)",
@@ -504,9 +527,7 @@ def build_markdown_report(
         "",
     ]
     for v in variants:
-        lines.append(
-            f"- `{v}` -> mini `{MINI_REFERENCE[v]['mini_variant']}`"
-        )
+        lines.append(f"- `{v}` -> mini `{MINI_REFERENCE[v]['mini_variant']}`")
 
     lines += [
         "",
@@ -522,9 +543,7 @@ def build_markdown_report(
         numer = c.get("numer", "-")
         denom = c.get("denom", "-")
         frac = f"{numer}/{denom}" if denom != "-" else "-"
-        lines.append(
-            f"| `{v}` | {rate_str} | {frac} | {c.get('description','')} |"
-        )
+        lines.append(f"| `{v}` | {rate_str} | {frac} | {c.get('description', '')} |")
 
     # Sample cues: pick 2 questions spread across the 30.
     lines += [
@@ -540,16 +559,14 @@ def build_markdown_report(
         q_row = first_rows[idx]
         lines.append(
             f"### Q{idx} (`{q_row['conversation_id']}`, "
-            f"{q_row.get('category','?')}): {q_row['question']!r}"
+            f"{q_row.get('category', '?')}): {q_row['question']!r}"
         )
         lines.append("")
         lines.append(f"Gold turn_ids: {q_row['gold_turn_ids']}")
         lines.append("")
         for v in variants:
             row = results["variants"][v]["per_question"][idx]
-            lines.append(
-                f"- `{v}` (R@20={row['r@20']:.2f}, R@50={row['r@50']:.2f})"
-            )
+            lines.append(f"- `{v}` (R@20={row['r@20']:.2f}, R@50={row['r@50']:.2f})")
             lines.append(f"  {_sample_key(v, row)}")
         lines.append("")
 
@@ -583,15 +600,15 @@ def build_markdown_report(
             lines.append(f"- `{v}`: {r20:.1%}@20, {r50:.1%}@50")
         lines.append("")
     if one_side_candidates:
-        lines.append(
-            "**>= 90% of mini at ONE K (partial close):**"
-        )
+        lines.append("**>= 90% of mini at ONE K (partial close):**")
         for v, r20, r50 in one_side_candidates:
             lines.append(f"- `{v}`: {r20:.1%}@20, {r50:.1%}@50")
         lines.append("")
 
     # Decision rules per plan.
-    nhf = results["variants"].get("nano_hyde_first_person_filter", {}).get("summary", {})
+    nhf = (
+        results["variants"].get("nano_hyde_first_person_filter", {}).get("summary", {})
+    )
     nsf = results["variants"].get("nano_v2f_speakerformat", {}).get("summary", {})
     nhfp = results["variants"].get("nano_hyde_first_person", {}).get("summary", {})
 
@@ -626,9 +643,7 @@ def build_markdown_report(
                 f"(speakerformat={nsf50:.4f}, hyde_fp={nhfp50:.4f})."
             )
     # All below 0.75?
-    max_r50 = max(
-        results["variants"][v]["summary"]["mean_r@50"] for v in variants
-    )
+    max_r50 = max(results["variants"][v]["summary"]["mean_r@50"] for v in variants)
     if max_r50 < 0.75:
         lines.append(
             f"- All nano variants below 0.75 K=50 "
@@ -654,9 +669,7 @@ def build_markdown_report(
                 "beats single-probe HyDE on nano."
             )
         else:
-            lines.append(
-                "- Gradient: HyDE vs speakerformat tied at K=50."
-            )
+            lines.append("- Gradient: HyDE vs speakerformat tied at K=50.")
 
     lines += [
         "",

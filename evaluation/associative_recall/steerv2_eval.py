@@ -25,10 +25,21 @@ from collections import defaultdict
 from pathlib import Path
 
 import openai
+from active_steering import EmbeddingCache
+from active_steering_v2 import SteerV2Config, active_steer_v2
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    V2F_MODEL,
+    _dedupe_by_turn_id,
+    _MergedLLMCache,
+    _query_em,
+    format_primer_context,
+)
+from em_lme_tuned_cues import (
+    LMETUNE_V2F_MIXED7030_CACHE,
+    V2F_LME_MIXED_7030_PROMPT,
+    parse_speaker_cues,
+)
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -45,26 +56,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from active_steering import EmbeddingCache
-from active_steering_v2 import SteerV2Config, active_steer_v2
-from em_architectures import (
-    BESTSHOT_LLM_CACHE,
-    EM_V2F_LLM_CACHE,
-    V2F_MODEL,
-    V2F_PROMPT,
-    _MergedLLMCache,
-    _dedupe_by_turn_id,
-    _query_em,
-    format_primer_context,
-    parse_v2f_cues,
-)
-from em_lme_tuned_cues import (
-    LMETUNE_V2F_MIXED7030_CACHE,
-    V2F_LME_MIXED_7030_PROMPT,
-    parse_speaker_cues,
-)
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -321,9 +314,7 @@ async def main() -> None:
         else:
             engine = create_async_engine(sql_url, pool_size=20, max_overflow=20)
         engines.append(engine)
-        seg_store = SQLAlchemySegmentStore(
-            SQLAlchemySegmentStoreParams(engine=engine)
-        )
+        seg_store = SQLAlchemySegmentStore(SQLAlchemySegmentStoreParams(engine=engine))
         await seg_store.startup()
         segment_stores.append(seg_store)
 
@@ -619,7 +610,7 @@ def write_report(results: dict) -> None:
     for variant, per in variants.items():
         traj = per["trajectory"]
         cells = []
-        for rnd in range(0, 4):
+        for rnd in range(4):
             entry = traj.get(str(rnd))
             if entry and "mean_r@50" in entry:
                 cells.append(f"{entry['mean_r@50']:.4f}")
@@ -648,7 +639,7 @@ def write_report(results: dict) -> None:
                 rnd = tr["round"]
                 if rnd == 0:
                     lines.append(
-                        f"- round 0: R@50={tr.get('r@50','--')}, "
+                        f"- round 0: R@50={tr.get('r@50', '--')}, "
                         f"top-5 gold mask: {tr['topk_is_gold']}"
                     )
                     continue
@@ -663,7 +654,7 @@ def write_report(results: dict) -> None:
                     if 0 <= i < len(tr["topk_is_gold"])
                 ]
                 lines.append(
-                    f"- round {rnd}: R@50={tr.get('r@50','--')}, "
+                    f"- round {rnd}: R@50={tr.get('r@50', '--')}, "
                     f"drift={tr['probe_drift']:.3f}"
                 )
                 lines.append(
@@ -684,7 +675,9 @@ def write_report(results: dict) -> None:
     # Verdict
     lines.append("## Verdict")
     lines.append("")
-    base = variants.get("baseline_v2f_direct", {}).get("summary", {}).get("mean_r@50", 0.0)
+    base = (
+        variants.get("baseline_v2f_direct", {}).get("summary", {}).get("mean_r@50", 0.0)
+    )
     full = variants.get("steerv2_full", {}).get("summary", {}).get("mean_r@50", 0.0)
     addo = variants.get("steerv2_addonly", {}).get("summary", {}).get("mean_r@50", 0.0)
     subo = variants.get("steerv2_subonly", {}).get("summary", {}).get("mean_r@50", 0.0)

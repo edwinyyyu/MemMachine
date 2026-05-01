@@ -25,16 +25,20 @@ import json
 from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
-from associative_recall import CACHE_DIR, EmbeddingCache, LLMCache, Segment, SegmentStore
+from associative_recall import (
+    CACHE_DIR,
+    EmbeddingCache,
+    LLMCache,
+    SegmentStore,
+)
 from best_shot import (
+    V2F_PROMPT,
     BestshotBase,
     BestshotResult,
-    V2F_PROMPT,
     _format_segments,
     _parse_cues,
 )
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Dedicated caches (read many shared caches for hits, write only to own files)
@@ -400,7 +404,6 @@ def _mean_embedding(
     embed_model: str = "text-embedding-3-small",
 ) -> tuple[np.ndarray, int]:
     """Return (mean_embedding, num_newly_embedded). Uses cache."""
-    from associative_recall import EMBED_MODEL
 
     embs = []
     new_count = 0
@@ -461,9 +464,7 @@ def learn_question_direction(
     return direction, stats
 
 
-def project_away(
-    emb: np.ndarray, direction: np.ndarray, alpha: float
-) -> np.ndarray:
+def project_away(emb: np.ndarray, direction: np.ndarray, alpha: float) -> np.ndarray:
     """Project `emb` away from `direction` with strength `alpha`.
 
     direction should already be unit length. Output is normalized to unit
@@ -518,9 +519,7 @@ class QProjOnly(_QProjBase):
         # Retrieve top-K with max needed budget upstream (eval does its own
         # cosine@K for the baseline). Here, return top-50 to cover both K=20
         # and K=50 budgets.
-        result = self.store.search(
-            proj_emb, top_k=50, conversation_id=conversation_id
-        )
+        result = self.store.search(proj_emb, top_k=50, conversation_id=conversation_id)
         return BestshotResult(
             segments=list(result.segments),
             metadata={
@@ -539,26 +538,23 @@ class QProjV2f(_QProjBase):
 
     def retrieve(self, question: str, conversation_id: str) -> BestshotResult:
         proj_emb = self.projected_query_embedding(question)
-        hop0 = self.store.search(
-            proj_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(proj_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
-        prompt = V2F_PROMPT.format(
-            question=question, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=question, context_section=context_section)
         output = self.llm_call(prompt)
         cues = _parse_cues(output)[:2]
 
         for cue in cues:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:

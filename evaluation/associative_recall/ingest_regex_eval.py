@@ -17,37 +17,30 @@ Usage: uv run python ingest_regex_eval.py
 from __future__ import annotations
 
 import json
-import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     EMBED_MODEL,
+    RetrievalResult,
     Segment,
     SegmentStore,
-    RetrievalResult,
 )
 from best_shot import (
-    BestshotBase,
     BestshotEmbeddingCache,
     BestshotLLMCache,
     MetaV2f,
-    _format_segments,
-    _parse_cues,
-    V2F_PROMPT,
 )
+from dotenv import load_dotenv
 from ingest_regex_altkeys import (
-    AltKey,
     HEURISTIC_NAMES,
-    generate_alt_keys_for_conversation,
+    AltKey,
     generate_all_alt_keys,
 )
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -68,8 +61,9 @@ class AugmentedSegmentStore:
       - get_neighbors, search
     """
 
-    def __init__(self, base: SegmentStore, alt_keys: list[AltKey],
-                 alt_embeddings: np.ndarray):
+    def __init__(
+        self, base: SegmentStore, alt_keys: list[AltKey], alt_embeddings: np.ndarray
+    ):
         self._base = base
         # Passthrough attrs
         self.segments = base.segments
@@ -85,15 +79,17 @@ class AugmentedSegmentStore:
         # Alt-keys
         self.alt_keys: list[AltKey] = alt_keys
         if len(alt_keys) == 0 or alt_embeddings.size == 0:
-            self.alt_normalized = np.zeros((0, base.normalized_embeddings.shape[1]),
-                                           dtype=np.float32)
+            self.alt_normalized = np.zeros(
+                (0, base.normalized_embeddings.shape[1]), dtype=np.float32
+            )
             self.alt_parent_index = np.zeros(0, dtype=np.int64)
         else:
             norms = np.linalg.norm(alt_embeddings, axis=1, keepdims=True)
             norms = np.maximum(norms, 1e-10)
             self.alt_normalized = (alt_embeddings / norms).astype(np.float32)
             self.alt_parent_index = np.array(
-                [k.parent_index for k in alt_keys], dtype=np.int64,
+                [k.parent_index for k in alt_keys],
+                dtype=np.int64,
             )
 
     def search(
@@ -166,10 +162,12 @@ def embed_texts_cached(
             to_compute.append((i, t_stripped))
 
     if to_compute:
-        print(f"  Embedding {len(to_compute)} new alt-key texts (not in cache)...",
-              flush=True)
+        print(
+            f"  Embedding {len(to_compute)} new alt-key texts (not in cache)...",
+            flush=True,
+        )
     for start in range(0, len(to_compute), batch_size):
-        batch = to_compute[start:start + batch_size]
+        batch = to_compute[start : start + batch_size]
         batch_texts = [t for _, t in batch]
         response = client.embeddings.create(model=EMBED_MODEL, input=batch_texts)
         for (i, t), embed_data in zip(batch, response.data):
@@ -233,7 +231,7 @@ class ConditionResult:
 
 def run_cosine_condition(
     store_for_search,
-    embedder: "Embedder",
+    embedder: Embedder,
     questions: list[dict],
 ) -> ConditionResult:
     """Run pure cosine (no cues) on a given store."""
@@ -265,7 +263,7 @@ def run_cosine_condition(
 
 def run_v2f_condition(
     store_for_search,
-    embedder: "Embedder",
+    embedder: Embedder,
     questions: list[dict],
     arch_name: str,
 ) -> ConditionResult:
@@ -404,15 +402,9 @@ def render_markdown(
     # --- Index bloat ---
     lines.append("## 1. Index bloat")
     lines.append("")
-    lines.append(
-        f"- Original segments in LoCoMo corpus: **{bloat['n_original']}**"
-    )
-    lines.append(
-        f"- Alt-keys generated (deduped by text): **{bloat['n_altkeys']}**"
-    )
-    lines.append(
-        f"- Bloat factor (alt / original): **{bloat['bloat_factor']:.2f}x**"
-    )
+    lines.append(f"- Original segments in LoCoMo corpus: **{bloat['n_original']}**")
+    lines.append(f"- Alt-keys generated (deduped by text): **{bloat['n_altkeys']}**")
+    lines.append(f"- Bloat factor (alt / original): **{bloat['bloat_factor']:.2f}x**")
     lines.append(
         f"- Fraction of segments that fire at least one heuristic: "
         f"**{bloat['fraction_any_fire']:.1%}**"
@@ -442,8 +434,10 @@ def render_markdown(
     lines.append("| condition | mean r@20 | mean r@50 |")
     lines.append("|---|---:|---:|")
     for cond_name in [
-        "cosine_no_altkeys", "cosine_with_altkeys",
-        "v2f_no_altkeys", "v2f_with_altkeys",
+        "cosine_no_altkeys",
+        "cosine_with_altkeys",
+        "v2f_no_altkeys",
+        "v2f_with_altkeys",
     ]:
         s = ov.get(cond_name, {})
         lines.append(
@@ -473,8 +467,10 @@ def render_markdown(
         row = f"| {cat} | {n_cat} "
         for K in BUDGETS:
             for cond in [
-                "cosine_no_altkeys", "cosine_with_altkeys",
-                "v2f_no_altkeys", "v2f_with_altkeys",
+                "cosine_no_altkeys",
+                "cosine_with_altkeys",
+                "v2f_no_altkeys",
+                "v2f_with_altkeys",
             ]:
                 v = d.get(cond, {}).get(f"mean_r@{K}", 0.0)
                 row += f"| {v:.3f} "
@@ -560,16 +556,26 @@ def main() -> None:
     with open(DATA_DIR / "questions_extended.json") as f:
         all_qs = json.load(f)
     locomo_qs = [q for q in all_qs if q.get("benchmark") == "locomo"][:30]
-    print(f"  LoCoMo-30: {len(locomo_qs)} questions, "
-          f"{len(store.segments)} total segments (all benchmarks)", flush=True)
+    print(
+        f"  LoCoMo-30: {len(locomo_qs)} questions, "
+        f"{len(store.segments)} total segments (all benchmarks)",
+        flush=True,
+    )
 
     # --- Generate alt-keys on the FULL LoCoMo sub-corpus (all locomo convs).
-    locomo_conv_ids = {s.conversation_id for s in store.segments
-                       if s.conversation_id.startswith("locomo_")}
-    locomo_segments = [s for s in store.segments
-                       if s.conversation_id in locomo_conv_ids]
-    print(f"  LoCoMo sub-corpus: {len(locomo_segments)} segments across "
-          f"{len(locomo_conv_ids)} conversations", flush=True)
+    locomo_conv_ids = {
+        s.conversation_id
+        for s in store.segments
+        if s.conversation_id.startswith("locomo_")
+    }
+    locomo_segments = [
+        s for s in store.segments if s.conversation_id in locomo_conv_ids
+    ]
+    print(
+        f"  LoCoMo sub-corpus: {len(locomo_segments)} segments across "
+        f"{len(locomo_conv_ids)} conversations",
+        flush=True,
+    )
 
     alt_keys_raw, fire_counts = generate_all_alt_keys(locomo_segments)
     # Dedup by text; keep first occurrence (retains parent_index + heuristic).
@@ -580,21 +586,23 @@ def main() -> None:
             continue
         seen_text.add(k.text)
         alt_keys.append(k)
-    print(f"  Alt-keys: {len(alt_keys_raw)} raw, {len(alt_keys)} deduped by text",
-          flush=True)
+    print(
+        f"  Alt-keys: {len(alt_keys_raw)} raw, {len(alt_keys)} deduped by text",
+        flush=True,
+    )
     print(f"  Per-heuristic fire counts: {fire_counts}", flush=True)
 
     n_segments_with_any_fire = sum(
-        1 for segs in [locomo_segments]
+        1
+        for segs in [locomo_segments]
         for s in segs
-        if any(
-            k.parent_index == s.index for k in alt_keys_raw
-        )
+        if any(k.parent_index == s.index for k in alt_keys_raw)
     )
     # faster: use a set
     parents_fired = {k.parent_index for k in alt_keys_raw}
-    n_segments_with_any_fire = sum(1 for s in locomo_segments
-                                   if s.index in parents_fired)
+    n_segments_with_any_fire = sum(
+        1 for s in locomo_segments if s.index in parents_fired
+    )
     fraction_any = n_segments_with_any_fire / len(locomo_segments)
 
     # --- Embed alt-keys ---
@@ -602,7 +610,9 @@ def main() -> None:
     embedder = Embedder(client)
     print(f"Embedding {len(alt_keys)} alt-keys...", flush=True)
     alt_embeddings = embed_texts_cached(
-        client, embedder.embedding_cache, [k.text for k in alt_keys],
+        client,
+        embedder.embedding_cache,
+        [k.text for k in alt_keys],
     )
     embedder.save()
 
@@ -711,7 +721,7 @@ def main() -> None:
     caveats = [
         "Only 30 questions, from one LoCoMo conversation. Deltas below "
         "~0.01 are within noise.",
-        "Regex `by (day)` is interpreted as \"by <weekday>\" (case-insensitive, "
+        'Regex `by (day)` is interpreted as "by <weekday>" (case-insensitive, '
         "word-boundary); other interpretations are plausible.",
         "The `rare_entity` heuristic as specified emits every capitalized-not-"
         "sentence-initial token plus number/version tokens. True corpus-rare "
@@ -719,8 +729,8 @@ def main() -> None:
         "here; this means rare_entity is intentionally noisy, matching the "
         "analysis's §9 caveat.",
         "The anaphoric heuristic fires only on the pronoun set given in §7. "
-        "A handful of `ingestion_predictability.md` examples (e.g. \"Yeah, 16 "
-        "weeks...\") were labeled anaphoric in that report but do NOT match "
+        'A handful of `ingestion_predictability.md` examples (e.g. "Yeah, 16 '
+        'weeks...") were labeled anaphoric in that report but do NOT match '
         "the literal first-token pronoun spec; our implementation follows "
         "the spec.",
         "Alt-key scoring is per-parent-max over original + alt-key "
@@ -734,8 +744,14 @@ def main() -> None:
 
     # --- Render ---
     md = render_markdown(
-        summary, bloat, fire_counts, len(locomo_qs), len(locomo_segments),
-        verdict, fp_notes, caveats,
+        summary,
+        bloat,
+        fire_counts,
+        len(locomo_qs),
+        len(locomo_segments),
+        verdict,
+        fp_notes,
+        caveats,
     )
 
     md_path = RESULTS_DIR / "ingestion_regex_empirical.md"
@@ -765,9 +781,7 @@ def main() -> None:
             "category_deltas_v2f_at_20": cat_deltas,
             "one_liner": verdict_line,
         },
-        "per_question": {
-            name: cond.per_question for name, cond in conditions.items()
-        },
+        "per_question": {name: cond.per_question for name, cond in conditions.items()},
     }
     json_path = RESULTS_DIR / "ingestion_regex_empirical.json"
     with open(json_path, "w") as f:
@@ -778,12 +792,18 @@ def main() -> None:
     print("\n" + "=" * 70)
     print("RESULTS")
     print("=" * 70)
-    for cond in ["cosine_no_altkeys", "cosine_with_altkeys",
-                 "v2f_no_altkeys", "v2f_with_altkeys"]:
+    for cond in [
+        "cosine_no_altkeys",
+        "cosine_with_altkeys",
+        "v2f_no_altkeys",
+        "v2f_with_altkeys",
+    ]:
         s = summary["overall"][cond]
         print(f"  {cond:28s} r@20={s['mean_r@20']:.4f}  r@50={s['mean_r@50']:.4f}")
-    print(f"\n  bloat_factor={bloat['bloat_factor']:.2f}x  "
-          f"frac_any_fire={bloat['fraction_any_fire']:.1%}")
+    print(
+        f"\n  bloat_factor={bloat['bloat_factor']:.2f}x  "
+        f"frac_any_fire={bloat['fraction_any_fire']:.1%}"
+    )
     print(f"  v2f Δr@20={v2f_delta_20:+.4f}  v2f Δr@50={v2f_delta_50:+.4f}")
     print(f"  verdict: {verdict_line}")
 

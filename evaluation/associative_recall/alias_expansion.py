@@ -53,8 +53,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -65,13 +63,13 @@ from associative_recall import (
 )
 from best_shot import (
     MODEL,
+    V2F_PROMPT,
     BestshotBase,
     BestshotResult,
-    V2F_PROMPT,
     _format_segments,
     _parse_cues,
 )
-
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Dedicated caches
@@ -661,17 +659,13 @@ class _AliasExpansionBase(BestshotBase):
             "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
             + _format_segments(primer_segments)
         )
-        prompt = V2F_PROMPT.format(
-            question=question, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=question, context_section=context_section)
         output = self.llm_call(prompt)
         cues = _parse_cues(output)[:2]
         outcomes: list[dict] = []
         for cue in cues:
             cue_emb = self.embed_text(cue)
-            res = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id
-            )
+            res = self.store.search(cue_emb, top_k=10, conversation_id=conversation_id)
             rids: list[int] = []
             for seg, sc in zip(res.segments, res.scores):
                 rids.append(seg.index)
@@ -752,9 +746,7 @@ class _AliasExpansionBase(BestshotBase):
                     sibling_probe_outcomes.append(
                         {
                             "sibling": sib_text,
-                            "retrieved_turn_ids": [
-                                seg_map[i].turn_id for i in rids
-                            ],
+                            "retrieved_turn_ids": [seg_map[i].turn_id for i in rids],
                         }
                     )
 

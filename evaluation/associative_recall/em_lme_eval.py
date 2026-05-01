@@ -29,9 +29,22 @@ from pathlib import Path
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
 
+# Reuse em_architectures primitives but NOT the specific architectures
+# (they don't apply the "User: " prefix to cues the way we want).
+from em_architectures import (
+    TYPE_ENUMERATED_PROMPT,
+    V2F_MODEL,
+    V2F_PROMPT,
+    EMHit,
+    _dedupe_by_turn_id,
+    _merge_by_max_score,
+    _MergedLLMCache,
+    _query_em,
+    format_primer_context,
+    parse_type_enum_cues,
+    parse_v2f_cues,
+)
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -48,23 +61,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-# Reuse em_architectures primitives but NOT the specific architectures
-# (they don't apply the "User: " prefix to cues the way we want).
-from em_architectures import (
-    EMHit,
-    V2F_PROMPT,
-    TYPE_ENUMERATED_PROMPT,
-    V2F_MODEL,
-    _MergedLLMCache,
-    _dedupe_by_turn_id,
-    _merge_by_max_score,
-    _query_em,
-    format_primer_context,
-    parse_type_enum_cues,
-    parse_v2f_cues,
-)
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -139,13 +137,10 @@ async def em_v2f_userprefix(
     # Hop 0: raw-query retrieval (K=10) with expand=0 to build the primer
     # context, same as best_shot.MetaV2f.
     primer_hits = _dedupe_by_turn_id(
-        await _query_em(
-            memory, prefixed_q, vector_search_limit=10, expand_context=0
-        )
+        await _query_em(memory, prefixed_q, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer_hits
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer_hits
     ]
     context_section = format_primer_context(primer_segments)
     prompt = V2F_PROMPT.format(question=question, context_section=context_section)
@@ -199,13 +194,10 @@ async def em_ens_2_userprefix(
     """v2f 2 cues + type_enumerated 7 cues, sum_cosine merge, user-prefix."""
     prefixed_q = _ensure_user_prefix(question)
     primer_hits = _dedupe_by_turn_id(
-        await _query_em(
-            memory, prefixed_q, vector_search_limit=10, expand_context=0
-        )
+        await _query_em(memory, prefixed_q, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer_hits
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer_hits
     ]
     context_section = format_primer_context(primer_segments)
 
@@ -562,15 +554,14 @@ def write_markdown_report(results: dict, collections_meta: dict) -> None:
         f"- n_questions = {results['questions']} "
         "(30 multi-session + 30 single-session-preference + 30 temporal-reasoning)",
         f"- n_events_total = {collections_meta['n_events_total']}",
-        f"- ingest time = {collections_meta['ingest_total_s']}s "
-        f"(concurrency={3})",
+        f"- ingest time = {collections_meta['ingest_total_s']}s (concurrency={3})",
         f"- segment store = `{collections_meta['sql_url']}`",
         f"- namespace = `{collections_meta['namespace']}`, "
         f"collection prefix = `{collections_meta['prefix']}_<question_id>`",
         "- speaker baking: `User` / `Assistant` via MessageContext.source",
         "- timestamps: haystack_dates (per session) + monotonic +1s per turn",
         "- queries/cues: prepended with `User: ` before embedding",
-        f"- embedder = `text-embedding-3-small`, reranker=None, "
+        "- embedder = `text-embedding-3-small`, reranker=None, "
         "derive_sentences=False, max_text_chunk_length=500",
         "",
         "## Per-architecture summary",
@@ -653,7 +644,12 @@ def write_markdown_report(results: dict, collections_meta: dict) -> None:
 
     # Findings.
     def pick(name: str, cat: str, k: int) -> float:
-        return archs.get(name, {}).get("by_category", {}).get(cat, {}).get(f"mean_r@{k}", 0.0)
+        return (
+            archs.get(name, {})
+            .get("by_category", {})
+            .get(cat, {})
+            .get(f"mean_r@{k}", 0.0)
+        )
 
     def ov(name: str, k: int) -> float:
         return archs.get(name, {}).get("summary", {}).get(f"mean_r@{k}", 0.0)
@@ -689,7 +685,7 @@ def write_markdown_report(results: dict, collections_meta: dict) -> None:
         f"- EM `em_v2f_userprefix` K=50: {ov('em_v2f_userprefix', 50):.3f} "
         f"(Δ = {ov('em_v2f_userprefix', 50) - SS_V2F_REF['overall_k50']:+.3f})",
         "",
-        "Speaker-baking alone (\"User: ...\" prefix into embedded text) "
+        'Speaker-baking alone ("User: ..." prefix into embedded text) '
         "did NOT beat the SS substrate at matched K — it slightly "
         "underperformed. The substrate-level benefit only appears when "
         "paired with expand_context.",
@@ -726,9 +722,8 @@ def write_markdown_report(results: dict, collections_meta: dict) -> None:
         "",
         "1. Use EventMemory with speaker baking (`MessageContext.source = "
         "User|Assistant`).",
-        "2. Prepend `\"User: \"` to queries and cues before embedding.",
-        "3. Generate v2f cues (2 per question) from the natural question "
-        "text.",
+        '2. Prepend `"User: "` to queries and cues before embedding.',
+        "3. Generate v2f cues (2 per question) from the natural question text.",
         "4. **Use `expand_context=3`** at retrieval time — this is the "
         "primary win vs LoCoMo, where expand_context hurt.",
         f"5. Best single-call config on LME-hard: `em_v2f_expand_3` "
@@ -748,7 +743,7 @@ def write_markdown_report(results: dict, collections_meta: dict) -> None:
         f"in namespace `{collections_meta['namespace']}`",
         "- Caches: `cache/emlme_v2f_llm_cache.json`, "
         "`cache/emlme_type_enum_llm_cache.json`",
-        f"- Sources: `em_lme_setup.py`, `em_lme_eval.py`",
+        "- Sources: `em_lme_setup.py`, `em_lme_eval.py`",
     ]
 
     RESULTS_MD.write_text("\n".join(md))

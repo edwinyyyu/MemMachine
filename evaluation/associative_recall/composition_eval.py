@@ -29,34 +29,26 @@ Usage:
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
-import re
-import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
-    EMBED_MODEL,
     Segment,
     SegmentStore,
 )
 from critical_info_store import (
-    CriticalAltKey,
     CriticalInfoGenerator,
     CriticalInfoStore,
     classify_turns,
     decisions_to_altkeys,
     merge_always_top_m,
 )
+from dotenv import load_dotenv
 from ensemble_retrieval import (
     ENSEMBLE_COMPOSITIONS,
     SPECIALISTS,
@@ -67,10 +59,11 @@ from ensemble_retrieval import (
 )
 from ingest_regex_eval import (
     Embedder,
-    embed_texts_cached,
     compute_recall,
+    embed_texts_cached,
     fair_backfill_turn_ids,
 )
+from openai import OpenAI
 from router_study import KEYWORD_RULES
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -232,8 +225,7 @@ def ensemble_main_ranked_with_scores(
                 continue
             ranked.append((s, 10.0 - rank * EPS))
             seen.add(s.index)
-        cos_by_idx = {s.index: sc for s, sc in zip(cosine_segments,
-                                                    cosine_scores)}
+        cos_by_idx = {s.index: sc for s, sc in zip(cosine_segments, cosine_scores)}
         for s in cosine_segments:
             if s.index in seen:
                 continue
@@ -246,8 +238,7 @@ def ensemble_main_ranked_with_scores(
     pool: dict[int, dict] = {}
     for name, so in sub.items():
         for rank, (seg, cos) in enumerate(zip(so.segments, so.cosine_scores)):
-            entry = pool.setdefault(seg.index,
-                                    {"segment": seg, "scores": []})
+            entry = pool.setdefault(seg.index, {"segment": seg, "scores": []})
             entry["scores"].append(cos)
     # Score = sum of per-specialist cosine scores; unique across ensemble
     merged: list[tuple[Segment, float]] = []
@@ -301,13 +292,11 @@ def build_question_contexts(
 
         # Embed query via v2f's cache; shared across specialists
         q_emb = specialists["v2f"].embed_text(q_text)
-        cos_res = store.search(q_emb, top_k=max(BUDGETS),
-                               conversation_id=conv_id)
+        cos_res = store.search(q_emb, top_k=max(BUDGETS), conversation_id=conv_id)
         cos_segs = list(cos_res.segments)
         cos_scores = list(cos_res.scores)
 
-        outputs = run_specialists_cached(specialists, store, q_text,
-                                          conv_id, q_emb)
+        outputs = run_specialists_cached(specialists, store, q_text, conv_id, q_emb)
 
         label = route_keyword_label(q_text)
         comp = COMPOSITION_FOR_LABEL.get(label, ("v2f",))
@@ -320,20 +309,22 @@ def build_question_contexts(
             min_score=-1.0,  # filtering at merge time
         )
 
-        ctxs.append(QuestionContext(
-            question=q,
-            q_text=q_text,
-            conv_id=conv_id,
-            source_ids=source_ids,
-            category=cat,
-            query_emb=q_emb,
-            cosine_segments=cos_segs,
-            cosine_scores=cos_scores,
-            outputs=outputs,
-            router_label=label,
-            router_composition=comp,
-            crit_ranked=crit,
-        ))
+        ctxs.append(
+            QuestionContext(
+                question=q,
+                q_text=q_text,
+                conv_id=conv_id,
+                source_ids=source_ids,
+                category=cat,
+                query_emb=q_emb,
+                cosine_segments=cos_segs,
+                cosine_scores=cos_scores,
+                outputs=outputs,
+                router_label=label,
+                router_composition=comp,
+                crit_ranked=crit,
+            )
+        )
     return ctxs
 
 
@@ -375,29 +366,44 @@ def variant_router_v2fplus_default(ctx: QuestionContext, K: int) -> set[int]:
 
 def variant_ens_2(ctx: QuestionContext, K: int) -> set[int]:
     segs = ensemble_at_k(
-        ctx.outputs, ("v2f", "type_enumerated"), "sum_cosine",
-        ctx.cosine_segments, K,
+        ctx.outputs,
+        ("v2f", "type_enumerated"),
+        "sum_cosine",
+        ctx.cosine_segments,
+        K,
     )
     return {s.turn_id for s in segs}
 
 
 def variant_crit_only(ctx: QuestionContext, K: int) -> set[int]:
     v2f_main = v2f_main_ranked_with_scores(
-        ctx.outputs["v2f"], ctx.cosine_segments, ctx.cosine_scores,
+        ctx.outputs["v2f"],
+        ctx.cosine_segments,
+        ctx.cosine_scores,
     )
     merged_segs = merge_always_top_m(
-        v2f_main, ctx.crit_ranked, K, top_m=5, min_score=0.2,
+        v2f_main,
+        ctx.crit_ranked,
+        K,
+        top_m=5,
+        min_score=0.2,
     )
     return {s.turn_id for s in merged_segs}
 
 
 def variant_ens_2_plus_crit(ctx: QuestionContext, K: int) -> set[int]:
     main_ranked = ensemble_main_ranked_with_scores(
-        ctx.outputs, ("v2f", "type_enumerated"),
-        ctx.cosine_segments, ctx.cosine_scores,
+        ctx.outputs,
+        ("v2f", "type_enumerated"),
+        ctx.cosine_segments,
+        ctx.cosine_scores,
     )
     merged_segs = merge_always_top_m(
-        main_ranked, ctx.crit_ranked, K, top_m=5, min_score=0.2,
+        main_ranked,
+        ctx.crit_ranked,
+        K,
+        top_m=5,
+        min_score=0.2,
     )
     return {s.turn_id for s in merged_segs}
 
@@ -410,7 +416,11 @@ def variant_router_ens(ctx: QuestionContext, K: int) -> set[int]:
         segs = _dedupe_by_index(list(so.segments))
         return fair_backfill_turn_ids(segs, ctx.cosine_segments, K)
     segs = ensemble_at_k(
-        ctx.outputs, comp, "sum_cosine", ctx.cosine_segments, K,
+        ctx.outputs,
+        comp,
+        "sum_cosine",
+        ctx.cosine_segments,
+        K,
     )
     return {s.turn_id for s in segs}
 
@@ -418,10 +428,17 @@ def variant_router_ens(ctx: QuestionContext, K: int) -> set[int]:
 def variant_router_ens_plus_crit(ctx: QuestionContext, K: int) -> set[int]:
     comp = ctx.router_composition
     main_ranked = ensemble_main_ranked_with_scores(
-        ctx.outputs, comp, ctx.cosine_segments, ctx.cosine_scores,
+        ctx.outputs,
+        comp,
+        ctx.cosine_segments,
+        ctx.cosine_scores,
     )
     merged_segs = merge_always_top_m(
-        main_ranked, ctx.crit_ranked, K, top_m=5, min_score=0.2,
+        main_ranked,
+        ctx.crit_ranked,
+        K,
+        top_m=5,
+        min_score=0.2,
     )
     return {s.turn_id for s in merged_segs}
 
@@ -429,10 +446,17 @@ def variant_router_ens_plus_crit(ctx: QuestionContext, K: int) -> set[int]:
 def variant_ens_all_plus_crit(ctx: QuestionContext, K: int) -> set[int]:
     comp = ENSEMBLE_COMPOSITIONS["ens_5"]
     main_ranked = ensemble_main_ranked_with_scores(
-        ctx.outputs, comp, ctx.cosine_segments, ctx.cosine_scores,
+        ctx.outputs,
+        comp,
+        ctx.cosine_segments,
+        ctx.cosine_scores,
     )
     merged_segs = merge_always_top_m(
-        main_ranked, ctx.crit_ranked, K, top_m=5, min_score=0.2,
+        main_ranked,
+        ctx.crit_ranked,
+        K,
+        top_m=5,
+        min_score=0.2,
     )
     return {s.turn_id for s in merged_segs}
 
@@ -497,24 +521,26 @@ def evaluate_dataset(
     print(f"\n{'=' * 70}\n[{ds_name}]\n{'=' * 70}", flush=True)
     store = SegmentStore(data_dir=DATA_DIR, npz_name=cfg["npz"])
     questions = load_questions(ds_name)
-    print(f"  questions={len(questions)} segments={len(store.segments)}",
-          flush=True)
+    print(f"  questions={len(questions)} segments={len(store.segments)}", flush=True)
 
     # --- Build critical-info store for this dataset ---
     conv_ids = {q["conversation_id"] for q in questions}
     target = [s for s in store.segments if s.conversation_id in conv_ids]
-    print(f"  target segments: {len(target)} — classifying (LLM cached)",
-          flush=True)
+    print(f"  target segments: {len(target)} — classifying (LLM cached)", flush=True)
     t_c = time.time()
     decisions = classify_turns(generator, target, log_every=200)
-    print(f"  classify done in {time.time() - t_c:.1f}s — "
-          f"crit={sum(1 for d in decisions if d.critical)}/{len(decisions)}",
-          flush=True)
+    print(
+        f"  classify done in {time.time() - t_c:.1f}s — "
+        f"crit={sum(1 for d in decisions if d.critical)}/{len(decisions)}",
+        flush=True,
+    )
     alt_keys = decisions_to_altkeys(decisions)
     alt_texts = [k.text for k in alt_keys]
     if alt_texts:
         alt_embs = embed_texts_cached(
-            client, embedder.embedding_cache, alt_texts,
+            client,
+            embedder.embedding_cache,
+            alt_texts,
         )
     else:
         alt_embs = np.zeros((0, 1536), dtype=np.float32)
@@ -532,8 +558,7 @@ def evaluate_dataset(
     specialists = {name: build_specialist(name, store) for name in SPECIALISTS}
 
     # --- Collect per-question contexts ---
-    print("  building per-question contexts (specialist outputs + crit)...",
-          flush=True)
+    print("  building per-question contexts (specialist outputs + crit)...", flush=True)
     t_ctx = time.time()
     ctxs = build_question_contexts(store, specialists, questions, crit_store)
     print(f"  contexts built in {time.time() - t_ctx:.1f}s", flush=True)
@@ -569,7 +594,8 @@ def evaluate_dataset(
                 r = compute_recall(ids, ctx.source_ids)
                 row["recall"][var_name][f"r@{K}"] = round(r, 4)
             row["llm_calls_per_variant"][var_name] = round(
-                llm_cost_per_variant(var_name, ctx), 2,
+                llm_cost_per_variant(var_name, ctx),
+                2,
             )
         per_q_rows.append(row)
 
@@ -578,20 +604,23 @@ def evaluate_dataset(
     for var in VARIANTS_ORDER:
         per_variant[var] = {}
         for K in BUDGETS:
-            vals = [r["recall"][var][f"r@{K}"]
-                    for r in per_q_rows
-                    if r["num_source_turns"] > 0]
+            vals = [
+                r["recall"][var][f"r@{K}"]
+                for r in per_q_rows
+                if r["num_source_turns"] > 0
+            ]
             per_variant[var][f"r@{K}"] = (
                 round(sum(vals) / len(vals), 4) if vals else 0.0
             )
     # Cost
     per_variant_cost: dict = {}
     for var in VARIANTS_ORDER:
-        costs = [r["llm_calls_per_variant"][var]
-                 for r in per_q_rows
-                 if r["num_source_turns"] > 0]
-        per_variant_cost[var] = round(
-            sum(costs) / len(costs), 3) if costs else 0.0
+        costs = [
+            r["llm_calls_per_variant"][var]
+            for r in per_q_rows
+            if r["num_source_turns"] > 0
+        ]
+        per_variant_cost[var] = round(sum(costs) / len(costs), 3) if costs else 0.0
 
     # Per-category
     by_cat: dict = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
@@ -610,8 +639,8 @@ def evaluate_dataset(
             "variants": {
                 var: {
                     f"r@{K}": round(
-                        sum(by_cat[cat][var][K]) /
-                        max(1, len(by_cat[cat][var][K])), 4,
+                        sum(by_cat[cat][var][K]) / max(1, len(by_cat[cat][var][K])),
+                        4,
                     )
                     for K in BUDGETS
                 }
@@ -648,16 +677,19 @@ def evaluate_dataset(
 # ---------------------------------------------------------------------------
 # Markdown
 # ---------------------------------------------------------------------------
-def render_markdown(all_results: dict, classifier_cost: dict,
-                    total_elapsed: float) -> str:
+def render_markdown(
+    all_results: dict, classifier_cost: dict, total_elapsed: float
+) -> str:
     L: list[str] = []
     L.append("# Composition Study — do the three shipped wins compose?\n")
     L.append(
         "Three shipped wins being composed: **keyword router**, "
-        "**ens_2_v2f_typeenum**, **critical-info always_top_M**.\n")
+        "**ens_2_v2f_typeenum**, **critical-info always_top_M**.\n"
+    )
     L.append(
         "Variants evaluated on LoCoMo-30 + synthetic-19 + puzzle-16 + "
-        "advanced-23 at K=20 and K=50, fair-backfilled.\n")
+        "advanced-23 at K=20 and K=50, fair-backfilled.\n"
+    )
     L.append(f"\nElapsed: {total_elapsed:.0f}s.\n")
 
     # Headline table: every variant × K × each dataset
@@ -682,10 +714,11 @@ def render_markdown(all_results: dict, classifier_cost: dict,
 
     # Additivity check on LoCoMo and synthetic
     L.append("\n## Additivity check: ens_2 + crit vs sum of gains\n")
+    L.append("Compute Δ(ens_2 + crit) vs Δ(ens_2) + Δ(crit_only) per dataset × K.\n")
     L.append(
-        "Compute Δ(ens_2 + crit) vs Δ(ens_2) + Δ(crit_only) per dataset × K.\n")
-    L.append("| Dataset | K | v2f | ens_2 | crit_only | ens_2+crit | "
-             "Δ_ens_2 | Δ_crit | Δ_both | sum_indiv | verdict |")
+        "| Dataset | K | v2f | ens_2 | crit_only | ens_2+crit | "
+        "Δ_ens_2 | Δ_crit | Δ_both | sum_indiv | verdict |"
+    )
     L.append("|---|---|---|---|---|---|---|---|---|---|---|")
     for ds in DATASETS:
         res = all_results[ds]
@@ -716,15 +749,24 @@ def render_markdown(all_results: dict, classifier_cost: dict,
 
     # Router distribution
     L.append("\n## Keyword-router label distribution\n")
-    L.append("| Dataset | " + " | ".join(
-        ["v2f", "v2f_plus_types", "type_enumerated", "chain",
-         "v2f_style_explicit"]) + " |")
+    L.append(
+        "| Dataset | "
+        + " | ".join(
+            ["v2f", "v2f_plus_types", "type_enumerated", "chain", "v2f_style_explicit"]
+        )
+        + " |"
+    )
     L.append("|---|" + "---|" * 5)
     for ds in DATASETS:
         rd = all_results[ds]["routing_distribution"]
         row = [ds]
-        for lab in ["v2f", "v2f_plus_types", "type_enumerated", "chain",
-                    "v2f_style_explicit"]:
+        for lab in [
+            "v2f",
+            "v2f_plus_types",
+            "type_enumerated",
+            "chain",
+            "v2f_style_explicit",
+        ]:
             row.append(str(rd.get(lab, 0)))
         L.append("| " + " | ".join(row) + " |")
 
@@ -763,13 +805,15 @@ def render_markdown(all_results: dict, classifier_cost: dict,
         f"- Input tokens: {classifier_cost['prompt_tokens']} "
         f"output tokens: {classifier_cost['completion_tokens']}\n"
         f"- Est USD (gpt-5-mini @ $0.25/M in, $2/M out): "
-        f"${classifier_cost['est_usd']:.4f}\n")
+        f"${classifier_cost['est_usd']:.4f}\n"
+    )
     for ds in DATASETS:
         res = all_results[ds]
         L.append(
-            f"  - {ds}: flag rate {res['flag_rate']*100:.2f}% "
+            f"  - {ds}: flag rate {res['flag_rate'] * 100:.2f}% "
             f"({res['n_critical_turns']}/{res['n_target_segments']} turns), "
-            f"{res['n_altkeys_dedup']} alt-keys\n")
+            f"{res['n_altkeys_dedup']} alt-keys\n"
+        )
 
     # Verdict
     L.append("\n## Verdict\n")
@@ -788,8 +832,9 @@ def render_markdown(all_results: dict, classifier_cost: dict,
         if mean_r > best_r:
             best_r = mean_r
             best_var = var
-    L.append(f"- Best variant overall @ K=50 (weighted): "
-             f"**{best_var}** r@50={best_r:.4f}\n")
+    L.append(
+        f"- Best variant overall @ K=50 (weighted): **{best_var}** r@50={best_r:.4f}\n"
+    )
 
     # LoCoMo headline
     loc = all_results["locomo_30q"]["per_variant"]
@@ -799,14 +844,16 @@ def render_markdown(all_results: dict, classifier_cost: dict,
         f"crit={loc['crit_only']['r@50']:.4f} "
         f"ens_2+crit={loc['ens_2_plus_crit']['r@50']:.4f} "
         f"router_ens={loc['router_ens']['r@50']:.4f} "
-        f"router_ens+crit={loc['router_ens_plus_crit']['r@50']:.4f}\n")
+        f"router_ens+crit={loc['router_ens_plus_crit']['r@50']:.4f}\n"
+    )
     # Synthetic headline
     syn = all_results["synthetic_19q"]["per_variant"]
     L.append(
         f"- synthetic-19 @ K=20: v2f={syn['v2f']['r@20']:.4f} "
         f"ens_2={syn['ens_2']['r@20']:.4f} "
         f"crit={syn['crit_only']['r@20']:.4f} "
-        f"ens_2+crit={syn['ens_2_plus_crit']['r@20']:.4f}\n")
+        f"ens_2+crit={syn['ens_2_plus_crit']['r@20']:.4f}\n"
+    )
 
     return "\n".join(L)
 
@@ -818,7 +865,9 @@ def main() -> None:
     t0 = time.time()
     client = OpenAI(timeout=60.0)
     generator = CriticalInfoGenerator(
-        client=client, prompt_version=CRITICAL_PROMPT_VERSION, max_workers=8,
+        client=client,
+        prompt_version=CRITICAL_PROMPT_VERSION,
+        max_workers=8,
     )
     embedder = Embedder(client)
 
@@ -837,8 +886,7 @@ def main() -> None:
         "completion_tokens": generator.total_completion_tokens,
     }
     cost["est_usd"] = round(
-        cost["prompt_tokens"] * 0.25 / 1e6
-        + cost["completion_tokens"] * 2.0 / 1e6,
+        cost["prompt_tokens"] * 0.25 / 1e6 + cost["completion_tokens"] * 2.0 / 1e6,
         6,
     )
 
@@ -860,26 +908,33 @@ def main() -> None:
         per_q = out.get("per_question", [])
         pruned = []
         for r in per_q:
-            pruned.append({
-                "dataset": r["dataset"],
-                "conversation_id": r["conversation_id"],
-                "question_index": r["question_index"],
-                "category": r["category"],
-                "num_source_turns": r["num_source_turns"],
-                "router_label": r["router_label"],
-                "recall": r["recall"],
-            })
+            pruned.append(
+                {
+                    "dataset": r["dataset"],
+                    "conversation_id": r["conversation_id"],
+                    "question_index": r["question_index"],
+                    "category": r["category"],
+                    "num_source_turns": r["num_source_turns"],
+                    "router_label": r["router_label"],
+                    "recall": r["recall"],
+                }
+            )
         out["per_question"] = pruned
         return out
 
     json_path = RESULTS_DIR / "composition_study.json"
     with open(json_path, "w") as f:
-        json.dump({
-            "prompt_version": CRITICAL_PROMPT_VERSION,
-            "elapsed_s": round(total_elapsed, 2),
-            "classifier_cost": cost,
-            "results": {ds: _strip(res) for ds, res in all_results.items()},
-        }, f, indent=2, default=str)
+        json.dump(
+            {
+                "prompt_version": CRITICAL_PROMPT_VERSION,
+                "elapsed_s": round(total_elapsed, 2),
+                "classifier_cost": cost,
+                "results": {ds: _strip(res) for ds, res in all_results.items()},
+            },
+            f,
+            indent=2,
+            default=str,
+        )
     print(f"\nWrote {json_path}", flush=True)
 
     md = render_markdown(all_results, cost, total_elapsed)
@@ -899,24 +954,25 @@ def main() -> None:
             r = all_results[ds]["per_variant"][var]["r@50"]
             row += f"{r:>14.4f} "
         print(row)
-    print(f"\nTotal elapsed: {total_elapsed:.0f}s  "
-          f"classifier ${cost['est_usd']:.4f}")
+    print(f"\nTotal elapsed: {total_elapsed:.0f}s  classifier ${cost['est_usd']:.4f}")
 
 
 def _flush_interim(all_results: dict) -> None:
     """Incremental checkpoint for safety."""
     tmp_path = RESULTS_DIR / "composition_study.interim.json"
     try:
-        payload = {"partial_results": {
-            ds: {
-                "ds_name": res["ds_name"],
-                "n_with_gold": res["n_with_gold"],
-                "per_variant": res["per_variant"],
-                "flag_rate": res["flag_rate"],
-                "n_critical_turns": res["n_critical_turns"],
+        payload = {
+            "partial_results": {
+                ds: {
+                    "ds_name": res["ds_name"],
+                    "n_with_gold": res["n_with_gold"],
+                    "per_variant": res["per_variant"],
+                    "flag_rate": res["flag_rate"],
+                    "n_critical_turns": res["n_critical_turns"],
+                }
+                for ds, res in all_results.items()
             }
-            for ds, res in all_results.items()
-        }}
+        }
         with open(tmp_path, "w") as f:
             json.dump(payload, f, indent=2)
     except Exception as e:

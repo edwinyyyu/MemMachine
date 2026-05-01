@@ -13,20 +13,20 @@ and pick the winner.
 
 Budget: ~15 * ~4 = ~60 LLM calls at gpt-5-mini (~$0.20).
 """
+
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import openai
 from dotenv import load_dotenv
-
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -46,25 +46,62 @@ CACHE_FILE = CACHE_DIR / "notes_tune_prompts_cache.json"
 # Each entry: (turn_id, expected_category, short_description)
 # Speakers: Caroline (user), Melanie (assistant) for locomo_conv-26.
 SAMPLE_TURNS: list[tuple[int, str, str]] = [
-    (130, "phatic", "Caroline: generic encouragement 'Running can boost mood. Keep it up!'"),
+    (
+        130,
+        "phatic",
+        "Caroline: generic encouragement 'Running can boost mood. Keep it up!'",
+    ),
     (134, "phatic", "Caroline: 'Glad it helped ya, Melanie!' short encouragement"),
     (173, "phatic", "Caroline: 'No worries... Enjoy your day!' goodbye phatic"),
-    (12,  "anaphora", "Caroline: 'Is this your own painting?' — 'this' → painting Mel just shared"),
-    (28,  "anaphora", "Melanie: 'What made you pick it?' — 'it' → adoption agency"),
-    (82,  "anaphora", "Caroline: 'That bowl is gorgeous! ... Did you make it?' — 'it' → pottery bowl"),
-    (60,  "named", "Caroline: necklace from grandma in Sweden (new entities: Sweden, grandma, necklace)"),
+    (
+        12,
+        "anaphora",
+        "Caroline: 'Is this your own painting?' — 'this' → painting Mel just shared",
+    ),
+    (28, "anaphora", "Melanie: 'What made you pick it?' — 'it' → adoption agency"),
+    (
+        82,
+        "anaphora",
+        "Caroline: 'That bowl is gorgeous! ... Did you make it?' — 'it' → pottery bowl",
+    ),
+    (
+        60,
+        "named",
+        "Caroline: necklace from grandma in Sweden (new entities: Sweden, grandma, necklace)",
+    ),
     (118, "named", "Caroline: favorite book 'Becoming Nicole' by Amy Ellis Nutt"),
     (195, "named", "Caroline: group name 'Connected LGBTQ Activists'"),
-    (47,  "count", "Caroline: known these friends for 4 years (since moved from home country)"),
-    (123, "count", "Melanie: 'a pup and a kitty' — now 2 pets named later (Luna, Oliver)"),
-    (50,  "fact",  "Melanie: '5 years already!' years married"),
-    (62,  "fact",  "Caroline: hand-painted bowl from friend on 18th birthday ten years ago"),
-    (197, "update", "Caroline: 'I missed it but it was a powerful reminder' — correcting implied attendance"),
-    (351, "update", "Melanie: 'The sign was just a precaution... had a great time' — correcting alarm"),
+    (
+        47,
+        "count",
+        "Caroline: known these friends for 4 years (since moved from home country)",
+    ),
+    (
+        123,
+        "count",
+        "Melanie: 'a pup and a kitty' — now 2 pets named later (Luna, Oliver)",
+    ),
+    (50, "fact", "Melanie: '5 years already!' years married"),
+    (
+        62,
+        "fact",
+        "Caroline: hand-painted bowl from friend on 18th birthday ten years ago",
+    ),
+    (
+        197,
+        "update",
+        "Caroline: 'I missed it but it was a powerful reminder' — correcting implied attendance",
+    ),
+    (
+        351,
+        "update",
+        "Melanie: 'The sign was just a precaution... had a great time' — correcting alarm",
+    ),
 ]
 
 
 # --- Data loading -------------------------------------------------------
+
 
 def load_conv26_turns() -> list[tuple[int, str, str]]:
     d = np.load(DATA_DIR / "segments_extended.npz", allow_pickle=True)
@@ -88,6 +125,7 @@ def em_format(speaker: str, content: str) -> str:
 
 
 # --- Cache --------------------------------------------------------------
+
 
 def _sha(model: str, prompt: str) -> str:
     return hashlib.sha256(f"{model}:{prompt}".encode()).hexdigest()
@@ -257,6 +295,7 @@ ROUND_PROMPTS: dict[str, str] = {
 
 # --- Driver -------------------------------------------------------------
 
+
 @dataclass
 class TurnResult:
     turn_id: int
@@ -303,7 +342,11 @@ async def run_round(
     for s in sample_set:
         tasks.append(
             _run_prompt_on_turn(
-                client, cache, prompt_template, s["context_lines"], s["current_turn_line"]
+                client,
+                cache,
+                prompt_template,
+                s["context_lines"],
+                s["current_turn_line"],
             )
         )
     outputs = await asyncio.gather(*tasks)
@@ -345,7 +388,9 @@ def _analyze_round(results: list[TurnResult]) -> dict[str, Any]:
             concrete_fail.append(r)
             continue
         has_label = any(kw in out for kw in label_kws)
-        has_structure = has_label or any(ch.isdigit() for ch in out) or len(out.splitlines()) >= 1
+        has_structure = (
+            has_label or any(ch.isdigit() for ch in out) or len(out.splitlines()) >= 1
+        )
         if has_structure and len(out) > 0:
             concrete_ok.append(r)
         else:
@@ -460,7 +505,11 @@ async def main() -> None:
             f"= {sc['phatic_accuracy']:.0%}; concrete {sc['non_phatic_concrete']}/{sc['non_phatic_total']} "
             f"= {sc['concrete_accuracy']:.0%}\n"
         )
-        md.append("<details><summary>Prompt</summary>\n\n```\n" + block["prompt"] + "\n```\n</details>\n")
+        md.append(
+            "<details><summary>Prompt</summary>\n\n```\n"
+            + block["prompt"]
+            + "\n```\n</details>\n"
+        )
         md.append("### Outputs\n")
         for r in block["results"]:
             md.append(

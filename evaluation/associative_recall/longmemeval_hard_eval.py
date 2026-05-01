@@ -30,25 +30,19 @@ from __future__ import annotations
 
 import json
 import time
-import traceback
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
-    EMBED_MODEL,
     EmbeddingCache,
     LLMCache,
     Segment,
     SegmentStore,
 )
-from best_shot import MetaV2f, BestshotEmbeddingCache, BestshotLLMCache
 from critical_info_store import (
     CriticalInfoGenerator,
     CriticalInfoStore,
@@ -56,6 +50,7 @@ from critical_info_store import (
     decisions_to_altkeys,
     merge_always_top_m,
 )
+from dotenv import load_dotenv
 from ensemble_retrieval import (
     SpecialistOutput,
     _attach_cosine_scores,
@@ -64,6 +59,7 @@ from ensemble_retrieval import (
     merge_sum_cosine,
 )
 from ingest_regex_eval import Embedder, embed_texts_cached
+from openai import OpenAI
 from two_speaker_filter import TwoSpeakerFilter
 
 
@@ -155,6 +151,7 @@ def _patch_arch_with_lmehard_caches(arch, emb_cache, llm_cache) -> None:
     1.2GB bestshot cache each."""
     arch.embedding_cache = emb_cache
     arch.llm_cache = llm_cache
+
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -264,23 +261,18 @@ def build_critical_store(
     target = [s for s in store.segments if s.conversation_id in conv_ids]
     if not target:
         return None
-    print(
-        f"  classifying {len(target)} turns for critical-info...", flush=True
-    )
+    print(f"  classifying {len(target)} turns for critical-info...", flush=True)
     t0 = time.time()
     decisions = classify_turns(generator, target, log_every=500)
     n_crit = sum(1 for d in decisions if d.critical)
     print(
-        f"  classify done in {time.time() - t0:.1f}s -- crit="
-        f"{n_crit}/{len(decisions)}",
+        f"  classify done in {time.time() - t0:.1f}s -- crit={n_crit}/{len(decisions)}",
         flush=True,
     )
     alt_keys = decisions_to_altkeys(decisions)
     alt_texts = [k.text for k in alt_keys]
     if alt_texts:
-        alt_embs = embed_texts_cached(
-            client, embedder.embedding_cache, alt_texts
-        )
+        alt_embs = embed_texts_cached(client, embedder.embedding_cache, alt_texts)
     else:
         alt_embs = np.zeros((0, 1536), dtype=np.float32)
     crit_store = CriticalInfoStore(store, alt_keys, alt_embs)
@@ -332,7 +324,9 @@ def run_specialists_on_q(
             segs = []
         scores = _attach_cosine_scores(store, segs, query_emb)
         out[name] = SpecialistOutput(
-            name=name, segments=segs, cosine_scores=scores,
+            name=name,
+            segments=segs,
+            cosine_scores=scores,
             llm_calls=arch.llm_calls,
         )
     return out
@@ -366,9 +360,7 @@ def arch_ens_2_v2f_typeenum(ctx: QContext, K: int) -> set[int]:
     return {s.turn_id for s in segs}
 
 
-def arch_critical_info(
-    ctx: QContext, K: int, crit_store_ok: bool
-) -> set[int]:
+def arch_critical_info(ctx: QContext, K: int, crit_store_ok: bool) -> set[int]:
     base = list(ctx.specialist_outputs["v2f"].segments)
     if not crit_store_ok or not ctx.crit_ranked:
         segs = fair_backfill_segments(base, ctx.cosine_segments, K)
@@ -377,7 +369,11 @@ def arch_critical_info(
         base, ctx.cosine_segments, ctx.cosine_scores
     )
     merged_segs = merge_always_top_m(
-        main_ranked, ctx.crit_ranked, K, top_m=5, min_score=0.2,
+        main_ranked,
+        ctx.crit_ranked,
+        K,
+        top_m=5,
+        min_score=0.2,
     )
     return {s.turn_id for s in merged_segs}
 
@@ -388,9 +384,7 @@ def arch_two_speaker_filter(ctx: QContext, K: int) -> set[int]:
     return {s.turn_id for s in segs}
 
 
-def arch_ens_all_plus_crit(
-    ctx: QContext, K: int, crit_store_ok: bool
-) -> set[int]:
+def arch_ens_all_plus_crit(ctx: QContext, K: int, crit_store_ok: bool) -> set[int]:
     subset = {
         n: ctx.specialist_outputs[n]
         for n in ENS_5_SPECIALISTS
@@ -405,18 +399,22 @@ def arch_ens_all_plus_crit(
         base, ctx.cosine_segments, ctx.cosine_scores
     )
     merged_segs = merge_always_top_m(
-        main_ranked, ctx.crit_ranked, K, top_m=5, min_score=0.2,
+        main_ranked,
+        ctx.crit_ranked,
+        K,
+        top_m=5,
+        min_score=0.2,
     )
     return {s.turn_id for s in merged_segs}
 
 
 ARCH_FUNCS = {
-    "cosine_baseline":      (arch_cosine_baseline, False),
-    "meta_v2f":             (arch_meta_v2f, False),
-    "ens_2_v2f_typeenum":   (arch_ens_2_v2f_typeenum, False),
-    "critical_info_store":  (arch_critical_info, True),
-    "two_speaker_filter":   (arch_two_speaker_filter, False),
-    "ens_all_plus_crit":    (arch_ens_all_plus_crit, True),
+    "cosine_baseline": (arch_cosine_baseline, False),
+    "meta_v2f": (arch_meta_v2f, False),
+    "ens_2_v2f_typeenum": (arch_ens_2_v2f_typeenum, False),
+    "critical_info_store": (arch_critical_info, True),
+    "two_speaker_filter": (arch_two_speaker_filter, False),
+    "ens_all_plus_crit": (arch_ens_all_plus_crit, True),
 }
 
 
@@ -450,8 +448,8 @@ def main() -> None:
         gs = gold_per_cat[cat]
         print(
             f"  {cat:30s} n={cat_counts[cat]:3d} "
-            f"turns: mean={sum(ts)/len(ts):.0f} min={min(ts)} max={max(ts)}  "
-            f"gold: mean={sum(gs)/len(gs):.0f} min={min(gs)} max={max(gs)}",
+            f"turns: mean={sum(ts) / len(ts):.0f} min={min(ts)} max={max(ts)}  "
+            f"gold: mean={sum(gs) / len(gs):.0f} min={min(gs)} max={max(gs)}",
             flush=True,
         )
 
@@ -477,20 +475,21 @@ def main() -> None:
     # arch or Embedder. Otherwise each constructor would re-load the 1.2GB
     # bestshot cache.
     import best_shot as _best_shot
+    import domain_agnostic as _domain_agnostic
+    import goal_chain as _goal_chain
     import ingest_regex_eval as _ingest_regex_eval
     import two_speaker_filter as _two_speaker_filter
     import type_enumerated as _type_enumerated
-    import domain_agnostic as _domain_agnostic
-    import goal_chain as _goal_chain
 
     _patched: list[tuple] = []
+
     def _patch(mod, attr):
         orig = getattr(mod, attr)
         _patched.append((mod, attr, orig))
         setattr(
-            mod, attr,
-            LmeHardEmbeddingCache if "Embedding" in attr
-            else LmeHardLLMCache,
+            mod,
+            attr,
+            LmeHardEmbeddingCache if "Embedding" in attr else LmeHardLLMCache,
         )
 
     for mod, attr in (
@@ -532,13 +531,11 @@ def main() -> None:
 
     print("\nBuilding critical-info store...", flush=True)
     t0 = time.time()
-    crit_store = build_critical_store(
-        store, questions, generator, client, embedder
-    )
+    crit_store = build_critical_store(store, questions, generator, client, embedder)
     crit_store_ok = crit_store is not None
     print(
-        f"  crit_store_ok={crit_store_ok} "
-        f"({time.time() - t0:.1f}s)", flush=True,
+        f"  crit_store_ok={crit_store_ok} ({time.time() - t0:.1f}s)",
+        flush=True,
     )
 
     try:
@@ -558,8 +555,7 @@ def main() -> None:
                 cache = arch_ref.llm_cache
                 client_ref = arch_ref.client
 
-                def real_llm_call(prompt: str,
-                                  model: str = _model_default) -> str:
+                def real_llm_call(prompt: str, model: str = _model_default) -> str:
                     cached = cache.get(model, prompt)
                     if cached is not None:
                         arch_ref.llm_calls += 1
@@ -573,19 +569,18 @@ def main() -> None:
                     cache.put(model, prompt, text)
                     arch_ref.llm_calls += 1
                     return text
+
                 return real_llm_call
 
             arch.llm_call = make_real_llm_call(arch)
             specialists[name] = arch
-            print(f"    {name}: ready in {time.time() - t0:.1f}s",
-                  flush=True)
+            print(f"    {name}: ready in {time.time() - t0:.1f}s", flush=True)
 
         print("  Building two_speaker_filter...", flush=True)
         t0 = time.time()
         ts_filter = TwoSpeakerFilter(store, client=client)
         _patch_arch_with_lmehard_caches(ts_filter, emb_cache, llm_cache)
-        print(f"    two_speaker_filter: ready in {time.time() - t0:.1f}s",
-              flush=True)
+        print(f"    two_speaker_filter: ready in {time.time() - t0:.1f}s", flush=True)
     finally:
         for mod, attr, orig in _patched:
             setattr(mod, attr, orig)
@@ -602,23 +597,17 @@ def main() -> None:
         category = q["category"]
 
         query_emb = specialists["v2f"].embed_text(q_text)
-        cos_res = store.search(
-            query_emb, top_k=max(BUDGETS), conversation_id=conv_id
-        )
+        cos_res = store.search(query_emb, top_k=max(BUDGETS), conversation_id=conv_id)
         cos_segs = list(cos_res.segments)
         cos_scores = list(cos_res.scores)
 
         # Specialist outputs (ens_5)
-        spec_out = run_specialists_on_q(
-            specialists, store, q_text, conv_id, query_emb
-        )
+        spec_out = run_specialists_on_q(specialists, store, q_text, conv_id, query_emb)
 
         # Two-speaker filter — run full retrieve(); check if transform applied
         ts_result = ts_filter.retrieve(q_text, conv_id)
         ts_segs = list(ts_result.segments)
-        ts_fired = bool(
-            ts_result.metadata.get("applied_speaker_transform", False)
-        )
+        ts_fired = bool(ts_result.metadata.get("applied_speaker_transform", False))
         if ts_fired:
             two_speaker_fires += 1
 
@@ -626,15 +615,21 @@ def main() -> None:
         crit_ranked: list[tuple[int, float, Segment]] = []
         if crit_store is not None:
             crit_ranked = crit_store.search_per_parent(
-                query_emb, top_m=max(BUDGETS),
-                conversation_id=conv_id, min_score=-1.0,
+                query_emb,
+                top_m=max(BUDGETS),
+                conversation_id=conv_id,
+                min_score=-1.0,
             )
 
         ctx = QContext(
-            question=q, q_text=q_text, conv_id=conv_id,
-            source_ids=source_ids, category=category,
+            question=q,
+            q_text=q_text,
+            conv_id=conv_id,
+            source_ids=source_ids,
+            category=category,
             query_emb=query_emb,
-            cosine_segments=cos_segs, cosine_scores=cos_scores,
+            cosine_segments=cos_segs,
+            cosine_scores=cos_scores,
             specialist_outputs=spec_out,
             two_speaker_segments=ts_segs,
             two_speaker_fired=ts_fired,
@@ -659,19 +654,21 @@ def main() -> None:
                     )
                     recalls[f"{arch_name}@{K}"] = 0.0
 
-        per_q_rows.append({
-            "question_index": qi,
-            "conversation_id": conv_id,
-            "category": category,
-            "question": q_text[:200],
-            "num_source_turns": len(source_ids),
-            "two_speaker_fired": ts_fired,
-            "recall": recalls,
-            "time_s": round(time.time() - t_q, 2),
-        })
+        per_q_rows.append(
+            {
+                "question_index": qi,
+                "conversation_id": conv_id,
+                "category": category,
+                "question": q_text[:200],
+                "num_source_turns": len(source_ids),
+                "two_speaker_fired": ts_fired,
+                "recall": recalls,
+                "time_s": round(time.time() - t_q, 2),
+            }
+        )
         if (qi + 1) % 5 == 0:
             print(
-                f"  [{qi+1}/{len(questions)}] cat={category} "
+                f"  [{qi + 1}/{len(questions)}] cat={category} "
                 f"v2f@50={recalls.get('meta_v2f@50', 0):.3f} "
                 f"ens_all@50={recalls.get('ens_all_plus_crit@50', 0):.3f}",
                 flush=True,
@@ -700,8 +697,7 @@ def main() -> None:
 
     # Aggregate
     def mean_recall(rows: list[dict], key: str) -> float:
-        vs = [r["recall"].get(key, 0.0) for r in rows
-              if r["num_source_turns"] > 0]
+        vs = [r["recall"].get(key, 0.0) for r in rows if r["num_source_turns"] > 0]
         return round(sum(vs) / len(vs), 4) if vs else 0.0
 
     overall_agg: dict[str, float] = {}
@@ -717,16 +713,14 @@ def main() -> None:
         entry: dict[str, Any] = {"n": len(cat_rows)}
         for arch_name in ARCH_NAMES:
             for K in BUDGETS:
-                entry[f"{arch_name}@{K}"] = mean_recall(
-                    cat_rows, f"{arch_name}@{K}"
-                )
+                entry[f"{arch_name}@{K}"] = mean_recall(cat_rows, f"{arch_name}@{K}")
         per_cat_agg[cat] = entry
 
     total_elapsed = time.time() - t_all
 
     out = {
         "n_questions": len(questions),
-        "categories": list(sorted(cat_counts)),
+        "categories": sorted(cat_counts),
         "cat_counts": dict(cat_counts),
         "two_speaker_fires": two_speaker_fires,
         "two_speaker_fire_rate": (
@@ -758,8 +752,7 @@ def main() -> None:
             f"r@50={overall_agg[f'{arch_name}@50']:.3f}",
             flush=True,
         )
-    print(f"\nTwo-speaker fire rate: {two_speaker_fires}/{len(questions)}",
-          flush=True)
+    print(f"\nTwo-speaker fire rate: {two_speaker_fires}/{len(questions)}", flush=True)
 
 
 def render_markdown(
@@ -776,10 +769,12 @@ def render_markdown(
         "temporal-reasoning). Fair-backfill recall at K=20 and K=50. "
         "Per-question conversation scoping.\n"
     )
-    L.append(f"Elapsed: {out['total_elapsed_s']:.0f}s  |  "
-             f"questions: {out['n_questions']}  |  "
-             f"two_speaker_fires: {out['two_speaker_fires']} "
-             f"({100 * out['two_speaker_fire_rate']:.1f}%)\n")
+    L.append(
+        f"Elapsed: {out['total_elapsed_s']:.0f}s  |  "
+        f"questions: {out['n_questions']}  |  "
+        f"two_speaker_fires: {out['two_speaker_fires']} "
+        f"({100 * out['two_speaker_fire_rate']:.1f}%)\n"
+    )
 
     # Sample composition
     L.append("\n## Sample composition\n")
@@ -790,8 +785,8 @@ def render_markdown(
         gs = gold_per_cat[cat]
         L.append(
             f"| {cat} | {cat_counts[cat]} | "
-            f"{sum(ts)/len(ts):.0f} | "
-            f"{sum(gs)/len(gs):.1f} / {min(gs)} / {max(gs)} |"
+            f"{sum(ts) / len(ts):.0f} | "
+            f"{sum(gs) / len(gs):.1f} / {min(gs)} / {max(gs)} |"
         )
 
     # Overall recall matrix
@@ -849,24 +844,16 @@ def render_markdown(
         cos20 = per["cosine_baseline@20"]
         cos50 = per["cosine_baseline@50"]
         ens50 = per["ens_all_plus_crit@50"]
-        L.append(
-            f"- cosine_baseline: r@20={cos20:.3f}  r@50={cos50:.3f}"
-        )
+        L.append(f"- cosine_baseline: r@20={cos20:.3f}  r@50={cos50:.3f}")
         L.append(
             f"- meta_v2f:        r@20={v2f20:.3f}  r@50={v2f50:.3f}  "
             f"Δ vs cosine: {v2f20 - cos20:+.3f} / {v2f50 - cos50:+.3f}"
         )
         L.append(
-            f"- ens_all_plus_crit: r@50={ens50:.3f}  "
-            f"Δ vs v2f@50: {ens50 - v2f50:+.3f}"
+            f"- ens_all_plus_crit: r@50={ens50:.3f}  Δ vs v2f@50: {ens50 - v2f50:+.3f}"
         )
-        best_arch = max(
-            ARCH_NAMES, key=lambda a: per[f"{a}@50"]
-        )
-        L.append(
-            f"- best @K=50: **{best_arch}** "
-            f"({per[f'{best_arch}@50']:.3f})"
-        )
+        best_arch = max(ARCH_NAMES, key=lambda a: per[f"{a}@50"])
+        L.append(f"- best @K=50: **{best_arch}** ({per[f'{best_arch}@50']:.3f})")
 
     # Note two_speaker fire rate
     L.append("\n## Two-speaker filter coverage\n")
@@ -874,7 +861,7 @@ def render_markdown(
         f"Two-speaker filter fired on "
         f"{out['two_speaker_fires']}/{out['n_questions']} questions "
         f"({100 * out['two_speaker_fire_rate']:.1f}%). "
-        "LongMemEval questions are first-person (\"I\") and do not generally "
+        'LongMemEval questions are first-person ("I") and do not generally '
         "mention named participants, so this specialist is expected to not "
         "fire; when it does not fire, it falls through to v2f."
     )

@@ -33,15 +33,14 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 from associative_recall import Segment, SegmentStore
 from best_shot import MetaV2f
 from domain_agnostic import (
-    DomainAgnosticVariant,
-    V2F_STYLE_EXPLICIT_PROMPT,
     NEUTRAL_HEADER,
+    V2F_STYLE_EXPLICIT_PROMPT,
+    DomainAgnosticVariant,
 )
+from dotenv import load_dotenv
 from goal_chain import GoalChainRetriever
 from type_enumerated import TypeEnumeratedVariant, V2fPlusTypesVariant
 
@@ -230,8 +229,7 @@ def collect_retrievals() -> dict:
                         arch.save_caches()
                     except Exception:
                         pass
-                print(f"  [{ds_name}] processed {qi + 1}/{len(questions)}",
-                      flush=True)
+                print(f"  [{ds_name}] processed {qi + 1}/{len(questions)}", flush=True)
 
         for arch in specialists.values():
             try:
@@ -246,9 +244,7 @@ def analyze(retrievals: dict) -> dict:
     """Compute unique-gains, overlap, union-ceiling; overall + per category."""
     # Aggregators
     #   per_spec[K][specialist] = list of per-q {'unique':, 'overlap':, 'recall':, 'gold_count':}
-    per_spec: dict[int, dict[str, list[dict]]] = {
-        K: defaultdict(list) for K in BUDGETS
-    }
+    per_spec: dict[int, dict[str, list[dict]]] = {K: defaultdict(list) for K in BUDGETS}
     # per_category[K][cat][specialist] -> list of same dicts
     per_category: dict[int, dict[str, dict[str, list[dict]]]] = {
         K: defaultdict(lambda: defaultdict(list)) for K in BUDGETS
@@ -269,19 +265,19 @@ def analyze(retrievals: dict) -> dict:
                 for name in SPECIALISTS:
                     if name == "v2f":
                         # Record v2f recall as a baseline per-question entry
-                        per_spec[K]["v2f"].append({
-                            "dataset": ds_name,
-                            "qkey": qkey,
-                            "category": cat,
-                            "unique_vs_v2f": 0,
-                            "overlap_with_v2f": len(gold_v2f),
-                            "gold_found": len(gold_v2f),
-                            "gold_total": len(source),
-                            "recall": len(gold_v2f) / len(source),
-                        })
-                        per_category[K][cat]["v2f"].append(
-                            per_spec[K]["v2f"][-1]
+                        per_spec[K]["v2f"].append(
+                            {
+                                "dataset": ds_name,
+                                "qkey": qkey,
+                                "category": cat,
+                                "unique_vs_v2f": 0,
+                                "overlap_with_v2f": len(gold_v2f),
+                                "gold_found": len(gold_v2f),
+                                "gold_total": len(source),
+                                "recall": len(gold_v2f) / len(source),
+                            }
                         )
+                        per_category[K][cat]["v2f"].append(per_spec[K]["v2f"][-1])
                         continue
                     g = retrieved_by_spec.get(name, {}).get(K, set()) & source
                     unique = len(g - gold_v2f)
@@ -302,28 +298,27 @@ def analyze(retrievals: dict) -> dict:
                 # Union-ensemble ceiling across all 5 specialists
                 union_gold: set[int] = set()
                 for name in SPECIALISTS:
-                    union_gold |= (
-                        retrieved_by_spec.get(name, {}).get(K, set()) & source
-                    )
-                union_rows[K].append({
-                    "dataset": ds_name,
-                    "qkey": qkey,
-                    "category": cat,
-                    "gold_total": len(source),
-                    "gold_v2f": len(gold_v2f),
-                    "gold_union_all": len(union_gold),
-                    "recall_v2f": len(gold_v2f) / len(source),
-                    "recall_union_all": len(union_gold) / len(source),
-                    # Best single specialist for this question
-                    "recall_best_single": max(
-                        len(
-                            (retrieved_by_spec.get(name, {}).get(K, set())
-                             & source)
-                        )
-                        / len(source)
-                        for name in SPECIALISTS
-                    ),
-                })
+                    union_gold |= retrieved_by_spec.get(name, {}).get(K, set()) & source
+                union_rows[K].append(
+                    {
+                        "dataset": ds_name,
+                        "qkey": qkey,
+                        "category": cat,
+                        "gold_total": len(source),
+                        "gold_v2f": len(gold_v2f),
+                        "gold_union_all": len(union_gold),
+                        "recall_v2f": len(gold_v2f) / len(source),
+                        "recall_union_all": len(union_gold) / len(source),
+                        # Best single specialist for this question
+                        "recall_best_single": max(
+                            len(
+                                retrieved_by_spec.get(name, {}).get(K, set()) & source
+                            )
+                            / len(source)
+                            for name in SPECIALISTS
+                        ),
+                    }
+                )
 
     # Summary helpers
     def mean(vs):
@@ -339,14 +334,15 @@ def analyze(retrievals: dict) -> dict:
                 "K": K,
                 "n": len(rows),
                 "mean_unique_vs_v2f": round(
-                    mean([r["unique_vs_v2f"] for r in rows]), 4),
+                    mean([r["unique_vs_v2f"] for r in rows]), 4
+                ),
                 "mean_overlap_with_v2f": round(
-                    mean([r["overlap_with_v2f"] for r in rows]), 4),
+                    mean([r["overlap_with_v2f"] for r in rows]), 4
+                ),
                 "frac_q_with_unique_gain": round(
-                    mean([1 if r["unique_vs_v2f"] > 0 else 0
-                          for r in rows]), 4),
-                "mean_recall": round(
-                    mean([r["recall"] for r in rows]), 4),
+                    mean([1 if r["unique_vs_v2f"] > 0 else 0 for r in rows]), 4
+                ),
+                "mean_recall": round(mean([r["recall"] for r in rows]), 4),
             }
 
     # Per-category unique gains
@@ -365,11 +361,12 @@ def analyze(retrievals: dict) -> dict:
                 else:
                     entry[name] = {
                         "mean_unique_vs_v2f": round(
-                            mean([r["unique_vs_v2f"] for r in rows]), 4),
+                            mean([r["unique_vs_v2f"] for r in rows]), 4
+                        ),
                         "frac_q_with_unique_gain": round(
-                            mean([1 if r["unique_vs_v2f"] > 0 else 0 for r in rows]), 4),
-                        "mean_recall": round(
-                            mean([r["recall"] for r in rows]), 4),
+                            mean([1 if r["unique_vs_v2f"] > 0 else 0 for r in rows]), 4
+                        ),
+                        "mean_recall": round(mean([r["recall"] for r in rows]), 4),
                     }
             cat_summary[K][cat] = entry
 
@@ -382,16 +379,18 @@ def analyze(retrievals: dict) -> dict:
             "n_questions_with_gold": len(rows),
             "mean_recall_v2f": round(mean([r["recall_v2f"] for r in rows]), 4),
             "mean_recall_union_all": round(
-                mean([r["recall_union_all"] for r in rows]), 4),
+                mean([r["recall_union_all"] for r in rows]), 4
+            ),
             "mean_recall_best_single": round(
-                mean([r["recall_best_single"] for r in rows]), 4),
+                mean([r["recall_best_single"] for r in rows]), 4
+            ),
             "delta_union_over_v2f": round(
                 mean([r["recall_union_all"] - r["recall_v2f"] for r in rows]),
                 4,
             ),
             "delta_best_single_over_v2f": round(
-                mean([r["recall_best_single"] - r["recall_v2f"]
-                      for r in rows]), 4),
+                mean([r["recall_best_single"] - r["recall_v2f"] for r in rows]), 4
+            ),
         }
 
     # Subset union ceilings: v2f + each other specialist (pair) and
@@ -403,7 +402,7 @@ def analyze(retrievals: dict) -> dict:
 
     subset_results: dict = {K: {} for K in BUDGETS}
     for K in BUDGETS:
-        for r in range(0, len(non_v2f) + 1):
+        for r in range(len(non_v2f) + 1):
             for combo in combinations(non_v2f, r):
                 subset = ("v2f",) + combo
                 recalls = []
@@ -414,10 +413,7 @@ def analyze(retrievals: dict) -> dict:
                             continue
                         got: set[int] = set()
                         for name in subset:
-                            got |= (
-                                row["retrieved"].get(name, {}).get(K, set())
-                                & source
-                            )
+                            got |= row["retrieved"].get(name, {}).get(K, set()) & source
                         recalls.append(len(got) / len(source))
                 key = "+".join(subset)
                 subset_results[K][key] = {
@@ -440,11 +436,11 @@ def render_markdown(analysis: dict, data_coverage: dict) -> str:
     lines.append(
         "Does ensembling retrieval specialists (by union of gold-turns "
         "retrieved) produce a meaningful recall lift over v2f alone? Or do "
-        "specialists mostly rediscover the same gold turns?\n")
+        "specialists mostly rediscover the same gold turns?\n"
+    )
 
     lines.append("## Data coverage\n")
-    lines.append(
-        "| Dataset | n_questions | specialists re-run (all cache-hits) |")
+    lines.append("| Dataset | n_questions | specialists re-run (all cache-hits) |")
     lines.append("|---|---|---|")
     for ds, info in data_coverage.items():
         lines.append(f"| {ds} | {info['n']} | {info['specialists']} |")
@@ -453,12 +449,14 @@ def render_markdown(analysis: dict, data_coverage: dict) -> str:
     lines.append(
         "Across all 88 questions, for each specialist s ≠ v2f at each K, "
         "how often does s retrieve a gold turn that v2f missed, and by how "
-        "many turns on average?\n")
+        "many turns on average?\n"
+    )
     for K in BUDGETS:
         lines.append(f"\n### K={K}\n")
         lines.append(
             "| Specialist | mean unique vs v2f | frac q with unique gain | "
-            "mean overlap with v2f | mean recall |")
+            "mean overlap with v2f | mean recall |"
+        )
         lines.append("|---|---|---|---|---|")
         for name in SPECIALISTS:
             if name == "v2f":
@@ -472,14 +470,13 @@ def render_markdown(analysis: dict, data_coverage: dict) -> str:
                 f"{row['mean_recall']} |"
             )
         v2f_row = analysis["per_specialist_summary"][f"v2f_K{K}"]
-        lines.append(
-            f"| v2f (ref) | — | — | — | {v2f_row['mean_recall']} |"
-        )
+        lines.append(f"| v2f (ref) | — | — | — | {v2f_row['mean_recall']} |")
 
     lines.append("\n## Union-ensemble ceiling (all 5 specialists)\n")
     lines.append(
         "| K | v2f-alone recall | union-5 recall | best-single recall | "
-        "Δ union over v2f | Δ best-single over v2f |")
+        "Δ union over v2f | Δ best-single over v2f |"
+    )
     lines.append("|---|---|---|---|---|---|")
     for K in BUDGETS:
         u = analysis["union_ceiling"][f"K{K}"]
@@ -497,9 +494,7 @@ def render_markdown(analysis: dict, data_coverage: dict) -> str:
         rows = list(analysis["subset_results"][K].items())
         # Sort by recall descending
         rows.sort(key=lambda kv: -kv[1]["mean_recall"])
-        lines.append(
-            "| size | ensemble | mean_recall | Δ vs v2f-alone |"
-        )
+        lines.append("| size | ensemble | mean_recall | Δ vs v2f-alone |")
         lines.append("|---|---|---|---|")
         v2f_alone = analysis["subset_results"][K]["v2f"]["mean_recall"]
         # Show top 1 per size
@@ -527,13 +522,17 @@ def render_markdown(analysis: dict, data_coverage: dict) -> str:
             sub = entry.get(name, {})
             if not sub:
                 continue
-            rows.append((cat, entry.get("n", 0),
-                         sub.get("mean_unique_vs_v2f", 0),
-                         sub.get("frac_q_with_unique_gain", 0)))
+            rows.append(
+                (
+                    cat,
+                    entry.get("n", 0),
+                    sub.get("mean_unique_vs_v2f", 0),
+                    sub.get("frac_q_with_unique_gain", 0),
+                )
+            )
         rows.sort(key=lambda r: -r[2])
         lines.append(f"\n### {name}\n")
-        lines.append("| Category | n | mean unique vs v2f | frac q with "
-                     "unique gain |")
+        lines.append("| Category | n | mean unique vs v2f | frac q with unique gain |")
         lines.append("|---|---|---|---|")
         for cat, n, mu, fq in rows[:2]:
             lines.append(f"| {cat} | {n} | {mu} | {fq} |")
@@ -588,7 +587,8 @@ def render_markdown(analysis: dict, data_coverage: dict) -> str:
         for K in BUDGETS:
             key = f"{name}_K{K}"
             mean_unique_all += analysis["per_specialist_summary"][key][
-                "mean_unique_vs_v2f"]
+                "mean_unique_vs_v2f"
+            ]
             cnt += 1
     mean_unique_all /= max(1, cnt)
     lines.append(
@@ -614,8 +614,11 @@ def render_markdown(analysis: dict, data_coverage: dict) -> str:
     )
     # 2-specialist recommendations
     for K in BUDGETS:
-        rows = [(k, v) for k, v in analysis["subset_results"][K].items()
-                if v["n_ensemble"] == 2]
+        rows = [
+            (k, v)
+            for k, v in analysis["subset_results"][K].items()
+            if v["n_ensemble"] == 2
+        ]
         rows.sort(key=lambda kv: -kv[1]["mean_recall"])
         v2f_alone = analysis["subset_results"][K]["v2f"]["mean_recall"]
         best_pair_name, best_pair = rows[0]

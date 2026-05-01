@@ -26,16 +26,13 @@ import hashlib
 import json
 import os
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 import numpy as np
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -62,6 +59,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -194,9 +193,7 @@ def _build_prev_context(
     return "\n".join(lines)
 
 
-def build_summary_prompt(
-    turn_text: str, speaker: str, prev_context: str
-) -> str:
+def build_summary_prompt(turn_text: str, speaker: str, prev_context: str) -> str:
     return SUMMARY_PROMPT.format(
         turn_text=turn_text.strip(),
         speaker=speaker,

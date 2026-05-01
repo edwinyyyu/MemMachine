@@ -19,20 +19,23 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
-from associative_recall import CACHE_DIR, EmbeddingCache, LLMCache, Segment, SegmentStore
+from associative_recall import (
+    CACHE_DIR,
+    EmbeddingCache,
+    LLMCache,
+    Segment,
+    SegmentStore,
+)
 from best_shot import (
+    V2F_PROMPT,
     BestshotBase,
     BestshotResult,
-    V2F_PROMPT,
     _format_segments,
     _parse_cues,
 )
-
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Dedicated caches — read-only on shared caches, write to own files
@@ -339,16 +342,12 @@ class _V2fVariantBase(BestshotBase):
 
     def retrieve(self, question: str, conversation_id: str) -> BestshotResult:
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
         hop0_text = self._hop0_context_text(all_segments)
-        context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + hop0_text
-        )
+        context_section = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + hop0_text
 
         # Fallback behavior: if hop0 is empty, verbatim variants degrade to
         # vanilla v2f to avoid asking the LLM to quote from nothing.
@@ -400,8 +399,7 @@ class _V2fVariantBase(BestshotBase):
                 "cues": kept_cues,
                 "cues_raw": [o.cue for o in outcomes],
                 "cue_outcomes": [
-                    {"cue": o.cue, "kept": o.kept, "reason": o.reason}
-                    for o in outcomes
+                    {"cue": o.cue, "kept": o.kept, "reason": o.reason} for o in outcomes
                 ],
                 "hop0_empty": len(hop0.segments) == 0,
             },

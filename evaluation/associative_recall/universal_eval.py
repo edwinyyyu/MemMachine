@@ -12,18 +12,12 @@ Usage:
     uv run python universal_eval.py --list
 """
 
-import hashlib
 import json
-import sys
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -31,8 +25,9 @@ from associative_recall import (
     LLMCache,
     Segment,
     SegmentStore,
-    RetrievalResult,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -188,8 +183,9 @@ def save_caches():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def format_segments(segments: list[Segment], max_items: int = 12,
-                    max_chars: int = 250) -> str:
+def format_segments(
+    segments: list[Segment], max_items: int = 12, max_chars: int = 250
+) -> str:
     if not segments:
         return "(no content retrieved yet)"
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
@@ -432,13 +428,8 @@ def run_variant(
     baseline_segments = list(hop0.segments)
     exclude = {s.index for s in baseline_segments}
 
-    context_section = (
-        "RETRIEVED CONTENT SO FAR:\n"
-        + format_segments(baseline_segments)
-    )
-    prompt = prompt_template.format(
-        question=question, context_section=context_section
-    )
+    context_section = "RETRIEVED CONTENT SO FAR:\n" + format_segments(baseline_segments)
+    prompt = prompt_template.format(question=question, context_section=context_section)
     output = llm_call(prompt)
 
     # Check for DONE
@@ -454,7 +445,9 @@ def run_variant(
         for cue in cues[:2]:
             cue_emb = embed_text(cue)
             result = store.search(
-                cue_emb, top_k=10, conversation_id=conv_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conv_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -622,9 +615,7 @@ def summarize_results(
         summary[f"standalone_delta_{lbl}"] = round(s_mean - b_mean, 4)
         summary[f"standalone_W/L_{lbl}"] = f"{s_wins}/{s_losses}"
 
-    summary["avg_cue_hits"] = round(
-        sum(r["cue_hits"] for r in results) / n, 2
-    )
+    summary["avg_cue_hits"] = round(sum(r["cue_hits"] for r in results) / n, 2)
     summary["avg_cue_segments"] = round(
         sum(r["num_cue_segments"] for r in results) / n, 1
     )
@@ -637,9 +628,9 @@ def summarize_results(
 
 def print_grand_summary(all_summaries: list[dict]):
     """Print a compact summary table across all variants and datasets."""
-    print(f"\n{'='*130}")
+    print(f"\n{'=' * 130}")
     print("GRAND SUMMARY: Union delta (cues can only ADD)")
-    print(f"{'='*130}")
+    print(f"{'=' * 130}")
 
     # Group by variant
     by_variant: dict[str, list[dict]] = defaultdict(list)
@@ -655,7 +646,9 @@ def print_grand_summary(all_summaries: list[dict]):
         f"{'Avg':>8}"
     )
     print(header)
-    print(f"{'':22} | {'r@20    r@50':>14} | {'r@20    r@50':>14} | {'r@20    r@50':>14} | {'r@20    r@50':>14} |")
+    print(
+        f"{'':22} | {'r@20    r@50':>14} | {'r@20    r@50':>14} | {'r@20    r@50':>14} | {'r@20    r@50':>14} |"
+    )
     print("-" * 130)
 
     for variant in VARIANTS:
@@ -701,9 +694,9 @@ def print_grand_summary(all_summaries: list[dict]):
 
 def print_standalone_summary(all_summaries: list[dict]):
     """Print standalone (displacement) summary."""
-    print(f"\n{'='*130}")
+    print(f"\n{'=' * 130}")
     print("STANDALONE SUMMARY: arch segments compete directly with baseline")
-    print(f"{'='*130}")
+    print(f"{'=' * 130}")
 
     by_variant: dict[str, list[dict]] = defaultdict(list)
     for s in all_summaries:
@@ -717,7 +710,9 @@ def print_standalone_summary(all_summaries: list[dict]):
         f"{'Advanced':>14}"
     )
     print(header)
-    print(f"{'':22} | {'r@20    r@50':>14} | {'r@20    r@50':>14} | {'r@20    r@50':>14} | {'r@20    r@50':>14}")
+    print(
+        f"{'':22} | {'r@20    r@50':>14} | {'r@20    r@50':>14} | {'r@20    r@50':>14} | {'r@20    r@50':>14}"
+    )
     print("-" * 130)
 
     for variant in VARIANTS:
@@ -744,16 +739,19 @@ def spot_check_cues(results: list[dict], variant_name: str, n: int = 5):
     """Print cues from N randomly-chosen questions for quality check."""
     print(f"\n--- Spot-check cues for {variant_name} ---")
     import random
+
     sample = random.sample(results, min(n, len(results)))
     for r in sample:
         q = r["question"]
         cues = r.get("cues", [])
         done = r.get("done", False)
-        delta20 = r["union_recalls"].get("r@20", 0) - r["baseline_recalls"].get("r@20", 0)
+        delta20 = r["union_recalls"].get("r@20", 0) - r["baseline_recalls"].get(
+            "r@20", 0
+        )
         hits = r.get("cue_hits", 0)
         print(f"  Q: {q[:80]}...")
         if done:
-            print(f"    -> DONE (no cues generated)")
+            print("    -> DONE (no cues generated)")
         for cue in cues:
             print(f"    Cue: {cue[:120]}")
         print(f"    delta_r@20={delta20:+.3f}, cue_hits={hits}")
@@ -770,7 +768,9 @@ def main():
         description="Universal prompt evaluation across all datasets"
     )
     parser.add_argument(
-        "--variant", type=str, default=None,
+        "--variant",
+        type=str,
+        default=None,
         help="Run specific variant",
     )
     parser.add_argument("--all", action="store_true", help="Run all variants")
@@ -778,11 +778,15 @@ def main():
     parser.add_argument("--force", action="store_true", help="Overwrite existing")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
-        "--datasets", nargs="+", default=None,
+        "--datasets",
+        nargs="+",
+        default=None,
         help="Specific datasets to run (default: all)",
     )
     parser.add_argument(
-        "--spot-check", type=int, default=3,
+        "--spot-check",
+        type=int,
+        default=3,
         help="Number of questions to spot-check per variant-dataset",
     )
     args = parser.parse_args()
@@ -818,9 +822,9 @@ def main():
 
     for ds_name in dataset_names:
         ds_info = DATASETS[ds_name]
-        print(f"\n{'#'*100}")
+        print(f"\n{'#' * 100}")
         print(f"# LOADING DATASET: {ds_info['label']}")
-        print(f"{'#'*100}")
+        print(f"{'#' * 100}")
 
         store = SegmentStore(DATA_DIR, ds_info["npz"])
         with open(DATA_DIR / ds_info["questions"]) as f:
@@ -829,7 +833,7 @@ def main():
         if ds_info.get("filter"):
             questions = [q for q in questions if ds_info["filter"](q)]
         if ds_info.get("max_q"):
-            questions = questions[:ds_info["max_q"]]
+            questions = questions[: ds_info["max_q"]]
 
         print(f"  Segments: {len(store.segments)}, Questions: {len(questions)}")
 
@@ -859,8 +863,9 @@ def main():
                 q_short = question["question"][:55]
                 cat = question["category"]
                 print(
-                    f"  [{i+1}/{len(questions)}] {cat}: {q_short}...",
-                    end="", flush=True,
+                    f"  [{i + 1}/{len(questions)}] {cat}: {q_short}...",
+                    end="",
+                    flush=True,
                 )
                 try:
                     result = evaluate_one(
@@ -877,6 +882,7 @@ def main():
                 except Exception as e:
                     print(f" ERROR: {e}")
                     import traceback
+
                     traceback.print_exc()
 
                 if (i + 1) % 5 == 0:
@@ -898,8 +904,7 @@ def main():
 
             # Spot check
             if args.spot_check > 0 and results:
-                spot_check_cues(results, f"{variant_name}/{ds_name}",
-                                n=args.spot_check)
+                spot_check_cues(results, f"{variant_name}/{ds_name}", n=args.spot_check)
 
     # Grand summary
     if len(all_summaries) > 1:

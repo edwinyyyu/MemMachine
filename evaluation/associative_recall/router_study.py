@@ -30,23 +30,27 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import sys
 import threading
 import time
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+from associative_recall import (
+    CACHE_DIR,
+    EMBED_MODEL,
+    EmbeddingCache,
+    LLMCache,
+    Segment,
+    SegmentStore,
+)
+from domain_agnostic import (
+    NEUTRAL_HEADER,
+    V2F_STYLE_EXPLICIT_PROMPT,
+    DomainAgnosticVariant,
+)
 from dotenv import load_dotenv
 from openai import OpenAI
-
-from associative_recall import CACHE_DIR, EMBED_MODEL, EmbeddingCache, LLMCache
-from associative_recall import Segment, SegmentStore
-from domain_agnostic import (
-    DomainAgnosticVariant,
-    V2F_STYLE_EXPLICIT_PROMPT,
-    NEUTRAL_HEADER,
-)
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -88,8 +92,13 @@ DATASETS: dict[str, dict] = {
 }
 
 # Specialists available to all routers
-SPECIALISTS = ("v2f", "v2f_plus_types", "type_enumerated", "chain",
-               "v2f_style_explicit")
+SPECIALISTS = (
+    "v2f",
+    "v2f_plus_types",
+    "type_enumerated",
+    "chain",
+    "v2f_style_explicit",
+)
 
 # One-line descriptions used in LLM router prompts
 SPECIALIST_DESCRIPTIONS = {
@@ -155,10 +164,12 @@ def load_specialist_table(ds: str, specialist: str) -> dict[tuple, dict]:
 # ---------------------------------------------------------------------------
 # Fill missing K=50 for v2f_style_explicit by re-running the variant
 # ---------------------------------------------------------------------------
-def fair_backfill_recall(arch_segments: list[Segment],
-                          cosine_segments: list[Segment],
-                          source_ids: set[int],
-                          budget: int) -> float:
+def fair_backfill_recall(
+    arch_segments: list[Segment],
+    cosine_segments: list[Segment],
+    source_ids: set[int],
+    budget: int,
+) -> float:
     seen: set[int] = set()
     arch_unique: list[Segment] = []
     for s in arch_segments:
@@ -186,8 +197,9 @@ def ensure_v2f_style_has_k50(verbose: bool = True) -> None:
         if data["results"] and "arch_r@50" in data["results"][0]["fair_backfill"]:
             continue
         if verbose:
-            print(f"[v2f_style_explicit] Re-running {ds} to compute K=50...",
-                  flush=True)
+            print(
+                f"[v2f_style_explicit] Re-running {ds} to compute K=50...", flush=True
+            )
         cfg = DATASETS[ds]
         store = SegmentStore(data_dir=DATA_DIR, npz_name=cfg["npz"])
         variant = DomainAgnosticVariant(
@@ -205,8 +217,9 @@ def ensure_v2f_style_has_k50(verbose: bool = True) -> None:
             res = variant.retrieve(q_text, conv_id)
             arch_segs = res.segments
             query_emb = variant.embed_text(q_text)
-            cosine_res = store.search(query_emb, top_k=max(BUDGETS),
-                                      conversation_id=conv_id)
+            cosine_res = store.search(
+                query_emb, top_k=max(BUDGETS), conversation_id=conv_id
+            )
             cosine_segs = list(cosine_res.segments)
             fb = {}
             for K in BUDGETS:
@@ -215,19 +228,21 @@ def ensure_v2f_style_has_k50(verbose: bool = True) -> None:
                 fb[f"baseline_r@{K}"] = round(b, 4)
                 fb[f"arch_r@{K}"] = round(a, 4)
                 fb[f"delta_r@{K}"] = round(a - b, 4)
-            new_results.append({
-                "conversation_id": conv_id,
-                "category": q.get("category", "unknown"),
-                "question_index": q.get("question_index", i),
-                "question": q_text,
-                "source_chat_ids": sorted(source_ids),
-                "num_source_turns": len(source_ids),
-                "total_arch_retrieved": len(arch_segs),
-                "embed_calls": variant.embed_calls,
-                "llm_calls": variant.llm_calls,
-                "fair_backfill": fb,
-                "metadata": {},
-            })
+            new_results.append(
+                {
+                    "conversation_id": conv_id,
+                    "category": q.get("category", "unknown"),
+                    "question_index": q.get("question_index", i),
+                    "question": q_text,
+                    "source_chat_ids": sorted(source_ids),
+                    "num_source_turns": len(source_ids),
+                    "total_arch_retrieved": len(arch_segs),
+                    "embed_calls": variant.embed_calls,
+                    "llm_calls": variant.llm_calls,
+                    "fair_backfill": fb,
+                    "metadata": {},
+                }
+            )
             if (i + 1) % 5 == 0:
                 variant.save_caches()
         variant.save_caches()
@@ -236,8 +251,7 @@ def ensure_v2f_style_has_k50(verbose: bool = True) -> None:
         with open(path, "w") as f:
             json.dump(data, f, indent=2, default=str)
         if verbose:
-            print(f"  -> wrote K=50 results into {path.name}",
-                  flush=True)
+            print(f"  -> wrote K=50 results into {path.name}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +407,9 @@ def _llm_route(question: str, model: str) -> str:
         ROUTER_USAGE["calls"] += 1
         if usage is not None:
             ROUTER_USAGE["input_tokens"] += int(getattr(usage, "prompt_tokens", 0) or 0)
-            ROUTER_USAGE["output_tokens"] += int(getattr(usage, "completion_tokens", 0) or 0)
+            ROUTER_USAGE["output_tokens"] += int(
+                getattr(usage, "completion_tokens", 0) or 0
+            )
     except Exception as e:
         print(f"    LLM route error ({model}): {e}", flush=True)
         text = "v2f"
@@ -413,8 +429,7 @@ def _parse_label(text: str) -> str:
             first = line
             break
     # Remove common prefixes
-    first = re.sub(r"^(label:|answer:|specialist:|route:|choice:)\s*",
-                   "", first)
+    first = re.sub(r"^(label:|answer:|specialist:|route:|choice:)\s*", "", first)
     first = first.strip().strip(".,;:`\"'").strip()
     # Longest-match first: order labels by length desc to avoid v2f
     # absorbing v2f_plus_types or v2f_style_explicit.
@@ -449,18 +464,68 @@ def route_llm_nano(question: str) -> str:
 # Keyword rules, applied in order. First matching rule wins.
 KEYWORD_RULES: list[tuple[re.Pattern, str]] = [
     # Chain / proactive / sequential / evolving-terminology cues
-    (re.compile(r"\b(draft|prepare|plan for|help me (?:with|draft|prepare)|write me|compose)\b", re.I), "chain"),
-    (re.compile(r"\b(step[- ]by[- ]step|sequence of|order of|in order|in the order|chain of|progression|chronolog)\b", re.I), "chain"),
-    (re.compile(r"\b(current|latest|most recent) (?:status|state|version|plan|alias)\b", re.I), "chain"),
-    (re.compile(r"\b(history of|evolution of|evolv|renamed|now called|used to call|aka|alias)\b", re.I), "chain"),
+    (
+        re.compile(
+            r"\b(draft|prepare|plan for|help me (?:with|draft|prepare)|write me|compose)\b",
+            re.IGNORECASE,
+        ),
+        "chain",
+    ),
+    (
+        re.compile(
+            r"\b(step[- ]by[- ]step|sequence of|order of|in order|in the order|chain of|progression|chronolog)\b",
+            re.IGNORECASE,
+        ),
+        "chain",
+    ),
+    (
+        re.compile(
+            r"\b(current|latest|most recent) (?:status|state|version|plan|alias)\b",
+            re.IGNORECASE,
+        ),
+        "chain",
+    ),
+    (
+        re.compile(
+            r"\b(history of|evolution of|evolv|renamed|now called|used to call|aka|alias)\b",
+            re.IGNORECASE,
+        ),
+        "chain",
+    ),
     # Logical-constraint satisfaction
-    (re.compile(r"\b(all|every|which|who).*\b(satisf(?:y|ies)|meet(?:s)?|match(?:es)?|fit(?:s)?|agree|accommodat)\b", re.I), "type_enumerated"),
-    (re.compile(r"\b(under|subject to|given) (?:the )?constraint", re.I), "type_enumerated"),
+    (
+        re.compile(
+            r"\b(all|every|which|who).*\b(satisf(?:y|ies)|meet(?:s)?|match(?:es)?|fit(?:s)?|agree|accommodat)\b",
+            re.IGNORECASE,
+        ),
+        "type_enumerated",
+    ),
+    (
+        re.compile(r"\b(under|subject to|given) (?:the )?constraint", re.IGNORECASE),
+        "type_enumerated",
+    ),
     # Multi-criterion set aggregations
-    (re.compile(r"\b(list|enumerate|name all|how many.*\band\b|what are all|both.+and\b)\b", re.I), "v2f_plus_types"),
-    (re.compile(r"\b(every|all of the).+\b(with|having|that (?:are|were|have))\b", re.I), "v2f_plus_types"),
+    (
+        re.compile(
+            r"\b(list|enumerate|name all|how many.*\band\b|what are all|both.+and\b)\b",
+            re.IGNORECASE,
+        ),
+        "v2f_plus_types",
+    ),
+    (
+        re.compile(
+            r"\b(every|all of the).+\b(with|having|that (?:are|were|have))\b", re.IGNORECASE
+        ),
+        "v2f_plus_types",
+    ),
     # Descriptive / open-ended
-    (re.compile(r"\b(describe|summarize|overview|what did.+?talk about|discuss(?:ed|ion))\b", re.I), "v2f_style_explicit"),
+    (
+        re.compile(
+            r"\b(describe|summarize|overview|what did.+?talk about|discuss(?:ed|ion))\b",
+            re.IGNORECASE,
+        ),
+        "v2f_style_explicit",
+    ),
 ]
 
 
@@ -554,8 +619,7 @@ def build_oracle_table(tables: dict, K: int) -> dict[str, str]:
     specialist for each category" as the ceiling.
     """
     # Aggregate: (category) -> specialist -> list of recalls
-    agg: dict[str, dict[str, list[float]]] = defaultdict(
-        lambda: defaultdict(list))
+    agg: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     for ds, per_spec in tables.items():
         for spec, table in per_spec.items():
             for k, entry in table.items():
@@ -597,18 +661,22 @@ def evaluate_router(
     all_per_q: list[dict] = []
 
     per_category_agg: dict[str, dict[int, list[float]]] = defaultdict(
-        lambda: defaultdict(list))
-    routing_correct_counts = {K: 0 for K in BUDGETS}
+        lambda: defaultdict(list)
+    )
+    routing_correct_counts = dict.fromkeys(BUDGETS, 0)
     routing_total = 0
 
     for ds_name in DATASETS:
         questions = load_questions(ds_name)
-        per_ds: dict = {"n": len(questions),
-                        "routing": {K: defaultdict(int) for K in BUDGETS}}
+        per_ds: dict = {
+            "n": len(questions),
+            "routing": {K: defaultdict(int) for K in BUDGETS},
+        }
         recalls: dict[int, list[float]] = {K: [] for K in BUDGETS}
         baselines: dict[int, list[float]] = {K: [] for K in BUDGETS}
         per_cat_ds: dict[str, dict[int, list[float]]] = defaultdict(
-            lambda: defaultdict(list))
+            lambda: defaultdict(list)
+        )
 
         for q in questions:
             routing_total += 1
@@ -643,14 +711,16 @@ def evaluate_router(
                     if chosen == target_spec:
                         routing_correct_counts[K] += 1
 
-            all_per_q.append({
-                "dataset": ds_name,
-                "question_index": q_idx,
-                "conversation_id": conv_id,
-                "question": q_text[:120],
-                "category": cat,
-                "routed_to": per_q_routed,
-            })
+            all_per_q.append(
+                {
+                    "dataset": ds_name,
+                    "question_index": q_idx,
+                    "conversation_id": conv_id,
+                    "question": q_text[:120],
+                    "category": cat,
+                    "routed_to": per_q_routed,
+                }
+            )
 
         ds_entry: dict = {
             "n": len(questions),
@@ -662,8 +732,7 @@ def evaluate_router(
             n = max(1, len(vals))
             ds_entry[f"mean_r@{K}"] = round(sum(vals) / n, 4)
             ds_entry[f"baseline_r@{K}"] = round(sum(base_vals) / n, 4)
-            ds_entry[f"delta_r@{K}"] = round(
-                (sum(vals) - sum(base_vals)) / n, 4)
+            ds_entry[f"delta_r@{K}"] = round((sum(vals) - sum(base_vals)) / n, 4)
         # Per-category for this dataset
         ds_entry["per_category"] = {}
         for cat, per_k in per_cat_ds.items():
@@ -703,8 +772,7 @@ def evaluate_router(
             continue
         summary[f"overall_r@{K}"] = round(total_sum / total_n, 4)
         summary[f"overall_baseline_r@{K}"] = round(total_base / total_n, 4)
-        summary[f"overall_delta_r@{K}"] = round(
-            (total_sum - total_base) / total_n, 4)
+        summary[f"overall_delta_r@{K}"] = round((total_sum - total_base) / total_n, 4)
 
     if oracle_cat_to_spec is not None and routing_total > 0:
         summary["routing_accuracy_vs_oracle"] = {
@@ -758,14 +826,18 @@ def main() -> None:
         print(f"\n=== Running router: {name} ===", flush=True)
         t_start = time.time()
         summary = evaluate_router(
-            name, fn, tables,
+            name,
+            fn,
+            tables,
             oracle_cat_to_spec=oracle_tables,
         )
         all_router_summaries[name] = summary
-        print(f"  overall r@20={summary.get('overall_r@20')}, "
-              f"r@50={summary.get('overall_r@50')}, "
-              f"elapsed={time.time() - t_start:.1f}s",
-              flush=True)
+        print(
+            f"  overall r@20={summary.get('overall_r@20')}, "
+            f"r@50={summary.get('overall_r@50')}, "
+            f"elapsed={time.time() - t_start:.1f}s",
+            flush=True,
+        )
         # Save caches as we go
         _llm_cache.save()
         _emb_cache.save()
@@ -803,8 +875,7 @@ def main() -> None:
         json.dump(out_json, f, indent=2, default=str)
     print(f"\nSaved raw numbers: {json_path}")
 
-    md = render_markdown(all_router_summaries, oracle_tables, router_tokens,
-                          tables)
+    md = render_markdown(all_router_summaries, oracle_tables, router_tokens, tables)
     md_path = RESULTS_DIR / "router_study.md"
     with open(md_path, "w") as f:
         f.write(md)
@@ -828,8 +899,7 @@ def main() -> None:
 
     # Per-dataset comparison at K=20
     print("\nPer-dataset r@20:")
-    print(f"{'Router':<22s}  " + "  ".join(
-        f"{ds:<14s}" for ds in DATASETS))
+    print(f"{'Router':<22s}  " + "  ".join(f"{ds:<14s}" for ds in DATASETS))
     for name, s in all_router_summaries.items():
         row = f"{name:<22s}  "
         for ds in DATASETS:
@@ -838,40 +908,47 @@ def main() -> None:
         print(row)
 
 
-def render_markdown(summaries: dict, oracle_tables: dict,
-                    router_tokens: dict, tables: dict) -> str:
+def render_markdown(
+    summaries: dict, oracle_tables: dict, router_tokens: dict, tables: dict
+) -> str:
     lines: list[str] = []
     lines.append("# Router Study\n")
     lines.append(
         "Question: can a cheap router dispatch across specialists and beat "
-        "v2f-only across many question categories?\n")
+        "v2f-only across many question categories?\n"
+    )
 
     lines.append("## Setup\n")
     lines.append(
         "- 5 specialists: v2f (baseline), v2f_plus_types (K=50 Pareto), "
         "type_enumerated (logic_constraint), chain (chain_with_scratchpad), "
-        "v2f_style_explicit (cross-dataset winner).\n")
+        "v2f_style_explicit (cross-dataset winner).\n"
+    )
     lines.append(
         "- 6 routers: v2f_only (control), oracle (ceiling via per-category "
         "best specialist), llm_router_mini (gpt-5-mini), llm_router_nano "
         "(gpt-5-nano), keyword_router (regex rules), embedding_router "
-        "(nearest-exemplar cosine).\n")
+        "(nearest-exemplar cosine).\n"
+    )
     lines.append(
         "- 4 datasets (88 questions total) × {K=20, K=50}. Per-question "
         "specialist recalls loaded from existing cached per-question result "
-        "files; no specialist code was modified.\n")
+        "files; no specialist code was modified.\n"
+    )
 
     # Headline table
     lines.append("## Overall recall\n")
-    lines.append("| Router | r@20 | Δ@20 | r@50 | Δ@50 | routing accuracy "
-                 "vs oracle @20 / @50 |")
+    lines.append(
+        "| Router | r@20 | Δ@20 | r@50 | Δ@50 | routing accuracy vs oracle @20 / @50 |"
+    )
     lines.append("|---|---|---|---|---|---|")
     for name, s in summaries.items():
         acc = s.get("routing_accuracy_vs_oracle", {})
         a20 = acc.get("r@20", None)
         a50 = acc.get("r@50", None)
-        acc_str = (f"{a20:.2f} / {a50:.2f}"
-                   if (a20 is not None and a50 is not None) else "—")
+        acc_str = (
+            f"{a20:.2f} / {a50:.2f}" if (a20 is not None and a50 is not None) else "—"
+        )
         lines.append(
             f"| {name} | {s.get('overall_r@20', 0):.4f} | "
             f"{s.get('overall_delta_r@20', 0):+.4f} | "
@@ -899,8 +976,7 @@ def render_markdown(summaries: dict, oracle_tables: dict,
     cats_sorted = sorted(all_cats)
     for K in BUDGETS:
         lines.append(f"\n## Per-category r@{K}\n")
-        lines.append("| Category | n | "
-                     + " | ".join(summaries.keys()) + " |")
+        lines.append("| Category | n | " + " | ".join(summaries.keys()) + " |")
         lines.append("|---|---|" + "---|" * len(summaries))
         for cat in cats_sorted:
             ns = [
@@ -910,8 +986,11 @@ def render_markdown(summaries: dict, oracle_tables: dict,
             n = max(ns) if ns else 0
             row = [cat, str(n)]
             for name in summaries:
-                v = summaries[name]["per_category"].get(cat, {}).get(
-                    f"mean_r@{K}", None)
+                v = (
+                    summaries[name]["per_category"]
+                    .get(cat, {})
+                    .get(f"mean_r@{K}", None)
+                )
                 row.append("—" if v is None else f"{v:.4f}")
             lines.append("| " + " | ".join(row) + " |")
 
@@ -926,63 +1005,71 @@ def render_markdown(summaries: dict, oracle_tables: dict,
 
     # Top helps/hurts per cheap router vs v2f_only, per K
     v2f = summaries.get("v2f_only", {})
-    for name in ("llm_router_mini", "llm_router_nano",
-                 "keyword_router", "embedding_router", "oracle"):
+    for name in (
+        "llm_router_mini",
+        "llm_router_nano",
+        "keyword_router",
+        "embedding_router",
+        "oracle",
+    ):
         s = summaries.get(name)
         if not s:
             continue
-        lines.append(f"\n## {name}: categories where routing helps / hurts"
-                     f" vs v2f_only\n")
+        lines.append(
+            f"\n## {name}: categories where routing helps / hurts vs v2f_only\n"
+        )
         for K in BUDGETS:
             lines.append(f"\n### K={K}\n")
             diffs = []
             for cat in sorted(s["per_category"].keys()):
                 r_here = s["per_category"][cat].get(f"mean_r@{K}", 0)
-                r_v2f = v2f["per_category"].get(cat, {}).get(
-                    f"mean_r@{K}", 0)
-                diffs.append((cat, s["per_category"][cat].get("n", 0),
-                              r_here, r_v2f, r_here - r_v2f))
-            helps = [d for d in sorted(diffs, key=lambda x: -x[4])
-                     if d[4] > 0][:3]
-            hurts = [d for d in sorted(diffs, key=lambda x: x[4])
-                     if d[4] < 0][:3]
+                r_v2f = v2f["per_category"].get(cat, {}).get(f"mean_r@{K}", 0)
+                diffs.append(
+                    (
+                        cat,
+                        s["per_category"][cat].get("n", 0),
+                        r_here,
+                        r_v2f,
+                        r_here - r_v2f,
+                    )
+                )
+            helps = [d for d in sorted(diffs, key=lambda x: -x[4]) if d[4] > 0][:3]
+            hurts = [d for d in sorted(diffs, key=lambda x: x[4]) if d[4] < 0][:3]
             lines.append("- Top helps:")
             if not helps:
                 lines.append("  - (none)")
             for cat, n, rh, rv, d in helps:
-                lines.append(
-                    f"  - {cat} (n={n}): {rv:.3f} → {rh:.3f} ({d:+.3f})")
+                lines.append(f"  - {cat} (n={n}): {rv:.3f} → {rh:.3f} ({d:+.3f})")
             lines.append("- Top hurts:")
             if not hurts:
                 lines.append("  - (none)")
             for cat, n, rh, rv, d in hurts:
-                lines.append(
-                    f"  - {cat} (n={n}): {rv:.3f} → {rh:.3f} ({d:+.3f})")
+                lines.append(f"  - {cat} (n={n}): {rv:.3f} → {rh:.3f} ({d:+.3f})")
 
     # Router tokens
     lines.append("\n## Router cost\n")
     lines.append(
-        f"- Router LLM calls this run (cache misses only): "
-        f"{router_tokens['calls']}\n")
-    lines.append(
-        f"- Cache hits: {router_tokens['cache_hits']}\n")
-    lines.append(
-        f"- Fresh input tokens this run: {router_tokens['input_tokens']}\n")
-    lines.append(
-        f"- Fresh output tokens this run: {router_tokens['output_tokens']}\n")
+        f"- Router LLM calls this run (cache misses only): {router_tokens['calls']}\n"
+    )
+    lines.append(f"- Cache hits: {router_tokens['cache_hits']}\n")
+    lines.append(f"- Fresh input tokens this run: {router_tokens['input_tokens']}\n")
+    lines.append(f"- Fresh output tokens this run: {router_tokens['output_tokens']}\n")
     lines.append(
         f"- Estimated per-question cost (cold cache): "
         f"~{router_tokens.get('est_input_tokens_per_call', 0)} input tokens + "
         f"~{router_tokens.get('est_output_tokens_per_call_mini', 0)} output "
         f"tokens for gpt-5-mini (including reasoning tokens); "
-        f"~{router_tokens.get('est_output_tokens_per_call_nano', 0)} for nano.\n")
+        f"~{router_tokens.get('est_output_tokens_per_call_nano', 0)} for nano.\n"
+    )
     lines.append(
         "- At gpt-5-mini list pricing (~$0.25/M input, $2/M output), "
         "one mini router call is ~$0.0004/question; one nano call ~$0.0002. "
-        "88 questions ≈ $0.04 for mini, $0.02 for nano.\n")
+        "88 questions ≈ $0.04 for mini, $0.02 for nano.\n"
+    )
     lines.append(
         "- Keyword + embedding routers use $0 of new LLM budget per "
-        "question (embedding router uses one cached cosine lookup).\n")
+        "question (embedding router uses one cached cosine lookup).\n"
+    )
 
     # Verdict
     lines.append("\n## Verdict\n")
@@ -990,17 +1077,23 @@ def render_markdown(summaries: dict, oracle_tables: dict,
     oracle = summaries.get("oracle", {})
     lines.append(
         f"- **v2f_only overall r@20 = {v2f.get('overall_r@20', 0):.4f}, "
-        f"r@50 = {v2f.get('overall_r@50', 0):.4f}.**\n")
+        f"r@50 = {v2f.get('overall_r@50', 0):.4f}.**\n"
+    )
     lines.append(
         f"- **Oracle ceiling r@20 = {oracle.get('overall_r@20', 0):.4f} "
         f"(Δ vs v2f = {oracle.get('overall_r@20', 0) - v2f.get('overall_r@20', 0):+.4f}), "
         f"r@50 = {oracle.get('overall_r@50', 0):.4f} "
-        f"(Δ = {oracle.get('overall_r@50', 0) - v2f.get('overall_r@50', 0):+.4f}).**\n")
+        f"(Δ = {oracle.get('overall_r@50', 0) - v2f.get('overall_r@50', 0):+.4f}).**\n"
+    )
     for K in BUDGETS:
         best_cheap_name = None
         best_cheap_r = v2f.get(f"overall_r@{K}", 0)
-        for name in ("llm_router_mini", "llm_router_nano",
-                     "keyword_router", "embedding_router"):
+        for name in (
+            "llm_router_mini",
+            "llm_router_nano",
+            "keyword_router",
+            "embedding_router",
+        ):
             r = summaries.get(name, {}).get(f"overall_r@{K}", 0)
             if r > best_cheap_r:
                 best_cheap_r = r
@@ -1009,7 +1102,8 @@ def render_markdown(summaries: dict, oracle_tables: dict,
             delta = best_cheap_r - v2f.get(f"overall_r@{K}", 0)
             lines.append(
                 f"- **Best cheap router at K={K}: {best_cheap_name} = "
-                f"{best_cheap_r:.4f} (Δ vs v2f = {delta:+.4f}).**\n")
+                f"{best_cheap_r:.4f} (Δ vs v2f = {delta:+.4f}).**\n"
+            )
         else:
             lines.append(f"- **No cheap router beat v2f_only at K={K}.**\n")
 

@@ -30,9 +30,10 @@ def reanalyze(results_file: Path, store: SegmentStore) -> list[dict]:
         results = json.load(f)
 
     # We need question embeddings. We can re-embed via cached embeddings.
-    from associative_recall import EmbeddingCache, AssociativeRecallEngine
-    from openai import OpenAI
+    from associative_recall import EmbeddingCache
     from dotenv import load_dotenv
+    from openai import OpenAI
+
     load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
     client = OpenAI(timeout=60.0)
@@ -51,16 +52,21 @@ def reanalyze(results_file: Path, store: SegmentStore) -> list[dict]:
 
         # Get question embedding (should be cached)
         import hashlib
+
         key = hashlib.sha256(q_text.encode()).hexdigest()
         cached = embedding_cache.get(q_text)
         if cached is None:
-            resp = client.embeddings.create(model="text-embedding-3-small", input=[q_text])
+            resp = client.embeddings.create(
+                model="text-embedding-3-small", input=[q_text]
+            )
             cached = np.array(resp.data[0].embedding, dtype=np.float32)
             embedding_cache.put(q_text, cached)
 
         # Compute baseline at various budgets
         max_budget = max(BUDGETS + [total_assoc])
-        baseline_result = store.search(cached, top_k=max_budget, conversation_id=conv_id)
+        baseline_result = store.search(
+            cached, top_k=max_budget, conversation_id=conv_id
+        )
 
         baseline_recalls = {}
         for budget in BUDGETS:
@@ -96,7 +102,7 @@ def reanalyze(results_file: Path, store: SegmentStore) -> list[dict]:
         for hop in r["hop_details"]:
             cumulative_segments += hop["num_retrieved"]
             cum_hits = set()
-            for h2 in r["hop_details"][:r["hop_details"].index(hop)+1]:
+            for h2 in r["hop_details"][: r["hop_details"].index(hop) + 1]:
                 cum_hits.update(h2.get("new_source_hits", []))
             this_recall = compute_recall(cum_hits, source_ids)
             budget_recalls[cumulative_segments] = this_recall
@@ -121,27 +127,29 @@ def reanalyze(results_file: Path, store: SegmentStore) -> list[dict]:
                     else:
                         assoc_recalls[f"r@{budget}"] = budget_recalls[sorted_budgets[0]]
 
-        reanalyzed.append({
-            "question": q_text,
-            "conversation_id": conv_id,
-            "category": r["category"],
-            "source_chat_ids": sorted(source_ids),
-            "num_source_turns": len(source_ids),
-            "conv_length": conv_length,
-            "total_assoc_retrieved": total_assoc,
-            "retrieval_fraction": round(total_assoc / conv_length, 3),
-            "baseline_recalls": baseline_recalls,
-            "assoc_recalls": assoc_recalls,
-        })
+        reanalyzed.append(
+            {
+                "question": q_text,
+                "conversation_id": conv_id,
+                "category": r["category"],
+                "source_chat_ids": sorted(source_ids),
+                "num_source_turns": len(source_ids),
+                "conv_length": conv_length,
+                "total_assoc_retrieved": total_assoc,
+                "retrieval_fraction": round(total_assoc / conv_length, 3),
+                "baseline_recalls": baseline_recalls,
+                "assoc_recalls": assoc_recalls,
+            }
+        )
 
     embedding_cache.save()
     return reanalyzed
 
 
 def print_summary(results: list[dict], label: str) -> None:
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"NORMALIZED REANALYSIS: {label}")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
     by_category: dict[str, list[dict]] = defaultdict(list)
     for r in results:
@@ -151,15 +159,21 @@ def print_summary(results: list[dict], label: str) -> None:
 
     print(f"\n{'Budget':>8s}", end="")
     for lbl in budget_labels:
-        print(f"  {'B-'+lbl:>10s}  {'A-'+lbl:>10s}  {'Delta':>7s}", end="")
+        print(f"  {'B-' + lbl:>10s}  {'A-' + lbl:>10s}  {'Delta':>7s}", end="")
     print()
     print("-" * 120)
 
     all_results = list(results)
     for lbl in budget_labels:
-        b_mean = sum(r["baseline_recalls"].get(lbl, 0) for r in all_results) / len(all_results)
-        a_mean = sum(r["assoc_recalls"].get(lbl, 0) for r in all_results) / len(all_results)
-        print(f"  {lbl:>8s}: baseline={b_mean:.3f}  assoc={a_mean:.3f}  delta={a_mean-b_mean:+.3f}")
+        b_mean = sum(r["baseline_recalls"].get(lbl, 0) for r in all_results) / len(
+            all_results
+        )
+        a_mean = sum(r["assoc_recalls"].get(lbl, 0) for r in all_results) / len(
+            all_results
+        )
+        print(
+            f"  {lbl:>8s}: baseline={b_mean:.3f}  assoc={a_mean:.3f}  delta={a_mean - b_mean:+.3f}"
+        )
 
     avg_frac = sum(r["retrieval_fraction"] for r in all_results) / len(all_results)
     avg_total = sum(r["total_assoc_retrieved"] for r in all_results) / len(all_results)
@@ -167,7 +181,7 @@ def print_summary(results: list[dict], label: str) -> None:
     print(f"Avg total assoc segments: {avg_total:.0f}")
 
     # Per question detail
-    print(f"\nPER-QUESTION DETAIL:")
+    print("\nPER-QUESTION DETAIL:")
     print(f"{'Q':>3s} {'Category':>30s} {'Conv':>4s} {'Retr':>4s} {'Frac':>5s}", end="")
     print(f"  {'B@50':>5s} {'A@50':>5s} {'D@50':>5s}", end="")
     print(f"  {'B@act':>5s} {'A@act':>5s} {'D@act':>5s}")
@@ -176,14 +190,17 @@ def print_summary(results: list[dict], label: str) -> None:
         a50 = r["assoc_recalls"].get("r@50", 0)
         bact = r["baseline_recalls"].get("r@actual", 0)
         aact = r["assoc_recalls"].get("r@actual", 0)
-        print(f"{i:>3d} {r['category']:>30s} {r['conversation_id']:>4s} "
-              f"{r['total_assoc_retrieved']:>4d} {r['retrieval_fraction']:>5.2f}"
-              f"  {b50:>5.3f} {a50:>5.3f} {a50-b50:>+5.3f}"
-              f"  {bact:>5.3f} {aact:>5.3f} {aact-bact:>+5.3f}")
+        print(
+            f"{i:>3d} {r['category']:>30s} {r['conversation_id']:>4s} "
+            f"{r['total_assoc_retrieved']:>4d} {r['retrieval_fraction']:>5.2f}"
+            f"  {b50:>5.3f} {a50:>5.3f} {a50 - b50:>+5.3f}"
+            f"  {bact:>5.3f} {aact:>5.3f} {aact - bact:>+5.3f}"
+        )
 
 
 def main() -> None:
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("results_file", nargs="?", default=None)
     args = parser.parse_args()

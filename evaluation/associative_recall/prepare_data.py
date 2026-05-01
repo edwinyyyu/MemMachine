@@ -7,8 +7,6 @@ Also extracts probing questions with source_chat_ids for evaluation.
 
 import ast
 import json
-import os
-import sys
 import time
 from pathlib import Path
 
@@ -75,12 +73,14 @@ def extract_segments(conversation: dict) -> list[dict]:
                 content = content.split("->")[0].strip()
             if not content.strip():
                 continue
-            segments.append({
-                "conversation_id": conv_id,
-                "turn_id": turn_id,
-                "role": role,
-                "text": content,
-            })
+            segments.append(
+                {
+                    "conversation_id": conv_id,
+                    "turn_id": turn_id,
+                    "role": role,
+                    "text": content,
+                }
+            )
     return segments
 
 
@@ -103,14 +103,16 @@ def extract_questions(conversation: dict) -> list[dict]:
             source_ids = flatten_source_chat_ids(q.get("source_chat_ids"))
             if not source_ids:
                 continue
-            questions.append({
-                "conversation_id": conv_id,
-                "category": category,
-                "question_index": i,
-                "question": q["question"],
-                "source_chat_ids": source_ids,
-                "ideal_response": q.get("ideal_response", ""),
-            })
+            questions.append(
+                {
+                    "conversation_id": conv_id,
+                    "category": category,
+                    "question_index": i,
+                    "question": q["question"],
+                    "source_chat_ids": source_ids,
+                    "ideal_response": q.get("ideal_response", ""),
+                }
+            )
     return questions
 
 
@@ -118,8 +120,7 @@ def embed_texts(client: OpenAI, texts: list[str]) -> np.ndarray:
     all_embeddings = []
     for start in range(0, len(texts), BATCH_SIZE):
         batch = texts[start : start + BATCH_SIZE]
-        print(f"  Embedding batch {start // BATCH_SIZE + 1} "
-              f"({len(batch)} texts)...")
+        print(f"  Embedding batch {start // BATCH_SIZE + 1} ({len(batch)} texts)...")
         response = client.embeddings.create(model=EMBED_MODEL, input=batch)
         batch_embeddings = [item.embedding for item in response.data]
         all_embeddings.extend(batch_embeddings)
@@ -141,11 +142,12 @@ def main() -> None:
         questions = extract_questions(conv)
         all_segments.extend(segments)
         all_questions.extend(questions)
-        print(f"  Conv {conv['conversation_id']}: "
-              f"{len(segments)} segments, {len(questions)} questions")
+        print(
+            f"  Conv {conv['conversation_id']}: "
+            f"{len(segments)} segments, {len(questions)} questions"
+        )
 
-    print(f"\nTotal: {len(all_segments)} segments, "
-          f"{len(all_questions)} questions")
+    print(f"\nTotal: {len(all_segments)} segments, {len(all_questions)} questions")
 
     texts = [s["text"] for s in all_segments]
     print(f"\nEmbedding {len(texts)} segments...")
@@ -179,6 +181,7 @@ def main() -> None:
 
     print("\nCategory breakdown:")
     from collections import Counter
+
     cats = Counter(q["category"] for q in all_questions)
     for cat, count in sorted(cats.items()):
         print(f"  {cat}: {count}")

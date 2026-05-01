@@ -25,9 +25,17 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
+from antipara_cue_gen import MetaV2fDedicated
 from associative_recall import Segment
+from dotenv import load_dotenv
+from entity_mention import (
+    EntityLLMB01,
+    EntityRegexB005,
+    EntityRegexB01,
+    EntityRegexB02,
+    EntityRegexPlusV2f,
+    TurnEntityExtractor,
+)
 from fair_backfill_eval import (
     BUDGETS,
     DATASETS,
@@ -37,17 +45,6 @@ from fair_backfill_eval import (
     summarize,
     summarize_by_category,
 )
-from entity_mention import (
-    ARCH_CLASSES as ENTITY_ARCH_CLASSES,
-    EntityRegexB005,
-    EntityRegexB01,
-    EntityRegexB02,
-    EntityLLMB01,
-    EntityRegexPlusV2f,
-    TurnEntityExtractor,
-    _TURN_ENTITIES_FILE,
-)
-from antipara_cue_gen import MetaV2fDedicated
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -84,9 +81,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     md = result.metadata or {}
@@ -123,9 +118,7 @@ def evaluate_question(arch, question: dict) -> dict:
     row["gold_found_at_K"] = {
         str(K): sorted(arch_ids_at_K[K] & source_ids) for K in BUDGETS
     }
-    row["arch_ids_at_K"] = {
-        str(K): sorted(arch_ids_at_K[K]) for K in BUDGETS
-    }
+    row["arch_ids_at_K"] = {str(K): sorted(arch_ids_at_K[K]) for K in BUDGETS}
 
     return row
 
@@ -144,7 +137,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -153,6 +146,7 @@ def run_one(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -324,22 +318,22 @@ def extraction_stats(
                 turns_with_entities += 1
             for e in ents:
                 from entity_mention import _normalize_entity
+
                 norm = _normalize_entity(e)
                 if norm:
                     all_entities_norm.add(norm)
 
     mean_per_turn = (
-        sum(per_turn_counts) / len(per_turn_counts)
-        if per_turn_counts else 0.0
+        sum(per_turn_counts) / len(per_turn_counts) if per_turn_counts else 0.0
     )
     return {
         "dataset": dataset,
         "extractor": extractor_kind,
         "total_turns": total_turns,
         "turns_with_entities": turns_with_entities,
-        "frac_turns_with_entities": round(
-            turns_with_entities / total_turns, 3
-        ) if total_turns else 0.0,
+        "frac_turns_with_entities": round(turns_with_entities / total_turns, 3)
+        if total_turns
+        else 0.0,
         "mean_entities_per_turn": round(mean_per_turn, 2),
         "unique_entities": len(all_entities_norm),
     }
@@ -350,8 +344,7 @@ def query_entity_stats(rows: list[dict]) -> dict:
     counts = [len(r.get("query_entities", [])) for r in rows]
     mean = sum(counts) / len(counts) if counts else 0
     mean_boosted = (
-        sum(r.get("num_boosted_turns", 0) for r in rows) / len(rows)
-        if rows else 0
+        sum(r.get("num_boosted_turns", 0) for r in rows) / len(rows) if rows else 0
     )
     return {
         "n_queries": len(rows),
@@ -406,9 +399,7 @@ def main() -> None:
         for arch_name in arch_names:
             cls = ARCH_CLASSES[arch_name]
             arch = cls(store)
-            results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(arch_name, arch, ds_name, questions)
             all_results[arch_name][ds_name] = {
                 "summary": summary,
                 "category_breakdown": by_cat,
@@ -436,9 +427,7 @@ def main() -> None:
         for d in ds_names:
             if d not in all_results.get(a, {}):
                 continue
-            query_stats_out[a][d] = query_entity_stats(
-                all_results[a][d]["results"]
-            )
+            query_stats_out[a][d] = query_entity_stats(all_results[a][d]["results"])
 
     # Orthogonality vs meta_v2f
     orthogonality: dict[str, dict] = {}
@@ -465,8 +454,12 @@ def main() -> None:
     # Qualitative trios (prefer regex_plus_v2f on LoCoMo, fall back to others)
     trios: list[dict] = []
     primary_arch = None
-    for cand in ("entity_regex_plus_v2f", "entity_regex_b0.1",
-                 "entity_llm_b0.1", "entity_regex_b0.2"):
+    for cand in (
+        "entity_regex_plus_v2f",
+        "entity_regex_b0.1",
+        "entity_llm_b0.1",
+        "entity_regex_b0.2",
+    ):
         if cand in arch_names:
             primary_arch = cand
             break
@@ -509,9 +502,7 @@ def main() -> None:
             a: {
                 d: {
                     "summary": all_results[a][d]["summary"],
-                    "category_breakdown": all_results[a][d][
-                        "category_breakdown"
-                    ],
+                    "category_breakdown": all_results[a][d]["category_breakdown"],
                 }
                 for d in all_results[a]
             }
@@ -540,9 +531,7 @@ def main() -> None:
                         "arch": a,
                         "dataset": d,
                         "summary": all_results[a][d]["summary"],
-                        "category_breakdown": all_results[a][d][
-                            "category_breakdown"
-                        ],
+                        "category_breakdown": all_results[a][d]["category_breakdown"],
                         "results": all_results[a][d]["results"],
                     },
                     f,
@@ -552,9 +541,7 @@ def main() -> None:
 
     # Markdown report
     md: list[str] = []
-    md.append(
-        "# Entity-mention exact-match index — non-cosine retrieval signal\n"
-    )
+    md.append("# Entity-mention exact-match index — non-cosine retrieval signal\n")
     md.append(
         "Motivation: v2f's cosine retrieval is fuzzy. Gold turns that share a "
         "specific entity with the query (names, IDs, numbers) can be missed "
@@ -565,7 +552,9 @@ def main() -> None:
     )
 
     md.append("## Entity extraction stats\n")
-    md.append("| Dataset | Extractor | turns | turns w/ent | % | ent/turn | unique ents |")
+    md.append(
+        "| Dataset | Extractor | turns | turns w/ent | % | ent/turn | unique ents |"
+    )
     md.append("|---|---|---:|---:|---:|---:|---:|")
     for d in ds_names:
         for kind in ("regex", "llm"):
@@ -620,8 +609,7 @@ def main() -> None:
     if orthogonality:
         md.append("\n## Orthogonality vs v2f\n")
         md.append(
-            "Fraction of gold turns found by the variant that v2f did NOT "
-            "find.\n"
+            "Fraction of gold turns found by the variant that v2f did NOT find.\n"
         )
         md.append("| Arch | Dataset/K | gold_found | novel_vs_v2f | frac_novel |")
         md.append("|---|---|---:|---:|---:|")
@@ -633,33 +621,21 @@ def main() -> None:
                 )
 
     if trios:
+        md.append(f"\n## Qualitative trios ({primary_arch}, LoCoMo, K=50)\n")
         md.append(
-            f"\n## Qualitative trios ({primary_arch}, LoCoMo, K=50)\n"
-        )
-        md.append(
-            "Each row: query, extracted query entities, boosted turn ids, "
-            "gold found."
+            "Each row: query, extracted query entities, boosted turn ids, gold found."
         )
         for ex in trios:
-            novel_tag = (
-                " **(novel vs v2f)**" if ex.get("novel_vs_v2f") else ""
-            )
+            novel_tag = " **(novel vs v2f)**" if ex.get("novel_vs_v2f") else ""
             md.append(f"\n- **Q:** {ex['question']}{novel_tag}")
+            md.append(f"  - Query entities: {ex.get('query_entities', [])}")
+            md.append(f"  - Num boosted turns: {ex.get('num_boosted_turns', 0)}")
             md.append(
-                f"  - Query entities: {ex.get('query_entities', [])}"
-            )
-            md.append(
-                f"  - Num boosted turns: {ex.get('num_boosted_turns', 0)}"
-            )
-            md.append(
-                f"  - Boosted turn ids (sample): "
-                f"{ex.get('boosted_turn_ids', [])[:20]}"
+                f"  - Boosted turn ids (sample): {ex.get('boosted_turn_ids', [])[:20]}"
             )
             md.append(f"  - Gold found: {ex.get('gold_found', [])}")
             if ex.get("novel_vs_v2f"):
-                md.append(
-                    f"  - Novel vs v2f: {ex['novel_vs_v2f']}"
-                )
+                md.append(f"  - Novel vs v2f: {ex['novel_vs_v2f']}")
 
     md.append("\n## Top categories by Δr@50\n")
     for a in top_cats:
@@ -689,18 +665,11 @@ def main() -> None:
     # Verdict
     md.append("\n## Verdict\n")
     verdict = "(see numbers above)"
-    if (
-        "meta_v2f" in all_results
-        and "locomo_30q" in all_results["meta_v2f"]
-    ):
-        v2f50_lc = all_results["meta_v2f"]["locomo_30q"]["summary"][
-            "arch_r@50"
-        ]
+    if "meta_v2f" in all_results and "locomo_30q" in all_results["meta_v2f"]:
+        v2f50_lc = all_results["meta_v2f"]["locomo_30q"]["summary"]["arch_r@50"]
         v2f50_syn = None
         if "synthetic_19q" in all_results["meta_v2f"]:
-            v2f50_syn = all_results["meta_v2f"]["synthetic_19q"]["summary"][
-                "arch_r@50"
-            ]
+            v2f50_syn = all_results["meta_v2f"]["synthetic_19q"]["summary"]["arch_r@50"]
 
         variant_scores: list[tuple[str, float, float | None]] = []
         for a in arch_names:
@@ -720,7 +689,8 @@ def main() -> None:
                 f"({best[1]:.3f} vs {v2f50_lc:.3f})."
             )
             if (
-                best[2] is not None and v2f50_syn is not None
+                best[2] is not None
+                and v2f50_syn is not None
                 and best[2] > v2f50_syn + 0.005
             ):
                 verdict += (
@@ -728,13 +698,9 @@ def main() -> None:
                     f"({best[2]:.3f} vs {v2f50_syn:.3f})."
                 )
             elif best[2] is not None and v2f50_syn is not None:
-                verdict += (
-                    f" Synthetic @K=50: {best[2]:.3f} vs v2f {v2f50_syn:.3f}."
-                )
+                verdict += f" Synthetic @K=50: {best[2]:.3f} vs v2f {v2f50_syn:.3f}."
         else:
-            details = ", ".join(
-                f"{n}=LC{lc:.3f}" for n, lc, _ in variant_scores
-            )
+            details = ", ".join(f"{n}=LC{lc:.3f}" for n, lc, _ in variant_scores)
             verdict = (
                 f"**ABANDON**: no entity variant beats v2f on LoCoMo-30 "
                 f"@K=50 (v2f={v2f50_lc:.3f}; {details})."
@@ -744,7 +710,7 @@ def main() -> None:
         "\n## Outputs\n"
         "- `results/entity_mention_study.md` — this report\n"
         "- `results/entity_mention_study.json` — raw metrics + stats\n"
-        f"- `results/turn_entities.json` — per-turn extracted entities\n"
+        "- `results/turn_entities.json` — per-turn extracted entities\n"
         "- `results/entity_<arch>_<dataset>.json` — per-question detail\n"
     )
 

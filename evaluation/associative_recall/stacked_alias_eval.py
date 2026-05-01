@@ -23,19 +23,17 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
+from antipara_cue_gen import MetaV2fDedicated
 from associative_recall import Segment
+from dotenv import load_dotenv
 from fair_backfill_eval import (
     BUDGETS,
-    DATASETS,
     RESULTS_DIR,
     fair_backfill_evaluate,
     load_dataset,
     summarize,
     summarize_by_category,
 )
-from antipara_cue_gen import MetaV2fDedicated
 from stacked_alias import StackedAlias
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -67,9 +65,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     md = result.metadata or {}
@@ -130,7 +126,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -139,6 +135,7 @@ def run_one(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -237,9 +234,7 @@ def compute_orthogonality(
     return {
         "total_gold": total_gold,
         "novel_vs_v2f": novel_gold,
-        "fraction_novel": round(novel_gold / total_gold, 4)
-        if total_gold
-        else 0.0,
+        "fraction_novel": round(novel_gold / total_gold, 4) if total_gold else 0.0,
     }
 
 
@@ -259,9 +254,7 @@ def main() -> None:
             arch = cls(store)
             if arch_name == "stacked_alias":
                 index_stats_by_ds[ds_name] = getattr(arch, "index_stats", {})
-            results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(arch_name, arch, ds_name, questions)
             all_results[arch_name][ds_name] = {
                 "summary": summary,
                 "category_breakdown": by_cat,
@@ -305,9 +298,7 @@ def main() -> None:
             a: {
                 d: {
                     "summary": all_results[a][d]["summary"],
-                    "category_breakdown": all_results[a][d][
-                        "category_breakdown"
-                    ],
+                    "category_breakdown": all_results[a][d]["category_breakdown"],
                 }
                 for d in all_results[a]
             }
@@ -332,9 +323,7 @@ def main() -> None:
                         "arch": a,
                         "dataset": d,
                         "summary": all_results[a][d]["summary"],
-                        "category_breakdown": all_results[a][d][
-                            "category_breakdown"
-                        ],
+                        "category_breakdown": all_results[a][d]["category_breakdown"],
                         "results": all_results[a][d]["results"],
                     },
                     f,
@@ -413,13 +402,9 @@ def main() -> None:
         contrib = d.get("n_queries_alias_contributed_gold", {})
         n = d.get("n_queries", 0)
         md.append(f"- n queries: {n}")
+        md.append(f"- mean raw alt-key hits / query: {d.get('mean_alt_key_hits_raw')}")
         md.append(
-            f"- mean raw alt-key hits / query: "
-            f"{d.get('mean_alt_key_hits_raw')}"
-        )
-        md.append(
-            f"- mean alias-turn hits (deduped) / query: "
-            f"{d.get('mean_alias_turn_hits')}"
+            f"- mean alias-turn hits (deduped) / query: {d.get('mean_alias_turn_hits')}"
         )
         md.append(
             f"- mean alias-turn hits novel vs v2f / query: "
@@ -455,15 +440,11 @@ def main() -> None:
 
     # Cost comparison
     md.append("## Cost comparison (per-query LLM calls)\n")
-    md.append(
-        "| Arch | avg LLM/q (LoCoMo) | avg LLM/q (synthetic) | ingest LLM |"
-    )
+    md.append("| Arch | avg LLM/q (LoCoMo) | avg LLM/q (synthetic) | ingest LLM |")
     md.append("|---|---:|---:|---:|")
     for a in ARCH_CLASSES:
         lc_s = all_results.get(a, {}).get("locomo_30q", {}).get("summary", {})
-        sy_s = all_results.get(a, {}).get(
-            "synthetic_19q", {}
-        ).get("summary", {})
+        sy_s = all_results.get(a, {}).get("synthetic_19q", {}).get("summary", {})
         ingest = "none" if a == "meta_v2f" else "1 per conv (shared w/ alias_expand)"
         md.append(
             f"| {a} | {lc_s.get('avg_llm_calls', 0):.1f} | "
@@ -479,9 +460,7 @@ def main() -> None:
     verdict = "see numbers above"
     if "stacked_alias" in all_results and "meta_v2f" in all_results:
         v2f_lc = all_results["meta_v2f"]["locomo_30q"]["summary"]["arch_r@50"]
-        sa_lc = all_results["stacked_alias"]["locomo_30q"]["summary"][
-            "arch_r@50"
-        ]
+        sa_lc = all_results["stacked_alias"]["locomo_30q"]["summary"]["arch_r@50"]
         aexp_lc_r50 = 0.8806
         # Novel gold vs v2f: if the mechanism never surfaces new gold, even a
         # bonus variant cannot help.

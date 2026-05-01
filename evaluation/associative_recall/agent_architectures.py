@@ -4,15 +4,11 @@ Each architecture gives the LLM control over the retrieval process:
 how many cues to generate, when to stop, what strategy to use.
 """
 
-import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -20,8 +16,9 @@ from associative_recall import (
     LLMCache,
     Segment,
     SegmentStore,
-    RetrievalResult,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -32,6 +29,7 @@ AGENT_CACHE_DIR = CACHE_DIR
 @dataclass
 class AgentArchResult:
     """Result from an agent architecture's retrieval."""
+
     segments: list[Segment]
     metadata: dict = field(default_factory=dict)
 
@@ -47,8 +45,11 @@ class AgentEmbeddingCache(EmbeddingCache):
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, list[float]] = {}
         # Read from all existing caches
-        for name in ("embedding_cache.json", "arch_embedding_cache.json",
-                     "agent_embedding_cache.json"):
+        for name in (
+            "embedding_cache.json",
+            "arch_embedding_cache.json",
+            "agent_embedding_cache.json",
+        ):
             p = self.cache_dir / name
             if p.exists():
                 with open(p) as f:
@@ -82,8 +83,7 @@ class AgentLLMCache(LLMCache):
         self.cache_dir = AGENT_CACHE_DIR
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, str] = {}
-        for name in ("llm_cache.json", "arch_llm_cache.json",
-                     "agent_llm_cache.json"):
+        for name in ("llm_cache.json", "arch_llm_cache.json", "agent_llm_cache.json"):
             p = self.cache_dir / name
             if p.exists():
                 with open(p) as f:
@@ -168,8 +168,9 @@ class AgentBase:
 # ---------------------------------------------------------------------------
 # Helper: format segments for display in prompts
 # ---------------------------------------------------------------------------
-def _format_segments(segments: list[Segment], max_items: int = 12,
-                     max_chars: int = 250) -> str:
+def _format_segments(
+    segments: list[Segment], max_items: int = 12, max_chars: int = 250
+) -> str:
     """Format segments chronologically for LLM context."""
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
     lines = []
@@ -195,8 +196,13 @@ class AgenticLoop(AgentBase):
     - Max 4 LLM calls (orient + up to 3 search iterations)
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 max_iterations: int = 3, per_cue_k: int = 10):
+    def __init__(
+        self,
+        store: SegmentStore,
+        client: OpenAI | None = None,
+        max_iterations: int = 3,
+        per_cue_k: int = 10,
+    ):
         super().__init__(store, client)
         self.max_iterations = max_iterations
         self.per_cue_k = per_cue_k
@@ -274,13 +280,15 @@ ACTION: STOP"""
                     if cue:
                         cues.append(cue)
 
-            iteration_log.append({
-                "iteration": iteration,
-                "assessment": assessment,
-                "action": action,
-                "num_cues": len(cues),
-                "cues": cues,
-            })
+            iteration_log.append(
+                {
+                    "iteration": iteration,
+                    "assessment": assessment,
+                    "action": action,
+                    "num_cues": len(cues),
+                    "cues": cues,
+                }
+            )
 
             if action == "STOP" or not cues:
                 break
@@ -289,7 +297,8 @@ ACTION: STOP"""
             for cue in cues[:4]:  # Hard cap at 4
                 cue_emb = self.embed_text(cue)
                 result = self.store.search(
-                    cue_emb, top_k=self.per_cue_k,
+                    cue_emb,
+                    top_k=self.per_cue_k,
                     conversation_id=conversation_id,
                     exclude_indices=seen_indices,
                 )
@@ -325,8 +334,9 @@ class ContextBootstrapping(AgentBase):
     Tests whether knowing the memory's content first improves cue quality.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 per_cue_k: int = 10):
+    def __init__(
+        self, store: SegmentStore, client: OpenAI | None = None, per_cue_k: int = 10
+    ):
         super().__init__(store, client)
         self.per_cue_k = per_cue_k
 
@@ -380,7 +390,8 @@ Nothing else."""
         for cue in orient_cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_cue_k,
+                cue_emb,
+                top_k=self.per_cue_k,
                 conversation_id=conversation_id,
                 exclude_indices=seen_indices,
             )
@@ -401,7 +412,7 @@ CONTEXT (orientation): {orientation}
 ALL RETRIEVED SO FAR ({len(all_segments)} segments):
 {context}
 
-PREVIOUS CUES: {', '.join(orient_cues[:2])}
+PREVIOUS CUES: {", ".join(orient_cues[:2])}
 
 What's still MISSING? Generate 2 cues targeting gaps in the retrieved \
 content. Use specific vocabulary from the conversation.
@@ -424,7 +435,8 @@ Nothing else."""
         for cue in refine_cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_cue_k,
+                cue_emb,
+                top_k=self.per_cue_k,
                 conversation_id=conversation_id,
                 exclude_indices=seen_indices,
             )
@@ -459,8 +471,13 @@ class HypothesisDriven(AgentBase):
     Naturally handles contradictions, knowledge updates, and synthesis.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 max_revisions: int = 2, per_cue_k: int = 10):
+    def __init__(
+        self,
+        store: SegmentStore,
+        client: OpenAI | None = None,
+        max_revisions: int = 2,
+        per_cue_k: int = 10,
+    ):
         super().__init__(store, client)
         self.max_revisions = max_revisions
         self.per_cue_k = per_cue_k
@@ -482,9 +499,8 @@ class HypothesisDriven(AgentBase):
 
             prev_cue_text = ""
             if previous_cues:
-                prev_cue_text = (
-                    "\n\nPREVIOUS CUES TRIED:\n"
-                    + "\n".join(f"- {c}" for c in previous_cues)
+                prev_cue_text = "\n\nPREVIOUS CUES TRIED:\n" + "\n".join(
+                    f"- {c}" for c in previous_cues
                 )
 
             if revision == 0:
@@ -518,7 +534,7 @@ You are testing a hypothesis about a conversation to answer a question.
 
 Question: {question}
 
-CURRENT HYPOTHESIS: {hypothesis_log[-1].get('hypothesis', 'none')}
+CURRENT HYPOTHESIS: {hypothesis_log[-1].get("hypothesis", "none")}
 
 ALL EVIDENCE FOUND ({len(all_segments)} segments):
 {context}{prev_cue_text}
@@ -559,13 +575,15 @@ Nothing else."""
                     if cue:
                         cues.append(cue)
 
-            hypothesis_log.append({
-                "revision": revision,
-                "hypothesis": hypothesis,
-                "evaluation": evaluation,
-                "num_cues": len(cues),
-                "confirmed": confirmed,
-            })
+            hypothesis_log.append(
+                {
+                    "revision": revision,
+                    "hypothesis": hypothesis,
+                    "evaluation": evaluation,
+                    "num_cues": len(cues),
+                    "confirmed": confirmed,
+                }
+            )
 
             if confirmed or not cues:
                 break
@@ -574,7 +592,8 @@ Nothing else."""
             for cue in cues[:2]:
                 cue_emb = self.embed_text(cue)
                 result = self.store.search(
-                    cue_emb, top_k=self.per_cue_k,
+                    cue_emb,
+                    top_k=self.per_cue_k,
                     conversation_id=conversation_id,
                     exclude_indices=seen_indices,
                 )
@@ -609,9 +628,14 @@ class WorkingMemoryBuffer(AgentBase):
     Tests whether explicit curation of context improves cue quality.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 buffer_size: int = 8, max_hops: int = 2,
-                 per_cue_k: int = 10):
+    def __init__(
+        self,
+        store: SegmentStore,
+        client: OpenAI | None = None,
+        buffer_size: int = 8,
+        max_hops: int = 2,
+        per_cue_k: int = 10,
+    ):
         super().__init__(store, client)
         self.buffer_size = buffer_size
         self.max_hops = max_hops
@@ -627,7 +651,7 @@ class WorkingMemoryBuffer(AgentBase):
         all_segments: list[Segment] = list(initial.segments)
         seen_indices: set[int] = {s.index for s in all_segments}
         # Buffer starts with top results
-        buffer: list[Segment] = list(initial.segments[:self.buffer_size])
+        buffer: list[Segment] = list(initial.segments[: self.buffer_size])
         previous_cues: list[str] = []
         hop_log: list[dict] = []
 
@@ -641,15 +665,14 @@ class WorkingMemoryBuffer(AgentBase):
             if new_candidates:
                 recent = sorted(new_candidates, key=lambda s: s.turn_id)[-6:]
                 new_text = (
-                    f"\n\nNEW SEGMENTS (not in buffer, available for swap):\n"
+                    "\n\nNEW SEGMENTS (not in buffer, available for swap):\n"
                     + _format_segments(recent, max_items=6)
                 )
 
             prev_cue_text = ""
             if previous_cues:
-                prev_cue_text = (
-                    "\n\nPREVIOUS CUES:\n"
-                    + "\n".join(f"- {c}" for c in previous_cues)
+                prev_cue_text = "\n\nPREVIOUS CUES:\n" + "\n".join(
+                    f"- {c}" for c in previous_cues
                 )
 
             prompt = f"""\
@@ -703,13 +726,15 @@ Nothing else."""
             if evict_ids:
                 buffer = [s for s in buffer if s.turn_id not in evict_ids]
 
-            hop_log.append({
-                "hop": hop,
-                "assessment": assessment,
-                "evicted": sorted(evict_ids),
-                "buffer_size_after_evict": len(buffer),
-                "num_cues": len(cues),
-            })
+            hop_log.append(
+                {
+                    "hop": hop,
+                    "assessment": assessment,
+                    "evicted": sorted(evict_ids),
+                    "buffer_size_after_evict": len(buffer),
+                    "num_cues": len(cues),
+                }
+            )
 
             if not cues:
                 break
@@ -719,7 +744,8 @@ Nothing else."""
             for cue in cues[:2]:
                 cue_emb = self.embed_text(cue)
                 result = self.store.search(
-                    cue_emb, top_k=self.per_cue_k,
+                    cue_emb,
+                    top_k=self.per_cue_k,
                     conversation_id=conversation_id,
                     exclude_indices=seen_indices,
                 )
@@ -771,8 +797,9 @@ class AdaptiveStrategy(AgentBase):
     - EVIDENCE_HUNT: hypothesis-driven for contradictions
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 per_cue_k: int = 10):
+    def __init__(
+        self, store: SegmentStore, client: OpenAI | None = None, per_cue_k: int = 10
+    ):
         super().__init__(store, client)
         self.per_cue_k = per_cue_k
 
@@ -837,13 +864,14 @@ Nothing else."""
 
         # Cap cues based on strategy
         max_cues = {"DEEP_DRILL": 2, "BROAD_SWEEP": 4, "TEMPORAL_SCAN": 3}
-        cues = cues[:max_cues.get(strategy, 3)]
+        cues = cues[: max_cues.get(strategy, 3)]
 
         # Execute search
         for cue in cues:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_cue_k,
+                cue_emb,
+                top_k=self.per_cue_k,
                 conversation_id=conversation_id,
                 exclude_indices=seen_indices,
             )
@@ -862,7 +890,7 @@ Question: {question}
 ALL RETRIEVED ({len(all_segments)} segments):
 {context}
 
-PREVIOUS CUES: {', '.join(cues)}
+PREVIOUS CUES: {", ".join(cues)}
 
 Should you search more or stop? If searching, generate 1-2 targeted cues \
 for the most critical gaps. Use specific vocabulary.
@@ -889,7 +917,8 @@ Nothing else."""
             for cue in refine_cues[:2]:
                 cue_emb = self.embed_text(cue)
                 result = self.store.search(
-                    cue_emb, top_k=self.per_cue_k,
+                    cue_emb,
+                    top_k=self.per_cue_k,
                     conversation_id=conversation_id,
                     exclude_indices=seen_indices,
                 )
@@ -922,8 +951,9 @@ class V15Control(AgentBase):
     the reference results. Uses the exact v15 prompt.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 per_cue_k: int = 10):
+    def __init__(
+        self, store: SegmentStore, client: OpenAI | None = None, per_cue_k: int = 10
+    ):
         super().__init__(store, client)
         self.per_cue_k = per_cue_k
 
@@ -972,7 +1002,8 @@ Nothing else."""
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_cue_k,
+                cue_emb,
+                top_k=self.per_cue_k,
                 conversation_id=conversation_id,
                 exclude_indices=seen_indices,
             )
@@ -1008,8 +1039,9 @@ class FocusedAgentic(AgentBase):
     explicit quality gate for second hop.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 per_cue_k: int = 10):
+    def __init__(
+        self, store: SegmentStore, client: OpenAI | None = None, per_cue_k: int = 10
+    ):
         super().__init__(store, client)
         self.per_cue_k = per_cue_k
 
@@ -1029,9 +1061,8 @@ class FocusedAgentic(AgentBase):
 
             prev_cue_text = ""
             if all_cues:
-                prev_cue_text = (
-                    "\n\nPREVIOUS CUES (do NOT repeat):\n"
-                    + "\n".join(f"- {c}" for c in all_cues)
+                prev_cue_text = "\n\nPREVIOUS CUES (do NOT repeat):\n" + "\n".join(
+                    f"- {c}" for c in all_cues
                 )
 
             prompt = f"""\
@@ -1085,12 +1116,14 @@ Nothing else."""
 
             cues = cues[:2]  # Hard cap
 
-            hop_log.append({
-                "hop": hop,
-                "coverage": coverage,
-                "gaps": gaps,
-                "num_cues": len(cues),
-            })
+            hop_log.append(
+                {
+                    "hop": hop,
+                    "coverage": coverage,
+                    "gaps": gaps,
+                    "num_cues": len(cues),
+                }
+            )
 
             if not cues:
                 break
@@ -1099,7 +1132,8 @@ Nothing else."""
             for cue in cues:
                 cue_emb = self.embed_text(cue)
                 result = self.store.search(
-                    cue_emb, top_k=self.per_cue_k,
+                    cue_emb,
+                    top_k=self.per_cue_k,
                     conversation_id=conversation_id,
                     exclude_indices=seen_indices,
                 )
@@ -1137,8 +1171,9 @@ class V15WithStop(AgentBase):
     Tests: does giving a stop option reduce noise without losing wins?
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 per_cue_k: int = 10):
+    def __init__(
+        self, store: SegmentStore, client: OpenAI | None = None, per_cue_k: int = 10
+    ):
         super().__init__(store, client)
         self.per_cue_k = per_cue_k
 
@@ -1195,7 +1230,8 @@ Nothing else."""
             for cue in cues[:2]:
                 cue_emb = self.embed_text(cue)
                 result = self.store.search(
-                    cue_emb, top_k=self.per_cue_k,
+                    cue_emb,
+                    top_k=self.per_cue_k,
                     conversation_id=conversation_id,
                     exclude_indices=seen_indices,
                 )
@@ -1227,8 +1263,9 @@ class V15ConditionalHop2(AgentBase):
     Tests: does a conditional second hop improve without diluting?
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 per_cue_k: int = 10):
+    def __init__(
+        self, store: SegmentStore, client: OpenAI | None = None, per_cue_k: int = 10
+    ):
         super().__init__(store, client)
         self.per_cue_k = per_cue_k
 
@@ -1276,7 +1313,8 @@ Nothing else."""
         for cue in hop1_cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_cue_k,
+                cue_emb,
+                top_k=self.per_cue_k,
                 conversation_id=conversation_id,
                 exclude_indices=seen_indices,
             )
@@ -1297,7 +1335,7 @@ RETRIEVED CONVERSATION EXCERPTS SO FAR:
 {context2}
 
 PREVIOUS CUES ALREADY TRIED (do NOT repeat or paraphrase):
-{chr(10).join(f'- {c}' for c in hop1_cues[:2])}
+{chr(10).join(f"- {c}" for c in hop1_cues[:2])}
 
 First, briefly assess: Given what's been retrieved so far, how well is this \
 search going? What kind of content is still missing? Should you search for \
@@ -1332,7 +1370,8 @@ Nothing else."""
             for cue in hop2_cues[:2]:
                 cue_emb = self.embed_text(cue)
                 result = self.store.search(
-                    cue_emb, top_k=self.per_cue_k,
+                    cue_emb,
+                    top_k=self.per_cue_k,
                     conversation_id=conversation_id,
                     exclude_indices=seen_indices,
                 )
@@ -1348,7 +1387,8 @@ Nothing else."""
                 "hop1_cues": hop1_cues[:2],
                 "hop2_stopped": hop2_stopped,
                 "hop2_cues": hop2_cues[:2] if not hop2_stopped else [],
-                "total_cues": len(hop1_cues[:2]) + (len(hop2_cues[:2]) if not hop2_stopped else 0),
+                "total_cues": len(hop1_cues[:2])
+                + (len(hop2_cues[:2]) if not hop2_stopped else 0),
                 "total_segments": len(all_segments),
             },
         )
@@ -1364,8 +1404,9 @@ class V15VariableCues(AgentBase):
     identical to v15. Tests whether variable cue count helps.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 per_cue_k: int = 10):
+    def __init__(
+        self, store: SegmentStore, client: OpenAI | None = None, per_cue_k: int = 10
+    ):
         super().__init__(store, client)
         self.per_cue_k = per_cue_k
 
@@ -1418,7 +1459,8 @@ Nothing else."""
         for cue in cues:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_cue_k,
+                cue_emb,
+                top_k=self.per_cue_k,
                 conversation_id=conversation_id,
                 exclude_indices=seen_indices,
             )
@@ -1452,8 +1494,9 @@ class OrientThenV15(AgentBase):
     Uses 2 LLM calls total (orient + cue generation).
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 per_cue_k: int = 10):
+    def __init__(
+        self, store: SegmentStore, client: OpenAI | None = None, per_cue_k: int = 10
+    ):
         super().__init__(store, client)
         self.per_cue_k = per_cue_k
 
@@ -1514,7 +1557,8 @@ Nothing else."""
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_cue_k,
+                cue_emb,
+                top_k=self.per_cue_k,
                 conversation_id=conversation_id,
                 exclude_indices=seen_indices,
             )
@@ -1548,8 +1592,9 @@ class DualPerspective(AgentBase):
     Same budget: 2 LLM calls, 2 cues, ~30 segments.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 per_cue_k: int = 10):
+    def __init__(
+        self, store: SegmentStore, client: OpenAI | None = None, per_cue_k: int = 10
+    ):
         super().__init__(store, client)
         self.per_cue_k = per_cue_k
 
@@ -1620,7 +1665,8 @@ Nothing else."""
         for cue in all_cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_cue_k,
+                cue_emb,
+                top_k=self.per_cue_k,
                 conversation_id=conversation_id,
                 exclude_indices=seen_indices,
             )
@@ -1653,8 +1699,9 @@ class V15Rerank(AgentBase):
     in the top 20?
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 per_cue_k: int = 10):
+    def __init__(
+        self, store: SegmentStore, client: OpenAI | None = None, per_cue_k: int = 10
+    ):
         super().__init__(store, client)
         self.per_cue_k = per_cue_k
 
@@ -1702,7 +1749,8 @@ Nothing else."""
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_cue_k,
+                cue_emb,
+                top_k=self.per_cue_k,
                 conversation_id=conversation_id,
                 exclude_indices=seen_indices,
             )
@@ -1715,8 +1763,7 @@ Nothing else."""
         # Show the model up to 25 segments and ask it to pick the most relevant
         candidates = sorted(all_segments, key=lambda s: s.turn_id)[:25]
         cand_text = "\n".join(
-            f"[{i}] Turn {s.turn_id}: {s.text[:200]}"
-            for i, s in enumerate(candidates)
+            f"[{i}] Turn {s.turn_id}: {s.text[:200]}" for i, s in enumerate(candidates)
         )
 
         rerank_prompt = f"""\
@@ -1782,8 +1829,9 @@ class V15ConditionalForced2(AgentBase):
     The difference from v15_conditional_hop2: no STOP option in hop 2.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 per_cue_k: int = 10):
+    def __init__(
+        self, store: SegmentStore, client: OpenAI | None = None, per_cue_k: int = 10
+    ):
         super().__init__(store, client)
         self.per_cue_k = per_cue_k
 
@@ -1834,7 +1882,8 @@ Nothing else."""
         for cue in hop1_cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_cue_k,
+                cue_emb,
+                top_k=self.per_cue_k,
                 conversation_id=conversation_id,
                 exclude_indices=seen_indices,
             )
@@ -1846,12 +1895,27 @@ Nothing else."""
         # Decide if hop 2 is needed based on assessment keywords
         # Look for signals of incomplete coverage
         assessment_lower = hop1_assessment.lower()
-        needs_hop2 = any(kw in assessment_lower for kw in [
-            "missing", "not found", "no mention", "doesn't cover",
-            "hasn't been", "need to find", "pivot", "different",
-            "incomplete", "lacking", "gap", "absent", "still need",
-            "not yet", "limited", "insufficient",
-        ])
+        needs_hop2 = any(
+            kw in assessment_lower
+            for kw in [
+                "missing",
+                "not found",
+                "no mention",
+                "doesn't cover",
+                "hasn't been",
+                "need to find",
+                "pivot",
+                "different",
+                "incomplete",
+                "lacking",
+                "gap",
+                "absent",
+                "still need",
+                "not yet",
+                "limited",
+                "insufficient",
+            ]
+        )
 
         hop2_cues: list[str] = []
         if needs_hop2:
@@ -1866,7 +1930,7 @@ RETRIEVED CONVERSATION EXCERPTS SO FAR:
 {context2}
 
 PREVIOUS CUES ALREADY TRIED (do NOT repeat or paraphrase):
-{chr(10).join(f'- {c}' for c in hop1_cues[:2])}
+{chr(10).join(f"- {c}" for c in hop1_cues[:2])}
 
 First, briefly assess: Given what's been retrieved so far, how well is this \
 search going? What kind of content is still missing? Should you search for \
@@ -1892,7 +1956,8 @@ Nothing else."""
             for cue in hop2_cues[:2]:
                 cue_emb = self.embed_text(cue)
                 result = self.store.search(
-                    cue_emb, top_k=self.per_cue_k,
+                    cue_emb,
+                    top_k=self.per_cue_k,
                     conversation_id=conversation_id,
                     exclude_indices=seen_indices,
                 )

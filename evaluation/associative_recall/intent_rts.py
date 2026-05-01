@@ -47,9 +47,27 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
-from typing import Iterable
 
+from em_architectures import (
+    V2F_MODEL,
+    V2F_PROMPT,
+    EMHit,
+    _dedupe_by_turn_id,
+    _merge_by_max_score,
+    _MergedLLMCache,
+    _query_em,
+    format_primer_context,
+    parse_v2f_cues,
+)
+from em_retuned_cue_gen import (
+    build_v2f_speakerformat_prompt,
+)
+from em_retuned_cue_gen import (
+    parse_cues as parse_retuned_cues,
+)
+from intent_em import (
+    resolve_speaker_to_name,
+)
 from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
@@ -57,50 +75,46 @@ from memmachine_server.common.filter.filter_parser import (
 )
 from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 
-from em_architectures import (
-    EMHit,
-    V2F_MODEL,
-    V2F_PROMPT,
-    _MergedLLMCache,
-    _dedupe_by_turn_id,
-    _merge_by_max_score,
-    _query_em,
-    format_primer_context,
-    parse_v2f_cues,
-)
-from em_retuned_cue_gen import (
-    build_v2f_speakerformat_prompt,
-    parse_cues as parse_retuned_cues,
-)
-from intent_em import (
-    resolve_speaker_to_name,
-)
-
-
 # ---------------------------------------------------------------------------
 # Temporal reference resolution
 # ---------------------------------------------------------------------------
 
 _MONTH_NAMES = {
-    "january": 1, "jan": 1,
-    "february": 2, "feb": 2,
-    "march": 3, "mar": 3,
-    "april": 4, "apr": 4,
+    "january": 1,
+    "jan": 1,
+    "february": 2,
+    "feb": 2,
+    "march": 3,
+    "mar": 3,
+    "april": 4,
+    "apr": 4,
     "may": 5,
-    "june": 6, "jun": 6,
-    "july": 7, "jul": 7,
-    "august": 8, "aug": 8,
-    "september": 9, "sept": 9, "sep": 9,
-    "october": 10, "oct": 10,
-    "november": 11, "nov": 11,
-    "december": 12, "dec": 12,
+    "june": 6,
+    "jun": 6,
+    "july": 7,
+    "jul": 7,
+    "august": 8,
+    "aug": 8,
+    "september": 9,
+    "sept": 9,
+    "sep": 9,
+    "october": 10,
+    "oct": 10,
+    "november": 11,
+    "nov": 11,
+    "december": 12,
+    "dec": 12,
 }
 
 _UNIT_DAYS = {
-    "day": 1, "days": 1,
-    "week": 7, "weeks": 7,
-    "month": 30, "months": 30,
-    "year": 365, "years": 365,
+    "day": 1,
+    "days": 1,
+    "week": 7,
+    "weeks": 7,
+    "month": 30,
+    "months": 30,
+    "year": 365,
+    "years": 365,
 }
 
 
@@ -125,16 +139,12 @@ def _parse_absolute_date(ref: str) -> datetime | None:
     if re.fullmatch(r"20\d{2}", r):
         return datetime(int(r), 1, 1, tzinfo=UTC)
     # "4 May 2023" / "May 4, 2023" / "May 2023" / "4 May, 2023"
-    m = re.fullmatch(
-        r"(\d{1,2})\s+([a-zA-Z]+)[,\s]*(20\d{2})", r
-    )
+    m = re.fullmatch(r"(\d{1,2})\s+([a-zA-Z]+)[,\s]*(20\d{2})", r)
     if m:
         d, mo, y = int(m.group(1)), m.group(2), int(m.group(3))
         if mo in _MONTH_NAMES:
             return datetime(y, _MONTH_NAMES[mo], d, tzinfo=UTC)
-    m = re.fullmatch(
-        r"([a-zA-Z]+)\s+(\d{1,2})[,\s]*(20\d{2})", r
-    )
+    m = re.fullmatch(r"([a-zA-Z]+)\s+(\d{1,2})[,\s]*(20\d{2})", r)
     if m:
         mo, d, y = m.group(1), int(m.group(2)), int(m.group(3))
         if mo in _MONTH_NAMES:
@@ -151,9 +161,7 @@ def _parse_absolute_date(ref: str) -> datetime | None:
     return None
 
 
-def _parse_relative_offset(
-    ref: str, anchor_now: datetime
-) -> datetime | None:
+def _parse_relative_offset(ref: str, anchor_now: datetime) -> datetime | None:
     """Parse 'N <unit> ago' / 'last <unit>' / 'N <unit> later' etc."""
     r = ref.strip().lower()
     m = re.fullmatch(r"(\d+)\s+([a-zA-Z]+)\s+ago", r)
@@ -252,9 +260,7 @@ def build_rts_filter(
             )
             if matched_name:
                 filters.append(
-                    Comparison(
-                        field="context.source", op="=", value=matched_name
-                    )
+                    Comparison(field="context.source", op="=", value=matched_name)
                 )
                 analysis["applied"].append("speaker")
                 analysis["speaker_resolved"] = matched_name
@@ -274,12 +280,8 @@ def build_rts_filter(
             if window is not None:
                 filters.append(
                     And(
-                        left=Comparison(
-                            field="timestamp", op=">=", value=window.start
-                        ),
-                        right=Comparison(
-                            field="timestamp", op="<=", value=window.end
-                        ),
+                        left=Comparison(field="timestamp", op=">=", value=window.start),
+                        right=Comparison(field="timestamp", op="<=", value=window.end),
                     )
                 )
                 analysis["applied"].append("temporal_relation")
@@ -347,8 +349,7 @@ async def _generate_v2f_cues(
         await _query_em(memory, question, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer_hits
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer_hits
     ]
     context_section = format_primer_context(primer_segments)
     prompt = V2F_PROMPT.format(question=question, context_section=context_section)
@@ -379,14 +380,11 @@ async def _generate_speakerformat_cues(
         await _query_em(memory, question, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer_hits
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer_hits
     ]
     context_section = format_primer_context(primer_segments)
     p_user, p_asst = participants
-    prompt = build_v2f_speakerformat_prompt(
-        question, context_section, p_user, p_asst
-    )
+    prompt = build_v2f_speakerformat_prompt(question, context_section, p_user, p_asst)
     cached = llm_cache.get(V2F_MODEL, prompt)
     cache_hit = cached is not None
     if cached is None:
@@ -430,7 +428,10 @@ async def _run_variant(
     openai_client,
 ) -> IntentRTSResult:
     filter_expr, analysis = build_rts_filter(
-        plan, question, conversation_id, speaker_map,
+        plan,
+        question,
+        conversation_id,
+        speaker_map,
         apply_speaker=apply_speaker,
         apply_temporal=apply_temporal,
         anchor_now=anchor_now,
@@ -446,8 +447,11 @@ async def _run_variant(
         )
     elif cue_style == "speakerformat" and speakerfmt_cache is not None:
         cues, cue_meta = await _generate_speakerformat_cues(
-            memory, question, participants,
-            llm_cache=speakerfmt_cache, openai_client=openai_client,
+            memory,
+            question,
+            participants,
+            llm_cache=speakerfmt_cache,
+            openai_client=openai_client,
         )
     cue_batches: list[list[EMHit]] = []
     for cue in cues[:2]:
@@ -494,8 +498,13 @@ async def intent_rts_full(
 ) -> IntentRTSResult:
     """Speaker filter + temporal filter + v2f_speakerformat cues."""
     return await _run_variant(
-        memory, question, conversation_id,
-        K=K, plan=plan, speaker_map=speaker_map, participants=participants,
+        memory,
+        question,
+        conversation_id,
+        K=K,
+        plan=plan,
+        speaker_map=speaker_map,
+        participants=participants,
         anchor_now=anchor_now,
         apply_speaker=True,
         apply_temporal=True,
@@ -522,8 +531,13 @@ async def intent_rts_temporal_only(
 ) -> IntentRTSResult:
     """Temporal filter only (NO speaker) + v2f cues."""
     return await _run_variant(
-        memory, question, conversation_id,
-        K=K, plan=plan, speaker_map=speaker_map, participants=participants,
+        memory,
+        question,
+        conversation_id,
+        K=K,
+        plan=plan,
+        speaker_map=speaker_map,
+        participants=participants,
         anchor_now=anchor_now,
         apply_speaker=False,
         apply_temporal=True,
@@ -555,8 +569,13 @@ async def intent_rts_speaker_only(
     themselves.
     """
     return await _run_variant(
-        memory, question, conversation_id,
-        K=K, plan=plan, speaker_map=speaker_map, participants=participants,
+        memory,
+        question,
+        conversation_id,
+        K=K,
+        plan=plan,
+        speaker_map=speaker_map,
+        participants=participants,
         anchor_now=anchor_now,
         apply_speaker=True,
         apply_temporal=False,

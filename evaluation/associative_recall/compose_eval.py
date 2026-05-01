@@ -40,9 +40,24 @@ from pathlib import Path
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    V2F_MODEL,
+    V2F_PROMPT,
+    _MergedLLMCache,
+    format_primer_context,
+    parse_v2f_cues,
+)
+from em_lme_tuned_cues import (
+    V2F_LME_MIXED_7030_PROMPT,
+    parse_speaker_cues,
+)
+from em_retuned_cue_gen import (
+    build_v2f_speakerformat_prompt,
+)
+from em_retuned_cue_gen import (
+    parse_cues as parse_retuned_cues,
+)
+from em_two_speaker import classify_speaker_side, load_two_speaker_map
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -60,24 +75,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import (
-    V2F_MODEL,
-    V2F_PROMPT,
-    _MergedLLMCache,
-    format_primer_context,
-    parse_v2f_cues,
-)
-from em_retuned_cue_gen import (
-    build_v2f_speakerformat_prompt,
-    parse_cues as parse_retuned_cues,
-)
-from em_two_speaker import classify_speaker_side, load_two_speaker_map
-from em_lme_tuned_cues import (
-    V2F_LME_MIXED_7030_PROMPT,
-    parse_speaker_cues,
-)
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -181,9 +180,7 @@ def _merge_dual_by_max_score(
     return sorted(best.values(), key=lambda h: -h.score)
 
 
-def _view_coverage(
-    hits: list[DualEMHit], gold: set[int], K: int
-) -> dict:
+def _view_coverage(hits: list[DualEMHit], gold: set[int], K: int) -> dict:
     topk = hits[:K]
     per_turn: dict[int, str] = {}
     for h in topk:
@@ -242,8 +239,7 @@ async def em_v2f_topicsumm(
         )
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer
     ]
     context_section = format_primer_context(primer_segments)
     prompt = V2F_PROMPT.format(question=question, context_section=context_section)
@@ -281,14 +277,11 @@ async def em_v2f_topicsumm_sf(
         )
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer
     ]
     context_section = format_primer_context(primer_segments)
     p_user, p_asst = participants
-    prompt = build_v2f_speakerformat_prompt(
-        question, context_section, p_user, p_asst
-    )
+    prompt = build_v2f_speakerformat_prompt(question, context_section, p_user, p_asst)
     raw, hit = await _llm_call(openai_client, prompt, cache)
     cues = parse_retuned_cues(raw, max_cues=2)
 
@@ -320,8 +313,12 @@ async def em_v2f_topicsumm_sf_spkfilter(
 ) -> tuple[list[DualEMHit], dict]:
     """v2f_topicsumm_sf + property_filter on speaker when query names one."""
     base_hits, meta = await em_v2f_topicsumm_sf(
-        memory, question, participants, K=max(K, 50),
-        cache=cache, openai_client=openai_client,
+        memory,
+        question,
+        participants,
+        K=max(K, 50),
+        cache=cache,
+        openai_client=openai_client,
     )
     side, user_name, asst_name, name_tokens = classify_speaker_side(
         question, conversation_id, speaker_map
@@ -345,7 +342,8 @@ async def em_v2f_topicsumm_sf_spkfilter(
     prop_filter = Comparison(field="context.source", op="=", value=matched_name)
     filtered_hits = _dedupe_dual_by_turn_id(
         await _query_em_dual(
-            memory, question,
+            memory,
+            question,
             vector_search_limit=(K + 10) * OVERSAMPLE,
             expand_context=0,
             property_filter=prop_filter,
@@ -416,8 +414,7 @@ async def em_v2f_lme_mixed_7030_expand3_summ(
         )
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer
     ]
     context_section = format_primer_context(primer_segments)
     prompt = V2F_LME_MIXED_7030_PROMPT.format(
@@ -508,10 +505,12 @@ async def run_part_a(variants: list[str], args) -> dict:
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     v2f_cache = _MergedLLMCache(
-        reader_paths=[TOPICSUMM_V2F_CACHE], writer_path=TOPICSUMM_V2F_CACHE,
+        reader_paths=[TOPICSUMM_V2F_CACHE],
+        writer_path=TOPICSUMM_V2F_CACHE,
     )
     v2f_sf_cache = _MergedLLMCache(
-        reader_paths=[TOPICSUMM_V2F_SF_CACHE], writer_path=TOPICSUMM_V2F_SF_CACHE,
+        reader_paths=[TOPICSUMM_V2F_SF_CACHE],
+        writer_path=TOPICSUMM_V2F_SF_CACHE,
     )
 
     memories: dict[str, EventMemory] = {}
@@ -561,22 +560,37 @@ async def run_part_a(variants: list[str], args) -> dict:
                 meta_out: dict = {}
                 if variant == "em_cosine_baseline_topicsumm":
                     hits = await em_cosine_baseline_topicsumm(
-                        mem, q_text, K=max_K,
+                        mem,
+                        q_text,
+                        K=max_K,
                     )
                 elif variant == "em_v2f_topicsumm":
                     hits, meta_out = await em_v2f_topicsumm(
-                        mem, q_text, K=max_K,
-                        cache=v2f_cache, openai_client=openai_client,
+                        mem,
+                        q_text,
+                        K=max_K,
+                        cache=v2f_cache,
+                        openai_client=openai_client,
                     )
                 elif variant == "em_v2f_topicsumm_sf":
                     hits, meta_out = await em_v2f_topicsumm_sf(
-                        mem, q_text, participants, K=max_K,
-                        cache=v2f_sf_cache, openai_client=openai_client,
+                        mem,
+                        q_text,
+                        participants,
+                        K=max_K,
+                        cache=v2f_sf_cache,
+                        openai_client=openai_client,
                     )
                 elif variant == "em_v2f_topicsumm_sf_spkfilter":
                     hits, meta_out = await em_v2f_topicsumm_sf_spkfilter(
-                        mem, q_text, cid, participants, speaker_map,
-                        K=max_K, cache=v2f_sf_cache, openai_client=openai_client,
+                        mem,
+                        q_text,
+                        cid,
+                        participants,
+                        speaker_map,
+                        K=max_K,
+                        cache=v2f_sf_cache,
+                        openai_client=openai_client,
                     )
                 else:
                     raise KeyError(variant)
@@ -711,7 +725,8 @@ async def run_part_b(variants: list[str], args) -> dict:
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     mixed7030_cache = _MergedLLMCache(
-        reader_paths=[LMESUMM_MIXED7030_CACHE], writer_path=LMESUMM_MIXED7030_CACHE,
+        reader_paths=[LMESUMM_MIXED7030_CACHE],
+        writer_path=LMESUMM_MIXED7030_CACHE,
     )
 
     memories: dict[str, EventMemory] = {}
@@ -759,8 +774,11 @@ async def run_part_b(variants: list[str], args) -> dict:
                 hits = await em_cosine_baseline_summ_lme(mem, q_text, K=max_K)
             elif variant == "em_v2f_lme_mixed_7030_expand3_summ":
                 hits, meta_out = await em_v2f_lme_mixed_7030_expand3_summ(
-                    mem, q_text, K=max_K,
-                    cache=mixed7030_cache, openai_client=openai_client,
+                    mem,
+                    q_text,
+                    K=max_K,
+                    cache=mixed7030_cache,
+                    openai_client=openai_client,
                 )
             else:
                 raise KeyError(variant)
@@ -943,10 +961,13 @@ def _build_md_part_b(results: dict) -> list[str]:
             f"{s['mean_r@50']:.4f} | {s['time_s']:.1f} |"
         )
 
-    md += ["", "## Per-category R@50", "",
-           "| Variant | multi-session | single-session-preference | "
-           "temporal-reasoning |",
-           "| --- | --- | --- | --- |"]
+    md += [
+        "",
+        "## Per-category R@50",
+        "",
+        "| Variant | multi-session | single-session-preference | temporal-reasoning |",
+        "| --- | --- | --- | --- |",
+    ]
     for variant, data in results["variants"].items():
         bc = data["by_category"]
         md.append(
@@ -956,9 +977,13 @@ def _build_md_part_b(results: dict) -> list[str]:
             f"{bc.get('temporal-reasoning', {}).get('mean_r@50', 0):.4f} |"
         )
 
-    md += ["", "## View coverage (top-50)", "",
-           "| Variant | gold credited | raw wins | summary wins | summary share |",
-           "| --- | --- | --- | --- | --- |"]
+    md += [
+        "",
+        "## View coverage (top-50)",
+        "",
+        "| Variant | gold credited | raw wins | summary wins | summary share |",
+        "| --- | --- | --- | --- | --- |",
+    ]
     for variant, c in results.get("view_coverage", {}).items():
         md.append(
             f"| `{variant}` | {c['gold_credited_top50']} | "

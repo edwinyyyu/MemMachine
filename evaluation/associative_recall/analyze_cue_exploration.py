@@ -5,8 +5,6 @@ showing per-version, per-category, and per-question results.
 """
 
 import json
-import sys
-from collections import defaultdict
 from pathlib import Path
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
@@ -60,9 +58,9 @@ def main() -> None:
     ]
 
     for benchmark in ["beam", "locomo"]:
-        print(f"\n{'='*100}")
+        print(f"\n{'=' * 100}")
         print(f"  {benchmark.upper()} BENCHMARK")
-        print(f"{'='*100}")
+        print(f"{'=' * 100}")
 
         print(f"\n  {'Config':35s} {'n':>3s}", end="")
         for b in BUDGETS:
@@ -83,18 +81,19 @@ def main() -> None:
             print(f"  {desc:35s} {len(results):>3d}", end="")
             for b in BUDGETS:
                 m = compute_metrics(results, f"r@{b}")
-                print(f"  {m['delta']:>+7.3f} {m['wins']}/{m['ties']}/{m['losses']:>5s}", end="")
+                print(
+                    f"  {m['delta']:>+7.3f} {m['wins']}/{m['ties']}/{m['losses']:>5s}",
+                    end="",
+                )
             print(f"  {avg_segs:>6.0f}")
 
         # Per-category breakdown for loaded configs
         if loaded_configs:
-            print(f"\n  Per-category deltas at r@20:")
+            print("\n  Per-category deltas at r@20:")
             # Get all categories
-            all_cats = sorted(set(
-                r["category"]
-                for _, _, results in loaded_configs
-                for r in results
-            ))
+            all_cats = sorted(
+                set(r["category"] for _, _, results in loaded_configs for r in results)
+            )
 
             print(f"    {'category':35s}", end="")
             for short_name, _, _ in loaded_configs:
@@ -114,9 +113,9 @@ def main() -> None:
                 print()
 
     # Example cues comparison
-    print(f"\n{'='*100}")
+    print(f"\n{'=' * 100}")
     print("  EXAMPLE CUES BY PROMPT VERSION")
-    print(f"{'='*100}")
+    print(f"{'=' * 100}")
 
     # Pick a few questions and show cues from each version
     example_questions = []
@@ -143,7 +142,9 @@ def main() -> None:
         for short_name, cues, r in versions:
             b20 = r["baseline_recalls"]["r@20"]
             a20 = r["assoc_recalls"]["r@20"]
-            print(f"    [{short_name:>5s}] delta={a20-b20:+.3f} | {', '.join(c[:60] for c in cues[:2])}")
+            print(
+                f"    [{short_name:>5s}] delta={a20 - b20:+.3f} | {', '.join(c[:60] for c in cues[:2])}"
+            )
 
 
 if __name__ == "__main__":

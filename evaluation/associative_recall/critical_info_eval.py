@@ -23,29 +23,26 @@ import json
 import random
 import time
 from collections import defaultdict
-from dataclasses import asdict
 from pathlib import Path
-
-import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
-from associative_recall import (
-    EMBED_MODEL,
-    Segment,
-    SegmentStore,
-)
 
 # Patch BestshotEmbeddingCache.__init__ to tolerate corrupt JSON cache files
 # BEFORE importing anything that uses it (best_shot, ingest_regex_eval).
 # This is necessary because concurrent agents may have corrupted a shared
 # cache file on disk.
 import best_shot as _best_shot_module
+from associative_recall import (
+    Segment,
+    SegmentStore,
+)
+from dotenv import load_dotenv
+from openai import OpenAI
+
 _ORIG_BEC_INIT = _best_shot_module.BestshotEmbeddingCache.__init__
 
 
 def _safe_bec_init(self):
     from associative_recall import CACHE_DIR as _CACHE_DIR
+
     self.cache_dir = _CACHE_DIR
     self.cache_dir.mkdir(parents=True, exist_ok=True)
     self._cache: dict = {}
@@ -73,11 +70,13 @@ def _safe_bec_init(self):
                     raw = f.read().decode("utf-8", errors="replace")
                 obj, _end = json.JSONDecoder().raw_decode(raw)
                 self._cache.update(obj)
-                print(f"  (warn) cache file {name} corrupt; recovered "
-                      f"{len(obj)} entries via raw_decode", flush=True)
+                print(
+                    f"  (warn) cache file {name} corrupt; recovered "
+                    f"{len(obj)} entries via raw_decode",
+                    flush=True,
+                )
             except Exception as e:
-                print(f"  (warn) skipping corrupt cache file {name}: {e}",
-                      flush=True)
+                print(f"  (warn) skipping corrupt cache file {name}: {e}", flush=True)
     self.cache_file = self.cache_dir / "bestshot_embedding_cache.json"
     self._new_entries = {}
 
@@ -121,11 +120,8 @@ _best_shot_module.BestshotEmbeddingCache.save = _safe_bec_save  # type: ignore[m
 import os
 
 from best_shot import (
-    BestshotEmbeddingCache,
-    BestshotLLMCache,
     MetaV2f,
 )
-
 from critical_info_store import (
     CriticalAltKey,
     CriticalInfoGenerator,
@@ -137,13 +133,12 @@ from critical_info_store import (
     merge_always_top_m,
 )
 from ingest_regex_eval import (
-    Embedder,
-    embed_texts_cached,
-    compute_recall,
-    fair_backfill_turn_ids,
     BUDGETS,
+    Embedder,
+    compute_recall,
+    embed_texts_cached,
+    fair_backfill_turn_ids,
 )
-
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -250,9 +245,7 @@ def v2f_fair_backfill_ranked(
     cos_scores = list(cos_res.scores)
 
     # Build cosine index -> score map for lookup
-    cos_score_by_idx = {
-        s.index: sc for s, sc in zip(cos_segs, cos_scores)
-    }
+    cos_score_by_idx = {s.index: sc for s, sc in zip(cos_segs, cos_scores)}
 
     # Dedupe arch preserving order; assign scores high-to-low to preserve ordering
     # on ties with cosine. Use 10.0 + epsilon decreasing to make sure arch wins
@@ -329,12 +322,18 @@ def run_variant(
         for K in BUDGETS:
             if variant == "crit_additive_bonus_0.1":
                 merged = merge_additive_bonus(
-                    main_ranked, crit_ranked, K, bonus=bonus,
+                    main_ranked,
+                    crit_ranked,
+                    K,
+                    bonus=bonus,
                 )
             elif variant == "crit_always_top_M":
                 merged = merge_always_top_m(
-                    main_ranked, crit_ranked, K,
-                    top_m=top_m_crit, min_score=min_score,
+                    main_ranked,
+                    crit_ranked,
+                    K,
+                    top_m=top_m_crit,
+                    min_score=min_score,
                 )
             else:
                 raise ValueError(f"unknown variant: {variant}")
@@ -470,8 +469,10 @@ def run_dataset(
     # Subset segments to conversations that appear in the questions
     conv_ids_in_qs = {q["conversation_id"] for q in qs}
     target_segments = [s for s in store.segments if s.conversation_id in conv_ids_in_qs]
-    print(f"  target segments (filtered to question convs): {len(target_segments)}",
-          flush=True)
+    print(
+        f"  target segments (filtered to question convs): {len(target_segments)}",
+        flush=True,
+    )
 
     # Classify
     if shared_decisions is not None and shared_crit_store is not None:
@@ -487,15 +488,19 @@ def run_dataset(
             print(f"  embedding {len(alt_texts)} alt-key texts ...", flush=True)
         # Wrap embed_texts_cached to tolerate concurrent cache save failures
         _orig_save = embedder.embedding_cache.save
+
         def _safe_save():
             try:
                 return _orig_save()
             except Exception as e:
                 print(f"  (warn) embedding_cache.save failed: {e}", flush=True)
+
         embedder.embedding_cache.save = _safe_save  # type: ignore[method-assign]
         try:
             alt_embs = embed_texts_cached(
-                client, embedder.embedding_cache, alt_texts,
+                client,
+                embedder.embedding_cache,
+                alt_texts,
             )
         finally:
             embedder.embedding_cache.save = _orig_save  # type: ignore[method-assign]
@@ -510,7 +515,7 @@ def run_dataset(
     n_alts_raw = sum(len(d.alt_keys) for d in decisions)
     flag_rate = n_crit / max(n_turns, 1)
     print(
-        f"  classified: n={n_turns} critical={n_crit} ({flag_rate*100:.1f}%) "
+        f"  classified: n={n_turns} critical={n_crit} ({flag_rate * 100:.1f}%) "
         f"alts_raw={n_alts_raw} alts_dedup={len(alt_keys)}",
         flush=True,
     )
@@ -524,7 +529,11 @@ def run_dataset(
     # Variant 1
     print("  [2/3] crit_additive_bonus_0.1 ...", flush=True)
     variant_a_rows = run_variant(
-        "crit_additive_bonus_0.1", store, crit_store, embedder, qs,
+        "crit_additive_bonus_0.1",
+        store,
+        crit_store,
+        embedder,
+        qs,
         bonus=0.1,
     )
     variant_a_summary = summarize(variant_a_rows)
@@ -533,8 +542,13 @@ def run_dataset(
     # Variant 2
     print("  [3/3] crit_always_top_M ...", flush=True)
     variant_b_rows = run_variant(
-        "crit_always_top_M", store, crit_store, embedder, qs,
-        top_m_crit=5, min_score=0.2,
+        "crit_always_top_M",
+        store,
+        crit_store,
+        embedder,
+        qs,
+        top_m_crit=5,
+        min_score=0.2,
     )
     variant_b_summary = summarize(variant_b_rows)
     variant_b_by_cat = summarize_by_category(variant_b_rows)
@@ -553,16 +567,21 @@ def run_dataset(
         "n_critical_turns": n_crit,
         "flag_rate": flag_rate,
         "n_altkeys_dedup": len(alt_keys),
-        "baseline": {"summary": baseline_summary, "by_category": baseline_by_cat,
-                     "per_question": baseline_rows},
+        "baseline": {
+            "summary": baseline_summary,
+            "by_category": baseline_by_cat,
+            "per_question": baseline_rows,
+        },
         "crit_additive_bonus_0.1": {
-            "summary": variant_a_summary, "by_category": variant_a_by_cat,
+            "summary": variant_a_summary,
+            "by_category": variant_a_by_cat,
             "per_question": variant_a_rows,
             "crit_contribution_at_20": crit_contrib_a_20,
             "crit_contribution_at_50": crit_contrib_a_50,
         },
         "crit_always_top_M": {
-            "summary": variant_b_summary, "by_category": variant_b_by_cat,
+            "summary": variant_b_summary,
+            "by_category": variant_b_by_cat,
             "per_question": variant_b_rows,
             "crit_contribution_at_20": crit_contrib_b_20,
             "crit_contribution_at_50": crit_contrib_b_50,
@@ -600,7 +619,7 @@ def render_markdown(results: dict, cost: dict, samples: list[dict]) -> str:
     for ds_name, res in results.items():
         L.append(
             f"| {ds_name} | {res['n_target_segments']} "
-            f"| {res['n_critical_turns']} | {res['flag_rate']*100:.1f}% "
+            f"| {res['n_critical_turns']} | {res['flag_rate'] * 100:.1f}% "
             f"| {res['n_altkeys_dedup']} |"
         )
     L.append("")
@@ -624,8 +643,8 @@ def render_markdown(results: dict, cost: dict, samples: list[dict]) -> str:
             va = res["crit_additive_bonus_0.1"]["summary"][f"mean_r@{K}"]
             vb = res["crit_always_top_M"]["summary"][f"mean_r@{K}"]
             L.append(
-                f"| {ds_name} | {K} | {b:.4f} | {va:.4f} | {va-b:+.4f} "
-                f"| {vb:.4f} | {vb-b:+.4f} |"
+                f"| {ds_name} | {K} | {b:.4f} | {va:.4f} | {va - b:+.4f} "
+                f"| {vb:.4f} | {vb - b:+.4f} |"
             )
     L.append("")
 
@@ -635,8 +654,10 @@ def render_markdown(results: dict, cost: dict, samples: list[dict]) -> str:
         L.append("")
         res = results["locomo_30q"]
         cats = sorted(res["baseline"]["by_category"].keys())
-        L.append("| category | n | base @20 | var_a @20 | var_b @20 | "
-                 "base @50 | var_a @50 | var_b @50 |")
+        L.append(
+            "| category | n | base @20 | var_a @20 | var_b @20 | "
+            "base @50 | var_a @50 | var_b @50 |"
+        )
         L.append("|---|---:|---:|---:|---:|---:|---:|---:|")
         for cat in cats:
             bc = res["baseline"]["by_category"][cat]
@@ -660,8 +681,7 @@ def render_markdown(results: dict, cost: dict, samples: list[dict]) -> str:
     )
     L.append("")
     L.append(
-        "| dataset | variant | K | frac questions with crit-gold | "
-        "frac gold via crit |"
+        "| dataset | variant | K | frac questions with crit-gold | frac gold via crit |"
     )
     L.append("|---|---|---:|---:|---:|")
     for ds_name, res in results.items():
@@ -670,8 +690,8 @@ def render_markdown(results: dict, cost: dict, samples: list[dict]) -> str:
                 cc = res[var][f"crit_contribution_at_{K}"]
                 L.append(
                     f"| {ds_name} | {var} | {K} "
-                    f"| {cc['frac_questions_with_crit_gold']*100:.1f}% "
-                    f"| {cc['frac_gold_via_crit']*100:.1f}% |"
+                    f"| {cc['frac_questions_with_crit_gold'] * 100:.1f}% "
+                    f"| {cc['frac_gold_via_crit'] * 100:.1f}% |"
                 )
     L.append("")
 
@@ -684,15 +704,17 @@ def render_markdown(results: dict, cost: dict, samples: list[dict]) -> str:
         fp = res["false_positive"]
         L.append(
             f"| {ds_name} | {fp['n_hits']} | {fp['n_non_gold']} | "
-            f"{fp['fp_rate']*100:.1f}% |"
+            f"{fp['fp_rate'] * 100:.1f}% |"
         )
     L.append("")
 
     # Cost
     L.append("## 6. Cost")
     L.append("")
-    L.append(f"- LLM classification calls: uncached={cost['n_uncached']} "
-             f"cached={cost['n_cached']}")
+    L.append(
+        f"- LLM classification calls: uncached={cost['n_uncached']} "
+        f"cached={cost['n_cached']}"
+    )
     L.append(f"- Input tokens: {cost['prompt_tokens']}")
     L.append(f"- Output tokens: {cost['completion_tokens']}")
     L.append(f"- Est. cost (gpt-5-mini): ${cost['est_usd']:.3f}")
@@ -703,8 +725,7 @@ def render_markdown(results: dict, cost: dict, samples: list[dict]) -> str:
     L.append("")
     for s in samples[:10]:
         flag = "CRITICAL" if s["critical"] else "SKIP"
-        L.append(f"- [{flag}] ({s['role']}, turn {s['turn_id']}): "
-                 f"{s['text'][:120]}")
+        L.append(f"- [{flag}] ({s['role']}, turn {s['turn_id']}): {s['text'][:120]}")
         for alt in s["alt_keys"][:3]:
             L.append(f"    - ALT: {alt}")
     L.append("")
@@ -717,7 +738,8 @@ def main() -> None:
     parser.add_argument("--prompt", default="v2", choices=["v1", "v2", "v3"])
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument(
-        "--datasets", default="locomo_30q,synthetic_19q",
+        "--datasets",
+        default="locomo_30q,synthetic_19q",
         help="comma-separated list",
     )
     args = parser.parse_args()
@@ -727,7 +749,9 @@ def main() -> None:
 
     client = OpenAI(timeout=60.0)
     generator = CriticalInfoGenerator(
-        client=client, prompt_version=args.prompt, max_workers=args.workers,
+        client=client,
+        prompt_version=args.prompt,
+        max_workers=args.workers,
     )
     embedder = Embedder(client)
 
@@ -752,8 +776,7 @@ def main() -> None:
                 all_qs = json.load(f)
             qs = [q for q in all_qs if q.get("benchmark") == "locomo"][:30]
             conv_ids_in_qs = {q["conversation_id"] for q in qs}
-            segs = [s for s in store.segments
-                    if s.conversation_id in conv_ids_in_qs]
+            segs = [s for s in store.segments if s.conversation_id in conv_ids_in_qs]
             decisions = classify_turns(generator, segs)
             rng = random.Random(7)
             crit_decisions = [d for d in decisions if d.critical]
@@ -764,15 +787,17 @@ def main() -> None:
             )
             for si in sample_ids:
                 d = crit_decisions[si]
-                all_samples.append({
-                    "conversation_id": d.conversation_id,
-                    "turn_id": d.turn_id,
-                    "role": d.role,
-                    "text": d.text,
-                    "critical": d.critical,
-                    "alt_keys": d.alt_keys,
-                    "raw_response": d.raw_response,
-                })
+                all_samples.append(
+                    {
+                        "conversation_id": d.conversation_id,
+                        "turn_id": d.turn_id,
+                        "role": d.role,
+                        "text": d.text,
+                        "critical": d.critical,
+                        "alt_keys": d.alt_keys,
+                        "raw_response": d.raw_response,
+                    }
+                )
             # Also 10 SKIP samples for qualitative inspection
             skip_ids = rng.sample(
                 range(len(skip_decisions)),
@@ -780,15 +805,17 @@ def main() -> None:
             )
             for si in skip_ids:
                 d = skip_decisions[si]
-                all_samples.append({
-                    "conversation_id": d.conversation_id,
-                    "turn_id": d.turn_id,
-                    "role": d.role,
-                    "text": d.text,
-                    "critical": d.critical,
-                    "alt_keys": d.alt_keys,
-                    "raw_response": d.raw_response,
-                })
+                all_samples.append(
+                    {
+                        "conversation_id": d.conversation_id,
+                        "turn_id": d.turn_id,
+                        "role": d.role,
+                        "text": d.text,
+                        "critical": d.critical,
+                        "alt_keys": d.alt_keys,
+                        "raw_response": d.raw_response,
+                    }
+                )
 
     # Cost
     cost = {
@@ -798,8 +825,7 @@ def main() -> None:
         "completion_tokens": generator.total_completion_tokens,
     }
     cost["est_usd"] = round(
-        cost["prompt_tokens"] * 0.25 / 1e6
-        + cost["completion_tokens"] * 2.0 / 1e6,
+        cost["prompt_tokens"] * 0.25 / 1e6 + cost["completion_tokens"] * 2.0 / 1e6,
         4,
     )
 
@@ -820,22 +846,28 @@ def main() -> None:
     print(f"\nWrote {md_path}", flush=True)
 
     json_path = RESULTS_DIR / "critical_info_store.json"
+
     # Strip large per_question payloads to keep JSON reasonable but keep enough
     # for re-analysis.
     def strip_large(res: dict) -> dict:
         out = {k: v for k, v in res.items()}
         for key in [
-            "baseline", "crit_additive_bonus_0.1", "crit_always_top_M",
+            "baseline",
+            "crit_additive_bonus_0.1",
+            "crit_always_top_M",
         ]:
             if key in out and isinstance(out[key], dict):
                 # strip retrieved_ids lists which are huge
                 per_q = out[key].get("per_question", [])
                 pruned = []
                 for r in per_q:
-                    pruned.append({
-                        k: v for k, v in r.items()
-                        if not k.startswith("retrieved_ids")
-                    })
+                    pruned.append(
+                        {
+                            k: v
+                            for k, v in r.items()
+                            if not k.startswith("retrieved_ids")
+                        }
+                    )
                 out[key] = {**out[key], "per_question": pruned}
         return out
 
@@ -845,18 +877,17 @@ def main() -> None:
                 "prompt_version": args.prompt,
                 "elapsed_s": round(time.time() - t0, 2),
                 "cost": cost,
-                "results": {
-                    ds: strip_large(res) for ds, res in all_results.items()
-                },
+                "results": {ds: strip_large(res) for ds, res in all_results.items()},
             },
-            f, indent=2, default=str,
+            f,
+            indent=2,
+            default=str,
         )
     print(f"Wrote {json_path}", flush=True)
 
     samples_path = RESULTS_DIR / "critical_info_samples.json"
     with open(samples_path, "w") as f:
-        json.dump({"prompt_version": args.prompt, "samples": all_samples},
-                  f, indent=2)
+        json.dump({"prompt_version": args.prompt, "samples": all_samples}, f, indent=2)
     print(f"Wrote {samples_path}", flush=True)
 
     # Console summary
@@ -865,17 +896,21 @@ def main() -> None:
     print("=" * 70)
     for ds_name, res in all_results.items():
         print(f"\n{ds_name}:")
-        print(f"  flag_rate={res['flag_rate']*100:.1f}%  "
-              f"n_crit={res['n_critical_turns']}/{res['n_target_segments']}  "
-              f"alt-keys={res['n_altkeys_dedup']}")
+        print(
+            f"  flag_rate={res['flag_rate'] * 100:.1f}%  "
+            f"n_crit={res['n_critical_turns']}/{res['n_target_segments']}  "
+            f"alt-keys={res['n_altkeys_dedup']}"
+        )
         for K in BUDGETS:
             b = res["baseline"]["summary"][f"mean_r@{K}"]
             va = res["crit_additive_bonus_0.1"]["summary"][f"mean_r@{K}"]
             vb = res["crit_always_top_M"]["summary"][f"mean_r@{K}"]
-            print(f"  K={K}: baseline={b:.4f}  additive={va:.4f} "
-                  f"(Δ{va-b:+.4f})  always_top_M={vb:.4f} (Δ{vb-b:+.4f})")
+            print(
+                f"  K={K}: baseline={b:.4f}  additive={va:.4f} "
+                f"(Δ{va - b:+.4f})  always_top_M={vb:.4f} (Δ{vb - b:+.4f})"
+            )
     print(f"\nLLM cost: ~${cost['est_usd']:.3f}")
-    print(f"Elapsed: {time.time()-t0:.0f}s")
+    print(f"Elapsed: {time.time() - t0:.0f}s")
 
 
 if __name__ == "__main__":

@@ -13,6 +13,5 @@ from __future__ import annotations
 
 from two_speaker_composition import main
 
-
 if __name__ == "__main__":
     main()

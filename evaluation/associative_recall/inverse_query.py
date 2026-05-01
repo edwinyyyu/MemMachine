@@ -25,21 +25,23 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
-from associative_recall import CACHE_DIR, EmbeddingCache, LLMCache, Segment, SegmentStore
+from associative_recall import (
+    CACHE_DIR,
+    EmbeddingCache,
+    LLMCache,
+    Segment,
+    SegmentStore,
+)
 from best_shot import (
+    V2F_PROMPT,
     BestshotBase,
     BestshotResult,
-    V2F_PROMPT,
     _format_segments,
     _parse_cues,
 )
-
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Dedicated caches — read many shared caches for hits, write only to own files
@@ -269,9 +271,7 @@ class _InverseQueryBase(BestshotBase):
         inverse query, merge by max cosine across all probes."""
         # Step 1: raw query top-10
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         hop0_segments = list(hop0.segments)
         hop0_scores = list(hop0.scores)
 
@@ -390,9 +390,7 @@ class InverseQueryV2f(_InverseQueryBase):
     def retrieve(self, question: str, conversation_id: str) -> BestshotResult:
         # Step 1: raw query top-10
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         hop0_segments = list(hop0.segments)
         hop0_scores = list(hop0.scores)
 
@@ -428,9 +426,7 @@ class InverseQueryV2f(_InverseQueryBase):
         v2f_outcomes: list[dict] = []
         for cue in v2f_cues:
             cue_emb = self.embed_text(cue)
-            res = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id
-            )
+            res = self.store.search(cue_emb, top_k=10, conversation_id=conversation_id)
             retrieved_ids = []
             for seg, sc in zip(res.segments, res.scores):
                 retrieved_ids.append(seg.index)

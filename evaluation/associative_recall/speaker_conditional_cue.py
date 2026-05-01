@@ -28,8 +28,6 @@ import os
 from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EmbeddingCache,
@@ -38,14 +36,14 @@ from associative_recall import (
     SegmentStore,
 )
 from best_shot import (
+    V2F_PROMPT,
     BestshotBase,
     BestshotResult,
-    V2F_PROMPT,
     _format_segments,
     _parse_cues,
 )
+from openai import OpenAI
 from speaker_attributed import extract_name_mentions
-
 
 # ---------------------------------------------------------------------------
 # Dedicated caches
@@ -54,9 +52,7 @@ _SC_EMB_FILE = CACHE_DIR / "speakerCue_embedding_cache.json"
 _SC_LLM_FILE = CACHE_DIR / "speakerCue_llm_cache.json"
 
 _CONV_TWO_SPEAKERS_FILE = (
-    Path(__file__).resolve().parent
-    / "results"
-    / "conversation_two_speakers.json"
+    Path(__file__).resolve().parent / "results" / "conversation_two_speakers.json"
 )
 
 # Warm-start read paths (shared caches we can reuse but not pollute).
@@ -124,9 +120,7 @@ class SpeakerCueEmbeddingCache(EmbeddingCache):
             except (json.JSONDecodeError, OSError):
                 existing = {}
         existing.update(self._new_entries)
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         try:
             with open(tmp, "w") as f:
                 json.dump(existing, f)
@@ -176,9 +170,7 @@ class SpeakerCueLLMCache(LLMCache):
             except (json.JSONDecodeError, OSError):
                 existing = {}
         existing.update(self._new_entries)
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         try:
             with open(tmp, "w") as f:
                 json.dump(existing, f)
@@ -308,8 +300,7 @@ class _SpeakerCondBase(BestshotBase):
                 if isinstance(pair, dict):
                     out[cid] = {
                         "user": pair.get("user", "UNKNOWN") or "UNKNOWN",
-                        "assistant": pair.get("assistant", "UNKNOWN")
-                        or "UNKNOWN",
+                        "assistant": pair.get("assistant", "UNKNOWN") or "UNKNOWN",
                     }
         except (json.JSONDecodeError, OSError):
             pass
@@ -353,9 +344,7 @@ class _SpeakerCondBase(BestshotBase):
         q = q / qn
         sims = self.store.normalized_embeddings @ q
         conv_mask = self.store.conversation_ids == conversation_id
-        role_mask = self.role_masks.get(
-            role, np.zeros_like(conv_mask, dtype=bool)
-        )
+        role_mask = self.role_masks.get(role, np.zeros_like(conv_mask, dtype=bool))
         combined_mask = conv_mask & role_mask
         sims = np.where(combined_mask, sims, -1.0)
         if exclude_indices:
@@ -373,9 +362,7 @@ class _SpeakerCondBase(BestshotBase):
     # --- retrieve ---
     def retrieve(self, question: str, conversation_id: str) -> BestshotResult:
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments: list[Segment] = list(hop0.segments)
         exclude: set[int] = {s.index for s in all_segments}
 
@@ -391,8 +378,7 @@ class _SpeakerCondBase(BestshotBase):
             conditioned_on = asst_name
 
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
 
         if conditioned_on is not None:
@@ -435,9 +421,7 @@ class _SpeakerCondBase(BestshotBase):
             "conditioned_on": conditioned_on,
             "applied_cue_conditioning": conditioned_on is not None,
             "applied_filter": False,
-            "n_user_in_v2f": int(
-                sum(1 for s in all_segments if s.role == "user")
-            ),
+            "n_user_in_v2f": int(sum(1 for s in all_segments if s.role == "user")),
             "n_assistant_in_v2f": int(
                 sum(1 for s in all_segments if s.role == "assistant")
             ),
@@ -459,12 +443,8 @@ class _SpeakerCondBase(BestshotBase):
                 exclude_indices=v2f_idx_set,
             )
             appended = role_hits[: self.role_only_top_m]
-            appended_segments = [
-                self.store.segments[i] for i, _ in appended
-            ]
-            filtered_v2f = [
-                s for s in all_segments if s.role == matched_role
-            ]
+            appended_segments = [self.store.segments[i] for i, _ in appended]
+            filtered_v2f = [s for s in all_segments if s.role == matched_role]
             merged = list(filtered_v2f)
             seen = {s.index for s in merged}
             for s in appended_segments:

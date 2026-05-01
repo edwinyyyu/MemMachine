@@ -22,16 +22,14 @@ import traceback
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-from associative_recall import SegmentStore, Segment
+from associative_recall import Segment, SegmentStore
 from deep_narrow import (
+    DeepNarrowBase,
+    DeepNarrowNoStop,
     DeepNarrowV1,
     DeepNarrowWideProbe,
-    DeepNarrowNoStop,
-    DeepNarrowBase,
-    DeepNarrowResult,
 )
+from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -156,16 +154,12 @@ def evaluate_question(arch: DeepNarrowBase, question: dict) -> dict:
     # Cosine top-max(BUDGETS) baseline.
     q_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        q_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(q_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     fair_backfill = {}
     for K in BUDGETS:
-        b_r, a_r = fair_backfill_eval(
-            arch_segments, cosine_segments, source_ids, K
-        )
+        b_r, a_r = fair_backfill_eval(arch_segments, cosine_segments, source_ids, K)
         fair_backfill[f"baseline_r@{K}"] = round(b_r, 4)
         fair_backfill[f"arch_r@{K}"] = round(a_r, 4)
         fair_backfill[f"delta_r@{K}"] = round(a_r - b_r, 4)
@@ -192,12 +186,14 @@ def evaluate_question(arch: DeepNarrowBase, question: dict) -> dict:
     # Record after initial retrieval (hop 0)
     K20_ids = arch_at_k_turn_ids(running_pool, cosine_segments, 20)
     K50_ids = arch_at_k_turn_ids(running_pool, cosine_segments, 50)
-    per_hop_recall.append({
-        "hop": 0,
-        "pool_size": len(running_pool),
-        "r@20": round(compute_recall(K20_ids, source_ids), 4),
-        "r@50": round(compute_recall(K50_ids, source_ids), 4),
-    })
+    per_hop_recall.append(
+        {
+            "hop": 0,
+            "pool_size": len(running_pool),
+            "r@20": round(compute_recall(K20_ids, source_ids), 4),
+            "r@50": round(compute_recall(K50_ids, source_ids), 4),
+        }
+    )
 
     for rec in hop_records:
         nf = rec.get("new_found", 0) if isinstance(rec, dict) else rec.new_found
@@ -208,22 +204,24 @@ def evaluate_question(arch: DeepNarrowBase, question: dict) -> dict:
                 break
         K20_ids = arch_at_k_turn_ids(running_pool, cosine_segments, 20)
         K50_ids = arch_at_k_turn_ids(running_pool, cosine_segments, 50)
-        per_hop_recall.append({
-            "hop": rec["hop"] if isinstance(rec, dict) else rec.hop,
-            "pool_size": len(running_pool),
-            "r@20": round(compute_recall(K20_ids, source_ids), 4),
-            "r@50": round(compute_recall(K50_ids, source_ids), 4),
-        })
+        per_hop_recall.append(
+            {
+                "hop": rec["hop"] if isinstance(rec, dict) else rec.hop,
+                "pool_size": len(running_pool),
+                "r@20": round(compute_recall(K20_ids, source_ids), 4),
+                "r@50": round(compute_recall(K50_ids, source_ids), 4),
+            }
+        )
 
     # Saturation & hop stats.
     hops_with_new = sum(
-        1 for h in hop_records
+        1
+        for h in hop_records
         if (h.get("new_found", 0) if isinstance(h, dict) else h.new_found) > 0
         and not (h.get("stopped", False) if isinstance(h, dict) else h.stopped)
     )
     hops_with_cue = sum(
-        1 for h in hop_records
-        if (h.get("cue", "") if isinstance(h, dict) else h.cue)
+        1 for h in hop_records if (h.get("cue", "") if isinstance(h, dict) else h.cue)
     )
     saturation_rate = (
         (hops_with_cue - hops_with_new) / hops_with_cue if hops_with_cue > 0 else 0.0
@@ -269,15 +267,9 @@ def summarize(results: list[dict], arch_name: str, dataset: str) -> dict:
     summary["avg_total_retrieved"] = round(
         sum(r["total_arch_retrieved"] for r in results) / n, 1
     )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1
-    )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
-    summary["avg_hops_used"] = round(
-        sum(r["hops_used"] for r in results) / n, 2
-    )
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
+    summary["avg_hops_used"] = round(sum(r["hops_used"] for r in results) / n, 2)
     summary["pct_hit_max_hops"] = round(
         100.0 * sum(1 for r in results if r["hit_max_hops"]) / n, 1
     )
@@ -319,10 +311,10 @@ def summarize_by_category(results: list[dict]) -> dict:
             a_vals = [r["fair_backfill"][f"arch_r@{K}"] for r in rs]
             entry[f"baseline_r@{K}"] = round(sum(b_vals) / n, 4)
             entry[f"arch_r@{K}"] = round(sum(a_vals) / n, 4)
-            entry[f"delta_r@{K}"] = round(entry[f"arch_r@{K}"] - entry[f"baseline_r@{K}"], 4)
-        entry["avg_hops_used"] = round(
-            sum(r["hops_used"] for r in rs) / n, 2
-        )
+            entry[f"delta_r@{K}"] = round(
+                entry[f"arch_r@{K}"] - entry[f"baseline_r@{K}"], 4
+            )
+        entry["avg_hops_used"] = round(sum(r["hops_used"] for r in rs) / n, 2)
         out[cat] = entry
     return out
 
@@ -345,18 +337,20 @@ def load_cached_baseline(arch_name: str, dataset: str) -> dict | None:
             qs = []
             for r in results:
                 fb = r.get("fair_backfill", {})
-                qs.append({
-                    "category": r.get("category", "unknown"),
-                    "conversation_id": r.get("conversation_id", ""),
-                    "question_index": r.get("question_index", -1),
-                    "num_source_turns": r.get("num_source_turns", 0),
-                    "baseline_r@20": fb.get("baseline_r@20", 0.0),
-                    "arch_r@20": fb.get("arch_r@20", 0.0),
-                    "baseline_r@50": fb.get("baseline_r@50", 0.0),
-                    "arch_r@50": fb.get("arch_r@50", 0.0),
-                    "llm_calls": r.get("llm_calls", 0),
-                    "embed_calls": r.get("embed_calls", 0),
-                })
+                qs.append(
+                    {
+                        "category": r.get("category", "unknown"),
+                        "conversation_id": r.get("conversation_id", ""),
+                        "question_index": r.get("question_index", -1),
+                        "num_source_turns": r.get("num_source_turns", 0),
+                        "baseline_r@20": fb.get("baseline_r@20", 0.0),
+                        "arch_r@20": fb.get("arch_r@20", 0.0),
+                        "baseline_r@50": fb.get("baseline_r@50", 0.0),
+                        "arch_r@50": fb.get("arch_r@50", 0.0),
+                        "llm_calls": r.get("llm_calls", 0),
+                        "embed_calls": r.get("embed_calls", 0),
+                    }
+                )
             return {
                 "summary": d.get("summary", {}),
                 "category_breakdown": d.get("category_breakdown", {}),
@@ -387,7 +381,7 @@ def run_variant(
     for i, q in enumerate(qs):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(qs)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(qs)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -454,9 +448,7 @@ def make_report(
     lines.append(
         "| Variant | Dataset | n | base@20 | arch@20 | d@20 | base@50 | arch@50 | d@50 | avg LLM |"
     )
-    lines.append(
-        "|---|---|---|---|---|---|---|---|---|---|"
-    )
+    lines.append("|---|---|---|---|---|---|---|---|---|---|")
 
     all_rows: list[tuple[str, str, dict]] = []
     # Cached baselines first
@@ -473,8 +465,10 @@ def make_report(
             all_rows.append((v_name, ds_name, s))
 
     for name, ds, s in all_rows:
+
         def g(k, default=0.0):
             return s.get(k, default)
+
         lines.append(
             f"| {name} | {ds} | {s.get('n', 0)} | "
             f"{g('baseline_r@20', 0):.3f} | {g('arch_r@20', 0):.3f} | "
@@ -514,9 +508,11 @@ def make_report(
         if ds_name not in per_variant_dataset.get("deep_narrow_v1", {}):
             continue
         by_cat_dn = per_variant_dataset["deep_narrow_v1"][ds_name]["by_cat"]
-        by_cat_v2f = cached_baselines.get("meta_v2f", {}).get(
-            ds_name, {}
-        ).get("category_breakdown", {})
+        by_cat_v2f = (
+            cached_baselines.get("meta_v2f", {})
+            .get(ds_name, {})
+            .get("category_breakdown", {})
+        )
         lines.append(f"### {ds_name}")
         lines.append("")
         lines.append(
@@ -542,13 +538,11 @@ def make_report(
     # Recall-vs-hop curve (aggregated across dataset)
     lines.append("## Recall vs hop curve (deep_narrow_v1)")
     lines.append("")
-    for ds_name, payload in per_variant_dataset.get(
-        "deep_narrow_v1", {}
-    ).items():
+    for ds_name, payload in per_variant_dataset.get("deep_narrow_v1", {}).items():
         results = payload["results"]
         max_hop = max(
-            (max((p["hop"] for p in r["per_hop_recall"]), default=0)
-             for r in results), default=0
+            (max((p["hop"] for p in r["per_hop_recall"]), default=0) for r in results),
+            default=0,
         )
         hop_table: dict[int, list[tuple[float, float]]] = defaultdict(list)
         for r in results:
@@ -571,27 +565,29 @@ def make_report(
                 continue
             r20 = sum(p[0] for p in pairs) / len(pairs)
             r50 = sum(p[1] for p in pairs) / len(pairs)
-            lines.append(
-                f"| {h} | {r20:.4f} | {r50:.4f} | {len(pairs)} |"
-            )
+            lines.append(f"| {h} | {r20:.4f} | {r50:.4f} | {len(pairs)} |")
         lines.append("")
 
     # Verdict
     lines.append("## Verdict")
     lines.append("")
     # Compute the dominant comparison: deep_narrow_v1 vs meta_v2f on locomo
-    v2f_loc = cached_baselines.get("meta_v2f", {}).get(
-        "locomo_30q", {}
-    ).get("summary", {})
-    dn_loc = per_variant_dataset.get("deep_narrow_v1", {}).get(
-        "locomo_30q", {}
-    ).get("summary", {})
-    v2f_syn = cached_baselines.get("meta_v2f", {}).get(
-        "synthetic_19q", {}
-    ).get("summary", {})
-    dn_syn = per_variant_dataset.get("deep_narrow_v1", {}).get(
-        "synthetic_19q", {}
-    ).get("summary", {})
+    v2f_loc = (
+        cached_baselines.get("meta_v2f", {}).get("locomo_30q", {}).get("summary", {})
+    )
+    dn_loc = (
+        per_variant_dataset.get("deep_narrow_v1", {})
+        .get("locomo_30q", {})
+        .get("summary", {})
+    )
+    v2f_syn = (
+        cached_baselines.get("meta_v2f", {}).get("synthetic_19q", {}).get("summary", {})
+    )
+    dn_syn = (
+        per_variant_dataset.get("deep_narrow_v1", {})
+        .get("synthetic_19q", {})
+        .get("summary", {})
+    )
 
     def _delta(dn_s: dict, v2f_s: dict, k: str) -> float:
         return dn_s.get(k, 0.0) - v2f_s.get(k, 0.0)
@@ -628,9 +624,13 @@ def main() -> None:
         help="Comma-separated dataset names.",
     )
     parser.add_argument("--max-questions", type=int, default=None)
-    parser.add_argument("--early-stop-after", type=int, default=None,
-                        help="After this many q on LoCoMo, check if DN<<v2f "
-                             "and stop if so (decision rule).")
+    parser.add_argument(
+        "--early-stop-after",
+        type=int,
+        default=None,
+        help="After this many q on LoCoMo, check if DN<<v2f "
+        "and stop if so (decision rule).",
+    )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
@@ -670,7 +670,11 @@ def main() -> None:
 
             store, questions = load_dataset(ds_name)
             results, summary, by_cat = run_variant(
-                v_name, VARIANTS[v_name], ds_name, store, questions,
+                v_name,
+                VARIANTS[v_name],
+                ds_name,
+                store,
+                questions,
                 max_questions=args.max_questions,
                 verbose=True,
             )
@@ -702,9 +706,11 @@ def main() -> None:
                 and v_name == "deep_narrow_v1"
                 and len(results) >= args.early_stop_after
             ):
-                v2f = cached_baselines.get("meta_v2f", {}).get(
-                    "locomo_30q", {}
-                ).get("summary", {})
+                v2f = (
+                    cached_baselines.get("meta_v2f", {})
+                    .get("locomo_30q", {})
+                    .get("summary", {})
+                )
                 dn_a20 = summary.get("arch_r@20", 0)
                 v2f_a20 = v2f.get("arch_r@20", 0)
                 if dn_a20 + 0.05 < v2f_a20:

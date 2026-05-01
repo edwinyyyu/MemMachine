@@ -28,25 +28,21 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
-    CACHE_DIR,
     EMBED_MODEL,
-    EmbeddingCache,
-    LLMCache,
     Segment,
     SegmentStore,
 )
 from best_shot import (
+    V2F_PROMPT,
     BestshotEmbeddingCache,
     BestshotLLMCache,
-    V2F_PROMPT,
+    BestshotResult,
     _format_segments,
     _parse_cues,
-    BestshotResult,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -93,9 +89,7 @@ class NeighborPriorityEmbeddingCache(BestshotEmbeddingCache):
         super().__init__()
         # Override write target; the parent constructor already loaded every
         # existing embedding cache.
-        self.cache_file = (
-            self.cache_dir / "neighbor_priority_embedding_cache.json"
-        )
+        self.cache_file = self.cache_dir / "neighbor_priority_embedding_cache.json"
         extra = self.cache_dir / "neighbor_priority_embedding_cache.json"
         if extra.exists():
             with open(extra) as f:
@@ -165,9 +159,7 @@ class NeighborPriorityV2f:
         if cached is not None:
             self.embed_calls += 1
             return cached
-        response = self.client.embeddings.create(
-            model=EMBED_MODEL, input=[text]
-        )
+        response = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
         embedding = np.array(response.data[0].embedding, dtype=np.float32)
         self.embedding_cache.put(text, embedding)
         self.embed_calls += 1
@@ -222,9 +214,7 @@ class NeighborPriorityV2f:
 
     def retrieve(self, question: str, conversation_id: str) -> BestshotResult:
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
 
         collected: list[Segment] = []
         seen: set[int] = set()
@@ -239,9 +229,7 @@ class NeighborPriorityV2f:
             "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
             + _format_segments(list(hop0.segments))
         )
-        prompt = V2F_PROMPT.format(
-            question=question, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=question, context_section=context_section)
         output = self.llm_call(prompt)
         cues = _parse_cues(output)
 
@@ -311,9 +299,7 @@ def apply_post_hoc_neighbors(
 
     # 2. Neighbors of those source picks, inserted in parent order.
     for parent in arch_unique[:source_k]:
-        neighbors = store.get_neighbors(
-            parent, radius=1, exclude_indices=final_seen
-        )
+        neighbors = store.get_neighbors(parent, radius=1, exclude_indices=final_seen)
         for nb in neighbors:
             if nb.index not in final_seen:
                 final.append(nb)
@@ -414,8 +400,11 @@ def evaluate_one(
 
     if variant == "v2f_post_hoc_neighbors":
         final_segs = apply_post_hoc_neighbors(
-            arch_segments, cosine_segments, arch.store,
-            source_k=arch.post_hoc_source_k, budget=K_BUDGET,
+            arch_segments,
+            cosine_segments,
+            arch.store,
+            source_k=arch.post_hoc_source_k,
+            budget=K_BUDGET,
         )
     else:
         final_segs = fair_backfill(arch_segments, cosine_segments, K_BUDGET)
@@ -499,9 +488,7 @@ def run_variant(
     questions: list[dict],
 ) -> dict:
     cfg = VARIANTS[variant]
-    arch = NeighborPriorityV2f(
-        store, mode=cfg["mode"], radius=cfg["radius"]
-    )
+    arch = NeighborPriorityV2f(store, mode=cfg["mode"], radius=cfg["radius"])
 
     print(f"\n[{variant} | {dataset} | n={len(questions)}]", flush=True)
     rows: list[dict] = []
@@ -512,6 +499,7 @@ def run_variant(
         except Exception as e:
             print(f"  ERROR on Q{i}: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         if (i + 1) % 10 == 0:
             arch.save_caches()
@@ -548,9 +536,7 @@ def main() -> None:
         )
         for variant in VARIANTS:
             payload = run_variant(variant, ds_name, store, questions)
-            out_path = (
-                RESULTS_DIR / f"neighbor_{variant}_{ds_name}.json"
-            )
+            out_path = RESULTS_DIR / f"neighbor_{variant}_{ds_name}.json"
             with open(out_path, "w") as f:
                 json.dump(payload, f, indent=2, default=str)
             all_summaries.setdefault(variant, {})[ds_name] = {

@@ -11,10 +11,9 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-from associative_recall import SegmentStore, Segment
 from adaptive_cue_count import ARCHITECTURES
+from associative_recall import Segment, SegmentStore
+from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -106,9 +105,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -164,12 +161,8 @@ def summarize(results: list[dict], arch_name: str, dataset: str) -> dict:
     summary["avg_total_retrieved"] = round(
         sum(r["total_arch_retrieved"] for r in results) / n, 1
     )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1
-    )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
     summary["avg_completion_tokens"] = round(
         sum(r["completion_tokens"] for r in results) / n, 1
     )
@@ -244,7 +237,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -253,6 +246,7 @@ def run_one(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -277,7 +271,7 @@ def run_one(
         f"embed={summary['avg_embed_calls']:.1f} "
         f"completion_tok={summary['avg_completion_tokens']:.0f}"
     )
-    print(f"\n  By difficulty:")
+    print("\n  By difficulty:")
     for d, c in by_diff.items():
         print(
             f"    {d:8s} (n={c['n']}): "
@@ -285,7 +279,7 @@ def run_one(
             f"r@50 d={c['delta_r@50']:+.3f} "
             f"W/T/L@50={c['W/T/L_r@50']}"
         )
-    print(f"\n  By category:")
+    print("\n  By category:")
     for cat, c in by_cat.items():
         print(
             f"    {cat:28s} (n={c['n']}): "
@@ -330,8 +324,7 @@ def write_md_report(all_data: dict, path: Path) -> None:
         for r in results:
             counts[r["difficulty"]] += 1
         dist = ", ".join(
-            f"{k}={v} ({100*v/total:.0f}%)"
-            for k, v in sorted(counts.items())
+            f"{k}={v} ({100 * v / total:.0f}%)" for k, v in sorted(counts.items())
         )
         lines.append(f"- **{ds}** (n={total}): {dist}")
     lines.append("")
@@ -343,9 +336,7 @@ def write_md_report(all_data: dict, path: Path) -> None:
         "| variant | dataset | base@20 | arch@20 | Δ@20 | W/T/L@20 | "
         "base@50 | arch@50 | Δ@50 | W/T/L@50 | avg LLM tok | avg LLM calls |"
     )
-    lines.append(
-        "|---|---|---|---|---|---|---|---|---|---|---|---|"
-    )
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for arch_name in ARCHITECTURES:
         for ds in DATASETS:
             blob = all_data.get(arch_name, {}).get(ds)
@@ -372,8 +363,7 @@ def write_md_report(all_data: dict, path: Path) -> None:
         lines.append(f"### {ds}")
         lines.append("")
         lines.append(
-            "| variant | EASY Δ@20 | MEDIUM Δ@20 | HARD Δ@20 | "
-            "FLAT Δ@20 | V2F Δ@20 |"
+            "| variant | EASY Δ@20 | MEDIUM Δ@20 | HARD Δ@20 | FLAT Δ@20 | V2F Δ@20 |"
         )
         lines.append("|---|---|---|---|---|---|")
         for arch_name in ARCHITECTURES:
@@ -414,9 +404,7 @@ def write_md_report(all_data: dict, path: Path) -> None:
         cells = []
         for cat in cats_sorted:
             if cat in by_cat:
-                cells.append(
-                    f"{by_cat[cat]['delta_r@20']:+.3f} (n={by_cat[cat]['n']})"
-                )
+                cells.append(f"{by_cat[cat]['delta_r@20']:+.3f} (n={by_cat[cat]['n']})")
             else:
                 cells.append("—")
         lines.append(f"| {arch_name} | " + " | ".join(cells) + " |")
@@ -426,8 +414,7 @@ def write_md_report(all_data: dict, path: Path) -> None:
     lines.append("## Cost per query (mean)")
     lines.append("")
     lines.append(
-        "| variant | dataset | LLM calls | completion tok | prompt tok | "
-        "embed calls |"
+        "| variant | dataset | LLM calls | completion tok | prompt tok | embed calls |"
     )
     lines.append("|---|---|---|---|---|---|")
     for arch_name in ARCHITECTURES:
@@ -469,10 +456,7 @@ def write_md_report(all_data: dict, path: Path) -> None:
     )
     best = max(avg_delta, key=lambda k: avg_delta[k]) if avg_delta else "?"
     adaptive_best = max(three_tier, binary)
-    if (
-        adaptive_best > ref + 0.005
-        and adaptive_best > flat6 + 0.005
-    ):
+    if adaptive_best > ref + 0.005 and adaptive_best > flat6 + 0.005:
         verdict = (
             "SHIP (narrow): adaptive variant beats both v2f and always_6. "
             "Adaptation captures benefit flat cue-bumps miss."
@@ -499,8 +483,10 @@ def write_md_report(all_data: dict, path: Path) -> None:
     lines.append("")
     lines.append("- `results/adaptive_cue_count.json` — full raw")
     lines.append("- `results/adaptive_cue_count.md` — this report")
-    lines.append("- Caches: `cache/adaptive_cue_embedding_cache.json`, "
-                 "`cache/adaptive_cue_llm_cache.json`")
+    lines.append(
+        "- Caches: `cache/adaptive_cue_embedding_cache.json`, "
+        "`cache/adaptive_cue_llm_cache.json`"
+    )
 
     path.write_text("\n".join(lines))
 

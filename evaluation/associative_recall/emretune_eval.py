@@ -38,9 +38,25 @@ from pathlib import Path
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    V2F_MODEL,
+    V2F_PROMPT,
+    _dedupe_by_turn_id,
+    _merge_by_max_score,
+    _MergedLLMCache,
+    _query_em,
+    format_primer_context,
+    parse_v2f_cues,
+)
+from em_retuned_cue_gen import (
+    build_type_enum_speakerfmt_prompt,
+    build_v2f_mixedspeakers_prompt,
+    build_v2f_roletag_prompt,
+    build_v2f_speakerformat_prompt,
+)
+from em_retuned_cue_gen import (
+    parse_cues as parse_retuned_cues,
+)
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -57,26 +73,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import (
-    V2F_MODEL,
-    V2F_PROMPT,
-    EMHit,
-    _MergedLLMCache,
-    _dedupe_by_turn_id,
-    _merge_by_max_score,
-    _query_em,
-    format_primer_context,
-    parse_v2f_cues,
-)
-from em_retuned_cue_gen import (
-    build_v2f_mixedspeakers_prompt,
-    build_v2f_roletag_prompt,
-    build_v2f_speakerformat_prompt,
-    build_type_enum_speakerfmt_prompt,
-    parse_cues as parse_retuned_cues,
-)
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -160,9 +158,7 @@ async def generate_cues(
     p_user, p_asst = participants
 
     if variant == "v2f_em_baseline":
-        prompt = V2F_PROMPT.format(
-            question=question, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=question, context_section=context_section)
         raw, hit = await _llm_call(openai_client, prompt, cache)
         return parse_v2f_cues(raw, max_cues=2), raw, hit
 
@@ -220,8 +216,7 @@ async def evaluate_question(
         await _query_em(memory, q_text, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer_hits
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer_hits
     ]
     context_section = format_primer_context(primer_segments)
 
@@ -245,9 +240,7 @@ async def evaluate_question(
     cue_hits = []
     for cue in cues:
         cue_hits.append(
-            await _query_em(
-                memory, cue, vector_search_limit=max_K, expand_context=0
-            )
+            await _query_em(memory, cue, vector_search_limit=max_K, expand_context=0)
         )
     merged = _merge_by_max_score([primer_for_merge, *cue_hits])
     hits = merged[:max_K]
@@ -317,9 +310,7 @@ async def main() -> None:
     caches: dict[str, _MergedLLMCache] = {}
     for variant in VARIANTS:
         path = CACHE_FILES[variant]
-        caches[variant] = _MergedLLMCache(
-            reader_paths=[path], writer_path=path
-        )
+        caches[variant] = _MergedLLMCache(reader_paths=[path], writer_path=path)
 
     memories: dict[str, EventMemory] = {}
     participants_by_conv: dict[str, tuple[str, str]] = {}
@@ -359,8 +350,13 @@ async def main() -> None:
             mem = memories[cid]
             participants = participants_by_conv[cid]
             row = await evaluate_question(
-                variant, mem, q, participants, caches[variant],
-                openai_client, max_K=max_K,
+                variant,
+                mem,
+                q,
+                participants,
+                caches[variant],
+                openai_client,
+                max_K=max_K,
             )
             rows.append(row)
         elapsed = time.monotonic() - t_variant
@@ -456,7 +452,7 @@ def build_markdown_report(results: dict, questions: list[dict]) -> list[str]:
         "",
         f"- n_questions = {len(questions)} (benchmark=locomo, first 30)",
         "- EventMemory backend, `text-embedding-3-small`, `gpt-5-mini`",
-        "- Speaker-baked embedded format: `\"{source}: {text}\"` "
+        '- Speaker-baked embedded format: `"{source}: {text}"` '
         "(from `event_memory.py::_format_text`)",
         "- Caches: `cache/emretune_<variant>_cache.json` (dedicated)",
         "- Architecture identical across variants (primer + 2 or 7 cues, "
@@ -464,7 +460,7 @@ def build_markdown_report(results: dict, questions: list[dict]) -> list[str]:
         "",
         "## Speaker-baking format confirmation",
         "",
-        "`event_memory.py::_format_text` returns `f\"{source}: {text}\"` for "
+        '`event_memory.py::_format_text` returns `f"{source}: {text}"` for '
         "MessageContext events. Per-conversation sources: conv-26 Caroline/Melanie, "
         "conv-30 Jon/Gina, conv-41 John/Maria.",
         "",
@@ -519,14 +515,13 @@ def build_markdown_report(results: dict, questions: list[dict]) -> list[str]:
         sample_keys.append(idx)
     for idx in sample_keys:
         q = base_rows[idx]
-        lines.append(
-            f"### Q{idx}: `{q['conversation_id']}` -- {q['question']!r}"
-        )
+        lines.append(f"### Q{idx}: `{q['conversation_id']}` -- {q['question']!r}")
         lines.append("")
         for variant in VARIANTS:
             v_row = results["variants"][variant]["per_question"][idx]
-            lines.append(f"- `{variant}` "
-                         f"(R@20={v_row['r@20']:.2f}, R@50={v_row['r@50']:.2f}):")
+            lines.append(
+                f"- `{variant}` (R@20={v_row['r@20']:.2f}, R@50={v_row['r@50']:.2f}):"
+            )
             for c in v_row["cues"]:
                 lines.append(f"  - `{c}`")
         lines.append("")
@@ -576,9 +571,7 @@ def build_markdown_report(results: dict, questions: list[dict]) -> list[str]:
             for v, d20, d50 in side_wins:
                 lines.append(f"- `{v}`: d20={d20:+.4f}, d50={d50:+.4f}")
             lines.append("")
-            lines.append(
-                "Consider K-specific routing or keep current v2f prompt."
-            )
+            lines.append("Consider K-specific routing or keep current v2f prompt.")
         else:
             lines.append(
                 "**No change.** All retuned variants tie or lose vs the "

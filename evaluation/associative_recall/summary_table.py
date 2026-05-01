@@ -46,14 +46,14 @@ def wtl(results: list[dict], budget_label: str) -> tuple[int, int, int]:
 
 def main() -> None:
     for benchmark in ["beam", "locomo"]:
-        print(f"\n{'='*120}")
+        print(f"\n{'=' * 120}")
         print(f"  {benchmark.upper()} BENCHMARK (30 questions)")
-        print(f"{'='*120}")
+        print(f"{'=' * 120}")
 
         # Header
         print(f"\n  {'Config':25s}", end="")
         for b in BUDGETS:
-            print(f"  {'delta r@'+str(b):>10s} {'W/T/L':>7s}", end="")
+            print(f"  {'delta r@' + str(b):>10s} {'W/T/L':>7s}", end="")
         print(f"  {'AvgSeg':>6s}")
         print("  " + "-" * 100)
 
@@ -69,26 +69,38 @@ def main() -> None:
             print(f"  {desc:25s}", end="")
             for b in BUDGETS:
                 bl = f"r@{b}"
-                b_mean = sum(r["baseline_recalls"].get(bl, 0) for r in results) / len(results)
-                a_mean = sum(r["assoc_recalls"].get(bl, 0) for r in results) / len(results)
+                b_mean = sum(r["baseline_recalls"].get(bl, 0) for r in results) / len(
+                    results
+                )
+                a_mean = sum(r["assoc_recalls"].get(bl, 0) for r in results) / len(
+                    results
+                )
                 delta = a_mean - b_mean
                 w, t, l = wtl(results, bl)
                 print(f"  {delta:>+10.3f} {w}/{t}/{l}", end="")
             print(f"  {avg_segs:>6.0f}")
 
         # Combined ranking
-        print(f"\n  Ranking by avg delta across r@20+r@50:")
+        print("\n  Ranking by avg delta across r@20+r@50:")
         scores = []
         for desc, results in loaded:
-            d20 = sum(r["assoc_recalls"]["r@20"] - r["baseline_recalls"]["r@20"] for r in results) / len(results)
-            d50 = sum(r["assoc_recalls"]["r@50"] - r["baseline_recalls"]["r@50"] for r in results) / len(results)
+            d20 = sum(
+                r["assoc_recalls"]["r@20"] - r["baseline_recalls"]["r@20"]
+                for r in results
+            ) / len(results)
+            d50 = sum(
+                r["assoc_recalls"]["r@50"] - r["baseline_recalls"]["r@50"]
+                for r in results
+            ) / len(results)
             avg_d = (d20 + d50) / 2
             w20, _, l20 = wtl(results, "r@20")
             scores.append((avg_d, desc, d20, d50, w20, l20))
 
         scores.sort(reverse=True)
         for rank, (avg_d, desc, d20, d50, w20, l20) in enumerate(scores, 1):
-            print(f"    {rank}. {desc:25s} avg={avg_d:+.3f} (r@20={d20:+.3f} r@50={d50:+.3f}) W/L@20={w20}/{l20}")
+            print(
+                f"    {rank}. {desc:25s} avg={avg_d:+.3f} (r@20={d20:+.3f} r@50={d50:+.3f}) W/L@20={w20}/{l20}"
+            )
 
 
 if __name__ == "__main__":

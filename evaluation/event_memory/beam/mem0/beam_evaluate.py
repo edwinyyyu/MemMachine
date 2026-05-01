@@ -136,7 +136,9 @@ RESPONSE:
 Return format: ["event 1 description", "event 2 description", ...]"""
 
 
-def _build_event_alignment_prompt(extracted_event: str, rubric_events: list[str]) -> str:
+def _build_event_alignment_prompt(
+    extracted_event: str, rubric_events: list[str]
+) -> str:
     """Body of `get_beam_event_alignment_prompt` from mem0's prompts.py."""
     events_list = "\n".join(f"{i}. {e}" for i, e in enumerate(rubric_events))
     return f"""Given the following extracted event from an LLM response, determine which

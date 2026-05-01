@@ -25,10 +25,9 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-from associative_recall import SegmentStore, Segment
+from associative_recall import Segment, SegmentStore
 from best_shot import MetaV2f
+from dotenv import load_dotenv
 from multichannel_weighted import (
     CHANNEL_DESCRIPTIONS,
     CHANNEL_NAMES,
@@ -121,9 +120,7 @@ def evaluate_question(arch, question: dict) -> dict:
     # Cosine top-K baseline (single call)
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -175,15 +172,9 @@ def summarize(results: list[dict], arch_name: str, dataset: str) -> dict:
     summary["avg_total_retrieved"] = round(
         sum(r["total_arch_retrieved"] for r in results) / n, 1
     )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 2
-    )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 2
-    )
-    summary["avg_time_s"] = round(
-        sum(r["time_s"] for r in results) / n, 2
-    )
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 2)
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 2)
+    summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
     return summary
 
 
@@ -220,7 +211,7 @@ def run_arch_on_dataset(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}",
             flush=True,
         )
         try:
@@ -229,6 +220,7 @@ def run_arch_on_dataset(
         except Exception as e:
             print(f"  ERROR on question {i}: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -260,13 +252,11 @@ def analyze_weight_patterns(
     rows: list[dict],
 ) -> dict:
     """Aggregate LLM-chosen weights across queries."""
-    weights_per_channel: dict[str, list[float]] = {
-        ch: [] for ch in CHANNEL_NAMES
-    }
+    weights_per_channel: dict[str, list[float]] = {ch: [] for ch in CHANNEL_NAMES}
     category_weights: dict[str, dict[str, list[float]]] = defaultdict(
         lambda: {ch: [] for ch in CHANNEL_NAMES}
     )
-    n_zero: dict[str, int] = {ch: 0 for ch in CHANNEL_NAMES}
+    n_zero: dict[str, int] = dict.fromkeys(CHANNEL_NAMES, 0)
     n_total = 0
     sample_queries = []
 
@@ -288,21 +278,18 @@ def analyze_weight_patterns(
                 {
                     "question": r.get("question", "")[:120],
                     "category": cat,
-                    "weights": {ch: round(float(w.get(ch, 0.0)), 2)
-                                 for ch in CHANNEL_NAMES},
+                    "weights": {
+                        ch: round(float(w.get(ch, 0.0)), 2) for ch in CHANNEL_NAMES
+                    },
                     "reasoning": meta.get("reasoning", "")[:200],
                     "channels_executed": meta.get("channels_executed", []),
                 }
             )
 
     avg = {
-        ch: round(sum(v) / max(len(v), 1), 3)
-        for ch, v in weights_per_channel.items()
+        ch: round(sum(v) / max(len(v), 1), 3) for ch, v in weights_per_channel.items()
     }
-    zero_rate = {
-        ch: round(n_zero[ch] / max(n_total, 1), 3)
-        for ch in CHANNEL_NAMES
-    }
+    zero_rate = {ch: round(n_zero[ch] / max(n_total, 1), 3) for ch in CHANNEL_NAMES}
     # Per-category averages
     cat_avg: dict[str, dict[str, float]] = {}
     for cat, w_map in category_weights.items():
@@ -361,8 +348,8 @@ def render_report(all_data: dict) -> str:
     # Weight patterns for multich_llm_weighted
     lines.append("\n## Weight patterns (multich_llm_weighted)\n")
     for ds in DATASETS:
-        pat = all_data.get("multich_llm_weighted", {}).get(ds, {}).get(
-            "weight_patterns"
+        pat = (
+            all_data.get("multich_llm_weighted", {}).get(ds, {}).get("weight_patterns")
         )
         if not pat:
             continue
@@ -383,18 +370,14 @@ def render_report(all_data: dict) -> str:
         for q in pat.get("sample_queries", [])[:3]:
             lines.append(f"- **[{q['category']}]** {q['question']}")
             non_zero = {k: v for k, v in q["weights"].items() if v > 0.01}
-            lines.append(
-                f"  - Weights (non-zero): {non_zero}"
-            )
+            lines.append(f"  - Weights (non-zero): {non_zero}")
             if q.get("reasoning"):
                 lines.append(f"  - Reasoning: {q['reasoning']}")
         lines.append("")
 
     # Cost comparison
     lines.append("\n## Cost Comparison (avg LLM calls per query)\n")
-    lines.append(
-        "| Architecture | LoCoMo-30 | Synthetic-19 |"
-    )
+    lines.append("| Architecture | LoCoMo-30 | Synthetic-19 |")
     lines.append("|---|---|---|")
     for arch_name in ["meta_v2f"] + list(VARIANTS):
         row = [arch_name]
@@ -412,18 +395,30 @@ def render_report(all_data: dict) -> str:
     for ds in DATASETS:
         lines.append(f"### {ds}\n")
         for K in BUDGETS:
-            ref = all_data.get("meta_v2f", {}).get(ds, {}).get(
-                "summary", {}
-            ).get(f"arch_r@{K}", 0.0)
-            llm_s = all_data.get("multich_llm_weighted", {}).get(ds, {}).get(
-                "summary", {}
-            ).get(f"arch_r@{K}", 0.0)
-            uni = all_data.get("multich_uniform", {}).get(ds, {}).get(
-                "summary", {}
-            ).get(f"arch_r@{K}", 0.0)
-            binr = all_data.get("multich_binary", {}).get(ds, {}).get(
-                "summary", {}
-            ).get(f"arch_r@{K}", 0.0)
+            ref = (
+                all_data.get("meta_v2f", {})
+                .get(ds, {})
+                .get("summary", {})
+                .get(f"arch_r@{K}", 0.0)
+            )
+            llm_s = (
+                all_data.get("multich_llm_weighted", {})
+                .get(ds, {})
+                .get("summary", {})
+                .get(f"arch_r@{K}", 0.0)
+            )
+            uni = (
+                all_data.get("multich_uniform", {})
+                .get(ds, {})
+                .get("summary", {})
+                .get(f"arch_r@{K}", 0.0)
+            )
+            binr = (
+                all_data.get("multich_binary", {})
+                .get(ds, {})
+                .get("summary", {})
+                .get(f"arch_r@{K}", 0.0)
+            )
             lines.append(
                 f"- **K={K}**: meta_v2f={ref:.4f}, "
                 f"llm_weighted={llm_s:.4f} ({llm_s - ref:+.4f}), "
@@ -451,9 +446,7 @@ def main() -> None:
         )
 
         for arch_name in ["meta_v2f"] + list(VARIANTS):
-            rows, summary, by_cat = run_arch_on_dataset(
-                arch_name, store, questions
-            )
+            rows, summary, by_cat = run_arch_on_dataset(arch_name, store, questions)
             entry = {
                 "arch": arch_name,
                 "dataset": ds_name,

@@ -63,12 +63,8 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -78,6 +74,8 @@ from associative_recall import (
     SegmentStore,
 )
 from best_shot import V2F_PROMPT, _format_segments, _parse_cues
+from dotenv import load_dotenv
+from openai import OpenAI
 from speaker_attributed import extract_name_mentions
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -156,9 +154,7 @@ class IntentEmbeddingCache(EmbeddingCache):
             except (json.JSONDecodeError, OSError):
                 existing = {}
         existing.update(self._new_entries)
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         with open(tmp, "w") as f:
             json.dump(existing, f)
         os.replace(tmp, self.cache_file)
@@ -201,9 +197,7 @@ class IntentLLMCache(LLMCache):
             except (json.JSONDecodeError, OSError):
                 existing = {}
         existing.update(self._new_entries)
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         with open(tmp, "w") as f:
             json.dump(existing, f)
         os.replace(tmp, self.cache_file)
@@ -243,9 +237,7 @@ class IntentParseCache:
             except (json.JSONDecodeError, OSError):
                 existing = {}
         existing.update(self._new_entries)
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         with open(tmp, "w") as f:
             json.dump(existing, f)
         os.replace(tmp, self.cache_file)
@@ -267,7 +259,13 @@ INTENT_TYPES = (
 )
 
 ANSWER_FORMS = (
-    "date", "person", "number", "description", "list", "yes-no", None,
+    "date",
+    "person",
+    "number",
+    "description",
+    "list",
+    "yes-no",
+    None,
 )
 
 INTENT_PARSE_PROMPT = """\
@@ -318,9 +316,7 @@ Query: {query}"""
 
 def build_intent_parse_prompt(query: str) -> str:
     types_str = json.dumps(list(INTENT_TYPES))
-    return INTENT_PARSE_PROMPT.format(
-        intent_types=types_str, query=query.strip()
-    )
+    return INTENT_PARSE_PROMPT.format(intent_types=types_str, query=query.strip())
 
 
 def _coerce_str(x) -> str | None:
@@ -426,9 +422,7 @@ def parse_intent_response(raw: str) -> dict:
     answer_form = _coerce_str(constraints_raw.get("answer_form"))
     if answer_form:
         answer_form = answer_form.lower()
-    if answer_form not in (
-        "date", "person", "number", "description", "list", "yes-no"
-    ):
+    if answer_form not in ("date", "person", "number", "description", "list", "yes-no"):
         answer_form = None
 
     primary_topic = _coerce_str(obj.get("primary_topic"))
@@ -494,17 +488,92 @@ _RE_FIRST_PERSON_PREF = re.compile(
 )
 
 _NAME_STOPWORDS = {
-    "I", "You", "Me", "My", "We", "Us", "Our", "Your", "They", "Them",
-    "He", "She", "It", "This", "That", "These", "Those", "There", "Here",
-    "What", "When", "Where", "Who", "Why", "How", "Which", "Whom", "Whose",
-    "The", "A", "An", "Is", "Are", "Was", "Were", "Be", "Been", "Being",
-    "Have", "Has", "Had", "Do", "Does", "Did", "Will", "Would", "Should",
-    "Could", "Can", "May", "Might", "Must", "Shall",
-    "Yes", "No", "Not", "Never", "Always", "Maybe",
-    "And", "Or", "But", "If", "So", "Then", "Else", "Because", "Since",
-    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
-    "Sunday", "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
+    "I",
+    "You",
+    "Me",
+    "My",
+    "We",
+    "Us",
+    "Our",
+    "Your",
+    "They",
+    "Them",
+    "He",
+    "She",
+    "It",
+    "This",
+    "That",
+    "These",
+    "Those",
+    "There",
+    "Here",
+    "What",
+    "When",
+    "Where",
+    "Who",
+    "Why",
+    "How",
+    "Which",
+    "Whom",
+    "Whose",
+    "The",
+    "A",
+    "An",
+    "Is",
+    "Are",
+    "Was",
+    "Were",
+    "Be",
+    "Been",
+    "Being",
+    "Have",
+    "Has",
+    "Had",
+    "Do",
+    "Does",
+    "Did",
+    "Will",
+    "Would",
+    "Should",
+    "Could",
+    "Can",
+    "May",
+    "Might",
+    "Must",
+    "Shall",
+    "Yes",
+    "No",
+    "Not",
+    "Never",
+    "Always",
+    "Maybe",
+    "And",
+    "Or",
+    "But",
+    "If",
+    "So",
+    "Then",
+    "Else",
+    "Because",
+    "Since",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+    "January",
+    "February",
+    "March",
+    "April",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 }
 _RE_CAPWORD = re.compile(r"\b([A-Z][a-zA-Z\-']+)\b")
 
@@ -528,7 +597,8 @@ def has_date_tokens(text: str) -> bool:
         r"\b(january|february|march|april|may|june|july|august|"
         r"september|october|november|december|"
         r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
-        text, re.IGNORECASE,
+        text,
+        re.IGNORECASE,
     ):
         return True
     return False
@@ -563,9 +633,7 @@ _CONV_SPEAKERS_FILE = (
     Path(__file__).resolve().parent / "results" / "conversation_speakers.json"
 )
 _CONV_TWO_SPEAKERS_FILE = (
-    Path(__file__).resolve().parent
-    / "results"
-    / "conversation_two_speakers.json"
+    Path(__file__).resolve().parent / "results" / "conversation_two_speakers.json"
 )
 
 
@@ -579,11 +647,8 @@ def load_speaker_map() -> dict[str, dict[str, str]]:
             for cid, pair in raw.items():
                 if isinstance(pair, dict):
                     out[cid] = {
-                        "user": (pair.get("user") or "UNKNOWN").strip()
-                        or "UNKNOWN",
-                        "assistant": (
-                            pair.get("assistant") or "UNKNOWN"
-                        ).strip()
+                        "user": (pair.get("user") or "UNKNOWN").strip() or "UNKNOWN",
+                        "assistant": (pair.get("assistant") or "UNKNOWN").strip()
                         or "UNKNOWN",
                     }
         except (json.JSONDecodeError, OSError):
@@ -646,9 +711,7 @@ class IntentParserArch:
 
         # Precomputed masks/flags per store (fixed per store).
         self.role_masks = {
-            "user": np.array(
-                [s.role == "user" for s in store.segments], dtype=bool
-            ),
+            "user": np.array([s.role == "user" for s in store.segments], dtype=bool),
             "assistant": np.array(
                 [s.role == "assistant" for s in store.segments], dtype=bool
             ),
@@ -689,9 +752,7 @@ class IntentParserArch:
         if cached is not None:
             self.embed_calls += 1
             return cached
-        response = self.client.embeddings.create(
-            model=EMBED_MODEL, input=[text]
-        )
+        response = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
         emb = np.array(response.data[0].embedding, dtype=np.float32)
         self.embedding_cache.put(text, emb)
         self.embed_calls += 1
@@ -778,9 +839,7 @@ class IntentParserArch:
             out.append((int(i), float(sims[i])))
         return out
 
-    def _v2f_cosine(
-        self, query: str, conversation_id: str
-    ) -> list[tuple[int, float]]:
+    def _v2f_cosine(self, query: str, conversation_id: str) -> list[tuple[int, float]]:
         """V2f-style retrieval matching MetaV2f's ordering.
 
         Returns an ordered list of (seg_index, rank_score) where the ordering
@@ -790,17 +849,12 @@ class IntentParserArch:
         primary ordering signal is LIST POSITION, not cosine score.
         """
         query_emb = self.embed_text(query)
-        primer = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        primer = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         primer_segs = list(primer.segments)
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(primer_segs)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(primer_segs)
         )
-        prompt = V2F_PROMPT.format(
-            question=query, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=query, context_section=context_section)
         output = self.llm_call(prompt)
         cues = _parse_cues(output)[:2]
 
@@ -814,7 +868,9 @@ class IntentParserArch:
         for cue in cues:
             cue_emb = self.embed_text(cue)
             res = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=seen,
             )
             for seg in res.segments:
@@ -856,8 +912,7 @@ class IntentParserArch:
         # Defensive: parsed speaker must appear in the original query.
         q_mentions = {t.lower() for t in extract_name_mentions(query)}
         q_tokens = {t.lower() for t in re.findall(r"[A-Za-z]+", query)}
-        if (speaker_lower not in q_mentions
-                and speaker_lower.split()[0] not in q_tokens):
+        if speaker_lower not in q_mentions and speaker_lower.split()[0] not in q_tokens:
             return None
 
         pair = self.speaker_map.get(conversation_id, {})
@@ -882,9 +937,7 @@ class IntentParserArch:
             return "assistant"
         return None
 
-    def retrieve(
-        self, question: str, conversation_id: str
-    ) -> IntentResult:
+    def retrieve(self, question: str, conversation_id: str) -> IntentResult:
         plan = self.parse_intent(question)
         constraints = plan.get("constraints", {}) or {}
         signals_applied: list[str] = []
@@ -954,9 +1007,7 @@ class IntentParserArch:
         # 1. Speaker filter
         sp_name = constraints.get("speaker")
         if sp_name and _allowed("speaker"):
-            role = self._resolve_speaker_role(
-                sp_name, conversation_id, question
-            )
+            role = self._resolve_speaker_role(sp_name, conversation_id, question)
             if role in ("user", "assistant"):
                 mask = self.role_masks[role]
                 res = self._cosine_search(topic_emb, conversation_id, mask=mask)
@@ -973,9 +1024,7 @@ class IntentParserArch:
                 query_emb, conversation_id, mask=self.temporal_mask
             )
             for idx, sc in self._normalize(res):
-                final_scores[idx] = (
-                    final_scores.get(idx, 0.0) + self.signal_bonus * sc
-                )
+                final_scores[idx] = final_scores.get(idx, 0.0) + self.signal_bonus * sc
             # Also embed the temporal reference itself if available
             ref = tr.get("reference") if isinstance(tr, dict) else None
             if ref and len(ref) >= 3:
@@ -995,43 +1044,35 @@ class IntentParserArch:
                 query_emb, conversation_id, mask=self.negation_mask
             )
             for idx, sc in self._normalize(res):
-                final_scores[idx] = (
-                    final_scores.get(idx, 0.0) + self.signal_bonus * sc
-                )
+                final_scores[idx] = final_scores.get(idx, 0.0) + self.signal_bonus * sc
             signals_applied.append("negation")
 
         # 4. Answer-form specific boosts
         af = constraints.get("answer_form")
         if af == "date" and _allowed("answer_form:date"):
-            res = self._cosine_search(
-                query_emb, conversation_id, mask=self.date_mask
-            )
+            res = self._cosine_search(query_emb, conversation_id, mask=self.date_mask)
             for idx, sc in self._normalize(res):
-                final_scores[idx] = (
-                    final_scores.get(idx, 0.0) + self.signal_bonus * sc
-                )
+                final_scores[idx] = final_scores.get(idx, 0.0) + self.signal_bonus * sc
             signals_applied.append("answer_form:date")
         elif af == "person" and _allowed("answer_form:person"):
             res = self._cosine_search(
                 query_emb, conversation_id, mask=self.proper_noun_mask
             )
             for idx, sc in self._normalize(res):
-                final_scores[idx] = (
-                    final_scores.get(idx, 0.0) + self.signal_bonus * sc
-                )
+                final_scores[idx] = final_scores.get(idx, 0.0) + self.signal_bonus * sc
             signals_applied.append("answer_form:person")
 
         # 5. Preference intent: boost first-person self-statements
-        if (plan.get("intent_type") == "preference"
-                and _allowed("intent_type:preference")):
+        if plan.get("intent_type") == "preference" and _allowed(
+            "intent_type:preference"
+        ):
             res = self._cosine_search(
-                query_emb, conversation_id,
+                query_emb,
+                conversation_id,
                 mask=self.first_person_pref_mask,
             )
             for idx, sc in self._normalize(res):
-                final_scores[idx] = (
-                    final_scores.get(idx, 0.0) + self.signal_bonus * sc
-                )
+                final_scores[idx] = final_scores.get(idx, 0.0) + self.signal_bonus * sc
             signals_applied.append("intent_type:preference")
 
         # 6. Answer-form list / needs_aggregation: expand top-K via extra
@@ -1040,8 +1081,7 @@ class IntentParserArch:
         if af == "list" and _allowed("answer_form:list"):
             expand = True
             signals_applied.append("answer_form:list")
-        if (plan.get("needs_aggregation")
-                and _allowed("needs_aggregation")):
+        if plan.get("needs_aggregation") and _allowed("needs_aggregation"):
             expand = True
             if "needs_aggregation" not in signals_applied:
                 signals_applied.append("needs_aggregation")
@@ -1067,8 +1107,7 @@ class IntentParserArch:
             "num_candidates": len(final_scores),
             "mode": self.mode,
             "top5_turn_ids": [
-                (self.store.segments[i].turn_id, float(sc))
-                for i, sc in ranked[:5]
+                (self.store.segments[i].turn_id, float(sc)) for i, sc in ranked[:5]
             ],
         }
         return IntentResult(segments=segments, metadata=metadata)

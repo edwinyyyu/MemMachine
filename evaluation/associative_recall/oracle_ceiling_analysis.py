@@ -50,6 +50,7 @@ SHIPPED_K50 = {
 
 # ----- helpers ------------------------------------------------------------
 
+
 def detect_dataset(fn: str) -> str | None:
     for ds in DATASETS:
         if ds in fn:
@@ -289,6 +290,7 @@ def collect_critical_info_store() -> list[tuple[str, str, dict]]:
 # qkeys to the form `conv_id|qidx` (no text), and track question metadata
 # from the text-containing sources.
 
+
 def normalize_key(key: str) -> str:
     parts = key.split("|", 2)
     if len(parts) >= 2:
@@ -297,6 +299,7 @@ def normalize_key(key: str) -> str:
 
 
 # ----- oracle compute ----------------------------------------------------
+
 
 def main() -> None:
     print("Collecting per-question recall from all architectures...")
@@ -316,7 +319,9 @@ def main() -> None:
 
     # Build the full matrix.
     # matrix[ds][norm_key][arch_label] = {"r@20": float|None, "r@50": float|None}
-    matrix: dict[str, dict[str, dict[str, dict]]] = {ds: defaultdict(dict) for ds in DATASETS}
+    matrix: dict[str, dict[str, dict[str, dict]]] = {
+        ds: defaultdict(dict) for ds in DATASETS
+    }
     # metadata[ds][norm_key] = {"question": str, "category": str, ...}
     metadata: dict[str, dict[str, dict]] = {ds: {} for ds in DATASETS}
     # archs_per_ds: dataset -> set of arch labels
@@ -341,7 +346,12 @@ def main() -> None:
                 }
             else:
                 # Backfill missing fields
-                for field in ("category", "conversation_id", "question_index", "num_source_turns"):
+                for field in (
+                    "category",
+                    "conversation_id",
+                    "question_index",
+                    "num_source_turns",
+                ):
                     if not existing.get(field):
                         v = rec.get(field)
                         if v is not None:
@@ -355,7 +365,12 @@ def main() -> None:
     # architectures don't have puzzle/advanced per-question data — only the
     # "standard" collector gives those. So the union of questions across
     # architectures equals the dataset size for each dataset.
-    expected = {"locomo_30q": 30, "synthetic_19q": 19, "puzzle_16q": 16, "advanced_23q": 23}
+    expected = {
+        "locomo_30q": 30,
+        "synthetic_19q": 19,
+        "puzzle_16q": 16,
+        "advanced_23q": 23,
+    }
 
     # ===== Compute ceilings =====
     # best_arch_recall per (ds, question, K)
@@ -371,8 +386,12 @@ def main() -> None:
         for nk, arch_map in questions.items():
             meta = metadata[ds].get(nk, {})
             # Collect all recalls at each K
-            r20s = {a: v["r@20"] for a, v in arch_map.items() if v.get("r@20") is not None}
-            r50s = {a: v["r@50"] for a, v in arch_map.items() if v.get("r@50") is not None}
+            r20s = {
+                a: v["r@20"] for a, v in arch_map.items() if v.get("r@20") is not None
+            }
+            r50s = {
+                a: v["r@50"] for a, v in arch_map.items() if v.get("r@50") is not None
+            }
             best_r20 = max(r20s.values()) if r20s else None
             best_r50 = max(r50s.values()) if r50s else None
             best_arch_r20 = max(r20s.items(), key=lambda t: t[1])[0] if r20s else None
@@ -411,19 +430,31 @@ def main() -> None:
     agg = {}
     for ds in DATASETS:
         rows = oracle[ds]
+
         def _mean(xs):
             xs = [x for x in xs if x is not None]
             return sum(xs) / len(xs) if xs else None
+
         mean_best_r20 = _mean([r["best_r20"] for r in rows])
         mean_best_r50 = _mean([r["best_r50"] for r in rows])
         mean_ship_r20 = _mean([r["shipped_r20"] for r in rows])
         mean_ship_r50 = _mean([r["shipped_r50"] for r in rows])
-        gap20 = (mean_best_r20 - mean_ship_r20) if (mean_best_r20 is not None and mean_ship_r20 is not None) else None
-        gap50 = (mean_best_r50 - mean_ship_r50) if (mean_best_r50 is not None and mean_ship_r50 is not None) else None
+        gap20 = (
+            (mean_best_r20 - mean_ship_r20)
+            if (mean_best_r20 is not None and mean_ship_r20 is not None)
+            else None
+        )
+        gap50 = (
+            (mean_best_r50 - mean_ship_r50)
+            if (mean_best_r50 is not None and mean_ship_r50 is not None)
+            else None
+        )
         agg[ds] = {
             "n_questions": len(rows),
-            "n_archs_avg_at_20": sum(r["n_archs_r20"] for r in rows) / max(len(rows), 1),
-            "n_archs_avg_at_50": sum(r["n_archs_r50"] for r in rows) / max(len(rows), 1),
+            "n_archs_avg_at_20": sum(r["n_archs_r20"] for r in rows)
+            / max(len(rows), 1),
+            "n_archs_avg_at_50": sum(r["n_archs_r50"] for r in rows)
+            / max(len(rows), 1),
             "oracle_ceiling_r20": mean_best_r20,
             "oracle_ceiling_r50": mean_best_r50,
             "shipped_r20": mean_ship_r20,
@@ -443,9 +474,11 @@ def main() -> None:
             cat = r.get("category") or "unknown"
             by_cat[cat].append(r)
         for cat, rs in by_cat.items():
+
             def _mean(xs):
                 xs = [x for x in xs if x is not None]
                 return sum(xs) / len(xs) if xs else None
+
             mbr50 = _mean([r["best_r50"] for r in rs])
             msr50 = _mean([r["shipped_r50"] for r in rs])
             mbr20 = _mean([r["best_r20"] for r in rs])
@@ -472,28 +505,38 @@ def main() -> None:
         "n_archs_per_dataset": {ds: len(archs_per_ds[ds]) for ds in DATASETS},
         "archs_per_dataset": {ds: sorted(archs_per_ds[ds]) for ds in DATASETS},
         "per_dataset_aggregate": agg,
-        "per_category_aggregate": {f"{ds}|{cat}": v for (ds, cat), v in cat_agg.items()},
+        "per_category_aggregate": {
+            f"{ds}|{cat}": v for (ds, cat), v in cat_agg.items()
+        },
         "oracle_rows": {ds: oracle[ds] for ds in DATASETS},
         "stubborn_failures_k50_lt_0.5": stubborn_list,
     }
-    (RESULTS_DIR / "oracle_ceiling_final.json").write_text(json.dumps(json_out, indent=2, default=str))
+    (RESULTS_DIR / "oracle_ceiling_final.json").write_text(
+        json.dumps(json_out, indent=2, default=str)
+    )
 
     # Markdown
     md = []
     md.append("# Final Oracle Ceiling Across All Architectures")
     md.append("")
     md.append(f"Datasets: {', '.join(DATASETS)}")
-    md.append(f"Architectures collected per dataset: "
-              f"{', '.join(f'{ds}={len(archs_per_ds[ds])}' for ds in DATASETS)}")
+    md.append(
+        f"Architectures collected per dataset: "
+        f"{', '.join(f'{ds}={len(archs_per_ds[ds])}' for ds in DATASETS)}"
+    )
     md.append("")
     md.append("## Oracle ceiling vs shipped recipe")
     md.append("")
-    md.append("| Dataset | N | Archs (≥ K=50) | Shipped @20 | Oracle @20 | Gap @20 | Shipped @50 | Oracle @50 | Gap @50 |")
+    md.append(
+        "| Dataset | N | Archs (≥ K=50) | Shipped @20 | Oracle @20 | Gap @20 | Shipped @50 | Oracle @50 | Gap @50 |"
+    )
     md.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for ds in DATASETS:
         a = agg[ds]
+
         def _fmt(x):
             return f"{x:.4f}" if x is not None else "n/a"
+
         md.append(
             f"| {ds} | {a['n_questions']} | {a['n_archs_avg_at_50']:.1f} | "
             f"{_fmt(a['shipped_r20'])} ({a['shipped_r20_name']}) | "
@@ -505,6 +548,7 @@ def main() -> None:
 
     # Overall totals (question-weighted average across datasets)
     total_q = sum(agg[ds]["n_questions"] for ds in DATASETS)
+
     def _weighted(field):
         num = 0.0
         den = 0
@@ -515,6 +559,7 @@ def main() -> None:
             num += v * agg[ds]["n_questions"]
             den += agg[ds]["n_questions"]
         return num / den if den else None
+
     md.append("**Overall (question-weighted):**")
     md.append("")
     md.append(f"- Oracle @20 = {_weighted('oracle_ceiling_r20'):.4f}")
@@ -529,19 +574,25 @@ def main() -> None:
     md.append("## Stubborn failures (best_r@50 < 0.5 across ALL archs)")
     md.append("")
     if not stubborn_list:
-        md.append("**None.** Every assessed question has at least one architecture reaching r@50 >= 0.5.")
+        md.append(
+            "**None.** Every assessed question has at least one architecture reaching r@50 >= 0.5."
+        )
         md.append("")
     else:
         md.append(f"Count: **{len(stubborn_list)}**")
         md.append("")
-        md.append("| Dataset | Conv | Category | # gold | Best @20 | Best @50 | Best arch @50 | Question |")
+        md.append(
+            "| Dataset | Conv | Category | # gold | Best @20 | Best @50 | Best arch @50 | Question |"
+        )
         md.append("| --- | --- | --- | ---: | ---: | ---: | --- | --- |")
-        for s in sorted(stubborn_list, key=lambda x: (x["dataset"], x.get("conversation_id") or "")):
+        for s in sorted(
+            stubborn_list, key=lambda x: (x["dataset"], x.get("conversation_id") or "")
+        ):
             q = (s.get("question") or "")[:160].replace("|", "\\|")
             md.append(
-                f"| {s['dataset']} | {s.get('conversation_id','')} | {s.get('category','')} | "
-                f"{s.get('num_source_turns','')} | {s.get('best_r20', 'n/a')} | "
-                f"{s.get('best_r50', 'n/a')} | {s.get('best_arch_r50','')} | {q} |"
+                f"| {s['dataset']} | {s.get('conversation_id', '')} | {s.get('category', '')} | "
+                f"{s.get('num_source_turns', '')} | {s.get('best_r20', 'n/a')} | "
+                f"{s.get('best_r50', 'n/a')} | {s.get('best_arch_r50', '')} | {q} |"
             )
         md.append("")
 
@@ -550,12 +601,16 @@ def main() -> None:
     md.append("")
     md.append("Sorted by largest gap first (bigger gap = more routing headroom).")
     md.append("")
-    md.append("| Dataset | Category | N | Oracle @50 | Shipped @50 | Gap @50 | Oracle @20 | Shipped @20 | Gap @20 |")
+    md.append(
+        "| Dataset | Category | N | Oracle @50 | Shipped @50 | Gap @50 | Oracle @20 | Shipped @20 | Gap @20 |"
+    )
     md.append("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     sorted_cats = sorted(cat_agg.items(), key=lambda kv: -(kv[1].get("gap_r50") or 0))
     for (ds, cat), v in sorted_cats:
+
         def _fmt(x):
             return f"{x:.4f}" if x is not None else "n/a"
+
         md.append(
             f"| {ds} | {cat} | {v['n']} | {_fmt(v.get('oracle_r50'))} | "
             f"{_fmt(v.get('shipped_r50'))} | {_fmt(v.get('gap_r50'))} | "
@@ -578,7 +633,9 @@ def main() -> None:
         if gap is None:
             return f"- {name}: could not compute."
         if gap < 0.01:
-            return f"- {name}: gap = {gap:.4f} pp; **saturated** (within 1pp of oracle)."
+            return (
+                f"- {name}: gap = {gap:.4f} pp; **saturated** (within 1pp of oracle)."
+            )
         if gap < 0.03:
             return f"- {name}: gap = {gap:.4f}; near-saturated (1-3pp headroom)."
         if gap < 0.05:
@@ -591,9 +648,11 @@ def main() -> None:
     md.append(f"- Stubborn failures at K=50 (< 0.5 best): **{len(stubborn_list)}**")
     md.append("")
 
-    md.append(f"Captured fraction of oracle ceiling: "
-              f"K=20 = {sw20/ow20:.3f} of oracle ({sw20:.4f}/{ow20:.4f}), "
-              f"K=50 = {sw50/ow50:.3f} of oracle ({sw50:.4f}/{ow50:.4f}).")
+    md.append(
+        f"Captured fraction of oracle ceiling: "
+        f"K=20 = {sw20 / ow20:.3f} of oracle ({sw20:.4f}/{ow20:.4f}), "
+        f"K=50 = {sw50 / ow50:.3f} of oracle ({sw50:.4f}/{ow50:.4f})."
+    )
     md.append("")
 
     md.append("## Pointers")
@@ -609,16 +668,20 @@ def main() -> None:
     print("=== ORACLE CEILING ===")
     for ds in DATASETS:
         a = agg[ds]
-        print(f"{ds}: n={a['n_questions']}  oracle@20={a['oracle_ceiling_r20']:.4f}  "
-              f"shipped@20={a['shipped_r20']:.4f}  gap@20={a['gap_r20']:.4f}  |  "
-              f"oracle@50={a['oracle_ceiling_r50']:.4f}  shipped@50={a['shipped_r50']:.4f}  "
-              f"gap@50={a['gap_r50']:.4f}")
+        print(
+            f"{ds}: n={a['n_questions']}  oracle@20={a['oracle_ceiling_r20']:.4f}  "
+            f"shipped@20={a['shipped_r20']:.4f}  gap@20={a['gap_r20']:.4f}  |  "
+            f"oracle@50={a['oracle_ceiling_r50']:.4f}  shipped@50={a['shipped_r50']:.4f}  "
+            f"gap@50={a['gap_r50']:.4f}"
+        )
     print(f"OVERALL oracle@20={ow20:.4f} shipped@20={sw20:.4f} gap@20={g20:.4f}")
     print(f"OVERALL oracle@50={ow50:.4f} shipped@50={sw50:.4f} gap@50={g50:.4f}")
     print(f"Stubborn (best r@50 < 0.5): {len(stubborn_list)}")
 
 
-def _lookup_shipped(r_at_k: dict, arch_map: dict, shipped_name: str, k: int) -> float | None:
+def _lookup_shipped(
+    r_at_k: dict, arch_map: dict, shipped_name: str, k: int
+) -> float | None:
     """Resolve shipped recipe recall at K. shipped_name looks like
     'two_speaker_filter@20' or 'composition_v2_all@50'. We search the arch_map
     for matching labels, preferring:

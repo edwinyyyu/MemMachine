@@ -35,17 +35,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Optional
 
 import numpy as np
-from openai import OpenAI
-
 from associative_recall import Segment, SegmentStore
-from gated_overlay import GatedOverlay, GatedResult
+from gated_overlay import GatedOverlay
+from openai import OpenAI
 from speaker_attributed import extract_name_mentions
-from two_speaker_filter import TwoSpeakerFilter, _CONV_TWO_SPEAKERS_FILE
-
+from two_speaker_filter import _CONV_TWO_SPEAKERS_FILE, TwoSpeakerFilter
 
 # ---------------------------------------------------------------------------
 # Route constants
@@ -97,8 +93,8 @@ def query_mentions_known_speaker(
     known participant's first name for this conversation.
     """
     pair = pairs.get(conversation_id, {})
-    user_name = (pair.get("user") or "UNKNOWN")
-    asst_name = (pair.get("assistant") or "UNKNOWN")
+    user_name = pair.get("user") or "UNKNOWN"
+    asst_name = pair.get("assistant") or "UNKNOWN"
     tokens = extract_name_mentions(query)
     tlow = {t.lower() for t in tokens}
 
@@ -133,18 +129,16 @@ class MetaRouter:
     def __init__(
         self,
         store: SegmentStore,
-        client: Optional[OpenAI] = None,
+        client: OpenAI | None = None,
         inverted: bool = False,
         gated_threshold: float = 0.7,
-        name: Optional[str] = None,
+        name: str | None = None,
     ) -> None:
         self.store = store
         self.client = client or OpenAI(timeout=60.0, max_retries=3)
         self.inverted = inverted
         self.gated_threshold = gated_threshold
-        self.arch_name = name or (
-            "meta_router_inverted" if inverted else "meta_router"
-        )
+        self.arch_name = name or ("meta_router_inverted" if inverted else "meta_router")
 
         # Instantiate both architectures (they have their own caches).
         self.two_speaker = TwoSpeakerFilter(store, client=self.client)
@@ -189,13 +183,11 @@ class MetaRouter:
 
     # --- dispatch ---
     def _collect_counters(self) -> None:
-        self.embed_calls = (
-            getattr(self.two_speaker, "embed_calls", 0)
-            + getattr(self.gated, "embed_calls", 0)
+        self.embed_calls = getattr(self.two_speaker, "embed_calls", 0) + getattr(
+            self.gated, "embed_calls", 0
         )
-        self.llm_calls = (
-            getattr(self.two_speaker, "llm_calls", 0)
-            + getattr(self.gated, "llm_calls", 0)
+        self.llm_calls = getattr(self.two_speaker, "llm_calls", 0) + getattr(
+            self.gated, "llm_calls", 0
         )
 
     def retrieve(
@@ -233,9 +225,7 @@ class MetaRouter:
         metadata: dict = {
             "name": self.arch_name,
             "route": route,
-            "routing_rule": (
-                "inverted" if self.inverted else "primary"
-            ),
+            "routing_rule": ("inverted" if self.inverted else "primary"),
             "query_name_tokens": name_tokens,
             "matched_names": matched_names,
             "speaker_mention_matches": matches,
@@ -253,12 +243,10 @@ class MetaRouter:
 def build_meta_router(
     name: str,
     store: SegmentStore,
-    client: Optional[OpenAI] = None,
+    client: OpenAI | None = None,
 ) -> MetaRouter:
     if name == "meta_router":
-        return MetaRouter(
-            store, client=client, inverted=False, name="meta_router"
-        )
+        return MetaRouter(store, client=client, inverted=False, name="meta_router")
     if name == "meta_router_inverted":
         return MetaRouter(
             store, client=client, inverted=True, name="meta_router_inverted"

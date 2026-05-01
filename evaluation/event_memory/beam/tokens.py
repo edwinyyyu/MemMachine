@@ -1,5 +1,6 @@
-import json
 import argparse
+import json
+
 
 def average_input_tokens(data):
     total_tokens = 0
@@ -14,7 +15,9 @@ def average_input_tokens(data):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compute average input_tokens from JSON")
+    parser = argparse.ArgumentParser(
+        description="Compute average input_tokens from JSON"
+    )
     parser.add_argument("file", help="Path to JSON file")
     args = parser.parse_args()
 

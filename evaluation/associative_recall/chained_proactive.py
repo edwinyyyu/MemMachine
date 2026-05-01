@@ -38,19 +38,16 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
-
-from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 
 from em_architectures import (
     V2F_MODEL,
     EMHit,
-    _MergedLLMCache,
     _dedupe_by_turn_id,
     _merge_by_max_score,
+    _MergedLLMCache,
     _query_em,
 )
-
+from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
 
@@ -236,7 +233,7 @@ def _extract_json(text: str) -> dict | None:
     if start < 0 or end <= start:
         return None
     try:
-        return json.loads(t[start:end + 1])
+        return json.loads(t[start : end + 1])
     except Exception:
         return None
 
@@ -252,23 +249,33 @@ def parse_plan(response: str) -> dict:
         nid = str(n.get("id") or "").strip()
         ntype = str(n.get("type") or "").strip().lower()
         target = str(n.get("target") or "").strip()
-        if not nid or not target or ntype not in ("entity_discovery", "per_entity_fact"):
+        if (
+            not nid
+            or not target
+            or ntype not in ("entity_discovery", "per_entity_fact")
+        ):
             continue
-        depends_on = [str(x).strip() for x in (n.get("depends_on") or []) if str(x).strip()]
+        depends_on = [
+            str(x).strip() for x in (n.get("depends_on") or []) if str(x).strip()
+        ]
         for_each = n.get("for_each")
         for_each = str(for_each).strip() if for_each else None
-        exp_vocab = [str(x).strip() for x in (n.get("expected_vocab") or []) if str(x).strip()]
+        exp_vocab = [
+            str(x).strip() for x in (n.get("expected_vocab") or []) if str(x).strip()
+        ]
         entity_cat = n.get("entity_category")
         entity_cat = str(entity_cat).strip() if entity_cat else None
-        nodes.append({
-            "id": nid,
-            "type": ntype,
-            "target": target,
-            "expected_vocab": exp_vocab,
-            "depends_on": depends_on,
-            "for_each": for_each,
-            "entity_category": entity_cat,
-        })
+        nodes.append(
+            {
+                "id": nid,
+                "type": ntype,
+                "target": target,
+                "expected_vocab": exp_vocab,
+                "depends_on": depends_on,
+                "for_each": for_each,
+                "entity_category": entity_cat,
+            }
+        )
     return {
         "explicit_entities": [str(e).strip() for e in explicit if str(e).strip()],
         "info_nodes": nodes,
@@ -298,7 +305,11 @@ def parse_entities(response: str) -> list[str]:
 def parse_sufficiency(response: str) -> dict:
     obj = _extract_json(response) or {}
     ans = obj.get("answerable")
-    answerable = bool(ans) if isinstance(ans, bool) else str(ans).strip().lower() in ("true", "yes", "1")
+    answerable = (
+        bool(ans)
+        if isinstance(ans, bool)
+        else str(ans).strip().lower() in ("true", "yes", "1")
+    )
     extra = obj.get("extra_nodes") or []
     # Re-run node schema validation.
     extra_nodes: list[dict] = []
@@ -308,17 +319,35 @@ def parse_sufficiency(response: str) -> dict:
         nid = str(n.get("id") or "").strip()
         ntype = str(n.get("type") or "").strip().lower()
         target = str(n.get("target") or "").strip()
-        if not nid or not target or ntype not in ("entity_discovery", "per_entity_fact"):
+        if (
+            not nid
+            or not target
+            or ntype not in ("entity_discovery", "per_entity_fact")
+        ):
             continue
-        extra_nodes.append({
-            "id": nid,
-            "type": ntype,
-            "target": target,
-            "expected_vocab": [str(x).strip() for x in (n.get("expected_vocab") or []) if str(x).strip()],
-            "depends_on": [str(x).strip() for x in (n.get("depends_on") or []) if str(x).strip()],
-            "for_each": str(n.get("for_each")).strip() if n.get("for_each") else None,
-            "entity_category": str(n.get("entity_category")).strip() if n.get("entity_category") else None,
-        })
+        extra_nodes.append(
+            {
+                "id": nid,
+                "type": ntype,
+                "target": target,
+                "expected_vocab": [
+                    str(x).strip()
+                    for x in (n.get("expected_vocab") or [])
+                    if str(x).strip()
+                ],
+                "depends_on": [
+                    str(x).strip()
+                    for x in (n.get("depends_on") or [])
+                    if str(x).strip()
+                ],
+                "for_each": str(n.get("for_each")).strip()
+                if n.get("for_each")
+                else None,
+                "entity_category": str(n.get("entity_category")).strip()
+                if n.get("entity_category")
+                else None,
+            }
+        )
     return {"answerable": answerable, "extra_nodes": extra_nodes}
 
 
@@ -332,10 +361,16 @@ def parse_flat_needs(response: str) -> list[dict]:
         need = str(n.get("need") or "").strip()
         if not need:
             continue
-        out.append({
-            "need": need,
-            "expected_vocab": [str(x).strip() for x in (n.get("expected_vocab") or []) if str(x).strip()],
-        })
+        out.append(
+            {
+                "need": need,
+                "expected_vocab": [
+                    str(x).strip()
+                    for x in (n.get("expected_vocab") or [])
+                    if str(x).strip()
+                ],
+            }
+        )
     return out
 
 
@@ -366,7 +401,9 @@ async def _llm_call(
 # --------------------------------------------------------------------------
 
 
-def _format_hits_for_prompt(hits: list[EMHit], max_items: int = 8, max_len: int = 160) -> str:
+def _format_hits_for_prompt(
+    hits: list[EMHit], max_items: int = 8, max_len: int = 160
+) -> str:
     if not hits:
         return "(no retrievals)"
     top = sorted(hits, key=lambda h: -h.score)[:max_items]
@@ -452,7 +489,9 @@ async def run_single_shot(
 ) -> RetrievalResult:
     p1, p2 = participants
     prompt = SINGLE_SHOT_PROMPT.format(
-        task_prompt=task_prompt, participant_1=p1, participant_2=p2,
+        task_prompt=task_prompt,
+        participant_1=p1,
+        participant_2=p2,
     )
     raw, cache_hit = await _llm_call(openai_client, prompt, cuegen_cache)
     cues = parse_cues(raw, max_cues=2)
@@ -498,14 +537,18 @@ async def run_flat_proactive(
     p1, p2 = participants
 
     decompose_prompt = FLAT_DECOMPOSE_PROMPT.format(
-        participant_1=p1, participant_2=p2, task_prompt=task_prompt,
+        participant_1=p1,
+        participant_2=p2,
+        task_prompt=task_prompt,
     )
     decompose_raw, decompose_hit = await _llm_call(
         openai_client, decompose_prompt, flat_cache
     )
     needs = parse_flat_needs(decompose_raw)
     if not needs:
-        needs = [{"need": task_prompt.strip().split("\n")[0][:120], "expected_vocab": []}]
+        needs = [
+            {"need": task_prompt.strip().split("\n")[0][:120], "expected_vocab": []}
+        ]
 
     n_llm_calls = 1
     all_batches: list[list[EMHit]] = []
@@ -514,8 +557,11 @@ async def run_flat_proactive(
     for need in needs:
         vocab_str = ", ".join(need.get("expected_vocab") or []) or "(none)"
         cue_prompt = CUEGEN_NODE_PROMPT.format(
-            participant_1=p1, participant_2=p2, task_prompt=task_prompt,
-            target=need["need"], expected_vocab=vocab_str,
+            participant_1=p1,
+            participant_2=p2,
+            task_prompt=task_prompt,
+            target=need["need"],
+            expected_vocab=vocab_str,
             entity_clause="",
         )
         cue_raw, cue_hit = await _llm_call(openai_client, cue_prompt, cuegen_cache)
@@ -535,13 +581,17 @@ async def run_flat_proactive(
             )
         merged_need = _dedupe_by_turn_id(_merge_by_max_score(batches_this_need))
         all_batches.extend(batches_this_need)
-        per_need_meta.append({
-            "need": need["need"],
-            "cues": cues,
-            "cue_cache_hit": cue_hit,
-            "n_hits": len(merged_need),
-            "top_turn_ids": [h.turn_id for h in sorted(merged_need, key=lambda h: -h.score)[:10]],
-        })
+        per_need_meta.append(
+            {
+                "need": need["need"],
+                "cues": cues,
+                "cue_cache_hit": cue_hit,
+                "n_hits": len(merged_need),
+                "top_turn_ids": [
+                    h.turn_id for h in sorted(merged_need, key=lambda h: -h.score)[:10]
+                ],
+            }
+        )
 
     global_merged = _dedupe_by_turn_id(_merge_by_max_score(all_batches))[:K_final]
     return RetrievalResult(
@@ -595,8 +645,11 @@ async def _retrieve_for_node(
                 f"Cues should retrieve {node['target']} SPECIFICALLY for {entity}."
             )
             prompt = CUEGEN_NODE_PROMPT.format(
-                participant_1=p1, participant_2=p2, task_prompt=task_prompt,
-                target=node["target"], expected_vocab=vocab_str,
+                participant_1=p1,
+                participant_2=p2,
+                task_prompt=task_prompt,
+                target=node["target"],
+                expected_vocab=vocab_str,
                 entity_clause=entity_clause,
             )
             raw, hit = await _llm_call(openai_client, prompt, cuegen_cache)
@@ -625,8 +678,11 @@ async def _retrieve_for_node(
                 f"{node['entity_category']!r}."
             )
         prompt = CUEGEN_NODE_PROMPT.format(
-            participant_1=p1, participant_2=p2, task_prompt=task_prompt,
-            target=node["target"], expected_vocab=vocab_str,
+            participant_1=p1,
+            participant_2=p2,
+            task_prompt=task_prompt,
+            target=node["target"],
+            expected_vocab=vocab_str,
             entity_clause=entity_clause,
         )
         raw, hit = await _llm_call(openai_client, prompt, cuegen_cache)
@@ -693,7 +749,9 @@ async def run_chained_proactive(
 
     # ----- Phase 1: plan DAG -----
     plan_prompt = PLAN_PROMPT.format(
-        participant_1=p1, participant_2=p2, task_prompt=task_prompt,
+        participant_1=p1,
+        participant_2=p2,
+        task_prompt=task_prompt,
     )
     plan_raw, plan_hit = await _llm_call(openai_client, plan_prompt, plan_cache)
     if not plan_hit:
@@ -704,15 +762,17 @@ async def run_chained_proactive(
         # Fallback: treat entire task as one entity_discovery node.
         plan = {
             "explicit_entities": [],
-            "info_nodes": [{
-                "id": "n1",
-                "type": "entity_discovery",
-                "target": task_prompt.strip().split("\n")[0][:160],
-                "expected_vocab": [],
-                "depends_on": [],
-                "for_each": None,
-                "entity_category": "mention",
-            }],
+            "info_nodes": [
+                {
+                    "id": "n1",
+                    "type": "entity_discovery",
+                    "target": task_prompt.strip().split("\n")[0][:160],
+                    "expected_vocab": [],
+                    "depends_on": [],
+                    "for_each": None,
+                    "entity_category": "mention",
+                }
+            ],
         }
 
     # ----- Phase 2: iterate (plan exec + sufficiency loop) -----
@@ -743,8 +803,13 @@ async def run_chained_proactive(
                     upstream = list(plan["explicit_entities"])
 
             hits, rmeta = await _retrieve_for_node(
-                memory, task_prompt, node, participants, upstream,
-                K_per_cue=K_per_cue, cuegen_cache=cuegen_cache,
+                memory,
+                task_prompt,
+                node,
+                participants,
+                upstream,
+                K_per_cue=K_per_cue,
+                cuegen_cache=cuegen_cache,
                 openai_client=openai_client,
             )
             n_llm_calls += rmeta["n_llm_calls"]
@@ -752,7 +817,10 @@ async def run_chained_proactive(
             node_hits[node["id"]] = hits
 
             ents, ent_hit, ent_calls = await _extract_entities_for_node(
-                node, hits, entity_cache=entity_cache, openai_client=openai_client,
+                node,
+                hits,
+                entity_cache=entity_cache,
+                openai_client=openai_client,
             )
             n_llm_calls += ent_calls
             node_entities[node["id"]] = ents
@@ -769,7 +837,9 @@ async def run_chained_proactive(
                 "upstream_entities_used": upstream,
                 "cuegen": rmeta["cuegen"],
                 "n_hits": rmeta["n_hits"],
-                "top_turn_ids": [h.turn_id for h in sorted(hits, key=lambda h: -h.score)[:10]],
+                "top_turn_ids": [
+                    h.turn_id for h in sorted(hits, key=lambda h: -h.score)[:10]
+                ],
                 "extracted_entities": ents,
                 "entity_cache_hit": ent_hit,
             }
@@ -793,12 +863,15 @@ async def run_chained_proactive(
                 plan_block_lines.append(
                     f"Discovered entities: {m['extracted_entities']}"
                 )
-            plan_block_lines.append(_format_hits_for_prompt(node_hits[node["id"]], max_items=5, max_len=150))
+            plan_block_lines.append(
+                _format_hits_for_prompt(node_hits[node["id"]], max_items=5, max_len=150)
+            )
             plan_block_lines.append("")
         plan_block = "\n".join(plan_block_lines)
 
         suff_prompt = SUFFICIENCY_PROMPT.format(
-            task_prompt=task_prompt, plan_block=plan_block,
+            task_prompt=task_prompt,
+            plan_block=plan_block,
         )
         suff_raw, suff_hit = await _llm_call(openai_client, suff_prompt, suff_cache)
         if not suff_hit:
@@ -851,7 +924,9 @@ async def run_chained_proactive(
                     for n in current_nodes
                 ],
             },
-            "nodes": [node_meta[n["id"]] for n in current_nodes if n["id"] in node_meta],
+            "nodes": [
+                node_meta[n["id"]] for n in current_nodes if n["id"] in node_meta
+            ],
             "n_iterations": len(iterations),
             "iterations": iterations,
             "n_entities_discovered": discovered_entity_count,

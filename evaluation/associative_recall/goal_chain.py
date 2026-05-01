@@ -52,9 +52,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -63,6 +60,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -257,9 +256,7 @@ def _format_segments(
     )
 
 
-def _format_segments_recent(
-    segments: list[Segment], max_chars: int = 250
-) -> str:
+def _format_segments_recent(segments: list[Segment], max_chars: int = 250) -> str:
     # Most-recently retrieved segments, sorted by retrieval order (not turn_id).
     return "\n".join(
         f"[Turn {s.turn_id}, {s.role}]: {s.text[:max_chars]}" for s in segments
@@ -356,8 +353,9 @@ def _parse_decision(text: str) -> dict:
     def _flush() -> None:
         nonlocal buf, current_key
         if current_key and buf:
-            out[current_key] = (out.get(current_key, "") + " "
-                                + " ".join(buf).strip()).strip()
+            out[current_key] = (
+                out.get(current_key, "") + " " + " ".join(buf).strip()
+            ).strip()
         buf = []
 
     for line in lines:
@@ -461,8 +459,11 @@ class GoalChainRetriever(GoalChainBase):
                     all_segs=_format_segments(all_segs, max_items=14),
                     recent_segs=_format_segments_recent(recent_segs[:8]),
                     round_num=rnd,
-                    explored=("\n".join(f"- {c}" for c in explored)
-                              if explored else "(none yet)"),
+                    explored=(
+                        "\n".join(f"- {c}" for c in explored)
+                        if explored
+                        else "(none yet)"
+                    ),
                 )
             else:
                 prompt = GOAL_CHAIN_PROMPT_A.format(
@@ -471,8 +472,11 @@ class GoalChainRetriever(GoalChainBase):
                     all_segs=_format_segments(all_segs, max_items=14),
                     recent_segs=_format_segments_recent(recent_segs[:8]),
                     round_num=rnd,
-                    explored=("\n".join(f"- {c}" for c in explored)
-                              if explored else "(none yet)"),
+                    explored=(
+                        "\n".join(f"- {c}" for c in explored)
+                        if explored
+                        else "(none yet)"
+                    ),
                 )
 
             response = self.llm_call(prompt)
@@ -483,13 +487,15 @@ class GoalChainRetriever(GoalChainBase):
             if self.use_scratchpad and parsed["scratchpad"]:
                 scratchpad = parsed["scratchpad"]
 
-            round_log.append({
-                "round": rnd,
-                "action": action,
-                "cue": cue,
-                "reasoning": reasoning,
-                "scratchpad": parsed.get("scratchpad", ""),
-            })
+            round_log.append(
+                {
+                    "round": rnd,
+                    "action": action,
+                    "cue": cue,
+                    "reasoning": reasoning,
+                    "scratchpad": parsed.get("scratchpad", ""),
+                }
+            )
 
             if action == "DONE":
                 break
@@ -503,8 +509,10 @@ class GoalChainRetriever(GoalChainBase):
             explored.append(cue)
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_round_k,
-                conversation_id=conversation_id, exclude_indices=exclude,
+                cue_emb,
+                top_k=self.per_round_k,
+                conversation_id=conversation_id,
+                exclude_indices=exclude,
             )
             new_segs: list[Segment] = []
             for s in result.segments:
@@ -512,13 +520,9 @@ class GoalChainRetriever(GoalChainBase):
                     all_segs.append(s)
                     exclude.add(s.index)
                     new_segs.append(s)
-            recent_segs = new_segs if new_segs else recent_segs
+            recent_segs = new_segs or recent_segs
 
-        name = (
-            "chain_with_scratchpad"
-            if self.use_scratchpad
-            else "chain_goal_tracking"
-        )
+        name = "chain_with_scratchpad" if self.use_scratchpad else "chain_goal_tracking"
         return GoalChainResult(
             segments=all_segs,
             embed_calls=self.embed_calls,
@@ -635,9 +639,7 @@ def evaluate_question(arch: GoalChainBase, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -684,15 +686,9 @@ def summarize(results: list[dict], arch_name: str, dataset: str) -> dict:
     summary["avg_total_retrieved"] = round(
         sum(r["total_arch_retrieved"] for r in results) / n, 1
     )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1
-    )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
-    summary["avg_time_s"] = round(
-        sum(r["time_s"] for r in results) / n, 2
-    )
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
+    summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
     # Action distribution
     actions = defaultdict(int)
     round_counts: list[int] = []
@@ -755,8 +751,10 @@ def run_variant_on_dataset(
         existing_results = doc.get("results", [])
         # If already complete, skip.
         if len(existing_results) >= len(questions):
-            print(f"  [cached] {variant_name} on {ds_name}: "
-                  f"{len(existing_results)} questions")
+            print(
+                f"  [cached] {variant_name} on {ds_name}: "
+                f"{len(existing_results)} questions"
+            )
             summary = doc.get("summary") or summarize(
                 existing_results, variant_name, ds_name
             )
@@ -776,8 +774,10 @@ def run_variant_on_dataset(
     results: list[dict] = list(existing_results)
 
     print(f"\n{'=' * 70}")
-    print(f"{variant_name} | {ds_name} | "
-          f"{len(questions)} total, {len(existing_results)} done")
+    print(
+        f"{variant_name} | {ds_name} | "
+        f"{len(questions)} total, {len(existing_results)} done"
+    )
     print(f"{'=' * 70}")
 
     for i, q in enumerate(questions):
@@ -786,8 +786,7 @@ def run_variant_on_dataset(
             continue
         q_short = q["question"][:55]
         print(
-            f"  [{i + 1}/{len(questions)}] "
-            f"{q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -796,6 +795,7 @@ def run_variant_on_dataset(
         except Exception as e:
             print(f"    ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
 
@@ -884,29 +884,31 @@ def load_reference_baseline(
         # Project to fair_backfill shape for comparison.
         projected = []
         for r in results:
-            projected.append({
-                "conversation_id": r["conversation_id"],
-                "category": r["category"],
-                "question_index": r["question_index"],
-                "question": r["question"],
-                "num_source_turns": r["num_source_turns"],
-                "total_arch_retrieved": r["total_retrieved"],
-                "embed_calls": r.get("embed_calls", 0),
-                "llm_calls": r.get("llm_calls", 0),
-                "time_s": r.get("time_s", 0),
-                "fair_backfill": {
-                    "baseline_r@20": r["baseline_recalls"]["r@20"],
-                    "arch_r@20": r["arch_recalls"]["r@20"],
-                    "delta_r@20": (
-                        r["arch_recalls"]["r@20"] - r["baseline_recalls"]["r@20"]
-                    ),
-                    "baseline_r@50": r["baseline_recalls"]["r@50"],
-                    "arch_r@50": r["arch_recalls"]["r@50"],
-                    "delta_r@50": (
-                        r["arch_recalls"]["r@50"] - r["baseline_recalls"]["r@50"]
-                    ),
-                },
-            })
+            projected.append(
+                {
+                    "conversation_id": r["conversation_id"],
+                    "category": r["category"],
+                    "question_index": r["question_index"],
+                    "question": r["question"],
+                    "num_source_turns": r["num_source_turns"],
+                    "total_arch_retrieved": r["total_retrieved"],
+                    "embed_calls": r.get("embed_calls", 0),
+                    "llm_calls": r.get("llm_calls", 0),
+                    "time_s": r.get("time_s", 0),
+                    "fair_backfill": {
+                        "baseline_r@20": r["baseline_recalls"]["r@20"],
+                        "arch_r@20": r["arch_recalls"]["r@20"],
+                        "delta_r@20": (
+                            r["arch_recalls"]["r@20"] - r["baseline_recalls"]["r@20"]
+                        ),
+                        "baseline_r@50": r["baseline_recalls"]["r@50"],
+                        "arch_r@50": r["arch_recalls"]["r@50"],
+                        "delta_r@50": (
+                            r["arch_recalls"]["r@50"] - r["baseline_recalls"]["r@50"]
+                        ),
+                    },
+                }
+            )
         summary = summarize(projected, "chain_of_thought", ds_name)
         by_cat = summarize_by_category(projected)
         return summary, by_cat
@@ -953,8 +955,10 @@ def main() -> None:
     all_summaries: dict = {}
     for ds_name in ds_names:
         store, questions = load_dataset(ds_name)
-        print(f"\nLoaded {ds_name}: {len(questions)} questions, "
-              f"{len(store.segments)} segments")
+        print(
+            f"\nLoaded {ds_name}: {len(questions)} questions, "
+            f"{len(store.segments)} segments"
+        )
         for variant_name in variant_names:
             _, summary, by_cat = run_variant_on_dataset(
                 variant_name, ds_name, store, questions, force=args.force
@@ -1069,10 +1073,12 @@ def main() -> None:
         _, v2f_bycat = load_reference_baseline("v2f", ds_name)
         v2f_d = (v2f_bycat or {}).get(target_cat, {}).get("delta_r@20")
         for variant_name in variant_names:
-            my = (all_summaries.get(variant_name, {})
-                  .get(ds_name, {})
-                  .get("category_breakdown", {})
-                  .get(target_cat))
+            my = (
+                all_summaries.get(variant_name, {})
+                .get(ds_name, {})
+                .get("category_breakdown", {})
+                .get(target_cat)
+            )
             if not my:
                 continue
             print(
@@ -1087,10 +1093,12 @@ def main() -> None:
         for cat in cats:
             v2f_d = (v2f_bycat or {}).get(cat, {}).get("delta_r@20")
             for variant_name in variant_names:
-                my = (all_summaries.get(variant_name, {})
-                      .get(ds_name, {})
-                      .get("category_breakdown", {})
-                      .get(cat))
+                my = (
+                    all_summaries.get(variant_name, {})
+                    .get(ds_name, {})
+                    .get("category_breakdown", {})
+                    .get(cat)
+                )
                 if not my:
                     continue
                 print(

@@ -34,11 +34,11 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
-import os
 import re
-from dataclasses import dataclass, field, asdict
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from openai import OpenAI
 
@@ -318,7 +318,7 @@ def _extract_json_block(text: str) -> str | None:
         elif c == "}":
             depth -= 1
             if depth == 0:
-                return text[start: i + 1]
+                return text[start : i + 1]
     return None
 
 
@@ -369,8 +369,12 @@ def parse_temporal_constraint(
     # Normalize: if temporal_type is set but constraint flag wasn't, treat as
     # constraint. If types/structure are wrong, fall back.
     if tc.temporal_type not in (
-        None, "before", "after", "during",
-        "relative-past", "relative-future",
+        None,
+        "before",
+        "after",
+        "during",
+        "relative-past",
+        "relative-future",
     ):
         return TemporalConstraint(raw_llm_response=raw)
     if tc.temporal_type is None:
@@ -430,7 +434,8 @@ def temporal_score(
     if t == "before":
         ref = (
             dt.date.fromisoformat(constraint.reference_date)
-            if constraint.reference_date else None
+            if constraint.reference_date
+            else None
         )
         if ref is None:
             return 0.0
@@ -439,7 +444,8 @@ def temporal_score(
     if t == "after":
         ref = (
             dt.date.fromisoformat(constraint.reference_date)
-            if constraint.reference_date else None
+            if constraint.reference_date
+            else None
         )
         if ref is None:
             return 0.0
@@ -448,7 +454,8 @@ def temporal_score(
     if t == "during":
         ref = (
             dt.date.fromisoformat(constraint.reference_date)
-            if constraint.reference_date else None
+            if constraint.reference_date
+            else None
         )
         if ref is None:
             return 0.0

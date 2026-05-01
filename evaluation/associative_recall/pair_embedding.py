@@ -23,11 +23,8 @@ from __future__ import annotations
 import json
 import time
 from collections import defaultdict
-from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -43,7 +40,7 @@ from best_shot import (
     _format_segments,
     _parse_cues,
 )
-
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Dedicated caches
@@ -235,19 +232,13 @@ class PairIndex:
                     continue
                 # Build pair only if roles alternate user->assistant
                 forward = a.role == "user" and b.role == "assistant"
-                reverse = (
-                    include_reverse
-                    and a.role == "assistant"
-                    and b.role == "user"
-                )
+                reverse = include_reverse and a.role == "assistant" and b.role == "user"
                 if not (forward or reverse):
                     continue
                 if use_role_prefix:
                     prefix_a = "USER" if a.role == "user" else "ASSISTANT"
                     prefix_b = "USER" if b.role == "user" else "ASSISTANT"
-                    pair_text = (
-                        f"{prefix_a}: {a.text}\n{prefix_b}: {b.text}"
-                    )
+                    pair_text = f"{prefix_a}: {a.text}\n{prefix_b}: {b.text}"
                 else:
                     pair_text = f"{a.text} {b.text}"
                 self.pairs.append((cid, a.index, b.index, pair_text))
@@ -264,9 +255,7 @@ class PairIndex:
         norms = np.maximum(norms, 1e-10)
         self.embeddings = mat
         self.normalized_embeddings = mat / norms
-        self.conversation_ids = np.array(
-            [p[0] for p in self.pairs], dtype=object
-        )
+        self.conversation_ids = np.array([p[0] for p in self.pairs], dtype=object)
 
     def __len__(self) -> int:
         return len(self.pairs)
@@ -285,14 +274,12 @@ class PairIndex:
             mask = self.conversation_ids == conversation_id
             sims = np.where(mask, sims, -1.0)
         top_idx = np.argsort(sims)[::-1][:top_m]
-        return [
-            (int(i), float(sims[i])) for i in top_idx if sims[i] > -1.0
-        ]
+        return [(int(i), float(sims[i])) for i in top_idx if sims[i] > -1.0]
 
 
 # Module-level per-store cache so each arch variant with the SAME prefix
 # setting reuses the same built index within a process.
-_PAIR_INDEX_REGISTRY: dict[tuple[int, bool, bool], "PairIndex"] = {}
+_PAIR_INDEX_REGISTRY: dict[tuple[int, bool, bool], PairIndex] = {}
 
 
 def get_or_build_pair_index(
@@ -421,9 +408,7 @@ class _PairBase(BestshotBase):
                 response = self.client.embeddings.create(
                     model=EMBED_MODEL, input=[text]
                 )
-                embedding = np.array(
-                    response.data[0].embedding, dtype=np.float32
-                )
+                embedding = np.array(response.data[0].embedding, dtype=np.float32)
                 self.embedding_cache.put(text, embedding)
                 self.embed_calls += 1
                 return embedding
@@ -473,9 +458,7 @@ class _PairBase(BestshotBase):
         promoted_ids: list[int] = []  # constituents promoted by pair hits
         pair_scores_each: list[float] = []
         for pair_idx, pair_cos in pair_hits:
-            _cid, seg_a_idx, seg_b_idx, _text = self._pair_index.pairs[
-                pair_idx
-            ]
+            _cid, seg_a_idx, seg_b_idx, _text = self._pair_index.pairs[pair_idx]
             promoted_score = pair_cos * self.attenuation
             pair_scores_each.append(pair_cos)
             for seg_idx in (seg_a_idx, seg_b_idx):
@@ -518,9 +501,7 @@ class _PairBase(BestshotBase):
                     source_map[seg.index].append(f"v2f:{sc:.3f}")
 
         # 4. Rank by score, truncate
-        ranked = sorted(
-            score_map.keys(), key=lambda i: score_map[i], reverse=True
-        )
+        ranked = sorted(score_map.keys(), key=lambda i: score_map[i], reverse=True)
         all_segments = [seg_map[i] for i in ranked]
 
         return BestshotResult(

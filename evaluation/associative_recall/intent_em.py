@@ -66,26 +66,26 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from memmachine_server.common.filter.filter_parser import Comparison, FilterExpr
-from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
-
 from em_architectures import (
-    EMHit,
     V2F_MODEL,
     V2F_PROMPT,
-    _MergedLLMCache,
+    EMHit,
     _dedupe_by_turn_id,
     _merge_by_max_score,
+    _MergedLLMCache,
     _query_em,
     format_primer_context,
     parse_v2f_cues,
 )
 from em_retuned_cue_gen import (
     build_v2f_speakerformat_prompt,
+)
+from em_retuned_cue_gen import (
     parse_cues as parse_retuned_cues,
 )
+from memmachine_server.common.filter.filter_parser import Comparison, FilterExpr
+from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 from speaker_attributed import extract_name_mentions
-
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
@@ -197,9 +197,7 @@ def build_em_filter(
             sp, question, conversation_id, speaker_map
         )
         if matched_name:
-            filter_expr = Comparison(
-                field="context.source", op="=", value=matched_name
-            )
+            filter_expr = Comparison(field="context.source", op="=", value=matched_name)
             analysis["applied"].append("speaker")
             analysis["speaker_resolved"] = matched_name
             analysis["matched_side"] = side
@@ -284,13 +282,10 @@ async def _generate_v2f_cues(
         await _query_em(memory, question, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer_hits
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer_hits
     ]
     context_section = format_primer_context(primer_segments)
-    prompt = V2F_PROMPT.format(
-        question=question, context_section=context_section
-    )
+    prompt = V2F_PROMPT.format(question=question, context_section=context_section)
     cached = llm_cache.get(V2F_MODEL, prompt)
     cache_hit = cached is not None
     if cached is None:
@@ -319,14 +314,11 @@ async def _generate_speakerformat_cues(
         await _query_em(memory, question, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer_hits
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer_hits
     ]
     context_section = format_primer_context(primer_segments)
     p_user, p_asst = participants
-    prompt = build_v2f_speakerformat_prompt(
-        question, context_section, p_user, p_asst
-    )
+    prompt = build_v2f_speakerformat_prompt(question, context_section, p_user, p_asst)
     cached = llm_cache.get(V2F_MODEL, prompt)
     cache_hit = cached is not None
     if cached is None:
@@ -342,9 +334,7 @@ async def _generate_speakerformat_cues(
     return cues, {"cues": cues, "cache_hit": cache_hit}
 
 
-def _apply_negation_nudge(
-    hits: list[EMHit], bonus: float = 0.02
-) -> list[EMHit]:
+def _apply_negation_nudge(hits: list[EMHit], bonus: float = 0.02) -> list[EMHit]:
     """Post-retrieval score nudge for turns with negation markers."""
     nudged: list[EMHit] = []
     for h in hits:

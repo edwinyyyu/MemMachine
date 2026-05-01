@@ -30,9 +30,19 @@ from pathlib import Path
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import _MergedLLMCache
+from em_iterative_archs import (
+    ITER_CH2_CACHE,
+    ITER_HD_CACHE,
+    ITER_RR_CACHE,
+    ITER_WMB_CACHE,
+    em_hypothesis_driven_sf,
+    em_iterative_with_filter,
+    em_v15_conditional_hop2_sf,
+    em_v15_rerank_sf,
+    em_working_memory_buffer_sf,
+)
+from em_two_speaker import load_two_speaker_map
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -49,21 +59,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import _MergedLLMCache
-from em_iterative_archs import (
-    ITER_CH2_CACHE,
-    ITER_HD_CACHE,
-    ITER_RR_CACHE,
-    ITER_WMB_CACHE,
-    em_hypothesis_driven_sf,
-    em_iterative_with_filter,
-    em_v15_conditional_hop2_sf,
-    em_v15_rerank_sf,
-    em_working_memory_buffer_sf,
-)
-from em_two_speaker import load_two_speaker_map
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -212,9 +209,7 @@ async def main() -> None:
     questions = load_questions()
     if args.limit is not None:
         questions = questions[: args.limit]
-    conv_to_meta = {
-        r["conversation_id"]: r for r in collections_meta["conversations"]
-    }
+    conv_to_meta = {r["conversation_id"]: r for r in collections_meta["conversations"]}
 
     qdrant_client = AsyncQdrantClient(
         host=os.getenv("QDRANT_HOST", "localhost"),
@@ -233,9 +228,7 @@ async def main() -> None:
         engine = create_async_engine(sql_url)
     else:
         engine = create_async_engine(sql_url, pool_size=20, max_overflow=20)
-    segment_store = SQLAlchemySegmentStore(
-        SQLAlchemySegmentStoreParams(engine=engine)
-    )
+    segment_store = SQLAlchemySegmentStore(SQLAlchemySegmentStoreParams(engine=engine))
     await segment_store.startup()
 
     openai_client = openai.AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
@@ -256,9 +249,7 @@ async def main() -> None:
     for variant in ALL_VARIANTS:
         path = CACHE_FILES[variant]
         if path not in unique_caches:
-            unique_caches[path] = _MergedLLMCache(
-                reader_paths=[path], writer_path=path
-            )
+            unique_caches[path] = _MergedLLMCache(reader_paths=[path], writer_path=path)
         caches[variant] = unique_caches[path]
 
     # Open EM per conversation.
@@ -319,9 +310,7 @@ async def main() -> None:
         summary = {
             "n": n,
             "time_s": round(elapsed, 1),
-            "mean_llm_calls": round(
-                sum(r["llm_calls"] for r in rows) / max(n, 1), 2
-            ),
+            "mean_llm_calls": round(sum(r["llm_calls"] for r in rows) / max(n, 1), 2),
         }
         for K in BUDGETS:
             summary[f"mean_r@{K}"] = round(
@@ -335,8 +324,7 @@ async def main() -> None:
             d = {"n": len(cat_rows)}
             for K in BUDGETS:
                 d[f"mean_r@{K}"] = round(
-                    sum(r[f"r@{K}"] for r in cat_rows)
-                    / max(len(cat_rows), 1),
+                    sum(r[f"r@{K}"] for r in cat_rows) / max(len(cat_rows), 1),
                     4,
                 )
             cat_summary[cat] = d
@@ -489,9 +477,9 @@ def build_markdown_report(
         "- Backend: EventMemory (`text-embedding-3-small`, `gpt-5-mini`, "
         "`max_text_chunk_length=500`, `derive_sentences=False`, "
         "`reranker=None`).",
-        "- Speaker-baked embeddings: `\"{source}: {text}\"`. All cue-gen "
+        '- Speaker-baked embeddings: `"{source}: {text}"`. All cue-gen '
         "prompts use the V2F_SPEAKERFORMAT style (cues must start with "
-        "`\"<speaker_name>: \"`).",
+        '`"<speaker_name>: "`).',
         "- `*_filter` variants apply `property_filter(context.source=<speaker>)`"
         " post-hoc when the query mentions one participant (mirrors "
         "`em_two_speaker_filter`).",
@@ -613,9 +601,7 @@ def build_markdown_report(
         d50 = s["mean_r@50"] - v2f_sf_50
         ratio = d50 / extra if extra > 0 else float("inf") if d50 != 0 else 0.0
         ratio_s = "n/a" if extra == 0 else f"{ratio:+.4f}"
-        lines.append(
-            f"| `{variant}` | {extra:.2f} | {d50:+.4f} | {ratio_s} |"
-        )
+        lines.append(f"| `{variant}` | {extra:.2f} | {d50:+.4f} | {ratio_s} |")
 
     # Verdict block (derived).
     best_variant_r20 = None
@@ -624,13 +610,17 @@ def build_markdown_report(
         if variant not in results["variants"]:
             continue
         s = results["variants"][variant]["summary"]
-        if best_variant_r20 is None or s["mean_r@20"] > results["variants"][
-            best_variant_r20
-        ]["summary"]["mean_r@20"]:
+        if (
+            best_variant_r20 is None
+            or s["mean_r@20"]
+            > results["variants"][best_variant_r20]["summary"]["mean_r@20"]
+        ):
             best_variant_r20 = variant
-        if best_variant_r50 is None or s["mean_r@50"] > results["variants"][
-            best_variant_r50
-        ]["summary"]["mean_r@50"]:
+        if (
+            best_variant_r50 is None
+            or s["mean_r@50"]
+            > results["variants"][best_variant_r50]["summary"]["mean_r@50"]
+        ):
             best_variant_r50 = variant
 
     lines += [

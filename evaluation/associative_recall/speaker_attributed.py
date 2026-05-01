@@ -37,12 +37,9 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EmbeddingCache,
@@ -51,14 +48,13 @@ from associative_recall import (
     SegmentStore,
 )
 from best_shot import (
-    MODEL,
+    V2F_PROMPT,
     BestshotBase,
     BestshotResult,
-    V2F_PROMPT,
     _format_segments,
     _parse_cues,
 )
-
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Dedicated caches (do not pollute other agents' caches)
@@ -132,9 +128,8 @@ class SpeakerEmbeddingCache(EmbeddingCache):
                 existing = {}
         existing.update(self._new_entries)
         import os
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         try:
             with open(tmp, "w") as f:
                 json.dump(existing, f)
@@ -185,9 +180,8 @@ class SpeakerLLMCache(LLMCache):
                 existing = {}
         existing.update(self._new_entries)
         import os
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         try:
             with open(tmp, "w") as f:
                 json.dump(existing, f)
@@ -232,18 +226,95 @@ def _format_opening_turns(
 _RE_NAME_TOKEN = re.compile(r"\b[A-Z][a-z]{1,}\b")
 # Stop words / sentence-initial/false-positive tokens to ignore.
 _NAME_STOPWORDS = {
-    "The", "A", "An", "What", "When", "Where", "Who", "Why", "How",
-    "Did", "Does", "Do", "Is", "Are", "Was", "Were", "Has", "Have",
-    "Had", "Can", "Could", "Should", "Would", "Will", "Shall", "May",
-    "Might", "Must", "This", "That", "These", "Those", "Please",
-    "And", "Or", "But", "If", "Then", "So", "Also", "Given", "Based",
-    "List", "Draft", "Help", "Create", "Include", "Tell", "Find",
-    "Explain", "Describe", "Summarize", "Make", "Show", "Provide",
-    "Identify", "Consider", "Note", "Indicate", "Output", "I", "I'm",
-    "I've", "I'll", "Ive", "Im", "Hey", "Hi", "Hello", "Yes", "No",
-    "Yeah", "Nope", "Ok", "Okay", "Sure", "Thanks", "Thank", "Let",
-    "Lets", "Dr", "Mr", "Mrs", "Ms", "Prof", "Sir", "Madam",
-    "LGBTQ", "CMS",
+    "The",
+    "A",
+    "An",
+    "What",
+    "When",
+    "Where",
+    "Who",
+    "Why",
+    "How",
+    "Did",
+    "Does",
+    "Do",
+    "Is",
+    "Are",
+    "Was",
+    "Were",
+    "Has",
+    "Have",
+    "Had",
+    "Can",
+    "Could",
+    "Should",
+    "Would",
+    "Will",
+    "Shall",
+    "May",
+    "Might",
+    "Must",
+    "This",
+    "That",
+    "These",
+    "Those",
+    "Please",
+    "And",
+    "Or",
+    "But",
+    "If",
+    "Then",
+    "So",
+    "Also",
+    "Given",
+    "Based",
+    "List",
+    "Draft",
+    "Help",
+    "Create",
+    "Include",
+    "Tell",
+    "Find",
+    "Explain",
+    "Describe",
+    "Summarize",
+    "Make",
+    "Show",
+    "Provide",
+    "Identify",
+    "Consider",
+    "Note",
+    "Indicate",
+    "Output",
+    "I",
+    "I'm",
+    "I've",
+    "I'll",
+    "Ive",
+    "Im",
+    "Hey",
+    "Hi",
+    "Hello",
+    "Yes",
+    "No",
+    "Yeah",
+    "Nope",
+    "Ok",
+    "Okay",
+    "Sure",
+    "Thanks",
+    "Thank",
+    "Let",
+    "Lets",
+    "Dr",
+    "Mr",
+    "Mrs",
+    "Ms",
+    "Prof",
+    "Sir",
+    "Madam",
+    "LGBTQ",
+    "CMS",
 }
 
 
@@ -320,7 +391,7 @@ class _SpeakerAttributedBase(BestshotBase):
 
         any_new = False
         for cid in conv_ids:
-            if cid in out and out[cid]:
+            if out.get(cid):
                 continue
             conv_segs = [s for s in store.segments if s.conversation_id == cid]
             if not conv_segs:
@@ -398,19 +469,14 @@ class _SpeakerAttributedBase(BestshotBase):
         self, question: str, conversation_id: str
     ) -> tuple[list[Segment], dict]:
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments: list[Segment] = list(hop0.segments)
         exclude: set[int] = {s.index for s in all_segments}
 
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
-        prompt = V2F_PROMPT.format(
-            question=question, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=question, context_section=context_section)
         output = self.llm_call(prompt)
         cues = _parse_cues(output)[:2]
 
@@ -446,9 +512,7 @@ class _SpeakerAttributedBase(BestshotBase):
             "query_mentions_conv_user": mentions,
             "applied_speaker_transform": False,
             "appended_user_only_indices": [],
-            "n_user_in_v2f": int(
-                sum(1 for s in v2f_segments if s.role == "user")
-            ),
+            "n_user_in_v2f": int(sum(1 for s in v2f_segments if s.role == "user")),
         }
 
         if not mentions:
@@ -518,9 +582,7 @@ class _SpeakerAttributedBase(BestshotBase):
         base_rank = len(v2f_segments)
         for rank, (idx, sim) in enumerate(appended):
             s = sim + self.boost  # all appended are role=user
-            appended_with_scores.append(
-                (self.store.segments[idx], s, base_rank + rank)
-            )
+            appended_with_scores.append((self.store.segments[idx], s, base_rank + rank))
 
         combined: list[tuple[Segment, float, int]] = (
             v2f_with_scores + appended_with_scores

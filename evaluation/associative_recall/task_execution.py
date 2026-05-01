@@ -14,7 +14,6 @@ Usage:
     uv run python task_execution.py --all --verbose
 """
 
-import hashlib
 import json
 import re
 import sys
@@ -24,9 +23,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -35,6 +31,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -214,7 +212,9 @@ class TaskExecBase:
 # Helpers
 # ---------------------------------------------------------------------------
 def format_segments(
-    segments: list[Segment], max_items: int = 16, max_chars: int = 300,
+    segments: list[Segment],
+    max_items: int = 16,
+    max_chars: int = 300,
 ) -> str:
     """Format segments chronologically for display in prompts."""
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
@@ -227,6 +227,7 @@ def format_segments(
 @dataclass
 class TaskExecResult:
     """Result from task execution."""
+
     segments: list[Segment]
     output_text: str  # The generated task output
     metadata: dict = field(default_factory=dict)
@@ -288,9 +289,7 @@ class GenerateAndCheck(TaskExecBase):
         self.max_rounds = max_rounds
         self.top_k_per_retrieve = top_k_per_retrieve
 
-    def execute(
-        self, task: str, conversation_id: str
-    ) -> TaskExecResult:
+    def execute(self, task: str, conversation_id: str) -> TaskExecResult:
         """Execute a task with generate-and-check pattern."""
         output_parts: list[str] = []
         all_segments: list[Segment] = []
@@ -300,7 +299,9 @@ class GenerateAndCheck(TaskExecBase):
 
         # Initial retrieval using task text
         initial_segments = self.retrieve_top_k(
-            task, conversation_id, top_k=self.top_k_per_retrieve,
+            task,
+            conversation_id,
+            top_k=self.top_k_per_retrieve,
             exclude_indices=exclude_indices,
         )
         all_segments.extend(initial_segments)
@@ -336,28 +337,33 @@ class GenerateAndCheck(TaskExecBase):
 
                 # Retrieve for this need
                 new_segments = self.retrieve_top_k(
-                    need_query, conversation_id,
+                    need_query,
+                    conversation_id,
                     top_k=self.top_k_per_retrieve,
                     exclude_indices=exclude_indices,
                 )
                 all_segments.extend(new_segments)
                 exclude_indices.update(s.index for s in new_segments)
 
-                round_details.append({
-                    "round": round_num,
-                    "action": "NEED",
-                    "need_query": need_query,
-                    "pre_need_text": pre_need[:200] if pre_need else "",
-                    "new_segments_count": len(new_segments),
-                })
+                round_details.append(
+                    {
+                        "round": round_num,
+                        "action": "NEED",
+                        "need_query": need_query,
+                        "pre_need_text": pre_need[:200] if pre_need else "",
+                        "new_segments_count": len(new_segments),
+                    }
+                )
             else:
                 # Model completed without needing more info
                 output_parts.append(response)
-                round_details.append({
-                    "round": round_num,
-                    "action": "COMPLETE",
-                    "output_length": len(response),
-                })
+                round_details.append(
+                    {
+                        "round": round_num,
+                        "action": "COMPLETE",
+                        "output_length": len(response),
+                    }
+                )
                 break
 
         final_output = "\n".join(output_parts)
@@ -454,7 +460,7 @@ class Autonomous(TaskExecBase):
             for action in ("THINK:", "RETRIEVE:", "WRITE:", "DONE"):
                 if response.upper().startswith(action):
                     action_name = action.rstrip(":")
-                    argument = response[len(action):].strip()
+                    argument = response[len(action) :].strip()
                     return action_name, argument
             # Default to THINK if unparseable
             return "THINK", response
@@ -464,21 +470,19 @@ class Autonomous(TaskExecBase):
         # Extract argument - everything after ARGUMENT: or after ACTION line
         arg_match = re.search(
             r"ARGUMENT:\s*(.*)",
-            response[action_match.end():],
+            response[action_match.end() :],
             re.DOTALL,
         )
         if arg_match:
             argument = arg_match.group(1).strip()
         else:
             # Take everything after the ACTION line
-            rest = response[action_match.end():].strip()
+            rest = response[action_match.end() :].strip()
             argument = rest
 
         return action_name, argument
 
-    def execute(
-        self, task: str, conversation_id: str
-    ) -> TaskExecResult:
+    def execute(self, task: str, conversation_id: str) -> TaskExecResult:
         """Execute a task with autonomous agent pattern."""
         scratchpad: list[str] = []
         output_parts: list[str] = []
@@ -490,15 +494,12 @@ class Autonomous(TaskExecBase):
         for step in range(1, self.max_steps + 1):
             # Build prompt
             scratchpad_text = (
-                "\n".join(f"[{i+1}] {s}" for i, s in enumerate(scratchpad))
-                if scratchpad else "(empty)"
+                "\n".join(f"[{i + 1}] {s}" for i, s in enumerate(scratchpad))
+                if scratchpad
+                else "(empty)"
             )
-            formatted = (
-                format_segments(all_segments) if all_segments else "(none yet)"
-            )
-            output_so_far = (
-                "\n".join(output_parts) if output_parts else "(nothing yet)"
-            )
+            formatted = format_segments(all_segments) if all_segments else "(none yet)"
+            output_so_far = "\n".join(output_parts) if output_parts else "(nothing yet)"
 
             prompt = AUTONOMOUS_PROMPT.format(
                 task=task,
@@ -514,35 +515,42 @@ class Autonomous(TaskExecBase):
 
             if action == "THINK":
                 scratchpad.append(argument[:500])
-                step_details.append({
-                    "step": step,
-                    "action": "THINK",
-                    "content": argument[:200],
-                })
+                step_details.append(
+                    {
+                        "step": step,
+                        "action": "THINK",
+                        "content": argument[:200],
+                    }
+                )
 
             elif action == "RETRIEVE":
                 retrieve_queries.append(argument)
                 new_segments = self.retrieve_top_k(
-                    argument, conversation_id,
+                    argument,
+                    conversation_id,
                     top_k=self.top_k_per_retrieve,
                     exclude_indices=exclude_indices,
                 )
                 all_segments.extend(new_segments)
                 exclude_indices.update(s.index for s in new_segments)
-                step_details.append({
-                    "step": step,
-                    "action": "RETRIEVE",
-                    "query": argument[:200],
-                    "new_segments_count": len(new_segments),
-                })
+                step_details.append(
+                    {
+                        "step": step,
+                        "action": "RETRIEVE",
+                        "query": argument[:200],
+                        "new_segments_count": len(new_segments),
+                    }
+                )
 
             elif action == "WRITE":
                 output_parts.append(argument)
-                step_details.append({
-                    "step": step,
-                    "action": "WRITE",
-                    "content_length": len(argument),
-                })
+                step_details.append(
+                    {
+                        "step": step,
+                        "action": "WRITE",
+                        "content_length": len(argument),
+                    }
+                )
 
             elif action == "DONE":
                 step_details.append({"step": step, "action": "DONE"})
@@ -556,15 +564,11 @@ class Autonomous(TaskExecBase):
             metadata={
                 "steps": len(step_details),
                 "retrieve_queries": retrieve_queries,
-                "think_count": sum(
-                    1 for d in step_details if d["action"] == "THINK"
-                ),
+                "think_count": sum(1 for d in step_details if d["action"] == "THINK"),
                 "retrieve_count": sum(
                     1 for d in step_details if d["action"] == "RETRIEVE"
                 ),
-                "write_count": sum(
-                    1 for d in step_details if d["action"] == "WRITE"
-                ),
+                "write_count": sum(1 for d in step_details if d["action"] == "WRITE"),
                 "step_details": step_details,
                 "output_preview": final_output[:500],
             },
@@ -622,9 +626,7 @@ class GenerateAndCheckV2(TaskExecBase):
         self.max_rounds = max_rounds
         self.top_k_per_retrieve = top_k_per_retrieve
 
-    def execute(
-        self, task: str, conversation_id: str
-    ) -> TaskExecResult:
+    def execute(self, task: str, conversation_id: str) -> TaskExecResult:
         """Execute with retrieve-first, skeptical approach."""
         all_segments: list[Segment] = []
         exclude_indices: set[int] = set()
@@ -633,7 +635,9 @@ class GenerateAndCheckV2(TaskExecBase):
 
         # Initial retrieval using task text
         initial_segments = self.retrieve_top_k(
-            task, conversation_id, top_k=self.top_k_per_retrieve,
+            task,
+            conversation_id,
+            top_k=self.top_k_per_retrieve,
             exclude_indices=exclude_indices,
         )
         all_segments.extend(initial_segments)
@@ -676,26 +680,31 @@ class GenerateAndCheckV2(TaskExecBase):
                 need_queries.append(need_query)
 
                 new_segments = self.retrieve_top_k(
-                    need_query, conversation_id,
+                    need_query,
+                    conversation_id,
                     top_k=self.top_k_per_retrieve,
                     exclude_indices=exclude_indices,
                 )
                 all_segments.extend(new_segments)
                 exclude_indices.update(s.index for s in new_segments)
 
-                round_details.append({
-                    "round": round_num,
-                    "action": "NEED",
-                    "need_query": need_query,
-                    "new_segments_count": len(new_segments),
-                })
+                round_details.append(
+                    {
+                        "round": round_num,
+                        "action": "NEED",
+                        "need_query": need_query,
+                        "new_segments_count": len(new_segments),
+                    }
+                )
             else:
                 final_output = response
-                round_details.append({
-                    "round": round_num,
-                    "action": "COMPLETE",
-                    "output_length": len(response),
-                })
+                round_details.append(
+                    {
+                        "round": round_num,
+                        "action": "COMPLETE",
+                        "output_length": len(response),
+                    }
+                )
                 break
 
         return TaskExecResult(
@@ -776,7 +785,7 @@ class AutonomousV2(TaskExecBase):
         for prefix in ("RETRIEVE:", "WRITE:", "DONE"):
             if response.upper().startswith(prefix):
                 action = prefix.rstrip(":")
-                argument = response[len(prefix):].strip()
+                argument = response[len(prefix) :].strip()
                 return action, argument
 
         # Try to find action in response
@@ -788,7 +797,7 @@ class AutonomousV2(TaskExecBase):
             )
             if match:
                 action = prefix.rstrip(":")
-                argument = response[match.end():].strip()
+                argument = response[match.end() :].strip()
                 # For multi-line WRITE, take everything after
                 return action, argument
 
@@ -797,9 +806,7 @@ class AutonomousV2(TaskExecBase):
             return "RETRIEVE", response
         return "WRITE", response
 
-    def execute(
-        self, task: str, conversation_id: str
-    ) -> TaskExecResult:
+    def execute(self, task: str, conversation_id: str) -> TaskExecResult:
         """Execute task with tight autonomous pattern."""
         output_parts: list[str] = []
         all_segments: list[Segment] = []
@@ -810,14 +817,14 @@ class AutonomousV2(TaskExecBase):
         for step in range(1, self.max_steps + 1):
             formatted = (
                 format_segments(all_segments, max_items=20)
-                if all_segments else "(none yet)"
+                if all_segments
+                else "(none yet)"
             )
-            output_so_far = (
-                "\n".join(output_parts) if output_parts else "(nothing yet)"
-            )
+            output_so_far = "\n".join(output_parts) if output_parts else "(nothing yet)"
             queries_so_far = (
                 "; ".join(f'"{q[:80]}"' for q in retrieve_queries)
-                if retrieve_queries else "(none)"
+                if retrieve_queries
+                else "(none)"
             )
 
             prompt = AUTONOMOUS_V2_PROMPT.format(
@@ -836,26 +843,31 @@ class AutonomousV2(TaskExecBase):
             if action == "RETRIEVE":
                 retrieve_queries.append(argument)
                 new_segments = self.retrieve_top_k(
-                    argument, conversation_id,
+                    argument,
+                    conversation_id,
                     top_k=self.top_k_per_retrieve,
                     exclude_indices=exclude_indices,
                 )
                 all_segments.extend(new_segments)
                 exclude_indices.update(s.index for s in new_segments)
-                step_details.append({
-                    "step": step,
-                    "action": "RETRIEVE",
-                    "query": argument[:200],
-                    "new_segments_count": len(new_segments),
-                })
+                step_details.append(
+                    {
+                        "step": step,
+                        "action": "RETRIEVE",
+                        "query": argument[:200],
+                        "new_segments_count": len(new_segments),
+                    }
+                )
 
             elif action == "WRITE":
                 output_parts.append(argument)
-                step_details.append({
-                    "step": step,
-                    "action": "WRITE",
-                    "content_length": len(argument),
-                })
+                step_details.append(
+                    {
+                        "step": step,
+                        "action": "WRITE",
+                        "content_length": len(argument),
+                    }
+                )
 
             elif action == "DONE":
                 step_details.append({"step": step, "action": "DONE"})
@@ -872,9 +884,7 @@ class AutonomousV2(TaskExecBase):
                 "retrieve_count": sum(
                     1 for d in step_details if d["action"] == "RETRIEVE"
                 ),
-                "write_count": sum(
-                    1 for d in step_details if d["action"] == "WRITE"
-                ),
+                "write_count": sum(1 for d in step_details if d["action"] == "WRITE"),
                 "step_details": step_details,
                 "output_preview": final_output[:500],
             },
@@ -959,9 +969,7 @@ class DecomposeThenRetrieve(TaskExecBase):
                     queries.append(q)
         return queries
 
-    def execute(
-        self, task: str, conversation_id: str
-    ) -> TaskExecResult:
+    def execute(self, task: str, conversation_id: str) -> TaskExecResult:
         """Decompose task into queries, retrieve, refine."""
         all_segments: list[Segment] = []
         exclude_indices: set[int] = set()
@@ -979,7 +987,8 @@ class DecomposeThenRetrieve(TaskExecBase):
         # Step 2: Retrieve for each query
         for query in all_query_list:
             new_segments = self.retrieve_top_k(
-                query, conversation_id,
+                query,
+                conversation_id,
                 top_k=self.top_k_per_query,
                 exclude_indices=exclude_indices,
             )
@@ -987,20 +996,20 @@ class DecomposeThenRetrieve(TaskExecBase):
             exclude_indices.update(s.index for s in new_segments)
             all_queries.append(query)
 
-        round_details.append({
-            "round": 0,
-            "action": "DECOMPOSE",
-            "num_queries": len(all_query_list),
-            "queries": [q[:100] for q in all_query_list],
-            "total_segments": len(all_segments),
-        })
+        round_details.append(
+            {
+                "round": 0,
+                "action": "DECOMPOSE",
+                "num_queries": len(all_query_list),
+                "queries": [q[:100] for q in all_query_list],
+                "total_segments": len(all_segments),
+            }
+        )
 
         # Step 3: Refine -- look at what we have, identify gaps
         for refine_round in range(self.max_refine_rounds):
             formatted = format_segments(all_segments, max_items=20)
-            queries_so_far = "\n".join(
-                f"- {q[:100]}" for q in all_queries
-            )
+            queries_so_far = "\n".join(f"- {q[:100]}" for q in all_queries)
 
             refine_prompt = DECOMPOSE_REFINE_PROMPT.format(
                 task=task,
@@ -1011,11 +1020,16 @@ class DecomposeThenRetrieve(TaskExecBase):
 
             refine_response = self.llm_call(refine_prompt)
 
-            if "COMPLETE" in refine_response.upper() and "QUERY:" not in refine_response:
-                round_details.append({
-                    "round": refine_round + 1,
-                    "action": "COMPLETE",
-                })
+            if (
+                "COMPLETE" in refine_response.upper()
+                and "QUERY:" not in refine_response
+            ):
+                round_details.append(
+                    {
+                        "round": refine_round + 1,
+                        "action": "COMPLETE",
+                    }
+                )
                 break
 
             refine_queries = self._parse_queries(refine_response)
@@ -1024,7 +1038,8 @@ class DecomposeThenRetrieve(TaskExecBase):
 
             for query in refine_queries:
                 new_segments = self.retrieve_top_k(
-                    query, conversation_id,
+                    query,
+                    conversation_id,
                     top_k=self.top_k_per_query,
                     exclude_indices=exclude_indices,
                 )
@@ -1032,13 +1047,15 @@ class DecomposeThenRetrieve(TaskExecBase):
                 exclude_indices.update(s.index for s in new_segments)
                 all_queries.append(query)
 
-            round_details.append({
-                "round": refine_round + 1,
-                "action": "REFINE",
-                "num_queries": len(refine_queries),
-                "queries": [q[:100] for q in refine_queries],
-                "total_segments": len(all_segments),
-            })
+            round_details.append(
+                {
+                    "round": refine_round + 1,
+                    "action": "REFINE",
+                    "num_queries": len(refine_queries),
+                    "queries": [q[:100] for q in refine_queries],
+                    "total_segments": len(all_segments),
+                }
+            )
 
         return TaskExecResult(
             segments=all_segments,
@@ -1095,14 +1112,10 @@ class V2fBaseline(TaskExecBase):
     ):
         super().__init__(store, client)
 
-    def execute(
-        self, task: str, conversation_id: str
-    ) -> TaskExecResult:
+    def execute(self, task: str, conversation_id: str) -> TaskExecResult:
         """Run V2f with task text as question."""
         # Hop 0: embed task, retrieve top-10
-        initial_segments = self.retrieve_top_k(
-            task, conversation_id, top_k=10
-        )
+        initial_segments = self.retrieve_top_k(task, conversation_id, top_k=10)
         all_segments = list(initial_segments)
         exclude_indices = {s.index for s in all_segments}
 
@@ -1111,9 +1124,7 @@ class V2fBaseline(TaskExecBase):
         context_section = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + context
 
         # Single LLM call to generate cues
-        prompt = V2F_PROMPT.format(
-            question=task, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=task, context_section=context_section)
         output = self.llm_call(prompt)
 
         # Parse cues
@@ -1128,7 +1139,9 @@ class V2fBaseline(TaskExecBase):
         # Retrieve with each cue
         for cue in cues[:2]:
             new_segments = self.retrieve_top_k(
-                cue, conversation_id, top_k=10,
+                cue,
+                conversation_id,
+                top_k=10,
                 exclude_indices=exclude_indices,
             )
             for seg in new_segments:
@@ -1149,9 +1162,7 @@ class V2fBaseline(TaskExecBase):
 # ===========================================================================
 # Evaluation
 # ===========================================================================
-def compute_recall(
-    retrieved_turn_ids: set[int], source_turn_ids: set[int]
-) -> float:
+def compute_recall(retrieved_turn_ids: set[int], source_turn_ids: set[int]) -> float:
     if not source_turn_ids:
         return 1.0
     return len(retrieved_turn_ids & source_turn_ids) / len(source_turn_ids)
@@ -1289,12 +1300,8 @@ def summarize(results: list[dict], variant_name: str) -> dict:
     summary["avg_total_retrieved"] = round(
         sum(r["total_retrieved"] for r in results) / n, 1
     )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1
-    )
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
     summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
 
     return summary
@@ -1335,9 +1342,9 @@ def per_question_comparison(
         for r in results:
             q_indices.add(r["question_index"])
 
-    print(f"\n{'='*90}")
+    print(f"\n{'=' * 90}")
     print("PER-QUESTION COMPARISON (r@20)")
-    print(f"{'='*90}")
+    print(f"{'=' * 90}")
     print(
         f"{'Q#':>3s} {'Category':>12s} {'#src':>4s} {'baseline':>8s}",
         end="",
@@ -1374,15 +1381,15 @@ def run_variant(
     verbose: bool = False,
 ) -> list[dict]:
     """Run one variant on all questions, return results."""
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"ARCHITECTURE: {variant_name} | {len(questions)} questions")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     results = []
     for i, question in enumerate(questions):
         q_short = question["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] Q{question['question_index']} "
+            f"  [{i + 1}/{len(questions)}] Q{question['question_index']} "
             f"[{question['category']}]: {q_short}...",
             flush=True,
         )
@@ -1392,6 +1399,7 @@ def run_variant(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 3 == 0:
@@ -1418,7 +1426,7 @@ def run_variant(
     )
 
     cat_summaries = summarize_by_category(results)
-    print(f"\n  Per-category (r@20):")
+    print("\n  Per-category (r@20):")
     for cat, cs in cat_summaries.items():
         print(
             f"    {cat}: baseline={cs['baseline_r@20']:.3f} "
@@ -1433,16 +1441,17 @@ def run_variant(
 def main() -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Task-execution retrieval evaluation"
-    )
+    parser = argparse.ArgumentParser(description="Task-execution retrieval evaluation")
     parser.add_argument(
         "--arch",
         type=str,
         choices=[
-            "generate_and_check", "generate_and_check_v2",
-            "autonomous", "autonomous_v2",
-            "v2f_baseline", "decompose",
+            "generate_and_check",
+            "generate_and_check_v2",
+            "autonomous",
+            "autonomous_v2",
+            "v2f_baseline",
+            "decompose",
         ],
         default=None,
         help="Which architecture to run",
@@ -1476,15 +1485,17 @@ def main() -> None:
     architectures_to_run = []
     if args.all:
         architectures_to_run = [
-            "v2f_baseline", "generate_and_check", "generate_and_check_v2",
-            "autonomous", "autonomous_v2", "decompose",
+            "v2f_baseline",
+            "generate_and_check",
+            "generate_and_check_v2",
+            "autonomous",
+            "autonomous_v2",
+            "decompose",
         ]
     elif args.arch:
         architectures_to_run = [args.arch]
     else:
-        architectures_to_run = [
-            "v2f_baseline", "generate_and_check", "autonomous"
-        ]
+        architectures_to_run = ["v2f_baseline", "generate_and_check", "autonomous"]
 
     all_results: dict[str, list[dict]] = {}
 
@@ -1498,9 +1509,11 @@ def main() -> None:
             all_results[arch_name] = results
             # Print summary
             summary = summarize(results, arch_name)
-            print(f"  r@20: baseline={summary.get('baseline_r@20', 0):.3f} "
-                  f"arch={summary.get('arch_r@20', 0):.3f} "
-                  f"delta={summary.get('delta_r@20', 0):+.3f}")
+            print(
+                f"  r@20: baseline={summary.get('baseline_r@20', 0):.3f} "
+                f"arch={summary.get('arch_r@20', 0):.3f} "
+                f"delta={summary.get('delta_r@20', 0):+.3f}"
+            )
             continue
 
         # Create architecture
@@ -1515,9 +1528,7 @@ def main() -> None:
         elif arch_name == "autonomous_v2":
             arch = AutonomousV2(store, max_steps=12, top_k_per_retrieve=10)
         elif arch_name == "decompose":
-            arch = DecomposeThenRetrieve(
-                store, max_refine_rounds=2, top_k_per_query=5
-            )
+            arch = DecomposeThenRetrieve(store, max_refine_rounds=2, top_k_per_query=5)
         else:
             raise ValueError(f"Unknown architecture: {arch_name}")
 
@@ -1535,9 +1546,9 @@ def main() -> None:
         per_question_comparison(all_results)
 
         # Overall comparison
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print("OVERALL COMPARISON")
-        print(f"{'='*70}")
+        print(f"{'=' * 70}")
         for arch_name, results in all_results.items():
             summary = summarize(results, arch_name)
             print(

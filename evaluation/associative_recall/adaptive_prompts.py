@@ -52,9 +52,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -63,6 +60,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -447,9 +446,28 @@ TEMPORAL_PATTERNS = [
 ]
 
 EXPLICIT_QUESTION_STARTERS = (
-    "what", "when", "where", "who", "whom", "whose",
-    "did", "do", "does", "is", "are", "was", "were", "has", "have",
-    "how", "why", "which", "can", "could", "should", "would",
+    "what",
+    "when",
+    "where",
+    "who",
+    "whom",
+    "whose",
+    "did",
+    "do",
+    "does",
+    "is",
+    "are",
+    "was",
+    "were",
+    "has",
+    "have",
+    "how",
+    "why",
+    "which",
+    "can",
+    "could",
+    "should",
+    "would",
 )
 
 
@@ -604,9 +622,7 @@ class AdaptiveRunner:
     ) -> list[Segment]:
         """Plain cosine top-K over conversation."""
         q_emb = self.embed_text(question)
-        res = self.store.search(
-            q_emb, top_k=top_k, conversation_id=conversation_id
-        )
+        res = self.store.search(q_emb, top_k=top_k, conversation_id=conversation_id)
         return list(res.segments)
 
     def retrieve_with_cues(
@@ -624,13 +640,10 @@ class AdaptiveRunner:
         all_segments: list[Segment] = list(hop0.segments)
         exclude: set[int] = {s.index for s in all_segments}
 
-        ctx_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+        ctx_section = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(
+            all_segments
         )
-        prompt = prompt_template.format(
-            question=question, context_section=ctx_section
-        )
+        prompt = prompt_template.format(question=question, context_section=ctx_section)
         output = self.llm_call(prompt)
         cues = _parse_cues(output)
 
@@ -659,21 +672,21 @@ class AdaptiveRunner:
     ) -> RetrievalOutput:
         if variant == "baseline":
             # Cosine only; no cues. Retrieve max(BUDGETS) so we can truncate.
-            segs = self.retrieve_cosine(
-                question, conversation_id, top_k=max(BUDGETS)
-            )
+            segs = self.retrieve_cosine(question, conversation_id, top_k=max(BUDGETS))
             return RetrievalOutput(
                 segments=segs, cues=[], query_type="baseline", output=""
             )
         if variant == "v15":
             return self.retrieve_with_cues(
-                question, conversation_id,
+                question,
+                conversation_id,
                 prompt_template=self.PROMPTS["v15"],
                 query_type="v15",
             )
         if variant == "v2f":
             return self.retrieve_with_cues(
-                question, conversation_id,
+                question,
+                conversation_id,
                 prompt_template=self.PROMPTS["v2f"],
                 query_type="v2f",
             )
@@ -681,7 +694,8 @@ class AdaptiveRunner:
             qtype = detect_query_type(question)
             tpl = PROMPTS[qtype]
             return self.retrieve_with_cues(
-                question, conversation_id,
+                question,
+                conversation_id,
                 prompt_template=tpl,
                 query_type=qtype,
             )
@@ -802,9 +816,7 @@ def evaluate_question(
     return row
 
 
-def summarize(
-    results: list[dict], variant: str, dataset: str
-) -> dict:
+def summarize(results: list[dict], variant: str, dataset: str) -> dict:
     n = len(results)
     if n == 0:
         return {"variant": variant, "dataset": dataset, "n": 0}
@@ -824,12 +836,8 @@ def summarize(
     out["avg_total_retrieved"] = round(
         sum(r["total_arch_retrieved"] for r in results) / n, 1
     )
-    out["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1
-    )
-    out["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
+    out["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
+    out["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
     return out
 
 
@@ -895,7 +903,7 @@ def run_one(
         cosine_segs = cosine_by_qidx[i]
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category','?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -904,6 +912,7 @@ def run_one(
         except Exception as e:
             print(f"    ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -954,9 +963,7 @@ def precompute_cosine(
     return cos_by_idx
 
 
-def run_dataset(
-    ds_name: str, variants: list[str]
-) -> dict:
+def run_dataset(ds_name: str, variants: list[str]) -> dict:
     store, questions = load_dataset(ds_name)
     print(
         f"\nLoaded {ds_name}: {len(questions)} questions, "
@@ -1032,9 +1039,7 @@ def print_master_table(all_summaries: dict) -> None:
                         vals.append(
                             (
                                 variant,
-                                all_summaries[variant][ds]["summary"][
-                                    f"arch_r@{K}"
-                                ],
+                                all_summaries[variant][ds]["summary"][f"arch_r@{K}"],
                             )
                         )
                 if not vals:
@@ -1101,9 +1106,7 @@ def main() -> None:
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     if args.dry_run:
-        ds_names = (
-            [args.dataset] if args.dataset != "all" else list(DATASETS.keys())
-        )
+        ds_names = [args.dataset] if args.dataset != "all" else list(DATASETS.keys())
         for ds in ds_names:
             _, qs = load_dataset(ds)
             print(f"\n=== {ds} ({len(qs)} questions) ===")
@@ -1111,15 +1114,11 @@ def main() -> None:
             for q in qs:
                 qt = detect_query_type(q["question"])
                 counts[qt] += 1
-                print(
-                    f"  [{qt:18s}] {q.get('category','?'):22s} {q['question'][:80]}"
-                )
+                print(f"  [{qt:18s}] {q.get('category', '?'):22s} {q['question'][:80]}")
             print(f"  query-type distribution: {dict(counts)}")
         return
 
-    ds_names = (
-        [args.dataset] if args.dataset != "all" else list(DATASETS.keys())
-    )
+    ds_names = [args.dataset] if args.dataset != "all" else list(DATASETS.keys())
 
     all_summaries: dict = {v: {} for v in args.variants}
     for ds in ds_names:

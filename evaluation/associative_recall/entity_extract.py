@@ -38,9 +38,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -49,6 +46,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -150,8 +149,7 @@ def _format_segments(
         return "(no content retrieved yet)"
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
     return "\n".join(
-        f"[Turn {s.turn_id}, {s.role}]: {s.text[:max_chars]}"
-        for s in sorted_segs
+        f"[Turn {s.turn_id}, {s.role}]: {s.text[:max_chars]}" for s in sorted_segs
     )
 
 
@@ -161,7 +159,7 @@ def _parse_prefixed(text: str, prefix: str) -> list[str]:
     for line in text.strip().split("\n"):
         line = line.strip()
         if line.upper().startswith(pfx):
-            val = line[len(prefix):].strip()
+            val = line[len(prefix) :].strip()
             if val:
                 out.append(val)
     return out
@@ -334,9 +332,7 @@ class EntityExtractBase:
         if cached is not None:
             self.embed_calls += 1
             return cached
-        response = self.client.embeddings.create(
-            model=EMBED_MODEL, input=[text]
-        )
+        response = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
         embedding = np.array(response.data[0].embedding, dtype=np.float32)
         self.embedding_cache.put(text, embedding)
         self.embed_calls += 1
@@ -357,9 +353,7 @@ class EntityExtractBase:
         self.llm_calls += 1
         return text
 
-    def retrieve(
-        self, question: str, conversation_id: str
-    ) -> EntityResult:
+    def retrieve(self, question: str, conversation_id: str) -> EntityResult:
         raise NotImplementedError
 
 
@@ -369,9 +363,7 @@ class EntityExtractBase:
 class EntityExtractSimple(EntityExtractBase):
     name = "entity_simple"
 
-    def retrieve(
-        self, question: str, conversation_id: str
-    ) -> EntityResult:
+    def retrieve(self, question: str, conversation_id: str) -> EntityResult:
         exclude: set[int] = set()
         all_segs: list[Segment] = []
 
@@ -398,8 +390,10 @@ class EntityExtractSimple(EntityExtractBase):
         for cue in cues:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_cue_k,
-                conversation_id=conversation_id, exclude_indices=exclude,
+                cue_emb,
+                top_k=self.per_cue_k,
+                conversation_id=conversation_id,
+                exclude_indices=exclude,
             )
             for s in result.segments:
                 if s.index not in exclude:
@@ -425,9 +419,7 @@ class EntityExtractSimple(EntityExtractBase):
 class EntityExtractV2f(EntityExtractBase):
     name = "entity_v2f"
 
-    def retrieve(
-        self, question: str, conversation_id: str
-    ) -> EntityResult:
+    def retrieve(self, question: str, conversation_id: str) -> EntityResult:
         exclude: set[int] = set()
         all_segs: list[Segment] = []
 
@@ -457,8 +449,10 @@ class EntityExtractV2f(EntityExtractBase):
         for cue in cues:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_cue_k,
-                conversation_id=conversation_id, exclude_indices=exclude,
+                cue_emb,
+                top_k=self.per_cue_k,
+                conversation_id=conversation_id,
+                exclude_indices=exclude,
             )
             for s in result.segments:
                 if s.index not in exclude:
@@ -485,9 +479,7 @@ class EntityExtractV2f(EntityExtractBase):
 class EntityWeightedQuestion(EntityExtractBase):
     name = "entity_weighted_question"
 
-    def retrieve(
-        self, question: str, conversation_id: str
-    ) -> EntityResult:
+    def retrieve(self, question: str, conversation_id: str) -> EntityResult:
         exclude: set[int] = set()
         all_segs: list[Segment] = []
 
@@ -518,8 +510,10 @@ class EntityWeightedQuestion(EntityExtractBase):
         total_cue_budget = 2 * self.per_cue_k
         eq_emb = self.embed_text(enhanced_query)
         result = self.store.search(
-            eq_emb, top_k=total_cue_budget,
-            conversation_id=conversation_id, exclude_indices=exclude,
+            eq_emb,
+            top_k=total_cue_budget,
+            conversation_id=conversation_id,
+            exclude_indices=exclude,
         )
         for s in result.segments:
             if s.index not in exclude:
@@ -556,9 +550,7 @@ class EntityPerSegmentCue(EntityExtractBase):
     ) -> None:
         super().__init__(store, client, initial_k, per_cue_k)
 
-    def retrieve(
-        self, question: str, conversation_id: str
-    ) -> EntityResult:
+    def retrieve(self, question: str, conversation_id: str) -> EntityResult:
         exclude: set[int] = set()
         all_segs: list[Segment] = []
 
@@ -574,7 +566,7 @@ class EntityPerSegmentCue(EntityExtractBase):
         # Top 3 segments BY ORIGINAL SCORE (order in r0.segments is rank order)
         top3 = r0.segments[:3]
         numbered = "\n".join(
-            f"Segment {i+1} [Turn {s.turn_id}, {s.role}]: {s.text[:400]}"
+            f"Segment {i + 1} [Turn {s.turn_id}, {s.role}]: {s.text[:400]}"
             for i, s in enumerate(top3)
         )
 
@@ -588,8 +580,10 @@ class EntityPerSegmentCue(EntityExtractBase):
         for cue in cues:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_cue_k,
-                conversation_id=conversation_id, exclude_indices=exclude,
+                cue_emb,
+                top_k=self.per_cue_k,
+                conversation_id=conversation_id,
+                exclude_indices=exclude,
             )
             for s in result.segments:
                 if s.index not in exclude:
@@ -622,9 +616,7 @@ VARIANTS: dict[str, type[EntityExtractBase]] = {
 # ---------------------------------------------------------------------------
 # FAIR K-budget evaluation (same protocol as cot_universal.py)
 # ---------------------------------------------------------------------------
-def compute_recall(
-    retrieved_turn_ids: set[int], source_turn_ids: set[int]
-) -> float:
+def compute_recall(retrieved_turn_ids: set[int], source_turn_ids: set[int]) -> float:
     if not source_turn_ids:
         return 1.0
     return len(retrieved_turn_ids & source_turn_ids) / len(source_turn_ids)
@@ -652,9 +644,7 @@ def evaluate_one(
     # Cosine baseline at max(BUDGETS) for backfill
     q_emb = arch.embed_text(q_text)
     max_b = max(BUDGETS)
-    baseline = arch.store.search(
-        q_emb, top_k=max_b, conversation_id=conv_id
-    )
+    baseline = arch.store.search(q_emb, top_k=max_b, conversation_id=conv_id)
 
     arch_idx = {s.index for s in arch_segments}
     backfilled = list(arch_segments) + [
@@ -683,7 +673,8 @@ def evaluate_one(
         "llm_calls": arch.llm_calls,
         "time_s": round(elapsed, 2),
         "metadata": {
-            k: v for k, v in result.metadata.items()
+            k: v
+            for k, v in result.metadata.items()
             if k in ("name", "terms", "cues", "assessment", "enhanced_query")
         },
     }
@@ -773,7 +764,7 @@ def run_variant_on_dataset(
     for i, q in enumerate(qs):
         q_short = q["question"][:60].replace("\n", " ")
         print(
-            f"  [{i+1}/{len(qs)}] {q['category']}: {q_short}...",
+            f"  [{i + 1}/{len(qs)}] {q['category']}: {q_short}...",
             flush=True,
         )
         try:
@@ -782,6 +773,7 @@ def run_variant_on_dataset(
         except Exception as e:
             print(f"    ERROR: {type(e).__name__}: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
 
@@ -802,9 +794,7 @@ def run_variant_on_dataset(
 # ---------------------------------------------------------------------------
 # Cross-dataset aggregation + comparison
 # ---------------------------------------------------------------------------
-def load_budget_recall_by_qkey(
-    arch_name: str, dataset_key: str
-) -> dict[tuple, float]:
+def load_budget_recall_by_qkey(arch_name: str, dataset_key: str) -> dict[tuple, float]:
     path = RESULTS_DIR / f"budget_{arch_name}_{dataset_key}.json"
     if not path.exists():
         return {}
@@ -843,8 +833,7 @@ def per_category_rows(
     # Preload comparison arch recalls per K
     budget_by_arch: dict[str, dict[int, dict[tuple, float]]] = {
         "baseline": {
-            K: load_budget_recall_by_qkey(f"baseline_{K}", dataset_key)
-            for K in BUDGETS
+            K: load_budget_recall_by_qkey(f"baseline_{K}", dataset_key) for K in BUDGETS
         },
         "v2f_tight": {
             K: load_budget_recall_by_qkey(f"v2f_tight_{K}", dataset_key)
@@ -883,20 +872,22 @@ def per_category_rows(
             v2f_mean = _mean(v2f_vals)
             cot_mean = _mean(cot_vals)
 
-            out.append({
-                "variant": variant_name,
-                "dataset": dataset_key,
-                "category": cat,
-                "K": K,
-                "n": n,
-                "baseline": b_mean,
-                "v2f": v2f_mean,
-                "cot": cot_mean,
-                "arch": arch_mean,
-                "vs_v2f": (arch_mean - v2f_mean) if v2f_mean is not None else None,
-                "vs_cot": (arch_mean - cot_mean) if cot_mean is not None else None,
-                "vs_base": (arch_mean - b_mean) if b_mean is not None else None,
-            })
+            out.append(
+                {
+                    "variant": variant_name,
+                    "dataset": dataset_key,
+                    "category": cat,
+                    "K": K,
+                    "n": n,
+                    "baseline": b_mean,
+                    "v2f": v2f_mean,
+                    "cot": cot_mean,
+                    "arch": arch_mean,
+                    "vs_v2f": (arch_mean - v2f_mean) if v2f_mean is not None else None,
+                    "vs_cot": (arch_mean - cot_mean) if cot_mean is not None else None,
+                    "vs_base": (arch_mean - b_mean) if b_mean is not None else None,
+                }
+            )
     return out
 
 
@@ -914,9 +905,9 @@ def print_per_category_table(rows: list[dict], K: int) -> None:
     filtered = [r for r in rows if r["K"] == K]
     if not filtered:
         return
-    print(f"\n{'='*120}")
+    print(f"\n{'=' * 120}")
     print(f"PER-CATEGORY at K={K} (recall, fair backfill)")
-    print(f"{'='*120}")
+    print(f"{'=' * 120}")
     hdr = (
         f"{'Variant':<26s} {'Dataset':<14s} {'Category':<26s} {'n':>3s} "
         f"{'Base':>7s} {'v2f':>7s} {'CoT':>7s} {'Arch':>7s}  "
@@ -927,7 +918,7 @@ def print_per_category_table(rows: list[dict], K: int) -> None:
     last = (None, None)
     for r in filtered:
         if last != (None, None) and (r["variant"], r["dataset"]) != last:
-            print("")
+            print()
         last = (r["variant"], r["dataset"])
         print(
             f"{r['variant']:<26s} {r['dataset']:<14s} {r['category']:<26s} "
@@ -941,9 +932,9 @@ def print_per_category_table(rows: list[dict], K: int) -> None:
 
 def print_overall_by_dataset(rows: list[dict], K: int) -> None:
     """Dataset-level mean (weighted by category n) per variant."""
-    print(f"\n{'-'*96}")
+    print(f"\n{'-' * 96}")
     print(f"PER-DATASET at K={K} (weighted by category n within dataset)")
-    print(f"{'-'*96}")
+    print(f"{'-' * 96}")
     hdr = (
         f"{'Variant':<26s} {'Dataset':<14s} {'n':>3s} "
         f"{'Base':>7s} {'v2f':>7s} {'CoT':>7s} {'Arch':>7s}  "
@@ -988,9 +979,9 @@ def print_cross_dataset_mean(rows: list[dict], K: int) -> None:
     avoids over-weighting larger datasets). Also reports a pooled "question-
     weighted" mean for reference.
     """
-    print(f"\n{'='*96}")
+    print(f"\n{'=' * 96}")
     print(f"CROSS-DATASET MEAN r@{K} (primary headline)")
-    print(f"{'='*96}")
+    print(f"{'=' * 96}")
     hdr = (
         f"{'Variant':<26s} {'nQ':>4s}  "
         f"{'Base':>7s} {'v2f':>7s} {'CoT':>7s} {'Arch':>7s}  "
@@ -1016,11 +1007,10 @@ def print_cross_dataset_mean(rows: list[dict], K: int) -> None:
             if not items:
                 continue
             tot = sum(n for _, n in items)
-            variant_ds_means[var][metric][ds] = sum(
-                v * n for v, n in items
-            ) / tot
+            variant_ds_means[var][metric][ds] = sum(v * n for v, n in items) / tot
 
     for var in sorted(variant_ds_means.keys()):
+
         def _ds_mean(m: str) -> float | None:
             ds_vals = list(variant_ds_means[var][m].values())
             if not ds_vals:
@@ -1043,9 +1033,9 @@ def print_cross_dataset_mean(rows: list[dict], K: int) -> None:
 
 def print_category_deltas(rows: list[dict], K: int) -> None:
     """Best/worst categories per variant across datasets."""
-    print(f"\n{'='*96}")
+    print(f"\n{'=' * 96}")
     print(f"BEST/WORST categories at K={K} (delta vs v2f)")
-    print(f"{'='*96}")
+    print(f"{'=' * 96}")
 
     by_var_cat: dict[tuple[str, str], list[float]] = defaultdict(list)
     for r in rows:
@@ -1059,8 +1049,7 @@ def print_category_deltas(rows: list[dict], K: int) -> None:
         variant_cat_means[var].append((cat, mean_delta))
 
     for var in sorted(variant_cat_means.keys()):
-        ordered = sorted(variant_cat_means[var], key=lambda x: x[1],
-                         reverse=True)
+        ordered = sorted(variant_cat_means[var], key=lambda x: x[1], reverse=True)
         print(f"\n  {var}:")
         print("    Top helps (highest +delta vs v2f):")
         for cat, d in ordered[:5]:
@@ -1076,17 +1065,22 @@ def print_category_deltas(rows: list[dict], K: int) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--variant", type=str, default=None,
+        "--variant",
+        type=str,
+        default=None,
         choices=list(VARIANTS.keys()),
         help="Run a single variant (default: all four)",
     )
     parser.add_argument(
-        "--dataset", type=str, default=None,
+        "--dataset",
+        type=str,
+        default=None,
         choices=list(DATASETS.keys()),
         help="Restrict to one dataset (default: all four)",
     )
-    parser.add_argument("--force", action="store_true",
-                        help="Rerun even if result file exists")
+    parser.add_argument(
+        "--force", action="store_true", help="Rerun even if result file exists"
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -1100,7 +1094,10 @@ def main() -> None:
         for ds in datasets:
             try:
                 arch_rows = run_variant_on_dataset(
-                    var, ds, force=args.force, verbose=args.verbose,
+                    var,
+                    ds,
+                    force=args.force,
+                    verbose=args.verbose,
                 )
                 all_cat_rows.extend(per_category_rows(var, ds, arch_rows))
             except Exception as e:
@@ -1109,6 +1106,7 @@ def main() -> None:
                     flush=True,
                 )
                 import traceback
+
                 traceback.print_exc()
 
     # Save roll-up summary

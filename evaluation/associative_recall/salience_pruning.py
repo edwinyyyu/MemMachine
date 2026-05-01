@@ -24,18 +24,13 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
-    DATA_DIR,
-    EmbeddingCache,
-    LLMCache,
     RetrievalResult,
-    Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -46,10 +41,35 @@ CACHE_FILE = CACHE_DIR / "salience_llm_cache.json"
 # Regex heuristic sets
 # ---------------------------------------------------------------------------
 BACKCHANNEL_FIRST_TOKENS = {
-    "yeah", "yes", "yep", "ok", "okay", "sure", "nope", "no",
-    "hmm", "hmmm", "lol", "haha", "right", "true", "k", "kk",
-    "cool", "got", "nice", "thanks", "ty", "np", "alright",
-    "awesome", "great", "fine", "sounds", "wow", "oh",
+    "yeah",
+    "yes",
+    "yep",
+    "ok",
+    "okay",
+    "sure",
+    "nope",
+    "no",
+    "hmm",
+    "hmmm",
+    "lol",
+    "haha",
+    "right",
+    "true",
+    "k",
+    "kk",
+    "cool",
+    "got",
+    "nice",
+    "thanks",
+    "ty",
+    "np",
+    "alright",
+    "awesome",
+    "great",
+    "fine",
+    "sounds",
+    "wow",
+    "oh",
 }
 
 # backchannel regex patterns (match whole text roughly)
@@ -229,6 +249,7 @@ class SalienceMask:
 
     low_salience[i] = True  means segment i is low-salience (candidate for prune/downweight).
     """
+
     variant: str
     low_salience: np.ndarray  # bool array of shape (N,)
 
@@ -285,7 +306,7 @@ def build_mask(
             if label == "NO":
                 mask[i] = True
             if verbose and (j + 1) % 100 == 0:
-                print(f"    LLM classify {j+1}/{len(todo)}", flush=True)
+                print(f"    LLM classify {j + 1}/{len(todo)}", flush=True)
         llm_cache.save()
     else:
         raise ValueError(f"Unknown variant: {variant}")
@@ -335,9 +356,7 @@ class PrunedSegmentStore(SegmentStore):
         sims = self.normalized_embeddings @ q
 
         if self.mode == "downweight":
-            sims = np.where(
-                self.mask.low_salience, sims * self.downweight_factor, sims
-            )
+            sims = np.where(self.mask.low_salience, sims * self.downweight_factor, sims)
         elif self.mode == "drop":
             sims = np.where(self.mask.low_salience, -1.0, sims)
 
@@ -391,12 +410,14 @@ def false_prune_stats(
             gold_pruned += 1
             if len(pruned_samples) < 10:
                 seg = store.segments[idx]
-                pruned_samples.append({
-                    "conv": seg.conversation_id,
-                    "turn": seg.turn_id,
-                    "role": seg.role,
-                    "text": seg.text[:200],
-                })
+                pruned_samples.append(
+                    {
+                        "conv": seg.conversation_id,
+                        "turn": seg.turn_id,
+                        "role": seg.role,
+                        "text": seg.text[:200],
+                    }
+                )
 
     return {
         "gold_total": gold_total,

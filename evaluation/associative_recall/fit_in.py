@@ -39,17 +39,15 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
-    EMBED_MODEL,
     EmbeddingCache,
     LLMCache,
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 from prompt_optimization import (
     OptimBase,
     OptimResult,
@@ -331,9 +329,7 @@ class FitInVariant(OptimBase):
 
     def retrieve(self, question: str, conversation_id: str) -> OptimResult:
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
@@ -351,7 +347,9 @@ class FitInVariant(OptimBase):
                 continue
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -496,9 +494,7 @@ def evaluate_question(
 
     query_emb = arch.embed_text(q_text)
     max_K = max(budgets)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -552,15 +548,11 @@ def summarize_results(
         sum(r["total_arch_retrieved"] for r in results) / n, 1
     )
     out["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
-    out["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
+    out["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
     return out
 
 
-def summarize_by_category(
-    results: list[dict], budgets: list[int]
-) -> dict[str, dict]:
+def summarize_by_category(results: list[dict], budgets: list[int]) -> dict[str, dict]:
     by_cat: dict[str, list[dict]] = defaultdict(list)
     for r in results:
         by_cat[r["category"]].append(r)
@@ -573,9 +565,7 @@ def summarize_by_category(
             a_vals = [r["fair_backfill"][f"arch_r@{K}"] for r in rs]
             entry[f"baseline_r@{K}"] = round(sum(b_vals) / n, 4)
             entry[f"arch_r@{K}"] = round(sum(a_vals) / n, 4)
-            entry[f"delta_r@{K}"] = round(
-                sum(a_vals) / n - sum(b_vals) / n, 4
-            )
+            entry[f"delta_r@{K}"] = round(sum(a_vals) / n - sum(b_vals) / n, 4)
             wins = sum(1 for b, a in zip(b_vals, a_vals) if a > b + 0.001)
             losses = sum(1 for b, a in zip(b_vals, a_vals) if b > a + 0.001)
             entry[f"W/T/L_r@{K}"] = f"{wins}/{n - wins - losses}/{losses}"
@@ -587,11 +577,11 @@ def summarize_by_category(
 # Quick-test: 5 representative questions (same spec as prior tests)
 # ===========================================================================
 QUICK_QUESTIONS_SPEC = [
-    ("locomo_30q", "locomo_conv-26", 0),             # temporal, LGBTQ group
-    ("locomo_30q", "locomo_conv-26", 3),             # single_hop, Caroline research
-    ("synthetic_19q", "synth_personal", 0),          # control, Bob allergic
-    ("puzzle_16q", "puzzle_logic_1", 0),             # logic_constraint, desks
-    ("advanced_23q", "adv_evolving_term_1", 0),      # evolving_terminology
+    ("locomo_30q", "locomo_conv-26", 0),  # temporal, LGBTQ group
+    ("locomo_30q", "locomo_conv-26", 3),  # single_hop, Caroline research
+    ("synthetic_19q", "synth_personal", 0),  # control, Bob allergic
+    ("puzzle_16q", "puzzle_logic_1", 0),  # logic_constraint, desks
+    ("advanced_23q", "adv_evolving_term_1", 0),  # evolving_terminology
 ]
 
 
@@ -604,8 +594,7 @@ def load_quick_questions() -> tuple[list[tuple[str, dict]], dict]:
         _, questions = seen_datasets[ds_name]
         matched = None
         for q in questions:
-            if (q.get("conversation_id") == conv_id
-                    and q.get("question_index") == q_idx):
+            if q.get("conversation_id") == conv_id and q.get("question_index") == q_idx:
                 matched = q
                 break
         if matched is None:
@@ -647,7 +636,7 @@ def run_quick_test(variants_to_run: list[str]) -> dict:
     # Print comparison table
     print(
         f"\n{'Variant':<28s} "
-        + " ".join(f"Q{i+1}@20" for i in range(len(quick_qs)))
+        + " ".join(f"Q{i + 1}@20" for i in range(len(quick_qs)))
         + "   mean_delta"
     )
     print("-" * 100)
@@ -661,22 +650,16 @@ def run_quick_test(variants_to_run: list[str]) -> dict:
             cells.append(f"{a:.2f}({d:+.2f})")
             deltas.append(d)
         mean_d = sum(deltas) / len(deltas) if deltas else 0.0
-        print(
-            f"{variant_name:<28s} "
-            + "  ".join(cells)
-            + f"   {mean_d:+.3f}"
-        )
+        print(f"{variant_name:<28s} " + "  ".join(cells) + f"   {mean_d:+.3f}")
 
     ref_rows = all_rows[variants_to_run[0]]
-    b_cells = [
-        f"{r['fair_backfill']['baseline_r@20']:.2f}" for r in ref_rows
-    ]
+    b_cells = [f"{r['fair_backfill']['baseline_r@20']:.2f}" for r in ref_rows]
     print(f"\n{'(cosine baseline)':<28s} " + "  ".join(b_cells))
 
     print(
         "\nQuestions:\n"
         + "\n".join(
-            f"  Q{i+1} [{q['category']}] {q['question'][:80]}"
+            f"  Q{i + 1} [{q['category']}] {q['question'][:80]}"
             for i, (_, q) in enumerate(quick_qs)
         )
     )
@@ -686,7 +669,7 @@ def run_quick_test(variants_to_run: list[str]) -> dict:
     for variant_name in variants_to_run:
         print(f"\n[{variant_name}]")
         for i, r in enumerate(all_rows[variant_name]):
-            print(f"  Q{i+1}: ")
+            print(f"  Q{i + 1}: ")
             cues = r.get("cues", [])
             for c in cues[:2]:
                 print(f"    - {c[:300]}")
@@ -760,7 +743,7 @@ def run_full_eval(variants_to_run: list[str]) -> dict:
             for i, q in enumerate(questions):
                 q_short = q["question"][:55]
                 print(
-                    f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: "
+                    f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: "
                     f"{q_short}...",
                     flush=True,
                 )
@@ -770,15 +753,14 @@ def run_full_eval(variants_to_run: list[str]) -> dict:
                 except Exception as e:
                     print(f"  ERROR: {e}", flush=True)
                     import traceback
+
                     traceback.print_exc()
                 sys.stdout.flush()
                 if (i + 1) % 5 == 0:
                     arch.save_caches()
             arch.save_caches()
 
-            summary = summarize_results(
-                results, variant_name, ds_name, BUDGETS_FULL
-            )
+            summary = summarize_results(results, variant_name, ds_name, BUDGETS_FULL)
             by_cat = summarize_by_category(results, BUDGETS_FULL)
 
             per_variant_per_dataset_results[variant_name][ds_name] = {
@@ -792,7 +774,9 @@ def run_full_eval(variants_to_run: list[str]) -> dict:
             with open(out_path, "w") as f:
                 json.dump(
                     per_variant_per_dataset_results[variant_name][ds_name],
-                    f, indent=2, default=str,
+                    f,
+                    indent=2,
+                    default=str,
                 )
             print(f"  Saved: {out_path}")
 
@@ -875,7 +859,9 @@ def run_full_eval(variants_to_run: list[str]) -> dict:
                 "summary_table": summary_table,
                 "cross_dataset_avg_delta": cross_avg,
             },
-            f, indent=2, default=str,
+            f,
+            indent=2,
+            default=str,
         )
     print(f"\nSaved aggregate summary: {agg_path}")
 
@@ -894,11 +880,14 @@ def main():
     parser.add_argument("--quick", action="store_true", help="5-question gate test")
     parser.add_argument("--full", action="store_true", help="Full 4-dataset eval")
     parser.add_argument(
-        "--all", action="store_true",
+        "--all",
+        action="store_true",
         help="Run quick; if any new variant passes, run full on survivors",
     )
     parser.add_argument(
-        "--variants", type=str, default=None,
+        "--variants",
+        type=str,
+        default=None,
         help="Comma-separated variant names (default: all new + references)",
     )
     parser.add_argument("--list", action="store_true", help="List variants")
@@ -951,7 +940,9 @@ def main():
                         for v, rows in quick_result["all_rows"].items()
                     },
                 },
-                f, indent=2, default=str,
+                f,
+                indent=2,
+                default=str,
             )
         print(f"\nSaved quick results: {qpath}")
         print(f"Gate-passing variants: {quick_result['gate_pass']}")

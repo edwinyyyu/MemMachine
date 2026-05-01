@@ -10,33 +10,22 @@ Usage:
 """
 
 import json
-import sys
-import time
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
-    EMBED_MODEL,
     EmbeddingCache,
     LLMCache,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 from prompt_optimization import (
     META_V2F_PROMPT,
     V15_CONTROL_PROMPT,
-    BUDGETS,
     MetaV2Variant,
-    OptimEmbeddingCache,
-    OptimResult,
-    _format_segments,
-    _parse_cues,
-    compute_recall,
-    evaluate_one,
     run_variant,
     summarize,
     summarize_by_category,
@@ -142,8 +131,9 @@ class SynthTestLLMCache(LLMCache):
 class SynthTestMetaV2Variant(MetaV2Variant):
     """MetaV2Variant that uses synth_test caches."""
 
-    def __init__(self, store: SegmentStore, prompt_template: str,
-                 client: OpenAI | None = None):
+    def __init__(
+        self, store: SegmentStore, prompt_template: str, client: OpenAI | None = None
+    ):
         super().__init__(store, prompt_template, client)
         # Override caches with synth_test versions
         self.embedding_cache = SynthTestEmbeddingCache()
@@ -243,7 +233,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Test V2f vs V15 control on synthetic/puzzle/advanced benchmarks"
     )
-    parser.add_argument("--force", action="store_true", help="Overwrite existing results")
+    parser.add_argument(
+        "--force", action="store_true", help="Overwrite existing results"
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -255,9 +247,9 @@ def main() -> None:
         ds_name = dataset["name"]
         ds_label = dataset["label"]
 
-        print(f"\n{'#'*80}")
+        print(f"\n{'#' * 80}")
         print(f"# DATASET: {ds_label}")
-        print(f"{'#'*80}")
+        print(f"{'#' * 80}")
 
         # Load data
         store = SegmentStore(data_dir=DATA_DIR, npz_name=dataset["npz"])
@@ -288,7 +280,7 @@ def main() -> None:
                     f"W/T/L={summary.get('W/T/L_r@20', '?')}"
                 )
                 cat_summaries = summarize_by_category(results)
-                print(f"  Per-category (r@20):")
+                print("  Per-category (r@20):")
                 for cat, cs in cat_summaries.items():
                     print(
                         f"    {cat}: baseline={cs['baseline_r@20']:.3f} "
@@ -321,9 +313,9 @@ def main() -> None:
     # ===========================================================================
     # Grand summary
     # ===========================================================================
-    print(f"\n\n{'='*100}")
+    print(f"\n\n{'=' * 100}")
     print("V2f vs V15 CONTROL — Grand Summary")
-    print(f"{'='*100}")
+    print(f"{'=' * 100}")
 
     for comp in all_comparisons:
         print(f"\n--- {comp['dataset']} ({comp['n']} questions) ---")
@@ -331,12 +323,12 @@ def main() -> None:
             f"  Overall r@20: v15={comp['v15_r@20']:.3f}  v2f={comp['v2f_r@20']:.3f}  "
             f"delta={comp['delta_v2f_vs_v15']:+.4f}  W/T/L={comp['W/T/L']}"
         )
-        print(f"  Per-category:")
+        print("  Per-category:")
         print(
             f"    {'Category':<28s} {'n':>3s} {'Base':>7s} {'V15':>7s} "
             f"{'V2f':>7s} {'V2f-V15':>8s} {'V15-B':>7s} {'V2f-B':>7s} {'W/T/L':>7s}"
         )
-        print(f"    {'-'*88}")
+        print(f"    {'-' * 88}")
         for cat, cs in comp["per_category"].items():
             print(
                 f"    {cat:<28s} {cs['n']:>3d} {cs['baseline_r@20']:>7.3f} "
@@ -348,9 +340,9 @@ def main() -> None:
             )
 
     # Key questions analysis
-    print(f"\n\n{'='*100}")
+    print(f"\n\n{'=' * 100}")
     print("KEY QUESTIONS ANALYSIS")
-    print(f"{'='*100}")
+    print(f"{'=' * 100}")
 
     for comp in all_comparisons:
         cats = comp["per_category"]
@@ -380,23 +372,25 @@ def main() -> None:
                     f"V15={cs['v15_r@20']:.3f} ({cs['delta_v15_vs_base']:+.3f}), "
                     f"V2f={cs['v2f_r@20']:.3f} ({cs['delta_v2f_vs_base']:+.3f})"
                 )
-                print(f"   V2f vs V15: {cs['delta_v2f_vs_v15']:+.4f}, W/T/L={cs['W/T/L']}")
+                print(
+                    f"   V2f vs V15: {cs['delta_v2f_vs_v15']:+.4f}, W/T/L={cs['W/T/L']}"
+                )
 
         for cat_name in ("sequential_chain", "logic_constraint"):
             if cat_name in cats:
                 cs = cats[cat_name]
-                print(
-                    f"\n4. Hard puzzle category '{cat_name}' ({comp['dataset']}):"
-                )
+                print(f"\n4. Hard puzzle category '{cat_name}' ({comp['dataset']}):")
                 print(
                     f"   Baseline r@20={cs['baseline_r@20']:.3f}, "
                     f"V15={cs['v15_r@20']:.3f} ({cs['delta_v15_vs_base']:+.3f}), "
                     f"V2f={cs['v2f_r@20']:.3f} ({cs['delta_v2f_vs_base']:+.3f})"
                 )
-                print(f"   V2f vs V15: {cs['delta_v2f_vs_v15']:+.4f}, W/T/L={cs['W/T/L']}")
+                print(
+                    f"   V2f vs V15: {cs['delta_v2f_vs_v15']:+.4f}, W/T/L={cs['W/T/L']}"
+                )
 
     # Check for regressions (any category where V2f loses to V15)
-    print(f"\n\n3. Regression check (categories where V2f loses to V15):")
+    print("\n\n3. Regression check (categories where V2f loses to V15):")
     any_regression = False
     for comp in all_comparisons:
         for cat, cs in comp["per_category"].items():

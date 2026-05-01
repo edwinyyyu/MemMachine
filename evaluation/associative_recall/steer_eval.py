@@ -23,17 +23,35 @@ import argparse
 import asyncio
 import json
 import os
-import re
 import time
 from collections import defaultdict
-from dataclasses import asdict
 from pathlib import Path
 
 import openai
+from active_steering import (
+    STEER_EMB_CACHE,
+    STEER_LLM_CACHE,
+    EmbeddingCache,
+    SteerConfig,
+    active_steer,
+)
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    BESTSHOT_LLM_CACHE,
+    EM_V2F_LLM_CACHE,
+    V2F_MODEL,
+    V2F_PROMPT,
+    _dedupe_by_turn_id,
+    _MergedLLMCache,
+    _query_em,
+    format_primer_context,
+    parse_v2f_cues,
+)
+from em_lme_tuned_cues import (
+    LMETUNE_V2F_MIXED7030_CACHE,
+    V2F_LME_MIXED_7030_PROMPT,
+    parse_speaker_cues,
+)
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -50,31 +68,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from active_steering import (
-    STEER_EMB_CACHE,
-    STEER_LLM_CACHE,
-    EmbeddingCache,
-    SteerConfig,
-    active_steer,
-)
-from em_architectures import (
-    BESTSHOT_LLM_CACHE,
-    EM_V2F_LLM_CACHE,
-    V2F_MODEL,
-    V2F_PROMPT,
-    _MergedLLMCache,
-    _dedupe_by_turn_id,
-    _query_em,
-    format_primer_context,
-    parse_v2f_cues,
-)
-from em_lme_tuned_cues import (
-    LMETUNE_V2F_MIXED7030_CACHE,
-    V2F_LME_MIXED_7030_PROMPT,
-    parse_speaker_cues,
-)
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -440,7 +435,9 @@ async def main() -> None:
         if locomo_qs:
             with open(LOCOMO_COLLECTIONS_FILE) as f:
                 locomo_meta = json.load(f)
-            conv_to_meta = {r["conversation_id"]: r for r in locomo_meta["conversations"]}
+            conv_to_meta = {
+                r["conversation_id"]: r for r in locomo_meta["conversations"]
+            }
             sql_url = locomo_meta.get("sql_url") or os.getenv("SQL_URL")
             if sql_url.startswith("sqlite"):
                 engine = create_async_engine(sql_url)
@@ -662,7 +659,9 @@ def write_report(results: dict) -> None:
         "add/sub phrases."
     )
     lines.append("")
-    lines.append("Fixed: alpha=beta=0.1, text-embedding-3-small, gpt-5-mini, LoCoMo-30 and LME-hard-30 POC subset.")
+    lines.append(
+        "Fixed: alpha=beta=0.1, text-embedding-3-small, gpt-5-mini, LoCoMo-30 and LME-hard-30 POC subset."
+    )
     lines.append("")
 
     # Overall recall matrix
@@ -707,9 +706,7 @@ def write_report(results: dict) -> None:
     # Round-by-round trajectory for key variants
     lines.append("## Round-by-round recall trajectory (mean R@50)")
     lines.append("")
-    lines.append(
-        "Rows: variants. Columns: round 0 (initial cue) .. final round."
-    )
+    lines.append("Rows: variants. Columns: round 0 (initial cue) .. final round.")
     lines.append("")
     for corpus in ("locomo", "lme"):
         lines.append(f"### {corpus}")
@@ -723,9 +720,9 @@ def write_report(results: dict) -> None:
             traj = data["trajectory"]
             cells = []
             max_rnd = max(int(k) for k in traj.keys())
-            for rnd in range(0, 4):
+            for rnd in range(4):
                 entry = traj.get(str(rnd))
-                if entry and f"mean_r@50" in entry:
+                if entry and "mean_r@50" in entry:
                     cells.append(f"{entry['mean_r@50']:.4f}")
                 else:
                     cells.append("--")
@@ -760,7 +757,9 @@ def write_report(results: dict) -> None:
     for corpus in ("locomo", "lme"):
         lines.append(f"### {corpus}")
         lines.append("")
-        lines.append("| Variant | rd1 add_mag | rd1 sub_mag | rd2 add_mag | rd2 sub_mag |")
+        lines.append(
+            "| Variant | rd1 add_mag | rd1 sub_mag | rd2 add_mag | rd2 sub_mag |"
+        )
         lines.append("| --- | --- | --- | --- | --- |")
         for variant, per_corpus in variants.items():
             data = per_corpus.get(corpus)
@@ -789,7 +788,9 @@ def write_report(results: dict) -> None:
         lines.append(f"### `{variant}`")
         lines.append("")
         for r in rows:
-            lines.append(f"- Q `{r['question_id']}` (`{r['category']}`): {r['question']}")
+            lines.append(
+                f"- Q `{r['question_id']}` (`{r['category']}`): {r['question']}"
+            )
             lines.append(f"  - initial cue: `{r['initial_cue_text']}`")
             for tr in r["trajectory"]:
                 if tr["round"] == 0:
@@ -798,7 +799,7 @@ def write_report(results: dict) -> None:
                 subs = "; ".join(f"{p} (w={w})" for p, w in tr["sub_phrases"])
                 lines.append(
                     f"  - round {tr['round']}: drift={tr['probe_drift']:.3f}, "
-                    f"R@50={tr.get('r@50','--')}"
+                    f"R@50={tr.get('r@50', '--')}"
                 )
                 lines.append(f"    - ADD: {adds or '(empty)'}")
                 lines.append(f"    - SUB: {subs or '(empty)'}")
@@ -826,7 +827,9 @@ def write_report(results: dict) -> None:
         bq = _get_r50(base_q, corpus)
         lines.append(f"- baseline (v2f cue direct): R@50 = {base:.4f}")
         lines.append(f"- baseline (query direct): R@50 = {bq:.4f}")
-        lines.append(f"- steer_v2f_2round: R@50 = {steer:.4f} (Δ vs baseline = {steer - base:+.4f})")
+        lines.append(
+            f"- steer_v2f_2round: R@50 = {steer:.4f} (Δ vs baseline = {steer - base:+.4f})"
+        )
         lines.append(f"- steer_v2f_addonly: R@50 = {addo:.4f}")
         lines.append(f"- steer_v2f_subonly: R@50 = {subo:.4f}")
         lines.append("")
@@ -835,7 +838,9 @@ def write_report(results: dict) -> None:
     lines.append("")
     lines.append(f"- JSON: `{OUT_JSON.relative_to(ASSOC_DIR)}`")
     lines.append("- Sources: `active_steering.py`, `steer_eval.py`")
-    lines.append("- Caches: `cache/steer_llm_cache.json`, `cache/steer_embedding_cache.json`")
+    lines.append(
+        "- Caches: `cache/steer_llm_cache.json`, `cache/steer_embedding_cache.json`"
+    )
     lines.append("")
 
     OUT_MD.write_text("\n".join(lines))

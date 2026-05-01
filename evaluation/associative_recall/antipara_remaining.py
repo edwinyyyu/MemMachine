@@ -10,22 +10,15 @@ results files are present.
 from __future__ import annotations
 
 import json
-import sys
-import time
 from pathlib import Path
-
-from dotenv import load_dotenv
 
 from antipara_cue_eval import (
     ARCH_CLASSES,
-    evaluate_question,
     render_markdown,
     run_one,
 )
-from associative_recall import Segment, SegmentStore
+from dotenv import load_dotenv
 from fair_backfill_eval import (
-    BUDGETS,
-    DATA_DIR,
     DATASETS,
     RESULTS_DIR,
     load_dataset,
@@ -69,9 +62,7 @@ def main() -> None:
         for arch_name in arch_names:
             cls = ARCH_CLASSES[arch_name]
             arch = cls(store)
-            results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(arch_name, arch, ds_name, questions)
             out_path = RESULTS_DIR / f"antipara_{arch_name}_{ds_name}.json"
             with open(out_path, "w") as f:
                 json.dump(

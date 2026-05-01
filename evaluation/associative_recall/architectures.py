@@ -5,15 +5,11 @@ Segment objects. All architectures use the same SegmentStore for embedding
 lookups but differ in their retrieval strategy.
 """
 
-import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -21,8 +17,9 @@ from associative_recall import (
     LLMCache,
     Segment,
     SegmentStore,
-    RetrievalResult,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -30,6 +27,7 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 @dataclass
 class ArchResult:
     """Result from any architecture's retrieval."""
+
     segments: list[Segment]
     metadata: dict = field(default_factory=dict)
 
@@ -178,9 +176,14 @@ class SegmentAsQuery(BaseArchitecture):
     Collects all unique segments found along the walk.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 initial_top_k: int = 5, walk_hops: int = 4,
-                 walk_top_k: int = 5):
+    def __init__(
+        self,
+        store: SegmentStore,
+        client: OpenAI | None = None,
+        initial_top_k: int = 5,
+        walk_hops: int = 4,
+        walk_top_k: int = 5,
+    ):
         super().__init__(store, client)
         self.initial_top_k = initial_top_k
         self.walk_hops = walk_hops
@@ -204,7 +207,8 @@ class SegmentAsQuery(BaseArchitecture):
                 # Use the segment text as query
                 seg_emb = self.embed_text(current_seg.text)
                 result = self.store.search(
-                    seg_emb, top_k=self.walk_top_k,
+                    seg_emb,
+                    top_k=self.walk_top_k,
                     conversation_id=conversation_id,
                     exclude_indices=seen_indices,
                 )
@@ -237,14 +241,18 @@ class ClusterDiversify(BaseArchitecture):
     Select representatives from each cluster, prioritizing diversity.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 initial_top_k: int = 100, n_clusters: int = 8):
+    def __init__(
+        self,
+        store: SegmentStore,
+        client: OpenAI | None = None,
+        initial_top_k: int = 100,
+        n_clusters: int = 8,
+    ):
         super().__init__(store, client)
         self.initial_top_k = initial_top_k
         self.n_clusters = n_clusters
 
-    def _kmeans(self, embeddings: np.ndarray, k: int,
-                max_iter: int = 50) -> np.ndarray:
+    def _kmeans(self, embeddings: np.ndarray, k: int, max_iter: int = 50) -> np.ndarray:
         """Simple k-means clustering. Returns cluster assignments."""
         n = len(embeddings)
         if n <= k:
@@ -254,9 +262,7 @@ class ClusterDiversify(BaseArchitecture):
         for _ in range(1, k):
             # Distance to nearest existing center
             centers = embeddings[indices]
-            dists = np.min(
-                1 - embeddings @ centers.T, axis=1
-            )  # cosine distance
+            dists = np.min(1 - embeddings @ centers.T, axis=1)  # cosine distance
             dists[indices] = 0
             probs = dists / (dists.sum() + 1e-10)
             idx = np.random.choice(n, p=probs)
@@ -355,9 +361,14 @@ class MultiQueryFusion(BaseArchitecture):
     retrieve in parallel, combine with Reciprocal Rank Fusion.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 num_queries: int = 5, per_query_k: int = 20,
-                 model: str = "gpt-5-mini"):
+    def __init__(
+        self,
+        store: SegmentStore,
+        client: OpenAI | None = None,
+        num_queries: int = 5,
+        per_query_k: int = 20,
+        model: str = "gpt-5-mini",
+    ):
         super().__init__(store, client)
         self.num_queries = num_queries
         self.per_query_k = per_query_k
@@ -429,9 +440,15 @@ class RetrieveSummarizeRetrieve(BaseArchitecture):
     related content.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 initial_top_k: int = 10, summary_hops: int = 2,
-                 per_hop_k: int = 15, model: str = "gpt-5-mini"):
+    def __init__(
+        self,
+        store: SegmentStore,
+        client: OpenAI | None = None,
+        initial_top_k: int = 10,
+        summary_hops: int = 2,
+        per_hop_k: int = 15,
+        model: str = "gpt-5-mini",
+    ):
         super().__init__(store, client)
         self.initial_top_k = initial_top_k
         self.summary_hops = summary_hops
@@ -469,7 +486,8 @@ Summary (2-3 sentences, specific vocabulary):"""
             # Embed the summary and use as query
             summary_emb = self.embed_text(summary.strip())
             result = self.store.search(
-                summary_emb, top_k=self.per_hop_k,
+                summary_emb,
+                top_k=self.per_hop_k,
                 conversation_id=conversation_id,
                 exclude_indices=seen_indices,
             )
@@ -499,9 +517,14 @@ class AgentWorkingSet(BaseArchitecture):
     Limited to ~5 tool calls total.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 max_tool_calls: int = 5, per_search_k: int = 10,
-                 model: str = "gpt-5-mini"):
+    def __init__(
+        self,
+        store: SegmentStore,
+        client: OpenAI | None = None,
+        max_tool_calls: int = 5,
+        per_search_k: int = 10,
+        model: str = "gpt-5-mini",
+    ):
         super().__init__(store, client)
         self.max_tool_calls = max_tool_calls
         self.per_search_k = per_search_k
@@ -527,7 +550,9 @@ class AgentWorkingSet(BaseArchitecture):
             # Build working set description
             ws_lines = []
             for seg in sorted(working_set.values(), key=lambda s: s.turn_id):
-                ws_lines.append(f"[ID:{seg.index} Turn:{seg.turn_id}]: {seg.text[:200]}")
+                ws_lines.append(
+                    f"[ID:{seg.index} Turn:{seg.turn_id}]: {seg.text[:200]}"
+                )
             ws_text = "\n".join(ws_lines) if ws_lines else "(empty)"
 
             prompt = f"""\
@@ -553,12 +578,13 @@ Output exactly ONE action line. Nothing else."""
 
             if action_line.startswith("STOP"):
                 break
-            elif action_line.startswith("SEARCH:"):
+            if action_line.startswith("SEARCH:"):
                 query = action_line[7:].strip()
                 if query:
                     q_emb = self.embed_text(query)
                     result = self.store.search(
-                        q_emb, top_k=self.per_search_k,
+                        q_emb,
+                        top_k=self.per_search_k,
                         conversation_id=conversation_id,
                         exclude_indices=excluded_indices,
                     )
@@ -572,8 +598,7 @@ Output exactly ONE action line. Nothing else."""
                     part = part.strip()
                     try:
                         idx = int(part)
-                        if idx in working_set:
-                            del working_set[idx]
+                        working_set.pop(idx, None)
                     except ValueError:
                         pass
 
@@ -604,9 +629,14 @@ class HybridGapFill(BaseArchitecture):
     layer for gap-filling.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 baseline_k: int = 20, gap_fill_k: int = 10,
-                 model: str = "gpt-5-mini"):
+    def __init__(
+        self,
+        store: SegmentStore,
+        client: OpenAI | None = None,
+        baseline_k: int = 20,
+        gap_fill_k: int = 10,
+        model: str = "gpt-5-mini",
+    ):
         super().__init__(store, client)
         self.baseline_k = baseline_k
         self.gap_fill_k = gap_fill_k
@@ -657,7 +687,8 @@ Nothing else."""
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.gap_fill_k,
+                cue_emb,
+                top_k=self.gap_fill_k,
                 conversation_id=conversation_id,
                 exclude_indices=seen_indices,
             )
@@ -689,9 +720,15 @@ class CentroidWalk(BaseArchitecture):
     related content.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 initial_top_k: int = 10, hops: int = 3,
-                 per_hop_k: int = 10, drift_alpha: float = 0.3):
+    def __init__(
+        self,
+        store: SegmentStore,
+        client: OpenAI | None = None,
+        initial_top_k: int = 10,
+        hops: int = 3,
+        per_hop_k: int = 10,
+        drift_alpha: float = 0.3,
+    ):
         super().__init__(store, client)
         self.initial_top_k = initial_top_k
         self.hops = hops
@@ -719,11 +756,14 @@ class CentroidWalk(BaseArchitecture):
             centroid /= max(np.linalg.norm(centroid), 1e-10)
 
             # Drift query toward centroid
-            current_query = (1 - self.drift_alpha) * current_query + self.drift_alpha * centroid
+            current_query = (
+                1 - self.drift_alpha
+            ) * current_query + self.drift_alpha * centroid
             current_query /= max(np.linalg.norm(current_query), 1e-10)
 
             result = self.store.search(
-                current_query, top_k=self.per_hop_k,
+                current_query,
+                top_k=self.per_hop_k,
                 conversation_id=conversation_id,
                 exclude_indices=seen_indices,
             )
@@ -758,9 +798,15 @@ class NegativeSpace(BaseArchitecture):
     region.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 initial_top_k: int = 15, hops: int = 2,
-                 per_hop_k: int = 15, push_alpha: float = 0.3):
+    def __init__(
+        self,
+        store: SegmentStore,
+        client: OpenAI | None = None,
+        initial_top_k: int = 15,
+        hops: int = 2,
+        per_hop_k: int = 15,
+        push_alpha: float = 0.3,
+    ):
         super().__init__(store, client)
         self.initial_top_k = initial_top_k
         self.hops = hops
@@ -792,7 +838,8 @@ class NegativeSpace(BaseArchitecture):
             pushed_query /= max(np.linalg.norm(pushed_query), 1e-10)
 
             result = self.store.search(
-                pushed_query, top_k=self.per_hop_k,
+                pushed_query,
+                top_k=self.per_hop_k,
                 conversation_id=conversation_id,
                 exclude_indices=seen_indices,
             )
@@ -825,9 +872,14 @@ class MMRDiversified(BaseArchitecture):
     segments.
     """
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 total_k: int = 60, lambda_param: float = 0.7,
-                 candidate_pool: int = 150):
+    def __init__(
+        self,
+        store: SegmentStore,
+        client: OpenAI | None = None,
+        total_k: int = 60,
+        lambda_param: float = 0.7,
+        candidate_pool: int = 150,
+    ):
         super().__init__(store, client)
         self.total_k = total_k
         self.lambda_param = lambda_param
@@ -872,7 +924,10 @@ class MMRDiversified(BaseArchitecture):
                 relevance = float(query_sims[i])
                 # Max similarity to any selected segment
                 diversity_penalty = float(np.max(cand_embs[i] @ sel_embs_arr.T))
-                mmr = self.lambda_param * relevance - (1 - self.lambda_param) * diversity_penalty
+                mmr = (
+                    self.lambda_param * relevance
+                    - (1 - self.lambda_param) * diversity_penalty
+                )
                 if mmr > best_score:
                     best_score = mmr
                     best_idx = i

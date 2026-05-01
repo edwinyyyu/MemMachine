@@ -24,25 +24,22 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
+# Patch BestshotEmbeddingCache before import of best_shot users (to tolerate
+# concurrent corrupt cache files written by other agents).
+import best_shot as _best_shot_module
 from associative_recall import (
     Segment,
     SegmentStore,
 )
-
-# Patch BestshotEmbeddingCache before import of best_shot users (to tolerate
-# concurrent corrupt cache files written by other agents).
-import best_shot as _best_shot_module  # noqa: E402
-
+from dotenv import load_dotenv
+from openai import OpenAI
 
 _ORIG_BEC_INIT = _best_shot_module.BestshotEmbeddingCache.__init__
 
 
 def _safe_bec_init(self):
     from associative_recall import CACHE_DIR as _CACHE_DIR
+
     self.cache_dir = _CACHE_DIR
     self.cache_dir.mkdir(parents=True, exist_ok=True)
     self._cache: dict = {}
@@ -69,11 +66,13 @@ def _safe_bec_init(self):
                     raw = f.read().decode("utf-8", errors="replace")
                 obj, _ = json.JSONDecoder().raw_decode(raw)
                 self._cache.update(obj)
-                print(f"  (warn) cache {name} corrupt; recovered "
-                      f"{len(obj)} entries via raw_decode", flush=True)
+                print(
+                    f"  (warn) cache {name} corrupt; recovered "
+                    f"{len(obj)} entries via raw_decode",
+                    flush=True,
+                )
             except Exception as e:
-                print(f"  (warn) skipping corrupt cache {name}: {e}",
-                      flush=True)
+                print(f"  (warn) skipping corrupt cache {name}: {e}", flush=True)
     self.cache_file = self.cache_dir / "bestshot_embedding_cache.json"
     self._new_entries = {}
 
@@ -113,7 +112,6 @@ _best_shot_module.BestshotEmbeddingCache.save = _safe_bec_save  # type: ignore[m
 
 
 from best_shot import MetaV2f  # noqa: E402
-
 from dialogue_act import (  # noqa: E402
     ACT_LABELS,
     ActIndex,
@@ -134,7 +132,6 @@ from ingest_regex_eval import (  # noqa: E402
     compute_recall,
     fair_backfill_turn_ids,
 )
-
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -330,12 +327,18 @@ def run_variant(
         for K in BUDGETS:
             if merge_mode == "additive_bonus":
                 merged = merge_additive_bonus(
-                    main_ranked, combined, K, bonus=bonus,
+                    main_ranked,
+                    combined,
+                    K,
+                    bonus=bonus,
                 )
             else:
                 merged = merge_always_top_m(
-                    main_ranked, combined, K,
-                    top_m=top_m_act, min_score=min_score,
+                    main_ranked,
+                    combined,
+                    K,
+                    top_m=top_m_act,
+                    min_score=min_score,
                 )
             retrieved_ids = {s.turn_id for s in merged}
             row[f"r@{K}"] = compute_recall(retrieved_ids, source_ids)
@@ -395,7 +398,8 @@ def act_contribution(per_q: list[dict], K: int) -> dict:
         if contrib & gold:
             q_with += 1
     return {
-        "n": n, "K": K,
+        "n": n,
+        "K": K,
         "frac_questions_with_act_gold": round(q_with / n, 4),
         "frac_gold_via_act": round(act_gold / max(total_gold, 1), 4),
     }
@@ -453,8 +457,15 @@ def run_dataset(
     # Variant: keyword route
     print("  [2/4] dialact_keyword_route ...", flush=True)
     kw_rows, kw_route_counts = run_variant(
-        "dialact_keyword_route", store, act_indices, embedder, qs,
-        tagger=None, top_m_act=5, min_score=0.2, merge_mode="always_top_m",
+        "dialact_keyword_route",
+        store,
+        act_indices,
+        embedder,
+        qs,
+        tagger=None,
+        top_m_act=5,
+        min_score=0.2,
+        merge_mode="always_top_m",
     )
     kw_summary = summarize(kw_rows)
     kw_by_cat = summarize_by_category(kw_rows)
@@ -464,8 +475,14 @@ def run_dataset(
     if use_llm_route:
         print("  [3/4] dialact_llm_route ...", flush=True)
         llm_rows, llm_route_counts = run_variant(
-            "dialact_llm_route", store, act_indices, embedder, qs,
-            tagger=tagger, top_m_act=5, min_score=0.2,
+            "dialact_llm_route",
+            store,
+            act_indices,
+            embedder,
+            qs,
+            tagger=tagger,
+            top_m_act=5,
+            min_score=0.2,
             merge_mode="always_top_m",
         )
         llm_summary = summarize(llm_rows)
@@ -481,8 +498,15 @@ def run_dataset(
     # Variant: plus_v2f with additive bonus (keyword routing, bonus merge)
     print("  [4/4] dialact_plus_v2f (additive_bonus) ...", flush=True)
     plus_rows, plus_route_counts = run_variant(
-        "dialact_keyword_route", store, act_indices, embedder, qs,
-        tagger=None, top_m_act=5, bonus=0.1, min_score=0.2,
+        "dialact_keyword_route",
+        store,
+        act_indices,
+        embedder,
+        qs,
+        tagger=None,
+        top_m_act=5,
+        bonus=0.1,
+        min_score=0.2,
         merge_mode="additive_bonus",
     )
     plus_summary = summarize(plus_rows)
@@ -494,8 +518,9 @@ def run_dataset(
         "n_questions": len(qs),
         "n_target_segments": len(target_segments),
         "act_distribution": dist,
-        "act_index_sizes": {a: int(idx.act_normalized.shape[0])
-                            for a, idx in act_indices.items()},
+        "act_index_sizes": {
+            a: int(idx.act_normalized.shape[0]) for a, idx in act_indices.items()
+        },
         "baseline": {
             "summary": baseline_summary,
             "by_category": baseline_by_cat,
@@ -545,17 +570,22 @@ def render_markdown(results: dict, cost: dict, use_llm_route: bool) -> str:
     # ---- Act distribution ----
     L.append("## 1. Act distribution (tagged turns)")
     L.append("")
-    L.append("| dataset | n_turns | STATEMENT | DECISION | COMMITMENT | RETRACTION | UNRESOLVED | CLARIFICATION | UNKNOWN |")
+    L.append(
+        "| dataset | n_turns | STATEMENT | DECISION | COMMITMENT | RETRACTION | UNRESOLVED | CLARIFICATION | UNKNOWN |"
+    )
     L.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
     for ds, res in results.items():
         d = res["act_distribution"]
         n = res["n_target_segments"]
-        def pct(x): return f"{x} ({x/max(n,1)*100:.1f}%)"
+
+        def pct(x):
+            return f"{x} ({x / max(n, 1) * 100:.1f}%)"
+
         L.append(
-            f"| {ds} | {n} | {pct(d.get('STATEMENT',0))} "
-            f"| {pct(d.get('DECISION',0))} | {pct(d.get('COMMITMENT',0))} "
-            f"| {pct(d.get('RETRACTION',0))} | {pct(d.get('UNRESOLVED',0))} "
-            f"| {pct(d.get('CLARIFICATION',0))} | {pct(d.get('UNKNOWN',0))} |"
+            f"| {ds} | {n} | {pct(d.get('STATEMENT', 0))} "
+            f"| {pct(d.get('DECISION', 0))} | {pct(d.get('COMMITMENT', 0))} "
+            f"| {pct(d.get('RETRACTION', 0))} | {pct(d.get('UNRESOLVED', 0))} "
+            f"| {pct(d.get('CLARIFICATION', 0))} | {pct(d.get('UNKNOWN', 0))} |"
         )
     L.append("")
 
@@ -580,7 +610,7 @@ def render_markdown(results: dict, cost: dict, use_llm_route: bool) -> str:
             row = f"| {ds} | {K} | {b:.4f} |"
             for v in variants:
                 vv = res[v]["summary"].get(f"mean_r@{K}", 0.0)
-                row += f" {vv:.4f} | {vv-b:+.4f} |"
+                row += f" {vv:.4f} | {vv - b:+.4f} |"
             L.append(row)
     L.append("")
 
@@ -592,7 +622,9 @@ def render_markdown(results: dict, cost: dict, use_llm_route: bool) -> str:
             continue
         L.append(f"## 3. Per-category — {ds}")
         L.append("")
-        L.append("| category | n | base@20 | kw@20 | plus@20 | base@50 | kw@50 | plus@50 |")
+        L.append(
+            "| category | n | base@20 | kw@20 | plus@20 | base@50 | kw@50 | plus@50 |"
+        )
         L.append("|---|---:|---:|---:|---:|---:|---:|---:|")
         for cat in cats:
             bc = res["baseline"]["by_category"][cat]
@@ -625,8 +657,8 @@ def render_markdown(results: dict, cost: dict, use_llm_route: bool) -> str:
                     continue
                 L.append(
                     f"| {ds} | {v} | {K} "
-                    f"| {cc['frac_questions_with_act_gold']*100:.1f}% "
-                    f"| {cc['frac_gold_via_act']*100:.1f}% |"
+                    f"| {cc['frac_questions_with_act_gold'] * 100:.1f}% "
+                    f"| {cc['frac_gold_via_act'] * 100:.1f}% |"
                 )
     L.append("")
 
@@ -635,8 +667,7 @@ def render_markdown(results: dict, cost: dict, use_llm_route: bool) -> str:
     L.append("")
     for ds, res in results.items():
         rc = res["dialact_keyword_route"]["route_counts"]
-        L.append(f"- {ds}: " + ", ".join(
-            f"{k}={v}" for k, v in sorted(rc.items())))
+        L.append(f"- {ds}: " + ", ".join(f"{k}={v}" for k, v in sorted(rc.items())))
     L.append("")
 
     # ---- Cost ----
@@ -659,11 +690,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument(
-        "--datasets", default="locomo_30q,synthetic_19q",
+        "--datasets",
+        default="locomo_30q,synthetic_19q",
         help="comma-separated list",
     )
-    parser.add_argument("--use_llm_route", action="store_true",
-                        help="also run dialact_llm_route variant (adds LLM calls)")
+    parser.add_argument(
+        "--use_llm_route",
+        action="store_true",
+        help="also run dialact_llm_route variant (adds LLM calls)",
+    )
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -683,7 +718,10 @@ def main() -> None:
 
     for ds_name in datasets:
         res, labels = run_dataset(
-            ds_name, tagger, client, embedder,
+            ds_name,
+            tagger,
+            client,
+            embedder,
             use_llm_route=args.use_llm_route,
         )
         all_results[ds_name] = res
@@ -697,8 +735,7 @@ def main() -> None:
         "completion_tokens": tagger.total_completion_tokens,
     }
     cost["est_usd"] = round(
-        cost["prompt_tokens"] * 0.25 / 1e6
-        + cost["completion_tokens"] * 2.0 / 1e6,
+        cost["prompt_tokens"] * 0.25 / 1e6 + cost["completion_tokens"] * 2.0 / 1e6,
         4,
     )
 
@@ -722,18 +759,25 @@ def main() -> None:
     def strip_large(res: dict) -> dict:
         out = dict(res)
         for key in [
-            "baseline", "dialact_keyword_route", "dialact_llm_route",
+            "baseline",
+            "dialact_keyword_route",
+            "dialact_llm_route",
             "dialact_plus_v2f",
         ]:
             if key in out and isinstance(out[key], dict):
                 per_q = out[key].get("per_question", [])
                 pruned = []
                 for r in per_q:
-                    pruned.append({
-                        k: v for k, v in r.items()
-                        if not (k.startswith("retrieved_ids")
-                                or k.startswith("act_gold_contrib"))
-                    })
+                    pruned.append(
+                        {
+                            k: v
+                            for k, v in r.items()
+                            if not (
+                                k.startswith("retrieved_ids")
+                                or k.startswith("act_gold_contrib")
+                            )
+                        }
+                    )
                 out[key] = {**out[key], "per_question": pruned}
         return out
 
@@ -746,7 +790,9 @@ def main() -> None:
                 "use_llm_route": args.use_llm_route,
                 "results": {ds: strip_large(r) for ds, r in all_results.items()},
             },
-            f, indent=2, default=str,
+            f,
+            indent=2,
+            default=str,
         )
     print(f"Wrote {json_path}", flush=True)
 
@@ -765,7 +811,8 @@ def main() -> None:
                 }
                 for lab in all_labels
             ],
-            f, indent=2,
+            f,
+            indent=2,
         )
     print(f"Wrote {labels_path}", flush=True)
 
@@ -782,19 +829,20 @@ def main() -> None:
             b_k = b.get(f"mean_r@{K}", 0)
             kw_k = kw.get(f"mean_r@{K}", 0)
             pl_k = pl.get(f"mean_r@{K}", 0)
-            print(f"  K={K}: baseline={b_k:.4f}  kw_route={kw_k:.4f} "
-                  f"(Δ{kw_k-b_k:+.4f})  plus_v2f={pl_k:.4f} "
-                  f"(Δ{pl_k-b_k:+.4f})")
+            print(
+                f"  K={K}: baseline={b_k:.4f}  kw_route={kw_k:.4f} "
+                f"(Δ{kw_k - b_k:+.4f})  plus_v2f={pl_k:.4f} "
+                f"(Δ{pl_k - b_k:+.4f})"
+            )
         if args.use_llm_route:
             llm = res["dialact_llm_route"]["summary"]
             for K in BUDGETS:
                 llm_k = llm.get(f"mean_r@{K}", 0)
                 b_k = b.get(f"mean_r@{K}", 0)
-                print(f"  K={K}: llm_route={llm_k:.4f} "
-                      f"(Δ{llm_k-b_k:+.4f})")
+                print(f"  K={K}: llm_route={llm_k:.4f} (Δ{llm_k - b_k:+.4f})")
 
     print(f"\nLLM cost: ~${cost['est_usd']:.3f}")
-    print(f"Elapsed: {time.time()-t0:.0f}s")
+    print(f"Elapsed: {time.time() - t0:.0f}s")
 
 
 if __name__ == "__main__":

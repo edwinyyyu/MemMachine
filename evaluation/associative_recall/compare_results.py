@@ -45,9 +45,9 @@ def summarize(results: list[dict], label: str) -> dict:
     for d in RECALL_DEPTHS:
         summary["overall"]["baseline_" + d] = sum(all_b[d]) / len(all_b[d])
         summary["overall"]["assoc_" + d] = sum(all_a[d]) / len(all_a[d])
-        summary["overall"]["delta_" + d] = (
-            sum(all_a[d]) / len(all_a[d]) - sum(all_b[d]) / len(all_b[d])
-        )
+        summary["overall"]["delta_" + d] = sum(all_a[d]) / len(all_a[d]) - sum(
+            all_b[d]
+        ) / len(all_b[d])
 
     return summary
 

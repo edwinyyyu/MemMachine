@@ -21,9 +21,7 @@ from pathlib import Path
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import V2F_MODEL, EMHit, _MergedLLMCache
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -40,19 +38,18 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import V2F_MODEL, EMHit, _MergedLLMCache
 from proactive_memory import (
     PROACTIVE_CUEGEN_CACHE,
     PROACTIVE_DECOMPOSE_CACHE,
     PROACTIVE_SUFFICIENCY_CACHE,
     ProactiveResult,
-    _llm_call,
     _extract_json,
+    _llm_call,
     run_proactive,
     run_single_shot,
 )
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -93,7 +90,9 @@ Output ONLY a JSON object, no prose:
 "sufficiency": <0-10>, "brief_reasoning": "one or two sentences"}}"""
 
 
-def _format_hits_for_judge(hits: list[EMHit], max_items: int = 40, max_len: int = 220) -> str:
+def _format_hits_for_judge(
+    hits: list[EMHit], max_items: int = 40, max_len: int = 220
+) -> str:
     if not hits:
         return "(no retrievals)"
     # Sort by turn_id for readability.
@@ -148,7 +147,9 @@ def load_collections_meta() -> dict:
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--limit", type=int, default=None,
+        "--limit",
+        type=int,
+        default=None,
         help="Only run first N tasks (smoke test)",
     )
     parser.add_argument("--K", type=int, default=50)
@@ -251,21 +252,27 @@ async def main() -> None:
             # System A
             tA = time.monotonic()
             resA: ProactiveResult = await run_single_shot(
-                mem, task_prompt, participants,
+                mem,
+                task_prompt,
+                participants,
                 K=args.K,
                 cuegen_cache=caches["singleshot_cuegen"],
                 openai_client=openai_client,
             )
             tA = time.monotonic() - tA
             judgeA, judgeA_hit = await judge_retrieval(
-                task_prompt, resA.hits,
-                cache=caches["judge"], openai_client=openai_client,
+                task_prompt,
+                resA.hits,
+                cache=caches["judge"],
+                openai_client=openai_client,
             )
 
             # System B
             tB = time.monotonic()
             resB: ProactiveResult = await run_proactive(
-                mem, task_prompt, participants,
+                mem,
+                task_prompt,
+                participants,
                 K_per_need=args.K_per_need,
                 K_final=args.K,
                 max_rounds=args.max_rounds,
@@ -276,8 +283,10 @@ async def main() -> None:
             )
             tB = time.monotonic() - tB
             judgeB, judgeB_hit = await judge_retrieval(
-                task_prompt, resB.hits,
-                cache=caches["judge"], openai_client=openai_client,
+                task_prompt,
+                resB.hits,
+                cache=caches["judge"],
+                openai_client=openai_client,
             )
 
             row = {
@@ -346,34 +355,75 @@ async def main() -> None:
 
     # ----- Aggregate -----
     n = len(rows)
+
     def _mean(xs: list[float]) -> float:
         return sum(xs) / max(len(xs), 1)
 
     agg = {
         "n_tasks": n,
         "system_A": {
-            "mean_sufficiency": round(_mean([r["system_A"]["judge"]["sufficiency"] for r in rows]), 3),
-            "mean_coverage": round(_mean([r["system_A"]["judge"]["coverage"] for r in rows]), 3),
-            "mean_depth": round(_mean([r["system_A"]["judge"]["depth"] for r in rows]), 3),
-            "mean_noise": round(_mean([r["system_A"]["judge"]["noise"] for r in rows]), 3),
-            "mean_llm_calls": round(_mean([r["system_A"]["n_llm_calls"] for r in rows]), 2),
-            "mean_turns_retrieved": round(_mean([r["system_A"]["n_turns_retrieved"] for r in rows]), 2),
+            "mean_sufficiency": round(
+                _mean([r["system_A"]["judge"]["sufficiency"] for r in rows]), 3
+            ),
+            "mean_coverage": round(
+                _mean([r["system_A"]["judge"]["coverage"] for r in rows]), 3
+            ),
+            "mean_depth": round(
+                _mean([r["system_A"]["judge"]["depth"] for r in rows]), 3
+            ),
+            "mean_noise": round(
+                _mean([r["system_A"]["judge"]["noise"] for r in rows]), 3
+            ),
+            "mean_llm_calls": round(
+                _mean([r["system_A"]["n_llm_calls"] for r in rows]), 2
+            ),
+            "mean_turns_retrieved": round(
+                _mean([r["system_A"]["n_turns_retrieved"] for r in rows]), 2
+            ),
             "mean_time_s": round(_mean([r["system_A"]["time_s"] for r in rows]), 2),
         },
         "system_B": {
-            "mean_sufficiency": round(_mean([r["system_B"]["judge"]["sufficiency"] for r in rows]), 3),
-            "mean_coverage": round(_mean([r["system_B"]["judge"]["coverage"] for r in rows]), 3),
-            "mean_depth": round(_mean([r["system_B"]["judge"]["depth"] for r in rows]), 3),
-            "mean_noise": round(_mean([r["system_B"]["judge"]["noise"] for r in rows]), 3),
-            "mean_llm_calls": round(_mean([r["system_B"]["n_llm_calls"] for r in rows]), 2),
-            "mean_turns_retrieved": round(_mean([r["system_B"]["n_turns_retrieved"] for r in rows]), 2),
-            "mean_rounds": round(_mean([r["system_B"]["metadata"].get("rounds_executed", 1) for r in rows]), 2),
-            "mean_needs": round(_mean([len(r["system_B"]["metadata"].get("needs", [])) for r in rows]), 2),
+            "mean_sufficiency": round(
+                _mean([r["system_B"]["judge"]["sufficiency"] for r in rows]), 3
+            ),
+            "mean_coverage": round(
+                _mean([r["system_B"]["judge"]["coverage"] for r in rows]), 3
+            ),
+            "mean_depth": round(
+                _mean([r["system_B"]["judge"]["depth"] for r in rows]), 3
+            ),
+            "mean_noise": round(
+                _mean([r["system_B"]["judge"]["noise"] for r in rows]), 3
+            ),
+            "mean_llm_calls": round(
+                _mean([r["system_B"]["n_llm_calls"] for r in rows]), 2
+            ),
+            "mean_turns_retrieved": round(
+                _mean([r["system_B"]["n_turns_retrieved"] for r in rows]), 2
+            ),
+            "mean_rounds": round(
+                _mean(
+                    [r["system_B"]["metadata"].get("rounds_executed", 1) for r in rows]
+                ),
+                2,
+            ),
+            "mean_needs": round(
+                _mean([len(r["system_B"]["metadata"].get("needs", [])) for r in rows]),
+                2,
+            ),
             "mean_time_s": round(_mean([r["system_B"]["time_s"] for r in rows]), 2),
         },
     }
-    wins_A = sum(1 for r in rows if r["system_A"]["judge"]["sufficiency"] > r["system_B"]["judge"]["sufficiency"])
-    wins_B = sum(1 for r in rows if r["system_B"]["judge"]["sufficiency"] > r["system_A"]["judge"]["sufficiency"])
+    wins_A = sum(
+        1
+        for r in rows
+        if r["system_A"]["judge"]["sufficiency"] > r["system_B"]["judge"]["sufficiency"]
+    )
+    wins_B = sum(
+        1
+        for r in rows
+        if r["system_B"]["judge"]["sufficiency"] > r["system_A"]["judge"]["sufficiency"]
+    )
     ties = n - wins_A - wins_B
     agg["per_task_winners"] = {"A_wins": wins_A, "B_wins": wins_B, "ties": ties}
 
@@ -384,8 +434,12 @@ async def main() -> None:
         return round(calls / suff, 4)
 
     agg["cost_per_sufficiency_point"] = {
-        "A": _cps(agg["system_A"]["mean_llm_calls"], agg["system_A"]["mean_sufficiency"]),
-        "B": _cps(agg["system_B"]["mean_llm_calls"], agg["system_B"]["mean_sufficiency"]),
+        "A": _cps(
+            agg["system_A"]["mean_llm_calls"], agg["system_A"]["mean_sufficiency"]
+        ),
+        "B": _cps(
+            agg["system_B"]["mean_llm_calls"], agg["system_B"]["mean_sufficiency"]
+        ),
     }
 
     # Breakdown by #required_info_categories
@@ -442,17 +496,27 @@ def build_markdown_report(results: dict) -> str:
     lines.append("")
     lines.append("## Setup")
     lines.append("")
-    lines.append(f"- n_tasks = {agg['n_tasks']} task-shaped prompts across LoCoMo conv-26, 30, 41")
+    lines.append(
+        f"- n_tasks = {agg['n_tasks']} task-shaped prompts across LoCoMo conv-26, 30, 41"
+    )
     lines.append(f"- Model: {config['model']} (fixed); text-embedding-3-small")
-    lines.append(f"- K={config['K']} final turns, K_per_need={config['K_per_need']}, max_rounds={config['max_rounds']}")
+    lines.append(
+        f"- K={config['K']} final turns, K_per_need={config['K_per_need']}, max_rounds={config['max_rounds']}"
+    )
     lines.append("- Backend: existing arc_em_lc30_v1_{26,30,41} EventMemory (reused)")
-    lines.append("- Caches: `cache/proactive_{decompose,cuegen,sufficiency}_cache.json`, `proactive_singleshot_cuegen_cache.json`, `proactive_judge_cache.json`")
+    lines.append(
+        "- Caches: `cache/proactive_{decompose,cuegen,sufficiency}_cache.json`, `proactive_singleshot_cuegen_cache.json`, `proactive_judge_cache.json`"
+    )
     lines.append("")
 
     lines.append("## Systems")
     lines.append("")
-    lines.append("- **System A (single-shot)**: 1 LLM call -> 2 speaker-format cues -> retrieve top-K, merged with primer from the raw task prompt.")
-    lines.append("- **System B (proactive)**: Decompose (1 call) -> per-need cue-gen (N calls) -> sufficiency audit (1 call) -> follow-up probes for under-covered needs. Max rounds = 2.")
+    lines.append(
+        "- **System A (single-shot)**: 1 LLM call -> 2 speaker-format cues -> retrieve top-K, merged with primer from the raw task prompt."
+    )
+    lines.append(
+        "- **System B (proactive)**: Decompose (1 call) -> per-need cue-gen (N calls) -> sufficiency audit (1 call) -> follow-up probes for under-covered needs. Max rounds = 2."
+    )
     lines.append("")
 
     lines.append("## Task distribution")
@@ -462,9 +526,13 @@ def build_markdown_report(results: dict) -> str:
     for r in rows:
         s = r.get("task_shape", "unknown")
         shape_counts[s] = shape_counts.get(s, 0) + 1
-    lines.append("Task shapes: " + ", ".join(f"{k}={v}" for k, v in sorted(shape_counts.items())))
+    lines.append(
+        "Task shapes: " + ", ".join(f"{k}={v}" for k, v in sorted(shape_counts.items()))
+    )
     ncat = [len(r.get("required_info_categories", [])) for r in rows]
-    lines.append(f"Required info categories per task: min={min(ncat)}, max={max(ncat)}, mean={sum(ncat)/max(len(ncat),1):.2f}")
+    lines.append(
+        f"Required info categories per task: min={min(ncat)}, max={max(ncat)}, mean={sum(ncat) / max(len(ncat), 1):.2f}"
+    )
     lines.append("")
 
     lines.append("## Aggregate")
@@ -486,17 +554,23 @@ def build_markdown_report(results: dict) -> str:
     lines.append(f"| rounds executed (B) | - | {B.get('mean_rounds', 1)} | - |")
     lines.append(f"| info-needs decomposed (B) | - | {B.get('mean_needs', 0)} | - |")
     lines.append("")
-    lines.append(f"**Per-task winners**: A={w['A_wins']}, B={w['B_wins']}, ties={w['ties']}")
+    lines.append(
+        f"**Per-task winners**: A={w['A_wins']}, B={w['B_wins']}, ties={w['ties']}"
+    )
     lines.append("")
     cps = agg["cost_per_sufficiency_point"]
-    lines.append(f"**LLM calls per sufficiency point** (lower is better): A={cps['A']}, B={cps['B']}")
+    lines.append(
+        f"**LLM calls per sufficiency point** (lower is better): A={cps['A']}, B={cps['B']}"
+    )
     lines.append("")
 
     lines.append("## Sufficiency by #required info categories")
     lines.append("")
     lines.append("| #categories | n | A mean suff | B mean suff | d (B-A) |")
     lines.append("| --- | --- | --- | --- | --- |")
-    for nc, d in sorted(agg["by_n_required_categories"].items(), key=lambda x: int(x[0])):
+    for nc, d in sorted(
+        agg["by_n_required_categories"].items(), key=lambda x: int(x[0])
+    ):
         lines.append(
             f"| {nc} | {d['n']} | {d['A_mean_suff']} | {d['B_mean_suff']} | {d['d_B_minus_A']:+.3f} |"
         )
@@ -505,13 +579,15 @@ def build_markdown_report(results: dict) -> str:
     # Per-task table
     lines.append("## Per-task scores")
     lines.append("")
-    lines.append("| task_id | conv | shape | #cats | A suff | B suff | d | A calls | B calls | B rounds |")
+    lines.append(
+        "| task_id | conv | shape | #cats | A suff | B suff | d | A calls | B calls | B rounds |"
+    )
     lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     for r in rows:
         sA = r["system_A"]["judge"]["sufficiency"]
         sB = r["system_B"]["judge"]["sufficiency"]
         lines.append(
-            f"| {r['task_id']} | {r['conversation_id'][-2:]} | {r.get('task_shape','?')} | "
+            f"| {r['task_id']} | {r['conversation_id'][-2:]} | {r.get('task_shape', '?')} | "
             f"{len(r.get('required_info_categories', []))} | "
             f"{sA} | {sB} | {sB - sA:+d} | "
             f"{r['system_A']['n_llm_calls']} | {r['system_B']['n_llm_calls']} | "
@@ -520,23 +596,40 @@ def build_markdown_report(results: dict) -> str:
     lines.append("")
 
     # Qualitative examples: pick 2 tasks -- a big-B-wins and a big-A-wins (or tie).
-    sorted_by_diff = sorted(rows, key=lambda r: r["system_B"]["judge"]["sufficiency"] - r["system_A"]["judge"]["sufficiency"])
+    sorted_by_diff = sorted(
+        rows,
+        key=lambda r: (
+            r["system_B"]["judge"]["sufficiency"]
+            - r["system_A"]["judge"]["sufficiency"]
+        ),
+    )
     worst_for_B = sorted_by_diff[0] if sorted_by_diff else None
     best_for_B = sorted_by_diff[-1] if sorted_by_diff else None
     example_rows = []
     if best_for_B is not None:
-        example_rows.append(("Largest B lead" if best_for_B is not worst_for_B else "Example", best_for_B))
+        example_rows.append(
+            (
+                "Largest B lead" if best_for_B is not worst_for_B else "Example",
+                best_for_B,
+            )
+        )
     if worst_for_B is not None and worst_for_B is not best_for_B:
-        example_rows.append(("Largest A lead (or tie closest to A winning)", worst_for_B))
+        example_rows.append(
+            ("Largest A lead (or tie closest to A winning)", worst_for_B)
+        )
 
     lines.append("## Qualitative examples")
     lines.append("")
     for label, r in example_rows:
-        lines.append(f"### {label}: {r['task_id']} ({r['conversation_id']}, {r.get('task_shape','?')})")
+        lines.append(
+            f"### {label}: {r['task_id']} ({r['conversation_id']}, {r.get('task_shape', '?')})"
+        )
         lines.append("")
         lines.append(f"**Task**: {r['task_prompt']}")
         lines.append("")
-        lines.append(f"**Required info**: {', '.join(r.get('required_info_categories', []))}")
+        lines.append(
+            f"**Required info**: {', '.join(r.get('required_info_categories', []))}"
+        )
         lines.append("")
         lines.append(
             f"System A: sufficiency={r['system_A']['judge']['sufficiency']}, "
@@ -566,7 +659,7 @@ def build_markdown_report(results: dict) -> str:
         lines.append("B decomposed needs:")
         for n in r["system_B"]["metadata"].get("needs", []):
             lines.append(
-                f"  - ({n.get('priority','')}) {n.get('need','')}  "
+                f"  - ({n.get('priority', '')}) {n.get('need', '')}  "
                 f"cues={n.get('cues', [])}  "
                 f"followups={n.get('followup_probes', [])}"
             )
@@ -597,12 +690,21 @@ def build_markdown_report(results: dict) -> str:
             "or decomposition over-narrows the search."
         )
     cps_better = "A" if cps["A"] < cps["B"] else ("B" if cps["B"] < cps["A"] else "tie")
-    lines.append(f"- LLM-calls-per-sufficiency-point better: **{cps_better}** (A={cps['A']}, B={cps['B']}).")
+    lines.append(
+        f"- LLM-calls-per-sufficiency-point better: **{cps_better}** (A={cps['A']}, B={cps['B']})."
+    )
     # per-ncat trend
-    ncat_items = sorted(agg["by_n_required_categories"].items(), key=lambda x: int(x[0]))
+    ncat_items = sorted(
+        agg["by_n_required_categories"].items(), key=lambda x: int(x[0])
+    )
     if ncat_items:
         diffs = [d["d_B_minus_A"] for _, d in ncat_items]
-        trend = "B's advantage grows with #required categories" if all(diffs[i] <= diffs[i+1] for i in range(len(diffs)-1)) and len(diffs) > 1 else "no monotonic trend with #required categories"
+        trend = (
+            "B's advantage grows with #required categories"
+            if all(diffs[i] <= diffs[i + 1] for i in range(len(diffs) - 1))
+            and len(diffs) > 1
+            else "no monotonic trend with #required categories"
+        )
         lines.append(f"- Per-#categories breakdown: {trend}.")
     lines.append("")
     lines.append("## Outputs")

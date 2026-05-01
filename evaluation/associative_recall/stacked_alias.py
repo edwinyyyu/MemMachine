@@ -34,27 +34,23 @@ import time
 from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
+from alias_expansion import _replace_first_occurrence, find_alias_matches
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
     EmbeddingCache,
     LLMCache,
-    RetrievalResult,
     Segment,
     SegmentStore,
 )
 from best_shot import (
-    MODEL,
+    V2F_PROMPT,
     BestshotBase,
     BestshotResult,
-    V2F_PROMPT,
     _format_segments,
     _parse_cues,
 )
-from alias_expansion import find_alias_matches, _replace_first_occurrence
-
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Dedicated caches (do not pollute other agents' caches)
@@ -143,9 +139,8 @@ class StackedAliasEmbeddingCache(EmbeddingCache):
         # Use a unique tmp file to avoid racing with any parallel writer and
         # tolerate the replace target disappearing underneath us.
         import os
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         try:
             with open(tmp, "w") as f:
                 json.dump(existing, f)
@@ -198,9 +193,8 @@ class StackedAliasLLMCache(LLMCache):
                 existing = {}
         existing.update(self._new_entries)
         import os
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         try:
             with open(tmp, "w") as f:
                 json.dump(existing, f)
@@ -262,9 +256,9 @@ def generate_alt_keys_for_conversation(
 # ---------------------------------------------------------------------------
 class AliasAltKeyIndex:
     """Per-conversation alt-key index. Each alt-key has:
-      - text (embedded)
-      - parent_turn_index (points to a Segment in the base store)
-      - conversation_id (for filtering)
+    - text (embedded)
+    - parent_turn_index (points to a Segment in the base store)
+    - conversation_id (for filtering)
     """
 
     def __init__(self) -> None:
@@ -528,10 +522,9 @@ class _StackedAliasBase(BestshotBase):
         if pending:
             try:
                 import os
+
                 keys_arr = np.array(list(npz_cache.keys()), dtype=object)
-                vecs_arr = np.stack(
-                    [npz_cache[k] for k in npz_cache.keys()], axis=0
-                )
+                vecs_arr = np.stack([npz_cache[k] for k in npz_cache.keys()], axis=0)
                 # numpy.savez auto-adds '.npz' extension if absent, so write
                 # to a name that already ends with .npz and rename.
                 tmp_path = _ALT_KEY_EMB_NPZ.parent / (
@@ -552,19 +545,14 @@ class _StackedAliasBase(BestshotBase):
         """Returns (ordered v2f segment list, metadata). Stacked: hop0
         top-10, then cue-1 extras, then cue-2 extras."""
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments: list[Segment] = list(hop0.segments)
         exclude: set[int] = {s.index for s in all_segments}
 
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
-        prompt = V2F_PROMPT.format(
-            question=question, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=question, context_section=context_section)
         output = self.llm_call(prompt)
         cues = _parse_cues(output)[:2]
 

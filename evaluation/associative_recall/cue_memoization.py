@@ -44,8 +44,6 @@ import json
 from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EmbeddingCache,
@@ -54,12 +52,13 @@ from associative_recall import (
     SegmentStore,
 )
 from best_shot import (
+    V2F_PROMPT,
     BestshotBase,
     BestshotResult,
-    V2F_PROMPT,
     _format_segments,
     _parse_cues,
 )
+from openai import OpenAI
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 BANK_PATH = RESULTS_DIR / "fewshot_exemplar_bank.json"
@@ -199,8 +198,7 @@ def load_exemplar_bank() -> list[dict]:
     """Load exemplar bank with pre-computed question embeddings (normalized)."""
     if not BANK_PATH.exists():
         raise FileNotFoundError(
-            f"Exemplar bank missing: {BANK_PATH}. "
-            "Run build_exemplar_bank.py first."
+            f"Exemplar bank missing: {BANK_PATH}. Run build_exemplar_bank.py first."
         )
     with open(BANK_PATH) as f:
         data = json.load(f)
@@ -271,15 +269,11 @@ class _MemoizationBase(BestshotBase):
         # Swap in dedicated caches to isolate from sibling agents
         self.embedding_cache = MemoizeEmbeddingCache()
         self.llm_cache = MemoizeLLMCache()
-        self.exemplars = (
-            exemplars if exemplars is not None else load_exemplar_bank()
-        )
+        self.exemplars = exemplars if exemplars is not None else load_exemplar_bank()
 
     def retrieve(self, question: str, conversation_id: str) -> BestshotResult:
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         hop0_segments = list(hop0.segments)
         hop0_scores = list(hop0.scores)
 
@@ -418,9 +412,7 @@ class _MemoizationBase(BestshotBase):
                 "ran_v2f": ran_v2f,
                 "sim_threshold": self.sim_threshold,
                 "m_exemplars": self.m_exemplars,
-                "num_probes": (
-                    1 + len(memoized_cues) + len(v2f_cues)
-                ),
+                "num_probes": (1 + len(memoized_cues) + len(v2f_cues)),
                 "nearest_exemplar_sim": (
                     round(float(selected[0][1]), 4) if selected else None
                 ),

@@ -25,19 +25,15 @@ Usage:
 """
 
 import argparse
-import hashlib
 import json
 import random
 import sys
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -46,6 +42,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -350,8 +348,8 @@ def _parse_cues(response: str) -> list[str]:
 # ---------------------------------------------------------------------------
 @dataclass
 class BaselineAwareResult:
-    baseline_segments: list[Segment]          # cosine top-BASELINE_K
-    cue_segments: list[Segment]               # cue-found, in order (excluding baseline)
+    baseline_segments: list[Segment]  # cosine top-BASELINE_K
+    cue_segments: list[Segment]  # cue-found, in order (excluding baseline)
     assessment: str
     cues: list[str]
     llm_output: str
@@ -362,8 +360,7 @@ class BaselineAwareArch:
     that explicitly avoid baseline content; we search with those cues excluding
     the baseline segments."""
 
-    def __init__(self, store: SegmentStore, variant: str,
-                 client: OpenAI | None = None):
+    def __init__(self, store: SegmentStore, variant: str, client: OpenAI | None = None):
         assert variant in VARIANT_CONFIG, f"unknown variant: {variant}"
         self.store = store
         self.variant = variant
@@ -383,9 +380,7 @@ class BaselineAwareArch:
         if cached is not None:
             self.embed_calls += 1
             return cached
-        response = self.client.embeddings.create(
-            model=EMBED_MODEL, input=[text]
-        )
+        response = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
         emb = np.array(response.data[0].embedding, dtype=np.float32)
         self.embedding_cache.put(text, emb)
         self.embed_calls += 1
@@ -539,9 +534,7 @@ def evaluate_question(
 
     # Pure cosine top-max_k for baseline_r@K comparison at each K
     query_emb = arch.embed_text(q_text)
-    cosine_full = arch.store.search(
-        query_emb, top_k=max_k, conversation_id=conv_id
-    )
+    cosine_full = arch.store.search(query_emb, top_k=max_k, conversation_id=conv_id)
     cosine_segs = list(cosine_full.segments)
 
     row = {
@@ -573,12 +566,8 @@ def evaluate_question(
         row["recalls"][f"baseline_r@{k}"] = round(
             compute_recall(b_turns, source_ids), 4
         )
-        row["recalls"][f"modeA_r@{k}"] = round(
-            compute_recall(a_turns, source_ids), 4
-        )
-        row["recalls"][f"modeB_r@{k}"] = round(
-            compute_recall(bb_turns, source_ids), 4
-        )
+        row["recalls"][f"modeA_r@{k}"] = round(compute_recall(a_turns, source_ids), 4)
+        row["recalls"][f"modeB_r@{k}"] = round(compute_recall(bb_turns, source_ids), 4)
         row["recalls"][f"modeA_delta@{k}"] = round(
             row["recalls"][f"modeA_r@{k}"] - row["recalls"][f"baseline_r@{k}"], 4
         )
@@ -610,21 +599,11 @@ def summarize(results: list[dict], variant: str, dataset: str) -> dict:
     summary["avg_baseline_segs"] = round(
         sum(r["num_baseline_segs"] for r in results) / n, 1
     )
-    summary["avg_cue_segs"] = round(
-        sum(r["num_cue_segs"] for r in results) / n, 1
-    )
-    summary["avg_cues_per_q"] = round(
-        sum(len(r["cues"]) for r in results) / n, 2
-    )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1
-    )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
-    summary["avg_time_s"] = round(
-        sum(r["time_s"] for r in results) / n, 2
-    )
+    summary["avg_cue_segs"] = round(sum(r["num_cue_segs"] for r in results) / n, 1)
+    summary["avg_cues_per_q"] = round(sum(len(r["cues"]) for r in results) / n, 2)
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
+    summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
     return summary
 
 
@@ -683,7 +662,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -692,6 +671,7 @@ def run_one(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -758,10 +738,8 @@ def main() -> None:
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    variants = (
-        [args.variant] if args.variant else list(VARIANT_CONFIG.keys())
-    )
-    datasets = args.datasets if args.datasets else list(DATASETS.keys())
+    variants = [args.variant] if args.variant else list(VARIANT_CONFIG.keys())
+    datasets = args.datasets or list(DATASETS.keys())
 
     all_summaries: dict = {}
 
@@ -779,8 +757,7 @@ def main() -> None:
             out_path = RESULTS_DIR / f"baseline_aware_{variant}_{ds_name}.json"
             if out_path.exists() and not args.force:
                 print(
-                    f"\nSkipping {variant} on {ds_name} (exists). "
-                    f"Use --force to rerun."
+                    f"\nSkipping {variant} on {ds_name} (exists). Use --force to rerun."
                 )
                 with open(out_path) as f:
                     saved = json.load(f)
@@ -788,9 +765,7 @@ def main() -> None:
                 summary = saved["summary"]
                 by_cat = saved.get("category_breakdown", {})
             else:
-                results, summary, by_cat = run_one(
-                    variant, ds_name, store, questions
-                )
+                results, summary, by_cat = run_one(variant, ds_name, store, questions)
                 with open(out_path, "w") as f:
                     json.dump(
                         {

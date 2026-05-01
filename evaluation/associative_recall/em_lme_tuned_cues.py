@@ -21,7 +21,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-
 # =========================================================================
 # Variant 1: v2f_lme_userformat — LLM decides speaker per cue
 # =========================================================================
@@ -189,7 +188,7 @@ def parse_speaker_cues(
         mm = SPEAKER_RE.match(raw)
         if mm:
             prefix = raw[: mm.end()]
-            rest = raw[mm.end():].strip()
+            rest = raw[mm.end() :].strip()
             if prefix.lower().startswith("user"):
                 raw = "User: " + rest
             else:

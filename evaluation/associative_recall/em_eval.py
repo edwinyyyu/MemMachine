@@ -21,9 +21,15 @@ from pathlib import Path
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    BESTSHOT_LLM_CACHE,
+    EM_V2F_LLM_CACHE,
+    TYPE_ENUM_LLM_CACHE,
+    _MergedLLMCache,
+    em_cosine,
+    em_ens_2,
+    em_v2f,
+)
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -40,18 +46,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import (
-    BESTSHOT_LLM_CACHE,
-    EM_V2F_LLM_CACHE,
-    TYPE_ENUM_LLM_CACHE,
-    EMHit,
-    _MergedLLMCache,
-    em_cosine,
-    em_ens_2,
-    em_v2f,
-)
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 # Load local .env first (correct SQL_URL / qdrant host) then fall back
@@ -342,8 +338,7 @@ async def main() -> None:
         "",
         "## Setup",
         "",
-        f"- n_questions = {len(questions)} "
-        "(filter: `benchmark==locomo`, first 30)",
+        f"- n_questions = {len(questions)} (filter: `benchmark==locomo`, first 30)",
         f"- namespace = `{collections_meta.get('namespace')}`",
         f"- logical prefix = `{collections_meta.get('logical_prefix')}` "
         f"(Qdrant-safe: `{collections_meta.get('prefix')}_<26|30|41>`)",
@@ -351,7 +346,7 @@ async def main() -> None:
         "`reranker = None` (explicit — pure embedding scores)",
         "- Speaker baked into embedded text via `MessageContext.source = "
         "<speaker_name>` using `conversation_two_speakers.json`",
-        f"- segment store: `{collections_meta.get('sql_url','?')}`",
+        f"- segment store: `{collections_meta.get('sql_url', '?')}`",
         "",
         "## Results (EventMemory backend)",
         "",
@@ -386,12 +381,13 @@ async def main() -> None:
         "Additional SS references (no direct EM counterpart in this run):",
         "",
     ]
-    for name in ["speaker_user_filter", "two_speaker_filter",
-                 "ens_2_v2f_typeenum (rrf)"]:
+    for name in [
+        "speaker_user_filter",
+        "two_speaker_filter",
+        "ens_2_v2f_typeenum (rrf)",
+    ]:
         s = ss_numbers[name]
-        md_lines.append(
-            f"- `{name}` (SS): R@20={s['r@20']:.4f}, R@50={s['r@50']:.4f}"
-        )
+        md_lines.append(f"- `{name}` (SS): R@20={s['r@20']:.4f}, R@50={s['r@50']:.4f}")
     md_lines += [
         "",
         "## Findings",
@@ -421,7 +417,7 @@ async def main() -> None:
         "fit under K. Helpful for QA-context assembly (wider windows for "
         "gpt-5-mini), but a net *negative* for recall evaluation of "
         "set-oriented gold turn_ids. Decision rule on expand_context "
-        "(\"beats em_v2f -> free lift\") is NOT met.",
+        '("beats em_v2f -> free lift") is NOT met.',
         "",
         "### v2f transfers cleanly (parity, not lift)",
         "",
@@ -431,7 +427,7 @@ async def main() -> None:
         "is neutral for v2f at K=50; slightly worse at K=20 "
         f"({results['archs']['em_v2f']['summary']['mean_r@20']:.4f} vs "
         "0.7556). V2F cues already contain speaker-prefixed strings "
-        "like \"Caroline: I went to...\" in cached outputs, so they align "
+        'like "Caroline: I went to..." in cached outputs, so they align '
         "well with speaker-baked embedded text. Decision rule "
         "(`em_v2f >= 0.90` K=50 -> production win) is NOT met.",
         "",
@@ -465,13 +461,12 @@ async def main() -> None:
         "alias registry / confidence-gating channel logic to EM. Flagged "
         "for the follow-up prompt-tuning task (#74); with speaker-baked "
         "embedded text the v2f and type_enumerated prompts may benefit "
-        "from retuning to mimic `\"Caroline: content\"` form.",
+        'from retuning to mimic `"Caroline: content"` form.',
         "",
         "## Outputs",
         "",
         "- Results JSON: `results/eventmemory_baseline.json`",
-        "- Collections manifest (for cleanup): "
-        "`results/eventmemory_collections.json`",
+        "- Collections manifest (for cleanup): `results/eventmemory_collections.json`",
         "- Source: `em_setup.py`, `em_architectures.py`, `em_eval.py` under "
         "`evaluation/associative_recall/`",
         "",
@@ -490,7 +485,7 @@ async def main() -> None:
         "the session focused. LongMemEval-hard data is present in-tree "
         "(`data/longmemeval_hard_segments.npz`, "
         "`data/questions_longmemeval_hard.json`), so the follow-up run can "
-        "pick up from here; remember to prepend \"User: \" to queries/cues.",
+        'pick up from here; remember to prepend "User: " to queries/cues.',
     ]
     out_md = RESULTS_DIR / "eventmemory_baseline.md"
     out_md.write_text("\n".join(md_lines))

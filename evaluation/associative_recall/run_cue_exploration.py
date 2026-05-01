@@ -4,9 +4,7 @@ Tests multiple prompt versions (v8 baseline, v10-v16) on both BEAM and LoCoMo
 benchmarks, with normalized evaluation.
 """
 
-import json
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -17,11 +15,23 @@ CONFIGS = [
     # Baseline re-run on full dataset
     {"version": "v8", "label_suffix": "full", "desc": "v8 keyword-dense (baseline)"},
     # New cue format explorations
-    {"version": "v10", "label_suffix": "", "desc": "v10 HyDE-style hypothetical answer"},
+    {
+        "version": "v10",
+        "label_suffix": "",
+        "desc": "v10 HyDE-style hypothetical answer",
+    },
     {"version": "v11", "label_suffix": "", "desc": "v11 Utterance-style chat messages"},
     {"version": "v12", "label_suffix": "", "desc": "v12 Narrative-style paragraphs"},
-    {"version": "v13", "label_suffix": "", "desc": "v13 Freeform/Mixed (no format constraint)"},
-    {"version": "v14", "label_suffix": "", "desc": "v14 Contrastive (target what's missing)"},
+    {
+        "version": "v13",
+        "label_suffix": "",
+        "desc": "v13 Freeform/Mixed (no format constraint)",
+    },
+    {
+        "version": "v14",
+        "label_suffix": "",
+        "desc": "v14 Contrastive (target what's missing)",
+    },
     {"version": "v15", "label_suffix": "", "desc": "v15 Self-monitoring + cues"},
     {"version": "v16", "label_suffix": "", "desc": "v16 Scratchpad + cues"},
 ]
@@ -37,13 +47,22 @@ def run_evaluation(version: str, benchmark: str, label: str) -> bool:
         return True
 
     cmd = [
-        "uv", "run", "python", "evaluate_normalized.py",
-        "--prompt-version", version,
-        "--max-hops", "1",
-        "--neighbor-radius", "1",
-        "--data-suffix", "_extended",
-        "--benchmark-filter", benchmark,
-        "--label", label,
+        "uv",
+        "run",
+        "python",
+        "evaluate_normalized.py",
+        "--prompt-version",
+        version,
+        "--max-hops",
+        "1",
+        "--neighbor-radius",
+        "1",
+        "--data-suffix",
+        "_extended",
+        "--benchmark-filter",
+        benchmark,
+        "--label",
+        label,
     ]
     print(f"  RUN: {' '.join(cmd[-8:])}")
     t0 = time.time()
@@ -62,9 +81,9 @@ def run_evaluation(version: str, benchmark: str, label: str) -> bool:
 
 
 def main() -> None:
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
     print("CUE FORMAT EXPLORATION - Sequential Evaluation")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
     for config in CONFIGS:
         version = config["version"]
@@ -77,9 +96,9 @@ def main() -> None:
             print(f"\n  [{benchmark.upper()}] {version} -> {label}")
             run_evaluation(version, benchmark, label)
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print("All evaluations complete. Run analyze_normalized.py to compare.")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
 
 if __name__ == "__main__":

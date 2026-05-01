@@ -51,9 +51,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -62,6 +59,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -282,8 +281,9 @@ REASON: <short justification>"""
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _format_segments(segments: list[Segment], max_items: int = 16,
-                     max_chars: int = 250) -> str:
+def _format_segments(
+    segments: list[Segment], max_items: int = 16, max_chars: int = 250
+) -> str:
     if not segments:
         return "(no content retrieved yet)"
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
@@ -303,9 +303,8 @@ def _build_context_section(
             "what you'd expect to find in a conversation about this topic."
         )
     else:
-        base = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+        base = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(
+            all_segments
         )
     if previous_cues:
         base += (
@@ -367,9 +366,16 @@ class SupervisorBase:
     # If True, always run max_rounds. If False, consult the supervisor.
     always_run: bool = False
 
-    def __init__(self, store: SegmentStore, budget: int, *,
-                 max_rounds: int, always_run: bool,
-                 name: str, client: OpenAI | None = None):
+    def __init__(
+        self,
+        store: SegmentStore,
+        budget: int,
+        *,
+        max_rounds: int,
+        always_run: bool,
+        name: str,
+        client: OpenAI | None = None,
+    ):
         self.store = store
         self.budget = budget
         self.max_rounds = max_rounds
@@ -389,16 +395,13 @@ class SupervisorBase:
         if cached is not None:
             self.embed_calls += 1
             return cached
-        response = self.client.embeddings.create(
-            model=EMBED_MODEL, input=[text]
-        )
+        response = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
         embedding = np.array(response.data[0].embedding, dtype=np.float32)
         self.embedding_cache.put(text, embedding)
         self.embed_calls += 1
         return embedding
 
-    def llm_call(self, prompt: str, model: str = MODEL,
-                 max_tokens: int = 2000) -> str:
+    def llm_call(self, prompt: str, model: str = MODEL, max_tokens: int = 2000) -> str:
         cached = self.llm_cache.get(model, prompt)
         if cached is not None:
             self.llm_calls += 1
@@ -422,11 +425,18 @@ class SupervisorBase:
         self.llm_calls = 0
 
     # --- per-round retrieval helpers ---
-    def _retrieve_cue(self, cue_emb: np.ndarray, top_k: int,
-                      conversation_id: str, exclude: set[int],
-                      into: list[Segment]) -> int:
+    def _retrieve_cue(
+        self,
+        cue_emb: np.ndarray,
+        top_k: int,
+        conversation_id: str,
+        exclude: set[int],
+        into: list[Segment],
+    ) -> int:
         result = self.store.search(
-            cue_emb, top_k=top_k, conversation_id=conversation_id,
+            cue_emb,
+            top_k=top_k,
+            conversation_id=conversation_id,
             exclude_indices=exclude,
         )
         added = 0
@@ -447,7 +457,9 @@ class SupervisorBase:
         query_emb = self.embed_text(question)
         hop0_k = max(4, min(10, self.budget // 2))
         hop0_res = self.store.search(
-            query_emb, top_k=hop0_k, conversation_id=conversation_id,
+            query_emb,
+            top_k=hop0_k,
+            conversation_id=conversation_id,
         )
         for seg in hop0_res.segments:
             if seg.index not in exclude:
@@ -487,11 +499,13 @@ class SupervisorBase:
             else:
                 template = V2F_ROUND_N_PROMPT
                 context_section = _build_context_section(
-                    all_segments, previous_cues=all_cues,
+                    all_segments,
+                    previous_cues=all_cues,
                 )
 
             prompt = template.format(
-                question=question, context_section=context_section,
+                question=question,
+                context_section=context_section,
             )
             output = self.llm_call(prompt)
             cues = _parse_cues(output)
@@ -505,7 +519,8 @@ class SupervisorBase:
                 # For duplicate accounting: ask store for per_cue_k WITHOUT
                 # exclude mask to measure raw overlap.
                 raw_res = self.store.search(
-                    cue_emb, top_k=per_cue_k,
+                    cue_emb,
+                    top_k=per_cue_k,
                     conversation_id=conversation_id,
                 )
                 for seg in raw_res.segments:
@@ -518,7 +533,11 @@ class SupervisorBase:
                     break
                 fetch_k = min(per_cue_k, room)
                 self._retrieve_cue(
-                    cue_emb, fetch_k, conversation_id, exclude, all_segments,
+                    cue_emb,
+                    fetch_k,
+                    conversation_id,
+                    exclude,
+                    all_segments,
                 )
             all_round_cues.append(used_cues)
             all_cues.extend(used_cues)
@@ -526,7 +545,8 @@ class SupervisorBase:
 
             dup_rate = (
                 round((dup_hits / total_attempted) * 100, 1)
-                if total_attempted > 0 else 0.0
+                if total_attempted > 0
+                else 0.0
             )
             duplicate_rates.append(dup_rate)
 
@@ -540,8 +560,7 @@ class SupervisorBase:
             # Supervisor decision
             budget_left = self.budget - len(all_segments)
             cues_block = "\n".join(
-                f"  r{ri+1}: {c}" for ri, cs in enumerate(all_round_cues)
-                for c in cs
+                f"  r{ri + 1}: {c}" for ri, cs in enumerate(all_round_cues) for c in cs
             )
             sup_prompt = SUPERVISOR_PROMPT.format(
                 question=question,
@@ -553,15 +572,17 @@ class SupervisorBase:
             )
             sup_out = self.llm_call(sup_prompt)
             decision, reason = _parse_supervisor(sup_out)
-            supervisor_log.append({
-                "round": round_idx + 1,
-                "decision": decision,
-                "reason": reason,
-                "duplicate_rate": dup_rate,
-                "n_segments": len(all_segments),
-                "budget_left": budget_left,
-                "raw_output": sup_out,
-            })
+            supervisor_log.append(
+                {
+                    "round": round_idx + 1,
+                    "decision": decision,
+                    "reason": reason,
+                    "duplicate_rate": dup_rate,
+                    "n_segments": len(all_segments),
+                    "budget_left": budget_left,
+                    "raw_output": sup_out,
+                }
+            )
             if decision == "STOP":
                 break
 
@@ -569,8 +590,10 @@ class SupervisorBase:
         if len(all_segments) < self.budget:
             need = self.budget - len(all_segments)
             backfill = self.store.search(
-                query_emb, top_k=need + len(exclude),
-                conversation_id=conversation_id, exclude_indices=exclude,
+                query_emb,
+                top_k=need + len(exclude),
+                conversation_id=conversation_id,
+                exclude_indices=exclude,
             )
             for seg in backfill.segments:
                 if seg.index in exclude:
@@ -605,24 +628,36 @@ class SupervisorBase:
 # Variant registry
 # ---------------------------------------------------------------------------
 VARIANTS = {
-    "supervisor_stop_only": {"max_rounds": 2, "always_run": False,
-                             "desc": "Up to 2 rounds, supervisor can stop"},
-    "supervisor_adaptive":  {"max_rounds": 3, "always_run": False,
-                             "desc": "Up to 3 rounds, supervisor can stop"},
-    "always_2_rounds":      {"max_rounds": 2, "always_run": True,
-                             "desc": "Always 2 rounds, no supervisor"},
-    "always_1_round":       {"max_rounds": 1, "always_run": True,
-                             "desc": "Always 1 round (v2f control)"},
+    "supervisor_stop_only": {
+        "max_rounds": 2,
+        "always_run": False,
+        "desc": "Up to 2 rounds, supervisor can stop",
+    },
+    "supervisor_adaptive": {
+        "max_rounds": 3,
+        "always_run": False,
+        "desc": "Up to 3 rounds, supervisor can stop",
+    },
+    "always_2_rounds": {
+        "max_rounds": 2,
+        "always_run": True,
+        "desc": "Always 2 rounds, no supervisor",
+    },
+    "always_1_round": {
+        "max_rounds": 1,
+        "always_run": True,
+        "desc": "Always 1 round (v2f control)",
+    },
 }
 
 
-def build_variant(name: str, store: SegmentStore,
-                  budget: int) -> SupervisorBase:
+def build_variant(name: str, store: SegmentStore, budget: int) -> SupervisorBase:
     if name not in VARIANTS:
         raise ValueError(f"Unknown variant: {name}")
     cfg = VARIANTS[name]
     return SupervisorBase(
-        store, budget=budget,
+        store,
+        budget=budget,
         max_rounds=cfg["max_rounds"],
         always_run=cfg["always_run"],
         name=name,
@@ -674,15 +709,13 @@ def load_dataset(key: str) -> tuple[list[dict], SegmentStore]:
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
-def compute_recall(retrieved_turn_ids: set[int],
-                   source_turn_ids: set[int]) -> float:
+def compute_recall(retrieved_turn_ids: set[int], source_turn_ids: set[int]) -> float:
     if not source_turn_ids:
         return 1.0
     return len(retrieved_turn_ids & source_turn_ids) / len(source_turn_ids)
 
 
-def evaluate_one(arch: SupervisorBase, question: dict,
-                 verbose: bool = False) -> dict:
+def evaluate_one(arch: SupervisorBase, question: dict, verbose: bool = False) -> dict:
     q_text = question["question"]
     conv_id = question["conversation_id"]
     source_ids = set(question["source_chat_ids"])
@@ -719,9 +752,19 @@ def evaluate_one(arch: SupervisorBase, question: dict,
         "supervisor_continues": n_continue,
         "duplicate_rates": result.metadata.get("duplicate_rates", []),
         "metadata": {
-            k: v for k, v in result.metadata.items()
-            if k in ("name", "cues", "round_cues", "hop0_k", "per_cue_k",
-                     "rounds_run", "supervisor_log", "duplicate_rates")
+            k: v
+            for k, v in result.metadata.items()
+            if k
+            in (
+                "name",
+                "cues",
+                "round_cues",
+                "hop0_k",
+                "per_cue_k",
+                "rounds_run",
+                "supervisor_log",
+                "duplicate_rates",
+            )
         },
     }
 
@@ -735,12 +778,10 @@ def evaluate_one(arch: SupervisorBase, question: dict,
     return row
 
 
-def summarize(results: list[dict], variant: str, dataset: str,
-              budget: int) -> dict:
+def summarize(results: list[dict], variant: str, dataset: str, budget: int) -> dict:
     n = len(results)
     if n == 0:
-        return {"variant": variant, "dataset": dataset,
-                "budget": budget, "n": 0}
+        return {"variant": variant, "dataset": dataset, "budget": budget, "n": 0}
 
     recalls = [r["recall"] for r in results]
     llm_calls = [r["llm_calls"] for r in results]
@@ -769,19 +810,16 @@ def summarize(results: list[dict], variant: str, dataset: str,
         "mean_rounds_run": round(sum(rounds_run) / n, 2),
         "total_supervisor_stops": n_stops,
         "total_supervisor_continues": n_conts,
-        "avg_embed_calls": round(
-            sum(r["embed_calls"] for r in results) / n, 2
-        ),
+        "avg_embed_calls": round(sum(r["embed_calls"] for r in results) / n, 2),
         "avg_time_s": round(sum(r["time_s"] for r in results) / n, 2),
         "per_category": cat_summary,
     }
 
 
-def run_one(variant: str, dataset: str, budget: int,
-            force: bool = False, verbose: bool = False) -> dict:
-    result_file = RESULTS_DIR / (
-        f"supervisor_{variant}_{dataset}_k{budget}.json"
-    )
+def run_one(
+    variant: str, dataset: str, budget: int, force: bool = False, verbose: bool = False
+) -> dict:
+    result_file = RESULTS_DIR / (f"supervisor_{variant}_{dataset}_k{budget}.json")
     if result_file.exists() and not force:
         with open(result_file) as f:
             saved = json.load(f)
@@ -807,7 +845,7 @@ def run_one(variant: str, dataset: str, budget: int,
     for i, q in enumerate(qs):
         q_short = q["question"][:60].replace("\n", " ")
         print(
-            f"  [{i+1}/{len(qs)}] {q['category']}: {q_short}...",
+            f"  [{i + 1}/{len(qs)}] {q['category']}: {q_short}...",
             flush=True,
         )
         try:
@@ -816,6 +854,7 @@ def run_one(variant: str, dataset: str, budget: int,
         except Exception as e:
             print(f"  ERROR: {type(e).__name__}: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         # Incremental per-question save
@@ -824,7 +863,9 @@ def run_one(variant: str, dataset: str, budget: int,
         with open(result_file, "w") as f:
             json.dump(
                 {"results": results, "summary": summary_partial},
-                f, indent=2, default=str,
+                f,
+                indent=2,
+                default=str,
             )
         if (i + 1) % 3 == 0:
             arch.save_caches()
@@ -837,7 +878,9 @@ def run_one(variant: str, dataset: str, budget: int,
     with open(result_file, "w") as f:
         json.dump(
             {"results": results, "summary": summary},
-            f, indent=2, default=str,
+            f,
+            indent=2,
+            default=str,
         )
 
     print(
@@ -865,9 +908,11 @@ def print_final_table(all_summaries: dict) -> None:
         print("\n" + "=" * 110)
         print(f"RECALL @ K={budget}")
         print("=" * 110)
-        header = f"{'Variant':<24s}" + "".join(
-            f"{short_ds[ds]:>12s}" for ds in datasets
-        ) + f"{'Mean':>12s}"
+        header = (
+            f"{'Variant':<24s}"
+            + "".join(f"{short_ds[ds]:>12s}" for ds in datasets)
+            + f"{'Mean':>12s}"
+        )
         print(header)
         print("-" * len(header))
         for v in variants:
@@ -931,13 +976,13 @@ def print_final_table(all_summaries: dict) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Supervisor control-flow experiments"
+    parser = argparse.ArgumentParser(description="Supervisor control-flow experiments")
+    parser.add_argument(
+        "--variant", type=str, default=None, choices=list(VARIANTS.keys())
     )
-    parser.add_argument("--variant", type=str, default=None,
-                        choices=list(VARIANTS.keys()))
-    parser.add_argument("--dataset", type=str, default=None,
-                        choices=list(DATASETS.keys()))
+    parser.add_argument(
+        "--dataset", type=str, default=None, choices=list(DATASETS.keys())
+    )
     parser.add_argument("--budget", type=int, default=None, choices=[20, 50])
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--list", action="store_true")
@@ -948,9 +993,11 @@ def main() -> None:
     if args.list:
         print("Variants:")
         for name, cfg in VARIANTS.items():
-            print(f"  {name}: {cfg['desc']} "
-                  f"(max_rounds={cfg['max_rounds']}, "
-                  f"always_run={cfg['always_run']})")
+            print(
+                f"  {name}: {cfg['desc']} "
+                f"(max_rounds={cfg['max_rounds']}, "
+                f"always_run={cfg['always_run']})"
+            )
         print("\nDatasets:")
         for key in DATASETS:
             print(f"  {key}")
@@ -968,21 +1015,23 @@ def main() -> None:
             for b in budgets:
                 try:
                     summary = run_one(
-                        v, ds, b, force=args.force, verbose=args.verbose,
+                        v,
+                        ds,
+                        b,
+                        force=args.force,
+                        verbose=args.verbose,
                     )
                     all_summaries[(v, ds, b)] = summary
                 except Exception as e:
-                    print(
-                        f"  FATAL on {v}/{ds}/K={b}: {type(e).__name__}: {e}"
-                    )
+                    print(f"  FATAL on {v}/{ds}/K={b}: {type(e).__name__}: {e}")
                     import traceback
+
                     traceback.print_exc()
 
     # Persist overall summary
     summary_file = RESULTS_DIR / "supervisor_all_summaries.json"
     payload = {
-        f"{v}@{ds}@K{b}": summary
-        for (v, ds, b), summary in all_summaries.items()
+        f"{v}@{ds}@K{b}": summary for (v, ds, b), summary in all_summaries.items()
     }
     with open(summary_file, "w") as f:
         json.dump(payload, f, indent=2, default=str)

@@ -36,9 +36,12 @@ from pathlib import Path
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    EMHit,
+    _dedupe_by_turn_id,
+    _MergedLLMCache,
+)
+from em_two_speaker import classify_speaker_side, load_two_speaker_map
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -56,13 +59,7 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import (
-    EMHit,
-    _MergedLLMCache,
-    _dedupe_by_turn_id,
-)
-from em_two_speaker import classify_speaker_side, load_two_speaker_map
+from qdrant_client import AsyncQdrantClient
 from reflective_memory import (
     REFLMEM_CUEGEN_R1_CACHE,
     REFLMEM_CUEGEN_R2_CACHE,
@@ -70,7 +67,7 @@ from reflective_memory import (
     reflmem_1round,
     reflmem_2round,
 )
-
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -129,16 +126,22 @@ async def run_variant(
 ):
     if variant == "reflmem_1round":
         return await reflmem_1round(
-            memory, question, participants,
-            K=K, embedder=embedder,
+            memory,
+            question,
+            participants,
+            K=K,
+            embedder=embedder,
             cuegen_r1_cache=caches["reflmem_cuegen_r1"],
             reflect_cache=caches["reflmem_reflect"],
             openai_client=openai_client,
         )
     if variant == "reflmem_2round":
         return await reflmem_2round(
-            memory, question, participants,
-            K=K, embedder=embedder,
+            memory,
+            question,
+            participants,
+            K=K,
+            embedder=embedder,
             cuegen_r1_cache=caches["reflmem_cuegen_r1"],
             reflect_cache=caches["reflmem_reflect"],
             cuegen_r2_cache=caches["reflmem_cuegen_r2"],
@@ -177,9 +180,7 @@ async def compose_with_speaker_filter(
     meta["applied_speaker_filter"] = True
     meta["matched_name"] = matched_name
 
-    prop_filter = Comparison(
-        field="context.source", op="=", value=matched_name
-    )
+    prop_filter = Comparison(field="context.source", op="=", value=matched_name)
     q_resp = await memory.query(
         query=question,
         vector_search_limit=K + topup_extra,
@@ -229,11 +230,14 @@ async def main() -> None:
         help="Comma-separated variants to run",
     )
     parser.add_argument(
-        "--limit", type=int, default=None,
+        "--limit",
+        type=int,
+        default=None,
         help="Only run first N questions (smoke test)",
     )
     parser.add_argument(
-        "--skip_composition", action="store_true",
+        "--skip_composition",
+        action="store_true",
         help="Skip the speaker_filter composition step",
     )
     args = parser.parse_args()
@@ -336,9 +340,14 @@ async def main() -> None:
                 gold = set(q.get("source_chat_ids", []))
                 t0 = time.monotonic()
                 vr = await run_variant(
-                    variant, mem, q_text, participants,
-                    K=max_K, embedder=embedder,
-                    caches=caches, openai_client=openai_client,
+                    variant,
+                    mem,
+                    q_text,
+                    participants,
+                    K=max_K,
+                    embedder=embedder,
+                    caches=caches,
+                    openai_client=openai_client,
                 )
                 elapsed = time.monotonic() - t0
 
@@ -373,13 +382,9 @@ async def main() -> None:
                 sum(scratch_counts) / max(len(scratch_counts), 1), 2
             )
             rounds = [r["metadata"].get("rounds_executed", 1) for r in rows]
-            summary["avg_rounds"] = round(
-                sum(rounds) / max(len(rounds), 1), 2
-            )
+            summary["avg_rounds"] = round(sum(rounds) / max(len(rounds), 1), 2)
             if variant == "reflmem_2round":
-                novel_all = [
-                    r["metadata"].get("n_novel_turns_round2", 0) for r in rows
-                ]
+                novel_all = [r["metadata"].get("n_novel_turns_round2", 0) for r in rows]
                 summary["avg_novel_turns_round2"] = round(
                     sum(novel_all) / max(len(novel_all), 1), 2
                 )
@@ -399,8 +404,7 @@ async def main() -> None:
                 d = {"n": len(cat_rows)}
                 for K in BUDGETS:
                     d[f"mean_r@{K}"] = round(
-                        sum(r[f"r@{K}"] for r in cat_rows)
-                        / max(len(cat_rows), 1), 4
+                        sum(r[f"r@{K}"] for r in cat_rows) / max(len(cat_rows), 1), 4
                     )
                 cat_summary[cat] = d
 
@@ -441,15 +445,16 @@ async def main() -> None:
                 # scratch reprobe. We want a cleaner "round-1 primer+cues"
                 # baseline: simulate via running 1round but pretending
                 # no reprobe. Simpler: just re-run round-1 using our helper.
-                from reflective_memory import _run_round1_cuegen_and_retrieve
                 from em_architectures import _merge_by_max_score as _mm
+                from reflective_memory import _run_round1_cuegen_and_retrieve
 
-                primer, cues_r1, cue_hits_r1, _ = (
-                    await _run_round1_cuegen_and_retrieve(
-                        mem, q_text, participants,
-                        K=50, cache=caches["reflmem_cuegen_r1"],
-                        openai_client=openai_client,
-                    )
+                primer, cues_r1, cue_hits_r1, _ = await _run_round1_cuegen_and_retrieve(
+                    mem,
+                    q_text,
+                    participants,
+                    K=50,
+                    cache=caches["reflmem_cuegen_r1"],
+                    openai_client=openai_client,
                 )
                 r1_merged = _mm([primer, *cue_hits_r1])
                 r1_retrieved_50 = {h.turn_id for h in r1_merged[:50]}
@@ -457,19 +462,23 @@ async def main() -> None:
                 r1_gold = r1_retrieved_50 & gold
                 r2_gold = r2_retrieved_50 & gold
                 novel_gold = r2_gold - r1_gold
-                novelty_rows.append({
-                    "conversation_id": cid,
-                    "question": q_text,
-                    "r1_gold_count@50": len(r1_gold),
-                    "r2_gold_count@50": len(r2_gold),
-                    "n_novel_gold_round2": len(novel_gold),
-                    "novel_gold_turn_ids": sorted(novel_gold),
-                    "gold_total": len(gold),
-                })
+                novelty_rows.append(
+                    {
+                        "conversation_id": cid,
+                        "question": q_text,
+                        "r1_gold_count@50": len(r1_gold),
+                        "r2_gold_count@50": len(r2_gold),
+                        "n_novel_gold_round2": len(novel_gold),
+                        "novel_gold_turn_ids": sorted(novel_gold),
+                        "gold_total": len(gold),
+                    }
+                )
             total = len(novelty_rows)
             contributed = sum(1 for r in novelty_rows if r["n_novel_gold_round2"] > 0)
             results["round2_gold_novelty"] = {
-                "fraction_queries_with_novel_gold": round(contributed / max(total, 1), 4),
+                "fraction_queries_with_novel_gold": round(
+                    contributed / max(total, 1), 4
+                ),
                 "n_contributed": contributed,
                 "n_total": total,
                 "per_query": novelty_rows,
@@ -493,13 +502,22 @@ async def main() -> None:
                 gold = set(q.get("source_chat_ids", []))
                 t0 = time.monotonic()
                 vr = await run_variant(
-                    variant, mem, q_text, participants,
-                    K=max_K, embedder=embedder,
-                    caches=caches, openai_client=openai_client,
+                    variant,
+                    mem,
+                    q_text,
+                    participants,
+                    K=max_K,
+                    embedder=embedder,
+                    caches=caches,
+                    openai_client=openai_client,
                 )
                 merged, cmeta = await compose_with_speaker_filter(
-                    mem, q_text, cid, vr.hits,
-                    K=max_K, speaker_map=speaker_map,
+                    mem,
+                    q_text,
+                    cid,
+                    vr.hits,
+                    K=max_K,
+                    speaker_map=speaker_map,
                 )
                 elapsed = time.monotonic() - t0
                 row: dict = {
@@ -590,7 +608,7 @@ def build_markdown_report(
         "",
         f"- n_questions = {len(questions)} (benchmark=locomo, first 30)",
         "- EventMemory backend (arc_em_lc30_v1_{26,30,41}); "
-        "speaker-baked embedded format `\"{source}: {text}\"`",
+        'speaker-baked embedded format `"{source}: {text}"`',
         "- Model: text-embedding-3-small + gpt-5-mini (fixed)",
         "- Scratch memory: in-memory numpy cosine; per-query, not persisted",
         "- Caches: `cache/reflmem_{cuegen_r1,reflect,cuegen_r2}_cache.json` "
@@ -667,9 +685,7 @@ def build_markdown_report(
             f"(frac={n2['fraction_queries_with_novel_gold']:.3f})"
         )
         # Show the queries where novelty happened.
-        contributors = [
-            r for r in n2["per_query"] if r["n_novel_gold_round2"] > 0
-        ]
+        contributors = [r for r in n2["per_query"] if r["n_novel_gold_round2"] > 0]
         if contributors:
             lines.append("")
             lines.append("Queries with novel gold from round 2:")
@@ -703,7 +719,7 @@ def build_markdown_report(
             meta = row["metadata"]
             lines.append(
                 f"### Q{idx} (`{row['conversation_id']}`, "
-                f"{row.get('category','?')}): "
+                f"{row.get('category', '?')}): "
                 f"{row['question']!r}"
             )
             lines.append("")
@@ -725,8 +741,7 @@ def build_markdown_report(
                 f"{meta.get('reprobe_texts', [])}"
             )
             lines.append(
-                f"Scratch reprobe cosine scores: "
-                f"{meta.get('reprobe_scores', [])}"
+                f"Scratch reprobe cosine scores: {meta.get('reprobe_scores', [])}"
             )
             lines.append(
                 f"R@20={row['r@20']:.2f}, R@50={row['r@50']:.2f}, "

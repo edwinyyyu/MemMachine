@@ -29,9 +29,15 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
+from antipara_cue_gen import MetaV2fDedicated
 from associative_recall import Segment
+from context_embedding import (
+    ContextEmbPrevStacked,
+    ContextEmbW1Bonus,
+    ContextEmbW1Stacked,
+    ContextEmbW2Stacked,
+)
+from dotenv import load_dotenv
 from fair_backfill_eval import (
     BUDGETS,
     RESULTS_DIR,
@@ -39,13 +45,6 @@ from fair_backfill_eval import (
     load_dataset,
     summarize,
     summarize_by_category,
-)
-from antipara_cue_gen import MetaV2fDedicated
-from context_embedding import (
-    ContextEmbW1Stacked,
-    ContextEmbW2Stacked,
-    ContextEmbPrevStacked,
-    ContextEmbW1Bonus,
 )
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -86,9 +85,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     md = result.metadata or {}
@@ -128,9 +125,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     # Diagnostics: how many ctx-appended turns made it into final top-K?
     ctx_ids = set(row["ctx_appended_turn_ids"] or [])
-    row["ctx_in_topK"] = {
-        str(K): sorted(ctx_ids & arch_ids_at_K[K]) for K in BUDGETS
-    }
+    row["ctx_in_topK"] = {str(K): sorted(ctx_ids & arch_ids_at_K[K]) for K in BUDGETS}
     row["n_ctx_in_topK"] = {K: len(ctx_ids & arch_ids_at_K[K]) for K in BUDGETS}
 
     row["gold_found_at_K"] = {
@@ -151,7 +146,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -160,6 +155,7 @@ def run_one(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -256,9 +252,7 @@ def compute_orthogonality(
     return {
         "total_gold": total_gold,
         "novel_vs_v2f": novel_gold,
-        "fraction_novel": round(novel_gold / total_gold, 4)
-        if total_gold
-        else 0.0,
+        "fraction_novel": round(novel_gold / total_gold, 4) if total_gold else 0.0,
     }
 
 
@@ -281,9 +275,7 @@ def main() -> None:
                 index_stats_by_variant_ds[variant][ds_name] = getattr(
                     arch, "index_stats", {}
                 )
-            results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(arch_name, arch, ds_name, questions)
             all_results[arch_name][ds_name] = {
                 "summary": summary,
                 "category_breakdown": by_cat,
@@ -329,9 +321,7 @@ def main() -> None:
             a: {
                 d: {
                     "summary": all_results[a][d]["summary"],
-                    "category_breakdown": all_results[a][d][
-                        "category_breakdown"
-                    ],
+                    "category_breakdown": all_results[a][d]["category_breakdown"],
                 }
                 for d in all_results[a]
             }
@@ -356,9 +346,7 @@ def main() -> None:
                         "arch": a,
                         "dataset": d,
                         "summary": all_results[a][d]["summary"],
-                        "category_breakdown": all_results[a][d][
-                            "category_breakdown"
-                        ],
+                        "category_breakdown": all_results[a][d]["category_breakdown"],
                         "results": all_results[a][d]["results"],
                     },
                     f,
@@ -433,25 +421,19 @@ def main() -> None:
             contrib = d.get("n_queries_ctx_contributed_gold", {})
             n = d.get("n_queries", 0)
             md.append(f"- n queries: {n}")
+            md.append(f"- mean raw ctx hits / query: {d.get('mean_ctx_hits_raw')}")
             md.append(
-                f"- mean raw ctx hits / query: "
-                f"{d.get('mean_ctx_hits_raw')}"
-            )
-            md.append(
-                f"- mean ctx-turn hits (deduped) / query: "
-                f"{d.get('mean_ctx_turn_hits')}"
+                f"- mean ctx-turn hits (deduped) / query: {d.get('mean_ctx_turn_hits')}"
             )
             md.append(
                 f"- mean ctx-turn hits novel vs v2f / query: "
                 f"{d.get('mean_ctx_turn_hits_novel_vs_v2f')}"
             )
             md.append(
-                f"- queries where >=1 ctx turn entered top-20: "
-                f"{fired.get('20')}/{n}"
+                f"- queries where >=1 ctx turn entered top-20: {fired.get('20')}/{n}"
             )
             md.append(
-                f"- queries where >=1 ctx turn entered top-50: "
-                f"{fired.get('50')}/{n}"
+                f"- queries where >=1 ctx turn entered top-50: {fired.get('50')}/{n}"
             )
             md.append(
                 f"- queries where a ctx-appended turn was gold @K=20: "
@@ -490,8 +472,7 @@ def main() -> None:
             md.append(f"### {a} / {d}\n")
             for r in rs:
                 md.append(
-                    f"- **Q**: {r['question'][:100]}  "
-                    f"gold={r['source_chat_ids']}"
+                    f"- **Q**: {r['question'][:100]}  gold={r['source_chat_ids']}"
                 )
                 md.append(
                     f"  ctx appended turn_ids: "
@@ -508,15 +489,10 @@ def main() -> None:
         for ds_name in EVAL_DATASETS:
             if ds_name not in all_results["meta_v2f"]:
                 continue
-            v2f_r50 = all_results["meta_v2f"][ds_name]["summary"].get(
-                "arch_r@50", 0.0
-            )
-            v2f_r20 = all_results["meta_v2f"][ds_name]["summary"].get(
-                "arch_r@20", 0.0
-            )
+            v2f_r50 = all_results["meta_v2f"][ds_name]["summary"].get("arch_r@50", 0.0)
+            v2f_r20 = all_results["meta_v2f"][ds_name]["summary"].get("arch_r@20", 0.0)
             verdict_lines.append(
-                f"**{ds_name}** — v2f baseline: r@20={v2f_r20:.3f} "
-                f"r@50={v2f_r50:.3f}"
+                f"**{ds_name}** — v2f baseline: r@20={v2f_r20:.3f} r@50={v2f_r50:.3f}"
             )
             for arch_name in CONTEXTEMB_VARIANTS:
                 if ds_name not in all_results.get(arch_name, {}):

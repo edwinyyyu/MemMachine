@@ -20,28 +20,23 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import sys
 import time
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-
 from associative_recall import (
     EMBED_MODEL,
     EmbeddingCache,
-    LLMCache,
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
 from fair_backfill_eval import (
     BUDGETS,
     DATASETS,
-    fair_backfill_evaluate,
     compute_recall,
-    summarize,
-    summarize_by_category,
+    fair_backfill_evaluate,
 )
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -54,6 +49,7 @@ CACHE_DIR = Path(__file__).resolve().parent / "cache"
 # =============================================================================
 # Helpers: embedding access shared across phases
 # =============================================================================
+
 
 def _l2_normalize(vec: np.ndarray) -> np.ndarray:
     n = np.linalg.norm(vec)
@@ -104,6 +100,7 @@ def _turn_emb(
 # PHASE A — GEOMETRY
 # =============================================================================
 
+
 def run_phase_a() -> dict:
     """Compute the geometry statistics for LoCoMo-30 multi-gold questions.
 
@@ -152,6 +149,7 @@ def run_phase_a() -> dict:
             if cached is None:
                 if client is None:
                     from openai import OpenAI
+
                     client = OpenAI(timeout=60.0)
                 q_emb = _embed_question(q_text, emb_cache, client)
             else:
@@ -169,7 +167,8 @@ def run_phase_a() -> dict:
             #                  that are not gold.
             gold_set = set(gold_ids)
             conv_turn_ids = [
-                seg.turn_id for seg in store.segments
+                seg.turn_id
+                for seg in store.segments
                 if seg.conversation_id == conv_id and seg.turn_id not in gold_set
             ]
             if not conv_turn_ids:
@@ -187,16 +186,18 @@ def run_phase_a() -> dict:
 
             gap = float(inter_gold - gold_to_query)
 
-            rows.append({
-                "conversation_id": conv_id,
-                "question_index": q.get("question_index"),
-                "category": q.get("category"),
-                "num_gold": len(gold_embs),
-                "inter_gold": float(inter_gold),
-                "gold_to_query": gold_to_query,
-                "random_to_query": random_to_query,
-                "gap_inter_minus_q": gap,
-            })
+            rows.append(
+                {
+                    "conversation_id": conv_id,
+                    "question_index": q.get("question_index"),
+                    "category": q.get("category"),
+                    "num_gold": len(gold_embs),
+                    "inter_gold": float(inter_gold),
+                    "gold_to_query": gold_to_query,
+                    "random_to_query": random_to_query,
+                    "gap_inter_minus_q": gap,
+                }
+            )
 
         if not rows:
             return {
@@ -211,18 +212,22 @@ def run_phase_a() -> dict:
         median_gap = float(np.median([r["gap_inter_minus_q"] for r in rows]))
         mean_inter = float(np.mean([r["inter_gold"] for r in rows]))
         mean_gold_q = float(np.mean([r["gold_to_query"] for r in rows]))
-        mean_rand_q = float(np.mean([
-            r["random_to_query"] for r in rows
-            if not np.isnan(r["random_to_query"])
-        ]))
+        mean_rand_q = float(
+            np.mean(
+                [
+                    r["random_to_query"]
+                    for r in rows
+                    if not np.isnan(r["random_to_query"])
+                ]
+            )
+        )
 
         # gap histogram: buckets from -0.30 to +0.30 step 0.05
         edges = np.arange(-0.30, 0.35, 0.05)
         gaps = np.array([r["gap_inter_minus_q"] for r in rows])
         hist, _ = np.histogram(gaps, bins=edges)
         histogram = [
-            {"lo": float(edges[i]), "hi": float(edges[i + 1]),
-             "count": int(hist[i])}
+            {"lo": float(edges[i]), "hi": float(edges[i + 1]), "count": int(hist[i])}
             for i in range(len(hist))
         ]
 
@@ -248,7 +253,9 @@ def run_phase_a() -> dict:
     missed_stats = {"available": False}
     if err_path.exists():
         err = json.load(open(err_path))
-        per_q = [p for p in err.get("per_question", []) if p.get("dataset") == "locomo_30q"]
+        per_q = [
+            p for p in err.get("per_question", []) if p.get("dataset") == "locomo_30q"
+        ]
         pair_records = []
         for p in per_q:
             conv_id = p["conversation_id"]
@@ -269,14 +276,16 @@ def run_phase_a() -> dict:
                 if m_e is None:
                     continue
                 sims = ret_mat @ m_e
-                pair_records.append({
-                    "conversation_id": conv_id,
-                    "missed_turn_id": mtid,
-                    "retrieved_gold_ids": retrieved_gold,
-                    "max_cos_to_retrieved_gold": float(sims.max()),
-                    "mean_cos_to_retrieved_gold": float(sims.mean()),
-                    "question_index": p.get("question_index"),
-                })
+                pair_records.append(
+                    {
+                        "conversation_id": conv_id,
+                        "missed_turn_id": mtid,
+                        "retrieved_gold_ids": retrieved_gold,
+                        "max_cos_to_retrieved_gold": float(sims.max()),
+                        "mean_cos_to_retrieved_gold": float(sims.mean()),
+                        "question_index": p.get("question_index"),
+                    }
+                )
         if pair_records:
             missed_stats = {
                 "available": True,
@@ -291,10 +300,14 @@ def run_phase_a() -> dict:
                     np.mean([r["mean_cos_to_retrieved_gold"] for r in pair_records])
                 ),
                 "frac_missed_max_cos_ge_0_6": float(
-                    np.mean([r["max_cos_to_retrieved_gold"] >= 0.6 for r in pair_records])
+                    np.mean(
+                        [r["max_cos_to_retrieved_gold"] >= 0.6 for r in pair_records]
+                    )
                 ),
                 "frac_missed_max_cos_ge_0_5": float(
-                    np.mean([r["max_cos_to_retrieved_gold"] >= 0.5 for r in pair_records])
+                    np.mean(
+                        [r["max_cos_to_retrieved_gold"] >= 0.5 for r in pair_records]
+                    )
                 ),
                 "records_preview": pair_records[:15],
             }
@@ -331,20 +344,27 @@ def run_phase_a() -> dict:
             md_lines.append("No multi-gold questions.\n\n")
             continue
         md_lines.append("| Stat | Value |\n|---|---|\n")
-        md_lines.append(f"| fraction gold off-center (gap>0) | "
-                        f"{res['fraction_gold_off_center']:.3f} |\n")
-        md_lines.append(f"| mean gap (inter-gold − gold-to-query) | "
-                        f"{res['mean_gap_inter_minus_q']:+.4f} |\n")
-        md_lines.append(f"| median gap | "
-                        f"{res['median_gap_inter_minus_q']:+.4f} |\n")
-        md_lines.append(f"| mean inter-gold cos | "
-                        f"{res['mean_inter_gold']:.4f} |\n")
-        md_lines.append(f"| mean gold-to-query cos | "
-                        f"{res['mean_gold_to_query']:.4f} |\n")
-        md_lines.append(f"| mean random-to-query cos (baseline) | "
-                        f"{res['mean_random_to_query']:.4f} |\n")
-        md_lines.append(f"| mean query lift over random | "
-                        f"{res['mean_query_lift_over_random']:+.4f} |\n\n")
+        md_lines.append(
+            f"| fraction gold off-center (gap>0) | "
+            f"{res['fraction_gold_off_center']:.3f} |\n"
+        )
+        md_lines.append(
+            f"| mean gap (inter-gold − gold-to-query) | "
+            f"{res['mean_gap_inter_minus_q']:+.4f} |\n"
+        )
+        md_lines.append(f"| median gap | {res['median_gap_inter_minus_q']:+.4f} |\n")
+        md_lines.append(f"| mean inter-gold cos | {res['mean_inter_gold']:.4f} |\n")
+        md_lines.append(
+            f"| mean gold-to-query cos | {res['mean_gold_to_query']:.4f} |\n"
+        )
+        md_lines.append(
+            f"| mean random-to-query cos (baseline) | "
+            f"{res['mean_random_to_query']:.4f} |\n"
+        )
+        md_lines.append(
+            f"| mean query lift over random | "
+            f"{res['mean_query_lift_over_random']:+.4f} |\n\n"
+        )
         md_lines.append("### Gap histogram (inter-gold − gold-to-query)\n\n")
         md_lines.append("| bin | count |\n|---|---|\n")
         for h in res["gap_histogram"]:
@@ -354,21 +374,33 @@ def run_phase_a() -> dict:
     # Missed-to-retrieved-gold
     md_lines.append("## Missed turns vs retrieved-gold neighbors (LoCoMo-30)\n\n")
     if not missed_stats.get("available"):
-        md_lines.append(f"Not available: {missed_stats.get('reason','no data')}\n\n")
+        md_lines.append(f"Not available: {missed_stats.get('reason', 'no data')}\n\n")
     else:
-        md_lines.append(f"n_pairs (missed-turn × its question's retrieved-gold set) = "
-                        f"{missed_stats['n_pairs']}\n\n")
+        md_lines.append(
+            f"n_pairs (missed-turn × its question's retrieved-gold set) = "
+            f"{missed_stats['n_pairs']}\n\n"
+        )
         md_lines.append("| Stat | Value |\n|---|---|\n")
-        md_lines.append(f"| mean max cos(missed, retrieved-gold) | "
-                        f"{missed_stats['mean_max_cos_missed_to_retrieved_gold']:.4f} |\n")
-        md_lines.append(f"| median max cos | "
-                        f"{missed_stats['median_max_cos_missed_to_retrieved_gold']:.4f} |\n")
-        md_lines.append(f"| mean mean cos | "
-                        f"{missed_stats['mean_mean_cos_missed_to_retrieved_gold']:.4f} |\n")
-        md_lines.append(f"| frac missed with max cos >= 0.5 | "
-                        f"{missed_stats['frac_missed_max_cos_ge_0_5']:.3f} |\n")
-        md_lines.append(f"| frac missed with max cos >= 0.6 | "
-                        f"{missed_stats['frac_missed_max_cos_ge_0_6']:.3f} |\n\n")
+        md_lines.append(
+            f"| mean max cos(missed, retrieved-gold) | "
+            f"{missed_stats['mean_max_cos_missed_to_retrieved_gold']:.4f} |\n"
+        )
+        md_lines.append(
+            f"| median max cos | "
+            f"{missed_stats['median_max_cos_missed_to_retrieved_gold']:.4f} |\n"
+        )
+        md_lines.append(
+            f"| mean mean cos | "
+            f"{missed_stats['mean_mean_cos_missed_to_retrieved_gold']:.4f} |\n"
+        )
+        md_lines.append(
+            f"| frac missed with max cos >= 0.5 | "
+            f"{missed_stats['frac_missed_max_cos_ge_0_5']:.3f} |\n"
+        )
+        md_lines.append(
+            f"| frac missed with max cos >= 0.6 | "
+            f"{missed_stats['frac_missed_max_cos_ge_0_6']:.3f} |\n\n"
+        )
 
     # Decision gate verdict based on locomo_30q
     r30 = results_30
@@ -387,8 +419,10 @@ def run_phase_a() -> dict:
             md_lines.append("=> BORDERLINE. Proceed to Phase B with K0=10 only.\n")
             verdict = "borderline"
         else:
-            md_lines.append("=> SKIP Phase B. Gold clusters near the query, "
-                            "bigger-K cosine would capture it.\n")
+            md_lines.append(
+                "=> SKIP Phase B. Gold clusters near the query, "
+                "bigger-K cosine would capture it.\n"
+            )
             verdict = "skip"
 
     md_lines.append("\n")
@@ -403,6 +437,7 @@ def run_phase_a() -> dict:
 # =============================================================================
 # PHASE B — SPREADING ACTIVATION RETRIEVAL
 # =============================================================================
+
 
 def build_knn_graph(
     store: SegmentStore,
@@ -436,16 +471,18 @@ def build_knn_graph(
             picks = top_idx[row_i]
             # sort these picks by score desc
             picks_sorted = picks[np.argsort(-sim[row_i, picks])]
-            neighbors = [(int(idx_list[int(p)]), float(sim[row_i, int(p)]))
-                         for p in picks_sorted]
+            neighbors = [
+                (int(idx_list[int(p)]), float(sim[row_i, int(p)])) for p in picks_sorted
+            ]
             adjacency[int(idx_list[row_i])] = neighbors
 
     return adjacency
 
 
 def save_adjacency_json(adj: dict[int, list[tuple[int, float]]], path: Path) -> None:
-    serial = {str(k): [[int(n), round(float(s), 6)] for n, s in v]
-              for k, v in adj.items()}
+    serial = {
+        str(k): [[int(n), round(float(s), 6)] for n, s in v] for k, v in adj.items()
+    }
     with open(path, "w") as f:
         json.dump(serial, f)
 
@@ -463,7 +500,7 @@ def spread_from_seeds(
     for sidx, score in seeds:
         activation[sidx] = activation.get(sidx, 0.0) + extra_seed_boost * score
     for sidx, score in seeds:
-        for (nidx, sim) in adjacency.get(sidx, []):
+        for nidx, sim in adjacency.get(sidx, []):
             activation[nidx] = activation.get(nidx, 0.0) + alpha * score * sim
     return activation
 
@@ -481,8 +518,10 @@ def spreading_retrieve(
     return top K_final by total activation."""
     # cosine top-K0 seeds
     seed_result = store.search(query_emb, top_k=K0, conversation_id=conversation_id)
-    seeds = [(seg.index, float(score)) for seg, score in
-             zip(seed_result.segments, seed_result.scores)]
+    seeds = [
+        (seg.index, float(score))
+        for seg, score in zip(seed_result.segments, seed_result.scores)
+    ]
     activation = spread_from_seeds(seeds, adjacency, alpha=alpha)
     # rank
     ranked = sorted(activation.items(), key=lambda kv: -kv[1])
@@ -527,10 +566,11 @@ def spread_over_initial(
 # Phase B evaluation
 # =============================================================================
 
+
 def run_phase_b(verdict: str) -> dict:
     """Evaluate spread_plain and spread_v2f on LoCoMo-30 using fair-backfill."""
-    from openai import OpenAI
     from best_shot import MetaV2f
+    from openai import OpenAI
 
     store = SegmentStore(data_dir=DATA_DIR, npz_name="segments_extended.npz")
     cfg = DATASETS["locomo_30q"]
@@ -541,8 +581,10 @@ def run_phase_b(verdict: str) -> dict:
     conv_ids = list({q["conversation_id"] for q in questions})
     print(f"Building kNN graph over {len(conv_ids)} conversations, k=10 ...")
     adj = build_knn_graph(store, conversation_ids=conv_ids, k=10)
-    print(f"  Graph size: {len(adj)} nodes, "
-          f"mean degree {np.mean([len(v) for v in adj.values()]):.1f}")
+    print(
+        f"  Graph size: {len(adj)} nodes, "
+        f"mean degree {np.mean([len(v) for v in adj.values()]):.1f}"
+    )
 
     # Save adjacency
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -629,8 +671,13 @@ def run_phase_b(verdict: str) -> dict:
             # If spread yields < K, backfill with cosine top-K.
             for K0 in K0_values:
                 sp_segs = spreading_retrieve(
-                    store, q_emb, conv_id, adj,
-                    K_final=K, K0=K0, alpha=alpha,
+                    store,
+                    q_emb,
+                    conv_id,
+                    adj,
+                    K_final=K,
+                    K0=K0,
+                    alpha=alpha,
                 )
                 _b, sp_r, _ = fair_backfill_evaluate(
                     sp_segs, cosine_segments, source_ids, K
@@ -640,8 +687,13 @@ def run_phase_b(verdict: str) -> dict:
             # spread_v2f: spread from v2f's retrieved segments, seed scores =
             # cosine(q, seg); then top-K + backfill
             spv2f_segs = spread_over_initial(
-                store, v2f_segments, v2f_seed_scores, conv_id, adj,
-                K_final=K, alpha=alpha,
+                store,
+                v2f_segments,
+                v2f_seed_scores,
+                conv_id,
+                adj,
+                K_final=K,
+                alpha=alpha,
             )
             _b, spv2f_r, _ = fair_backfill_evaluate(
                 spv2f_segs, cosine_segments, source_ids, K
@@ -650,7 +702,7 @@ def run_phase_b(verdict: str) -> dict:
 
         per_q_records.append(record)
         print(
-            f"[{i+1}/{len(questions)}] "
+            f"[{i + 1}/{len(questions)}] "
             f"cos@20={record['fair_backfill']['cosine_r@20']:.3f} "
             f"v2f@20={record['fair_backfill']['v2f_r@20']:.3f} "
             f"spK0=10@20={record['fair_backfill']['spread_plain_K0=10_r@20']:.3f} "
@@ -665,9 +717,11 @@ def run_phase_b(verdict: str) -> dict:
     emb_cache.save()
 
     # Aggregate
-    variants = ["cosine", "v2f"] + [
-        f"spread_plain_K0={K0}" for K0 in K0_values
-    ] + ["spread_v2f"]
+    variants = (
+        ["cosine", "v2f"]
+        + [f"spread_plain_K0={K0}" for K0 in K0_values]
+        + ["spread_v2f"]
+    )
 
     n = len(per_q_records)
     summaries: dict[str, dict] = {}
@@ -711,11 +765,15 @@ def run_phase_b(verdict: str) -> dict:
     md.append("## Summary (recall averaged over n=30)\n\n")
     md.append("| variant | r@20 | r@50 |\n|---|---|---|\n")
     for v in variants:
-        md.append(f"| {v} | {summaries[v]['r@20']:.4f} | "
-                  f"{summaries[v]['r@50']:.4f} |\n")
+        md.append(
+            f"| {v} | {summaries[v]['r@20']:.4f} | {summaries[v]['r@50']:.4f} |\n"
+        )
     md.append("\n## Per-category\n\n")
-    md.append("| category | n | " + " | ".join(
-        f"{v} r@{K}" for v in variants for K in BUDGETS) + " |\n")
+    md.append(
+        "| category | n | "
+        + " | ".join(f"{v} r@{K}" for v in variants for K in BUDGETS)
+        + " |\n"
+    )
     md.append("|---|---|" + "|".join("---" for _ in variants for _ in BUDGETS) + "|\n")
     for cat, entry in per_cat.items():
         row = f"| {cat} | {entry['n']} |"
@@ -736,15 +794,21 @@ def run_phase_b(verdict: str) -> dict:
     spv2f50 = summaries["spread_v2f"]["r@50"]
 
     md.append("## Verdict\n\n")
-    md.append(f"- spread_plain vs cosine: r@20 {sp20 - cos20:+.4f}, "
-              f"r@50 {sp50 - cos50:+.4f}\n")
-    md.append(f"- spread_v2f vs v2f:     r@20 {spv2f20 - v2f20:+.4f}, "
-              f"r@50 {spv2f50 - v2f50:+.4f}\n\n")
+    md.append(
+        f"- spread_plain vs cosine: r@20 {sp20 - cos20:+.4f}, "
+        f"r@50 {sp50 - cos50:+.4f}\n"
+    )
+    md.append(
+        f"- spread_v2f vs v2f:     r@20 {spv2f20 - v2f20:+.4f}, "
+        f"r@50 {spv2f50 - v2f50:+.4f}\n\n"
+    )
     if sp20 > cos20 and sp50 > cos50 and spv2f20 > v2f20 and spv2f50 > v2f50:
         v = "Ship spreading (wins both standalone and on top of v2f)."
     elif sp20 > cos20 and sp50 > cos50 and spv2f20 <= v2f20:
-        v = ("Narrow-use: spread_plain beats plain cosine, but does NOT "
-             "compose with v2f. Good as a cheap retrieval but skip stacking.")
+        v = (
+            "Narrow-use: spread_plain beats plain cosine, but does NOT "
+            "compose with v2f. Good as a cheap retrieval but skip stacking."
+        )
     elif spv2f20 > v2f20 and spv2f50 > v2f50 and sp20 <= cos20:
         v = "Use only stacked on v2f."
     else:

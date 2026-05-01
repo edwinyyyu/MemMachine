@@ -44,12 +44,9 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
-from typing import Iterable
+from collections.abc import Iterable
 
 import numpy as np
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EmbeddingCache,
@@ -58,13 +55,13 @@ from associative_recall import (
     SegmentStore,
 )
 from best_shot import (
+    V2F_PROMPT,
     BestshotBase,
     BestshotResult,
-    V2F_PROMPT,
     _format_segments,
     _parse_cues,
 )
-
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Dedicated caches
@@ -140,9 +137,8 @@ class ClauseEmbeddingCache(EmbeddingCache):
                 existing = {}
         existing.update(self._new_entries)
         import os
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         try:
             with open(tmp, "w") as f:
                 json.dump(existing, f)
@@ -193,9 +189,8 @@ class ClauseLLMCache(LLMCache):
                 existing = {}
         existing.update(self._new_entries)
         import os
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         try:
             with open(tmp, "w") as f:
                 json.dump(existing, f)
@@ -213,14 +208,7 @@ class ClauseLLMCache(LLMCache):
 # Mechanical splitter
 # ---------------------------------------------------------------------------
 _STOPWORDS = frozenset(
-    """
-    a an the of in on at to for with by and or but is are was were be been being
-    has have had do does did will would can could should may might must shall
-    i me my mine you your yours he him his she her hers it its we us our ours
-    they them their theirs this that these those what who whom whose which how
-    why when where if then else not no yes as so than too very just also still
-    please include any all every each every other all any some most more less
-    """.split()
+    ["a", "an", "the", "of", "in", "on", "at", "to", "for", "with", "by", "and", "or", "but", "is", "are", "was", "were", "be", "been", "being", "has", "have", "had", "do", "does", "did", "will", "would", "can", "could", "should", "may", "might", "must", "shall", "i", "me", "my", "mine", "you", "your", "yours", "he", "him", "his", "she", "her", "hers", "it", "its", "we", "us", "our", "ours", "they", "them", "their", "theirs", "this", "that", "these", "those", "what", "who", "whom", "whose", "which", "how", "why", "when", "where", "if", "then", "else", "not", "no", "yes", "as", "so", "than", "too", "very", "just", "also", "still", "please", "include", "any", "all", "every", "each", "every", "other", "all", "any", "some", "most", "more", "less"]
 )
 
 # Conjunction tokens to split on at sentence level. Ordered by specificity.
@@ -466,18 +454,14 @@ class _ClauseBase(BestshotBase):
         per_parent_clause: dict[int, str] = {}
         for c in clauses:
             emb = self.embed_text(c)
-            res = self.store.search(
-                emb, top_k=top_m, conversation_id=conversation_id
-            )
+            res = self.store.search(emb, top_k=top_m, conversation_id=conversation_id)
             for seg, sc in zip(res.segments, res.scores):
                 cur = per_parent_score.get(seg.index)
                 if cur is None or sc > cur:
                     per_parent_score[seg.index] = sc
                     per_parent_clause[seg.index] = c
         # Rank by max score desc
-        ranked = sorted(
-            per_parent_score.items(), key=lambda t: t[1], reverse=True
-        )
+        ranked = sorted(per_parent_score.items(), key=lambda t: t[1], reverse=True)
         segments = [self.store.segments[i] for i, _ in ranked]
         scores = [s for _, s in ranked]
         meta = {"best_clause_per_index": per_parent_clause}
@@ -489,19 +473,14 @@ class _ClauseBase(BestshotBase):
         """Run v2f on the given query_text. Stacked: hop0 top-10, then
         cue1 top-10, cue2 top-10 (excluding overlaps)."""
         query_emb = self.embed_text(query_text)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments: list[Segment] = list(hop0.segments)
         exclude: set[int] = {s.index for s in all_segments}
 
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
-        prompt = V2F_PROMPT.format(
-            question=query_text, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=query_text, context_section=context_section)
         output = self.llm_call(prompt)
         cues = _parse_cues(output)[:2]
 

@@ -25,9 +25,27 @@ from pathlib import Path
 import numpy as np
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_alias_expand import (
+    em_alias_expand_v2f,
+    load_alias_groups,
+)
+from em_architectures import (
+    BESTSHOT_LLM_CACHE,
+    EM_V2F_LLM_CACHE,
+    EMHit,
+    _MergedLLMCache,
+)
+from em_gated_no_speaker import (
+    EMDEF_GATED_LLM_CACHE,
+    GATED_LLM_CACHE,
+    em_gated_no_speaker,
+)
+from em_two_speaker import (
+    classify_speaker_side,
+    em_two_speaker_filter,
+    em_two_speaker_query_only,
+    load_two_speaker_map,
+)
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -44,29 +62,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import (
-    BESTSHOT_LLM_CACHE,
-    EM_V2F_LLM_CACHE,
-    EMHit,
-    _MergedLLMCache,
-)
-from em_two_speaker import (
-    em_two_speaker_filter,
-    em_two_speaker_query_only,
-    load_two_speaker_map,
-    classify_speaker_side,
-)
-from em_alias_expand import (
-    em_alias_expand_v2f,
-    load_alias_groups,
-)
-from em_gated_no_speaker import (
-    em_gated_no_speaker,
-    EMDEF_GATED_LLM_CACHE,
-    GATED_LLM_CACHE,
-)
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -229,11 +226,22 @@ async def evaluate_question(
     }
     # strip big metadata fields for per-question output (keep only useful ones)
     keep_keys = {
-        "matched_side", "conv_user_name", "conv_assistant_name",
-        "query_name_tokens", "applied_speaker_filter", "matched_name",
-        "appended_turn_ids", "dropped_v2f_turn_ids", "v2f_cues",
-        "alias_matches", "num_variants", "fallback",
-        "confidences", "firing_channels", "overlay", "route",
+        "matched_side",
+        "conv_user_name",
+        "conv_assistant_name",
+        "query_name_tokens",
+        "applied_speaker_filter",
+        "matched_name",
+        "appended_turn_ids",
+        "dropped_v2f_turn_ids",
+        "v2f_cues",
+        "alias_matches",
+        "num_variants",
+        "fallback",
+        "confidences",
+        "firing_channels",
+        "overlay",
+        "route",
     }
     for k, v in meta.items():
         if k in keep_keys:
@@ -365,7 +373,9 @@ async def main() -> None:
         for q in questions:
             mem = memories[q["conversation_id"]]
             row = await evaluate_question(
-                arch, mem, q,
+                arch,
+                mem,
+                q,
                 speaker_map=speaker_map,
                 alias_groups_by_conv=alias_groups_by_conv,
                 all_segments_by_conv=all_segments_by_conv,
@@ -449,7 +459,7 @@ async def main() -> None:
         "",
         "- Speaker is baked into embedded text via `MessageContext.source`.",
         "- The filter field name is `context.source` (EM's `property_filter` "
-        "API uses `Comparison(field=\"context.source\", op=\"=\", value=<name>)`).",
+        'API uses `Comparison(field="context.source", op="=", value=<name>)`).',
         "- Per-conversation speaker names (from "
         "`results/conversation_two_speakers.json`):",
         "  - `locomo_conv-26`: user=Caroline, assistant=Melanie",
@@ -501,9 +511,15 @@ async def main() -> None:
         "",
     ]
     if t_s:
-        verdict = "SHIP" if t_s.get("mean_r@20", 0) >= 0.88 else (
-            "FOLDED" if abs(t_s.get("mean_r@20", 0) - em_baseline["em_cosine_baseline"][0]) < 0.01
-            else "MID"
+        verdict = (
+            "SHIP"
+            if t_s.get("mean_r@20", 0) >= 0.88
+            else (
+                "FOLDED"
+                if abs(t_s.get("mean_r@20", 0) - em_baseline["em_cosine_baseline"][0])
+                < 0.01
+                else "MID"
+            )
         )
         md_lines.append(
             f"- `em_two_speaker_filter` R@20 = {t_s['mean_r@20']:.4f} "

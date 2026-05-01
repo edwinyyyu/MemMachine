@@ -9,10 +9,8 @@ Outputs per-(variant, dataset) JSON files at:
 """
 
 import json
-from pathlib import Path
 
 from domain_agnostic import (
-    DATASETS,
     RESULTS_DIR,
     build_variant,
     load_dataset,
@@ -87,7 +85,10 @@ def main() -> None:
             if ds_name == "locomo_30q":
                 with open(RESULTS_DIR / "domain_agnostic_v2f_locomo_30q.json") as f:
                     v2f = json.load(f)["summary"]
-                with open(RESULTS_DIR / "domain_agnostic_v2f_register_inferred_locomo_30q.json") as f:
+                with open(
+                    RESULTS_DIR
+                    / "domain_agnostic_v2f_register_inferred_locomo_30q.json"
+                ) as f:
                     reg = json.load(f)["summary"]
             else:
                 v2f = records[("v2f", ds_name)]["summary"]
@@ -97,7 +98,7 @@ def main() -> None:
                 continue
             v = v2f[key]
             r = reg[key]
-            print(f"{ds_name:<20s} {v:>12.3f} {r:>12.3f} {r-v:>+10.3f}")
+            print(f"{ds_name:<20s} {v:>12.3f} {r:>12.3f} {r - v:>+10.3f}")
 
 
 if __name__ == "__main__":

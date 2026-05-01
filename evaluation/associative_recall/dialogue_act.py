@@ -22,19 +22,17 @@ import hashlib
 import json
 import re
 import time
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from pathlib import Path
 from threading import Lock
-from typing import Iterable
 
 import numpy as np
-from openai import OpenAI
-
 from associative_recall import CACHE_DIR, Segment, SegmentStore
 
 # Re-export merge helpers so eval code only imports from this module.
 from critical_info_store import merge_additive_bonus, merge_always_top_m  # noqa: F401
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -144,6 +142,7 @@ class DialactLLMCache:
                         existing = {}
             existing.update(self._new_entries)
             import os
+
             tmp = self.cache_file.with_suffix(f".json.{os.getpid()}.tmp")
             with open(tmp, "w") as f:
                 json.dump(existing, f)
@@ -244,7 +243,7 @@ class DialogueActTagger:
 
     def _cache_key(self, prompt: str) -> str:
         # Namespace so a cache shared with other callers doesn't collide.
-        return f"[dialogue_act/v1]\n" + prompt
+        return "[dialogue_act/v1]\n" + prompt
 
     def call_one(self, role: str, text: str) -> str:
         prompt = build_tag_prompt(role, text)
@@ -298,7 +297,7 @@ class DialogueActTagger:
     def route_query(self, question: str) -> tuple[set[str], str]:
         """LLM-based query -> act-set routing. Returns (act_set, raw)."""
         prompt = build_route_prompt(question)
-        ck = f"[dialogue_act_route/v1]\n" + prompt
+        ck = "[dialogue_act_route/v1]\n" + prompt
         with self._cache_lock:
             cached = self.cache.get(self.model, ck)
         if cached is not None:
@@ -475,20 +474,44 @@ def build_act_indices(
 # acts to enable.
 _ROUTE_RULES: list[tuple[re.Pattern[str], set[str]]] = [
     # Unfinished / commitment-style questions
-    (re.compile(r"\b(complete[ds]?|never|didn'?t|did not|haven'?t|promise|follow[- ]?up|unfinished|pending|still need|yet to)\b", re.I),
-     {"COMMITMENT", "UNRESOLVED"}),
+    (
+        re.compile(
+            r"\b(complete[ds]?|never|didn'?t|did not|haven'?t|promise|follow[- ]?up|unfinished|pending|still need|yet to)\b",
+            re.IGNORECASE,
+        ),
+        {"COMMITMENT", "UNRESOLVED"},
+    ),
     # Decision-like
-    (re.compile(r"\b(decide[ds]?|decision|choose|chose|chosen|pick(ed)?|resolv(e|ed|ing)|settle[ds]?|pick[- ]?ed)\b", re.I),
-     {"DECISION"}),
+    (
+        re.compile(
+            r"\b(decide[ds]?|decision|choose|chose|chosen|pick(ed)?|resolv(e|ed|ing)|settle[ds]?|pick[- ]?ed)\b",
+            re.IGNORECASE,
+        ),
+        {"DECISION"},
+    ),
     # Correction / retraction
-    (re.compile(r"\b(correct(ed)?|wrong|mistak(e|en)|updat(e|ed|ing)|actually|revers(e|ed)|chang(e|ed)|switch(ed)?|instead)\b", re.I),
-     {"RETRACTION"}),
+    (
+        re.compile(
+            r"\b(correct(ed)?|wrong|mistak(e|en)|updat(e|ed|ing)|actually|revers(e|ed)|chang(e|ed)|switch(ed)?|instead)\b",
+            re.IGNORECASE,
+        ),
+        {"RETRACTION"},
+    ),
     # Contradiction / inconsistency
-    (re.compile(r"\b(contradict\w*|inconsisten\w*|mismatch\w*|conflict\w*|disagree\w*)\b", re.I),
-     {"RETRACTION", "DECISION"}),
+    (
+        re.compile(
+            r"\b(contradict\w*|inconsisten\w*|mismatch\w*|conflict\w*|disagree\w*)\b",
+            re.IGNORECASE,
+        ),
+        {"RETRACTION", "DECISION"},
+    ),
     # Explicit question-hunting: "still need to", "open question", "unanswered"
-    (re.compile(r"\b(open question|unanswered|unresolved|TBD|pending|waiting)\b", re.I),
-     {"UNRESOLVED"}),
+    (
+        re.compile(
+            r"\b(open question|unanswered|unresolved|TBD|pending|waiting)\b", re.IGNORECASE
+        ),
+        {"UNRESOLVED"},
+    ),
 ]
 
 
@@ -528,7 +551,7 @@ def combine_act_hits(
 # Summary utilities
 # ---------------------------------------------------------------------------
 def act_distribution(labels: Iterable[TurnActLabel]) -> dict[str, int]:
-    dist: dict[str, int] = {a: 0 for a in ACT_LABELS}
+    dist: dict[str, int] = dict.fromkeys(ACT_LABELS, 0)
     dist["UNKNOWN"] = 0
     for lab in labels:
         dist[lab.label if lab.label in dist else "UNKNOWN"] += 1

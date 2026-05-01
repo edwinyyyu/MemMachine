@@ -20,17 +20,14 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 from associative_recall import Segment, SegmentStore
+from dotenv import load_dotenv
 from ensemble_retrieval import (
     ENSEMBLE_COMPOSITIONS,
     MERGING_STRATEGIES,
     SPECIALISTS,
     build_specialist,
     ensemble_at_k,
-    fair_backfill,
-    merge_max_cosine,
     run_specialists_cached,
 )
 
@@ -128,9 +125,7 @@ def evaluate_dataset(
         cosine_segments = list(cosine_res.segments)
 
         # Run all 5 specialists, cache-only
-        outputs = run_specialists_cached(
-            specialists, store, q_text, conv_id, query_emb
-        )
+        outputs = run_specialists_cached(specialists, store, q_text, conv_id, query_emb)
 
         row: dict = {
             "dataset": ds_name,
@@ -139,9 +134,7 @@ def evaluate_dataset(
             "category": cat,
             "num_source_turns": len(source_ids),
             "per_specialist_recall": {},
-            "per_specialist_llm_calls": {
-                n: outputs[n].llm_calls for n in SPECIALISTS
-            },
+            "per_specialist_llm_calls": {n: outputs[n].llm_calls for n in SPECIALISTS},
             "ensemble_recall": {},
         }
         if not source_ids:
@@ -200,8 +193,7 @@ def evaluate_dataset(
                     arch.save_caches()
                 except Exception:
                     pass
-            print(f"  [{ds_name}] processed {qi + 1}/{len(questions)}",
-                  flush=True)
+            print(f"  [{ds_name}] processed {qi + 1}/{len(questions)}", flush=True)
 
     for arch in specialists.values():
         try:
@@ -225,30 +217,33 @@ def mean(vs):
 
 def aggregate(all_rows: dict[str, list[dict]]) -> dict:
     """Aggregate into:
-      per_ds[ds][ens][strat][K] = mean recall (over questions with gold)
-      per_ds[ds]['v2f_alone'][K] = mean recall
-      all_ds[ens][strat][K]
-      all_ds['v2f_alone'][K]
-      per_cat[ds][cat][ens][strat][K] ... only for K=50 winners + v2f
-      llm_cost[ens] = expected LLM calls per question
+    per_ds[ds][ens][strat][K] = mean recall (over questions with gold)
+    per_ds[ds]['v2f_alone'][K] = mean recall
+    all_ds[ens][strat][K]
+    all_ds['v2f_alone'][K]
+    per_cat[ds][cat][ens][strat][K] ... only for K=50 winners + v2f
+    llm_cost[ens] = expected LLM calls per question
     """
-    out: dict = {"per_ds": {}, "all_ds": {}, "per_category": {},
-                 "llm_cost": {}, "ds_counts": {}}
+    out: dict = {
+        "per_ds": {},
+        "all_ds": {},
+        "per_category": {},
+        "llm_cost": {},
+        "ds_counts": {},
+    }
 
     # LLM cost: use specialist_complementarity's per-call multipliers.
     for ens, specs in ENSEMBLE_COMPOSITIONS.items():
-        out["llm_cost"][ens] = round(
-            sum(SPECIALIST_COST[s] for s in specs), 2
-        )
+        out["llm_cost"][ens] = round(sum(SPECIALIST_COST[s] for s in specs), 2)
     out["llm_cost"]["v2f_alone"] = 1.0
 
     # Per-dataset aggregation
-    all_q_by_ens: dict = defaultdict(lambda: defaultdict(
-        lambda: defaultdict(list)))
+    all_q_by_ens: dict = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     all_q_v2f: dict = defaultdict(list)
     # Per-category aggregation (across all datasets)
-    all_cat_q: dict = defaultdict(lambda: defaultdict(
-        lambda: defaultdict(lambda: defaultdict(list))))
+    all_cat_q: dict = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    )
     all_cat_v2f: dict = defaultdict(lambda: defaultdict(list))
     # Per-category counts
     all_cat_n: dict = defaultdict(int)
@@ -279,14 +274,11 @@ def aggregate(all_rows: dict[str, list[dict]]) -> dict:
 
         out["per_ds"][ds] = {
             "n_with_gold": n_gold,
-            "v2f_alone": {
-                f"r@{K}": round(mean(ds_v2f[K]), 4) for K in BUDGETS
-            },
+            "v2f_alone": {f"r@{K}": round(mean(ds_v2f[K]), 4) for K in BUDGETS},
             "ensembles": {
                 ens: {
                     strat: {
-                        f"r@{K}": round(mean(ds_ens[ens][strat][K]), 4)
-                        for K in BUDGETS
+                        f"r@{K}": round(mean(ds_ens[ens][strat][K]), 4) for K in BUDGETS
                     }
                     for strat in MERGING_STRATEGIES
                 }
@@ -318,9 +310,7 @@ def aggregate(all_rows: dict[str, list[dict]]) -> dict:
             "ensembles": {
                 ens: {
                     strat: {
-                        f"r@{K}": round(mean(
-                            all_cat_q[cat][ens][strat][K]
-                        ), 4)
+                        f"r@{K}": round(mean(all_cat_q[cat][ens][strat][K]), 4)
                         for K in BUDGETS
                     }
                     for strat in MERGING_STRATEGIES
@@ -346,9 +336,7 @@ def render_markdown(aggr: dict, all_rows: dict[str, list[dict]]) -> str:
         "segments as v2f's top-K? If so, which merging strategy and ensemble "
         "composition ships?\n"
     )
-    lines.append(
-        f"**Compositions**: {list(ENSEMBLE_COMPOSITIONS.keys())}\n"
-    )
+    lines.append(f"**Compositions**: {list(ENSEMBLE_COMPOSITIONS.keys())}\n")
     lines.append(f"**Merging strategies**: {list(MERGING_STRATEGIES)}\n")
     lines.append(f"**Budgets**: K={BUDGETS}\n")
     lines.append(
@@ -365,8 +353,7 @@ def render_markdown(aggr: dict, all_rows: dict[str, list[dict]]) -> str:
     for ens, cost in aggr["llm_cost"].items():
         if ens == "v2f_alone":
             continue
-        lines.append(f"| {ens} ({'+'.join(ENSEMBLE_COMPOSITIONS[ens])}) "
-                     f"| {cost} |")
+        lines.append(f"| {ens} ({'+'.join(ENSEMBLE_COMPOSITIONS[ens])}) | {cost} |")
 
     # Fair-budget verdict: LoCoMo @ K=50 headline table
     lines.append("\n## Headline: LoCoMo @ K=50 (primary fair-budget test)\n")
@@ -384,9 +371,7 @@ def render_markdown(aggr: dict, all_rows: dict[str, list[dict]]) -> str:
             )
     all_rows_sorted.sort(key=lambda x: -x[2])
     for ens, strat, r50, delta, cost in all_rows_sorted:
-        lines.append(
-            f"| {ens} | {strat} | {r50:.4f} | {delta:+.4f} | {cost}× |"
-        )
+        lines.append(f"| {ens} | {strat} | {r50:.4f} | {delta:+.4f} | {cost}× |")
 
     # Per-dataset × K tables
     for ds in DATASETS:
@@ -399,8 +384,7 @@ def render_markdown(aggr: dict, all_rows: dict[str, list[dict]]) -> str:
             lines.append(f"\n### K={K}\n")
             v2f_r = dsblk["v2f_alone"][f"r@{K}"]
             lines.append(f"v2f-alone recall = **{v2f_r:.4f}**\n")
-            lines.append("| Ensemble | max_cosine | sum_cosine | rrf | "
-                         "round_robin |")
+            lines.append("| Ensemble | max_cosine | sum_cosine | rrf | round_robin |")
             lines.append("|---|---|---|---|---|")
             for ens in ENSEMBLE_COMPOSITIONS:
                 row = dsblk["ensembles"][ens]
@@ -409,6 +393,7 @@ def render_markdown(aggr: dict, all_rows: dict[str, list[dict]]) -> str:
                     r = row[strat][f"r@{K}"]
                     d = r - v2f_r
                     return f"{r:.4f} ({d:+.4f})"
+
                 lines.append(
                     f"| {ens} | {cell('max_cosine')} | {cell('sum_cosine')} "
                     f"| {cell('rrf')} | {cell('round_robin')} |"
@@ -421,8 +406,7 @@ def render_markdown(aggr: dict, all_rows: dict[str, list[dict]]) -> str:
         lines.append(f"\n### K={K}\n")
         v2f_r = allblk["v2f_alone"][f"r@{K}"]
         lines.append(f"v2f-alone recall = **{v2f_r:.4f}**\n")
-        lines.append("| Ensemble | max_cosine | sum_cosine | rrf | "
-                     "round_robin |")
+        lines.append("| Ensemble | max_cosine | sum_cosine | rrf | round_robin |")
         lines.append("|---|---|---|---|---|")
         for ens in ENSEMBLE_COMPOSITIONS:
             row = allblk["ensembles"][ens]
@@ -431,6 +415,7 @@ def render_markdown(aggr: dict, all_rows: dict[str, list[dict]]) -> str:
                 r = row[strat][f"r@{K}"]
                 d = r - v2f_r
                 return f"{r:.4f} ({d:+.4f})"
+
             lines.append(
                 f"| {ens} | {cell('max_cosine')} | {cell('sum_cosine')} "
                 f"| {cell('rrf')} | {cell('round_robin')} |"
@@ -495,9 +480,7 @@ def render_markdown(aggr: dict, all_rows: dict[str, list[dict]]) -> str:
             r = aggr["per_ds"]["locomo_30q"]["ensembles"][ens][strat]["r@50"]
             delta = r - v2f_loco_50
             if delta >= 0.03:
-                ship_candidates.append(
-                    (aggr["llm_cost"][ens], ens, strat, r, delta)
-                )
+                ship_candidates.append((aggr["llm_cost"][ens], ens, strat, r, delta))
     ship_candidates.sort()  # lowest cost first
 
     if ship_candidates:
@@ -564,8 +547,7 @@ def main() -> None:
         rows, meta = evaluate_dataset(ds_name)
         all_rows[ds_name] = rows
         dataset_meta[ds_name] = meta
-        print(f"  n={meta['n_questions']} with_gold={meta['n_with_gold']}",
-              flush=True)
+        print(f"  n={meta['n_questions']} with_gold={meta['n_with_gold']}", flush=True)
 
     print("\nAggregating ...", flush=True)
     aggr = aggregate(all_rows)
@@ -575,9 +557,7 @@ def main() -> None:
     payload = {
         "dataset_meta": dataset_meta,
         "aggregate": aggr,
-        "per_question_sample": {
-            ds: rows[:3] for ds, rows in all_rows.items()
-        },
+        "per_question_sample": {ds: rows[:3] for ds, rows in all_rows.items()},
         "elapsed_s": round(time.time() - t0, 2),
     }
     with open(json_path, "w") as f:
@@ -605,8 +585,10 @@ def main() -> None:
             if r > best_r:
                 best_r = r
                 best_strat = strat
-        print(f"  {ens:24s} best @K=50 via {best_strat:12s}: {best_r:.4f} "
-              f"(Δ={best_r - v2f_50:+.4f}, cost={aggr['llm_cost'][ens]}×)")
+        print(
+            f"  {ens:24s} best @K=50 via {best_strat:12s}: {best_r:.4f} "
+            f"(Δ={best_r - v2f_50:+.4f}, cost={aggr['llm_cost'][ens]}×)"
+        )
 
 
 if __name__ == "__main__":

@@ -17,16 +17,12 @@ Usage:
 """
 
 import json
-import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -35,6 +31,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 from prompt_optimization import META_V2F_PROMPT, _format_segments
 
 
@@ -48,6 +46,7 @@ def _parse_cues(response: str) -> list[str]:
         CUE (ARRIVAL): text
     """
     import re
+
     cues: list[str] = []
     for line in response.strip().split("\n"):
         line = line.strip()
@@ -60,6 +59,7 @@ def _parse_cues(response: str) -> list[str]:
             if cue:
                 cues.append(cue)
     return cues
+
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -302,9 +302,8 @@ def _build_context_section(segments: list[Segment]) -> str:
             "No conversation excerpts retrieved yet. Generate cues based on "
             "what you'd expect to find in a conversation about this topic."
         )
-    return (
-        "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-        + _format_segments(segments, max_items=12, max_chars=250)
+    return "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(
+        segments, max_items=12, max_chars=250
     )
 
 
@@ -318,18 +317,16 @@ class TypeEnumeratedVariant(TypeEnumBase):
     Per-cue top_k is configurable. Default top_k=3 leads to ~10+21=31 segments.
     """
 
-    def __init__(self, store: SegmentStore,
-                 per_cue_top_k: int = 3,
-                 client: OpenAI | None = None):
+    def __init__(
+        self, store: SegmentStore, per_cue_top_k: int = 3, client: OpenAI | None = None
+    ):
         super().__init__(store, client)
         self.per_cue_top_k = per_cue_top_k
 
     def retrieve(self, question: str, conversation_id: str) -> TypeEnumResult:
         # Hop 0: cosine top-10 (matches v2f hop-0 for apples-to-apples)
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
@@ -345,8 +342,10 @@ class TypeEnumeratedVariant(TypeEnumBase):
         for cue in cues[:7]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_cue_top_k,
-                conversation_id=conversation_id, exclude_indices=exclude,
+                cue_emb,
+                top_k=self.per_cue_top_k,
+                conversation_id=conversation_id,
+                exclude_indices=exclude,
             )
             for seg in result.segments:
                 if seg.index not in exclude:
@@ -372,17 +371,15 @@ class TypeEnumeratedSelectiveVariant(TypeEnumBase):
     one cue per type. Each cue retrieves top-5 (~10 + 20 = 30 segments).
     """
 
-    def __init__(self, store: SegmentStore,
-                 per_cue_top_k: int = 5,
-                 client: OpenAI | None = None):
+    def __init__(
+        self, store: SegmentStore, per_cue_top_k: int = 5, client: OpenAI | None = None
+    ):
         super().__init__(store, client)
         self.per_cue_top_k = per_cue_top_k
 
     def retrieve(self, question: str, conversation_id: str) -> TypeEnumResult:
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
@@ -398,15 +395,17 @@ class TypeEnumeratedSelectiveVariant(TypeEnumBase):
         for line in output.splitlines():
             line = line.strip()
             if line.upper().startswith("SELECTED:"):
-                rest = line[len("SELECTED:"):].strip()
+                rest = line[len("SELECTED:") :].strip()
                 selected_types = [t.strip() for t in rest.split(",") if t.strip()]
                 break
 
         for cue in cues[:4]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_cue_top_k,
-                conversation_id=conversation_id, exclude_indices=exclude,
+                cue_emb,
+                top_k=self.per_cue_top_k,
+                conversation_id=conversation_id,
+                exclude_indices=exclude,
             )
             for seg in result.segments:
                 if seg.index not in exclude:
@@ -438,24 +437,21 @@ class V2fPlusTypesVariant(TypeEnumBase):
     typed segments can contribute.
     """
 
-    def __init__(self, store: SegmentStore,
-                 per_cue_top_k: int = 3,
-                 client: OpenAI | None = None):
+    def __init__(
+        self, store: SegmentStore, per_cue_top_k: int = 3, client: OpenAI | None = None
+    ):
         super().__init__(store, client)
         self.per_cue_top_k = per_cue_top_k
 
     def retrieve(self, question: str, conversation_id: str) -> TypeEnumResult:
         # Stage 1: v2f (hop0 + 2 cues x top-10)
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
         v2f_context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
         v2f_prompt = META_V2F_PROMPT.format(
             question=question, context_section=v2f_context_section
@@ -466,8 +462,10 @@ class V2fPlusTypesVariant(TypeEnumBase):
         for cue in v2f_cues:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10,
-                conversation_id=conversation_id, exclude_indices=exclude,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
+                exclude_indices=exclude,
             )
             for seg in result.segments:
                 if seg.index not in exclude:
@@ -485,8 +483,10 @@ class V2fPlusTypesVariant(TypeEnumBase):
         for cue in type_cues:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_cue_top_k,
-                conversation_id=conversation_id, exclude_indices=exclude,
+                cue_emb,
+                top_k=self.per_cue_top_k,
+                conversation_id=conversation_id,
+                exclude_indices=exclude,
             )
             for seg in result.segments:
                 if seg.index not in exclude:
@@ -629,9 +629,7 @@ def evaluate_question(arch: TypeEnumBase, question: dict) -> dict:
     # Cosine top-max(BUDGETS)
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -682,15 +680,9 @@ def summarize(results: list[dict], arch_name: str, dataset: str) -> dict:
     summary["avg_total_retrieved"] = round(
         sum(r["total_arch_retrieved"] for r in results) / n, 1
     )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 2
-    )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 2
-    )
-    summary["avg_time_s"] = round(
-        sum(r["time_s"] for r in results) / n, 2
-    )
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 2)
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 2)
+    summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
     return summary
 
 
@@ -736,8 +728,10 @@ def run_variant_on_dataset(
 
     store, questions = load_dataset(ds_name)
     print(f"\n{'=' * 78}")
-    print(f"VARIANT={variant_name} | DATASET={ds_name} | "
-          f"n={len(questions)} questions, {len(store.segments)} segments")
+    print(
+        f"VARIANT={variant_name} | DATASET={ds_name} | "
+        f"n={len(questions)} questions, {len(store.segments)} segments"
+    )
     print(f"{'=' * 78}")
 
     arch = VARIANT_FACTORIES[variant_name](store)
@@ -745,22 +739,30 @@ def run_variant_on_dataset(
     results: list[dict] = []
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
-        print(f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
-              flush=True)
+        print(
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            flush=True,
+        )
         try:
             row = evaluate_question(arch, q)
             results.append(row)
 
             # Save incrementally per-question
             with open(out_path, "w") as f:
-                json.dump({
-                    "variant": variant_name,
-                    "dataset": ds_name,
-                    "results": results,
-                }, f, indent=2, default=str)
+                json.dump(
+                    {
+                        "variant": variant_name,
+                        "dataset": ds_name,
+                        "results": results,
+                    },
+                    f,
+                    indent=2,
+                    default=str,
+                )
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
 
         if (i + 1) % 5 == 0:
@@ -790,10 +792,12 @@ def run_variant_on_dataset(
             f"delta={summary[f'delta_r@{K}']:+.3f} "
             f"W/T/L={summary[f'W/T/L_r@{K}']}"
         )
-    print(f"  avg retrieved={summary['avg_total_retrieved']:.0f} "
-          f"llm={summary['avg_llm_calls']:.1f} "
-          f"embed={summary['avg_embed_calls']:.1f}")
-    print(f"\n  Per-category:")
+    print(
+        f"  avg retrieved={summary['avg_total_retrieved']:.0f} "
+        f"llm={summary['avg_llm_calls']:.1f} "
+        f"embed={summary['avg_embed_calls']:.1f}"
+    )
+    print("\n  Per-category:")
     for cat, c in by_cat.items():
         print(
             f"    {cat:28s} (n={c['n']}): "
@@ -840,8 +844,7 @@ def compare_to_v2f(all_runs: dict) -> dict:
                     "v2f_arch": v2f_summary[f"arch_r@{K}"],
                     "variant_arch": variant_summary[f"arch_r@{K}"],
                     "delta_variant_vs_v2f": round(
-                        variant_summary[f"arch_r@{K}"]
-                        - v2f_summary[f"arch_r@{K}"], 4
+                        variant_summary[f"arch_r@{K}"] - v2f_summary[f"arch_r@{K}"], 4
                     ),
                     "baseline": variant_summary[f"baseline_r@{K}"],
                 }
@@ -883,20 +886,27 @@ def print_comparison_table(comparisons: dict) -> None:
                     f"v2f={o['v2f_arch']:.3f} variant={o['variant_arch']:.3f} "
                     f"delta_v_vs_v2f={o['delta_variant_vs_v2f']:+.4f}"
                 )
-            print(f"  Per-category (r@20 | r@50 | delta vs v2f @20 | @50):")
-            print(f"    {'Category':<28s} {'n':>3s} "
-                  f"{'base20':>7s} {'v2f20':>7s} {'var20':>7s} {'d20':>7s}  "
-                  f"{'base50':>7s} {'v2f50':>7s} {'var50':>7s} {'d50':>7s}")
+            print("  Per-category (r@20 | r@50 | delta vs v2f @20 | @50):")
+            print(
+                f"    {'Category':<28s} {'n':>3s} "
+                f"{'base20':>7s} {'v2f20':>7s} {'var20':>7s} {'d20':>7s}  "
+                f"{'base50':>7s} {'v2f50':>7s} {'var50':>7s} {'d50':>7s}"
+            )
             for cat, cd in entry["per_category"].items():
                 r20 = cd["r@20"]
                 r50 = cd["r@50"]
+
                 def _f(x):
                     return f"{x:>7.3f}" if isinstance(x, (int, float)) else f"{'-':>7s}"
 
                 d20 = r20["delta_variant_vs_v2f"]
                 d50 = r50["delta_variant_vs_v2f"]
-                d20_s = f"{d20:>+7.3f}" if isinstance(d20, (int, float)) else f"{'-':>7s}"
-                d50_s = f"{d50:>+7.3f}" if isinstance(d50, (int, float)) else f"{'-':>7s}"
+                d20_s = (
+                    f"{d20:>+7.3f}" if isinstance(d20, (int, float)) else f"{'-':>7s}"
+                )
+                d50_s = (
+                    f"{d50:>+7.3f}" if isinstance(d50, (int, float)) else f"{'-':>7s}"
+                )
                 print(
                     f"    {cat:<28s} {cd['n']:>3d} "
                     f"{_f(r20['baseline'])} {_f(r20['v2f_arch'])} {_f(r20['variant_arch'])} {d20_s}  "
@@ -910,8 +920,10 @@ def print_comparison_table(comparisons: dict) -> None:
         "advanced_23q": ["quantitative_aggregation"],
     }
     print("\n" + "=" * 100)
-    print("KEY-CATEGORIES FOCUS (target: logic_constraint, completeness, "
-          "procedural, quantitative_aggregation)")
+    print(
+        "KEY-CATEGORIES FOCUS (target: logic_constraint, completeness, "
+        "procedural, quantitative_aggregation)"
+    )
     print("=" * 100)
     for variant_name, ds_map in comparisons.items():
         print(f"\n--- {variant_name} ---")
@@ -948,16 +960,18 @@ def main() -> None:
         description="Test constraint-type-enumerated cue generator variants"
     )
     parser.add_argument(
-        "--variant", type=str, default="all",
-        help="One of: type_enumerated, type_enumerated_selective, "
-             "v2f_plus_types, all",
+        "--variant",
+        type=str,
+        default="all",
+        help="One of: type_enumerated, type_enumerated_selective, v2f_plus_types, all",
     )
-    parser.add_argument("--list", action="store_true",
-                        help="List available variants")
-    parser.add_argument("--datasets", type=str, default="all",
-                        help="Comma-separated list or 'all'")
-    parser.add_argument("--force", action="store_true",
-                        help="Overwrite existing results")
+    parser.add_argument("--list", action="store_true", help="List available variants")
+    parser.add_argument(
+        "--datasets", type=str, default="all", help="Comma-separated list or 'all'"
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="Overwrite existing results"
+    )
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -993,9 +1007,7 @@ def main() -> None:
             if ds_name not in DATASETS:
                 print(f"Unknown dataset: {ds_name}")
                 continue
-            saved = run_variant_on_dataset(
-                variant_name, ds_name, force=args.force
-            )
+            saved = run_variant_on_dataset(variant_name, ds_name, force=args.force)
             all_runs[variant_name][ds_name] = saved
 
     # Build comparisons vs v2f and print
@@ -1016,7 +1028,9 @@ def main() -> None:
                 },
                 "comparisons_vs_v2f": comparisons,
             },
-            f, indent=2, default=str,
+            f,
+            indent=2,
+            default=str,
         )
     print(f"\nSaved combined summary: {summary_path}")
 

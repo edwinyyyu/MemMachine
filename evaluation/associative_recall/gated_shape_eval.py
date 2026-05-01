@@ -19,19 +19,16 @@ Dedicated caches (gatedTS_*) so concurrent agents cannot corrupt this run.
 Usage:
     uv run python gated_shape_eval.py
 """
+
 from __future__ import annotations
 
 import json
 import os
-import sys
 import time
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EmbeddingCache,
@@ -39,6 +36,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -126,9 +125,7 @@ class GatedTSEmbeddingCache(EmbeddingCache):
             except (json.JSONDecodeError, OSError):
                 existing = {}
         existing.update(self._new_entries)
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         with open(tmp, "w") as f:
             json.dump(existing, f)
         os.replace(tmp, self.cache_file)
@@ -171,9 +168,7 @@ class GatedTSLLMCache(LLMCache):
             except (json.JSONDecodeError, OSError):
                 existing = {}
         existing.update(self._new_entries)
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         with open(tmp, "w") as f:
             json.dump(existing, f)
         os.replace(tmp, self.cache_file)
@@ -318,27 +313,29 @@ def load_cached_originals() -> list[dict]:
     for src in src_rows:
         qi = src.get("question_index", -1)
         meta = src.get("metadata", {}) or {}
-        out.append({
-            "orig_row_index": qi,
-            "shape": ORIGINAL_SHAPE,
-            "conversation_id": src["conversation_id"],
-            "category": src["category"],
-            "question": src["question"],
-            "original_question": orig_q_lookup.get(qi, src["question"]),
-            "source_chat_ids": src["source_chat_ids"],
-            "num_source_turns": src["num_source_turns"],
-            "embed_calls": src.get("embed_calls", 0),
-            "llm_calls": src.get("llm_calls", 0),
-            "time_s": src.get("time_s", 0.0),
-            "fair_backfill": src["fair_backfill"],
-            "metadata": {
-                "confidences": meta.get("confidences", {}),
-                "reasoning": meta.get("reasoning", ""),
-                "firing_channels": meta.get("firing_channels", []),
-                "m_effective": meta.get("m_effective", {}),
-                "overlay": meta.get("overlay", {}),
-            },
-        })
+        out.append(
+            {
+                "orig_row_index": qi,
+                "shape": ORIGINAL_SHAPE,
+                "conversation_id": src["conversation_id"],
+                "category": src["category"],
+                "question": src["question"],
+                "original_question": orig_q_lookup.get(qi, src["question"]),
+                "source_chat_ids": src["source_chat_ids"],
+                "num_source_turns": src["num_source_turns"],
+                "embed_calls": src.get("embed_calls", 0),
+                "llm_calls": src.get("llm_calls", 0),
+                "time_s": src.get("time_s", 0.0),
+                "fair_backfill": src["fair_backfill"],
+                "metadata": {
+                    "confidences": meta.get("confidences", {}),
+                    "reasoning": meta.get("reasoning", ""),
+                    "firing_channels": meta.get("firing_channels", []),
+                    "m_effective": meta.get("m_effective", {}),
+                    "overlay": meta.get("overlay", {}),
+                },
+            }
+        )
     return out
 
 
@@ -363,9 +360,9 @@ def channel_fire_stats(rows: list[dict]) -> dict:
     n = len(rows)
     if n == 0:
         return {"n": 0}
-    fire: dict[str, int] = {ch: 0 for ch in SUPPLEMENT_NAMES}
-    contrib: dict[str, int] = {ch: 0 for ch in SUPPLEMENT_NAMES}
-    conf_sums: dict[str, float] = {ch: 0.0 for ch in SUPPLEMENT_NAMES}
+    fire: dict[str, int] = dict.fromkeys(SUPPLEMENT_NAMES, 0)
+    contrib: dict[str, int] = dict.fromkeys(SUPPLEMENT_NAMES, 0)
+    conf_sums: dict[str, float] = dict.fromkeys(SUPPLEMENT_NAMES, 0.0)
     firing_per_q: list[int] = []
     for r in rows:
         meta = r.get("metadata", {}) or {}
@@ -401,8 +398,10 @@ def channel_agreement_vs_original(
     rows_by_shape: dict[str, list[dict]],
 ) -> dict:
     """% of queries where firing-channel set matches ORIGINAL, per shape."""
-    orig = {r["orig_row_index"]: set(r["metadata"]["firing_channels"])
-            for r in rows_by_shape.get(ORIGINAL_SHAPE, [])}
+    orig = {
+        r["orig_row_index"]: set(r["metadata"]["firing_channels"])
+        for r in rows_by_shape.get(ORIGINAL_SHAPE, [])
+    }
     out: dict = {}
     for sh in SHAPES:
         rows = rows_by_shape.get(sh, [])
@@ -421,26 +420,27 @@ def channel_agreement_vs_original(
                 agree += 1
             # Cosine similarity of confidence vectors
             orig_row = next(
-                (x for x in rows_by_shape[ORIGINAL_SHAPE]
-                 if x["orig_row_index"] == key), None
+                (
+                    x
+                    for x in rows_by_shape[ORIGINAL_SHAPE]
+                    if x["orig_row_index"] == key
+                ),
+                None,
             )
             if orig_row is not None:
                 c_o = orig_row["metadata"].get("confidences", {}) or {}
                 c_s = r["metadata"].get("confidences", {}) or {}
-                v_o = np.array(
-                    [float(c_o.get(ch, 0.0)) for ch in SUPPLEMENT_NAMES]
-                )
-                v_s = np.array(
-                    [float(c_s.get(ch, 0.0)) for ch in SUPPLEMENT_NAMES]
-                )
+                v_o = np.array([float(c_o.get(ch, 0.0)) for ch in SUPPLEMENT_NAMES])
+                v_s = np.array([float(c_s.get(ch, 0.0)) for ch in SUPPLEMENT_NAMES])
                 nom = float(np.linalg.norm(v_o) * np.linalg.norm(v_s))
                 if nom > 1e-10:
                     conf_cos_sum += float(v_o @ v_s) / nom
                 else:
-                    conf_cos_sum += 1.0 if (
-                        np.linalg.norm(v_o) < 1e-10
-                        and np.linalg.norm(v_s) < 1e-10
-                    ) else 0.0
+                    conf_cos_sum += (
+                        1.0
+                        if (np.linalg.norm(v_o) < 1e-10 and np.linalg.norm(v_s) < 1e-10)
+                        else 0.0
+                    )
         out[sh] = {
             "n_compared": total,
             "exact_firing_set_match_pct": (
@@ -493,14 +493,8 @@ def render_markdown(
             drop20 = 0.0
             drop50 = 0.0
         else:
-            drop20 = (
-                orig_s.get("mean_arch_r@20", 0.0)
-                - s.get("mean_arch_r@20", 0.0)
-            )
-            drop50 = (
-                orig_s.get("mean_arch_r@50", 0.0)
-                - s.get("mean_arch_r@50", 0.0)
-            )
+            drop20 = orig_s.get("mean_arch_r@20", 0.0) - s.get("mean_arch_r@20", 0.0)
+            drop50 = orig_s.get("mean_arch_r@50", 0.0) - s.get("mean_arch_r@50", 0.0)
         lines.append(
             f"| {sh} | {s['n']} | {s['mean_arch_r@20']:.4f} | "
             f"{s['mean_arch_r@50']:.4f} | "
@@ -557,8 +551,7 @@ def render_markdown(
         "of the 5-dim channel confidence vector vs the original's.\n"
     )
     lines.append(
-        "| Shape | n | Exact firing-set match % | "
-        "Mean conf-vector cosine vs ORIGINAL |"
+        "| Shape | n | Exact firing-set match % | Mean conf-vector cosine vs ORIGINAL |"
     )
     lines.append("|---|---|---|---|")
     for sh in SHAPES:
@@ -572,9 +565,7 @@ def render_markdown(
         )
 
     # --- Sample confidence comparison for 2 queries ---
-    lines.append(
-        "\n## Sample: LLM confidences across shapes for 2 queries\n"
-    )
+    lines.append("\n## Sample: LLM confidences across shapes for 2 queries\n")
     sample_ids = [0, 1]  # first two originals
     by_idx_shape: dict[tuple[int, str], dict] = {}
     for sh_rows in rows_by_shape.values():
@@ -585,17 +576,11 @@ def render_markdown(
         orig_row = by_idx_shape.get((oi, ORIGINAL_SHAPE))
         if not orig_row:
             continue
+        lines.append(f"\n**Q{oi + 1} (original)**: {orig_row['original_question']}\n")
         lines.append(
-            f"\n**Q{oi + 1} (original)**: {orig_row['original_question']}\n"
+            "| Shape | Question | " + " | ".join(SUPPLEMENT_NAMES) + " | fired |"
         )
-        lines.append(
-            "| Shape | Question | "
-            + " | ".join(SUPPLEMENT_NAMES)
-            + " | fired |"
-        )
-        lines.append(
-            "|---|---|" + "---|" * (len(SUPPLEMENT_NAMES) + 1)
-        )
+        lines.append("|---|---|" + "---|" * (len(SUPPLEMENT_NAMES) + 1))
         for sh in (ORIGINAL_SHAPE, "CMD", "DRAFT", "META"):
             r = by_idx_shape.get((oi, sh))
             if not r:
@@ -617,9 +602,7 @@ def render_markdown(
         "Numbers for `meta_v2f` / `two_speaker_filter` / `keyword_router` "
         "are from `results/task_shape_adversarial.md`.\n"
     )
-    lines.append(
-        "| Architecture | ORIG | CMD | DRAFT | META | Worst drop |"
-    )
+    lines.append("| Architecture | ORIG | CMD | DRAFT | META | Worst drop |")
     lines.append("|---|---|---|---|---|---|")
     # Other arch numbers (K=50 arch_r, worst drop). Lifted verbatim.
     prev_rows = [
@@ -646,10 +629,7 @@ def render_markdown(
         f"{mt50:.4f} | {g_worst:+.4f} |"
     )
     for name, o, c, d, m, w in prev_rows:
-        lines.append(
-            f"| {name} | {o:.4f} | {c:.4f} | {d:.4f} | {m:.4f} | "
-            f"+{w:.4f} |"
-        )
+        lines.append(f"| {name} | {o:.4f} | {c:.4f} | {d:.4f} | {m:.4f} | +{w:.4f} |")
 
     # --- Verdict ---
     lines.append("\n## Verdict\n")
@@ -670,9 +650,7 @@ def render_markdown(
             "confidence scoring is also shape-sensitive; a different "
             "routing mechanism is needed."
         )
-    lines.append(
-        f"- Worst drop vs ORIGINAL @K=50: **{g_worst:+.4f}**\n"
-    )
+    lines.append(f"- Worst drop vs ORIGINAL @K=50: **{g_worst:+.4f}**\n")
     lines.append(f"- {verdict}\n")
 
     return "\n".join(lines)
@@ -685,9 +663,7 @@ def main() -> None:
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Load store
-    store = SegmentStore(
-        data_dir=DATA_DIR, npz_name="segments_extended.npz"
-    )
+    store = SegmentStore(data_dir=DATA_DIR, npz_name="segments_extended.npz")
     print(f"Loaded {len(store.segments)} segments", flush=True)
 
     # Load task-shape variants
@@ -708,9 +684,7 @@ def main() -> None:
 
     # Build gated_threshold_0.7 (primary)
     client = OpenAI(timeout=60.0, max_retries=3)
-    arch = GatedOverlay(
-        store, client=client, threshold=0.7, name="gated_threshold_0.7"
-    )
+    arch = GatedOverlay(store, client=client, threshold=0.7, name="gated_threshold_0.7")
 
     rows_by_shape: dict[str, list[dict]] = {
         ORIGINAL_SHAPE: originals,
@@ -728,10 +702,9 @@ def main() -> None:
             try:
                 row = evaluate_one(arch, q)
             except Exception as e:
-                print(
-                    f"  ERROR [{sh} {i+1}/{len(qs)}]: {e}", flush=True
-                )
+                print(f"  ERROR [{sh} {i + 1}/{len(qs)}]: {e}", flush=True)
                 import traceback
+
                 traceback.print_exc()
                 continue
             rows_by_shape[sh].append(row)
@@ -741,10 +714,8 @@ def main() -> None:
         arch.save_caches()
         n = len(rows_by_shape[sh])
         if n:
-            a20 = sum(r["fair_backfill"]["arch_r@20"]
-                      for r in rows_by_shape[sh]) / n
-            a50 = sum(r["fair_backfill"]["arch_r@50"]
-                      for r in rows_by_shape[sh]) / n
+            a20 = sum(r["fair_backfill"]["arch_r@20"] for r in rows_by_shape[sh]) / n
+            a50 = sum(r["fair_backfill"]["arch_r@50"] for r in rows_by_shape[sh]) / n
             print(
                 f"  {sh} (n={n}): a@20={a20:.4f} a@50={a50:.4f} "
                 f"({time.time() - t_sh:.1f}s)",
@@ -758,18 +729,15 @@ def main() -> None:
     )
 
     # Aggregate
-    shape_summary = {sh: per_shape_recall(rs)
-                     for sh, rs in rows_by_shape.items()}
-    fire_stats = {sh: channel_fire_stats(rs)
-                  for sh, rs in rows_by_shape.items()}
+    shape_summary = {sh: per_shape_recall(rs) for sh, rs in rows_by_shape.items()}
+    fire_stats = {sh: channel_fire_stats(rs) for sh, rs in rows_by_shape.items()}
     agreement = channel_agreement_vs_original(rows_by_shape)
 
     # Save raw
     raw = {
         "arch": "gated_threshold_0.7",
         "n_originals": len(rows_by_shape[ORIGINAL_SHAPE]),
-        "n_per_shape": {sh: len(rows_by_shape[sh])
-                        for sh in rows_by_shape},
+        "n_per_shape": {sh: len(rows_by_shape[sh]) for sh in rows_by_shape},
         "elapsed_s": round(elapsed, 2),
         "shape_summary": shape_summary,
         "channel_fire_stats": fire_stats,
@@ -781,9 +749,7 @@ def main() -> None:
         json.dump(raw, f, indent=2, default=str)
     print(f"Saved raw: {raw_path}", flush=True)
 
-    md = render_markdown(
-        rows_by_shape, shape_summary, fire_stats, agreement
-    )
+    md = render_markdown(rows_by_shape, shape_summary, fire_stats, agreement)
     md_path = RESULTS_DIR / "gated_shape.md"
     with open(md_path, "w") as f:
         f.write(md)

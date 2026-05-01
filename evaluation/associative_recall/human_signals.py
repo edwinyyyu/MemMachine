@@ -28,15 +28,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -443,9 +442,7 @@ class HumanSignalsV2f:
         conv_len = _conversation_length(self.store, conversation_id)
 
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
@@ -456,16 +453,16 @@ class HumanSignalsV2f:
             conv_len=conv_len,
         )
 
-        prompt = V2F_PROMPT.format(
-            question=question, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=question, context_section=context_section)
         output = self.llm_call(prompt)
         cues = _parse_cues(output)
 
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -664,7 +661,7 @@ def run_one(
             continue
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -673,6 +670,7 @@ def run_one(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
             continue
 
@@ -735,7 +733,9 @@ def run_one(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--variant", type=str, default=None,
+        "--variant",
+        type=str,
+        default=None,
         choices=[
             "v2f",
             "neighbors_v2f",
@@ -746,11 +746,15 @@ def main() -> None:
         help="Run a single variant (default: all four signal variants)",
     )
     parser.add_argument(
-        "--datasets", type=str, nargs="+", default=None,
+        "--datasets",
+        type=str,
+        nargs="+",
+        default=None,
         help="Datasets to run (default: all four)",
     )
     parser.add_argument(
-        "--force", action="store_true",
+        "--force",
+        action="store_true",
         help="Overwrite existing results instead of resuming",
     )
     args = parser.parse_args()
@@ -802,10 +806,7 @@ def print_final_table(all_summaries: dict, datasets: list[str]) -> None:
     print("\n" + "=" * 110)
     print(f"HUMAN SIGNALS SUMMARY  (fair K-budget at K={BUDGET})")
     print("=" * 110)
-    hdr = (
-        f"{'Variant':<26s} "
-        + " ".join(f"{ds:>14s}" for ds in datasets)
-    )
+    hdr = f"{'Variant':<26s} " + " ".join(f"{ds:>14s}" for ds in datasets)
     print(hdr)
     print("-" * len(hdr))
     for variant in all_summaries:

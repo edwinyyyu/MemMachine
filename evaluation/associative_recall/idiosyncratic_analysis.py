@@ -15,21 +15,16 @@ Question embeddings reuse the global EmbeddingCache if present.
 from __future__ import annotations
 
 import json
-import os
 import re
-from collections import Counter, defaultdict
-from dataclasses import dataclass, asdict
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import numpy as np
-
 from associative_recall import (
-    CACHE_DIR,
     DATA_DIR,
     EMBED_MODEL,
     EmbeddingCache,
-    SegmentStore,
 )
 
 HERE = Path(__file__).resolve().parent
@@ -41,15 +36,36 @@ RESULTS_DIR.mkdir(exist_ok=True)
 # touching that file).
 # ---------------------------------------------------------------------------
 ANAPHORIC_TOKENS = {
-    "that", "this", "those", "these",
-    "it", "they", "he", "she",
-    "him", "her", "his", "its",
-    "their", "them",
+    "that",
+    "this",
+    "those",
+    "these",
+    "it",
+    "they",
+    "he",
+    "she",
+    "him",
+    "her",
+    "his",
+    "its",
+    "their",
+    "them",
 }
 SHORT_RESPONSE_TOKENS = {
-    "yeah", "yes", "yep", "ok", "okay", "sure",
-    "no", "nope", "definitely", "exactly", "right",
-    "true", "false", "maybe",
+    "yeah",
+    "yes",
+    "yep",
+    "ok",
+    "okay",
+    "sure",
+    "no",
+    "nope",
+    "definitely",
+    "exactly",
+    "right",
+    "true",
+    "false",
+    "maybe",
 }
 UPDATE_MARKER_RE = re.compile(
     r"^(actually|wait|oh|scratch that|correction|on second thought|update|"
@@ -150,25 +166,119 @@ def compute_predictable_tags(
 # Surface / lexical features
 # ---------------------------------------------------------------------------
 STOPWORDS = {
-    "a", "an", "the", "and", "or", "but", "of", "in", "on", "at", "to", "from",
-    "for", "with", "by", "as", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "should", "could",
-    "may", "might", "can", "this", "that", "these", "those", "it", "its", "we",
-    "you", "i", "they", "them", "he", "she", "his", "her", "their", "our", "me",
-    "my", "your", "what", "which", "who", "whom", "whose", "when", "where", "why",
-    "how", "if", "then", "than", "also", "so", "just", "not", "no", "yes", "yeah",
-    "ok", "okay", "about", "there", "here", "out", "up", "down", "into", "over",
-    "under", "again", "very", "some", "any", "all", "more", "most", "much", "many",
-    "each", "every", "few", "other", "another", "own", "same", "such", "only",
-    "too", "both", "between",
+    "a",
+    "an",
+    "the",
+    "and",
+    "or",
+    "but",
+    "of",
+    "in",
+    "on",
+    "at",
+    "to",
+    "from",
+    "for",
+    "with",
+    "by",
+    "as",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "have",
+    "has",
+    "had",
+    "do",
+    "does",
+    "did",
+    "will",
+    "would",
+    "should",
+    "could",
+    "may",
+    "might",
+    "can",
+    "this",
+    "that",
+    "these",
+    "those",
+    "it",
+    "its",
+    "we",
+    "you",
+    "i",
+    "they",
+    "them",
+    "he",
+    "she",
+    "his",
+    "her",
+    "their",
+    "our",
+    "me",
+    "my",
+    "your",
+    "what",
+    "which",
+    "who",
+    "whom",
+    "whose",
+    "when",
+    "where",
+    "why",
+    "how",
+    "if",
+    "then",
+    "than",
+    "also",
+    "so",
+    "just",
+    "not",
+    "no",
+    "yes",
+    "yeah",
+    "ok",
+    "okay",
+    "about",
+    "there",
+    "here",
+    "out",
+    "up",
+    "down",
+    "into",
+    "over",
+    "under",
+    "again",
+    "very",
+    "some",
+    "any",
+    "all",
+    "more",
+    "most",
+    "much",
+    "many",
+    "each",
+    "every",
+    "few",
+    "other",
+    "another",
+    "own",
+    "same",
+    "such",
+    "only",
+    "too",
+    "both",
+    "between",
 }
 TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z\-']+")
 
 
 def _toks(text: str) -> set[str]:
-    return {
-        t.lower() for t in TOKEN_RE.findall(text) if t.lower() not in STOPWORDS
-    }
+    return {t.lower() for t in TOKEN_RE.findall(text) if t.lower() not in STOPWORDS}
 
 
 def jaccard(a: set, b: set) -> float:
@@ -473,12 +583,8 @@ def main() -> None:
             if idx is None:
                 continue
             sims.append(cosine(q_emb, store.embeddings[idx]))
-        e["mean_cos_retrieved_gold_to_q"] = (
-            float(np.mean(sims)) if sims else None
-        )
-        e["max_cos_retrieved_gold_to_q"] = (
-            float(np.max(sims)) if sims else None
-        )
+        e["mean_cos_retrieved_gold_to_q"] = float(np.mean(sims)) if sims else None
+        e["max_cos_retrieved_gold_to_q"] = float(np.max(sims)) if sims else None
 
     # --- For each miss, rank vs all segments in SAME conversation to see where it lands
     for e in idio:
@@ -497,13 +603,13 @@ def main() -> None:
         # rank of e["_seg_idx"]
         target_pos_arr = np.where(conv_idxs[order] == e["_seg_idx"])[0]
         e["rank_in_conv"] = int(target_pos_arr[0]) if target_pos_arr.size else None
-        e["conv_size"] = int(len(conv_idxs))
+        e["conv_size"] = len(conv_idxs)
 
     # --- Clustering on missed-turn embeddings
     # Use k=6 as a compromise
     N = M_norm.shape[0]
     k = min(6, max(2, N // 8))
-    if N >= k:
+    if k <= N:
         labels, centroids = kmeans_cosine(M_norm, k=k, seed=42)
     else:
         labels = np.zeros(N, dtype=int)
@@ -520,8 +626,18 @@ def main() -> None:
     #   implicit_reference: has pronouns/deictics missed by strict anaphoric (he/she/they/that appears anywhere)
     #   other: everything else
     DEICTIC = {
-        "here", "there", "then", "later", "earlier", "yesterday", "tomorrow",
-        "recently", "above", "below", "that one", "the same",
+        "here",
+        "there",
+        "then",
+        "later",
+        "earlier",
+        "yesterday",
+        "tomorrow",
+        "recently",
+        "above",
+        "below",
+        "that one",
+        "the same",
     }
     for e in idio:
         text = e["text"]
@@ -532,8 +648,18 @@ def main() -> None:
         mtok = e["miss_tok_count"]
         # detect pronouns/deictics anywhere in text
         has_internal_pronoun = any(
-            re.search(rf"\b{p}\b", text_lower) for p in (
-                "he", "she", "they", "them", "their", "that", "this", "these", "those", "it"
+            re.search(rf"\b{p}\b", text_lower)
+            for p in (
+                "he",
+                "she",
+                "they",
+                "them",
+                "their",
+                "that",
+                "this",
+                "these",
+                "those",
+                "it",
             )
         )
         has_deictic = any(d in text_lower for d in DEICTIC)
@@ -574,8 +700,7 @@ def main() -> None:
             ),
         },
         "turns": [
-            {k2: v2 for k2, v2 in e.items() if not k2.startswith("_")}
-            for e in idio
+            {k2: v2 for k2, v2 in e.items() if not k2.startswith("_")} for e in idio
         ],
         "clusters": {
             str(c): {
@@ -609,8 +734,8 @@ def main() -> None:
     md = []
     md.append("# Analysis A: Genuinely-Idiosyncratic Missed Turns\n")
     md.append(
-        f"Operational bucket: non-predictable by 7-regex heuristics AND "
-        f"q-category not in {{proactive, quantitative_aggregation, inference}}.\n"
+        "Operational bucket: non-predictable by 7-regex heuristics AND "
+        "q-category not in {proactive, quantitative_aggregation, inference}.\n"
     )
     md.append(
         f"- Total missed turns: **{all_missed_count}**\n"
@@ -635,22 +760,22 @@ def main() -> None:
         f"p10={np.percentile(wcs, 10):.0f}, p90={np.percentile(wcs, 90):.0f}, "
         f"min={wcs.min()}, max={wcs.max()}\n"
     )
-    md.append(f"### Role distribution\n")
+    md.append("### Role distribution\n")
     for r, c in roles.most_common():
-        md.append(f"- {r}: {c} ({100*c/len(idio):.1f}%)\n")
-    md.append(f"### Original failure-mode label\n")
+        md.append(f"- {r}: {c} ({100 * c / len(idio):.1f}%)\n")
+    md.append("### Original failure-mode label\n")
     for r, c in pfms.most_common():
-        md.append(f"- {r}: {c} ({100*c/len(idio):.1f}%)\n")
-    md.append(f"### Adjacency to retrieved turns\n")
+        md.append(f"- {r}: {c} ({100 * c / len(idio):.1f}%)\n")
+    md.append("### Adjacency to retrieved turns\n")
     md.append(
         f"- adjacent-to-retrieved at radius 1: {adj_r1} / {len(idio)} "
-        f"({100*adj_r1/len(idio):.1f}%)\n"
+        f"({100 * adj_r1 / len(idio):.1f}%)\n"
         f"- adjacent-to-retrieved at radius 2: {adj_r2} / {len(idio)} "
-        f"({100*adj_r2/len(idio):.1f}%)\n"
+        f"({100 * adj_r2 / len(idio):.1f}%)\n"
     )
-    md.append(f"### Q-category distribution\n")
+    md.append("### Q-category distribution\n")
     for r, c in qcats.most_common():
-        md.append(f"- {r}: {c} ({100*c/len(idio):.1f}%)\n")
+        md.append(f"- {r}: {c} ({100 * c / len(idio):.1f}%)\n")
 
     # Embedding story
     cos_miss_q = np.array([e["cosine_miss_to_q"] for e in idio])
@@ -675,10 +800,8 @@ def main() -> None:
             f"mean={cos_gold_present.mean():.3f}, "
             f"median={np.median(cos_gold_present):.3f}\n"
         )
-        gap = cos_gold_present.mean() - cos_miss_q[:len(cos_gold_present)].mean()
-        md.append(
-            f"- gap (retrieved_gold mean - missed mean): {gap:+.3f}\n"
-        )
+        gap = cos_gold_present.mean() - cos_miss_q[: len(cos_gold_present)].mean()
+        md.append(f"- gap (retrieved_gold mean - missed mean): {gap:+.3f}\n")
     md.append(
         f"- rank of missed turn within its own conversation (1536-D cosine to q): "
         f"mean={rank_in_conv.mean():.1f}, median={np.median(rank_in_conv):.0f}, "
@@ -700,18 +823,15 @@ def main() -> None:
         members = np.where(labels == c)[0]
         md.append(f"### Cluster {c} ({len(members)} turns)\n")
         md.append("**Top lift terms:** ")
-        md.append(
-            ", ".join(f"`{t}` ({s:.1f})" for t, s in cluster_terms[c])
-            + "\n"
-        )
+        md.append(", ".join(f"`{t}` ({s:.1f})" for t, s in cluster_terms[c]) + "\n")
         md.append("**Examples:**\n")
         for i in members[:3].tolist():
             e = idio[i]
             md.append(
                 f"- [{e['q_category']}] (conv `{e['conversation_id']}`, "
                 f"turn {e['turn_id']}, {e['role']}): "
-                f"\"{e['text'][:180]}\"\n"
-                f"  - question: \"{e['question'][:120]}\"\n"
+                f'"{e["text"][:180]}"\n'
+                f'  - question: "{e["question"][:120]}"\n'
             )
 
     # Failure-type classification counts
@@ -721,7 +841,7 @@ def main() -> None:
         "Rule-based from computed features (lexical overlap, cosine, length, pronouns):\n"
     )
     for t, c in ft_counts.most_common():
-        md.append(f"- {t}: {c} ({100*c/len(idio):.1f}%)\n")
+        md.append(f"- {t}: {c} ({100 * c / len(idio):.1f}%)\n")
 
     # Question concentration
     md.append("## 5. Question concentration\n")
@@ -738,9 +858,8 @@ def main() -> None:
         md.append(f"| {cid} | {qi} | {cnt} |\n")
 
     # Verdict
-    fixable = (
-        ft_counts.get("lexical_mismatch", 0)
-        + ft_counts.get("implicit_reference", 0)
+    fixable = ft_counts.get("lexical_mismatch", 0) + ft_counts.get(
+        "implicit_reference", 0
     )
     ceiling = ft_counts.get("topic_drift", 0) + ft_counts.get("other", 0)
     structural = ft_counts.get("structural_role", 0)
@@ -748,7 +867,7 @@ def main() -> None:
     md.append(
         f"- Plausibly fixable via existing cue-generation architectures "
         f"(v2f / chain_with_scratchpad): **{fixable} / {len(idio)}** "
-        f"({100*fixable/max(1,len(idio)):.1f}%)\n"
+        f"({100 * fixable / max(1, len(idio)):.1f}%)\n"
         f"  (lexical_mismatch has sibling-gold signal to piggy-back; "
         f"implicit_reference carries deictics that a small expand-with-prev-turn "
         f"rule would catch.)\n"
@@ -760,7 +879,7 @@ def main() -> None:
     md.append(
         f"- Likely retrieval ceiling (topic_drift + other, no surface or "
         f"paraphrase handle): **{ceiling} / {len(idio)}** "
-        f"({100*ceiling/max(1,len(idio)):.1f}%)\n"
+        f"({100 * ceiling / max(1, len(idio)):.1f}%)\n"
     )
     md.append(
         "\n**Key finding:** see mean cosine(missed, q) vs mean cosine(retrieved_gold, q) "

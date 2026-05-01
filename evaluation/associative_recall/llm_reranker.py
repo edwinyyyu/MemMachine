@@ -12,26 +12,21 @@ Usage:
     uv run python llm_reranker.py --all --verbose
 """
 
-import hashlib
 import json
 import sys
-import time
 from collections import defaultdict
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
-    EMBED_MODEL,
     EmbeddingCache,
     LLMCache,
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -225,7 +220,8 @@ class LLMReranker:
             except Exception as e:
                 last_err = e
                 import time as _time
-                _time.sleep(2 ** attempt)
+
+                _time.sleep(2**attempt)
         raise last_err  # type: ignore[misc]
 
     def save_caches(self) -> None:
@@ -289,10 +285,9 @@ class LLMReranker:
         """Rerank a single batch of segments."""
         if self.variant == "listwise":
             return self._rerank_listwise(question, segments, top_k)
-        elif self.variant == "batch_score":
+        if self.variant == "batch_score":
             return self._rerank_batch_score(question, segments, top_k)
-        else:
-            raise ValueError(f"Unknown rerank variant: {self.variant}")
+        raise ValueError(f"Unknown rerank variant: {self.variant}")
 
     def _rerank_listwise(
         self,
@@ -351,9 +346,7 @@ class LLMReranker:
 
         return [seg for _, seg in indexed]
 
-    def _parse_rank_response(
-        self, response: str, num_segments: int
-    ) -> list[int]:
+    def _parse_rank_response(self, response: str, num_segments: int) -> list[int]:
         """Parse RANK: <number> lines from response."""
         indices = []
         for line in response.strip().split("\n"):
@@ -423,9 +416,7 @@ def reconstruct_segments(
 # ---------------------------------------------------------------------------
 # Evaluation helpers
 # ---------------------------------------------------------------------------
-def compute_recall(
-    retrieved_turn_ids: set[int], source_turn_ids: set[int]
-) -> float:
+def compute_recall(retrieved_turn_ids: set[int], source_turn_ids: set[int]) -> float:
     if not source_turn_ids:
         return 1.0
     return len(retrieved_turn_ids & source_turn_ids) / len(source_turn_ids)
@@ -448,9 +439,7 @@ def evaluate_reranked(
         orig_ids = {s.turn_id for s in original_segments[:budget]}
         rerank_ids = {s.turn_id for s in reranked_segments[:budget]}
         original_recalls[f"r@{budget}"] = compute_recall(orig_ids, source_ids)
-        reranked_recalls[f"r@{budget}"] = compute_recall(
-            rerank_ids, source_ids
-        )
+        reranked_recalls[f"r@{budget}"] = compute_recall(rerank_ids, source_ids)
 
     # Also compute baseline (cosine) recalls — load from saved results
     # r@actual for the whole pool
@@ -496,12 +485,8 @@ def summarize_rerank(
         orig_mean = sum(orig_vals) / n
         rerank_mean = sum(rerank_vals) / n
 
-        wins = sum(
-            1 for o, r in zip(orig_vals, rerank_vals) if r > o + 0.001
-        )
-        losses = sum(
-            1 for o, r in zip(orig_vals, rerank_vals) if o > r + 0.001
-        )
+        wins = sum(1 for o, r in zip(orig_vals, rerank_vals) if r > o + 0.001)
+        losses = sum(1 for o, r in zip(orig_vals, rerank_vals) if o > r + 0.001)
         ties = n - wins - losses
 
         summary[f"original_{label}"] = round(orig_mean, 4)
@@ -509,18 +494,14 @@ def summarize_rerank(
         summary[f"delta_{label}"] = round(rerank_mean - orig_mean, 4)
         summary[f"W/T/L_{label}"] = f"{wins}/{ties}/{losses}"
 
-    summary["avg_pool_size"] = round(
-        sum(r["total_in_pool"] for r in results) / n, 1
-    )
+    summary["avg_pool_size"] = round(sum(r["total_in_pool"] for r in results) / n, 1)
     summary["avg_original_llm"] = round(
         sum(r["original_llm_calls"] for r in results) / n, 1
     )
     summary["avg_rerank_llm"] = round(
         sum(r["rerank_llm_calls"] for r in results) / n, 1
     )
-    summary["avg_total_llm"] = round(
-        sum(r["total_llm_calls"] for r in results) / n, 1
-    )
+    summary["avg_total_llm"] = round(sum(r["total_llm_calls"] for r in results) / n, 1)
 
     return summary
 
@@ -538,12 +519,8 @@ def summarize_by_category(results: list[dict]) -> dict[str, dict]:
         rerank_vals = [r["reranked_recalls"]["r@20"] for r in cat_results]
         orig_mean = sum(orig_vals) / n
         rerank_mean = sum(rerank_vals) / n
-        wins = sum(
-            1 for o, r in zip(orig_vals, rerank_vals) if r > o + 0.001
-        )
-        losses = sum(
-            1 for o, r in zip(orig_vals, rerank_vals) if o > r + 0.001
-        )
+        wins = sum(1 for o, r in zip(orig_vals, rerank_vals) if r > o + 0.001)
+        losses = sum(1 for o, r in zip(orig_vals, rerank_vals) if o > r + 0.001)
         cat_summaries[cat] = {
             "n": n,
             "original_r@20": round(orig_mean, 4),
@@ -567,12 +544,12 @@ def run_rerank_evaluation(
     verbose: bool = False,
 ) -> tuple[list[dict], dict]:
     """Run architecture + reranker on all questions."""
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(
         f"RERANK: {arch_name} + {reranker.variant} | "
         f"{benchmark_label} | {len(questions)} questions"
     )
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     results = []
     for i, question in enumerate(questions):
@@ -580,7 +557,7 @@ def run_rerank_evaluation(
         conv_id = question["conversation_id"]
         q_short = q_text[:55]
         print(
-            f"  [{i+1}/{len(questions)}] {question.get('category', '?')}: "
+            f"  [{i + 1}/{len(questions)}] {question.get('category', '?')}: "
             f"{q_short}...",
             flush=True,
         )
@@ -601,9 +578,7 @@ def run_rerank_evaluation(
 
             # Step 2: Rerank
             reranker.reset_counters()
-            reranked_segments = reranker.rerank(
-                q_text, original_segments, top_k=20
-            )
+            reranked_segments = reranker.rerank(q_text, original_segments, top_k=20)
             rerank_llm_calls = reranker.llm_calls
 
             # Step 3: Evaluate
@@ -628,9 +603,7 @@ def run_rerank_evaluation(
                 orig_r20 = result["original_recalls"]["r@20"]
                 rerank_r20 = result["reranked_recalls"]["r@20"]
                 delta = rerank_r20 - orig_r20
-                marker = (
-                    "W" if delta > 0.001 else ("L" if delta < -0.001 else "T")
-                )
+                marker = "W" if delta > 0.001 else ("L" if delta < -0.001 else "T")
                 print(
                     f"    pool={len(original_segments)}, "
                     f"orig_r@20={orig_r20:.3f}, "
@@ -652,9 +625,7 @@ def run_rerank_evaluation(
     arch_instance.save_caches()
     reranker.save_caches()
 
-    summary = summarize_rerank(
-        results, arch_name, reranker.variant, benchmark_label
-    )
+    summary = summarize_rerank(results, arch_name, reranker.variant, benchmark_label)
 
     # Print compact summary
     print(f"\n--- {arch_name} + {reranker.variant} on {benchmark_label} ---")
@@ -674,7 +645,7 @@ def run_rerank_evaluation(
     )
 
     cat_summaries = summarize_by_category(results)
-    print(f"\n  Per-category (r@20):")
+    print("\n  Per-category (r@20):")
     for cat, cs in cat_summaries.items():
         print(
             f"    {cat}: delta={cs['delta_r@20']:+.3f} "
@@ -689,9 +660,9 @@ def print_comparison_table(
     benchmark: str,
 ):
     """Print comparison table: original vs reranked vs baseline."""
-    print(f"\n{'='*100}")
+    print(f"\n{'=' * 100}")
     print(f"COMPARISON TABLE — {benchmark.upper()}")
-    print(f"{'='*100}")
+    print(f"{'=' * 100}")
 
     # Load baseline from bestshot results for reference
     baseline_r20 = None
@@ -750,9 +721,9 @@ def print_cost_benefit_table(
     benchmark: str,
 ):
     """Print cost-benefit analysis: is reranking worth the extra LLM cost?"""
-    print(f"\n{'='*100}")
+    print(f"\n{'=' * 100}")
     print(f"COST-BENEFIT ANALYSIS — {benchmark.upper()}")
-    print(f"{'='*100}")
+    print(f"{'=' * 100}")
 
     # Load bestshot summaries for comparison
     bestshot_file = RESULTS_DIR / "bestshot_all_summaries.json"
@@ -762,8 +733,7 @@ def print_cost_benefit_table(
             bestshot_summaries = json.load(f)
 
     print(
-        f"\n{'System':<45s} {'r@20':>8s} {'r@50':>8s} "
-        f"{'LLM calls':>10s} {'Pool':>6s}"
+        f"\n{'System':<45s} {'r@20':>8s} {'r@50':>8s} {'LLM calls':>10s} {'Pool':>6s}"
     )
     print("-" * 80)
 
@@ -793,10 +763,7 @@ def print_cost_benefit_table(
             llm = s.get("avg_total_llm", 0)
             pool = s.get("avg_pool_size", 0)
             label = f"{arch_name} + {variant}"
-            print(
-                f"  {label:<43s} "
-                f"{r20:>7.3f}  {r50:>7.3f}  {llm:>9.1f}  {pool:>5.0f}"
-            )
+            print(f"  {label:<43s} {r20:>7.3f}  {r50:>7.3f}  {llm:>9.1f}  {pool:>5.0f}")
 
 
 # ---------------------------------------------------------------------------
@@ -876,29 +843,15 @@ def main() -> None:
 
     # Import best_shot architecture classes
     from best_shot import (
-        DecomposeThenRetrieve,
-        FlatMultiCue,
-        FrontierV2Iterative,
-        Interleaved,
-        MetaV2f,
-        RetrieveThenDecompose,
-        V15Control,
         build_architectures,
     )
 
     # Load LoCoMo data
     with open(DATA_DIR / "questions_extended.json") as f:
         all_questions = json.load(f)
-    locomo_store = SegmentStore(
-        data_dir=DATA_DIR, npz_name="segments_extended.npz"
-    )
-    locomo_qs = [
-        q for q in all_questions if q.get("benchmark") == "locomo"
-    ][:30]
-    print(
-        f"LoCoMo: {len(locomo_qs)} questions, "
-        f"{len(locomo_store.segments)} segments"
-    )
+    locomo_store = SegmentStore(data_dir=DATA_DIR, npz_name="segments_extended.npz")
+    locomo_qs = [q for q in all_questions if q.get("benchmark") == "locomo"][:30]
+    print(f"LoCoMo: {len(locomo_qs)} questions, {len(locomo_store.segments)} segments")
 
     # Load synthetic data
     synth_store = None
@@ -907,9 +860,7 @@ def main() -> None:
     if synth_path.exists():
         with open(synth_path) as f:
             synth_qs = json.load(f)
-        synth_store = SegmentStore(
-            data_dir=DATA_DIR, npz_name="segments_synthetic.npz"
-        )
+        synth_store = SegmentStore(data_dir=DATA_DIR, npz_name="segments_synthetic.npz")
         print(
             f"Synthetic: {len(synth_qs)} questions, "
             f"{len(synth_store.segments)} segments"
@@ -933,9 +884,7 @@ def main() -> None:
 
             # Load existing baseline results for this arch
             baseline_results = None
-            baseline_file = (
-                RESULTS_DIR / f"bestshot_{arch_name}_locomo_30q.json"
-            )
+            baseline_file = RESULTS_DIR / f"bestshot_{arch_name}_locomo_30q.json"
             if baseline_file.exists():
                 with open(baseline_file) as f:
                     baseline_data = json.load(f)
@@ -943,8 +892,7 @@ def main() -> None:
 
             for variant in variants:
                 result_file = (
-                    RESULTS_DIR
-                    / f"rerank_{variant}_{arch_name}_locomo_30q.json"
+                    RESULTS_DIR / f"rerank_{variant}_{arch_name}_locomo_30q.json"
                 )
                 if result_file.exists() and not args.force:
                     print(
@@ -988,11 +936,7 @@ def main() -> None:
                 all_summaries[arch_name][key] = summary
 
     # Run on synthetic
-    if (
-        not args.locomo_only
-        and synth_store is not None
-        and synth_qs
-    ):
+    if not args.locomo_only and synth_store is not None and synth_qs:
         from best_shot import build_architectures as build_archs
 
         synth_archs = build_archs(synth_store)
@@ -1004,9 +948,7 @@ def main() -> None:
 
             # Load existing baseline results
             baseline_results = None
-            baseline_file = (
-                RESULTS_DIR / f"bestshot_{arch_name}_synthetic_19q.json"
-            )
+            baseline_file = RESULTS_DIR / f"bestshot_{arch_name}_synthetic_19q.json"
             if baseline_file.exists():
                 with open(baseline_file) as f:
                     baseline_data = json.load(f)
@@ -1014,8 +956,7 @@ def main() -> None:
 
             for variant in variants:
                 result_file = (
-                    RESULTS_DIR
-                    / f"rerank_{variant}_{arch_name}_synthetic_19q.json"
+                    RESULTS_DIR / f"rerank_{variant}_{arch_name}_synthetic_19q.json"
                 )
                 if result_file.exists() and not args.force:
                     print(
@@ -1060,10 +1001,7 @@ def main() -> None:
 
     # Print comparison tables
     for benchmark in ["locomo_30q", "synthetic_19q"]:
-        has_data = any(
-            any(benchmark in k for k in v)
-            for v in all_summaries.values()
-        )
+        has_data = any(any(benchmark in k for k in v) for v in all_summaries.values())
         if has_data:
             print_comparison_table(all_summaries, benchmark)
             print_cost_benefit_table(all_summaries, benchmark)

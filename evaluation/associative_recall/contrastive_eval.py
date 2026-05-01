@@ -18,12 +18,16 @@ from __future__ import annotations
 import json
 import sys
 import time
-from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 from associative_recall import Segment, SegmentStore
+from contrastive_retrieval import (
+    ContrastiveOnly,
+    ContrastiveV2F,
+    CosineBaseline,
+    V2FReference,
+)
+from dotenv import load_dotenv
 from fair_backfill_eval import (
     BUDGETS,
     DATA_DIR,
@@ -31,12 +35,6 @@ from fair_backfill_eval import (
     fair_backfill_evaluate,
     summarize,
     summarize_by_category,
-)
-from contrastive_retrieval import (
-    ContrastiveOnly,
-    ContrastiveV2F,
-    CosineBaseline,
-    V2FReference,
 )
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -120,9 +118,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -163,7 +159,7 @@ def run_one(arch_name: str, arch, dataset: str, questions: list[dict]):
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -211,9 +207,7 @@ def _category_deltas(
     base_cb = (
         all_summaries.get(base_arch, {}).get(dataset, {}).get("category_breakdown", {})
     )
-    cb = (
-        all_summaries.get(arch_name, {}).get(dataset, {}).get("category_breakdown", {})
-    )
+    cb = all_summaries.get(arch_name, {}).get(dataset, {}).get("category_breakdown", {})
     for cat, row in cb.items():
         base_row = base_cb.get(cat)
         if not base_row:
@@ -247,12 +241,8 @@ def render_markdown(
 
     # Recall table
     lines.append("## Recall table (arch_r@K, fair-backfill)")
-    lines.append(
-        "| Dataset | K | " + " | ".join(arch_names) + " |"
-    )
-    lines.append(
-        "|---------|---|" + "|".join(["------:"] * len(arch_names)) + "|"
-    )
+    lines.append("| Dataset | K | " + " | ".join(arch_names) + " |")
+    lines.append("|---------|---|" + "|".join(["------:"] * len(arch_names)) + "|")
     for ds in DATASETS:
         for K in BUDGETS:
             cells = []
@@ -267,9 +257,7 @@ def render_markdown(
     lines.append(f"## Deltas vs `{base}` (arch_r@K)")
     others = [a for a in arch_names if a != base]
     lines.append("| Dataset | K | " + " | ".join(others) + " |")
-    lines.append(
-        "|---------|---|" + "|".join(["------:"] * len(others)) + "|"
-    )
+    lines.append("|---------|---|" + "|".join(["------:"] * len(others)) + "|")
     for ds in DATASETS:
         for K in BUDGETS:
             base_s = all_summaries.get(base, {}).get(ds, {}).get("summary")
@@ -290,9 +278,7 @@ def render_markdown(
     # W/T/L vs cosine baseline (fair-backfill 'delta_r@K' is vs cosine)
     lines.append("## W/T/L vs cosine baseline (delta_r@K)")
     lines.append("| Dataset | K | " + " | ".join(arch_names) + " |")
-    lines.append(
-        "|---------|---|" + "|".join(["------:"] * len(arch_names)) + "|"
-    )
+    lines.append("|---------|---|" + "|".join(["------:"] * len(arch_names)) + "|")
     for ds in DATASETS:
         for K in BUDGETS:
             cells = []
@@ -319,13 +305,9 @@ def render_markdown(
 
     # Category breakdown (locomo_30q, K=50) — gainers vs losers
     lines.append("## Top 2 gaining / losing categories (locomo_30q, r@50)")
-    lines.append(
-        "For each contrastive variant, top 2 categories by delta vs `v2f`."
-    )
+    lines.append("For each contrastive variant, top 2 categories by delta vs `v2f`.")
     for arch in others:
-        deltas = _category_deltas(
-            all_summaries, arch, base, "locomo_30q", 50
-        )
+        deltas = _category_deltas(all_summaries, arch, base, "locomo_30q", 50)
         if not deltas:
             continue
         deltas.sort(key=lambda x: x[2], reverse=True)
@@ -347,17 +329,15 @@ def render_markdown(
         "`cos_d` = cosine with distractor-probe; `score` = cos_a − α·cos_d."
     )
     v2f_rows = all_results.get("v2f", {}).get("locomo_30q", [])
-    cv_rows = all_results.get(
-        f"contrast_v2f_a{alpha_str(0.5)}", {}
-    ).get("locomo_30q", [])
+    cv_rows = all_results.get(f"contrast_v2f_a{alpha_str(0.5)}", {}).get(
+        "locomo_30q", []
+    )
     for i in range(min(3, len(cv_rows))):
         cv = cv_rows[i]
         v2f_r = v2f_rows[i] if i < len(v2f_rows) else None
         lines.append(f"\n### Question: _{cv['question']}_")
         lines.append(f"- category: `{cv['category']}`")
-        lines.append(
-            f"- distractor_probe: _{cv.get('distractor_probe', '')}_"
-        )
+        lines.append(f"- distractor_probe: _{cv.get('distractor_probe', '')}_")
         gold = set(cv.get("source_chat_ids", []))
         lines.append(f"- gold turn_ids: {sorted(gold)}")
 
@@ -393,9 +373,7 @@ def render_markdown(
 
     # Verdict scaffolding
     lines.append("## Verdict")
-    lines.append(
-        "Apply the decision rules from the brief:"
-    )
+    lines.append("Apply the decision rules from the brief:")
     lines.append(
         "1. If any `contrast_v2f_a*` beats `v2f` at any (ds, K) — clean win, "
         "note best α."
@@ -478,9 +456,7 @@ def main() -> None:
 
         for arch_name in arch_names:
             arch = build_arch(arch_name, store)
-            results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(arch_name, arch, ds_name, questions)
 
             out_path = RESULTS_DIR / f"contrast_{arch_name}_{ds_name}.json"
             with open(out_path, "w") as f:

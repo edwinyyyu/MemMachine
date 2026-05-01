@@ -28,9 +28,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -39,6 +36,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -175,8 +174,7 @@ class HybridBase:
         self.embed_calls += 1
         return embedding
 
-    def llm_call(self, prompt: str, model: str = MODEL,
-                 max_tokens: int = 2000) -> str:
+    def llm_call(self, prompt: str, model: str = MODEL, max_tokens: int = 2000) -> str:
         cached = self.llm_cache.get(model, prompt)
         if cached is not None:
             self.llm_calls += 1
@@ -209,8 +207,9 @@ class HybridResult:
     metadata: dict = field(default_factory=dict)
 
 
-def _format_segments(segments: list[Segment], max_items: int = 12,
-                     max_chars: int = 250) -> str:
+def _format_segments(
+    segments: list[Segment], max_items: int = 12, max_chars: int = 250
+) -> str:
     """Format segments chronologically."""
     if not segments:
         return "(no content retrieved yet)"
@@ -261,11 +260,9 @@ def _build_context_section(
     if new_segments:
         latest_lines = []
         for seg in sorted(new_segments, key=lambda s: s.turn_id)[:6]:
-            latest_lines.append(
-                f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:200]}"
-            )
-        context_section += (
-            "\n\nMOST RECENTLY FOUND (last hop):\n" + "\n".join(latest_lines)
+            latest_lines.append(f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:200]}")
+        context_section += "\n\nMOST RECENTLY FOUND (last hop):\n" + "\n".join(
+            latest_lines
         )
     if previous_cues:
         context_section += (
@@ -365,17 +362,13 @@ class V2fBaseline(HybridBase):
     def retrieve(self, question: str, conversation_id: str) -> HybridResult:
         # Hop 0: embed question, retrieve top-10
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude_indices = {s.index for s in all_segments}
 
         # Single LLM call for cues
         context_section = _build_context_section(all_segments)
-        prompt = V2F_PROMPT.format(
-            question=question, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=question, context_section=context_section)
         output = self.llm_call(prompt)
         cues = _parse_cues(output)
 
@@ -383,7 +376,9 @@ class V2fBaseline(HybridBase):
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude_indices,
             )
             for seg in result.segments:
@@ -417,9 +412,7 @@ class HybridV2fGenCheck(HybridBase):
 
         # Step 1: Initial retrieval
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude_indices = {s.index for s in all_segments}
 
@@ -437,7 +430,9 @@ class HybridV2fGenCheck(HybridBase):
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude_indices,
             )
             for seg in result.segments:
@@ -462,7 +457,9 @@ class HybridV2fGenCheck(HybridBase):
             for gap in gaps[:2]:
                 gap_emb = self.embed_text(gap)
                 result = self.store.search(
-                    gap_emb, top_k=10, conversation_id=conversation_id,
+                    gap_emb,
+                    top_k=10,
+                    conversation_id=conversation_id,
                     exclude_indices=exclude_indices,
                 )
                 for seg in result.segments:
@@ -501,9 +498,7 @@ class V2fWithDaydream(HybridBase):
     def retrieve(self, question: str, conversation_id: str) -> HybridResult:
         # Step 1-2: Standard v2f
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude_indices = {s.index for s in all_segments}
 
@@ -517,7 +512,9 @@ class V2fWithDaydream(HybridBase):
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude_indices,
             )
             for seg in result.segments:
@@ -528,8 +525,7 @@ class V2fWithDaydream(HybridBase):
         # Step 3: Daydream -- tangential exploration (1 short LLM call)
         # Summarize retrieved topics for the daydream prompt
         topic_summary = "; ".join(
-            seg.text[:80]
-            for seg in sorted(all_segments[:8], key=lambda s: s.turn_id)
+            seg.text[:80] for seg in sorted(all_segments[:8], key=lambda s: s.turn_id)
         )
         daydream_prompt = DAYDREAM_PROMPT.format(
             question=question, topic_summary=topic_summary
@@ -549,7 +545,9 @@ class V2fWithDaydream(HybridBase):
         if daydream_cue:
             dd_emb = self.embed_text(daydream_cue)
             result = self.store.search(
-                dd_emb, top_k=10, conversation_id=conversation_id,
+                dd_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude_indices,
             )
             for seg in result.segments:
@@ -586,9 +584,7 @@ class V2fWithNegativeSpace(HybridBase):
         query_emb = self.embed_text(question)
         query_norm = query_emb / max(np.linalg.norm(query_emb), 1e-10)
 
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude_indices = {s.index for s in all_segments}
 
@@ -602,7 +598,9 @@ class V2fWithNegativeSpace(HybridBase):
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude_indices,
             )
             for seg in result.segments:
@@ -626,7 +624,9 @@ class V2fWithNegativeSpace(HybridBase):
         # Retrieve with residual vector
         ns_new: list[Segment] = []
         result = self.store.search(
-            residual, top_k=10, conversation_id=conversation_id,
+            residual,
+            top_k=10,
+            conversation_id=conversation_id,
             exclude_indices=exclude_indices,
         )
         for seg in result.segments:
@@ -667,9 +667,7 @@ class FullHybrid(HybridBase):
         # Step 1: Initial retrieval
         query_emb = self.embed_text(question)
         query_norm = query_emb / max(np.linalg.norm(query_emb), 1e-10)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude_indices = {s.index for s in all_segments}
 
@@ -685,7 +683,9 @@ class FullHybrid(HybridBase):
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude_indices,
             )
             for seg in result.segments:
@@ -707,7 +707,9 @@ class FullHybrid(HybridBase):
             for gap in gaps[:2]:
                 gap_emb = self.embed_text(gap)
                 result = self.store.search(
-                    gap_emb, top_k=10, conversation_id=conversation_id,
+                    gap_emb,
+                    top_k=10,
+                    conversation_id=conversation_id,
                     exclude_indices=exclude_indices,
                 )
                 for seg in result.segments:
@@ -727,7 +729,9 @@ class FullHybrid(HybridBase):
 
         ns_new: list[Segment] = []
         result = self.store.search(
-            residual, top_k=10, conversation_id=conversation_id,
+            residual,
+            top_k=10,
+            conversation_id=conversation_id,
             exclude_indices=exclude_indices,
         )
         for seg in result.segments:
@@ -760,9 +764,7 @@ class V2fWithBothDaydreams(HybridBase):
         query_emb = self.embed_text(question)
         query_norm = query_emb / max(np.linalg.norm(query_emb), 1e-10)
 
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude_indices = {s.index for s in all_segments}
 
@@ -776,7 +778,9 @@ class V2fWithBothDaydreams(HybridBase):
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude_indices,
             )
             for seg in result.segments:
@@ -786,8 +790,7 @@ class V2fWithBothDaydreams(HybridBase):
 
         # Step 3a: LLM daydream
         topic_summary = "; ".join(
-            seg.text[:80]
-            for seg in sorted(all_segments[:8], key=lambda s: s.turn_id)
+            seg.text[:80] for seg in sorted(all_segments[:8], key=lambda s: s.turn_id)
         )
         daydream_prompt = DAYDREAM_PROMPT.format(
             question=question, topic_summary=topic_summary
@@ -802,7 +805,9 @@ class V2fWithBothDaydreams(HybridBase):
         if daydream_cue:
             dd_emb = self.embed_text(daydream_cue)
             result = self.store.search(
-                dd_emb, top_k=10, conversation_id=conversation_id,
+                dd_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude_indices,
             )
             for seg in result.segments:
@@ -822,7 +827,9 @@ class V2fWithBothDaydreams(HybridBase):
 
         ns_new: list[Segment] = []
         result = self.store.search(
-            residual, top_k=10, conversation_id=conversation_id,
+            residual,
+            top_k=10,
+            conversation_id=conversation_id,
             exclude_indices=exclude_indices,
         )
         for seg in result.segments:
@@ -846,8 +853,7 @@ class V2fWithBothDaydreams(HybridBase):
 # ===========================================================================
 # Evaluation harness
 # ===========================================================================
-def compute_recall(retrieved_turn_ids: set[int],
-                   source_turn_ids: set[int]) -> float:
+def compute_recall(retrieved_turn_ids: set[int], source_turn_ids: set[int]) -> float:
     if not source_turn_ids:
         return 1.0
     return len(retrieved_turn_ids & source_turn_ids) / len(source_turn_ids)
@@ -972,12 +978,8 @@ def summarize(results: list[dict], variant_name: str, benchmark: str) -> dict:
     summary["avg_total_retrieved"] = round(
         sum(r["total_retrieved"] for r in results) / n, 1
     )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1
-    )
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
     summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
 
     return summary
@@ -1017,18 +1019,18 @@ def run_variant(
     verbose: bool = False,
 ) -> tuple[list[dict], dict]:
     """Run one variant, return (results, summary)."""
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(
         f"VARIANT: {variant_name} | BENCHMARK: {benchmark_label} | "
         f"{len(questions)} questions"
     )
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     results = []
     for i, question in enumerate(questions):
         q_short = question["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {question.get('category', '?')}: "
+            f"  [{i + 1}/{len(questions)}] {question.get('category', '?')}: "
             f"{q_short}...",
             flush=True,
         )
@@ -1038,6 +1040,7 @@ def run_variant(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -1065,7 +1068,7 @@ def run_variant(
     # Category breakdown
     cat_breakdown = summarize_by_category(results)
     if cat_breakdown:
-        print(f"\n  Per-category r@20 / r@50:")
+        print("\n  Per-category r@20 / r@50:")
         for cat, vals in sorted(cat_breakdown.items()):
             print(
                 f"    {cat:20s} ({vals['n']}q): "
@@ -1113,18 +1116,24 @@ def main():
 
     parser = argparse.ArgumentParser(description="Hybrid retrieval experiments")
     parser.add_argument("--arch", type=str, help="Architecture name")
-    parser.add_argument("--dataset", type=str, default="locomo_30q",
-                        choices=list(DATASETS.keys()),
-                        help="Dataset to use")
-    parser.add_argument("--all", action="store_true",
-                        help="Run all architectures")
-    parser.add_argument("--all-datasets", action="store_true",
-                        help="Run on all datasets")
-    parser.add_argument("--list", action="store_true",
-                        help="List available architectures")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="locomo_30q",
+        choices=list(DATASETS.keys()),
+        help="Dataset to use",
+    )
+    parser.add_argument("--all", action="store_true", help="Run all architectures")
+    parser.add_argument(
+        "--all-datasets", action="store_true", help="Run on all datasets"
+    )
+    parser.add_argument(
+        "--list", action="store_true", help="List available architectures"
+    )
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--force", action="store_true",
-                        help="Overwrite existing results")
+    parser.add_argument(
+        "--force", action="store_true", help="Overwrite existing results"
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -1142,10 +1151,7 @@ def main():
         parser.error("Specify --arch <name> or --all")
 
     # Determine which datasets to run
-    dataset_names = (
-        list(DATASETS.keys()) if args.all_datasets
-        else [args.dataset]
-    )
+    dataset_names = list(DATASETS.keys()) if args.all_datasets else [args.dataset]
 
     all_summaries = []
 
@@ -1158,19 +1164,19 @@ def main():
         with open(questions_file) as f:
             questions = json.load(f)
         if ds["max_questions"]:
-            questions = questions[:ds["max_questions"]]
+            questions = questions[: ds["max_questions"]]
 
         for arch_name in arch_names:
             if arch_name not in ARCHITECTURES:
                 print(f"Unknown architecture: {arch_name}")
                 continue
 
-            result_file = (
-                RESULTS_DIR / f"hybrid_{arch_name}_{ds_name}.json"
-            )
+            result_file = RESULTS_DIR / f"hybrid_{arch_name}_{ds_name}.json"
             if result_file.exists() and not args.force:
-                print(f"Skipping {arch_name} on {ds_name} (exists). "
-                      f"Use --force to overwrite.")
+                print(
+                    f"Skipping {arch_name} on {ds_name} (exists). "
+                    f"Use --force to overwrite."
+                )
                 # Load existing for summary
                 with open(result_file) as f:
                     existing = json.load(f)
@@ -1180,7 +1186,10 @@ def main():
 
             arch = ARCHITECTURES[arch_name](store)
             results, summary = run_variant(
-                arch_name, arch, questions, ds["label"],
+                arch_name,
+                arch,
+                questions,
+                ds["label"],
                 verbose=args.verbose,
             )
             all_summaries.append(summary)
@@ -1201,9 +1210,9 @@ def main():
 
     # Final comparison table
     if len(all_summaries) > 1:
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print("COMPARISON TABLE")
-        print(f"{'='*80}")
+        print(f"{'=' * 80}")
         header = (
             f"{'Variant':30s} {'Dataset':15s} "
             f"{'r@20':>8s} {'d@20':>8s} {'r@50':>8s} {'d@50':>8s} "

@@ -34,15 +34,24 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
-from uuid import UUID
 
 import numpy as np
 import openai
+from active_steering import EmbeddingCache, _query_em_by_vector, cached_embed
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    V2F_MODEL,
+    EMHit,
+    _dedupe_by_turn_id,
+    _MergedLLMCache,
+    _query_em,
+    format_primer_context,
+)
+from em_lme_tuned_cues import (
+    LMETUNE_V2F_MIXED7030_CACHE,
+    V2F_LME_MIXED_7030_PROMPT,
+    parse_speaker_cues,
+)
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -59,22 +68,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from active_steering import EmbeddingCache, _query_em_by_vector, cached_embed
-from em_architectures import (
-    EMHit,
-    V2F_MODEL,
-    _MergedLLMCache,
-    _dedupe_by_turn_id,
-    _query_em,
-    format_primer_context,
-)
-from em_lme_tuned_cues import (
-    LMETUNE_V2F_MIXED7030_CACHE,
-    V2F_LME_MIXED_7030_PROMPT,
-    parse_speaker_cues,
-)
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -124,7 +119,9 @@ Task:
 """
 
 
-PROMPT_KEYWORD = _PROMPT_SHARED_HEADER + """
+PROMPT_KEYWORD = (
+    _PROMPT_SHARED_HEADER
+    + """
 Extract 2-4 KEYWORDS (each 1-3 words) representing the specific concept the
 probe should move toward.
 
@@ -136,9 +133,12 @@ Rules:
 - 2-4 items, each 1-3 words.
 - No questions, no generic words like "information" or "detail".
 """
+)
 
 
-PROMPT_SHORT_PHRASE = _PROMPT_SHARED_HEADER + """
+PROMPT_SHORT_PHRASE = (
+    _PROMPT_SHARED_HEADER
+    + """
 Extract 2-3 SHORT PHRASES (each 4-8 words) that target the specific concept
 the probe should move toward.
 
@@ -150,9 +150,12 @@ Rules:
 - 2-3 items, each 4-8 words.
 - Concrete, no questions.
 """
+)
 
 
-PROMPT_SENTENCE = _PROMPT_SHARED_HEADER + """
+PROMPT_SENTENCE = (
+    _PROMPT_SHARED_HEADER
+    + """
 Extract 2-3 sentence-fragments (each < 20 words) that target the specific
 concept the probe should move toward.
 
@@ -164,6 +167,7 @@ Rules:
 - 2-3 items, each < 20 words.
 - Concrete, no questions.
 """
+)
 
 
 PROMPT_BY_GRAN = {
@@ -208,7 +212,9 @@ def _parse_llm_json(response: str) -> dict:
     out = dict(empty)
     try:
         out["gold_likely_indices"] = [
-            int(x) for x in obj.get("gold_likely_indices", []) if isinstance(x, (int, float))
+            int(x)
+            for x in obj.get("gold_likely_indices", [])
+            if isinstance(x, (int, float))
         ]
     except Exception:
         out["gold_likely_indices"] = []
@@ -271,20 +277,20 @@ async def _build_lme_v2f_cue(
 @dataclass
 class VariantConfig:
     name: str
-    granularity: str            # keyword | short_phrase | sentence
-    alpha: float                # scale for arithmetic mode
-    aggregation: str            # arithmetic | probe_union | baseline
+    granularity: str  # keyword | short_phrase | sentence
+    alpha: float  # scale for arithmetic mode
+    aggregation: str  # arithmetic | probe_union | baseline
 
 
 VARIANTS: list[VariantConfig] = [
     VariantConfig("baseline", "sentence", 0.0, "baseline"),
-    VariantConfig("keyadd_kw_a0.05",     "keyword",      0.05, "arithmetic"),
-    VariantConfig("keyadd_kw_a0.1",      "keyword",      0.10, "arithmetic"),
-    VariantConfig("keyadd_kw_a0.2",      "keyword",      0.20, "arithmetic"),
-    VariantConfig("keyadd_short_a0.05",  "short_phrase", 0.05, "arithmetic"),
-    VariantConfig("keyadd_short_a0.1",   "short_phrase", 0.10, "arithmetic"),
-    VariantConfig("keyadd_sent_a0.05",   "sentence",     0.05, "arithmetic"),
-    VariantConfig("keyadd_probe_union",  "keyword",      0.0,  "probe_union"),
+    VariantConfig("keyadd_kw_a0.05", "keyword", 0.05, "arithmetic"),
+    VariantConfig("keyadd_kw_a0.1", "keyword", 0.10, "arithmetic"),
+    VariantConfig("keyadd_kw_a0.2", "keyword", 0.20, "arithmetic"),
+    VariantConfig("keyadd_short_a0.05", "short_phrase", 0.05, "arithmetic"),
+    VariantConfig("keyadd_short_a0.1", "short_phrase", 0.10, "arithmetic"),
+    VariantConfig("keyadd_sent_a0.05", "sentence", 0.05, "arithmetic"),
+    VariantConfig("keyadd_probe_union", "keyword", 0.0, "probe_union"),
 ]
 
 
@@ -337,12 +343,14 @@ async def run_one_question(
     cue_vec = await cached_embed(embedder, initial_text, emb_cache=emb_cache)
     probe = _normalize(np.array(cue_vec, dtype=np.float64))
 
-    r0_hits = _dedupe_by_turn_id(await _query_em_by_vector(
-        memory,
-        probe,
-        vector_search_limit=VECTOR_SEARCH_LIMIT,
-        expand_context=EXPAND_CONTEXT,
-    ))
+    r0_hits = _dedupe_by_turn_id(
+        await _query_em_by_vector(
+            memory,
+            probe,
+            vector_search_limit=VECTOR_SEARCH_LIMIT,
+            expand_context=EXPAND_CONTEXT,
+        )
+    )
     baseline_r = {}
     for K in BUDGETS:
         r = {h.turn_id for h in r0_hits[:K]}
@@ -375,7 +383,9 @@ async def run_one_question(
         llm_cache=llm_cache,
     )
     gold_likely_idx = [
-        i for i in parsed["gold_likely_indices"] if 0 <= i < min(len(r0_hits), TOPK_FOR_LLM)
+        i
+        for i in parsed["gold_likely_indices"]
+        if 0 <= i < min(len(r0_hits), TOPK_FOR_LLM)
     ]
     add_terms = parsed["add_terms"]
     row["add_terms"] = add_terms
@@ -390,17 +400,17 @@ async def run_one_question(
             add_sum += _normalize(np.array(vec, dtype=np.float64))
         new_probe = _normalize(probe + variant.alpha * add_sum)
 
-        hits = _dedupe_by_turn_id(await _query_em_by_vector(
-            memory,
-            new_probe,
-            vector_search_limit=VECTOR_SEARCH_LIMIT,
-            expand_context=EXPAND_CONTEXT,
-        ))
+        hits = _dedupe_by_turn_id(
+            await _query_em_by_vector(
+                memory,
+                new_probe,
+                vector_search_limit=VECTOR_SEARCH_LIMIT,
+                expand_context=EXPAND_CONTEXT,
+            )
+        )
         for K in BUDGETS:
             r = {h.turn_id for h in hits[:K]}
-            row[f"r@{K}"] = round(
-                len(r & gold) / len(gold) if gold else 1.0, 4
-            )
+            row[f"r@{K}"] = round(len(r & gold) / len(gold) if gold else 1.0, 4)
         row["time_s"] = round(time.monotonic() - t0, 3)
         return row
 
@@ -418,23 +428,25 @@ async def run_one_question(
         score_by_turn: dict[int, float] = defaultdict(float)
         repr_hit: dict[int, EMHit] = {}
         for pv in per_probe_vectors:
-            hits = _dedupe_by_turn_id(await _query_em_by_vector(
-                memory,
-                pv,
-                vector_search_limit=VECTOR_SEARCH_LIMIT,
-                expand_context=EXPAND_CONTEXT,
-            ))
+            hits = _dedupe_by_turn_id(
+                await _query_em_by_vector(
+                    memory,
+                    pv,
+                    vector_search_limit=VECTOR_SEARCH_LIMIT,
+                    expand_context=EXPAND_CONTEXT,
+                )
+            )
             for h in hits:
                 score_by_turn[h.turn_id] += float(h.score)
                 if h.turn_id not in repr_hit:
                     repr_hit[h.turn_id] = h
 
-        merged = sorted(repr_hit.values(), key=lambda h: score_by_turn[h.turn_id], reverse=True)
+        merged = sorted(
+            repr_hit.values(), key=lambda h: score_by_turn[h.turn_id], reverse=True
+        )
         for K in BUDGETS:
             r = {h.turn_id for h in merged[:K]}
-            row[f"r@{K}"] = round(
-                len(r & gold) / len(gold) if gold else 1.0, 4
-            )
+            row[f"r@{K}"] = round(len(r & gold) / len(gold) if gold else 1.0, 4)
         row["n_probes"] = len(per_probe_vectors)
         row["time_s"] = round(time.monotonic() - t0, 3)
         return row
@@ -472,7 +484,9 @@ async def main() -> None:
     selected_names = {v.strip() for v in args.variants.split(",") if v.strip()}
     variants = [v for v in VARIANTS if v.name in selected_names]
     lme_qs = load_lme_questions(args.lme_per_cat)
-    print(f"[keyword_add_sweep] LME n={len(lme_qs)}, variants={len(variants)}", flush=True)
+    print(
+        f"[keyword_add_sweep] LME n={len(lme_qs)}, variants={len(variants)}", flush=True
+    )
 
     # Connect EM backend.
     qdrant_client = AsyncQdrantClient(
@@ -522,9 +536,7 @@ async def main() -> None:
         else:
             engine = create_async_engine(sql_url, pool_size=20, max_overflow=20)
         engines.append(engine)
-        seg_store = SQLAlchemySegmentStore(
-            SQLAlchemySegmentStoreParams(engine=engine)
-        )
+        seg_store = SQLAlchemySegmentStore(SQLAlchemySegmentStoreParams(engine=engine))
         await seg_store.startup()
         segment_stores.append(seg_store)
 
@@ -719,7 +731,7 @@ def write_report(results: dict) -> None:
             shown.add(qid)
             lines.append(f"- Q `{qid}` ({r.get('category')}): `{r['question'][:100]}`")
             lines.append(f"  - add_terms: {r.get('add_terms', [])}")
-            if "reasoning" in r and r["reasoning"]:
+            if r.get("reasoning"):
                 lines.append(f"  - reasoning: {r['reasoning']}")
         lines.append("")
 
@@ -727,7 +739,8 @@ def write_report(results: dict) -> None:
     lines.append("## Granularity verdict")
     lines.append("")
     arith = {
-        name: per for name, per in variants.items()
+        name: per
+        for name, per in variants.items()
         if per["config"]["aggregation"] == "arithmetic"
     }
     if arith:
@@ -755,7 +768,9 @@ def write_report(results: dict) -> None:
             key=lambda x: x[1],
         )
         union_r50 = union["summary"]["mean_r@50"]
-        lines.append(f"- best arithmetic: `{best_arith_name}` R@50 = {best_arith_r50:.4f}")
+        lines.append(
+            f"- best arithmetic: `{best_arith_name}` R@50 = {best_arith_r50:.4f}"
+        )
         lines.append(f"- probe_union: R@50 = {union_r50:.4f}")
         lines.append(f"- Δ (union - best_arith) = {union_r50 - best_arith_r50:+.4f}")
         lines.append(f"- Δ (union - baseline) = {union_r50 - base_r50:+.4f}")

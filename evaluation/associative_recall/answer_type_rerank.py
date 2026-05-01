@@ -21,11 +21,9 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from pathlib import Path
-
-from openai import OpenAI
 
 from associative_recall import CACHE_DIR, Segment
+from openai import OpenAI
 
 ANSWER_TYPES = ("DATE", "PERSON", "NUMBER", "LOCATION", "REASON", "DESCRIPTION")
 
@@ -170,12 +168,16 @@ def classify_answer_type_rule(question: str) -> tuple[str, bool]:
         or ql_stripped.startswith("how often")
     ):
         return "NUMBER", True
-    if ql_stripped.startswith("when") or ql_stripped.startswith("on what") or ql_stripped.startswith(
-        "at what"
+    if (
+        ql_stripped.startswith("when")
+        or ql_stripped.startswith("on what")
+        or ql_stripped.startswith("at what")
     ):
         return "DATE", True
-    if ql_stripped.startswith("who") or ql_stripped.startswith("whose") or ql_stripped.startswith(
-        "whom"
+    if (
+        ql_stripped.startswith("who")
+        or ql_stripped.startswith("whose")
+        or ql_stripped.startswith("whom")
     ):
         return "PERSON", True
     if ql_stripped.startswith("where"):
@@ -303,12 +305,14 @@ CAPITALIZED_RE = re.compile(r"(?<!^)(?<![.!?]\s)\b[A-Z][a-z]{2,}\b")
 STANDALONE_CAP_RE = re.compile(r"\b[A-Z][a-z]{2,}\b")
 
 PRONOUN_RE = re.compile(
-    r"\b(he|she|him|her|his|hers|they|them|their|theirs)\b", re.IGNORECASE,
+    r"\b(he|she|him|her|his|hers|they|them|their|theirs)\b",
+    re.IGNORECASE,
 )
 
 # LOCATION heuristic
 LOC_PREP_RE = re.compile(
-    r"\b(at|in|to|from|near)\s+[A-Z][a-zA-Z]+", re.IGNORECASE,
+    r"\b(at|in|to|from|near)\s+[A-Z][a-zA-Z]+",
+    re.IGNORECASE,
 )
 PLACE_WORDS_RE = re.compile(
     r"\b(city|street|road|avenue|park|restaurant|cafe|coffee shop|bar|mall|store|"
@@ -353,22 +357,55 @@ def turn_has_answer_type_tokens(text: str, answer_type: str) -> bool:
             tok = m.group(0)
             # Filter common non-name capitalized words
             if tok.lower() in {
-                "i", "i'm", "im", "ill", "ive", "id", "the", "a", "an",
-                "and", "or", "but", "so", "this", "that", "there", "then",
-                "when", "where", "why", "how", "what", "which", "who",
-                "monday", "tuesday", "wednesday", "thursday", "friday",
-                "saturday", "sunday", "january", "february", "march", "april",
-                "may", "june", "july", "august", "september", "october",
-                "november", "december",
+                "i",
+                "i'm",
+                "im",
+                "ill",
+                "ive",
+                "id",
+                "the",
+                "a",
+                "an",
+                "and",
+                "or",
+                "but",
+                "so",
+                "this",
+                "that",
+                "there",
+                "then",
+                "when",
+                "where",
+                "why",
+                "how",
+                "what",
+                "which",
+                "who",
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday",
+                "sunday",
+                "january",
+                "february",
+                "march",
+                "april",
+                "may",
+                "june",
+                "july",
+                "august",
+                "september",
+                "october",
+                "november",
+                "december",
             }:
                 continue
             return True
         return False
     if answer_type == "LOCATION":
-        return bool(
-            LOC_PREP_RE.search(t)
-            or PLACE_WORDS_RE.search(t)
-        )
+        return bool(LOC_PREP_RE.search(t) or PLACE_WORDS_RE.search(t))
     if answer_type == "REASON":
         return bool(REASON_MARKER_RE.search(t))
     # DESCRIPTION: every turn passes

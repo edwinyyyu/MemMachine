@@ -5,7 +5,6 @@ Saves to a separate npz file to avoid overwriting the original.
 """
 
 import json
-import sys
 import time
 from collections import Counter
 from pathlib import Path
@@ -52,18 +51,21 @@ def extract_beam_segments(conversation: dict) -> list[dict]:
                 content = content.split("->")[0].strip()
             if not content.strip():
                 continue
-            segments.append({
-                "conversation_id": conv_id,
-                "turn_id": turn_id,
-                "role": role,
-                "text": content,
-            })
+            segments.append(
+                {
+                    "conversation_id": conv_id,
+                    "turn_id": turn_id,
+                    "role": role,
+                    "text": content,
+                }
+            )
     return segments
 
 
 def extract_beam_questions(conversation: dict) -> list[dict]:
     """Extract questions from a BEAM conversation."""
     import ast
+
     conv_id = f"beam_{conversation['conversation_id']}"
     pq_raw = conversation.get("probing_questions", "{}")
     if isinstance(pq_raw, str):
@@ -75,10 +77,15 @@ def extract_beam_questions(conversation: dict) -> list[dict]:
         pq = pq_raw
 
     target_categories = {
-        "event_ordering", "instruction_following", "summarization",
-        "multi_session_reasoning", "information_extraction",
-        "temporal_reasoning", "contradiction_resolution",
-        "knowledge_update", "preference_following",
+        "event_ordering",
+        "instruction_following",
+        "summarization",
+        "multi_session_reasoning",
+        "information_extraction",
+        "temporal_reasoning",
+        "contradiction_resolution",
+        "knowledge_update",
+        "preference_following",
     }
 
     questions = []
@@ -89,15 +96,17 @@ def extract_beam_questions(conversation: dict) -> list[dict]:
             source_ids = _flatten_source_chat_ids(q.get("source_chat_ids"))
             if not source_ids:
                 continue
-            questions.append({
-                "conversation_id": conv_id,
-                "category": f"beam_{category}",
-                "question_index": i,
-                "question": q["question"],
-                "source_chat_ids": source_ids,
-                "ideal_response": q.get("ideal_response", ""),
-                "benchmark": "beam",
-            })
+            questions.append(
+                {
+                    "conversation_id": conv_id,
+                    "category": f"beam_{category}",
+                    "question_index": i,
+                    "question": q["question"],
+                    "source_chat_ids": source_ids,
+                    "ideal_response": q.get("ideal_response", ""),
+                    "benchmark": "beam",
+                }
+            )
     return questions
 
 
@@ -144,21 +153,21 @@ def extract_locomo_segments(entry: dict) -> list[dict]:
                 continue
             role = "user" if speaker == conv.get("speaker_a", "") else "assistant"
             dia_id_map[dia_id] = global_turn_id
-            segments.append({
-                "conversation_id": conv_id,
-                "turn_id": global_turn_id,
-                "role": role,
-                "text": text,
-            })
+            segments.append(
+                {
+                    "conversation_id": conv_id,
+                    "turn_id": global_turn_id,
+                    "role": role,
+                    "text": text,
+                }
+            )
             global_turn_id += 1
         session_idx += 1
 
     return segments, dia_id_map
 
 
-def extract_locomo_questions(
-    entry: dict, dia_id_map: dict[str, int]
-) -> list[dict]:
+def extract_locomo_questions(entry: dict, dia_id_map: dict[str, int]) -> list[dict]:
     """Extract questions from a LoCoMo conversation."""
     conv_id = f"locomo_{entry['sample_id']}"
     questions = []
@@ -182,15 +191,17 @@ def extract_locomo_questions(
             continue
 
         cat_name = LOCOMO_CATEGORY_NAMES.get(cat, f"cat{cat}")
-        questions.append({
-            "conversation_id": conv_id,
-            "category": f"locomo_{cat_name}",
-            "question_index": len(questions),
-            "question": q["question"],
-            "source_chat_ids": source_ids,
-            "ideal_response": q.get("answer", ""),
-            "benchmark": "locomo",
-        })
+        questions.append(
+            {
+                "conversation_id": conv_id,
+                "category": f"locomo_{cat_name}",
+                "question_index": len(questions),
+                "question": q["question"],
+                "source_chat_ids": source_ids,
+                "ideal_response": q.get("answer", ""),
+                "benchmark": "locomo",
+            }
+        )
 
     return questions
 
@@ -208,8 +219,10 @@ def embed_texts(client: OpenAI, texts: list[str]) -> np.ndarray:
     all_embeddings = []
     for start in range(0, len(texts), BATCH_SIZE):
         batch = texts[start : start + BATCH_SIZE]
-        print(f"  Embedding batch {start // BATCH_SIZE + 1} "
-              f"({len(batch)} texts)...", flush=True)
+        print(
+            f"  Embedding batch {start // BATCH_SIZE + 1} ({len(batch)} texts)...",
+            flush=True,
+        )
         response = client.embeddings.create(model=EMBED_MODEL, input=batch)
         batch_embeddings = [item.embedding for item in response.data]
         all_embeddings.extend(batch_embeddings)
@@ -230,15 +243,17 @@ def main() -> None:
 
     for idx in BEAM_CONV_RANGE:
         if idx >= len(beam_data):
-            print(f"  BEAM conv index {idx} out of range (max {len(beam_data)-1})")
+            print(f"  BEAM conv index {idx} out of range (max {len(beam_data) - 1})")
             break
         conv = beam_data[idx]
         segments = extract_beam_segments(conv)
         questions = extract_beam_questions(conv)
         all_segments.extend(segments)
         all_questions.extend(questions)
-        print(f"  BEAM conv {conv['conversation_id']}: "
-              f"{len(segments)} segments, {len(questions)} questions")
+        print(
+            f"  BEAM conv {conv['conversation_id']}: "
+            f"{len(segments)} segments, {len(questions)} questions"
+        )
 
     # --- LoCoMo conversations ---
     print(f"\nLoading LoCoMo conversations from {LOCOMO_PATH}...")
@@ -251,11 +266,12 @@ def main() -> None:
         questions = extract_locomo_questions(entry, dia_id_map)
         all_segments.extend(segments)
         all_questions.extend(questions)
-        print(f"  LoCoMo {entry['sample_id']}: "
-              f"{len(segments)} segments, {len(questions)} questions")
+        print(
+            f"  LoCoMo {entry['sample_id']}: "
+            f"{len(segments)} segments, {len(questions)} questions"
+        )
 
-    print(f"\nTotal NEW: {len(all_segments)} segments, "
-          f"{len(all_questions)} questions")
+    print(f"\nTotal NEW: {len(all_segments)} segments, {len(all_questions)} questions")
 
     # Category breakdown
     cats = Counter(q["category"] for q in all_questions)

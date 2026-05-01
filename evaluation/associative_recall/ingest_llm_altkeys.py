@@ -18,22 +18,18 @@ imports `AltKey` from there for type compatibility only.
 
 from __future__ import annotations
 
-import os
-import sys
 import time
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from pathlib import Path
 from threading import Lock
-from typing import Iterable
 
-from openai import OpenAI
+from best_shot import BestshotLLMCache
 
 # We reuse the AltKey dataclass layout from the regex module so downstream
 # augmented-index code works without change.
-from ingest_regex_altkeys import AltKey  # noqa: F401
-
-from best_shot import BestshotLLMCache
+from ingest_regex_altkeys import AltKey
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Prompt versions
@@ -175,6 +171,7 @@ PROMPT_VERSIONS = {
 @dataclass
 class LLMAltKey:
     """An alt-key emitted by the LLM."""
+
     parent_index: int
     text: str
     source: str = "llm"  # e.g. "llm:v3"
@@ -183,6 +180,7 @@ class LLMAltKey:
 @dataclass
 class LLMTurnDecision:
     """The raw decision for one turn (for analysis/inspection)."""
+
     parent_index: int
     conversation_id: str
     turn_id: int
@@ -208,8 +206,9 @@ def build_prev_context(prev_turns: list[tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
-def build_prompt(prompt_version: str, role: str, text: str,
-                 prev_turns: list[tuple[str, str]]) -> str:
+def build_prompt(
+    prompt_version: str, role: str, text: str, prev_turns: list[tuple[str, str]]
+) -> str:
     template = PROMPT_VERSIONS[prompt_version]
     prev_ctx = build_prev_context(prev_turns[-2:])
     return template.format(
@@ -253,7 +252,7 @@ def parse_response(response: str) -> tuple[bool, list[str]]:
             # strip the prefix after the colon or space
             idx = line.find(":")
             if idx >= 0:
-                alt = line[idx + 1:].strip()
+                alt = line[idx + 1 :].strip()
             else:
                 alt = line[3:].strip()
             # Trim trailing quotes/punct if wrapped
@@ -298,8 +297,7 @@ class LLMAltKeyGenerator:
         # doesn't collide across prompt versions.
         return f"[ingest_llm_altkeys/{self.prompt_version}]\n" + prompt
 
-    def call_one(self, role: str, text: str,
-                 prev_turns: list[tuple[str, str]]) -> str:
+    def call_one(self, role: str, text: str, prev_turns: list[tuple[str, str]]) -> str:
         prompt = build_prompt(self.prompt_version, role, text, prev_turns)
         cache_key_prompt = self._cache_key_prompt(prompt)
 
@@ -359,7 +357,7 @@ class LLMAltKeyGenerator:
 # ---------------------------------------------------------------------------
 def generate_altkeys_for_conversation(
     generator: LLMAltKeyGenerator,
-    segments: list,   # sorted by turn_id, same conversation
+    segments: list,  # sorted by turn_id, same conversation
     progress_cb=None,
 ) -> list[LLMTurnDecision]:
     """For a single conversation, build prev-context windows and call LLM
@@ -459,9 +457,11 @@ def decisions_to_altkeys(
         if d.skipped:
             continue
         for alt in d.alt_keys:
-            out.append(AltKey(
-                parent_index=d.parent_index,
-                heuristic=source_tag,
-                text=alt,
-            ))
+            out.append(
+                AltKey(
+                    parent_index=d.parent_index,
+                    heuristic=source_tag,
+                    text=alt,
+                )
+            )
     return out

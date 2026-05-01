@@ -24,9 +24,9 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-
+from antipara_cue_gen import MetaV2fDedicated
 from associative_recall import Segment
+from dotenv import load_dotenv
 from fair_backfill_eval import (
     BUDGETS,
     DATASETS,
@@ -38,10 +38,11 @@ from fair_backfill_eval import (
 )
 from mmr_cue_selection import (
     ARCH_CLASSES as MMR_ARCH_CLASSES,
+)
+from mmr_cue_selection import (
     MMREmbeddingCache,
     mean_pairwise_cosine,
 )
-from antipara_cue_gen import MetaV2fDedicated
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -75,9 +76,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -140,7 +139,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -149,6 +148,7 @@ def run_one(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -219,9 +219,7 @@ def compute_v2f_natural_diversity(
     return {
         "mean_pairwise_cos": round(mean_pw, 4),
         "num_questions_with_ge2_cues": len(pairwise_vals),
-        "avg_n_cues_per_question": round(
-            float(np.mean(counts)) if counts else 0.0, 2
-        ),
+        "avg_n_cues_per_question": round(float(np.mean(counts)) if counts else 0.0, 2),
         "per_question": per_q,
     }
 
@@ -333,9 +331,7 @@ def main() -> None:
         for arch_name in arch_names:
             cls = ARCH_CLASSES[arch_name]
             arch = cls(store)
-            results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(arch_name, arch, ds_name, questions)
             all_results[arch_name][ds_name] = {
                 "summary": summary,
                 "category_breakdown": by_cat,
@@ -366,10 +362,7 @@ def main() -> None:
 
     # Qualitative sample (from mmr_lam0.5_k3 on locomo)
     sample: dict | None = None
-    if (
-        "mmr_lam0.5_k3" in all_results
-        and "locomo_30q" in all_results["mmr_lam0.5_k3"]
-    ):
+    if "mmr_lam0.5_k3" in all_results and "locomo_30q" in all_results["mmr_lam0.5_k3"]:
         sample = qualitative_sample(
             all_results["mmr_lam0.5_k3"]["locomo_30q"]["results"]
         )
@@ -377,10 +370,7 @@ def main() -> None:
     # Top gaining/losing categories for mmr_lam0.5_k3 on locomo_30q
     top_gaining: list = []
     top_losing: list = []
-    if (
-        "mmr_lam0.5_k3" in all_results
-        and "locomo_30q" in all_results["mmr_lam0.5_k3"]
-    ):
+    if "mmr_lam0.5_k3" in all_results and "locomo_30q" in all_results["mmr_lam0.5_k3"]:
         top_gaining, top_losing = top_categories_delta(
             all_results["mmr_lam0.5_k3"]["locomo_30q"]["category_breakdown"],
             K=50,
@@ -394,9 +384,7 @@ def main() -> None:
             a: {
                 d: {
                     "summary": all_results[a][d]["summary"],
-                    "category_breakdown": all_results[a][d][
-                        "category_breakdown"
-                    ],
+                    "category_breakdown": all_results[a][d]["category_breakdown"],
                 }
                 for d in all_results[a]
             }
@@ -423,9 +411,7 @@ def main() -> None:
                         "arch": a,
                         "dataset": d,
                         "summary": all_results[a][d]["summary"],
-                        "category_breakdown": all_results[a][d][
-                            "category_breakdown"
-                        ],
+                        "category_breakdown": all_results[a][d]["category_breakdown"],
                         "results": all_results[a][d]["results"],
                     },
                     f,
@@ -471,9 +457,7 @@ def main() -> None:
         "Lower pairwise cosine = more diverse cues (cover distinct regions). "
         "Compare v2f natural (2 cues) vs MMR selected (3 or 4).\n"
     )
-    md_lines.append(
-        "| Dataset | Variant | mean pairwise cos | n_q w/ >=2 cues |"
-    )
+    md_lines.append("| Dataset | Variant | mean pairwise cos | n_q w/ >=2 cues |")
     md_lines.append("|---|---|---:|---:|")
     for ds_name in ds_names:
         ddiv = diversity.get(ds_name, {})
@@ -513,10 +497,8 @@ def main() -> None:
         )
         md_lines.append("\n**Candidates:**")
         for i, c in enumerate(sample["candidate_cues"]):
-            marker = (
-                "[SELECTED] " if c in sample["selected_cues"] else "           "
-            )
-            md_lines.append(f"\n{i+1}. {marker}{c}")
+            marker = "[SELECTED] " if c in sample["selected_cues"] else "           "
+            md_lines.append(f"\n{i + 1}. {marker}{c}")
 
     # Top categories
     if top_gaining or top_losing:
@@ -545,36 +527,24 @@ def main() -> None:
         and "mmr_lam0.5_k3" in all_results
         and "locomo_30q" in all_results["mmr_lam0.5_k3"]
     ):
-        v2f_lc50 = all_results["meta_v2f"]["locomo_30q"]["summary"][
-            "arch_r@50"
-        ]
-        mmr_lc50 = all_results["mmr_lam0.5_k3"]["locomo_30q"]["summary"][
-            "arch_r@50"
-        ]
+        v2f_lc50 = all_results["meta_v2f"]["locomo_30q"]["summary"]["arch_r@50"]
+        mmr_lc50 = all_results["mmr_lam0.5_k3"]["locomo_30q"]["summary"]["arch_r@50"]
         mmr3_lc50 = None
-        if "v2f_3cues" in all_results and "locomo_30q" in all_results[
-            "v2f_3cues"
-        ]:
-            mmr3_lc50 = all_results["v2f_3cues"]["locomo_30q"]["summary"][
-                "arch_r@50"
-            ]
+        if "v2f_3cues" in all_results and "locomo_30q" in all_results["v2f_3cues"]:
+            mmr3_lc50 = all_results["v2f_3cues"]["locomo_30q"]["summary"]["arch_r@50"]
         mmr07_lc50 = None
         if (
             "mmr_lam0.7_k3" in all_results
             and "locomo_30q" in all_results["mmr_lam0.7_k3"]
         ):
-            mmr07_lc50 = all_results["mmr_lam0.7_k3"]["locomo_30q"][
-                "summary"
-            ]["arch_r@50"]
+            mmr07_lc50 = all_results["mmr_lam0.7_k3"]["locomo_30q"]["summary"][
+                "arch_r@50"
+            ]
 
         if mmr_lc50 > v2f_lc50 + 0.005:
             # Differentiate: is the win MMR-specific, or just more-cues?
-            more_cues_beats = (
-                mmr3_lc50 is not None and mmr3_lc50 > v2f_lc50 + 0.005
-            )
-            rel_heavy_beats = (
-                mmr07_lc50 is not None and mmr07_lc50 > v2f_lc50 + 0.005
-            )
+            more_cues_beats = mmr3_lc50 is not None and mmr3_lc50 > v2f_lc50 + 0.005
+            rel_heavy_beats = mmr07_lc50 is not None and mmr07_lc50 > v2f_lc50 + 0.005
             if not more_cues_beats and not rel_heavy_beats:
                 verdict = (
                     f"**SHIP**: mmr_lam0.5_k3 beats v2f on LoCoMo-30 @K=50 "

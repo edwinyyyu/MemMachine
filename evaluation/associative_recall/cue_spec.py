@@ -38,11 +38,8 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -52,7 +49,7 @@ from associative_recall import (
     SegmentStore,
 )
 from best_shot import V2F_PROMPT, _format_segments, _parse_cues
-
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Dedicated caches — read all existing caches for maximum hits, write to
@@ -180,21 +177,14 @@ class CueSpecLLMCache(LLMCache):
 
 # Minimal English stopword list — big enough to catch "what/where/which"
 # bloat without over-filtering useful content words.
-_STOPWORDS: frozenset[str] = frozenset("""
-a an and are as at be been being but by did do does for from had has have
-he her his i if in into is it its me my not of on or our she should so some
-such than that the their them then there these they this those through to
-was we were what when where which who whom whose why will with would you
-your yours about above after all also am any below both can could even from
-had her hers him himself itself just like many may might must nor now off
-only other out over same several since still tell than though too very via
-when whenever whether while whom with without yet
-""".split())
+_STOPWORDS: frozenset[str] = frozenset(
+    ["a", "an", "and", "are", "as", "at", "be", "been", "being", "but", "by", "did", "do", "does", "for", "from", "had", "has", "have", "he", "her", "his", "i", "if", "in", "into", "is", "it", "its", "me", "my", "not", "of", "on", "or", "our", "she", "should", "so", "some", "such", "than", "that", "the", "their", "them", "then", "there", "these", "they", "this", "those", "through", "to", "was", "we", "were", "what", "when", "where", "which", "who", "whom", "whose", "why", "will", "with", "would", "you", "your", "yours", "about", "above", "after", "all", "also", "am", "any", "below", "both", "can", "could", "even", "from", "had", "her", "hers", "him", "himself", "itself", "just", "like", "many", "may", "might", "must", "nor", "now", "off", "only", "other", "out", "over", "same", "several", "since", "still", "tell", "than", "though", "too", "very", "via", "when", "whenever", "whether", "while", "whom", "with", "without", "yet"]
+)
 
 _WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9'\-]*")
-_INTERROGATIVE_PREFIXES: frozenset[str] = frozenset({
-    "what", "when", "how", "why", "who", "which", "where"
-})
+_INTERROGATIVE_PREFIXES: frozenset[str] = frozenset(
+    {"what", "when", "how", "why", "who", "which", "where"}
+)
 
 # Set-level thresholds
 _MAX_PAIRWISE_COSINE = 0.85
@@ -245,6 +235,7 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
 @dataclass
 class CueFailure:
     """Per-cue failure record."""
+
     index: int
     cue: str
     reasons: list[str] = field(default_factory=list)
@@ -253,6 +244,7 @@ class CueFailure:
 @dataclass
 class ValidationReport:
     """Outcome of validating a set of cues against the spec."""
+
     cues: list[str]
     query: str
     failures: list[CueFailure]
@@ -344,15 +336,13 @@ def validate_cues(
                 cos = _cosine(cue_embeddings[i], cue_embeddings[j])
                 if cos > _MAX_PAIRWISE_COSINE:
                     set_level.append(
-                        f"cues_{i+1}_and_{j+1}_too_similar(cos={cos:.2f})"
+                        f"cues_{i + 1}_and_{j + 1}_too_similar(cos={cos:.2f})"
                     )
         # Anti-random
         for i, emb in enumerate(cue_embeddings):
             cos = _cosine(emb, query_embedding)
             if cos < _MIN_QUERY_COSINE:
-                set_level.append(
-                    f"cue_{i+1}_too_unrelated_to_query(cos={cos:.2f})"
-                )
+                set_level.append(f"cue_{i + 1}_too_unrelated_to_query(cos={cos:.2f})")
 
     return ValidationReport(
         cues=list(cues),
@@ -557,7 +547,9 @@ class CueSpecBase:
 
     # -- Generation with verify-repair loop -------------------------------
     def _generate_cues(
-        self, question: str, context_section: str,
+        self,
+        question: str,
+        context_section: str,
         context_text: str = "",
     ) -> tuple[list[str], list[dict]]:
         """Return (final_cues, attempt_log). Attempt log records each
@@ -571,13 +563,15 @@ class CueSpecBase:
             )
             output = self.llm_call(prompt)
             cues = _parse_cues(output)[: self.num_cues]
-            attempts.append({
-                "attempt": 0,
-                "prompt_kind": "v2f",
-                "output": output,
-                "parsed_cues": cues,
-                "validation": None,
-            })
+            attempts.append(
+                {
+                    "attempt": 0,
+                    "prompt_kind": "v2f",
+                    "output": output,
+                    "parsed_cues": cues,
+                    "validation": None,
+                }
+            )
             return cues, attempts
 
         prompt = CUESPEC_PROMPT.format(
@@ -591,20 +585,22 @@ class CueSpecBase:
         # Cheap pre-check (no embeddings) — rejects per-cue issues. Set-level
         # embedding checks run after pre-check passes.
         rpt = validate_cues(cues, question, context_text=context_text)
-        attempts.append({
-            "attempt": 0,
-            "prompt_kind": "spec",
-            "output": output,
-            "parsed_cues": list(cues),
-            "validation": {
-                "ok": rpt.ok,
-                "failures": [
-                    {"index": f.index, "cue": f.cue, "reasons": f.reasons}
-                    for f in rpt.failures
-                ],
-                "set_level_failures": rpt.set_level_failures,
-            },
-        })
+        attempts.append(
+            {
+                "attempt": 0,
+                "prompt_kind": "spec",
+                "output": output,
+                "parsed_cues": list(cues),
+                "validation": {
+                    "ok": rpt.ok,
+                    "failures": [
+                        {"index": f.index, "cue": f.cue, "reasons": f.reasons}
+                        for f in rpt.failures
+                    ],
+                    "set_level_failures": rpt.set_level_failures,
+                },
+            }
+        )
 
         # Repair loop
         last_cues = cues
@@ -626,42 +622,36 @@ class CueSpecBase:
             )
             output = self.llm_call(repair_prompt)
             new_cues = _parse_cuespec_output(output)[: self.num_cues]
-            new_rpt = validate_cues(
-                new_cues, question, context_text=context_text
+            new_rpt = validate_cues(new_cues, question, context_text=context_text)
+            attempts.append(
+                {
+                    "attempt": round_i + 1,
+                    "prompt_kind": "repair",
+                    "output": output,
+                    "parsed_cues": list(new_cues),
+                    "validation": {
+                        "ok": new_rpt.ok,
+                        "failures": [
+                            {"index": f.index, "cue": f.cue, "reasons": f.reasons}
+                            for f in new_rpt.failures
+                        ],
+                        "set_level_failures": new_rpt.set_level_failures,
+                    },
+                }
             )
-            attempts.append({
-                "attempt": round_i + 1,
-                "prompt_kind": "repair",
-                "output": output,
-                "parsed_cues": list(new_cues),
-                "validation": {
-                    "ok": new_rpt.ok,
-                    "failures": [
-                        {"index": f.index, "cue": f.cue, "reasons": f.reasons}
-                        for f in new_rpt.failures
-                    ],
-                    "set_level_failures": new_rpt.set_level_failures,
-                },
-            })
             last_cues = new_cues
             last_report = new_rpt
 
         return last_cues, attempts
 
-    def retrieve(
-        self, question: str, conversation_id: str
-    ) -> CueSpecResult:
+    def retrieve(self, question: str, conversation_id: str) -> CueSpecResult:
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
         context_text = _format_segments(all_segments)
-        context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + context_text
-        )
+        context_section = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + context_text
 
         cues, attempts = self._generate_cues(
             question, context_section, context_text=context_text
@@ -671,7 +661,10 @@ class CueSpecBase:
         cue_embs = [self.embed_text(c) for c in cues if c.strip()]
         final_set_report = (
             validate_cues(
-                cues, question, cue_embs, query_emb,
+                cues,
+                question,
+                cue_embs,
+                query_emb,
                 context_text=context_text,
             )
             if cues
@@ -728,6 +721,7 @@ class CueSpecBase:
 class CueSpecMini(CueSpecBase):
     """gpt-5-mini + spec prompt + up to 1 repair (control: should match
     pristine v2f on mini)."""
+
     model = "gpt-5-mini"
     arch_name = "cuespec_mini"
     use_spec_prompt = True
@@ -736,6 +730,7 @@ class CueSpecMini(CueSpecBase):
 
 class CueSpecNano(CueSpecBase):
     """gpt-5-nano + spec prompt + up to 2 repair rounds. PRIMARY TEST."""
+
     model = "gpt-5-nano"
     arch_name = "cuespec_nano"
     use_spec_prompt = True
@@ -745,6 +740,7 @@ class CueSpecNano(CueSpecBase):
 class CueSpecNanoNoRepair(CueSpecBase):
     """gpt-5-nano + spec prompt, no repair (ablation: is repair doing the
     work, or is the spec prompt alone sufficient?)"""
+
     model = "gpt-5-nano"
     arch_name = "cuespec_nano_no_repair"
     use_spec_prompt = True
@@ -754,6 +750,7 @@ class CueSpecNanoNoRepair(CueSpecBase):
 class V2fNano(CueSpecBase):
     """gpt-5-nano + vanilla V2f prompt. Replicates the known failure mode
     (no spec, no repair)."""
+
     model = "gpt-5-nano"
     arch_name = "v2f_nano"
     use_spec_prompt = False

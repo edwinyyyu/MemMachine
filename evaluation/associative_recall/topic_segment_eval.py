@@ -15,14 +15,11 @@ import json
 import sys
 import time
 from collections import defaultdict
-from dataclasses import dataclass
 from pathlib import Path
-
-import numpy as np
-from dotenv import load_dotenv
 
 from associative_recall import Segment, SegmentStore
 from best_shot import MetaV2f
+from dotenv import load_dotenv
 from topic_segment import (
     TopicSegBuilder,
     TopicSegRetriever,
@@ -78,8 +75,11 @@ def _conv_ids(store: SegmentStore, prefix: str | None) -> list[str]:
 
 
 def ensure_segmentation(
-    ds_name: str, store: SegmentStore, variant: str,
-    chunk_size: int = 10, window_size: int = 40,
+    ds_name: str,
+    store: SegmentStore,
+    variant: str,
+    chunk_size: int = 10,
+    window_size: int = 40,
 ):
     """Build segmentation (cached) and return the SegmentationResult."""
     cfg = DATASETS[ds_name]
@@ -161,7 +161,9 @@ def evaluate_question(arch, question: dict) -> dict:
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
     cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id,
+        query_emb,
+        top_k=max_K,
+        conversation_id=conv_id,
     )
     cosine_segments = list(cosine_result.segments)
 
@@ -180,7 +182,10 @@ def evaluate_question(arch, question: dict) -> dict:
     }
     for K in BUDGETS:
         b_rec, a_rec = fair_backfill_evaluate(
-            arch_segments, cosine_segments, source_ids, K,
+            arch_segments,
+            cosine_segments,
+            source_ids,
+            K,
         )
         row["fair_backfill"][f"baseline_r@{K}"] = round(b_rec, 4)
         row["fair_backfill"][f"arch_r@{K}"] = round(a_rec, 4)
@@ -206,10 +211,12 @@ def summarize(results: list[dict], arch_name: str, dataset: str) -> dict:
         summary[f"delta_r@{K}"] = round(a_mean - b_mean, 4)
         summary[f"W/T/L_r@{K}"] = f"{wins}/{ties}/{losses}"
     summary["avg_total_retrieved"] = round(
-        sum(r["total_arch_retrieved"] for r in results) / n, 1,
+        sum(r["total_arch_retrieved"] for r in results) / n,
+        1,
     )
     summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1,
+        sum(r["llm_calls"] for r in results) / n,
+        1,
     )
     return summary
 
@@ -242,7 +249,10 @@ def summarize_by_category(results: list[dict]) -> dict[str, dict]:
 # Run helpers
 # ---------------------------------------------------------------------------
 def run_arch(
-    name: str, arch, dataset: str, questions: list[dict],
+    name: str,
+    arch,
+    dataset: str,
+    questions: list[dict],
 ) -> tuple[list[dict], dict, dict]:
     print(f"\n{'=' * 70}")
     print(f"{name} | {dataset} | {len(questions)} questions")
@@ -252,7 +262,7 @@ def run_arch(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -261,6 +271,7 @@ def run_arch(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -299,9 +310,11 @@ def main() -> None:
 
     for ds_name in DATASETS:
         store, questions = load_dataset(ds_name)
-        print(f"\n\n========= Dataset {ds_name}: {len(questions)} questions "
-              f"across {len(_conv_ids(store, DATASETS[ds_name]['conv_filter_prefix']))} "
-              f"conversations =========")
+        print(
+            f"\n\n========= Dataset {ds_name}: {len(questions)} questions "
+            f"across {len(_conv_ids(store, DATASETS[ds_name]['conv_filter_prefix']))} "
+            f"conversations ========="
+        )
 
         # ----- Baselines -----
         # v2f baseline: use MetaV2f
@@ -317,13 +330,15 @@ def main() -> None:
         # Fixed-size
         for n in fixed_chunk_sizes:
             seg_result = ensure_segmentation(
-                ds_name, store, "fixed", chunk_size=n,
+                ds_name,
+                store,
+                "fixed",
+                chunk_size=n,
             )
             total_segs = sum(len(v) for v in seg_result.conversations.values())
-            avg_turns = (
-                sum(len(s.turn_ids) for v in seg_result.conversations.values()
-                    for s in v) / max(total_segs, 1)
-            )
+            avg_turns = sum(
+                len(s.turn_ids) for v in seg_result.conversations.values() for s in v
+            ) / max(total_segs, 1)
             segmentation_stats[f"{ds_name}_fixed_n{n}"] = {
                 "variant": f"fixed_n{n}",
                 "total_segments": total_segs,
@@ -332,8 +347,11 @@ def main() -> None:
             }
             topic_store = TopicSegStore(seg_result, store)
             arch = TopicSegRetriever(
-                store, topic_store,
-                top_m_summaries=3, top_kt_turns=50, alpha=1.0,
+                store,
+                topic_store,
+                top_m_summaries=3,
+                top_kt_turns=50,
+                alpha=1.0,
             )
             name = f"topic_seg_fixed_n{n}"
             res, summ, cat = run_arch(name, arch, ds_name, questions)
@@ -345,13 +363,15 @@ def main() -> None:
 
         # LLM-driven
         seg_result = ensure_segmentation(
-            ds_name, store, "llm", window_size=llm_window,
+            ds_name,
+            store,
+            "llm",
+            window_size=llm_window,
         )
         total_segs = sum(len(v) for v in seg_result.conversations.values())
-        avg_turns = (
-            sum(len(s.turn_ids) for v in seg_result.conversations.values()
-                for s in v) / max(total_segs, 1)
-        )
+        avg_turns = sum(
+            len(s.turn_ids) for v in seg_result.conversations.values() for s in v
+        ) / max(total_segs, 1)
         segmentation_stats[f"{ds_name}_llm_w{llm_window}"] = {
             "variant": f"llm_w{llm_window}",
             "total_segments": total_segs,
@@ -361,8 +381,11 @@ def main() -> None:
         topic_store = TopicSegStore(seg_result, store)
         for top_m in [3, 5]:
             arch = TopicSegRetriever(
-                store, topic_store,
-                top_m_summaries=top_m, top_kt_turns=50, alpha=1.0,
+                store,
+                topic_store,
+                top_m_summaries=top_m,
+                top_kt_turns=50,
+                alpha=1.0,
             )
             name = f"topic_seg_llm_m{top_m}"
             res, summ, cat = run_arch(name, arch, ds_name, questions)
@@ -392,9 +415,7 @@ def build_report(data: dict, out_path: Path) -> None:
 
     # Segmentation stats
     lines.append("## Segmentation statistics\n")
-    lines.append(
-        "| Dataset/Variant | #Convs | Total segments | Avg turns/seg |"
-    )
+    lines.append("| Dataset/Variant | #Convs | Total segments | Avg turns/seg |")
     lines.append("|---|---|---|---|")
     for k, v in data["segmentation_stats"].items():
         lines.append(
@@ -428,16 +449,17 @@ def build_report(data: dict, out_path: Path) -> None:
     lines.append("## Category deltas (locomo_30q, best variant vs baseline)\n")
     best_variant = _pick_best_variant(data, "locomo_30q")
     lines.append(f"Best variant: **{best_variant}**\n")
-    if best_variant in data["results"] and "locomo_30q" in data["results"][best_variant]:
+    if (
+        best_variant in data["results"]
+        and "locomo_30q" in data["results"][best_variant]
+    ):
         cb = data["results"][best_variant]["locomo_30q"]["category_breakdown"]
         rows = sorted(
             cb.items(),
             key=lambda kv: kv[1]["delta_r@50"],
             reverse=True,
         )
-        lines.append(
-            "| Category | n | Δ@20 | Δ@50 | W/T/L@50 |"
-        )
+        lines.append("| Category | n | Δ@20 | Δ@50 | W/T/L@50 |")
         lines.append("|---|---|---|---|---|")
         for cat, entry in rows:
             lines.append(
@@ -476,12 +498,22 @@ def _pick_best_variant(data: dict, ds: str) -> str:
 
 def _assess_verdict(data: dict) -> str:
     # v2f baseline
-    v2f_locomo_r50 = data["results"].get("v2f", {}).get(
-        "locomo_30q", {}).get("summary", {}).get("arch_r@50", 0.0)
+    v2f_locomo_r50 = (
+        data["results"]
+        .get("v2f", {})
+        .get("locomo_30q", {})
+        .get("summary", {})
+        .get("arch_r@50", 0.0)
+    )
     # Best topic_seg variant
     best = _pick_best_variant(data, "locomo_30q")
-    best_locomo_r50 = data["results"].get(best, {}).get(
-        "locomo_30q", {}).get("summary", {}).get("arch_r@50", 0.0)
+    best_locomo_r50 = (
+        data["results"]
+        .get(best, {})
+        .get("locomo_30q", {})
+        .get("summary", {})
+        .get("arch_r@50", 0.0)
+    )
     delta = best_locomo_r50 - v2f_locomo_r50
     line = (
         f"- v2f locomo_30q r@50 = {v2f_locomo_r50:.4f}\n"

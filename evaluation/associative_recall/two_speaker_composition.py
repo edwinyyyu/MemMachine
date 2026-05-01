@@ -54,22 +54,27 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
 
+# Narrow wins
+from alias_expansion import (
+    _ALIAS_GROUPS_FILE,
+    AliasExpandV2fFull,
+    find_alias_matches,
+)
 from associative_recall import (
     CACHE_DIR,
     Segment,
     SegmentStore,
 )
 from best_shot import MetaV2f
+from clause_decomposition import ClausePlusV2f, split_query_into_clauses
+from context_embedding import ContextEmbW1Stacked
 from critical_info_store import (
     CriticalInfoGenerator,
     CriticalInfoStore,
@@ -77,42 +82,26 @@ from critical_info_store import (
     decisions_to_altkeys,
     merge_always_top_m,
 )
-from domain_agnostic import (
-    DomainAgnosticVariant,
-    V2F_STYLE_EXPLICIT_PROMPT,
-    NEUTRAL_HEADER,
-)
+from dotenv import load_dotenv
 from ensemble_retrieval import (
     SpecialistOutput,
     _attach_cosine_scores,
     _dedupe_preserve_order,
 )
-from goal_chain import GoalChainRetriever
 from ingest_regex_eval import (
     Embedder,
-    embed_texts_cached,
     compute_recall,
-    fair_backfill_turn_ids,
+    embed_texts_cached,
 )
-from type_enumerated import TypeEnumeratedVariant, V2fPlusTypesVariant
-
-# Narrow wins
-from alias_expansion import (
-    AliasExpandV2fFull,
-    find_alias_matches,
-    _ALIAS_GROUPS_FILE,
-)
-from clause_decomposition import ClausePlusV2f, split_query_into_clauses
-from context_embedding import ContextEmbW1Stacked
+from openai import OpenAI
 from speaker_attributed import (
-    SpeakerUserFilter,
     extract_name_mentions,
-    _CONV_SPEAKERS_FILE,
 )
 from two_speaker_filter import (
-    TwoSpeakerFilter,
     _CONV_TWO_SPEAKERS_FILE,
+    TwoSpeakerFilter,
 )
+from type_enumerated import TypeEnumeratedVariant
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -154,11 +143,11 @@ CRITICAL_PROMPT_VERSION = "v3"
 # Core specialists whose outputs we need per-question.
 CORE_SPECIALISTS = (
     "v2f",
-    "type_enumerated",                # for ens_2 sum_cosine
-    "two_speaker_filter",             # base layer
-    "alias_expand_v2f",               # overlay
-    "contextemb_w1_stacked",          # overlay
-    "clause_plus_v2f",                # overlay
+    "type_enumerated",  # for ens_2 sum_cosine
+    "two_speaker_filter",  # base layer
+    "alias_expand_v2f",  # overlay
+    "contextemb_w1_stacked",  # overlay
+    "clause_plus_v2f",  # overlay
 )
 
 
@@ -217,7 +206,9 @@ def run_specialists(
             segs = []
         scores = _attach_cosine_scores(store, segs, query_emb)
         out[name] = SpecialistOutput(
-            name=name, segments=segs, cosine_scores=scores,
+            name=name,
+            segments=segs,
+            cosine_scores=scores,
             llm_calls=arch.llm_calls,
         )
     return out
@@ -390,8 +381,8 @@ class QContext:
     cosine_segments: list[Segment]
     cosine_scores: list[float]
     outputs: dict[str, SpecialistOutput]
-    matched_side: str            # "user" | "assistant" | "both" | "none"
-    speaker_fires: bool          # side in ("user", "assistant")
+    matched_side: str  # "user" | "assistant" | "both" | "none"
+    speaker_fires: bool  # side in ("user", "assistant")
     alias_fires: bool
     multi_clause: bool
     crit_ranked: list[tuple[int, float, Segment]]
@@ -413,9 +404,7 @@ def build_contexts(
         cat = q.get("category", "unknown")
 
         q_emb = specialists["v2f"].embed_text(q_text)
-        cos_res = store.search(
-            q_emb, top_k=max(BUDGETS), conversation_id=conv_id
-        )
+        cos_res = store.search(q_emb, top_k=max(BUDGETS), conversation_id=conv_id)
         cos_segs = list(cos_res.segments)
         cos_scores = list(cos_res.scores)
 
@@ -435,22 +424,24 @@ def build_contexts(
                 min_score=-1.0,
             )
 
-        ctxs.append(QContext(
-            question=q,
-            q_text=q_text,
-            conv_id=conv_id,
-            source_ids=source_ids,
-            category=cat,
-            query_emb=q_emb,
-            cosine_segments=cos_segs,
-            cosine_scores=cos_scores,
-            outputs=outputs,
-            matched_side=side,
-            speaker_fires=speaker_fires,
-            alias_fires=alias_fires,
-            multi_clause=multi_clause,
-            crit_ranked=crit,
-        ))
+        ctxs.append(
+            QContext(
+                question=q,
+                q_text=q_text,
+                conv_id=conv_id,
+                source_ids=source_ids,
+                category=cat,
+                query_emb=q_emb,
+                cosine_segments=cos_segs,
+                cosine_scores=cos_scores,
+                outputs=outputs,
+                matched_side=side,
+                speaker_fires=speaker_fires,
+                alias_fires=alias_fires,
+                multi_clause=multi_clause,
+                crit_ranked=crit,
+            )
+        )
     return ctxs
 
 
@@ -486,38 +477,36 @@ def var_two_speaker_alone(ctx: QContext, K: int, crit_ok: bool) -> set[int]:
     return {s.turn_id for s in segs}
 
 
-def var_two_speaker_plus_ens2(
-    ctx: QContext, K: int, crit_ok: bool
-) -> set[int]:
+def var_two_speaker_plus_ens2(ctx: QContext, K: int, crit_ok: bool) -> set[int]:
     base = _two_speaker_base_seglist(ctx)
-    merged_2 = merge_by_sum_cosine(
-        ctx.outputs, ("v2f", "type_enumerated")
-    )
+    merged_2 = merge_by_sum_cosine(ctx.outputs, ("v2f", "type_enumerated"))
     ens_segs = [seg for seg, _ in merged_2]
     combined = stack_merge([base, ens_segs])
     segs = fair_backfill_segments(combined, ctx.cosine_segments, K)
     return {s.turn_id for s in segs}
 
 
-def var_two_speaker_plus_critical(
-    ctx: QContext, K: int, crit_ok: bool
-) -> set[int]:
+def var_two_speaker_plus_critical(ctx: QContext, K: int, crit_ok: bool) -> set[int]:
     base = _two_speaker_base_seglist(ctx)
     if not crit_ok or not ctx.crit_ranked:
         segs = fair_backfill_segments(base, ctx.cosine_segments, K)
         return {s.turn_id for s in segs}
     main_ranked = _main_ranked_with_scores_from_seglist(
-        base, ctx.cosine_segments, ctx.cosine_scores,
+        base,
+        ctx.cosine_segments,
+        ctx.cosine_scores,
     )
     merged = merge_always_top_m(
-        main_ranked, ctx.crit_ranked, K, top_m=5, min_score=0.2,
+        main_ranked,
+        ctx.crit_ranked,
+        K,
+        top_m=5,
+        min_score=0.2,
     )
     return {s.turn_id for s in merged}
 
 
-def var_two_speaker_plus_alias(
-    ctx: QContext, K: int, crit_ok: bool
-) -> set[int]:
+def var_two_speaker_plus_alias(ctx: QContext, K: int, crit_ok: bool) -> set[int]:
     base = _two_speaker_base_seglist(ctx)
     alias_so = ctx.outputs.get("alias_expand_v2f")
     alias_segs = list(alias_so.segments) if alias_so else []
@@ -526,9 +515,7 @@ def var_two_speaker_plus_alias(
     return {s.turn_id for s in segs}
 
 
-def var_two_speaker_plus_context(
-    ctx: QContext, K: int, crit_ok: bool
-) -> set[int]:
+def var_two_speaker_plus_context(ctx: QContext, K: int, crit_ok: bool) -> set[int]:
     base = _two_speaker_base_seglist(ctx)
     ctx_so = ctx.outputs.get("contextemb_w1_stacked")
     ctx_segs = list(ctx_so.segments) if ctx_so else []
@@ -537,9 +524,7 @@ def var_two_speaker_plus_context(
     return {s.turn_id for s in segs}
 
 
-def var_two_speaker_all_supplements(
-    ctx: QContext, K: int, crit_ok: bool
-) -> set[int]:
+def var_two_speaker_all_supplements(ctx: QContext, K: int, crit_ok: bool) -> set[int]:
     """Full composition v2 on top of two_speaker_filter base.
 
     Apply order:
@@ -556,9 +541,7 @@ def var_two_speaker_all_supplements(
     base = _two_speaker_base_seglist(ctx)
     segs_order.append(base)
 
-    merged_2 = merge_by_sum_cosine(
-        ctx.outputs, ("v2f", "type_enumerated")
-    )
+    merged_2 = merge_by_sum_cosine(ctx.outputs, ("v2f", "type_enumerated"))
     segs_order.append([seg for seg, _ in merged_2])
 
     alias_so = ctx.outputs.get("alias_expand_v2f")
@@ -581,10 +564,16 @@ def var_two_speaker_all_supplements(
         return {s.turn_id for s in segs}
 
     main_ranked = _main_ranked_with_scores_from_seglist(
-        combined, ctx.cosine_segments, ctx.cosine_scores,
+        combined,
+        ctx.cosine_segments,
+        ctx.cosine_scores,
     )
     merged = merge_always_top_m(
-        main_ranked, ctx.crit_ranked, K, top_m=5, min_score=0.2,
+        main_ranked,
+        ctx.crit_ranked,
+        K,
+        top_m=5,
+        min_score=0.2,
     )
     return {s.turn_id for s in merged}
 
@@ -615,8 +604,7 @@ def build_critical_store(
     target = [s for s in store.segments if s.conversation_id in conv_ids]
     if not target:
         return None
-    print(f"  classifying {len(target)} turns for critical-info...",
-          flush=True)
+    print(f"  classifying {len(target)} turns for critical-info...", flush=True)
     t_c = time.time()
     decisions = classify_turns(generator, target, log_every=500)
     print(
@@ -627,9 +615,7 @@ def build_critical_store(
     alt_keys = decisions_to_altkeys(decisions)
     alt_texts = [k.text for k in alt_keys]
     if alt_texts:
-        alt_embs = embed_texts_cached(
-            client, embedder.embedding_cache, alt_texts
-        )
+        alt_embs = embed_texts_cached(client, embedder.embedding_cache, alt_texts)
     else:
         alt_embs = np.zeros((0, 1536), dtype=np.float32)
     crit_store = CriticalInfoStore(store, alt_keys, alt_embs)
@@ -693,7 +679,12 @@ def evaluate_dataset(
     print("  building per-question contexts...", flush=True)
     t_ctx = time.time()
     ctxs = build_contexts(
-        store, specialists, qs, conv_two_speakers, conv_aliases, crit_store,
+        store,
+        specialists,
+        qs,
+        conv_two_speakers,
+        conv_aliases,
+        crit_store,
     )
     print(f"  contexts built in {time.time() - t_ctx:.1f}s", flush=True)
 
@@ -731,8 +722,7 @@ def evaluate_dataset(
 
     # Aggregate.
     def _agg(rows: list[dict], key: str) -> float:
-        vals = [r["recall"].get(key, 0.0) for r in rows
-                if r["num_source_turns"] > 0]
+        vals = [r["recall"].get(key, 0.0) for r in rows if r["num_source_turns"] > 0]
         return round(sum(vals) / len(vals), 4) if vals else 0.0
 
     agg: dict[str, float] = {}
@@ -765,8 +755,7 @@ def evaluate_dataset(
 
     # Per-subset.
     def _subset_agg(filter_fn) -> dict:
-        subset = [r for r in per_q_rows
-                  if r["num_source_turns"] > 0 and filter_fn(r)]
+        subset = [r for r in per_q_rows if r["num_source_turns"] > 0 and filter_fn(r)]
         if not subset:
             return {"n": 0}
         res: dict = {"n": len(subset)}
@@ -779,9 +768,7 @@ def evaluate_dataset(
     subsets = {
         "speaker_fires": _subset_agg(lambda r: r["speaker_fires"]),
         "matched_user": _subset_agg(lambda r: r["matched_side"] == "user"),
-        "matched_assistant": _subset_agg(
-            lambda r: r["matched_side"] == "assistant"
-        ),
+        "matched_assistant": _subset_agg(lambda r: r["matched_side"] == "assistant"),
         "matched_both": _subset_agg(lambda r: r["matched_side"] == "both"),
         "matched_none": _subset_agg(lambda r: r["matched_side"] == "none"),
     }
@@ -856,11 +843,18 @@ def render_markdown(all_results: dict, total_elapsed: float) -> str:
     # Subset analysis on LoCoMo
     loc_sub = all_results.get("locomo_30q", {}).get("subset_aggregates", {})
     L.append("\n## LoCoMo subset analysis (two_speaker_all_supplements)\n")
-    L.append("| Subset | n | v2f@50 | two_speaker_alone@50 | "
-             "two_speaker_all_supplements@50 | Δ(all vs v2f) |")
+    L.append(
+        "| Subset | n | v2f@50 | two_speaker_alone@50 | "
+        "two_speaker_all_supplements@50 | Δ(all vs v2f) |"
+    )
     L.append("|---|---:|---:|---:|---:|---:|")
-    for sub_name in ("matched_user", "matched_assistant", "matched_both",
-                      "matched_none", "speaker_fires"):
+    for sub_name in (
+        "matched_user",
+        "matched_assistant",
+        "matched_both",
+        "matched_none",
+        "speaker_fires",
+    ):
         d = loc_sub.get(sub_name, {})
         n = d.get("n", 0)
         if n == 0:
@@ -869,10 +863,7 @@ def render_markdown(all_results: dict, total_elapsed: float) -> str:
         v = d.get("v2f@50", 0.0)
         ts = d.get("two_speaker_alone@50", 0.0)
         a = d.get("two_speaker_all_supplements@50", 0.0)
-        L.append(
-            f"| {sub_name} | {n} | {v:.4f} | {ts:.4f} | {a:.4f} | "
-            f"{a - v:+.4f} |"
-        )
+        L.append(f"| {sub_name} | {n} | {v:.4f} | {ts:.4f} | {a:.4f} | {a - v:+.4f} |")
 
     # Decision + verdict
     L.append("\n## Decision\n")
@@ -888,7 +879,7 @@ def render_markdown(all_results: dict, total_elapsed: float) -> str:
     L.append(f"- LoCoMo K=50 v2f = {loc_v2f_50:.4f}")
     L.append(f"- LoCoMo K=50 two_speaker_alone = {loc_ts_50:.4f}")
     L.append(f"- LoCoMo K=50 two_speaker_all_supplements = {loc_all_50:.4f}")
-    L.append(f"- Prior ceiling (composition_v2_all) = 0.9170")
+    L.append("- Prior ceiling (composition_v2_all) = 0.9170")
     L.append(f"- Δ vs 0.9170: {loc_all_50 - 0.9170:+.4f}")
     if loc_all_50 > 0.9170 + 0.001:
         L.append(
@@ -912,7 +903,7 @@ def render_markdown(all_results: dict, total_elapsed: float) -> str:
         L.append(
             f"- K=20 confirms: two_speaker_alone ({loc_ts_20:.4f}) > "
             f"two_speaker_all_supplements ({loc_all_20:.4f}) by "
-            f"{(loc_ts_20 - loc_all_20)*100:.1f}pp. Supplements HURT at K=20."
+            f"{(loc_ts_20 - loc_all_20) * 100:.1f}pp. Supplements HURT at K=20."
         )
     elif abs(loc_ts_20 - loc_all_20) <= 0.001:
         L.append(
@@ -922,7 +913,7 @@ def render_markdown(all_results: dict, total_elapsed: float) -> str:
     else:
         L.append(
             f"- K=20: all_supplements ({loc_all_20:.4f}) > two_speaker_alone "
-            f"({loc_ts_20:.4f}) by {(loc_all_20 - loc_ts_20)*100:.1f}pp. "
+            f"({loc_ts_20:.4f}) by {(loc_all_20 - loc_ts_20) * 100:.1f}pp. "
             f"Supplements HELP even at K=20 — surprising."
         )
 
@@ -954,12 +945,17 @@ def main() -> None:
     for ds in DATASETS:
         try:
             all_results[ds] = evaluate_dataset(
-                ds, client, conv_two_speakers, conv_aliases,
-                generator, embedder,
+                ds,
+                client,
+                conv_two_speakers,
+                conv_aliases,
+                generator,
+                embedder,
             )
         except Exception as e:
             print(f"  [fatal] {ds} evaluation failed: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
             continue
 
@@ -976,7 +972,8 @@ def main() -> None:
                         }
                         for ds2, r in all_results.items()
                     },
-                    f, indent=2,
+                    f,
+                    indent=2,
                 )
         except Exception as e:
             print(f"  (warn) interim flush failed: {e}", flush=True)
@@ -1006,9 +1003,9 @@ def main() -> None:
     print("\n" + "=" * 80)
     print("TWO-SPEAKER COMPOSITION — recall summary")
     print("=" * 80)
-    print(f"{'variant':32s} " + " ".join(
-        f"{ds:>14s}@20 {ds:>14s}@50" for ds in DATASETS
-    ))
+    print(
+        f"{'variant':32s} " + " ".join(f"{ds:>14s}@20 {ds:>14s}@50" for ds in DATASETS)
+    )
     for var_name, _ in VARIANTS:
         row = f"{var_name:32s} "
         for ds in DATASETS:

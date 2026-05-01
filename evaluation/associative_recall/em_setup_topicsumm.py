@@ -26,19 +26,35 @@ Run once:
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
+from em_setup_summ import (
+    FILLER_MARKER,
+    SUMMARY_MODEL,
+    SummaryCache,
+    _build_prev_context,
+    _clean_summary,
+    build_summary_prompt,
+)
+from em_setup_summ import (
+    load_conversation_segments as load_summ_segments,
+)
 
+# Reuse the exact prompts / normalizers already used by em_setup_topic and
+# em_setup_summ so cache keys line up and zero new LLM calls are needed.
+from em_setup_topic import (
+    TOPIC_MODEL,
+    TopicCache,
+    _build_topic_prompt,
+    _normalize_topic,
+)
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -65,25 +81,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-# Reuse the exact prompts / normalizers already used by em_setup_topic and
-# em_setup_summ so cache keys line up and zero new LLM calls are needed.
-from em_setup_topic import (
-    TOPIC_MODEL,
-    TopicCache,
-    _build_topic_prompt,
-    _normalize_topic,
-)
-from em_setup_summ import (
-    FILLER_MARKER,
-    SUMMARY_MODEL,
-    SummaryCache,
-    _build_prev_context,
-    _clean_summary,
-    build_summary_prompt,
-    load_conversation_segments as load_summ_segments,
-)
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -306,6 +305,7 @@ async def main() -> None:
     speakers_map = load_speaker_map()
     # Reuse em_setup_summ's loader (segments_extended_locomo_prefixed.npz).
     from em_setup_summ import SEGMENTS_FILE
+
     conv_segments = load_summ_segments(SEGMENTS_FILE)
     for cid in LOCOMO_CONV_IDS:
         print(f"  {cid}: {len(conv_segments[cid])} turns", flush=True)

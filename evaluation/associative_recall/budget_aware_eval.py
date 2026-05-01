@@ -48,9 +48,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -59,6 +56,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -271,8 +270,9 @@ ASSESSMENT: <1-2 sentence evaluation>
 Nothing else."""
 
 
-def _render_cue_prompt(template: str, question: str,
-                       context_section: str, num_cues: int) -> str:
+def _render_cue_prompt(
+    template: str, question: str, context_section: str, num_cues: int
+) -> str:
     cue_word = "cue" if num_cues == 1 else "cues"
     cue_format = "\n".join(["CUE: <text>"] * num_cues)
     return template.format(
@@ -284,8 +284,7 @@ def _render_cue_prompt(template: str, question: str,
     )
 
 
-def _render_gap_prompt(question: str, formatted_segments: str,
-                       num_gaps: int) -> str:
+def _render_gap_prompt(question: str, formatted_segments: str, num_gaps: int) -> str:
     gap_word = "gap" if num_gaps == 1 else "gaps"
     gap_format = "\n".join(["GAP: <text>"] * num_gaps)
     return GAP_ASSESSMENT_PROMPT.format(
@@ -300,8 +299,9 @@ def _render_gap_prompt(question: str, formatted_segments: str,
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _format_segments(segments: list[Segment], max_items: int = 16,
-                     max_chars: int = 250) -> str:
+def _format_segments(
+    segments: list[Segment], max_items: int = 16, max_chars: int = 250
+) -> str:
     if not segments:
         return "(no content retrieved yet)"
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
@@ -317,10 +317,7 @@ def _build_context_section(all_segments: list[Segment]) -> str:
             "No conversation excerpts retrieved yet. Generate cues based on "
             "what you'd expect to find in a conversation about this topic."
         )
-    return (
-        "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-        + _format_segments(all_segments)
-    )
+    return "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
 
 
 def _parse_lines(response: str, prefix: str) -> list[str]:
@@ -328,7 +325,7 @@ def _parse_lines(response: str, prefix: str) -> list[str]:
     for line in response.strip().split("\n"):
         line = line.strip()
         if line.startswith(prefix):
-            value = line[len(prefix):].strip()
+            value = line[len(prefix) :].strip()
             if value:
                 items.append(value)
     return items
@@ -343,8 +340,7 @@ class BudgetBase:
     name: str = "base"
     budget: int = 0
 
-    def __init__(self, store: SegmentStore, budget: int,
-                 client: OpenAI | None = None):
+    def __init__(self, store: SegmentStore, budget: int, client: OpenAI | None = None):
         self.store = store
         self.budget = budget
         self.client = client or OpenAI(timeout=120.0)
@@ -361,16 +357,13 @@ class BudgetBase:
         if cached is not None:
             self.embed_calls += 1
             return cached
-        response = self.client.embeddings.create(
-            model=EMBED_MODEL, input=[text]
-        )
+        response = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
         embedding = np.array(response.data[0].embedding, dtype=np.float32)
         self.embedding_cache.put(text, embedding)
         self.embed_calls += 1
         return embedding
 
-    def llm_call(self, prompt: str, model: str = MODEL,
-                 max_tokens: int = 2000) -> str:
+    def llm_call(self, prompt: str, model: str = MODEL, max_tokens: int = 2000) -> str:
         cached = self.llm_cache.get(model, prompt)
         if cached is not None:
             self.llm_calls += 1
@@ -394,7 +387,7 @@ class BudgetBase:
         self.llm_calls = 0
 
     # Subclasses override
-    def retrieve(self, question: str, conversation_id: str) -> "BudgetResult":
+    def retrieve(self, question: str, conversation_id: str) -> BudgetResult:
         raise NotImplementedError
 
 
@@ -424,7 +417,9 @@ def _retrieve_into(
     if top_k <= 0:
         return 0
     result = store.search(
-        query_emb, top_k=top_k, conversation_id=conversation_id,
+        query_emb,
+        top_k=top_k,
+        conversation_id=conversation_id,
         exclude_indices=exclude,
     )
     added = 0
@@ -453,9 +448,7 @@ def _top_up_with_baseline(
     needed = budget - len(segments)
     if needed <= 0:
         return 0
-    return _retrieve_into(
-        store, query_emb, needed, conversation_id, exclude, segments
-    )
+    return _retrieve_into(store, query_emb, needed, conversation_id, exclude, segments)
 
 
 # ===========================================================================
@@ -487,10 +480,18 @@ class HopCueArch(BudgetBase):
     hop0 + num_cues * per_cue_k == budget.
     """
 
-    def __init__(self, store: SegmentStore, budget: int, *,
-                 hop0: int, num_cues: int, per_cue_k: int,
-                 prompt_kind: str, name: str,
-                 client: OpenAI | None = None):
+    def __init__(
+        self,
+        store: SegmentStore,
+        budget: int,
+        *,
+        hop0: int,
+        num_cues: int,
+        per_cue_k: int,
+        prompt_kind: str,
+        name: str,
+        client: OpenAI | None = None,
+    ):
         super().__init__(store, budget, client)
         self.hop0 = hop0
         self.num_cues = num_cues
@@ -510,8 +511,12 @@ class HopCueArch(BudgetBase):
         # Hop 0
         if self.hop0 > 0:
             _retrieve_into(
-                self.store, query_emb, self.hop0, conversation_id,
-                exclude, all_segments,
+                self.store,
+                query_emb,
+                self.hop0,
+                conversation_id,
+                exclude,
+                all_segments,
             )
 
         # Build context for prompt
@@ -525,9 +530,7 @@ class HopCueArch(BudgetBase):
         else:
             raise ValueError(f"Unknown prompt_kind: {self.prompt_kind}")
 
-        prompt = _render_cue_prompt(
-            template, question, context_section, self.num_cues
-        )
+        prompt = _render_cue_prompt(template, question, context_section, self.num_cues)
         output = self.llm_call(prompt)
         cues = _parse_lines(output, "CUE:")
 
@@ -538,14 +541,22 @@ class HopCueArch(BudgetBase):
             used_cues.append(cue)
             cue_emb = self.embed_text(cue)
             _retrieve_into(
-                self.store, cue_emb, self.per_cue_k, conversation_id,
-                exclude, all_segments,
+                self.store,
+                cue_emb,
+                self.per_cue_k,
+                conversation_id,
+                exclude,
+                all_segments,
             )
 
         # Top up if short
         _top_up_with_baseline(
-            self.store, query_emb, self.budget, conversation_id,
-            exclude, all_segments,
+            self.store,
+            query_emb,
+            self.budget,
+            conversation_id,
+            exclude,
+            all_segments,
         )
 
         # Strict truncate (should be no-op if math is correct)
@@ -573,12 +584,20 @@ class HopCueGapArch(BudgetBase):
     budget = hop0 + num_cues * per_cue_k + num_gaps * per_gap_k.
     """
 
-    def __init__(self, store: SegmentStore, budget: int, *,
-                 hop0: int, num_cues: int, per_cue_k: int,
-                 num_gaps: int, per_gap_k: int,
-                 name: str,
-                 prompt_kind: str = "v2f",
-                 client: OpenAI | None = None):
+    def __init__(
+        self,
+        store: SegmentStore,
+        budget: int,
+        *,
+        hop0: int,
+        num_cues: int,
+        per_cue_k: int,
+        num_gaps: int,
+        per_gap_k: int,
+        name: str,
+        prompt_kind: str = "v2f",
+        client: OpenAI | None = None,
+    ):
         super().__init__(store, budget, client)
         self.hop0 = hop0
         self.num_cues = num_cues
@@ -601,14 +620,19 @@ class HopCueGapArch(BudgetBase):
         # Hop 0
         if self.hop0 > 0:
             _retrieve_into(
-                self.store, query_emb, self.hop0, conversation_id,
-                exclude, all_segments,
+                self.store,
+                query_emb,
+                self.hop0,
+                conversation_id,
+                exclude,
+                all_segments,
             )
 
         # Cue generation (v2f)
         context_section = _build_context_section(all_segments)
-        template = (V2F_PROMPT_TEMPLATE if self.prompt_kind == "v2f"
-                    else V15_PROMPT_TEMPLATE)
+        template = (
+            V2F_PROMPT_TEMPLATE if self.prompt_kind == "v2f" else V15_PROMPT_TEMPLATE
+        )
         cue_prompt = _render_cue_prompt(
             template, question, context_section, self.num_cues
         )
@@ -621,8 +645,12 @@ class HopCueGapArch(BudgetBase):
             used_cues.append(cue)
             cue_emb = self.embed_text(cue)
             _retrieve_into(
-                self.store, cue_emb, self.per_cue_k, conversation_id,
-                exclude, all_segments,
+                self.store,
+                cue_emb,
+                self.per_cue_k,
+                conversation_id,
+                exclude,
+                all_segments,
             )
 
         # Gap generation
@@ -637,14 +665,22 @@ class HopCueGapArch(BudgetBase):
             used_gaps.append(gap)
             gap_emb = self.embed_text(gap)
             _retrieve_into(
-                self.store, gap_emb, self.per_gap_k, conversation_id,
-                exclude, all_segments,
+                self.store,
+                gap_emb,
+                self.per_gap_k,
+                conversation_id,
+                exclude,
+                all_segments,
             )
 
         # Top up if needed
         _top_up_with_baseline(
-            self.store, query_emb, self.budget, conversation_id,
-            exclude, all_segments,
+            self.store,
+            query_emb,
+            self.budget,
+            conversation_id,
+            exclude,
+            all_segments,
         )
 
         all_segments = all_segments[: self.budget]
@@ -679,23 +715,43 @@ def build_arch(name: str, store: SegmentStore) -> BudgetBase:
         return arch
     if name == "v15_tight_20":
         return HopCueArch(
-            store, budget=20, hop0=10, num_cues=2, per_cue_k=5,
-            prompt_kind="v15", name=name,
+            store,
+            budget=20,
+            hop0=10,
+            num_cues=2,
+            per_cue_k=5,
+            prompt_kind="v15",
+            name=name,
         )
     if name == "v2f_tight_20":
         return HopCueArch(
-            store, budget=20, hop0=10, num_cues=2, per_cue_k=5,
-            prompt_kind="v2f", name=name,
+            store,
+            budget=20,
+            hop0=10,
+            num_cues=2,
+            per_cue_k=5,
+            prompt_kind="v2f",
+            name=name,
         )
     if name == "pure_cue_20":
         return HopCueArch(
-            store, budget=20, hop0=0, num_cues=4, per_cue_k=5,
-            prompt_kind="v2f", name=name,
+            store,
+            budget=20,
+            hop0=0,
+            num_cues=4,
+            per_cue_k=5,
+            prompt_kind="v2f",
+            name=name,
         )
     if name == "single_cue_20":
         return HopCueArch(
-            store, budget=20, hop0=15, num_cues=1, per_cue_k=5,
-            prompt_kind="v15", name=name,
+            store,
+            budget=20,
+            hop0=15,
+            num_cues=1,
+            per_cue_k=5,
+            prompt_kind="v15",
+            name=name,
         )
 
     # Budget 50
@@ -705,23 +761,45 @@ def build_arch(name: str, store: SegmentStore) -> BudgetBase:
         return arch
     if name == "v15_tight_50":
         return HopCueArch(
-            store, budget=50, hop0=20, num_cues=2, per_cue_k=15,
-            prompt_kind="v15", name=name,
+            store,
+            budget=50,
+            hop0=20,
+            num_cues=2,
+            per_cue_k=15,
+            prompt_kind="v15",
+            name=name,
         )
     if name == "v2f_tight_50":
         return HopCueArch(
-            store, budget=50, hop0=20, num_cues=2, per_cue_k=15,
-            prompt_kind="v2f", name=name,
+            store,
+            budget=50,
+            hop0=20,
+            num_cues=2,
+            per_cue_k=15,
+            prompt_kind="v2f",
+            name=name,
         )
     if name == "wide_cue_50":
         return HopCueArch(
-            store, budget=50, hop0=10, num_cues=4, per_cue_k=10,
-            prompt_kind="v2f", name=name,
+            store,
+            budget=50,
+            hop0=10,
+            num_cues=4,
+            per_cue_k=10,
+            prompt_kind="v2f",
+            name=name,
         )
     if name == "gencheck_50":
         return HopCueGapArch(
-            store, budget=50, hop0=15, num_cues=2, per_cue_k=10,
-            num_gaps=3, per_gap_k=5, prompt_kind="v2f", name=name,
+            store,
+            budget=50,
+            hop0=15,
+            num_cues=2,
+            per_cue_k=10,
+            num_gaps=3,
+            per_gap_k=5,
+            prompt_kind="v2f",
+            name=name,
         )
 
     # Budget 100
@@ -731,38 +809,53 @@ def build_arch(name: str, store: SegmentStore) -> BudgetBase:
         return arch
     if name == "v2f_100":
         return HopCueGapArch(
-            store, budget=100, hop0=30, num_cues=2, per_cue_k=20,
-            num_gaps=1, per_gap_k=30, prompt_kind="v2f", name=name,
+            store,
+            budget=100,
+            hop0=30,
+            num_cues=2,
+            per_cue_k=20,
+            num_gaps=1,
+            per_gap_k=30,
+            prompt_kind="v2f",
+            name=name,
         )
 
     raise ValueError(f"Unknown architecture: {name}")
 
 
-BUDGET_K20 = ["baseline_20", "v15_tight_20", "v2f_tight_20",
-              "pure_cue_20", "single_cue_20"]
-BUDGET_K50 = ["baseline_50", "v15_tight_50", "v2f_tight_50",
-              "wide_cue_50", "gencheck_50"]
+BUDGET_K20 = [
+    "baseline_20",
+    "v15_tight_20",
+    "v2f_tight_20",
+    "pure_cue_20",
+    "single_cue_20",
+]
+BUDGET_K50 = [
+    "baseline_50",
+    "v15_tight_50",
+    "v2f_tight_50",
+    "wide_cue_50",
+    "gencheck_50",
+]
 BUDGET_K100 = ["baseline_100", "v2f_100"]
 ALL_ARCH_NAMES = BUDGET_K20 + BUDGET_K50 + BUDGET_K100
 
 
-ARCH_BUDGET = {a: 20 for a in BUDGET_K20}
-ARCH_BUDGET.update({a: 50 for a in BUDGET_K50})
-ARCH_BUDGET.update({a: 100 for a in BUDGET_K100})
+ARCH_BUDGET = dict.fromkeys(BUDGET_K20, 20)
+ARCH_BUDGET.update(dict.fromkeys(BUDGET_K50, 50))
+ARCH_BUDGET.update(dict.fromkeys(BUDGET_K100, 100))
 
 
 # ===========================================================================
 # Evaluation logic
 # ===========================================================================
-def compute_recall(retrieved_turn_ids: set[int],
-                   source_turn_ids: set[int]) -> float:
+def compute_recall(retrieved_turn_ids: set[int], source_turn_ids: set[int]) -> float:
     if not source_turn_ids:
         return 1.0
     return len(retrieved_turn_ids & source_turn_ids) / len(source_turn_ids)
 
 
-def evaluate_one(arch: BudgetBase, question: dict,
-                 verbose: bool = False) -> dict:
+def evaluate_one(arch: BudgetBase, question: dict, verbose: bool = False) -> dict:
     q_text = question["question"]
     conv_id = question["conversation_id"]
     source_ids = set(question["source_chat_ids"])
@@ -796,9 +889,19 @@ def evaluate_one(arch: BudgetBase, question: dict,
         "llm_calls": arch.llm_calls,
         "time_s": round(elapsed, 2),
         "metadata": {
-            k: v for k, v in result.metadata.items()
-            if k in ("name", "cues", "gaps", "hop0", "num_cues",
-                     "per_cue_k", "num_gaps", "per_gap_k")
+            k: v
+            for k, v in result.metadata.items()
+            if k
+            in (
+                "name",
+                "cues",
+                "gaps",
+                "hop0",
+                "num_cues",
+                "per_cue_k",
+                "num_gaps",
+                "per_gap_k",
+            )
         },
     }
 
@@ -812,12 +915,10 @@ def evaluate_one(arch: BudgetBase, question: dict,
     return row
 
 
-def summarize(results: list[dict], arch_name: str, benchmark: str,
-              budget: int) -> dict:
+def summarize(results: list[dict], arch_name: str, benchmark: str, budget: int) -> dict:
     n = len(results)
     if n == 0:
-        return {"arch": arch_name, "benchmark": benchmark,
-                "budget": budget, "n": 0}
+        return {"arch": arch_name, "benchmark": benchmark, "budget": budget, "n": 0}
 
     recalls = [r["recall"] for r in results]
     actual_counts = [r["actual_count"] for r in results]
@@ -842,12 +943,8 @@ def summarize(results: list[dict], arch_name: str, benchmark: str,
         "mean_recall": round(sum(recalls) / n, 4),
         "mean_actual_count": round(sum(actual_counts) / n, 2),
         "under_budget": under_budget,
-        "avg_embed_calls": round(
-            sum(r["embed_calls"] for r in results) / n, 2
-        ),
-        "avg_llm_calls": round(
-            sum(r["llm_calls"] for r in results) / n, 2
-        ),
+        "avg_embed_calls": round(sum(r["embed_calls"] for r in results) / n, 2),
+        "avg_llm_calls": round(sum(r["llm_calls"] for r in results) / n, 2),
         "avg_time_s": round(sum(r["time_s"] for r in results) / n, 2),
         "per_category": cat_summary,
     }
@@ -930,7 +1027,7 @@ def run_architecture_on_dataset(
     for i, q in enumerate(qs):
         q_short = q["question"][:60].replace("\n", " ")
         print(
-            f"  [{i+1}/{len(qs)}] {q['category']}: {q_short}...",
+            f"  [{i + 1}/{len(qs)}] {q['category']}: {q_short}...",
             flush=True,
         )
         try:
@@ -939,6 +1036,7 @@ def run_architecture_on_dataset(
         except Exception as e:
             print(f"  ERROR: {type(e).__name__}: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -953,15 +1051,16 @@ def run_architecture_on_dataset(
     with open(result_file, "w") as f:
         json.dump(
             {"results": results, "summary": summary},
-            f, indent=2, default=str,
+            f,
+            indent=2,
+            default=str,
         )
 
     # Sanity: verify budget enforcement
     over_budget = [r for r in results if r["actual_count"] > budget]
     if over_budget:
         print(
-            f"  !! BUDGET VIOLATED on {len(over_budget)} questions "
-            f"(actual > {budget})"
+            f"  !! BUDGET VIOLATED on {len(over_budget)} questions (actual > {budget})"
         )
     print(
         f"  -> mean recall={summary['mean_recall']:.3f}  "
@@ -976,8 +1075,8 @@ def run_architecture_on_dataset(
 
 def print_final_table(all_summaries: dict) -> None:
     """Summary layout:
-       Architecture | K=20 LoCoMo | K=20 Synth | K=20 Puzzle | K=20 Advanced |
-       K=50 LoCoMo | ...
+    Architecture | K=20 LoCoMo | K=20 Synth | K=20 Puzzle | K=20 Advanced |
+    K=50 LoCoMo | ...
     """
     print("\n" + "=" * 110)
     print("FINAL COMPARISON TABLE (r@K, absolute)")
@@ -992,7 +1091,9 @@ def print_final_table(all_summaries: dict) -> None:
     }
 
     for group_name, arch_list in [
-        ("K=20", BUDGET_K20), ("K=50", BUDGET_K50), ("K=100", BUDGET_K100),
+        ("K=20", BUDGET_K20),
+        ("K=50", BUDGET_K50),
+        ("K=100", BUDGET_K100),
     ]:
         budget = int(group_name.split("=")[1])
         header = f"{'Architecture':<22s}" + "".join(
@@ -1019,10 +1120,14 @@ def print_final_table(all_summaries: dict) -> None:
     print("DELTA vs cosine baseline (same K, same dataset)")
     print("=" * 110)
     baselines = {
-        20: "baseline_20", 50: "baseline_50", 100: "baseline_100",
+        20: "baseline_20",
+        50: "baseline_50",
+        100: "baseline_100",
     }
     for group_name, arch_list in [
-        ("K=20", BUDGET_K20), ("K=50", BUDGET_K50), ("K=100", BUDGET_K100),
+        ("K=20", BUDGET_K20),
+        ("K=50", BUDGET_K50),
+        ("K=100", BUDGET_K100),
     ]:
         budget = int(group_name.split("=")[1])
         baseline_name = baselines[budget]
@@ -1047,23 +1152,31 @@ def print_final_table(all_summaries: dict) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Budget-aware retrieval evaluation"
+    parser = argparse.ArgumentParser(description="Budget-aware retrieval evaluation")
+    parser.add_argument(
+        "--arch", type=str, default=None, help="Run a single architecture"
     )
-    parser.add_argument("--arch", type=str, default=None,
-                        help="Run a single architecture")
-    parser.add_argument("--budget", type=int, default=None,
-                        choices=[20, 50, 100],
-                        help="Run all architectures at this budget")
-    parser.add_argument("--dataset", type=str, default=None,
-                        choices=list(DATASETS.keys()),
-                        help="Restrict to one dataset")
-    parser.add_argument("--all", action="store_true",
-                        help="Run all architectures on all datasets")
-    parser.add_argument("--list", action="store_true",
-                        help="List all architectures")
-    parser.add_argument("--force", action="store_true",
-                        help="Rerun even if result file exists")
+    parser.add_argument(
+        "--budget",
+        type=int,
+        default=None,
+        choices=[20, 50, 100],
+        help="Run all architectures at this budget",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        choices=list(DATASETS.keys()),
+        help="Restrict to one dataset",
+    )
+    parser.add_argument(
+        "--all", action="store_true", help="Run all architectures on all datasets"
+    )
+    parser.add_argument("--list", action="store_true", help="List all architectures")
+    parser.add_argument(
+        "--force", action="store_true", help="Rerun even if result file exists"
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -1084,9 +1197,7 @@ def main() -> None:
             sys.exit(1)
         arch_names = [args.arch]
     elif args.budget is not None:
-        arch_names = [
-            a for a in ALL_ARCH_NAMES if ARCH_BUDGET[a] == args.budget
-        ]
+        arch_names = [a for a in ALL_ARCH_NAMES if ARCH_BUDGET[a] == args.budget]
     else:
         arch_names = ALL_ARCH_NAMES
 
@@ -1103,24 +1214,21 @@ def main() -> None:
         for dataset_key in dataset_keys:
             try:
                 summary = run_architecture_on_dataset(
-                    arch_name, dataset_key,
-                    force=args.force, verbose=args.verbose,
+                    arch_name,
+                    dataset_key,
+                    force=args.force,
+                    verbose=args.verbose,
                 )
                 all_summaries[(arch_name, dataset_key)] = summary
             except Exception as e:
-                print(
-                    f"  FATAL on {arch_name}/{dataset_key}: "
-                    f"{type(e).__name__}: {e}"
-                )
+                print(f"  FATAL on {arch_name}/{dataset_key}: {type(e).__name__}: {e}")
                 import traceback
+
                 traceback.print_exc()
 
     # Save overall summary
     summary_file = RESULTS_DIR / "budget_all_summaries.json"
-    payload = {
-        f"{a}@{ds}": summary
-        for (a, ds), summary in all_summaries.items()
-    }
+    payload = {f"{a}@{ds}": summary for (a, ds), summary in all_summaries.items()}
     with open(summary_file, "w") as f:
         json.dump(payload, f, indent=2, default=str)
     print(f"\nAll summaries saved: {summary_file}")

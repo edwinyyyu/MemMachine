@@ -16,8 +16,9 @@ import os
 import re
 import statistics
 from collections import defaultdict
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 RESULTS_DIR = ROOT / "results"
@@ -25,7 +26,7 @@ RESULTS_DIR = ROOT / "results"
 # Dataset patterns mapping result-file substring -> dataset key.
 DATASET_FILE_MAP = {
     "locomo_30q": "locomo_30q",
-    "locomo_30": "locomo_30q",   # some files use "locomo" (fulleval)
+    "locomo_30": "locomo_30q",  # some files use "locomo" (fulleval)
     "synthetic_19q": "synthetic_19q",
     "puzzle_16q": "puzzle_16q",
     "advanced_23q": "advanced_23q",
@@ -33,10 +34,10 @@ DATASET_FILE_MAP = {
 
 DATASETS = ["locomo_30q", "synthetic_19q", "puzzle_16q", "advanced_23q"]
 
-FAILURE_THRESHOLD = 0.5   # recall < 0.5 at K=50 counts as a failure
-SUCCESS_THRESHOLD = 0.5   # recall >= 0.5 at K=50 counts as a success
-STUBBORN_FAIL_FRACTION = 0.80   # >=80% of architectures must fail
-EASY_SUCCESS_FRACTION = 0.80    # >=80% of architectures must succeed
+FAILURE_THRESHOLD = 0.5  # recall < 0.5 at K=50 counts as a failure
+SUCCESS_THRESHOLD = 0.5  # recall >= 0.5 at K=50 counts as a success
+STUBBORN_FAIL_FRACTION = 0.80  # >=80% of architectures must fail
+EASY_SUCCESS_FRACTION = 0.80  # >=80% of architectures must succeed
 
 
 def detect_dataset(filename: str) -> str | None:
@@ -48,7 +49,7 @@ def detect_dataset(filename: str) -> str | None:
             return key
     # fulleval files say "fulleval_<dataset>_<arch>.json"
     if f.startswith("fulleval_"):
-        rest = f[len("fulleval_"):]
+        rest = f[len("fulleval_") :]
         for short, full in [
             ("locomo", "locomo_30q"),
             ("synthetic", "synthetic_19q"),
@@ -62,7 +63,7 @@ def detect_dataset(filename: str) -> str | None:
 
 def derive_arch_name(filename: str, dataset: str | None) -> str:
     """Derive a short architecture identifier from a filename."""
-    stem = filename[:-5] if filename.endswith(".json") else filename
+    stem = filename.removesuffix(".json")
     # Strip dataset suffix if present
     if dataset:
         stem = stem.replace("_" + dataset, "")
@@ -257,7 +258,9 @@ def main() -> None:
     question_meta: dict[str, dict[str, dict]] = {ds: {} for ds in DATASETS}
     stubborn_failures: dict[str, list[dict]] = {ds: [] for ds in DATASETS}
     easy_questions: dict[str, list[dict]] = {ds: [] for ds in DATASETS}
-    category_stubborn_rates: dict[str, dict[str, dict[str, int]]] = {ds: {} for ds in DATASETS}
+    category_stubborn_rates: dict[str, dict[str, dict[str, int]]] = {
+        ds: {} for ds in DATASETS
+    }
     failure_matrix_raw: dict[str, dict[str, dict]] = {ds: {} for ds in DATASETS}
 
     for ds in DATASETS:
@@ -303,7 +306,9 @@ def main() -> None:
         n_easy = 0
         stubborn_list = []
         easy_list = []
-        per_category_counts: dict[str, dict[str, int]] = defaultdict(lambda: {"n_questions": 0, "n_stubborn": 0, "n_easy": 0})
+        per_category_counts: dict[str, dict[str, int]] = defaultdict(
+            lambda: {"n_questions": 0, "n_stubborn": 0, "n_easy": 0}
+        )
 
         for key, measurements in per_q_measurements.items():
             if len(measurements) < min_measurements:
@@ -340,34 +345,40 @@ def main() -> None:
             if fail_frac >= STUBBORN_FAIL_FRACTION:
                 n_stubborn += 1
                 per_category_counts[cat]["n_stubborn"] += 1
-                stubborn_list.append({
-                    "key": key,
-                    "question": meta.get("question"),
-                    "category": cat,
-                    "num_source_turns": meta.get("num_source_turns"),
-                    "conversation_id": meta.get("conversation_id"),
-                    "n_measurements": len(measurements),
-                    "n_fail": n_fail,
-                    "fail_frac": fail_frac,
-                    "best_recall": best_recall,
-                    "best_arch": best_arch,
-                })
+                stubborn_list.append(
+                    {
+                        "key": key,
+                        "question": meta.get("question"),
+                        "category": cat,
+                        "num_source_turns": meta.get("num_source_turns"),
+                        "conversation_id": meta.get("conversation_id"),
+                        "n_measurements": len(measurements),
+                        "n_fail": n_fail,
+                        "fail_frac": fail_frac,
+                        "best_recall": best_recall,
+                        "best_arch": best_arch,
+                    }
+                )
             if pass_frac >= EASY_SUCCESS_FRACTION:
                 n_easy += 1
                 per_category_counts[cat]["n_easy"] += 1
-                easy_list.append({
-                    "key": key,
-                    "question": meta.get("question"),
-                    "category": cat,
-                    "num_source_turns": meta.get("num_source_turns"),
-                    "conversation_id": meta.get("conversation_id"),
-                    "n_measurements": len(measurements),
-                    "pass_frac": pass_frac,
-                })
+                easy_list.append(
+                    {
+                        "key": key,
+                        "question": meta.get("question"),
+                        "category": cat,
+                        "num_source_turns": meta.get("num_source_turns"),
+                        "conversation_id": meta.get("conversation_id"),
+                        "n_measurements": len(measurements),
+                        "pass_frac": pass_frac,
+                    }
+                )
 
         per_dataset_summary[ds] = {
             "n_arch": n_archs,
-            "n_questions_assessed": sum(1 for k, m in per_q_measurements.items() if len(m) >= min_measurements),
+            "n_questions_assessed": sum(
+                1 for k, m in per_q_measurements.items() if len(m) >= min_measurements
+            ),
             "n_total_questions": len(all_keys),
             "min_measurements": min_measurements,
             "stubborn": n_stubborn,
@@ -378,7 +389,9 @@ def main() -> None:
         category_stubborn_rates[ds] = dict(per_category_counts)
 
     # Compute cross-dataset stats and best-arch-on-stubborn comparisons.
-    arch_stubborn_hits: dict[str, dict[str, int]] = {ds: defaultdict(int) for ds in DATASETS}
+    arch_stubborn_hits: dict[str, dict[str, int]] = {
+        ds: defaultdict(int) for ds in DATASETS
+    }
     for ds in DATASETS:
         for stub in stubborn_failures[ds]:
             best_arch = stub["best_arch"]
@@ -402,15 +415,19 @@ def main() -> None:
         "arch_stubborn_hits": {ds: dict(v) for ds, v in arch_stubborn_hits.items()},
         "failure_matrix": failure_matrix_raw,
     }
-    (RESULTS_DIR / "failure_overlap_analysis.json").write_text(json.dumps(json_out, indent=2))
+    (RESULTS_DIR / "failure_overlap_analysis.json").write_text(
+        json.dumps(json_out, indent=2)
+    )
 
     # Generate Markdown report.
     lines: list[str] = []
     lines.append("# Cross-Architecture Failure Overlap")
     lines.append("")
-    lines.append(f"Failure threshold: recall @K=50 < {FAILURE_THRESHOLD}. "
-                 f"Stubborn threshold: >= {int(STUBBORN_FAIL_FRACTION*100)}% of archs fail. "
-                 f"Easy threshold: >= {int(EASY_SUCCESS_FRACTION*100)}% of archs succeed.")
+    lines.append(
+        f"Failure threshold: recall @K=50 < {FAILURE_THRESHOLD}. "
+        f"Stubborn threshold: >= {int(STUBBORN_FAIL_FRACTION * 100)}% of archs fail. "
+        f"Easy threshold: >= {int(EASY_SUCCESS_FRACTION * 100)}% of archs succeed."
+    )
     lines.append("")
 
     lines.append("## Architectures catalogued")
@@ -424,27 +441,36 @@ def main() -> None:
 
     lines.append("## Per-dataset summary")
     lines.append("")
-    lines.append("| Dataset | # Arch | # Questions assessed | Stubborn failures (>=80% fail) | Easy (>=80% pass) |")
+    lines.append(
+        "| Dataset | # Arch | # Questions assessed | Stubborn failures (>=80% fail) | Easy (>=80% pass) |"
+    )
     lines.append("| --- | ---: | ---: | ---: | ---: |")
     for ds in DATASETS:
         s = per_dataset_summary[ds]
-        lines.append(f"| {ds} | {s['n_arch']} | {s.get('n_questions_assessed', 0)} | {s.get('stubborn',0)} | {s.get('easy',0)} |")
+        lines.append(
+            f"| {ds} | {s['n_arch']} | {s.get('n_questions_assessed', 0)} | {s.get('stubborn', 0)} | {s.get('easy', 0)} |"
+        )
     lines.append("")
 
     # Detailed stubborn-failure listings per dataset.
     for ds in DATASETS:
-        stubs = sorted(stubborn_failures[ds], key=lambda x: (-x["fail_frac"], x.get("question_index") or 0))
+        stubs = sorted(
+            stubborn_failures[ds],
+            key=lambda x: (-x["fail_frac"], x.get("question_index") or 0),
+        )
         if not stubs:
             continue
         lines.append(f"## Stubborn failures -- {ds}")
         lines.append("")
-        lines.append("| Conv | Category | # gold | Fail frac | Best recall | Best arch | Question |")
+        lines.append(
+            "| Conv | Category | # gold | Fail frac | Best recall | Best arch | Question |"
+        )
         lines.append("| --- | --- | ---: | ---: | ---: | --- | --- |")
         for s in stubs:
             qtext = (s["question"] or "").replace("|", "\\|")
             lines.append(
-                f"| {s.get('conversation_id','')} | {s.get('category','')} | "
-                f"{s.get('num_source_turns','')} | "
+                f"| {s.get('conversation_id', '')} | {s.get('category', '')} | "
+                f"{s.get('num_source_turns', '')} | "
                 f"{s['n_fail']}/{s['n_measurements']} ({s['fail_frac']:.2f}) | "
                 f"{s['best_recall']:.2f} | {s['best_arch']} | {qtext[:180]} |"
             )
@@ -473,7 +499,9 @@ def main() -> None:
     # Category-level stubbornness rates.
     lines.append("## Category-level stubbornness rates")
     lines.append("")
-    lines.append("Percent of questions in a category that are stubborn failures (assessed questions only).")
+    lines.append(
+        "Percent of questions in a category that are stubborn failures (assessed questions only)."
+    )
     lines.append("")
     for ds in DATASETS:
         cats = category_stubborn_rates[ds]
@@ -481,21 +509,30 @@ def main() -> None:
             continue
         lines.append(f"### {ds}")
         lines.append("")
-        lines.append("| Category | N | # Stubborn | Stubborn rate | # Easy | Easy rate |")
+        lines.append(
+            "| Category | N | # Stubborn | Stubborn rate | # Easy | Easy rate |"
+        )
         lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
-        for cat, counts in sorted(cats.items(), key=lambda x: -(x[1]["n_stubborn"]/max(x[1]["n_questions"],1))):
+        for cat, counts in sorted(
+            cats.items(),
+            key=lambda x: -(x[1]["n_stubborn"] / max(x[1]["n_questions"], 1)),
+        ):
             n = counts["n_questions"]
             sb = counts["n_stubborn"]
             ez = counts["n_easy"]
             sb_rate = sb / n if n else 0
             ez_rate = ez / n if n else 0
-            lines.append(f"| {cat} | {n} | {sb} | {sb_rate:.2f} | {ez} | {ez_rate:.2f} |")
+            lines.append(
+                f"| {cat} | {n} | {sb} | {sb_rate:.2f} | {ez} | {ez_rate:.2f} |"
+            )
         lines.append("")
 
     # Surface feature contrast: stubborn vs. easy.
     lines.append("## Surface features: stubborn vs. easy")
     lines.append("")
-    lines.append("| Dataset | Group | N | mean Q length (chars) | mean # gold turns | multi-part rate |")
+    lines.append(
+        "| Dataset | Group | N | mean Q length (chars) | mean # gold turns | multi-part rate |"
+    )
     lines.append("| --- | --- | ---: | ---: | ---: | ---: |")
 
     def safe_mean(xs: Iterable[float]) -> float:
@@ -506,7 +543,9 @@ def main() -> None:
         qs = [q for q in qs if q]
         if not qs:
             return 0.0
-        n_multi = sum(1 for q in qs if (" and " in q.lower()) or "?" in q[:-1] or ", " in q)
+        n_multi = sum(
+            1 for q in qs if (" and " in q.lower()) or "?" in q[:-1] or ", " in q
+        )
         return n_multi / len(qs)
 
     for ds in DATASETS:
@@ -516,7 +555,11 @@ def main() -> None:
             continue
         for label, group in [("stubborn", stubs), ("easy", easies)]:
             qs = [x.get("question") for x in group]
-            ng = [x.get("num_source_turns") for x in group if x.get("num_source_turns") is not None]
+            ng = [
+                x.get("num_source_turns")
+                for x in group
+                if x.get("num_source_turns") is not None
+            ]
             lines.append(
                 f"| {ds} | {label} | {len(group)} | {safe_mean([len(q) for q in qs if q]):.1f} | "
                 f"{safe_mean(ng):.2f} | {multi_part_rate(qs):.2f} |"
@@ -526,7 +569,9 @@ def main() -> None:
     # Best-arch on stubborn: which architectures recover stubborn questions?
     lines.append("## Which architecture is best on stubborn failures?")
     lines.append("")
-    lines.append("Count of stubborn questions where this arch was the best (and achieved recall >= 0.5).")
+    lines.append(
+        "Count of stubborn questions where this arch was the best (and achieved recall >= 0.5)."
+    )
     lines.append("")
     for ds in DATASETS:
         hits = arch_stubborn_hits[ds]
@@ -554,20 +599,32 @@ def main() -> None:
             else:
                 total_recoverable += 1
     lines.append(f"- Total stubborn failures across all datasets: **{total_stubborn}**")
-    lines.append(f"- Of those, **{total_structural}** are *structural ceilings* (no architecture reached recall >= 0.5).")
-    lines.append(f"- **{total_recoverable}** are *architecture-specific solvable but unstable* (at least one architecture achieved recall >= 0.5).")
+    lines.append(
+        f"- Of those, **{total_structural}** are *structural ceilings* (no architecture reached recall >= 0.5)."
+    )
+    lines.append(
+        f"- **{total_recoverable}** are *architecture-specific solvable but unstable* (at least one architecture achieved recall >= 0.5)."
+    )
     lines.append("")
 
     if total_stubborn == 0:
-        lines.append("Cue generation clearly helps: no question is structurally unreachable.")
+        lines.append(
+            "Cue generation clearly helps: no question is structurally unreachable."
+        )
     else:
         ratio_structural = total_structural / max(total_stubborn, 1)
         if ratio_structural >= 0.6:
-            lines.append("**Verdict: mostly structural ceiling.** Over 60% of stubborn questions have no architecture that solves them, pointing to a retrieval-index limitation or gold-labeling noise rather than a cue-generation deficiency.")
+            lines.append(
+                "**Verdict: mostly structural ceiling.** Over 60% of stubborn questions have no architecture that solves them, pointing to a retrieval-index limitation or gold-labeling noise rather than a cue-generation deficiency."
+            )
         elif ratio_structural >= 0.3:
-            lines.append("**Verdict: mixed.** A meaningful fraction of stubborn questions are structurally unreachable, but others have at least one arch that solves them — suggesting both cue-generation instability *and* some genuine ceilings.")
+            lines.append(
+                "**Verdict: mixed.** A meaningful fraction of stubborn questions are structurally unreachable, but others have at least one arch that solves them — suggesting both cue-generation instability *and* some genuine ceilings."
+            )
         else:
-            lines.append("**Verdict: fixable.** Most stubborn questions have at least one architecture that solves them, implying the bottleneck is cue-generation stability / routing rather than structural retrieval limits.")
+            lines.append(
+                "**Verdict: fixable.** Most stubborn questions have at least one architecture that solves them, implying the bottleneck is cue-generation stability / routing rather than structural retrieval limits."
+            )
     lines.append("")
     lines.append("## Pointers")
     lines.append("")
@@ -581,8 +638,10 @@ def main() -> None:
     print("# catalogued:", len(catalogued), "skipped:", len(skipped))
     for ds in DATASETS:
         s = per_dataset_summary[ds]
-        print(f"{ds}: archs={s['n_arch']} assessed={s.get('n_questions_assessed')} "
-              f"stubborn={s.get('stubborn')} easy={s.get('easy')}")
+        print(
+            f"{ds}: archs={s['n_arch']} assessed={s.get('n_questions_assessed')} "
+            f"stubborn={s.get('stubborn')} easy={s.get('easy')}"
+        )
 
 
 if __name__ == "__main__":

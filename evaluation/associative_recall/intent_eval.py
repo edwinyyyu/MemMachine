@@ -23,10 +23,9 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-from associative_recall import SegmentStore, Segment
+from associative_recall import Segment, SegmentStore
 from best_shot import MetaV2f
+from dotenv import load_dotenv
 from intent_parser import VARIANTS, build_variant
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -112,9 +111,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -166,15 +163,9 @@ def summarize(results: list[dict], arch_name: str, dataset: str) -> dict:
     summary["avg_total_retrieved"] = round(
         sum(r["total_arch_retrieved"] for r in results) / n, 1
     )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 2
-    )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 2
-    )
-    summary["avg_time_s"] = round(
-        sum(r["time_s"] for r in results) / n, 2
-    )
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 2)
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 2)
+    summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
     return summary
 
 
@@ -214,7 +205,7 @@ def run_arch_on_dataset(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}",
             flush=True,
         )
         try:
@@ -223,6 +214,7 @@ def run_arch_on_dataset(
         except Exception as e:
             print(f"  ERROR on question {i}: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -258,9 +250,7 @@ def analyze_constraints(rows: list[dict]) -> dict:
     by_signal_lift: dict[str, list[tuple[float, float]]] = defaultdict(list)
     n = 0
     intent_type_counts: dict[str, int] = defaultdict(int)
-    intent_type_arch_vs_base: dict[str, list[tuple[float, float]]] = (
-        defaultdict(list)
-    )
+    intent_type_arch_vs_base: dict[str, list[tuple[float, float]]] = defaultdict(list)
     parse_ok_n = 0
 
     sample_parses: list[dict] = []
@@ -391,29 +381,37 @@ def render_report(all_data: dict) -> str:
     # --- Schema ---
     L.append("\n## Schema & sample parses\n")
     L.append("```json")
-    L.append(json.dumps({
-        "intent_type": "one of factual-lookup | preference | "
-                       "temporal-compare | multi-hop-inference | "
-                       "commitment-tracking | synthesis | counterfactual | "
-                       "other",
-        "entities": ["Caroline", "Phoenix"],
-        "constraints": {
-            "speaker": "Caroline or null",
-            "temporal_relation": {"marker": "after",
-                                   "reference": "Monday meeting"},
-            "negation": False,
-            "quantity_bound": None,
-            "answer_form": "date | person | number | description | list | "
-                           "yes-no | null",
-        },
-        "primary_topic": "Phoenix status",
-        "needs_aggregation": False,
-    }, indent=2))
+    L.append(
+        json.dumps(
+            {
+                "intent_type": "one of factual-lookup | preference | "
+                "temporal-compare | multi-hop-inference | "
+                "commitment-tracking | synthesis | counterfactual | "
+                "other",
+                "entities": ["Caroline", "Phoenix"],
+                "constraints": {
+                    "speaker": "Caroline or null",
+                    "temporal_relation": {
+                        "marker": "after",
+                        "reference": "Monday meeting",
+                    },
+                    "negation": False,
+                    "quantity_bound": None,
+                    "answer_form": "date | person | number | description | list | "
+                    "yes-no | null",
+                },
+                "primary_topic": "Phoenix status",
+                "needs_aggregation": False,
+            },
+            indent=2,
+        )
+    )
     L.append("```\n")
 
     # Pull sample parses from intent_parser_full / locomo_30q
     parses_blob = (
-        all_data.get("intent_parser_full", {}).get("locomo_30q", {})
+        all_data.get("intent_parser_full", {})
+        .get("locomo_30q", {})
         .get("constraint_analysis", {})
         .get("sample_parses", [])
     )
@@ -426,9 +424,7 @@ def render_report(all_data: dict) -> str:
                 f"primary_topic={sp.get('primary_topic')!r} "
                 f"entities={sp.get('entities')}"
             )
-            L.append(
-                f"  - constraints={json.dumps(sp.get('constraints', {}))}"
-            )
+            L.append(f"  - constraints={json.dumps(sp.get('constraints', {}))}")
             L.append(
                 f"  - signals_detected={sp.get('signals_detected')} "
                 f"signals_applied={sp.get('signals_applied')}"
@@ -445,16 +441,19 @@ def render_report(all_data: dict) -> str:
     combined: dict[str, list[dict]] = defaultdict(list)
     for ds in DATASETS:
         ds_blob = (
-            all_data.get("intent_parser_full", {}).get(ds, {})
+            all_data.get("intent_parser_full", {})
+            .get(ds, {})
             .get("constraint_analysis", {})
         )
         for sig, info in ds_blob.get("per_signal", {}).items():
             combined[sig].append((info, ds_blob.get("n", 0)))
 
     if combined:
-        L.append("| signal | detection rate (locomo) | detection rate "
-                 "(synthetic) | Δ@50 when detected (locomo) | Δ@50 when "
-                 "detected (synthetic) |")
+        L.append(
+            "| signal | detection rate (locomo) | detection rate "
+            "(synthetic) | Δ@50 when detected (locomo) | Δ@50 when "
+            "detected (synthetic) |"
+        )
         L.append("|---|---|---|---|---|")
         all_sigs = sorted(combined.keys())
         for sig in all_sigs:
@@ -506,15 +505,15 @@ def render_report(all_data: dict) -> str:
     # --- Per-intent-type analysis (LoCoMo) ---
     L.append("\n## Per-intent-type analysis (intent_parser_full, LoCoMo)\n")
     it_blob = (
-        all_data.get("intent_parser_full", {}).get("locomo_30q", {})
-        .get("constraint_analysis", {}).get("per_intent_type", {})
+        all_data.get("intent_parser_full", {})
+        .get("locomo_30q", {})
+        .get("constraint_analysis", {})
+        .get("per_intent_type", {})
     )
     if it_blob:
         L.append("| intent_type | n | base r@50 | arch r@50 | Δ@50 |")
         L.append("|---|---|---|---|---|")
-        for it, info in sorted(
-            it_blob.items(), key=lambda kv: -kv[1].get("n", 0)
-        ):
+        for it, info in sorted(it_blob.items(), key=lambda kv: -kv[1].get("n", 0)):
             L.append(
                 f"| {it} | {info['n']} | {info['base_r@50']:.4f} | "
                 f"{info['arch_r@50']:.4f} | {info['delta_r@50']:+.4f} |"
@@ -539,11 +538,13 @@ def render_report(all_data: dict) -> str:
             for K in BUDGETS:
                 m_s = multich.get("multich_llm_weighted", {}).get(ds, {})
                 ip_s = (
-                    all_data.get("intent_parser_full", {}).get(ds, {})
+                    all_data.get("intent_parser_full", {})
+                    .get(ds, {})
                     .get("summary", {})
                 )
                 ipc_s = (
-                    all_data.get("intent_parser_critical_only", {}).get(ds, {})
+                    all_data.get("intent_parser_critical_only", {})
+                    .get(ds, {})
                     .get("summary", {})
                 )
                 L.append(
@@ -558,24 +559,33 @@ def render_report(all_data: dict) -> str:
     L.append("\n## Verdict\n")
     for ds in DATASETS:
         ref = (
-            all_data.get("meta_v2f", {}).get(ds, {})
-            .get("summary", {}).get("arch_r@50", 0.0)
+            all_data.get("meta_v2f", {})
+            .get(ds, {})
+            .get("summary", {})
+            .get("arch_r@50", 0.0)
         )
         full = (
-            all_data.get("intent_parser_full", {}).get(ds, {})
-            .get("summary", {}).get("arch_r@50", 0.0)
+            all_data.get("intent_parser_full", {})
+            .get(ds, {})
+            .get("summary", {})
+            .get("arch_r@50", 0.0)
         )
         crit = (
-            all_data.get("intent_parser_critical_only", {}).get(ds, {})
-            .get("summary", {}).get("arch_r@50", 0.0)
+            all_data.get("intent_parser_critical_only", {})
+            .get(ds, {})
+            .get("summary", {})
+            .get("arch_r@50", 0.0)
         )
         noexec = (
-            all_data.get("intent_parser_no_plan_exec", {}).get(ds, {})
-            .get("summary", {}).get("arch_r@50", 0.0)
+            all_data.get("intent_parser_no_plan_exec", {})
+            .get(ds, {})
+            .get("summary", {})
+            .get("arch_r@50", 0.0)
         )
         m_llm = (
-            multich.get("multich_llm_weighted", {}).get(ds, {})
-            .get("arch_r@50", 0.0) if multich else 0.0
+            multich.get("multich_llm_weighted", {}).get(ds, {}).get("arch_r@50", 0.0)
+            if multich
+            else 0.0
         )
         L.append(
             f"- **{ds} K=50**: meta_v2f={ref:.4f}, "
@@ -594,12 +604,12 @@ def render_report(all_data: dict) -> str:
         "is neutral-to-slightly-harmful on datasets where queries are "
         "already open/synthesis-style (synthetic-19).\n"
     )
-    L.append(
-        "On LoCoMo, per-signal delta@50 when detected:\n"
-    )
+    L.append("On LoCoMo, per-signal delta@50 when detected:\n")
     loc_sigs = (
-        all_data.get("intent_parser_full", {}).get("locomo_30q", {})
-        .get("constraint_analysis", {}).get("per_signal", {})
+        all_data.get("intent_parser_full", {})
+        .get("locomo_30q", {})
+        .get("constraint_analysis", {})
+        .get("per_signal", {})
     )
     sig_rows = sorted(
         loc_sigs.items(),
@@ -658,9 +668,7 @@ def main() -> None:
         )
 
         for arch_name in ["meta_v2f"] + list(VARIANTS):
-            rows, summary, by_cat = run_arch_on_dataset(
-                arch_name, store, questions
-            )
+            rows, summary, by_cat = run_arch_on_dataset(arch_name, store, questions)
             entry = {
                 "arch": arch_name,
                 "dataset": ds_name,

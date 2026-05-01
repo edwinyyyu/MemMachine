@@ -17,9 +17,13 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
+from alias_tracker import (
+    AliasTrkContext,
+    AliasTrkDrift,
+)
+from antipara_cue_gen import MetaV2fDedicated
 from associative_recall import Segment
+from dotenv import load_dotenv
 from fair_backfill_eval import (
     BUDGETS,
     DATASETS,
@@ -29,11 +33,6 @@ from fair_backfill_eval import (
     summarize,
     summarize_by_category,
 )
-from alias_tracker import (
-    AliasTrkContext,
-    AliasTrkDrift,
-)
-from antipara_cue_gen import MetaV2fDedicated
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -67,9 +66,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     md = result.metadata
@@ -123,7 +120,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -208,9 +205,7 @@ def main() -> None:
         for arch_name in arch_names:
             cls = ARCH_CLASSES[arch_name]
             arch = cls(store)
-            results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(arch_name, arch, ds_name, questions)
             all_results[arch_name][ds_name] = {
                 "summary": summary,
                 "category_breakdown": by_cat,
@@ -243,9 +238,7 @@ def main() -> None:
         stats_per_conv[cid] = {
             "num_groups": len(groups),
             "total_aliases": sum(alias_counts),
-            "mean_aliases_per_group": round(
-                sum(alias_counts) / len(alias_counts), 2
-            ),
+            "mean_aliases_per_group": round(sum(alias_counts) / len(alias_counts), 2),
             "groups_with_turn_coverage": with_turns,
             "turn_range": list(trk.conv_turn_range(cid)),
             "sample_group": groups[0] if groups else None,
@@ -259,9 +252,9 @@ def main() -> None:
             if d in all_results.get(a, {}):
                 row[a] = all_results[a][d]["summary"]["avg_llm_calls"]
         if d in reference_rows:
-            row["alias_expand_v2f (reference)"] = (
-                reference_rows[d]["summary"]["avg_llm_calls"]
-            )
+            row["alias_expand_v2f (reference)"] = reference_rows[d]["summary"][
+                "avg_llm_calls"
+            ]
         cost_comparison[d] = row
 
     # Sample alias injections (2 examples from LoCoMo)
@@ -308,9 +301,7 @@ def main() -> None:
                         "alias_note": r.get("alias_note", ""),
                         "matches": r.get("matches", []),
                         "cues": r.get("cues", []),
-                        "gold_found_at_50": r.get(
-                            "gold_found_at_K", {}
-                        ).get("50", []),
+                        "gold_found_at_50": r.get("gold_found_at_K", {}).get("50", []),
                     }
                 )
 
@@ -353,9 +344,7 @@ def main() -> None:
                         "arch": a,
                         "dataset": d,
                         "summary": all_results[a][d]["summary"],
-                        "category_breakdown": all_results[a][d][
-                            "category_breakdown"
-                        ],
+                        "category_breakdown": all_results[a][d]["category_breakdown"],
                         "results": all_results[a][d]["results"],
                     },
                     f,
@@ -399,9 +388,7 @@ def main() -> None:
 
     # Recall table
     md.append("\n## Fair-backfill recall (LoCoMo-30)\n")
-    md.append(
-        "| Arch | base@20 | arch@20 | Δ@20 | base@50 | arch@50 | Δ@50 | llm/q |"
-    )
+    md.append("| Arch | base@20 | arch@20 | Δ@20 | base@50 | arch@50 | Δ@50 | llm/q |")
     md.append("|---|---:|---:|---:|---:|---:|---:|---:|")
     for a in arch_names:
         for d in ds_names:
@@ -461,10 +448,7 @@ def main() -> None:
     # Verdict
     md.append("\n## Verdict\n")
     verdict = "(see numbers above)"
-    if (
-        "meta_v2f" in all_results
-        and "locomo_30q" in all_results["meta_v2f"]
-    ):
+    if "meta_v2f" in all_results and "locomo_30q" in all_results["meta_v2f"]:
         v2f50 = all_results["meta_v2f"]["locomo_30q"]["summary"]["arch_r@50"]
         ref50 = None
         if "locomo_30q" in reference_rows:
@@ -477,17 +461,13 @@ def main() -> None:
             if "locomo_30q" not in all_results.get(a, {}):
                 continue
             s = all_results[a]["locomo_30q"]["summary"]
-            variant_scores.append(
-                (a, s["arch_r@50"], s["avg_llm_calls"])
-            )
+            variant_scores.append((a, s["arch_r@50"], s["avg_llm_calls"]))
         best = max(variant_scores, key=lambda t: t[1]) if variant_scores else None
 
         if best is None:
             verdict = "No tracker variants evaluated."
         else:
-            detail = ", ".join(
-                f"{n}={r:.3f}@{c:.1f}llm" for n, r, c in variant_scores
-            )
+            detail = ", ".join(f"{n}={r:.3f}@{c:.1f}llm" for n, r, c in variant_scores)
             if ref50 is not None:
                 if best[1] >= ref50 - 0.005:
                     verdict = (

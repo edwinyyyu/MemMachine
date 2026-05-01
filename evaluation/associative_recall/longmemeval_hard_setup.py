@@ -29,10 +29,9 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+from associative_recall import CACHE_DIR, EMBED_MODEL, EmbeddingCache
 from dotenv import load_dotenv
 from openai import OpenAI
-
-from associative_recall import CACHE_DIR, EMBED_MODEL, EmbeddingCache
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -119,13 +118,15 @@ def flatten_to_segments(question: dict) -> tuple[list[dict], set[int]]:
             text = turn.get("content", "")
             if not isinstance(text, str):
                 text = str(text)
-            segs.append({
-                "conversation_id": qid,
-                "turn_id": turn_idx,
-                "role": role,
-                "text": text,
-                "session_id": sess_id,
-            })
+            segs.append(
+                {
+                    "conversation_id": qid,
+                    "turn_id": turn_idx,
+                    "role": role,
+                    "text": text,
+                    "session_id": sess_id,
+                }
+            )
             if sess_id in gold_sessions:
                 gold_tids.add(turn_idx)
             turn_idx += 1
@@ -154,12 +155,11 @@ def embed_all(
             to_compute.append((i, t_str))
 
     total = len(to_compute)
-    print(f"  Need to embed {total} new turn texts (cached: {n - total}).",
-          flush=True)
+    print(f"  Need to embed {total} new turn texts (cached: {n - total}).", flush=True)
     t0 = time.time()
     done = 0
     for start in range(0, total, batch_size):
-        batch = to_compute[start:start + batch_size]
+        batch = to_compute[start : start + batch_size]
         batch_texts = [t for _, t in batch]
         resp = client.embeddings.create(model=EMBED_MODEL, input=batch_texts)
         for (i, t), embed_data in zip(batch, resp.data):
@@ -207,31 +207,33 @@ def main() -> None:
     for qi, q in enumerate(chosen):
         segs, gold_tids = flatten_to_segments(q)
         all_segments.extend(segs)
-        questions_out.append({
-            "question_id": q["question_id"],
-            "conversation_id": q["question_id"],
-            "question_index": qi,
-            "question": q["question"],
-            "answer": q["answer"],
-            "category": q["question_type"],
-            "question_type": q["question_type"],
-            "answer_session_ids": q["answer_session_ids"],
-            "source_chat_ids": sorted(gold_tids),
-            "source_ids": sorted(gold_tids),
-            "num_source_turns": len(gold_tids),
-            "num_haystack_turns": len(segs),
-        })
+        questions_out.append(
+            {
+                "question_id": q["question_id"],
+                "conversation_id": q["question_id"],
+                "question_index": qi,
+                "question": q["question"],
+                "answer": q["answer"],
+                "category": q["question_type"],
+                "question_type": q["question_type"],
+                "answer_session_ids": q["answer_session_ids"],
+                "source_chat_ids": sorted(gold_tids),
+                "source_ids": sorted(gold_tids),
+                "num_source_turns": len(gold_tids),
+                "num_haystack_turns": len(segs),
+            }
+        )
 
     turns_per_q = [qq["num_haystack_turns"] for qq in questions_out]
     gold_per_q = [qq["num_source_turns"] for qq in questions_out]
     print(
         f"Flattened: total_turns={sum(turns_per_q)} "
-        f"mean_turns/q={sum(turns_per_q)/len(chosen):.1f} "
+        f"mean_turns/q={sum(turns_per_q) / len(chosen):.1f} "
         f"min={min(turns_per_q)} max={max(turns_per_q)}",
         flush=True,
     )
     print(
-        f"  gold turns/q: mean={sum(gold_per_q)/len(gold_per_q):.1f} "
+        f"  gold turns/q: mean={sum(gold_per_q) / len(gold_per_q):.1f} "
         f"min={min(gold_per_q)} max={max(gold_per_q)}",
         flush=True,
     )
@@ -246,17 +248,11 @@ def main() -> None:
         flush=True,
     )
 
-    conv_ids = np.array(
-        [s["conversation_id"] for s in all_segments], dtype=object
-    )
-    turn_ids = np.array(
-        [s["turn_id"] for s in all_segments], dtype=np.int64
-    )
+    conv_ids = np.array([s["conversation_id"] for s in all_segments], dtype=object)
+    turn_ids = np.array([s["turn_id"] for s in all_segments], dtype=np.int64)
     roles = np.array([s["role"] for s in all_segments], dtype=object)
     texts_arr = np.array([s["text"] for s in all_segments], dtype=object)
-    session_ids = np.array(
-        [s["session_id"] for s in all_segments], dtype=object
-    )
+    session_ids = np.array([s["session_id"] for s in all_segments], dtype=object)
     np.savez(
         SEGMENTS_NPZ,
         embeddings=embeddings,

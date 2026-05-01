@@ -45,9 +45,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -56,6 +53,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -156,19 +155,16 @@ class StreamCommitLLMCache(LLMCache):
 # ---------------------------------------------------------------------------
 # Helpers: formatting
 # ---------------------------------------------------------------------------
-def _format_committed(segments: list[Segment],
-                      max_chars: int = 260) -> str:
+def _format_committed(segments: list[Segment], max_chars: int = 260) -> str:
     if not segments:
         return "(none yet)"
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)
     return "\n".join(
-        f"[Turn {s.turn_id}, {s.role}]: {s.text[:max_chars]}"
-        for s in sorted_segs
+        f"[Turn {s.turn_id}, {s.role}]: {s.text[:max_chars]}" for s in sorted_segs
     )
 
 
-def _format_candidates(segments: list[Segment],
-                       max_chars: int = 260) -> str:
+def _format_candidates(segments: list[Segment], max_chars: int = 260) -> str:
     # Preserve the enumerated order the LLM will reference with SEG <idx>.
     return "\n".join(
         f"SEG {i} [Turn {s.turn_id}, {s.role}]: {s.text[:max_chars]}"
@@ -281,9 +277,7 @@ class StreamCommitArch:
         if cached is not None:
             self.embed_calls += 1
             return cached
-        response = self.client.embeddings.create(
-            model=EMBED_MODEL, input=[text]
-        )
+        response = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
         embedding = np.array(response.data[0].embedding, dtype=np.float32)
         self.embedding_cache.put(text, embedding)
         self.embed_calls += 1
@@ -308,9 +302,7 @@ class StreamCommitArch:
     # Parsing
     # -----------------------------------------------------------------------
     @staticmethod
-    def _parse_commit_decisions(
-        response: str, num_candidates: int
-    ) -> list[bool]:
+    def _parse_commit_decisions(response: str, num_candidates: int) -> list[bool]:
         """Returns a bool list of length num_candidates; True=COMMIT."""
         decisions = [False] * num_candidates
         for line in response.strip().split("\n"):
@@ -370,14 +362,15 @@ class StreamCommitArch:
             )
             resp = self.llm_call(prompt)
             decisions = self._parse_commit_decisions(resp, len(batch))
-            committed_this_round = [
-                s for s, d in zip(batch, decisions) if d
-            ]
+            committed_this_round = [s for s, d in zip(batch, decisions) if d]
             committed.extend(committed_this_round)
             round_log.append(
-                {"round": 0, "cue": None,
-                 "batch_size": len(batch),
-                 "committed_this_round": len(committed_this_round)}
+                {
+                    "round": 0,
+                    "cue": None,
+                    "batch_size": len(batch),
+                    "committed_this_round": len(committed_this_round),
+                }
             )
 
         stopped_early = False
@@ -413,8 +406,12 @@ class StreamCommitArch:
             batch = result.segments
             if not batch:
                 round_log.append(
-                    {"round": round_i, "cue": cue, "batch_size": 0,
-                     "committed_this_round": 0}
+                    {
+                        "round": round_i,
+                        "cue": cue,
+                        "batch_size": 0,
+                        "committed_this_round": 0,
+                    }
                 )
                 break
             for s in batch:
@@ -428,9 +425,7 @@ class StreamCommitArch:
             )
             resp = self.llm_call(commit_prompt)
             decisions = self._parse_commit_decisions(resp, len(batch))
-            committed_this_round = [
-                s for s, d in zip(batch, decisions) if d
-            ]
+            committed_this_round = [s for s, d in zip(batch, decisions) if d]
             committed.extend(committed_this_round)
 
             # Variant C: optional early-stop check.
@@ -444,19 +439,25 @@ class StreamCommitArch:
                 early_stop_checked = True
                 if self._parse_status_done(gc_resp):
                     round_log.append(
-                        {"round": round_i, "cue": cue,
-                         "batch_size": len(batch),
-                         "committed_this_round": len(committed_this_round),
-                         "early_stop": True}
+                        {
+                            "round": round_i,
+                            "cue": cue,
+                            "batch_size": len(batch),
+                            "committed_this_round": len(committed_this_round),
+                            "early_stop": True,
+                        }
                     )
                     stopped_early = True
                     break
 
             round_log.append(
-                {"round": round_i, "cue": cue,
-                 "batch_size": len(batch),
-                 "committed_this_round": len(committed_this_round),
-                 "early_stop": False if early_stop_checked else None}
+                {
+                    "round": round_i,
+                    "cue": cue,
+                    "batch_size": len(batch),
+                    "committed_this_round": len(committed_this_round),
+                    "early_stop": False if early_stop_checked else None,
+                }
             )
 
         return StreamResult(
@@ -477,15 +478,13 @@ class StreamCommitArch:
 # ---------------------------------------------------------------------------
 # Evaluation: fair backfill against cosine
 # ---------------------------------------------------------------------------
-def compute_recall(retrieved_turn_ids: set[int],
-                   source_turn_ids: set[int]) -> float:
+def compute_recall(retrieved_turn_ids: set[int], source_turn_ids: set[int]) -> float:
     if not source_turn_ids:
         return 1.0
     return len(retrieved_turn_ids & source_turn_ids) / len(source_turn_ids)
 
 
-def evaluate_one(arch: StreamCommitArch, question: dict,
-                 verbose: bool = False) -> dict:
+def evaluate_one(arch: StreamCommitArch, question: dict, verbose: bool = False) -> dict:
     q_text = question["question"]
     conv_id = question["conversation_id"]
     source_ids = set(question["source_chat_ids"])
@@ -506,9 +505,7 @@ def evaluate_one(arch: StreamCommitArch, question: dict,
     # Baseline cosine top-max(BUDGETS) on the question.
     q_emb = arch.embed_text(q_text)
     max_b = max(BUDGETS)
-    baseline = arch.store.search(
-        q_emb, top_k=max_b, conversation_id=conv_id
-    )
+    baseline = arch.store.search(q_emb, top_k=max_b, conversation_id=conv_id)
 
     # Fair backfill. Priority order:
     #   1. committed (LLM-approved)
@@ -605,9 +602,7 @@ def load_dataset(key: str) -> tuple[list[dict], SegmentStore]:
 # ---------------------------------------------------------------------------
 # Comparison loaders
 # ---------------------------------------------------------------------------
-def load_budget_recall_by_qkey(
-    arch_name: str, dataset_key: str
-) -> dict[tuple, float]:
+def load_budget_recall_by_qkey(arch_name: str, dataset_key: str) -> dict[tuple, float]:
     path = RESULTS_DIR / f"budget_{arch_name}_{dataset_key}.json"
     if not path.exists():
         return {}
@@ -620,9 +615,7 @@ def load_budget_recall_by_qkey(
     return out
 
 
-def load_cot_recall_by_qkey(
-    dataset_key: str, K: int
-) -> dict[tuple, float]:
+def load_cot_recall_by_qkey(dataset_key: str, K: int) -> dict[tuple, float]:
     path = RESULTS_DIR / f"cot_chain_of_thought_{dataset_key}.json"
     if not path.exists():
         return {}
@@ -645,9 +638,7 @@ def stream_run(
     verbose: bool = False,
 ) -> list[dict]:
     suffix = {"A": "commit", "B": "no_cue", "C": "goal_check"}[variant]
-    result_file = RESULTS_DIR / (
-        f"stream_commit_{suffix}_{dataset_key}.json"
-    )
+    result_file = RESULTS_DIR / (f"stream_commit_{suffix}_{dataset_key}.json")
 
     qs, store = load_dataset(dataset_key)
     rows: list[dict] = []
@@ -658,13 +649,10 @@ def stream_run(
                 rows = json.load(f)
         except json.JSONDecodeError:
             rows = []
-        done_keys = {
-            (r["conversation_id"], r.get("question_index")) for r in rows
-        }
+        done_keys = {(r["conversation_id"], r.get("question_index")) for r in rows}
         # Already fully done? short-circuit.
         if all(
-            (q["conversation_id"], q.get("question_index")) in done_keys
-            for q in qs
+            (q["conversation_id"], q.get("question_index")) in done_keys for q in qs
         ):
             return rows
 
@@ -682,7 +670,7 @@ def stream_run(
             continue
         q_short = q["question"][:60].replace("\n", " ")
         print(
-            f"  [{i+1}/{len(qs)}] {q['category']}: {q_short}...",
+            f"  [{i + 1}/{len(qs)}] {q['category']}: {q_short}...",
             flush=True,
         )
         try:
@@ -691,6 +679,7 @@ def stream_run(
         except Exception as e:  # pragma: no cover
             print(f"    ERROR: {type(e).__name__}: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
 
@@ -711,9 +700,7 @@ def stream_run(
 # ---------------------------------------------------------------------------
 # Per-category summary
 # ---------------------------------------------------------------------------
-def summarize(
-    dataset_key: str, variant: str, rows: list[dict]
-) -> list[dict]:
+def summarize(dataset_key: str, variant: str, rows: list[dict]) -> list[dict]:
     """Group by category; attach baseline/v15/v2f/cot per-question recall
     for head-to-head."""
     budget_by_arch: dict[str, dict[int, dict]] = {}
@@ -801,12 +788,11 @@ def print_overall(all_rows: list[dict], K: int) -> None:
     rows = [r for r in all_rows if r["K"] == K]
     if not rows:
         return
-    print(f"\n{'-'*96}")
+    print(f"\n{'-' * 96}")
     print(
-        f"OVERALL per DATASET at K={K}  "
-        f"(recall, fair backfill; weighted by category n)"
+        f"OVERALL per DATASET at K={K}  (recall, fair backfill; weighted by category n)"
     )
-    print(f"{'-'*96}")
+    print(f"{'-' * 96}")
     hdr = (
         f"{'Dataset':<14s} {'Var':<4s} {'n':>3s} "
         f"{'Base':>7s} {'v15':>7s} {'v2f':>7s} {'CoT':>7s} {'Stream':>7s}  "
@@ -849,10 +835,12 @@ def print_cross_dataset(all_rows: list[dict], K: int) -> None:
     rows = [r for r in all_rows if r["K"] == K]
     if not rows:
         return
-    print(f"\n{'='*96}")
-    print(f"CROSS-DATASET AVERAGE at K={K}  "
-          f"(mean across all questions in all datasets, per variant)")
-    print(f"{'='*96}")
+    print(f"\n{'=' * 96}")
+    print(
+        f"CROSS-DATASET AVERAGE at K={K}  "
+        f"(mean across all questions in all datasets, per variant)"
+    )
+    print(f"{'=' * 96}")
     hdr = (
         f"{'Var':<8s} {'n':>4s} "
         f"{'Base':>7s} {'v15':>7s} {'v2f':>7s} {'CoT':>7s} {'Stream':>7s}  "
@@ -903,15 +891,12 @@ HARD_CATEGORIES = {
 
 
 def print_hard_categories(all_rows: list[dict], K: int) -> None:
-    rows = [
-        r for r in all_rows
-        if r["K"] == K and r["category"] in HARD_CATEGORIES
-    ]
+    rows = [r for r in all_rows if r["K"] == K and r["category"] in HARD_CATEGORIES]
     if not rows:
         return
-    print(f"\n{'='*96}")
+    print(f"\n{'=' * 96}")
     print(f"HARD-CATEGORY BREAKDOWN at K={K}")
-    print(f"{'='*96}")
+    print(f"{'=' * 96}")
     hdr = (
         f"{'Dataset':<14s} {'Category':<22s} {'Var':<4s} {'n':>3s} "
         f"{'v2f':>7s} {'CoT':>7s} {'Stream':>7s}  "
@@ -935,9 +920,9 @@ def print_hard_categories(all_rows: list[dict], K: int) -> None:
 
 def print_cost_summary(variant_rows: dict[str, list[dict]]) -> None:
     """Average embed/LLM call counts per question per variant and dataset."""
-    print(f"\n{'='*96}")
-    print(f"COST SUMMARY  (avg embed / LLM calls per question)")
-    print(f"{'='*96}")
+    print(f"\n{'=' * 96}")
+    print("COST SUMMARY  (avg embed / LLM calls per question)")
+    print(f"{'=' * 96}")
     hdr = (
         f"{'Dataset':<14s} {'Var':<4s} {'n':>3s} "
         f"{'avg_embed':>10s} {'avg_llm':>9s} {'avg_committed':>14s} "
@@ -957,10 +942,7 @@ def print_cost_summary(variant_rows: dict[str, list[dict]]) -> None:
             avg_llm = sum(r["llm_calls"] for r in grp) / n
             avg_com = sum(r["num_committed"] for r in grp) / n
             avg_seen = sum(r["num_seen"] for r in grp) / n
-            es = [
-                1 if r.get("metadata", {}).get("stopped_early") else 0
-                for r in grp
-            ]
+            es = [1 if r.get("metadata", {}).get("stopped_early") else 0 for r in grp]
             es_pct = 100.0 * sum(es) / n if n else 0.0
             print(
                 f"{ds:<14s} {variant:<4s} {n:>3d} "
@@ -974,31 +956,34 @@ def print_cost_summary(variant_rows: dict[str, list[dict]]) -> None:
 # ---------------------------------------------------------------------------
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--force", action="store_true",
-                        help="Rerun even if result file exists")
+    parser.add_argument(
+        "--force", action="store_true", help="Rerun even if result file exists"
+    )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
-        "--dataset", type=str, default=None,
+        "--dataset",
+        type=str,
+        default=None,
         choices=list(DATASETS.keys()),
         help="Restrict to a single dataset (default: all)",
     )
     parser.add_argument(
-        "--variants", type=str, default="A,B,C",
+        "--variants",
+        type=str,
+        default="A,B,C",
         help="Comma-separated variants to run: A (commit), "
-             "B (no_cue), C (goal_check). Default A,B,C.",
+        "B (no_cue), C (goal_check). Default A,B,C.",
     )
     parser.add_argument(
-        "--summary-only", action="store_true",
+        "--summary-only",
+        action="store_true",
         help="Only summarize existing result files; do not run anything.",
     )
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    dataset_keys = (
-        [args.dataset] if args.dataset else list(DATASETS.keys())
-    )
-    variants = [v.strip().upper() for v in args.variants.split(",")
-                if v.strip()]
+    dataset_keys = [args.dataset] if args.dataset else list(DATASETS.keys())
+    variants = [v.strip().upper() for v in args.variants.split(",") if v.strip()]
     for v in variants:
         if v not in {"A", "B", "C"}:
             raise SystemExit(f"Unknown variant: {v}")
@@ -1009,9 +994,7 @@ def main() -> None:
     for variant in variants:
         suffix = {"A": "commit", "B": "no_cue", "C": "goal_check"}[variant]
         for ds in dataset_keys:
-            result_file = RESULTS_DIR / (
-                f"stream_commit_{suffix}_{ds}.json"
-            )
+            result_file = RESULTS_DIR / (f"stream_commit_{suffix}_{ds}.json")
             if args.summary_only:
                 if not result_file.exists():
                     continue

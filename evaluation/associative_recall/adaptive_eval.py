@@ -27,12 +27,9 @@ Outputs
 from __future__ import annotations
 
 import json
-import statistics
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
-
-from dotenv import load_dotenv
 
 from adaptive_ensemble import (
     ADAPTIVE_ORDER,
@@ -40,6 +37,7 @@ from adaptive_ensemble import (
     adaptive_ensemble,
 )
 from associative_recall import Segment, SegmentStore
+from dotenv import load_dotenv
 from ensemble_retrieval import (
     SpecialistOutput,
     build_specialist,
@@ -168,9 +166,7 @@ def evaluate_dataset(ds_name: str) -> tuple[list[dict], dict]:
         )
         cosine_segments = list(cosine_res.segments)
 
-        outputs = run_specialists_cached(
-            specialists, store, q_text, conv_id, query_emb
-        )
+        outputs = run_specialists_cached(specialists, store, q_text, conv_id, query_emb)
 
         row: dict = {
             "dataset": ds_name,
@@ -203,11 +199,12 @@ def evaluate_dataset(ds_name: str) -> tuple[list[dict], dict]:
                 outputs, ("v2f", "type_enumerated"), cosine_segments, K
             )
             tids = {s.turn_id for s in segs_e2}
-            row["per_variant"].setdefault(
-                "ens_2_v2f_typeenum", {}
-            )[f"r@{K}"] = round(compute_recall(tids, source_ids), 4)
+            row["per_variant"].setdefault("ens_2_v2f_typeenum", {})[f"r@{K}"] = round(
+                compute_recall(tids, source_ids), 4
+            )
             row["per_variant"]["ens_2_v2f_typeenum"]["specialists_called"] = [
-                "v2f", "type_enumerated",
+                "v2f",
+                "type_enumerated",
             ]
             row["per_variant"]["ens_2_v2f_typeenum"]["n_called"] = 2
             row["per_variant"]["ens_2_v2f_typeenum"]["llm_cost"] = (
@@ -215,16 +212,12 @@ def evaluate_dataset(ds_name: str) -> tuple[list[dict], dict]:
             )
 
             # ens_5 (sum_cosine, order from ADAPTIVE_ORDER)
-            segs_e5 = _sum_cosine_merge(
-                outputs, ADAPTIVE_ORDER, cosine_segments, K
-            )
+            segs_e5 = _sum_cosine_merge(outputs, ADAPTIVE_ORDER, cosine_segments, K)
             tids = {s.turn_id for s in segs_e5}
             row["per_variant"].setdefault("ens_5", {})[f"r@{K}"] = round(
                 compute_recall(tids, source_ids), 4
             )
-            row["per_variant"]["ens_5"]["specialists_called"] = list(
-                ADAPTIVE_ORDER
-            )
+            row["per_variant"]["ens_5"]["specialists_called"] = list(ADAPTIVE_ORDER)
             row["per_variant"]["ens_5"]["n_called"] = len(ADAPTIVE_ORDER)
             row["per_variant"]["ens_5"]["llm_cost"] = sum(
                 SPECIALIST_COST[n] for n in ADAPTIVE_ORDER
@@ -233,9 +226,7 @@ def evaluate_dataset(ds_name: str) -> tuple[list[dict], dict]:
             # Adaptive variants
             for tau in TAU_VALUES:
                 name = f"adaptive_tau_{tau:.1f}"
-                ar = adaptive_ensemble(
-                    outputs, cosine_segments, K, tau, ADAPTIVE_ORDER
-                )
+                ar = adaptive_ensemble(outputs, cosine_segments, K, tau, ADAPTIVE_ORDER)
                 tids = {s.turn_id for s in ar.segments}
                 row["per_variant"].setdefault(name, {})[f"r@{K}"] = round(
                     compute_recall(tids, source_ids), 4
@@ -243,15 +234,13 @@ def evaluate_dataset(ds_name: str) -> tuple[list[dict], dict]:
                 # Record specialists_called only once per variant — but
                 # adaptive gating can differ between K=20 and K=50 (since
                 # novelty uses K). Store per-K.
-                row["per_variant"][name][
-                    f"specialists_called@{K}"
-                ] = ar.specialists_called
-                row["per_variant"][name][
-                    f"n_called@{K}"
-                ] = len(ar.specialists_called)
-                row["per_variant"][name][
-                    f"novelty_per_step@{K}"
-                ] = [round(n, 4) for n in ar.novelty_per_step]
+                row["per_variant"][name][f"specialists_called@{K}"] = (
+                    ar.specialists_called
+                )
+                row["per_variant"][name][f"n_called@{K}"] = len(ar.specialists_called)
+                row["per_variant"][name][f"novelty_per_step@{K}"] = [
+                    round(n, 4) for n in ar.novelty_per_step
+                ]
                 row["per_variant"][name][f"llm_cost@{K}"] = ar.llm_cost
 
         rows.append(row)
@@ -304,30 +293,21 @@ def aggregate(
                         # Fixed variants — static cost/count
                         per_v_n_called[v][K].append(vb.get("n_called", 1))
                         per_v_llm_cost[v][K].append(vb.get("llm_cost", 1.0))
-                        per_v_called_dist[v][K][
-                            vb.get("n_called", 1)
-                        ] += 1
+                        per_v_called_dist[v][K][vb.get("n_called", 1)] += 1
 
         out["per_ds"][ds] = {
             "n_with_gold": n_gold,
             "variants": {
-                v: {
-                    f"r@{K}": round(mean(per_v_recall[v][K]), 4)
-                    for K in BUDGETS
-                } | {
-                    f"mean_n_called@{K}": round(
-                        mean(per_v_n_called[v][K]), 3
-                    )
-                    for K in BUDGETS
-                } | {
-                    f"mean_llm_cost@{K}": round(
-                        mean(per_v_llm_cost[v][K]), 3
-                    )
-                    for K in BUDGETS
-                } | {
-                    f"n_called_dist@{K}": dict(per_v_called_dist[v][K])
+                v: {f"r@{K}": round(mean(per_v_recall[v][K]), 4) for K in BUDGETS}
+                | {
+                    f"mean_n_called@{K}": round(mean(per_v_n_called[v][K]), 3)
                     for K in BUDGETS
                 }
+                | {
+                    f"mean_llm_cost@{K}": round(mean(per_v_llm_cost[v][K]), 3)
+                    for K in BUDGETS
+                }
+                | {f"n_called_dist@{K}": dict(per_v_called_dist[v][K]) for K in BUDGETS}
                 for v in _variant_names()
             },
         }
@@ -356,15 +336,9 @@ def aggregate(
 
     out["combined"] = {
         "variants": {
-            v: {
-                f"r@{K}": round(mean(comb_r[v][K]), 4) for K in BUDGETS
-            } | {
-                f"mean_n_called@{K}": round(mean(comb_n[v][K]), 3)
-                for K in BUDGETS
-            } | {
-                f"mean_llm_cost@{K}": round(mean(comb_c[v][K]), 3)
-                for K in BUDGETS
-            }
+            v: {f"r@{K}": round(mean(comb_r[v][K]), 4) for K in BUDGETS}
+            | {f"mean_n_called@{K}": round(mean(comb_n[v][K]), 3) for K in BUDGETS}
+            | {f"mean_llm_cost@{K}": round(mean(comb_c[v][K]), 3) for K in BUDGETS}
             for v in _variant_names()
         },
     }
@@ -385,9 +359,7 @@ def aggregate(
     out["per_category"] = {
         cat: {
             "n": cat_n[cat],
-            "variants": {
-                v: round(mean(cat_r[cat][v]), 4) for v in _variant_names()
-            },
+            "variants": {v: round(mean(cat_r[cat][v]), 4) for v in _variant_names()},
         }
         for cat in cat_n
     }
@@ -476,9 +448,7 @@ def render_markdown(aggr: dict) -> str:
 
     # Per-category @K=50 (combined)
     lines.append("\n## Per-category recall @K=50 (combined)\n")
-    lines.append(
-        "| Category | n | v2f | ens_2 | ens_5 | a_0.1 | a_0.2 | a_0.3 |"
-    )
+    lines.append("| Category | n | v2f | ens_2 | ens_5 | a_0.1 | a_0.2 | a_0.3 |")
     lines.append("|---|---|---|---|---|---|---|---|")
     cat_items = sorted(
         aggr["per_category"].items(),
@@ -497,9 +467,7 @@ def render_markdown(aggr: dict) -> str:
     lines.append("\n## Cost-per-pp-gain vs v2f (combined, K=50)\n")
     cv = aggr["combined"]["variants"]
     v2f_r = cv["v2f"]["r@50"]
-    lines.append(
-        "| Variant | r@50 | Δ vs v2f (pp) | mean_cost@50 | pp / cost |"
-    )
+    lines.append("| Variant | r@50 | Δ vs v2f (pp) | mean_cost@50 | pp / cost |")
     lines.append("|---|---|---|---|---|")
     for v in _variant_names():
         r = cv[v]["r@50"]
@@ -507,8 +475,7 @@ def render_markdown(aggr: dict) -> str:
         delta_pp = (r - v2f_r) * 100.0
         pp_per_cost = delta_pp / cost if cost > 0 else 0.0
         lines.append(
-            f"| {v} | {r:.4f} | {delta_pp:+.2f} | {cost}× | "
-            f"{pp_per_cost:+.2f} |"
+            f"| {v} | {r:.4f} | {delta_pp:+.2f} | {cost}× | {pp_per_cost:+.2f} |"
         )
 
     # Verdict
@@ -522,7 +489,8 @@ def render_markdown(aggr: dict) -> str:
         r = cv[v]["r@50"]
         cost = cv[v]["mean_llm_cost@50"]
         if best_adaptive is None or (r, -cost) > (
-            best_adaptive["r50"], -best_adaptive["cost"]
+            best_adaptive["r50"],
+            -best_adaptive["cost"],
         ):
             best_adaptive = {"name": v, "r50": r, "cost": cost, "tau": tau}
 
@@ -535,9 +503,7 @@ def render_markdown(aggr: dict) -> str:
     )
     # Ship logic:
     gap = ens5_r50 - best_adaptive["r50"]
-    cost_ratio = (
-        best_adaptive["cost"] / ens5_cost if ens5_cost > 0 else 1.0
-    )
+    cost_ratio = best_adaptive["cost"] / ens5_cost if ens5_cost > 0 else 1.0
     if gap <= 0.005 and cost_ratio < 0.9:
         verdict = (
             f"SHIP — `{best_adaptive['name']}` matches ens_5 within "
@@ -574,8 +540,7 @@ def main() -> None:
         rows, meta = evaluate_dataset(ds_name)
         all_rows[ds_name] = rows
         dataset_meta[ds_name] = meta
-        print(f"  n={meta['n_questions']} with_gold={meta['n_with_gold']}",
-              flush=True)
+        print(f"  n={meta['n_questions']} with_gold={meta['n_with_gold']}", flush=True)
 
     print("\nAggregating ...", flush=True)
     aggr = aggregate(all_rows)

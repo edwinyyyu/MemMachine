@@ -31,18 +31,12 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
-import os
 import re
-import sys
-import threading
 import time
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -51,6 +45,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -200,8 +196,8 @@ def install_task_shape_caches() -> None:
     subclasses). Replacing their __init__ ensures writes go to tasksh_* and
     we still read from the shared warm set.
     """
-    import best_shot as _bs
     import antipara_cue_gen as _ap
+    import best_shot as _bs
     import two_speaker_filter as _tsf
     import type_enumerated as _te
 
@@ -235,10 +231,9 @@ install_task_shape_caches()
 # Now safe to import architectures (cache __init__s are patched).
 # ---------------------------------------------------------------------------
 from antipara_cue_gen import MetaV2fDedicated
+from best_shot import BestshotResult
 from two_speaker_filter import TwoSpeakerFilter
 from type_enumerated import TypeEnumeratedVariant
-from best_shot import BestshotResult
-
 
 # ---------------------------------------------------------------------------
 # HARD per-call timeout wrapper. The OpenAI client's built-in `timeout` is
@@ -251,8 +246,9 @@ from best_shot import BestshotResult
 _HARD_LLM_TIMEOUT_S = 90.0
 
 
-def _hard_timeout_llm(client, model: str, prompt: str,
-                       max_completion_tokens: int = 2000) -> str:
+def _hard_timeout_llm(
+    client, model: str, prompt: str, max_completion_tokens: int = 2000
+) -> str:
     """Call OpenAI with a hard per-call wall-clock timeout.
 
     We use a fresh single-thread executor per call so a stuck worker
@@ -277,9 +273,7 @@ def _hard_timeout_llm(client, model: str, prompt: str,
         # Abandon this future; its thread will eventually die on its own
         # when the server gives up, and the pool is torn down non-blocking.
         pool.shutdown(wait=False, cancel_futures=True)
-        raise TimeoutError(
-            f"LLM call exceeded hard timeout {_HARD_LLM_TIMEOUT_S}s"
-        )
+        raise TimeoutError(f"LLM call exceeded hard timeout {_HARD_LLM_TIMEOUT_S}s")
     finally:
         try:
             pool.shutdown(wait=False, cancel_futures=True)
@@ -289,8 +283,8 @@ def _hard_timeout_llm(client, model: str, prompt: str,
 
 # Monkey-patch each architecture base class's llm_call to use the hard
 # timeout. This picks up all subclasses.
-import best_shot as _bs
 import antipara_cue_gen as _ap
+import best_shot as _bs
 import two_speaker_filter as _tsf
 import type_enumerated as _te
 
@@ -303,7 +297,9 @@ def _make_hard_llm_call(orig_cls, default_tokens: int = 2000):
             return cached
         try:
             text = _hard_timeout_llm(
-                self.client, model, prompt,
+                self.client,
+                model,
+                prompt,
                 max_completion_tokens=default_tokens,
             )
         except Exception as e:
@@ -316,6 +312,7 @@ def _make_hard_llm_call(orig_cls, default_tokens: int = 2000):
         self.llm_cache.put(model, prompt, text)
         self.llm_calls += 1
         return text
+
     return llm_call
 
 
@@ -345,33 +342,65 @@ _te.OpenAI = _patched_openai  # type: ignore[assignment]
 # variant text without importing the full module (which runs main init).
 # ---------------------------------------------------------------------------
 KEYWORD_RULES: list[tuple[re.Pattern, str]] = [
-    (re.compile(
-        r"\b(draft|prepare|plan for|help me (?:with|draft|prepare)|write me|compose)\b",
-        re.I), "chain"),
-    (re.compile(
-        r"\b(step[- ]by[- ]step|sequence of|order of|in order|in the order|chain of|progression|chronolog)\b",
-        re.I), "chain"),
-    (re.compile(
-        r"\b(current|latest|most recent) (?:status|state|version|plan|alias)\b",
-        re.I), "chain"),
-    (re.compile(
-        r"\b(history of|evolution of|evolv|renamed|now called|used to call|aka|alias)\b",
-        re.I), "chain"),
-    (re.compile(
-        r"\b(all|every|which|who).*\b(satisf(?:y|ies)|meet(?:s)?|match(?:es)?|fit(?:s)?|agree|accommodat)\b",
-        re.I), "type_enumerated"),
-    (re.compile(
-        r"\b(under|subject to|given) (?:the )?constraint", re.I),
-     "type_enumerated"),
-    (re.compile(
-        r"\b(list|enumerate|name all|how many.*\band\b|what are all|both.+and\b)\b",
-        re.I), "v2f_plus_types"),
-    (re.compile(
-        r"\b(every|all of the).+\b(with|having|that (?:are|were|have))\b",
-        re.I), "v2f_plus_types"),
-    (re.compile(
-        r"\b(describe|summarize|overview|what did.+?talk about|discuss(?:ed|ion))\b",
-        re.I), "v2f_style_explicit"),
+    (
+        re.compile(
+            r"\b(draft|prepare|plan for|help me (?:with|draft|prepare)|write me|compose)\b",
+            re.IGNORECASE,
+        ),
+        "chain",
+    ),
+    (
+        re.compile(
+            r"\b(step[- ]by[- ]step|sequence of|order of|in order|in the order|chain of|progression|chronolog)\b",
+            re.IGNORECASE,
+        ),
+        "chain",
+    ),
+    (
+        re.compile(
+            r"\b(current|latest|most recent) (?:status|state|version|plan|alias)\b",
+            re.IGNORECASE,
+        ),
+        "chain",
+    ),
+    (
+        re.compile(
+            r"\b(history of|evolution of|evolv|renamed|now called|used to call|aka|alias)\b",
+            re.IGNORECASE,
+        ),
+        "chain",
+    ),
+    (
+        re.compile(
+            r"\b(all|every|which|who).*\b(satisf(?:y|ies)|meet(?:s)?|match(?:es)?|fit(?:s)?|agree|accommodat)\b",
+            re.IGNORECASE,
+        ),
+        "type_enumerated",
+    ),
+    (
+        re.compile(r"\b(under|subject to|given) (?:the )?constraint", re.IGNORECASE),
+        "type_enumerated",
+    ),
+    (
+        re.compile(
+            r"\b(list|enumerate|name all|how many.*\band\b|what are all|both.+and\b)\b",
+            re.IGNORECASE,
+        ),
+        "v2f_plus_types",
+    ),
+    (
+        re.compile(
+            r"\b(every|all of the).+\b(with|having|that (?:are|were|have))\b", re.IGNORECASE
+        ),
+        "v2f_plus_types",
+    ),
+    (
+        re.compile(
+            r"\b(describe|summarize|overview|what did.+?talk about|discuss(?:ed|ion))\b",
+            re.IGNORECASE,
+        ),
+        "v2f_style_explicit",
+    ),
 ]
 
 
@@ -425,7 +454,9 @@ class CosineBaselineArch:
     def retrieve(self, question: str, conversation_id: str) -> BestshotResult:
         q_emb = self.embed_text(question)
         res = self.store.search(
-            q_emb, top_k=max(BUDGETS), conversation_id=conversation_id,
+            q_emb,
+            top_k=max(BUDGETS),
+            conversation_id=conversation_id,
         )
         return BestshotResult(
             segments=list(res.segments),
@@ -520,9 +551,7 @@ class KeywordRouterArch:
                 "upper-bound for router-induced recall hurt."
             )
             segs = result.segments
-        self.embed_calls = (
-            self._v2f.embed_calls + self._type.embed_calls
-        )
+        self.embed_calls = self._v2f.embed_calls + self._type.embed_calls
         self.llm_calls = self._v2f.llm_calls + self._type.llm_calls
         return BestshotResult(segments=segs, metadata=arch_meta)
 
@@ -616,7 +645,9 @@ class Ens2V2fTypeEnumArch:
         return out
 
     def _cosine_against_query(
-        self, segments: list[Segment], query_emb: np.ndarray,
+        self,
+        segments: list[Segment],
+        query_emb: np.ndarray,
     ) -> list[float]:
         if not segments:
             return []
@@ -651,9 +682,7 @@ class Ens2V2fTypeEnumArch:
         ranked = sorted(pool.values(), key=lambda it: -it[1])
         merged = [it[0] for it in ranked]
 
-        self.embed_calls = (
-            self._v2f.embed_calls + self._type.embed_calls
-        )
+        self.embed_calls = self._v2f.embed_calls + self._type.embed_calls
         self.llm_calls = self._v2f.llm_calls + self._type.llm_calls
         return BestshotResult(
             segments=merged,
@@ -738,7 +767,9 @@ def evaluate_one_question(
     # Cosine top-K for fair-backfill
     q_emb = arch.embed_text(question)
     cos_res = arch.store.search(
-        q_emb, top_k=max(BUDGETS), conversation_id=conversation_id,
+        q_emb,
+        top_k=max(BUDGETS),
+        conversation_id=conversation_id,
     )
     cos_segments = list(cos_res.segments)
 
@@ -752,7 +783,10 @@ def evaluate_one_question(
     }
     for K in BUDGETS:
         b, a = fair_backfill_recall(
-            arch_segments, cos_segments, source_ids, K,
+            arch_segments,
+            cos_segments,
+            source_ids,
+            K,
         )
         row["fair_backfill"][f"baseline_r@{K}"] = round(b, 4)
         row["fair_backfill"][f"arch_r@{K}"] = round(a, 4)
@@ -820,8 +854,7 @@ def run_all(
         interim = _load_interim(arch_name) or {}
         if interim:
             print(
-                f"  Resuming {arch_name}: already have shapes "
-                f"{sorted(interim.keys())}",
+                f"  Resuming {arch_name}: already have shapes {sorted(interim.keys())}",
                 flush=True,
             )
 
@@ -840,21 +873,19 @@ def run_all(
                 summary_line_parts = [f"  {shape_label} (cached n={n})"]
                 for K in BUDGETS:
                     vals = [
-                        r["fair_backfill"][f"arch_r@{K}"]
-                        for r in interim[shape_label]
+                        r["fair_backfill"][f"arch_r@{K}"] for r in interim[shape_label]
                     ]
                     b_vals = [
                         r["fair_backfill"][f"baseline_r@{K}"]
                         for r in interim[shape_label]
                     ]
                     summary_line_parts.append(
-                        f"b@{K}={sum(b_vals)/n:.3f} "
-                        f"a@{K}={sum(vals)/n:.3f} "
-                        f"Δ={sum(vals)/n - sum(b_vals)/n:+.3f}"
+                        f"b@{K}={sum(b_vals) / n:.3f} "
+                        f"a@{K}={sum(vals) / n:.3f} "
+                        f"Δ={sum(vals) / n - sum(b_vals) / n:+.3f}"
                     )
                 print(
-                    f"{summary_line_parts[0]}  "
-                    + "  ".join(summary_line_parts[1:]),
+                    f"{summary_line_parts[0]}  " + "  ".join(summary_line_parts[1:]),
                     flush=True,
                 )
                 continue
@@ -867,7 +898,11 @@ def run_all(
                 source_ids = set(q.get("source_chat_ids", []))
                 try:
                     row = evaluate_one_question(
-                        arch, arch_name, q_text, conv_id, source_ids,
+                        arch,
+                        arch_name,
+                        q_text,
+                        conv_id,
+                        source_ids,
                     )
                 except Exception as e:
                     print(
@@ -875,18 +910,21 @@ def run_all(
                         flush=True,
                     )
                     import traceback
+
                     traceback.print_exc()
                     continue
-                row.update({
-                    "shape": shape_label,
-                    "orig_row_index": q.get("orig_row_index", i),
-                    "conversation_id": conv_id,
-                    "category": q.get("category", "unknown"),
-                    "question_index": q.get("question_index", -1),
-                    "question": q_text,
-                    "source_chat_ids": sorted(source_ids),
-                    "num_source_turns": len(source_ids),
-                })
+                row.update(
+                    {
+                        "shape": shape_label,
+                        "orig_row_index": q.get("orig_row_index", i),
+                        "conversation_id": conv_id,
+                        "category": q.get("category", "unknown"),
+                        "question_index": q.get("question_index", -1),
+                        "question": q_text,
+                        "source_chat_ids": sorted(source_ids),
+                        "num_source_turns": len(source_ids),
+                    }
+                )
                 out_rows.append(row)
                 if (i + 1) % 5 == 0:
                     try:
@@ -909,16 +947,12 @@ def run_all(
                 continue
             summary_line_parts = [f"  {shape_label} (n={n})"]
             for K in BUDGETS:
-                vals = [
-                    r["fair_backfill"][f"arch_r@{K}"] for r in out_rows
-                ]
-                b_vals = [
-                    r["fair_backfill"][f"baseline_r@{K}"] for r in out_rows
-                ]
+                vals = [r["fair_backfill"][f"arch_r@{K}"] for r in out_rows]
+                b_vals = [r["fair_backfill"][f"baseline_r@{K}"] for r in out_rows]
                 summary_line_parts.append(
-                    f"b@{K}={sum(b_vals)/n:.3f} "
-                    f"a@{K}={sum(vals)/n:.3f} "
-                    f"Δ={sum(vals)/n - sum(b_vals)/n:+.3f}"
+                    f"b@{K}={sum(b_vals) / n:.3f} "
+                    f"a@{K}={sum(vals) / n:.3f} "
+                    f"Δ={sum(vals) / n - sum(b_vals) / n:+.3f}"
                 )
             print(
                 f"{summary_line_parts[0]}  "
@@ -951,7 +985,8 @@ def per_shape_summary(
             entry[f"mean_arch_r@{K}"] = round(sum(a_vals) / n, 4)
             entry[f"mean_baseline_r@{K}"] = round(sum(b_vals) / n, 4)
             entry[f"mean_delta_r@{K}"] = round(
-                (sum(a_vals) - sum(b_vals)) / n, 4,
+                (sum(a_vals) - sum(b_vals)) / n,
+                4,
             )
         out[shape] = entry
     return out
@@ -1023,25 +1058,21 @@ def render_markdown(all_results: dict, variant_rows: list[dict]) -> str:
         by_orig[r["orig_row_index"]][r["shape"]] = r["question"]
         orig_texts[r["orig_row_index"]] = r["original_question"]
     for i in sorted(by_orig.keys())[:3]:
-        lines.append(
-            f"\n**Q{i + 1} (original)**: {orig_texts[i]}\n"
-        )
+        lines.append(f"\n**Q{i + 1} (original)**: {orig_texts[i]}\n")
         for sh in SHAPES:
             lines.append(f"- {sh}: {by_orig[i].get(sh, '—')}")
     lines.append("")
 
     # --- Recall matrix ---
     lines.append("\n## Recall by architecture × shape (fair-backfill)\n")
-    header = (
-        "| Architecture | shape | n | arch_r@20 | arch_r@50 | Δ_r@20 | "
-        "Δ_r@50 |"
-    )
+    header = "| Architecture | shape | n | arch_r@20 | arch_r@50 | Δ_r@20 | Δ_r@50 |"
     lines.append(header)
-    lines.append(
-        "|---|---|---|---|---|---|---|"
-    )
+    lines.append("|---|---|---|---|---|---|---|")
     order = (
-        ORIGINAL_SHAPE, "CMD", "DRAFT", "META",
+        ORIGINAL_SHAPE,
+        "CMD",
+        "DRAFT",
+        "META",
     )
     for arch_name in ARCH_BUILDERS:
         shape_rows = all_results.get(arch_name, {})
@@ -1060,9 +1091,7 @@ def render_markdown(all_results: dict, variant_rows: list[dict]) -> str:
 
     # --- Per-category recall by shape ---
     lines.append("\n## Per-category r@20 by shape\n")
-    lines.append(
-        "| Architecture | Category | n | ORIG | CMD | DRAFT | META |"
-    )
+    lines.append("| Architecture | Category | n | ORIG | CMD | DRAFT | META |")
     lines.append("|---|---|---|---|---|---|---|")
     for arch_name in ARCH_BUILDERS:
         shape_rows = all_results.get(arch_name, {})
@@ -1075,10 +1104,7 @@ def render_markdown(all_results: dict, variant_rows: list[dict]) -> str:
             row_parts = [arch_name, cat]
             per_shape_n = None
             for sh in (ORIGINAL_SHAPE, "CMD", "DRAFT", "META"):
-                rows = [
-                    r for r in shape_rows.get(sh, [])
-                    if r.get("category") == cat
-                ]
+                rows = [r for r in shape_rows.get(sh, []) if r.get("category") == cat]
                 if not rows:
                     if sh == ORIGINAL_SHAPE:
                         row_parts.append("—")
@@ -1089,16 +1115,12 @@ def render_markdown(all_results: dict, variant_rows: list[dict]) -> str:
                 if sh == ORIGINAL_SHAPE:
                     per_shape_n = len(rows)
                     row_parts.append(str(len(rows)))
-                mean_r = sum(
-                    r["fair_backfill"]["arch_r@20"] for r in rows
-                ) / len(rows)
+                mean_r = sum(r["fair_backfill"]["arch_r@20"] for r in rows) / len(rows)
                 row_parts.append(f"{mean_r:.3f}")
             lines.append("| " + " | ".join(row_parts) + " |")
 
     # --- Shape-sensitivity: recall_original - recall_taskshape ---
-    lines.append(
-        "\n## Shape sensitivity Δ (original minus shape)\n"
-    )
+    lines.append("\n## Shape sensitivity Δ (original minus shape)\n")
     lines.append(
         "Positive Δ = architecture loses recall on the task-shape "
         "variant. Negative Δ = architecture GAINS on the variant.\n"
@@ -1121,8 +1143,7 @@ def render_markdown(all_results: dict, variant_rows: list[dict]) -> str:
             for K in BUDGETS:
                 if entry:
                     deltas[(sh, K)] = (
-                        orig[f"mean_arch_r@{K}"]
-                        - entry[f"mean_arch_r@{K}"]
+                        orig[f"mean_arch_r@{K}"] - entry[f"mean_arch_r@{K}"]
                     )
                 else:
                     deltas[(sh, K)] = 0.0
@@ -1139,9 +1160,7 @@ def render_markdown(all_results: dict, variant_rows: list[dict]) -> str:
     # --- Keyword router dispatch distribution ---
     kr_rows = all_results.get("keyword_router", {})
     if kr_rows:
-        lines.append(
-            "\n## keyword_router dispatch distribution by shape\n"
-        )
+        lines.append("\n## keyword_router dispatch distribution by shape\n")
         lines.append(
             "This is the primary surface-sensitivity signal for "
             "keyword_router: does the REGEX-BASED DISPATCH change "
@@ -1170,7 +1189,9 @@ def render_markdown(all_results: dict, variant_rows: list[dict]) -> str:
         # Count per-row disagreements between ORIGINAL and each shape.
         orig_rows = kr_rows.get(ORIGINAL_SHAPE, [])
         orig_by_key = {
-            (r["orig_row_index"] if "orig_row_index" in r else r["question_index"]): r.get("routed_to")
+            (
+                r["orig_row_index"] if "orig_row_index" in r else r["question_index"]
+            ): r.get("routed_to")
             for r in orig_rows
         }
         lines.append(
@@ -1190,9 +1211,7 @@ def render_markdown(all_results: dict, variant_rows: list[dict]) -> str:
                     if orig_by_key[key] == r.get("routed_to"):
                         agree += 1
             pct = (100.0 * agree / total) if total else 0.0
-            lines.append(
-                f"- {sh}: {agree}/{total} ({pct:.1f}%)\n"
-            )
+            lines.append(f"- {sh}: {agree}/{total} ({pct:.1f}%)\n")
 
     # --- Verdict ---
     lines.append("\n## Verdict\n")
@@ -1283,6 +1302,7 @@ def render_markdown(all_results: dict, variant_rows: list[dict]) -> str:
 
 def main() -> None:
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--only",
@@ -1292,15 +1312,15 @@ def main() -> None:
     )
     args = parser.parse_args()
     only_archs = (
-        [a.strip() for a in args.only.split(",") if a.strip()]
-        if args.only else None
+        [a.strip() for a in args.only.split(",") if a.strip()] if args.only else None
     )
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Load store and originals (first 30 LoCoMo)
     store = SegmentStore(
-        data_dir=DATA_DIR, npz_name="segments_extended.npz",
+        data_dir=DATA_DIR,
+        npz_name="segments_extended.npz",
     )
     print(f"Loaded {len(store.segments)} segments", flush=True)
     with open(DATA_DIR / "questions_extended.json") as f:
@@ -1314,8 +1334,7 @@ def main() -> None:
     with open(VARIANTS_FILE) as f:
         variants = json.load(f)
     print(
-        f"Loaded {len(variants)} variants "
-        f"({len(variants) // len(SHAPES)} per shape)",
+        f"Loaded {len(variants)} variants ({len(variants) // len(SHAPES)} per shape)",
         flush=True,
     )
 
@@ -1325,7 +1344,10 @@ def main() -> None:
 
     t_start = time.time()
     all_results = run_all(
-        store, rows_by_shape, originals, only_archs=only_archs,
+        store,
+        rows_by_shape,
+        originals,
+        only_archs=only_archs,
     )
     elapsed_total = time.time() - t_start
 

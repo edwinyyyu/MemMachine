@@ -45,21 +45,19 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -120,11 +118,23 @@ def load_dataset(ds_name: str) -> tuple[SegmentStore, list[dict]]:
 # different question shapes (temporal, multi-hop, completeness, puzzle
 # reasoning, advanced adversarial naming).
 QUICK_TEST_SPEC: list[tuple[str, int]] = [
-    ("locomo_30q", 0),      # locomo_temporal: "When did Caroline go to the LGBTQ support group?"
-    ("locomo_30q", 2),      # locomo_multi_hop: "What fields would Caroline be likely to pursue..."
-    ("synthetic_19q", 0),   # control: "What is Bob allergic to? ..."
-    ("puzzle_16q", 1),      # logic_constraint: "What were all the constraints for the desk..."
-    ("advanced_23q", 1),    # evolving_terminology: "What are all the different names that have been used to refer to v2..."
+    (
+        "locomo_30q",
+        0,
+    ),  # locomo_temporal: "When did Caroline go to the LGBTQ support group?"
+    (
+        "locomo_30q",
+        2,
+    ),  # locomo_multi_hop: "What fields would Caroline be likely to pursue..."
+    ("synthetic_19q", 0),  # control: "What is Bob allergic to? ..."
+    (
+        "puzzle_16q",
+        1,
+    ),  # logic_constraint: "What were all the constraints for the desk..."
+    (
+        "advanced_23q",
+        1,
+    ),  # evolving_terminology: "What are all the different names that have been used to refer to v2..."
 ]
 
 
@@ -152,13 +162,13 @@ OBSERVATIONS: list[tuple[str, str]] = [
     (
         "keyword_bundles",
         "Dense keyword bundles often outperform polished sentences. "
-        "\"peanut allergy lactose intolerant\" beats \"Bob has a peanut "
-        "allergy and is also lactose intolerant.\"",
+        '"peanut allergy lactose intolerant" beats "Bob has a peanut '
+        'allergy and is also lactose intolerant."',
     ),
     (
         "first_person_fragments",
-        "First-person fragments work well for conversation. \"had a picnic\" "
-        "beats \"she went on a picnic at the park last weekend.\"",
+        'First-person fragments work well for conversation. "had a picnic" '
+        'beats "she went on a picnic at the park last weekend."',
     ),
     (
         "no_fabrication",
@@ -173,8 +183,8 @@ OBSERVATIONS: list[tuple[str, str]] = [
     ),
     (
         "multi_item_coverage",
-        "If the question implies multiple items (\"all\", \"every\", "
-        "\"list\"), generate cues covering different aspects. Each cue "
+        'If the question implies multiple items ("all", "every", '
+        '"list"), generate cues covering different aspects. Each cue '
         "should target a different type of item.",
     ),
     (
@@ -184,8 +194,8 @@ OBSERVATIONS: list[tuple[str, str]] = [
     ),
     (
         "declarative_over_interrogative",
-        "Cues written as questions (\"Did you mention X?\") perform worse "
-        "than statements (\"we talked about X\") on conversation data.",
+        'Cues written as questions ("Did you mention X?") perform worse '
+        'than statements ("we talked about X") on conversation data.',
     ),
     (
         "specificity_vs_breadth",
@@ -201,7 +211,7 @@ PROMPT_HEADER = (
     "will be embedded and compared via cosine similarity.\n\n"
     "CONTEXT:\n"
     "Embedding retrieval finds text that is semantically similar to the "
-    "query. A \"cue\" is text you write that will be used as a secondary "
+    'query. A "cue" is text you write that will be used as a secondary '
     "query. Good cues find content the original question vocabulary misses.\n"
 )
 
@@ -401,9 +411,7 @@ class TopdownRunner:
         self.emb_cache.save()
         self.llm_cache.save()
 
-    def retrieve_cosine(
-        self, question: str, conv_id: str, top_k: int
-    ) -> list[Segment]:
+    def retrieve_cosine(self, question: str, conv_id: str, top_k: int) -> list[Segment]:
         q_emb = self.embed_text(question)
         return list(
             self.store.search(q_emb, top_k=top_k, conversation_id=conv_id).segments
@@ -560,11 +568,11 @@ V2F_PROMPT = (
     "\nFirst, briefly assess: Given what's been retrieved so far, how well "
     "is this search going? What kind of content is still missing? Should "
     "you search for similar content or pivot to a different topic?\n\n"
-    "If the question implies MULTIPLE items or asks \"all/every\", keep "
+    'If the question implies MULTIPLE items or asks "all/every", keep '
     "searching for more even if some are already found.\n\n"
     "Then generate 2 search cues based on your assessment. Use specific "
     "vocabulary that would appear in the target conversation turns.\n\n"
-    "Do NOT write questions (\"Did you mention X?\"). Write text that would "
+    'Do NOT write questions ("Did you mention X?"). Write text that would '
     "actually appear in a chat message.\n\n"
     "Format:\nASSESSMENT: <1-2 sentence self-evaluation>\n"
     "CUE: <text>\nCUE: <text>\nNothing else."
@@ -600,9 +608,7 @@ def distill(picks: list) -> tuple[list[str], list[dict]]:
     # Also score v2f on the same quick-test set, so we have a final
     # comparison benchmark at the end of the run.
     _, v2f_score = run_quick_test("v2f", V2F_PROMPT, picks)
-    trajectory.append(
-        {"step": 0, "action": "v2f_reference", "score": v2f_score}
-    )
+    trajectory.append({"step": 0, "action": "v2f_reference", "score": v2f_score})
 
     # Gate: only proceed if verbose beats v2f on 3+/5 questions. We also
     # accept "avg score >= v2f" as a milder form of the same gate, to avoid
@@ -649,8 +655,7 @@ def distill(picks: list) -> tuple[list[str], list[dict]]:
             decision = "dropped"
         else:
             print(
-                f"  -> KEEP '{oid}' (score {score:.3f} < baseline "
-                f"{baseline_score:.3f})"
+                f"  -> KEEP '{oid}' (score {score:.3f} < baseline {baseline_score:.3f})"
             )
             decision = "kept"
         trajectory.append(
@@ -681,9 +686,7 @@ def distill(picks: list) -> tuple[list[str], list[dict]]:
     return current, trajectory
 
 
-def _head_to_head(
-    prompt_a: str, prompt_b: str, picks: list
-) -> int:
+def _head_to_head(prompt_a: str, prompt_b: str, picks: list) -> int:
     """Count how many quick-test questions prompt_a beats prompt_b on
     (strict greater than at r@50). Uses the existing cache — each unique
     (prompt, question) has already been evaluated."""
@@ -722,7 +725,7 @@ def run_full_eval(distilled_prompt: str) -> dict:
             rows.append(row)
             if (i + 1) % 5 == 0:
                 runner.save_caches()
-                print(f"  {i+1}/{len(questions)}")
+                print(f"  {i + 1}/{len(questions)}")
         runner.save_caches()
 
         n = len(rows)
@@ -758,8 +761,11 @@ def run_full_eval(distilled_prompt: str) -> dict:
 # ---------------------------------------------------------------------------
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--full-eval-only", action="store_true",
-                        help="Skip distillation, run full eval with pre-set obs")
+    parser.add_argument(
+        "--full-eval-only",
+        action="store_true",
+        help="Skip distillation, run full eval with pre-set obs",
+    )
     parser.add_argument(
         "--obs",
         nargs="+",

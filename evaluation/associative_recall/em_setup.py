@@ -17,16 +17,13 @@ import asyncio
 import json
 import os
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 import numpy as np
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -53,6 +50,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 # Load associative_recall's local .env first (has the right SQL_URL / QDRANT host),
@@ -204,7 +203,10 @@ async def main() -> None:
     # Prefer Postgres from SQL_URL. If not reachable (auth / missing role),
     # fall back to a file-backed SQLite under the results dir — the framework
     # supports SQLite so long as we use a file path and a non-static pool.
-    sql_url = os.getenv("SQL_URL") or f"sqlite+aiosqlite:///{RESULTS_DIR / 'eventmemory.sqlite3'}"
+    sql_url = (
+        os.getenv("SQL_URL")
+        or f"sqlite+aiosqlite:///{RESULTS_DIR / 'eventmemory.sqlite3'}"
+    )
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     try:
         engine = create_async_engine(sql_url, pool_size=50, max_overflow=50)
@@ -212,7 +214,7 @@ async def main() -> None:
         # engages early rather than after the first partition op.
         async with engine.connect() as conn:
             await conn.exec_driver_sql("SELECT 1")
-    except Exception as exc:  # noqa: BLE001  (broad is intentional here)
+    except Exception as exc:
         print(f"[em_setup] SQL_URL {sql_url!r} not reachable: {exc!r}")
         sqlite_path = RESULTS_DIR / "eventmemory.sqlite3"
         sql_url = f"sqlite+aiosqlite:///{sqlite_path}"

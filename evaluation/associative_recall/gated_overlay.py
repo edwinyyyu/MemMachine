@@ -74,9 +74,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
+from alias_expansion import (
+    AliasExtractor,
+    build_expanded_queries,
+    find_alias_matches,
+)
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -86,18 +88,15 @@ from associative_recall import (
     SegmentStore,
 )
 from best_shot import V2F_PROMPT, _format_segments, _parse_cues
-from alias_expansion import (
-    AliasExtractor,
-    build_expanded_queries,
-    find_alias_matches,
-)
-from speaker_attributed import extract_name_mentions
+from dotenv import load_dotenv
 from multichannel_weighted import (
     _CriticalClassifier,
     extract_query_entities,
     load_speaker_map,
     turn_has_temporal_tokens,
 )
+from openai import OpenAI
+from speaker_attributed import extract_name_mentions
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -174,9 +173,7 @@ class GatedEmbeddingCache(EmbeddingCache):
             except (json.JSONDecodeError, OSError):
                 existing = {}
         existing.update(self._new_entries)
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         with open(tmp, "w") as f:
             json.dump(existing, f)
         os.replace(tmp, self.cache_file)
@@ -219,9 +216,7 @@ class GatedLLMCache(LLMCache):
             except (json.JSONDecodeError, OSError):
                 existing = {}
         existing.update(self._new_entries)
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         with open(tmp, "w") as f:
             json.dump(existing, f)
         os.replace(tmp, self.cache_file)
@@ -253,8 +248,7 @@ SUPPLEMENT_DESCRIPTIONS = {
         "commitment, preference)"
     ),
     "temporal_tokens": (
-        "high if query has temporal constraint (when, after, during, by, "
-        "specific date)"
+        "high if query has temporal constraint (when, after, during, by, specific date)"
     ),
     "entity_exact_match": (
         "high if query has distinctive proper noun (not common names); "
@@ -300,7 +294,7 @@ Output ONLY the JSON object, no prose before or after."""
 def parse_confidences(raw: str) -> tuple[dict[str, float], str]:
     """Parse routing JSON. Returns (confidences, reasoning). Fallback:
     no supplements engaged."""
-    default = {ch: 0.0 for ch in SUPPLEMENT_NAMES}
+    default = dict.fromkeys(SUPPLEMENT_NAMES, 0.0)
     fallback_reason = "parse_failed_no_supplements"
 
     if not raw:
@@ -314,7 +308,7 @@ def parse_confidences(raw: str) -> tuple[dict[str, float], str]:
         start = text.find("{")
         end = text.rfind("}")
         if start >= 0 and end > start:
-            text = text[start:end + 1]
+            text = text[start : end + 1]
 
     try:
         obj = json.loads(text)
@@ -375,7 +369,7 @@ class GatedOverlay:
         self.threshold = threshold
         self.strict_min = strict_min
         self.allowed_channels = (
-            allowed_channels if allowed_channels else SUPPLEMENT_NAMES
+            allowed_channels or SUPPLEMENT_NAMES
         )
         self.per_channel_top_m = per_channel_top_m
         self.per_channel_retrieval_k = per_channel_retrieval_k
@@ -393,9 +387,7 @@ class GatedOverlay:
 
         # Per-store role masks for speaker channel
         self.role_masks = {
-            "user": np.array(
-                [s.role == "user" for s in store.segments], dtype=bool
-            ),
+            "user": np.array([s.role == "user" for s in store.segments], dtype=bool),
             "assistant": np.array(
                 [s.role == "assistant" for s in store.segments], dtype=bool
             ),
@@ -419,9 +411,7 @@ class GatedOverlay:
         if cached is not None:
             self.embed_calls += 1
             return cached
-        response = self.client.embeddings.create(
-            model=EMBED_MODEL, input=[text]
-        )
+        response = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
         emb = np.array(response.data[0].embedding, dtype=np.float32)
         self.embedding_cache.put(text, emb)
         self.embed_calls += 1
@@ -467,9 +457,7 @@ class GatedOverlay:
         self.llm_calls = 0
 
     # --- routing ---
-    def get_confidences(
-        self, query: str
-    ) -> tuple[dict[str, float], str, str]:
+    def get_confidences(self, query: str) -> tuple[dict[str, float], str, str]:
         prompt = ROUTING_PROMPT.format(query=query)
         raw = self.llm_call(prompt)
         confs, reasoning = parse_confidences(raw)
@@ -484,26 +472,23 @@ class GatedOverlay:
 
         Uses V2f prompt on top-10 raw primer, parses 2 cues, retrieves
         top-10 per cue, then backfills with raw cosine up to K."""
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments: list[Segment] = list(hop0.segments)
         exclude: set[int] = {s.index for s in all_segments}
 
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
-        prompt = V2F_PROMPT.format(
-            question=query, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=query, context_section=context_section)
         output = self.llm_call(prompt)
         cues = _parse_cues(output)[:2]
 
         for cue in cues:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -514,7 +499,9 @@ class GatedOverlay:
         # Backfill with raw cosine up to K (same behavior as fair_backfill)
         if len(all_segments) < K:
             backfill = self.store.search(
-                query_emb, top_k=K, conversation_id=conversation_id,
+                query_emb,
+                top_k=K,
+                conversation_id=conversation_id,
             )
             for seg in backfill.segments:
                 if seg.index not in exclude:
@@ -566,9 +553,7 @@ class GatedOverlay:
             mask = self.role_masks["assistant"]
         else:
             return []
-        cands = self._cosine_search_in_conv(
-            query_emb, conversation_id, mask=mask
-        )
+        cands = self._cosine_search_in_conv(query_emb, conversation_id, mask=mask)
         return [i for i, _ in cands]
 
     def ch_alias_context(
@@ -589,9 +574,7 @@ class GatedOverlay:
         agg: dict[int, float] = {}
         for text in probes[:8]:
             emb = self.embed_text(text)
-            res = self._cosine_search_in_conv(
-                emb, conversation_id
-            )
+            res = self._cosine_search_in_conv(emb, conversation_id)
             for idx, sc in res:
                 if idx not in agg or sc > agg[idx]:
                     agg[idx] = sc
@@ -605,9 +588,7 @@ class GatedOverlay:
     ) -> list[int]:
         if conversation_id not in self._crit_conv_cache:
             self._crit_conv_cache[conversation_id] = (
-                self.crit_classifier.build_critical_set_for_conv(
-                    conversation_id
-                )
+                self.crit_classifier.build_critical_set_for_conv(conversation_id)
             )
         crit_items = self._crit_conv_cache[conversation_id]
         if not crit_items:
@@ -698,9 +679,7 @@ class GatedOverlay:
             return v2f_segments[:K], overlay_info
 
         # Total slots to displace
-        total_displace = min(
-            sum(channel_m_effective.values()), max(K - 1, 0)
-        )
+        total_displace = min(sum(channel_m_effective.values()), max(K - 1, 0))
         if total_displace <= 0:
             return v2f_segments[:K], overlay_info
 
@@ -737,9 +716,7 @@ class GatedOverlay:
                 if chose is None:
                     continue
                 # Remove it from iter & mark used
-                channel_iters[ch] = [
-                    x for x in channel_iters[ch] if x != chose
-                ]
+                channel_iters[ch] = [x for x in channel_iters[ch] if x != chose]
                 used_ids.add(chose)
                 picked.append((ch, chose))
                 channel_picked_count[ch] += 1
@@ -747,7 +724,7 @@ class GatedOverlay:
                     break
                 if channel_picked_count[ch] < cap and channel_iters[ch]:
                     new_active.append(ch)
-            order_active = new_active if new_active else []
+            order_active = new_active or []
 
         overlay_info["displacements"] = dict(channel_picked_count)
         overlay_info["channels_contributing"] = [
@@ -767,16 +744,12 @@ class GatedOverlay:
         final_segs = [self.store.segments[i] for i in final_ids]
         return final_segs, overlay_info
 
-    def retrieve(
-        self, question: str, conversation_id: str, K: int = 50
-    ) -> GatedResult:
+    def retrieve(self, question: str, conversation_id: str, K: int = 50) -> GatedResult:
         confs, reasoning, raw = self.get_confidences(question)
         query_emb = self.embed_text(question)
 
         # Primary: v2f
-        v2f_segs, v2f_cues = self.run_v2f(
-            question, query_emb, conversation_id, K
-        )
+        v2f_segs, v2f_cues = self.run_v2f(question, query_emb, conversation_id, K)
 
         # Determine which supplements fire.
         firing: list[str] = []
@@ -791,16 +764,12 @@ class GatedOverlay:
                 # fired but ineligible for replacement
                 continue
             firing.append(ch)
-            m_effective[ch] = max(
-                1, int(math.ceil(self.per_channel_top_m * c))
-            )
+            m_effective[ch] = max(1, int(math.ceil(self.per_channel_top_m * c)))
 
         # Run firing supplements
         supplement_cands: dict[str, list[int]] = {}
         for ch in firing:
-            ids = self._run_supplement(
-                ch, question, query_emb, conversation_id
-            )
+            ids = self._run_supplement(ch, question, query_emb, conversation_id)
             if ids:
                 supplement_cands[ch] = ids
 
@@ -841,13 +810,9 @@ def build_variant(
     name: str, store: SegmentStore, client: OpenAI | None = None
 ) -> GatedOverlay:
     if name == "gated_threshold_0.7":
-        return GatedOverlay(
-            store, client=client, threshold=0.7, name=name
-        )
+        return GatedOverlay(store, client=client, threshold=0.7, name=name)
     if name == "gated_threshold_0.5":
-        return GatedOverlay(
-            store, client=client, threshold=0.5, name=name
-        )
+        return GatedOverlay(store, client=client, threshold=0.5, name=name)
     if name == "gated_replace_strict_0.85":
         return GatedOverlay(
             store,

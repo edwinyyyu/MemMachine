@@ -40,14 +40,31 @@ import asyncio
 import json
 import os
 import time
-from collections import defaultdict
 from pathlib import Path
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    V2F_MODEL,
+    V2F_PROMPT,
+    EMHit,
+    _dedupe_by_turn_id,
+    _merge_by_max_score,
+    _MergedLLMCache,
+    _query_em,
+    format_primer_context,
+    parse_v2f_cues,
+)
+from em_hyde_orient import (
+    HYDE_FIRST_PERSON_PROMPT,
+    parse_single_turn,
+)
+from em_retuned_cue_gen import (
+    build_v2f_speakerformat_prompt,
+)
+from em_retuned_cue_gen import (
+    parse_cues as parse_retuned_cues,
+)
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -64,27 +81,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import (
-    V2F_MODEL,
-    V2F_PROMPT,
-    EMHit,
-    _MergedLLMCache,
-    _dedupe_by_turn_id,
-    _merge_by_max_score,
-    _query_em,
-    format_primer_context,
-    parse_v2f_cues,
-)
-from em_retuned_cue_gen import (
-    build_v2f_speakerformat_prompt,
-    parse_cues as parse_retuned_cues,
-)
-from em_hyde_orient import (
-    HYDE_FIRST_PERSON_PROMPT,
-    parse_single_turn,
-)
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -217,8 +215,7 @@ async def _primer_context(
         await _query_em(memory, question, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer_hits
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer_hits
     ]
     context_section = format_primer_context(primer_segments)
     primer_full = await _query_em(
@@ -254,9 +251,7 @@ async def run_arch(
 
     if arch == "em_v2f":
         primer_full, context_section = await _primer_context(memory, question, max_K)
-        prompt = V2F_PROMPT.format(
-            question=question, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=question, context_section=context_section)
         raw, hit = await _llm_call(openai_client, prompt, caches["em_v2f"])
         cues = parse_v2f_cues(raw, max_cues=2)
 
@@ -533,8 +528,8 @@ def build_markdown_report(results: dict) -> list[str]:
         "## Setup",
         "",
         "- n = 30 LoCoMo questions per shape (120 total queries: 30x4 shapes)",
-        "- Shapes: ORIGINAL, CMD (\"Find ...\"), DRAFT (\"Summarize/Draft ...\"),",
-        "  META (\"What do we know about ...\" / \"Tell me about ...\")",
+        '- Shapes: ORIGINAL, CMD ("Find ..."), DRAFT ("Summarize/Draft ..."),',
+        '  META ("What do we know about ..." / "Tell me about ...")',
         "- Backend: EventMemory (Qdrant + SQLite), speaker-baked embeddings",
         "- Embedder: `text-embedding-3-small`, cue LLM: `gpt-5-mini`",
         "- Dedicated caches: `cache/emts_<arch>_cache.json`",
@@ -660,9 +655,9 @@ def build_markdown_report(results: dict) -> list[str]:
     #       -> "collapse to cosine"
     #       (b) shape-invariant lift -> keep cue gen
     #       (c) any arch ACTIVELY hurts some shape -> flag
-    v2f_sf_lift_orig_50 = _get_mean(results, "em_v2f_speakerformat", "ORIGINAL", 50) - _get_mean(
-        results, BASELINE_ARCH, "ORIGINAL", 50
-    )
+    v2f_sf_lift_orig_50 = _get_mean(
+        results, "em_v2f_speakerformat", "ORIGINAL", 50
+    ) - _get_mean(results, BASELINE_ARCH, "ORIGINAL", 50)
     task_shape_lifts_50 = {
         s: _get_mean(results, "em_v2f_speakerformat", s, 50)
         - _get_mean(results, BASELINE_ARCH, s, 50)
@@ -694,13 +689,13 @@ def build_markdown_report(results: dict) -> list[str]:
         f"(max {max_task_lift:+.4f})"
     )
     if active_harm:
-        lines.append(
-            f"- Active-harm cells (drop >= 1pp vs cosine): {len(active_harm)}"
-        )
+        lines.append(f"- Active-harm cells (drop >= 1pp vs cosine): {len(active_harm)}")
         for arch, shape, K, d in active_harm:
             lines.append(f"  - `{arch}` on {shape} at K={K}: {d:+.4f}")
     else:
-        lines.append("- No active-harm cells (no arch drops >=1pp vs cosine on any shape).")
+        lines.append(
+            "- No active-harm cells (no arch drops >=1pp vs cosine on any shape)."
+        )
 
     if v2f_sf_lift_orig_50 >= 0.01 and max_task_lift <= 0.01:
         lines.append(
@@ -730,7 +725,7 @@ def build_markdown_report(results: dict) -> list[str]:
         "",
         "## HyDE first-person collapse check",
         "",
-        "Hypothesis: em_hyde_first_person's \"I remember ...\" framing hurts "
+        'Hypothesis: em_hyde_first_person\'s "I remember ..." framing hurts '
         "DRAFT/META more than v2f's flexible chat framing.",
         "",
     ]
@@ -759,7 +754,7 @@ def build_markdown_report(results: dict) -> list[str]:
         "## Sample cues (3 questions x 4 shapes)",
         "",
     ]
-    orig_rows = results["cells"][f"em_v2f_speakerformat::ORIGINAL"]["per_question"]
+    orig_rows = results["cells"]["em_v2f_speakerformat::ORIGINAL"]["per_question"]
     pick = [0, len(orig_rows) // 2, len(orig_rows) - 1]
     for idx in pick:
         orig_row_index = orig_rows[idx]["orig_row_index"]

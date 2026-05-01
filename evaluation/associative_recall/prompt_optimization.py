@@ -10,7 +10,6 @@ Usage:
     uv run python prompt_optimization.py --list
 """
 
-import hashlib
 import json
 import sys
 import time
@@ -19,9 +18,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -29,8 +25,9 @@ from associative_recall import (
     LLMCache,
     Segment,
     SegmentStore,
-    RetrievalResult,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -606,8 +603,9 @@ class OptimBase:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _format_segments(segments: list[Segment], max_items: int = 12,
-                     max_chars: int = 250) -> str:
+def _format_segments(
+    segments: list[Segment], max_items: int = 12, max_chars: int = 250
+) -> str:
     """Format segments chronologically. Matches v15 control format."""
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
     lines = []
@@ -644,20 +642,16 @@ def _build_context_section(
     context_lines = []
     display_limit = 12 if hop_number <= 2 else 16
     for seg in sorted_segs[:display_limit]:
-        context_lines.append(
-            f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:250]}"
-        )
-    context_section = (
-        "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + "\n".join(context_lines)
+        context_lines.append(f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:250]}")
+    context_section = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + "\n".join(
+        context_lines
     )
     if new_segments and hop_number > 1:
         latest_lines = []
         for seg in sorted(new_segments, key=lambda s: s.turn_id)[:6]:
-            latest_lines.append(
-                f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:200]}"
-            )
-        context_section += (
-            "\n\nMOST RECENTLY FOUND (last hop):\n" + "\n".join(latest_lines)
+            latest_lines.append(f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:200]}")
+        context_section += "\n\nMOST RECENTLY FOUND (last hop):\n" + "\n".join(
+            latest_lines
         )
     if previous_cues:
         context_section += (
@@ -682,17 +676,16 @@ class MetaV2Variant(OptimBase):
     Matches v15_control retrieval logic exactly: no neighbor expansion.
     """
 
-    def __init__(self, store: SegmentStore, prompt_template: str,
-                 client: OpenAI | None = None):
+    def __init__(
+        self, store: SegmentStore, prompt_template: str, client: OpenAI | None = None
+    ):
         super().__init__(store, client)
         self.prompt_template = prompt_template
 
     def retrieve(self, question: str, conversation_id: str) -> OptimResult:
         # Hop 0: embed question, retrieve top-10
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude_indices = {s.index for s in all_segments}
 
@@ -700,9 +693,7 @@ class MetaV2Variant(OptimBase):
         # v15_control uses _format_segments then puts it after
         # "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
         context = _format_segments(all_segments)
-        context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + context
-        )
+        context_section = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + context
 
         # Single LLM call
         prompt = self.prompt_template.format(
@@ -721,7 +712,9 @@ class MetaV2Variant(OptimBase):
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude_indices,
             )
             for seg in result.segments:
@@ -741,10 +734,15 @@ class MetaV2Variant(OptimBase):
 class FrontierVariant(OptimBase):
     """Iterative frontier with configurable reflect prompt."""
 
-    def __init__(self, store: SegmentStore, reflect_prompt: str,
-                 client: OpenAI | None = None,
-                 max_reflects: int = 4, gaps_per_reflect: int = 2,
-                 segment_budget: int = 80):
+    def __init__(
+        self,
+        store: SegmentStore,
+        reflect_prompt: str,
+        client: OpenAI | None = None,
+        max_reflects: int = 4,
+        gaps_per_reflect: int = 2,
+        segment_budget: int = 80,
+    ):
         super().__init__(store, client)
         self.reflect_prompt = reflect_prompt
         self.max_reflects = max_reflects
@@ -758,9 +756,7 @@ class FrontierVariant(OptimBase):
 
         # Phase 0: initial probe
         query_emb = self.embed_text(question)
-        result = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        result = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments.extend(result.segments)
         for s in result.segments:
             exclude.add(s.index)
@@ -804,23 +800,27 @@ class FrontierVariant(OptimBase):
                 elif line.strip().upper() == "DONE":
                     done = True
 
-            reflect_log.append({
-                "reflect": reflect_i,
-                "assessment": assessment,
-                "gaps": gaps,
-                "done": done,
-            })
+            reflect_log.append(
+                {
+                    "reflect": reflect_i,
+                    "assessment": assessment,
+                    "gaps": gaps,
+                    "done": done,
+                }
+            )
 
             if done or not gaps:
                 break
 
             # Explore gaps
-            for gap in gaps[:self.gaps_per_reflect]:
+            for gap in gaps[: self.gaps_per_reflect]:
                 if len(all_segments) >= self.segment_budget:
                     break
                 gap_emb = self.embed_text(gap)
                 result = self.store.search(
-                    gap_emb, top_k=10, conversation_id=conversation_id,
+                    gap_emb,
+                    top_k=10,
+                    conversation_id=conversation_id,
                     exclude_indices=exclude,
                 )
                 for seg in result.segments:
@@ -860,11 +860,12 @@ def build_variants(store: SegmentStore) -> dict[str, OptimBase]:
         "meta_v2j_completeness_only": MetaV2Variant(store, META_V2J_PROMPT),
         # Frontier variants (iterative, 2+ LLM calls)
         "frontier_a_v15_style_reflect": FrontierVariant(
-            store, FRONTIER_A_REFLECT_PROMPT),
+            store, FRONTIER_A_REFLECT_PROMPT
+        ),
         "frontier_b_single_gap": FrontierVariant(
-            store, FRONTIER_B_REFLECT_PROMPT, gaps_per_reflect=1),
-        "frontier_c_vocab_emphasis": FrontierVariant(
-            store, FRONTIER_C_REFLECT_PROMPT),
+            store, FRONTIER_B_REFLECT_PROMPT, gaps_per_reflect=1
+        ),
+        "frontier_c_vocab_emphasis": FrontierVariant(store, FRONTIER_C_REFLECT_PROMPT),
     }
 
 
@@ -990,12 +991,8 @@ def summarize(results: list[dict], variant_name: str, benchmark: str) -> dict:
     summary["avg_total_retrieved"] = round(
         sum(r["total_retrieved"] for r in results) / n, 1
     )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1
-    )
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
     summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
 
     return summary
@@ -1034,19 +1031,18 @@ def run_variant(
     verbose: bool = False,
 ) -> tuple[list[dict], dict]:
     """Run one variant, return (results, summary)."""
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(
         f"VARIANT: {variant_name} | BENCHMARK: {benchmark_label} | "
         f"{len(questions)} questions"
     )
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     results = []
     for i, question in enumerate(questions):
         q_short = question["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {question['category']}: "
-            f"{q_short}...",
+            f"  [{i + 1}/{len(questions)}] {question['category']}: {q_short}...",
             flush=True,
         )
         try:
@@ -1055,6 +1051,7 @@ def run_variant(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -1081,7 +1078,7 @@ def run_variant(
     )
 
     cat_summaries = summarize_by_category(results)
-    print(f"\n  Per-category (r@20):")
+    print("\n  Per-category (r@20):")
     for cat, cs in cat_summaries.items():
         print(
             f"    {cat}: delta={cs['delta_r@20']:+.3f} "
@@ -1094,11 +1091,11 @@ def run_variant(
 def main() -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Prompt optimization experiments"
-    )
+    parser = argparse.ArgumentParser(description="Prompt optimization experiments")
     parser.add_argument(
-        "--variant", type=str, default=None,
+        "--variant",
+        type=str,
+        default=None,
         help="Run specific variant (use --list to see available)",
     )
     parser.add_argument("--all", action="store_true", help="Run all variants")
@@ -1152,15 +1149,15 @@ def main() -> None:
             print(f"Unknown variant: {variant_name}")
             continue
 
-        results_file = RESULTS_DIR / f"optim_{variant_name}_locomo_{args.num_questions}q.json"
+        results_file = (
+            RESULTS_DIR / f"optim_{variant_name}_locomo_{args.num_questions}q.json"
+        )
 
         if results_file.exists() and not args.force:
             print(f"\nSkipping {variant_name} (exists, use --force to overwrite)")
             with open(results_file) as f:
                 existing = json.load(f)
-            summary = summarize(
-                existing, variant_name, f"locomo_{args.num_questions}q"
-            )
+            summary = summarize(existing, variant_name, f"locomo_{args.num_questions}q")
             all_summaries.append(summary)
             print(
                 f"  r@20: delta={summary.get('delta_r@20', 0):+.3f} "
@@ -1188,9 +1185,9 @@ def main() -> None:
         json.dump(all_summaries, f, indent=2)
 
     # Grand summary table
-    print(f"\n{'='*120}")
+    print(f"\n{'=' * 120}")
     print("PROMPT OPTIMIZATION — Summary Table")
-    print(f"{'='*120}")
+    print(f"{'=' * 120}")
     print(
         f"{'Variant':<40s} {'B-r@20':>8s} {'A-r@20':>8s} "
         f"{'Delta':>8s} {'W/T/L':>10s} {'#Ret':>6s} {'Emb':>5s} "
@@ -1217,9 +1214,7 @@ def main() -> None:
         "meta_v2 = +0.256 (10W/20T/0L)  |  "
         "meta_v2b = +0.261 (10W/19T/1L)"
     )
-    print(
-        "             frontier_v2 = +0.172 (8W/20T/2L)"
-    )
+    print("             frontier_v2 = +0.172 (8W/20T/2L)")
 
 
 if __name__ == "__main__":

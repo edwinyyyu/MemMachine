@@ -10,19 +10,17 @@ Uses v2f's accumulated context section. Base prompt is V2f (gpt-5-mini).
 """
 
 import json
-import time
 from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
-from associative_recall import Segment, SegmentStore
+from associative_recall import SegmentStore
 from best_shot import (
     BestshotBase,
     BestshotResult,
     _format_segments,
     _parse_cues,
 )
+from openai import OpenAI
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 BANK_PATH = RESULTS_DIR / "fewshot_exemplar_bank.json"
@@ -66,17 +64,14 @@ def load_exemplar_bank() -> list[dict]:
     """Load exemplar bank with pre-computed embeddings."""
     if not BANK_PATH.exists():
         raise FileNotFoundError(
-            f"Exemplar bank missing: {BANK_PATH}. "
-            "Run build_exemplar_bank.py first."
+            f"Exemplar bank missing: {BANK_PATH}. Run build_exemplar_bank.py first."
         )
     with open(BANK_PATH) as f:
         data = json.load(f)
     exemplars = data["exemplars"]
     # Convert embeddings to numpy for fast cosine
     for ex in exemplars:
-        ex["_embedding"] = np.array(
-            ex["question_embedding"], dtype=np.float32
-        )
+        ex["_embedding"] = np.array(ex["question_embedding"], dtype=np.float32)
         n = np.linalg.norm(ex["_embedding"])
         ex["_embedding_norm"] = ex["_embedding"] / max(n, 1e-10)
     return exemplars
@@ -156,15 +151,12 @@ class FewshotV2fBase(BestshotBase):
 
     def retrieve(self, question: str, conversation_id: str) -> BestshotResult:
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
 
         # Select exemplars via leave-one-out on conversation_id
@@ -185,7 +177,9 @@ class FewshotV2fBase(BestshotBase):
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -242,6 +236,7 @@ class FewshotV2fCategoryK2(FewshotV2fBase):
     `retrieve_with_category` when category is known, else falls back to
     regular cosine selection.
     """
+
     exemplar_k = 2
     category_match = True
     arch_name = "fewshot_v2f_category_k2"

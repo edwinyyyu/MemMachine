@@ -44,26 +44,22 @@ Caches (dedicated so we never poison other specialists'):
 from __future__ import annotations
 
 import json
-import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-
-from memmachine_server.common.embedder.embedder import Embedder
-from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
-
 from em_architectures import (
     V2F_MODEL,
     EMHit,
-    _MergedLLMCache,
     _dedupe_by_turn_id,
     _merge_by_max_score,
+    _MergedLLMCache,
     _query_em,
     format_primer_context,
 )
-
+from memmachine_server.common.embedder.embedder import Embedder
+from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
 
@@ -157,9 +153,7 @@ Nothing else."""
 # --------------------------------------------------------------------------
 
 
-CUE_RE = re.compile(
-    r"^\s*CUE\s*:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE
-)
+CUE_RE = re.compile(r"^\s*CUE\s*:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
 
 
 def _strip_quotes(s: str) -> str:
@@ -341,13 +335,10 @@ async def _run_round1_cuegen_and_retrieve(
     """Returns (primer_full_K, cues, per_cue_hits_K, cache_hit)."""
     p_user, p_asst = participants
     primer_hits_10 = _dedupe_by_turn_id(
-        await _query_em(
-            memory, question, vector_search_limit=10, expand_context=0
-        )
+        await _query_em(memory, question, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer_hits_10
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer_hits_10
     ]
     context_section = format_primer_context(primer_segments)
     prompt = CUEGEN_R1_PROMPT.format(
@@ -479,19 +470,24 @@ async def reflmem_1round(
     q_emb_list = await embedder.search_embed([question])
     q_emb = np.asarray(q_emb_list[0], dtype=np.float32)
 
-    primer, cues_r1, cue_hits_r1, cache_hit_r1 = (
-        await _run_round1_cuegen_and_retrieve(
-            memory, question, participants,
-            K=K, cache=cuegen_r1_cache, openai_client=openai_client,
-        )
+    primer, cues_r1, cue_hits_r1, cache_hit_r1 = await _run_round1_cuegen_and_retrieve(
+        memory,
+        question,
+        participants,
+        K=K,
+        cache=cuegen_r1_cache,
+        openai_client=openai_client,
     )
     batches_r1 = [primer, *cue_hits_r1]
     merged_r1 = _merge_by_max_score(batches_r1)
 
     # Reflect on round-1 top hits.
     learned, still_need, reflect_cache_hit = await _reflect(
-        question, participants, merged_r1[:K],
-        cache=reflect_cache, openai_client=openai_client,
+        question,
+        participants,
+        merged_r1[:K],
+        cache=reflect_cache,
+        openai_client=openai_client,
     )
 
     scratch = ScratchMemory()
@@ -500,7 +496,11 @@ async def reflmem_1round(
 
     # Re-probe with top scratch entries.
     reprobe_batches, reprobe_texts, reprobe_scores = await _scratch_reprobe(
-        memory, scratch, q_emb, K=K, top_scratch=top_scratch,
+        memory,
+        scratch,
+        q_emb,
+        K=K,
+        top_scratch=top_scratch,
     )
 
     all_batches = [primer, *cue_hits_r1, *reprobe_batches]
@@ -554,19 +554,24 @@ async def reflmem_2round(
     q_emb_list = await embedder.search_embed([question])
     q_emb = np.asarray(q_emb_list[0], dtype=np.float32)
 
-    primer, cues_r1, cue_hits_r1, cache_hit_r1 = (
-        await _run_round1_cuegen_and_retrieve(
-            memory, question, participants,
-            K=K, cache=cuegen_r1_cache, openai_client=openai_client,
-        )
+    primer, cues_r1, cue_hits_r1, cache_hit_r1 = await _run_round1_cuegen_and_retrieve(
+        memory,
+        question,
+        participants,
+        K=K,
+        cache=cuegen_r1_cache,
+        openai_client=openai_client,
     )
     batches_r1 = [primer, *cue_hits_r1]
     merged_r1 = _merge_by_max_score(batches_r1)
 
     # Round 1 reflection.
     learned, still_need, reflect_cache_hit = await _reflect(
-        question, participants, merged_r1[:K],
-        cache=reflect_cache, openai_client=openai_client,
+        question,
+        participants,
+        merged_r1[:K],
+        cache=reflect_cache,
+        openai_client=openai_client,
     )
 
     scratch = ScratchMemory()
@@ -575,13 +580,22 @@ async def reflmem_2round(
 
     # Round 2 cue-gen.
     cues_r2, cue_hits_r2, cache_hit_r2 = await _round2_cuegen_and_retrieve(
-        memory, question, participants, scratch,
-        K=K, cache=cuegen_r2_cache, openai_client=openai_client,
+        memory,
+        question,
+        participants,
+        scratch,
+        K=K,
+        cache=cuegen_r2_cache,
+        openai_client=openai_client,
     )
 
     # Scratch reprobe against the corpus (auxiliary probes).
     reprobe_batches, reprobe_texts, reprobe_scores = await _scratch_reprobe(
-        memory, scratch, q_emb, K=K, top_scratch=top_scratch,
+        memory,
+        scratch,
+        q_emb,
+        K=K,
+        top_scratch=top_scratch,
     )
 
     all_batches = [primer, *cue_hits_r1, *cue_hits_r2, *reprobe_batches]

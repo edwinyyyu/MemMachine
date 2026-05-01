@@ -15,15 +15,11 @@ Variants:
   - meta_v2f (reference, always 2)
 """
 
-import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -32,6 +28,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -246,9 +244,7 @@ class AdaptiveCueBase:
         try:
             usage = response.usage
             if usage is not None:
-                self.total_completion_tokens += int(
-                    usage.completion_tokens or 0
-                )
+                self.total_completion_tokens += int(usage.completion_tokens or 0)
                 self.total_prompt_tokens += int(usage.prompt_tokens or 0)
         except Exception:
             pass
@@ -276,13 +272,9 @@ class AdaptiveCueBase:
     # ------------------------------------------------------------------
     # Main retrieval loop
     # ------------------------------------------------------------------
-    def retrieve(
-        self, question: str, conversation_id: str
-    ) -> AdaptiveCueResult:
+    def retrieve(self, question: str, conversation_id: str) -> AdaptiveCueResult:
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
@@ -291,8 +283,7 @@ class AdaptiveCueBase:
         num_cues, difficulty = self.pick_num_cues(top1_cosine)
 
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
 
         cue_format_lines = "\n".join(["CUE: <text>"] * num_cues)

@@ -14,18 +14,11 @@ Usage:
     uv run python constraint_retrieval.py [--step N] [--verbose]
 """
 
-import hashlib
 import json
-import sys
-import time
 from collections import defaultdict
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -33,8 +26,9 @@ from associative_recall import (
     LLMCache,
     Segment,
     SegmentStore,
-    RetrievalResult,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -189,8 +183,9 @@ def save_caches():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def format_segments(segments: list[Segment], max_items: int = 12,
-                    max_chars: int = 250) -> str:
+def format_segments(
+    segments: list[Segment], max_items: int = 12, max_chars: int = 250
+) -> str:
     if not segments:
         return "(no content retrieved yet)"
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
@@ -220,7 +215,8 @@ def retrieve_top_k(
 ) -> list[Segment]:
     query_emb = embed_text(query)
     result = store.search(
-        query_emb, top_k=top_k,
+        query_emb,
+        top_k=top_k,
         conversation_id=conversation_id,
         exclude_indices=exclude_indices,
     )
@@ -266,7 +262,7 @@ def step1_analyze_baseline(verbose: bool = False):
         source_segments = [s for s in conv_segments if s.turn_id in source_ids]
 
         if verbose:
-            print(f"\n    Source turn contents:")
+            print("\n    Source turn contents:")
             for seg in sorted(source_segments, key=lambda s: s.turn_id):
                 print(f"      Turn {seg.turn_id:3d} [{seg.role}]: {seg.text[:120]}...")
 
@@ -278,20 +274,24 @@ def step1_analyze_baseline(verbose: bool = False):
             found = retrieved_ids & source_ids
             missed = source_ids - retrieved_ids
             recall = len(found) / len(source_ids)
-            print(f"\n    Cosine top-{top_k}: recall={recall:.1%} ({len(found)}/{len(source_ids)})")
+            print(
+                f"\n    Cosine top-{top_k}: recall={recall:.1%} ({len(found)}/{len(source_ids)})"
+            )
             print(f"      Found: {sorted(found)}")
             print(f"      Missed: {sorted(missed)}")
 
             if verbose and top_k == 20:
                 # Show scores and what was actually retrieved
-                print(f"      Retrieved turn IDs with scores:")
+                print("      Retrieved turn IDs with scores:")
                 for seg, score in zip(result.segments[:20], result.scores[:20]):
                     marker = " <-- SOURCE" if seg.turn_id in source_ids else ""
-                    print(f"        Turn {seg.turn_id:3d} ({score:.4f}): "
-                          f"{seg.text[:80]}...{marker}")
+                    print(
+                        f"        Turn {seg.turn_id:3d} ({score:.4f}): "
+                        f"{seg.text[:80]}...{marker}"
+                    )
 
         # Analyze: for missed source turns, what is their cosine sim to the question?
-        print(f"\n    Cosine similarity of each SOURCE turn to the question:")
+        print("\n    Cosine similarity of each SOURCE turn to the question:")
         query_norm = query_emb / max(np.linalg.norm(query_emb), 1e-10)
         sims = []
         for seg in sorted(source_segments, key=lambda s: s.turn_id):
@@ -301,7 +301,17 @@ def step1_analyze_baseline(verbose: bool = False):
 
         sims.sort(key=lambda x: x[1], reverse=True)
         for turn_id, sim, text in sims:
-            in_top20 = "TOP20" if turn_id in {s.turn_id for s in store.search(query_emb, top_k=20, conversation_id=conv_id).segments} else "MISSED"
+            in_top20 = (
+                "TOP20"
+                if turn_id
+                in {
+                    s.turn_id
+                    for s in store.search(
+                        query_emb, top_k=20, conversation_id=conv_id
+                    ).segments
+                }
+                else "MISSED"
+            )
             print(f"      Turn {turn_id:3d} (sim={sim:.4f}) [{in_top20}]: {text}...")
 
 
@@ -342,10 +352,12 @@ def step2_analyze_cue_damage(verbose: bool = False):
             meta = r.get("metadata", {})
             cues = meta.get("cues", [])
 
-            print(f"\n  Q{q_idx}: baseline R@20={baseline_r20:.1%}, "
-                  f"{label} R@20={arch_r20:.1%}, delta={delta:+.1%}")
+            print(
+                f"\n  Q{q_idx}: baseline R@20={baseline_r20:.1%}, "
+                f"{label} R@20={arch_r20:.1%}, delta={delta:+.1%}"
+            )
             print(f"  Question: {question_text[:80]}...")
-            print(f"  Cues generated:")
+            print("  Cues generated:")
             for i, cue in enumerate(cues):
                 print(f"    [{i}]: {cue[:150]}...")
 
@@ -356,14 +368,16 @@ def step2_analyze_cue_damage(verbose: bool = False):
             hop0_ids = {s.turn_id for s in hop0.segments}
             exclude = {s.index for s in hop0.segments}
 
-            print(f"\n  Hop 0 (question cosine top-10):")
+            print("\n  Hop 0 (question cosine top-10):")
             print(f"    Found source turns: {sorted(hop0_ids & source_ids)}")
             print(f"    Missed source turns: {sorted(source_ids - hop0_ids)}")
 
             for i, cue in enumerate(cues[:2]):
                 cue_emb = embed_text(cue)
                 cue_result = store.search(
-                    cue_emb, top_k=10, conversation_id=conv_id,
+                    cue_emb,
+                    top_k=10,
+                    conversation_id=conv_id,
                     exclude_indices=exclude,
                 )
                 cue_ids = {s.turn_id for s in cue_result.segments}
@@ -375,18 +389,24 @@ def step2_analyze_cue_damage(verbose: bool = False):
                 print(f"    Non-source turns: {sorted(new_noise)}")
 
                 if verbose:
-                    print(f"    All retrieved:")
-                    for seg, score in zip(cue_result.segments[:10], cue_result.scores[:10]):
+                    print("    All retrieved:")
+                    for seg, score in zip(
+                        cue_result.segments[:10], cue_result.scores[:10]
+                    ):
                         marker = " <-- SOURCE" if seg.turn_id in source_ids else ""
-                        print(f"      Turn {seg.turn_id:3d} ({score:.4f}): "
-                              f"{seg.text[:80]}...{marker}")
+                        print(
+                            f"      Turn {seg.turn_id:3d} ({score:.4f}): "
+                            f"{seg.text[:80]}...{marker}"
+                        )
 
                 # Update exclude for next cue
                 for s in cue_result.segments:
                     exclude.add(s.index)
 
     # Key diagnostic: compare hop0 at top-20 vs (hop0-top10 + cue-top10 + cue-top10)
-    print("\n\n--- CRITICAL COMPARISON: cosine-only top-20 vs hop0(10)+cue(10)+cue(10) ---")
+    print(
+        "\n\n--- CRITICAL COMPARISON: cosine-only top-20 vs hop0(10)+cue(10)+cue(10) ---"
+    )
     for q in questions:
         conv_id = q["conversation_id"]
         question_text = q["question"]
@@ -402,10 +422,14 @@ def step2_analyze_cue_damage(verbose: bool = False):
         top30_source = {s.turn_id for s in top30.segments} & source_ids
 
         print(f"\n  Q{q['question_index']}: Source turns = {len(source_ids)}")
-        print(f"    Cosine top-20: {len(top20_source)} hits = "
-              f"{compute_recall(top20_source, source_ids):.1%}")
-        print(f"    Cosine top-30: {len(top30_source)} hits = "
-              f"{compute_recall(top30_source, source_ids):.1%}")
+        print(
+            f"    Cosine top-20: {len(top20_source)} hits = "
+            f"{compute_recall(top20_source, source_ids):.1%}"
+        )
+        print(
+            f"    Cosine top-30: {len(top30_source)} hits = "
+            f"{compute_recall(top30_source, source_ids):.1%}"
+        )
 
 
 # ===========================================================================
@@ -418,10 +442,18 @@ def step3a_expanded_baseline(verbose: bool = False):
     print("=" * 70)
 
     datasets = [
-        ("puzzle", "segments_puzzle.npz", "questions_puzzle.json",
-         ["logic_constraint"]),
-        ("synthetic", "segments_synthetic.npz", "questions_synthetic.json",
-         ["completeness", "procedural"]),
+        (
+            "puzzle",
+            "segments_puzzle.npz",
+            "questions_puzzle.json",
+            ["logic_constraint"],
+        ),
+        (
+            "synthetic",
+            "segments_synthetic.npz",
+            "questions_synthetic.json",
+            ["completeness", "procedural"],
+        ),
     ]
 
     results = []
@@ -441,20 +473,24 @@ def step3a_expanded_baseline(verbose: bool = False):
                 result = store.search(query_emb, top_k=top_k, conversation_id=conv_id)
                 retrieved_ids = {s.turn_id for s in result.segments}
                 recall = compute_recall(retrieved_ids, source_ids)
-                results.append({
-                    "dataset": ds_name,
-                    "category": q["category"],
-                    "question_index": q["question_index"],
-                    "method": f"cosine_top{top_k}",
-                    "recall": recall,
-                    "hits": len(retrieved_ids & source_ids),
-                    "total_source": len(source_ids),
-                })
+                results.append(
+                    {
+                        "dataset": ds_name,
+                        "category": q["category"],
+                        "question_index": q["question_index"],
+                        "method": f"cosine_top{top_k}",
+                        "recall": recall,
+                        "hits": len(retrieved_ids & source_ids),
+                        "total_source": len(source_ids),
+                    }
+                )
 
                 if top_k in [20, 30, 50]:
-                    print(f"  Q{q['question_index']} [{q['category']}] "
-                          f"top-{top_k}: {recall:.1%} "
-                          f"({len(retrieved_ids & source_ids)}/{len(source_ids)})")
+                    print(
+                        f"  Q{q['question_index']} [{q['category']}] "
+                        f"top-{top_k}: {recall:.1%} "
+                        f"({len(retrieved_ids & source_ids)}/{len(source_ids)})"
+                    )
 
     return results
 
@@ -503,10 +539,18 @@ def step3b_constraint_aware(verbose: bool = False):
     print("=" * 70)
 
     datasets = [
-        ("puzzle", "segments_puzzle.npz", "questions_puzzle.json",
-         ["logic_constraint"]),
-        ("synthetic", "segments_synthetic.npz", "questions_synthetic.json",
-         ["completeness", "procedural"]),
+        (
+            "puzzle",
+            "segments_puzzle.npz",
+            "questions_puzzle.json",
+            ["logic_constraint"],
+        ),
+        (
+            "synthetic",
+            "segments_synthetic.npz",
+            "questions_synthetic.json",
+            ["completeness", "procedural"],
+        ),
     ]
 
     all_results = []
@@ -552,7 +596,9 @@ def step3b_constraint_aware(verbose: bool = False):
             for cue in cues[:4]:
                 cue_emb = embed_text(cue)
                 result = store.search(
-                    cue_emb, top_k=10, conversation_id=conv_id,
+                    cue_emb,
+                    top_k=10,
+                    conversation_id=conv_id,
                     exclude_indices=exclude,
                 )
                 for seg in result.segments:
@@ -563,31 +609,40 @@ def step3b_constraint_aware(verbose: bool = False):
             retrieved_ids = {s.turn_id for s in all_segments}
             recall = compute_recall(retrieved_ids, source_ids)
             baseline_20 = compute_recall(
-                {s.turn_id for s in store.search(query_emb, top_k=20, conversation_id=conv_id).segments},
-                source_ids
+                {
+                    s.turn_id
+                    for s in store.search(
+                        query_emb, top_k=20, conversation_id=conv_id
+                    ).segments
+                },
+                source_ids,
             )
 
             num_cues = len(cues[:4])
-            print(f"  Q{q['question_index']} [{q['category']}] "
-                  f"constraint_aware: {recall:.1%} "
-                  f"({len(retrieved_ids & source_ids)}/{len(source_ids)}) "
-                  f"[{num_cues} cues, {len(all_segments)} segs] "
-                  f"vs baseline_20={baseline_20:.1%}")
+            print(
+                f"  Q{q['question_index']} [{q['category']}] "
+                f"constraint_aware: {recall:.1%} "
+                f"({len(retrieved_ids & source_ids)}/{len(source_ids)}) "
+                f"[{num_cues} cues, {len(all_segments)} segs] "
+                f"vs baseline_20={baseline_20:.1%}"
+            )
 
-            all_results.append({
-                "dataset": ds_name,
-                "category": q["category"],
-                "question_index": q["question_index"],
-                "question": question_text,
-                "conversation_id": conv_id,
-                "method": "constraint_aware",
-                "recall": recall,
-                "hits": len(retrieved_ids & source_ids),
-                "total_source": len(source_ids),
-                "total_retrieved": len(all_segments),
-                "cues": cues[:4],
-                "baseline_r20": baseline_20,
-            })
+            all_results.append(
+                {
+                    "dataset": ds_name,
+                    "category": q["category"],
+                    "question_index": q["question_index"],
+                    "question": question_text,
+                    "conversation_id": conv_id,
+                    "method": "constraint_aware",
+                    "recall": recall,
+                    "hits": len(retrieved_ids & source_ids),
+                    "total_source": len(source_ids),
+                    "total_retrieved": len(all_segments),
+                    "cues": cues[:4],
+                    "baseline_r20": baseline_20,
+                }
+            )
 
     return all_results
 
@@ -636,10 +691,18 @@ def step3c_iterative_collect(verbose: bool = False):
     print("=" * 70)
 
     datasets = [
-        ("puzzle", "segments_puzzle.npz", "questions_puzzle.json",
-         ["logic_constraint"]),
-        ("synthetic", "segments_synthetic.npz", "questions_synthetic.json",
-         ["completeness", "procedural"]),
+        (
+            "puzzle",
+            "segments_puzzle.npz",
+            "questions_puzzle.json",
+            ["logic_constraint"],
+        ),
+        (
+            "synthetic",
+            "segments_synthetic.npz",
+            "questions_synthetic.json",
+            ["completeness", "procedural"],
+        ),
     ]
 
     all_results = []
@@ -690,7 +753,9 @@ def step3c_iterative_collect(verbose: bool = False):
                 for cue in cues[:2]:
                     cue_emb = embed_text(cue)
                     result = store.search(
-                        cue_emb, top_k=10, conversation_id=conv_id,
+                        cue_emb,
+                        top_k=10,
+                        conversation_id=conv_id,
                         exclude_indices=exclude,
                     )
                     for seg in result.segments:
@@ -701,35 +766,46 @@ def step3c_iterative_collect(verbose: bool = False):
                 if verbose:
                     retrieved_ids = {s.turn_id for s in all_segments}
                     r = compute_recall(retrieved_ids, source_ids)
-                    print(f"    Round {round_num + 1}: {r:.1%} "
-                          f"({len(retrieved_ids & source_ids)}/{len(source_ids)}) "
-                          f"[{len(all_segments)} segs]")
+                    print(
+                        f"    Round {round_num + 1}: {r:.1%} "
+                        f"({len(retrieved_ids & source_ids)}/{len(source_ids)}) "
+                        f"[{len(all_segments)} segs]"
+                    )
 
             retrieved_ids = {s.turn_id for s in all_segments}
             recall = compute_recall(retrieved_ids, source_ids)
             baseline_20 = compute_recall(
-                {s.turn_id for s in store.search(query_emb, top_k=20, conversation_id=conv_id).segments},
-                source_ids
+                {
+                    s.turn_id
+                    for s in store.search(
+                        query_emb, top_k=20, conversation_id=conv_id
+                    ).segments
+                },
+                source_ids,
             )
 
-            print(f"  Q{q['question_index']} [{q['category']}] "
-                  f"iterative: {recall:.1%} "
-                  f"({len(retrieved_ids & source_ids)}/{len(source_ids)}) "
-                  f"[{total_llm_calls} LLM calls, {len(all_segments)} segs] "
-                  f"vs baseline_20={baseline_20:.1%}")
+            print(
+                f"  Q{q['question_index']} [{q['category']}] "
+                f"iterative: {recall:.1%} "
+                f"({len(retrieved_ids & source_ids)}/{len(source_ids)}) "
+                f"[{total_llm_calls} LLM calls, {len(all_segments)} segs] "
+                f"vs baseline_20={baseline_20:.1%}"
+            )
 
-            all_results.append({
-                "dataset": ds_name,
-                "category": q["category"],
-                "question_index": q["question_index"],
-                "method": "iterative_collect",
-                "recall": recall,
-                "hits": len(retrieved_ids & source_ids),
-                "total_source": len(source_ids),
-                "total_retrieved": len(all_segments),
-                "llm_calls": total_llm_calls,
-                "baseline_r20": baseline_20,
-            })
+            all_results.append(
+                {
+                    "dataset": ds_name,
+                    "category": q["category"],
+                    "question_index": q["question_index"],
+                    "method": "iterative_collect",
+                    "recall": recall,
+                    "hits": len(retrieved_ids & source_ids),
+                    "total_source": len(source_ids),
+                    "total_retrieved": len(all_segments),
+                    "llm_calls": total_llm_calls,
+                    "baseline_r20": baseline_20,
+                }
+            )
 
     return all_results
 
@@ -768,10 +844,18 @@ def step3d_broad_then_rerank(verbose: bool = False):
     print("=" * 70)
 
     datasets = [
-        ("puzzle", "segments_puzzle.npz", "questions_puzzle.json",
-         ["logic_constraint"]),
-        ("synthetic", "segments_synthetic.npz", "questions_synthetic.json",
-         ["completeness", "procedural"]),
+        (
+            "puzzle",
+            "segments_puzzle.npz",
+            "questions_puzzle.json",
+            ["logic_constraint"],
+        ),
+        (
+            "synthetic",
+            "segments_synthetic.npz",
+            "questions_synthetic.json",
+            ["completeness", "procedural"],
+        ),
     ]
 
     all_results = []
@@ -793,7 +877,9 @@ def step3d_broad_then_rerank(verbose: bool = False):
             # Format for LLM
             segments_text = ""
             for seg in sorted(broad_segments, key=lambda s: s.turn_id):
-                segments_text += f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:300]}\n\n"
+                segments_text += (
+                    f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:300]}\n\n"
+                )
 
             prompt = RERANK_PROMPT.format(
                 question=question_text,
@@ -825,31 +911,40 @@ def step3d_broad_then_rerank(verbose: bool = False):
             broad_recall = compute_recall(broad_ids, source_ids)
             rerank_recall = compute_recall(reranked_turn_ids, source_ids)
             baseline_20 = compute_recall(
-                {s.turn_id for s in store.search(query_emb, top_k=20, conversation_id=conv_id).segments},
-                source_ids
+                {
+                    s.turn_id
+                    for s in store.search(
+                        query_emb, top_k=20, conversation_id=conv_id
+                    ).segments
+                },
+                source_ids,
             )
 
-            print(f"  Q{q['question_index']} [{q['category']}] "
-                  f"broad_50: {broad_recall:.1%}, "
-                  f"reranked({len(reranked_segments)}): {rerank_recall:.1%}, "
-                  f"baseline_20: {baseline_20:.1%}")
+            print(
+                f"  Q{q['question_index']} [{q['category']}] "
+                f"broad_50: {broad_recall:.1%}, "
+                f"reranked({len(reranked_segments)}): {rerank_recall:.1%}, "
+                f"baseline_20: {baseline_20:.1%}"
+            )
 
             if verbose:
                 print(f"    Reranked hits: {sorted(reranked_turn_ids & source_ids)}")
                 print(f"    Reranked misses: {sorted(source_ids - reranked_turn_ids)}")
                 print(f"    Broad hits: {sorted(broad_ids & source_ids)}")
 
-            all_results.append({
-                "dataset": ds_name,
-                "category": q["category"],
-                "question_index": q["question_index"],
-                "method": "broad_then_rerank",
-                "broad_recall": broad_recall,
-                "rerank_recall": rerank_recall,
-                "num_reranked": len(reranked_segments),
-                "total_source": len(source_ids),
-                "baseline_r20": baseline_20,
-            })
+            all_results.append(
+                {
+                    "dataset": ds_name,
+                    "category": q["category"],
+                    "question_index": q["question_index"],
+                    "method": "broad_then_rerank",
+                    "broad_recall": broad_recall,
+                    "rerank_recall": rerank_recall,
+                    "num_reranked": len(reranked_segments),
+                    "total_source": len(source_ids),
+                    "baseline_r20": baseline_20,
+                }
+            )
 
     return all_results
 
@@ -858,6 +953,7 @@ def step3d_broad_then_rerank(verbose: bool = False):
 # Step 3e: Hybrid — broad cosine + constraint-aware cues + rerank
 # ===========================================================================
 
+
 def step3e_hybrid(verbose: bool = False):
     """Best of both: broad cosine pool + constraint-typed cues, then LLM rerank."""
     print("\n" + "=" * 70)
@@ -865,10 +961,18 @@ def step3e_hybrid(verbose: bool = False):
     print("=" * 70)
 
     datasets = [
-        ("puzzle", "segments_puzzle.npz", "questions_puzzle.json",
-         ["logic_constraint"]),
-        ("synthetic", "segments_synthetic.npz", "questions_synthetic.json",
-         ["completeness", "procedural"]),
+        (
+            "puzzle",
+            "segments_puzzle.npz",
+            "questions_puzzle.json",
+            ["logic_constraint"],
+        ),
+        (
+            "synthetic",
+            "segments_synthetic.npz",
+            "questions_synthetic.json",
+            ["completeness", "procedural"],
+        ),
     ]
 
     all_results = []
@@ -907,7 +1011,9 @@ def step3e_hybrid(verbose: bool = False):
             for cue in cues[:3]:
                 cue_emb = embed_text(cue)
                 result = store.search(
-                    cue_emb, top_k=10, conversation_id=conv_id,
+                    cue_emb,
+                    top_k=10,
+                    conversation_id=conv_id,
                     exclude_indices=exclude,
                 )
                 for seg in result.segments:
@@ -918,7 +1024,9 @@ def step3e_hybrid(verbose: bool = False):
             # Phase 3: LLM rerank to identify constraint-bearing turns
             segments_text = ""
             for seg in sorted(all_segments, key=lambda s: s.turn_id):
-                segments_text += f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:300]}\n\n"
+                segments_text += (
+                    f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:300]}\n\n"
+                )
 
             rerank_prompt = RERANK_PROMPT.format(
                 question=question_text,
@@ -944,27 +1052,36 @@ def step3e_hybrid(verbose: bool = False):
             pool_recall = compute_recall(pool_ids, source_ids)
             rerank_recall = compute_recall(relevant_ids, source_ids)
             baseline_20 = compute_recall(
-                {s.turn_id for s in store.search(query_emb, top_k=20, conversation_id=conv_id).segments},
-                source_ids
+                {
+                    s.turn_id
+                    for s in store.search(
+                        query_emb, top_k=20, conversation_id=conv_id
+                    ).segments
+                },
+                source_ids,
             )
 
-            print(f"  Q{q['question_index']} [{q['category']}] "
-                  f"pool({len(all_segments)}): {pool_recall:.1%}, "
-                  f"reranked({len(relevant_ids)}): {rerank_recall:.1%}, "
-                  f"baseline_20: {baseline_20:.1%}")
+            print(
+                f"  Q{q['question_index']} [{q['category']}] "
+                f"pool({len(all_segments)}): {pool_recall:.1%}, "
+                f"reranked({len(relevant_ids)}): {rerank_recall:.1%}, "
+                f"baseline_20: {baseline_20:.1%}"
+            )
 
-            all_results.append({
-                "dataset": ds_name,
-                "category": q["category"],
-                "question_index": q["question_index"],
-                "method": "hybrid",
-                "pool_recall": pool_recall,
-                "rerank_recall": rerank_recall,
-                "num_pool": len(all_segments),
-                "num_reranked": len(relevant_ids),
-                "total_source": len(source_ids),
-                "baseline_r20": baseline_20,
-            })
+            all_results.append(
+                {
+                    "dataset": ds_name,
+                    "category": q["category"],
+                    "question_index": q["question_index"],
+                    "method": "hybrid",
+                    "pool_recall": pool_recall,
+                    "rerank_recall": rerank_recall,
+                    "num_pool": len(all_segments),
+                    "num_reranked": len(relevant_ids),
+                    "total_source": len(source_ids),
+                    "baseline_r20": baseline_20,
+                }
+            )
 
     return all_results
 
@@ -972,8 +1089,13 @@ def step3e_hybrid(verbose: bool = False):
 # ===========================================================================
 # Summary table
 # ===========================================================================
-def print_summary(baseline_results, constraint_results, iterative_results,
-                  rerank_results, hybrid_results):
+def print_summary(
+    baseline_results,
+    constraint_results,
+    iterative_results,
+    rerank_results,
+    hybrid_results,
+):
     """Print a summary comparison table."""
     print("\n" + "=" * 70)
     print("SUMMARY COMPARISON")
@@ -1007,16 +1129,23 @@ def print_summary(baseline_results, constraint_results, iterative_results,
 
     # Print per-question
     methods_to_show = [
-        "baseline_r20", "cosine_top30", "cosine_top50",
-        "constraint_aware", "iterative_collect",
-        "broad_50", "broad50_reranked",
-        "hybrid_pool", "hybrid_reranked",
+        "baseline_r20",
+        "cosine_top30",
+        "cosine_top50",
+        "constraint_aware",
+        "iterative_collect",
+        "broad_50",
+        "broad50_reranked",
+        "hybrid_pool",
+        "hybrid_reranked",
     ]
 
-    print(f"\n{'Q':>4} {'Cat':>18} {'baseline':>8} {'cos30':>6} {'cos50':>6} "
-          f"{'constr':>6} {'iter':>6} "
-          f"{'brd50':>6} {'rrk50':>6} "
-          f"{'hybP':>6} {'hybR':>6}")
+    print(
+        f"\n{'Q':>4} {'Cat':>18} {'baseline':>8} {'cos30':>6} {'cos50':>6} "
+        f"{'constr':>6} {'iter':>6} "
+        f"{'brd50':>6} {'rrk50':>6} "
+        f"{'hybP':>6} {'hybR':>6}"
+    )
     print("-" * 100)
 
     cat_avgs: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
@@ -1034,10 +1163,12 @@ def print_summary(baseline_results, constraint_results, iterative_results,
         print(f"  {qi:>2} {cat:>18} " + " ".join(f"{v:>6}" for v in vals))
 
     # Category averages
-    print(f"\n{'':>4} {'CATEGORY AVG':>18} {'baseline':>8} {'cos30':>6} {'cos50':>6} "
-          f"{'constr':>6} {'iter':>6} "
-          f"{'brd50':>6} {'rrk50':>6} "
-          f"{'hybP':>6} {'hybR':>6}")
+    print(
+        f"\n{'':>4} {'CATEGORY AVG':>18} {'baseline':>8} {'cos30':>6} {'cos50':>6} "
+        f"{'constr':>6} {'iter':>6} "
+        f"{'brd50':>6} {'rrk50':>6} "
+        f"{'hybP':>6} {'hybR':>6}"
+    )
     print("-" * 100)
 
     for cat in sorted(cat_avgs.keys()):
@@ -1057,9 +1188,11 @@ def print_summary(baseline_results, constraint_results, iterative_results,
 # ===========================================================================
 def main():
     import argparse
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--step", type=int, default=0,
-                        help="Run specific step (1-5), 0=all")
+    parser.add_argument(
+        "--step", type=int, default=0, help="Run specific step (1-5), 0=all"
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
 
@@ -1078,8 +1211,11 @@ def main():
             hybrid_results = step3e_hybrid(verbose=args.verbose)
 
             print_summary(
-                baseline_results, constraint_results, iterative_results,
-                rerank_results, hybrid_results,
+                baseline_results,
+                constraint_results,
+                iterative_results,
+                rerank_results,
+                hybrid_results,
             )
 
             # Save all results

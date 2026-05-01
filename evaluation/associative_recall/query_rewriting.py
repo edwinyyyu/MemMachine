@@ -36,9 +36,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -47,6 +44,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -317,9 +316,7 @@ class VariantBase:
         if cached is not None:
             self.embed_calls += 1
             return cached
-        response = self.client.embeddings.create(
-            model=EMBED_MODEL, input=[text]
-        )
+        response = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
         emb = np.array(response.data[0].embedding, dtype=np.float32)
         self.embedding_cache.put(text, emb)
         self.embed_calls += 1
@@ -369,7 +366,7 @@ def _parse_lines(response: str, prefix: str) -> list[str]:
     for line in response.strip().splitlines():
         line = line.strip()
         if line.upper().startswith(p):
-            val = line[len(p):].strip()
+            val = line[len(p) :].strip()
             if val:
                 out.append(val)
     return out
@@ -411,12 +408,13 @@ class CosineOnlyVariant(VariantBase):
     name = "cosine_only"
 
     def retrieve(
-        self, question: str, conversation_id: str, K: int,
+        self,
+        question: str,
+        conversation_id: str,
+        K: int,
     ) -> VariantResult:
         q_emb = self.embed_text(question)
-        result = self.store.search(
-            q_emb, top_k=K, conversation_id=conversation_id
-        )
+        result = self.store.search(q_emb, top_k=K, conversation_id=conversation_id)
         return VariantResult(
             segments=list(result.segments),
             metadata={"name": self.name, "searches": 1, "split": [K]},
@@ -429,7 +427,10 @@ class V15ControlSplitVariant(VariantBase):
     name = "v15_control_split"
 
     def retrieve(
-        self, question: str, conversation_id: str, K: int,
+        self,
+        question: str,
+        conversation_id: str,
+        K: int,
     ) -> VariantResult:
         q_emb = self.embed_text(question)
         # Hop 0 context (use a generous top retrieval for the context section,
@@ -460,7 +461,9 @@ class V15ControlSplitVariant(VariantBase):
         for q, k in zip(queries, splits):
             emb = self.embed_text(q)
             res = self.store.search(
-                emb, top_k=k, conversation_id=conversation_id,
+                emb,
+                top_k=k,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             segs = list(res.segments)
@@ -487,7 +490,10 @@ class V2fV2SplitVariant(VariantBase):
     name = "v2f_v2_split"
 
     def retrieve(
-        self, question: str, conversation_id: str, K: int,
+        self,
+        question: str,
+        conversation_id: str,
+        K: int,
     ) -> VariantResult:
         q_emb = self.embed_text(question)
         context_probe = self.store.search(
@@ -514,7 +520,9 @@ class V2fV2SplitVariant(VariantBase):
         for q, k in zip(queries, splits):
             emb = self.embed_text(q)
             res = self.store.search(
-                emb, top_k=k, conversation_id=conversation_id,
+                emb,
+                top_k=k,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             segs = list(res.segments)
@@ -544,7 +552,10 @@ class QueryRewrite3Variant(VariantBase):
     name = "query_rewrite_3"
 
     def retrieve(
-        self, question: str, conversation_id: str, K: int,
+        self,
+        question: str,
+        conversation_id: str,
+        K: int,
     ) -> VariantResult:
         prompt = QUERY_REWRITE_PROMPT.format(question=question)
         output = self.llm_call(prompt)
@@ -563,7 +574,9 @@ class QueryRewrite3Variant(VariantBase):
             # Oversample by 2x up to K to cushion duplicates during merge.
             oversample_k = min(K, max(k * 2, k))
             res = self.store.search(
-                emb, top_k=oversample_k, conversation_id=conversation_id,
+                emb,
+                top_k=oversample_k,
+                conversation_id=conversation_id,
             )
             # But we only "allocate" k slots per search in the interleaving.
             segs = list(res.segments)[:k]
@@ -577,7 +590,9 @@ class QueryRewrite3Variant(VariantBase):
                 emb = self.embed_text(q)
                 oversample_k = min(K, max(k * 2, k))
                 res = self.store.search(
-                    emb, top_k=oversample_k, conversation_id=conversation_id,
+                    emb,
+                    top_k=oversample_k,
+                    conversation_id=conversation_id,
                 )
                 extra_pool.extend(res.segments)
             seen = {s.index for s in merged}
@@ -606,7 +621,10 @@ class HydeVariant(VariantBase):
     name = "hyde"
 
     def retrieve(
-        self, question: str, conversation_id: str, K: int,
+        self,
+        question: str,
+        conversation_id: str,
+        K: int,
     ) -> VariantResult:
         prompt = HYDE_PROMPT.format(question=question)
         output = self.llm_call(prompt)
@@ -615,7 +633,9 @@ class HydeVariant(VariantBase):
 
         emb = self.embed_text(hyde_text)
         res = self.store.search(
-            emb, top_k=K, conversation_id=conversation_id,
+            emb,
+            top_k=K,
+            conversation_id=conversation_id,
         )
         return VariantResult(
             segments=list(res.segments),
@@ -635,7 +655,10 @@ class Decomposition4Variant(VariantBase):
     name = "decomposition_4"
 
     def retrieve(
-        self, question: str, conversation_id: str, K: int,
+        self,
+        question: str,
+        conversation_id: str,
+        K: int,
     ) -> VariantResult:
         prompt = DECOMPOSITION_PROMPT.format(question=question)
         output = self.llm_call(prompt)
@@ -650,7 +673,9 @@ class Decomposition4Variant(VariantBase):
             emb = self.embed_text(c)
             oversample_k = min(K, max(k * 2, k))
             res = self.store.search(
-                emb, top_k=oversample_k, conversation_id=conversation_id,
+                emb,
+                top_k=oversample_k,
+                conversation_id=conversation_id,
             )
             segs = list(res.segments)[:k]
             per_search.append(segs)
@@ -663,7 +688,9 @@ class Decomposition4Variant(VariantBase):
                 emb = self.embed_text(c)
                 oversample_k = min(K, max(k * 2, k))
                 res = self.store.search(
-                    emb, top_k=oversample_k, conversation_id=conversation_id,
+                    emb,
+                    top_k=oversample_k,
+                    conversation_id=conversation_id,
                 )
                 extra_pool.extend(res.segments)
             seen = {s.index for s in merged}
@@ -696,7 +723,10 @@ class QuestionPlusNoiseVariant(VariantBase):
     name = "question_plus_noise"
 
     def retrieve(
-        self, question: str, conversation_id: str, K: int,
+        self,
+        question: str,
+        conversation_id: str,
+        K: int,
     ) -> VariantResult:
         q_emb = self.embed_text(question)
         # Deterministic noise using fixed seeds per question so results are
@@ -706,9 +736,9 @@ class QuestionPlusNoiseVariant(VariantBase):
             # Seed per question for determinism across runs.
             local_seed = (seed * 1_000_003) ^ (hash(question) & 0xFFFFFFFF)
             rng = np.random.default_rng(local_seed)
-            noise = rng.normal(
-                loc=0.0, scale=NOISE_SIGMA, size=q_emb.shape
-            ).astype(np.float32)
+            noise = rng.normal(loc=0.0, scale=NOISE_SIGMA, size=q_emb.shape).astype(
+                np.float32
+            )
             perturbed = q_emb + noise
             # The store normalizes inside search; still, we keep the perturbed
             # vector as-is (search divides by its norm).
@@ -719,7 +749,9 @@ class QuestionPlusNoiseVariant(VariantBase):
         for emb, k in zip(embs, splits):
             oversample_k = min(K, max(k * 2, k))
             res = self.store.search(
-                emb, top_k=oversample_k, conversation_id=conversation_id,
+                emb,
+                top_k=oversample_k,
+                conversation_id=conversation_id,
             )
             segs = list(res.segments)[:k]
             per_search.append(segs)
@@ -730,7 +762,9 @@ class QuestionPlusNoiseVariant(VariantBase):
             for emb, k in zip(embs, splits):
                 oversample_k = min(K, max(k * 2, k))
                 res = self.store.search(
-                    emb, top_k=oversample_k, conversation_id=conversation_id,
+                    emb,
+                    top_k=oversample_k,
+                    conversation_id=conversation_id,
                 )
                 extra_pool.extend(res.segments)
             seen = {s.index for s in merged}
@@ -768,7 +802,9 @@ VARIANTS = {
 # Helpers
 # ---------------------------------------------------------------------------
 def _format_segments(
-    segments: list[Segment], max_items: int = 10, max_chars: int = 250,
+    segments: list[Segment],
+    max_items: int = 10,
+    max_chars: int = 250,
 ) -> str:
     if not segments:
         return "(no content retrieved yet)"
@@ -801,7 +837,8 @@ def compute_recall(retrieved_turn_ids: set[int], source_ids: set[int]) -> float:
 # Evaluation
 # ---------------------------------------------------------------------------
 def evaluate_question(
-    variant: VariantBase, question: dict,
+    variant: VariantBase,
+    question: dict,
 ) -> dict:
     q_text = question["question"]
     conv_id = question["conversation_id"]
@@ -834,10 +871,7 @@ def evaluate_question(
         row["per_budget"][f"time_s@{K}"] = round(elapsed, 2)
 
         # Keep only the lightweight metadata (strings), not segments.
-        meta_copy = {
-            k: v for k, v in result.metadata.items()
-            if k not in ("segments",)
-        }
+        meta_copy = {k: v for k, v in result.metadata.items() if k not in ("segments",)}
         per_budget_meta[K] = meta_copy
 
     row["metadata"] = per_budget_meta
@@ -845,7 +879,9 @@ def evaluate_question(
 
 
 def summarize(
-    results: list[dict], variant_name: str, dataset: str,
+    results: list[dict],
+    variant_name: str,
+    dataset: str,
 ) -> dict:
     n = len(results)
     summary: dict = {"variant": variant_name, "dataset": dataset, "n": n}
@@ -882,13 +918,13 @@ def summarize_by_category(results: list[dict]) -> dict:
 
 
 def compare_vs_baseline(
-    results: list[dict], baseline_results: list[dict],
+    results: list[dict],
+    baseline_results: list[dict],
 ) -> dict:
     """Paired comparison against a baseline variant (same questions)."""
     # Index baseline by (conversation_id, question_index)
     base_by_key = {
-        (r["conversation_id"], r["question_index"]): r
-        for r in baseline_results
+        (r["conversation_id"], r["question_index"]): r for r in baseline_results
     }
     out: dict = {}
     for K in BUDGETS:
@@ -909,9 +945,7 @@ def compare_vs_baseline(
             else:
                 ties += 1
         n = len(deltas)
-        out[f"delta_r@{K}"] = (
-            round(sum(deltas) / n, 4) if n else 0.0
-        )
+        out[f"delta_r@{K}"] = round(sum(deltas) / n, 4) if n else 0.0
         out[f"W/T/L_r@{K}"] = f"{wins}/{ties}/{losses}"
     return out
 
@@ -933,8 +967,7 @@ def run_variant(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] "
-            f"{q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -963,8 +996,7 @@ def run_variant(
     print("  Per-category:")
     for cat, c in by_cat.items():
         print(
-            f"    {cat:24s} (n={c['n']:2d}): "
-            f"r@20={c['r@20']:.3f} r@50={c['r@50']:.3f}"
+            f"    {cat:24s} (n={c['n']:2d}): r@20={c['r@20']:.3f} r@50={c['r@50']:.3f}"
         )
     return results, summary, by_cat
 
@@ -975,18 +1007,25 @@ def run_variant(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--variant", type=str, default=None,
+        "--variant",
+        type=str,
+        default=None,
         help="Run a single variant (default: all)",
     )
     parser.add_argument(
-        "--dataset", type=str, default=None,
+        "--dataset",
+        type=str,
+        default=None,
         help="Run a single dataset (default: all)",
     )
     parser.add_argument(
-        "--list", action="store_true", help="List variants and datasets",
+        "--list",
+        action="store_true",
+        help="List variants and datasets",
     )
     parser.add_argument(
-        "--force", action="store_true",
+        "--force",
+        action="store_true",
         help="Overwrite existing per-(variant, dataset) results",
     )
     args = parser.parse_args()
@@ -1007,24 +1046,17 @@ def main() -> None:
 
     for v in variant_names:
         if v not in VARIANTS:
-            raise SystemExit(
-                f"Unknown variant: {v}. Available: {list(VARIANTS)}"
-            )
+            raise SystemExit(f"Unknown variant: {v}. Available: {list(VARIANTS)}")
     for d in dataset_names:
         if d not in DATASETS:
-            raise SystemExit(
-                f"Unknown dataset: {d}. Available: {list(DATASETS)}"
-            )
+            raise SystemExit(f"Unknown dataset: {d}. Available: {list(DATASETS)}")
 
     # Per-dataset loaded store (reuse across variants).
     store_cache: dict[str, tuple[SegmentStore, list[dict]]] = {}
     for d in dataset_names:
         store, questions = load_dataset(d)
         store_cache[d] = (store, questions)
-        print(
-            f"Loaded {d}: {len(questions)} questions, "
-            f"{len(store.segments)} segments"
-        )
+        print(f"Loaded {d}: {len(questions)} questions, {len(store.segments)} segments")
 
     all_results: dict[str, dict[str, list[dict]]] = {}
     all_summaries: dict[str, dict[str, dict]] = {}
@@ -1043,7 +1075,10 @@ def main() -> None:
                 by_cat = saved.get("category_breakdown", {})
             else:
                 results, summary, by_cat = run_variant(
-                    v, d, store, questions,
+                    v,
+                    d,
+                    store,
+                    questions,
                 )
                 with open(out_path, "w") as f:
                     json.dump(

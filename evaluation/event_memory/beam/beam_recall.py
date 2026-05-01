@@ -25,7 +25,6 @@ import ast
 import json
 from collections import defaultdict
 
-
 # Category → list of dict subfield names to flatten when source_chat_ids is a
 # dict. Any subfield not listed here is still picked up by the dict-flatten
 # fallback; this mapping is only documentation of the expected schema.
@@ -61,7 +60,11 @@ def _flatten_source_chat_ids(raw: object) -> set[int]:
     if raw is None:
         return set()
     if isinstance(raw, list):
-        return {int(x) for x in raw if isinstance(x, (int, float, str)) and str(x).lstrip("-").isdigit()}
+        return {
+            int(x)
+            for x in raw
+            if isinstance(x, (int, float, str)) and str(x).lstrip("-").isdigit()
+        }
     if isinstance(raw, dict):
         out: set[int] = set()
         for v in raw.values():
@@ -248,8 +251,7 @@ def main() -> None:
     )
     print("\n=== BEAM Retrieval Recall ===")
     print(
-        f"(skipped: {skipped_no_source} with no source, "
-        f"{skipped_unjoined} unjoinable)"
+        f"(skipped: {skipped_no_source} with no source, {skipped_unjoined} unjoinable)"
     )
     print(header)
     print("-" * len(header))

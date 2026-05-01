@@ -48,11 +48,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -63,12 +60,13 @@ from associative_recall import (
 )
 from best_shot import (
     MODEL,
+    V2F_PROMPT,
     BestshotBase,
     BestshotResult,
-    V2F_PROMPT,
     _format_segments,
     _parse_cues,
 )
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Dedicated caches — writes go here; reads union many shared caches.
@@ -76,9 +74,7 @@ from best_shot import (
 
 _ENTITY_EMB_FILE = CACHE_DIR / "entity_mention_embedding_cache.json"
 _ENTITY_LLM_FILE = CACHE_DIR / "entity_mention_llm_cache.json"
-_TURN_ENTITIES_FILE = (
-    Path(__file__).resolve().parent / "results" / "turn_entities.json"
-)
+_TURN_ENTITIES_FILE = Path(__file__).resolve().parent / "results" / "turn_entities.json"
 
 # Best-effort list of shared caches to warm from. Writes stay in dedicated
 # file so we don't corrupt other agents.
@@ -209,70 +205,361 @@ class EntityMentionLLMCache(LLMCache):
 # is not an entity.
 _STOPWORDS_COMMON = {
     # Function/content words that tend to appear capitalized
-    "i", "i'm", "i've", "i'll", "i'd", "a", "an", "the", "this", "that",
-    "these", "those", "it", "its", "it's", "he", "she", "they", "we", "you",
-    "your", "yours", "my", "mine", "our", "ours", "me", "us", "them", "him",
-    "her", "his", "hers", "their", "theirs", "who", "what", "when", "where",
-    "why", "how", "which", "whose", "whom",
+    "i",
+    "i'm",
+    "i've",
+    "i'll",
+    "i'd",
+    "a",
+    "an",
+    "the",
+    "this",
+    "that",
+    "these",
+    "those",
+    "it",
+    "its",
+    "it's",
+    "he",
+    "she",
+    "they",
+    "we",
+    "you",
+    "your",
+    "yours",
+    "my",
+    "mine",
+    "our",
+    "ours",
+    "me",
+    "us",
+    "them",
+    "him",
+    "her",
+    "his",
+    "hers",
+    "their",
+    "theirs",
+    "who",
+    "what",
+    "when",
+    "where",
+    "why",
+    "how",
+    "which",
+    "whose",
+    "whom",
     # Common sentence starters
-    "yes", "no", "yeah", "yep", "nope", "ok", "okay", "sure", "well", "hmm",
-    "oh", "ah", "um", "uh", "hey", "hi", "hello", "thanks", "thank",
-    "wow", "cool", "nice", "great", "awesome", "amazing", "sweet",
-    "lol", "haha", "lmao", "omg", "whoa",
-    "what's", "that's", "there's", "here's", "who's", "where's",
-    "how's", "when's", "let's", "you've", "you're", "you'd", "you'll",
-    "we've", "we're", "we'd", "we'll", "they've", "they're", "they'd",
-    "they'll", "gonna", "wanna", "gotta", "kinda", "sorta",
-    "couldn't", "wouldn't", "shouldn't", "didn't", "doesn't", "don't",
-    "can't", "won't", "isn't", "aren't", "wasn't", "weren't",
-    "sorry", "please", "maybe", "perhaps",
+    "yes",
+    "no",
+    "yeah",
+    "yep",
+    "nope",
+    "ok",
+    "okay",
+    "sure",
+    "well",
+    "hmm",
+    "oh",
+    "ah",
+    "um",
+    "uh",
+    "hey",
+    "hi",
+    "hello",
+    "thanks",
+    "thank",
+    "wow",
+    "cool",
+    "nice",
+    "great",
+    "awesome",
+    "amazing",
+    "sweet",
+    "lol",
+    "haha",
+    "lmao",
+    "omg",
+    "whoa",
+    "what's",
+    "that's",
+    "there's",
+    "here's",
+    "who's",
+    "where's",
+    "how's",
+    "when's",
+    "let's",
+    "you've",
+    "you're",
+    "you'd",
+    "you'll",
+    "we've",
+    "we're",
+    "we'd",
+    "we'll",
+    "they've",
+    "they're",
+    "they'd",
+    "they'll",
+    "gonna",
+    "wanna",
+    "gotta",
+    "kinda",
+    "sorta",
+    "couldn't",
+    "wouldn't",
+    "shouldn't",
+    "didn't",
+    "doesn't",
+    "don't",
+    "can't",
+    "won't",
+    "isn't",
+    "aren't",
+    "wasn't",
+    "weren't",
+    "sorry",
+    "please",
+    "maybe",
+    "perhaps",
     # Modal/auxiliary
-    "is", "are", "was", "were", "be", "been", "being", "am", "have", "has",
-    "had", "do", "does", "did", "will", "would", "should", "could", "can",
-    "may", "might", "must", "shall", "ought",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "am",
+    "have",
+    "has",
+    "had",
+    "do",
+    "does",
+    "did",
+    "will",
+    "would",
+    "should",
+    "could",
+    "can",
+    "may",
+    "might",
+    "must",
+    "shall",
+    "ought",
     # Conjunctions/prepositions
-    "and", "or", "but", "if", "so", "for", "with", "about", "of", "to", "in",
-    "on", "at", "by", "from", "as", "than", "then", "also", "too", "just",
-    "very", "really", "quite", "actually", "still", "already", "yet", "even",
+    "and",
+    "or",
+    "but",
+    "if",
+    "so",
+    "for",
+    "with",
+    "about",
+    "of",
+    "to",
+    "in",
+    "on",
+    "at",
+    "by",
+    "from",
+    "as",
+    "than",
+    "then",
+    "also",
+    "too",
+    "just",
+    "very",
+    "really",
+    "quite",
+    "actually",
+    "still",
+    "already",
+    "yet",
+    "even",
     # Common day words
-    "today", "tomorrow", "yesterday", "now", "later", "soon", "recently",
-    "sometimes", "always", "never", "often", "usually",
+    "today",
+    "tomorrow",
+    "yesterday",
+    "now",
+    "later",
+    "soon",
+    "recently",
+    "sometimes",
+    "always",
+    "never",
+    "often",
+    "usually",
     # Common words in conversation
-    "let", "let's", "get", "got", "going", "went", "come", "came", "see",
-    "saw", "know", "knew", "think", "thought", "want", "wanted", "need",
-    "needed", "like", "liked", "love", "loved", "feel", "felt", "make",
-    "made", "take", "took", "give", "gave", "find", "found", "tell", "told",
-    "say", "said", "says", "ask", "asked", "do", "does", "did", "done",
+    "let",
+    "get",
+    "got",
+    "going",
+    "went",
+    "come",
+    "came",
+    "see",
+    "saw",
+    "know",
+    "knew",
+    "think",
+    "thought",
+    "want",
+    "wanted",
+    "need",
+    "needed",
+    "like",
+    "liked",
+    "love",
+    "loved",
+    "feel",
+    "felt",
+    "make",
+    "made",
+    "take",
+    "took",
+    "give",
+    "gave",
+    "find",
+    "found",
+    "tell",
+    "told",
+    "say",
+    "said",
+    "says",
+    "ask",
+    "asked",
+    "done",
     # Short fillers
-    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
-    "ten", "here", "there", "everywhere", "anywhere", "somewhere",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "here",
+    "there",
+    "everywhere",
+    "anywhere",
+    "somewhere",
     # Common nouns (not proper)
-    "people", "person", "friend", "family", "work", "home", "day", "night",
-    "morning", "afternoon", "evening", "week", "month", "year",
-    "time", "thing", "things", "way", "ways", "life", "world",
+    "people",
+    "person",
+    "friend",
+    "family",
+    "work",
+    "home",
+    "day",
+    "night",
+    "morning",
+    "afternoon",
+    "evening",
+    "week",
+    "month",
+    "year",
+    "time",
+    "thing",
+    "things",
+    "way",
+    "ways",
+    "life",
+    "world",
     # Sentence-initial verbs/nouns that are commonly capitalized but not
     # entities. Keep this tight — false negatives here are fine (we
     # conservatively miss an entity); false positives (wrongly boosting
     # a turn that doesn't actually share an entity with the query) are
     # worse.
-    "version", "cost", "cost.", "price", "amount", "type", "kind",
-    "part", "number", "size", "level", "state", "status", "result",
-    "great", "good", "bad", "nice", "awesome", "amazing", "cool",
-    "happy", "sad", "glad", "right", "wrong", "true", "false",
-    "yes.", "no.", "done", "first", "second", "third", "last", "next",
-    "something", "anything", "nothing", "someone", "anyone", "everyone",
-    "everything", "nowhere", "everybody", "anybody", "nobody",
+    "version",
+    "cost",
+    "cost.",
+    "price",
+    "amount",
+    "type",
+    "kind",
+    "part",
+    "number",
+    "size",
+    "level",
+    "state",
+    "status",
+    "result",
+    "good",
+    "bad",
+    "happy",
+    "sad",
+    "glad",
+    "right",
+    "wrong",
+    "true",
+    "false",
+    "yes.",
+    "no.",
+    "first",
+    "second",
+    "third",
+    "last",
+    "next",
+    "something",
+    "anything",
+    "nothing",
+    "someone",
+    "anyone",
+    "everyone",
+    "everything",
+    "nowhere",
+    "everybody",
+    "anybody",
+    "nobody",
 }
 
 # Days / months are proper-nouny but too generic to count as entities.
 _STOPWORDS_GENERIC = {
-    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
     "sunday",
-    "january", "february", "march", "april", "may", "june", "july", "august",
-    "september", "october", "november", "december",
-    "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri", "sat", "sun",
-    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct",
-    "nov", "dec",
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+    "mon",
+    "tue",
+    "tues",
+    "wed",
+    "thu",
+    "thur",
+    "thurs",
+    "fri",
+    "sat",
+    "sun",
+    "jan",
+    "feb",
+    "mar",
+    "apr",
+    "jun",
+    "jul",
+    "aug",
+    "sep",
+    "sept",
+    "oct",
+    "nov",
+    "dec",
 }
 
 _STOPWORDS = _STOPWORDS_COMMON | _STOPWORDS_GENERIC
@@ -285,9 +572,7 @@ _RE_ACRONYM = re.compile(r"\b[A-Z]{2,}(?:-\d+)?\b")
 # "New York", "San Francisco Giants". Allows apostrophes and hyphens inside
 # tokens. Does NOT drop sentence-initial matches — we handle that via stopwords
 # plus the multi-word requirement for PP.
-_RE_PROPER = re.compile(
-    r"\b[A-Z][a-zA-Z'\-]+(?:\s+[A-Z][a-zA-Z'\-]+)*\b"
-)
+_RE_PROPER = re.compile(r"\b[A-Z][a-zA-Z'\-]+(?:\s+[A-Z][a-zA-Z'\-]+)*\b")
 
 # Currency amounts: $12, $12.5, $12k, $12.5M, $12,000
 _RE_CURRENCY = re.compile(r"\$\d+(?:[,.]?\d+)*(?:[kKmMbB])?")
@@ -401,8 +686,23 @@ def extract_entities_regex(text: str) -> list[str]:
     # Acronyms (2+ caps with optional -digits). Filter overlaps (so 'JIRA'
     # inside 'JIRA-4521' already captured by _RE_ID is skipped).
     _IRL_STOP_ACRONYMS = {
-        "ok", "lol", "omg", "lmao", "wtf", "btw", "idk", "imo", "imho",
-        "tbh", "fyi", "asap", "rn", "ur", "u", "yo", "oh",
+        "ok",
+        "lol",
+        "omg",
+        "lmao",
+        "wtf",
+        "btw",
+        "idk",
+        "imo",
+        "imho",
+        "tbh",
+        "fyi",
+        "asap",
+        "rn",
+        "ur",
+        "u",
+        "yo",
+        "oh",
     }
     for m in _RE_ACRONYM.finditer(text):
         sp = (m.start(), m.end())
@@ -556,16 +856,10 @@ class TurnEntityExtractor:
             return None
         return convd.get(str(turn_id))
 
-    def _set_cached(
-        self, conv_id: str, turn_id: int, entities: list[str]
-    ) -> None:
-        self._store[self.extractor].setdefault(conv_id, {})[str(turn_id)] = (
-            entities
-        )
+    def _set_cached(self, conv_id: str, turn_id: int, entities: list[str]) -> None:
+        self._store[self.extractor].setdefault(conv_id, {})[str(turn_id)] = entities
 
-    def extract_turn(
-        self, conversation_id: str, turn_id: int, text: str
-    ) -> list[str]:
+    def extract_turn(self, conversation_id: str, turn_id: int, text: str) -> list[str]:
         cached = self._get_cached(conversation_id, turn_id)
         if cached is not None:
             return cached
@@ -594,8 +888,7 @@ class TurnEntityExtractor:
                         time.sleep(1.5 * (attempt + 1))
                 if not response and last_exc is not None:
                     print(
-                        f"    [entity LLM] failed for turn {turn_id}: "
-                        f"{last_exc}",
+                        f"    [entity LLM] failed for turn {turn_id}: {last_exc}",
                         flush=True,
                     )
                 self.llm_cache.put(MODEL, prompt, response)
@@ -664,9 +957,7 @@ class TurnEntityExtractor:
             # Regex is fast enough to do inline.
             for seg in pending:
                 try:
-                    self.extract_turn(
-                        seg.conversation_id, seg.turn_id, seg.text
-                    )
+                    self.extract_turn(seg.conversation_id, seg.turn_id, seg.text)
                 except Exception as e:
                     print(
                         f"    [entity regex] error on {seg.conversation_id}"
@@ -762,9 +1053,7 @@ def build_conversation_index(
 # ---------------------------------------------------------------------------
 
 
-def extract_query_entities(
-    query: str, extractor: TurnEntityExtractor
-) -> list[str]:
+def extract_query_entities(query: str, extractor: TurnEntityExtractor) -> list[str]:
     """Extract entities from the query using the same extractor used at
     ingest time. For the LLM extractor we cache the query-level LLM call
     the same way as turns (separate cache entry because the prompt is the
@@ -821,9 +1110,7 @@ class _EntityMentionBase(BestshotBase):
     _extractor_cache: dict[tuple[int, str], TurnEntityExtractor] = {}
     _index_cache: dict[tuple[int, str, str], InvertedIndex] = {}
 
-    def __init__(
-        self, store: SegmentStore, client: OpenAI | None = None
-    ) -> None:
+    def __init__(self, store: SegmentStore, client: OpenAI | None = None) -> None:
         if client is None:
             client = OpenAI(timeout=60.0, max_retries=3)
         super().__init__(store, client)
@@ -857,17 +1144,10 @@ class _EntityMentionBase(BestshotBase):
         idx = self._index_cache.get(ikey)
         if idx is None:
             # For LLM extractor, extract on demand per conv
-            if (
-                self.extractor_kind == "llm"
-                and conv_id not in self._extracted_convs
-            ):
-                self.extractor.extract_for_store(
-                    self.store, conversation_ids=[conv_id]
-                )
+            if self.extractor_kind == "llm" and conv_id not in self._extracted_convs:
+                self.extractor.extract_for_store(self.store, conversation_ids=[conv_id])
                 self._extracted_convs.add(conv_id)
-            idx = build_conversation_index(
-                self.store, conv_id, self.extractor
-            )
+            idx = build_conversation_index(self.store, conv_id, self.extractor)
             self._index_cache[ikey] = idx
         return idx
 
@@ -910,9 +1190,7 @@ class _EntityMentionBase(BestshotBase):
                 response = self.client.embeddings.create(
                     model=EMBED_MODEL, input=[text]
                 )
-                embedding = np.array(
-                    response.data[0].embedding, dtype=np.float32
-                )
+                embedding = np.array(response.data[0].embedding, dtype=np.float32)
                 self.embedding_cache.put(text, embedding)
                 self.embed_calls += 1
                 return embedding
@@ -923,9 +1201,7 @@ class _EntityMentionBase(BestshotBase):
         self.embed_calls += 1
         return np.zeros(1536, dtype=np.float32)
 
-    def retrieve(
-        self, question: str, conversation_id: str
-    ) -> BestshotResult:
+    def retrieve(self, question: str, conversation_id: str) -> BestshotResult:
         index = self._get_index(conversation_id)
 
         # 1. Extract entities from query (same extractor).
@@ -990,9 +1266,7 @@ class _EntityMentionBase(BestshotBase):
                 if not cue:
                     continue
                 cue_emb = self.embed_text(cue)
-                cue_norm = cue_emb / max(
-                    float(np.linalg.norm(cue_emb)), 1e-10
-                )
+                cue_norm = cue_emb / max(float(np.linalg.norm(cue_emb)), 1e-10)
                 cue_sims = self.store.normalized_embeddings @ cue_norm
                 cue_sims_conv = np.where(conv_mask, cue_sims, -1e9)
                 # Take top-10 for this cue
@@ -1022,9 +1296,7 @@ class _EntityMentionBase(BestshotBase):
                 )
 
         # 5. Rank.
-        ranked = sorted(
-            score_map.keys(), key=lambda i: score_map[i], reverse=True
-        )
+        ranked = sorted(score_map.keys(), key=lambda i: score_map[i], reverse=True)
         all_segments = [seg_map[i] for i in ranked]
 
         # Metadata
@@ -1042,9 +1314,7 @@ class _EntityMentionBase(BestshotBase):
             "boosted_turn_ids": boosted_turn_ids[:50],
             "v2f_cues": v2f_cues,
             "v2f_outcomes": v2f_outcomes,
-            "num_turns_in_index": sum(
-                1 for _ in index.by_segment_index
-            ),
+            "num_turns_in_index": sum(1 for _ in index.by_segment_index),
             "index_num_entities": len(index.by_entity),
         }
         return BestshotResult(segments=all_segments, metadata=metadata)

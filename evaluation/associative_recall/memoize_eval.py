@@ -26,17 +26,23 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import Segment, SegmentStore
 from best_shot import (
+    V2F_PROMPT,
     BestshotBase,
     BestshotResult,
-    V2F_PROMPT,
     _format_segments,
     _parse_cues,
 )
+from cue_memoization import (
+    ARCH_CLASSES as MEMOIZE_ARCH_CLASSES,
+)
+from cue_memoization import (
+    MemoizeEmbeddingCache,
+    MemoizeLLMCache,
+    load_exemplar_bank,
+)
+from dotenv import load_dotenv
 from fair_backfill_eval import (
     BUDGETS,
     DATASETS,
@@ -46,12 +52,7 @@ from fair_backfill_eval import (
     summarize,
     summarize_by_category,
 )
-from cue_memoization import (
-    ARCH_CLASSES as MEMOIZE_ARCH_CLASSES,
-    MemoizeEmbeddingCache,
-    MemoizeLLMCache,
-    load_exemplar_bank,
-)
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -75,9 +76,7 @@ class MetaV2fMemoizeCache(BestshotBase):
 
     def retrieve(self, question: str, conversation_id: str) -> BestshotResult:
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         hop0_segments = list(hop0.segments)
         hop0_scores = list(hop0.scores)
 
@@ -91,9 +90,7 @@ class MetaV2fMemoizeCache(BestshotBase):
             "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
             + _format_segments(hop0_segments)
         )
-        prompt = V2F_PROMPT.format(
-            question=question, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=question, context_section=context_section)
         output = self.llm_call(prompt)
         cues = _parse_cues(output)[:2]
 
@@ -102,9 +99,7 @@ class MetaV2fMemoizeCache(BestshotBase):
             if not cue.strip():
                 continue
             cue_emb = self.embed_text(cue)
-            res = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id
-            )
+            res = self.store.search(cue_emb, top_k=10, conversation_id=conversation_id)
             retrieved_ids = []
             for seg, sc in zip(res.segments, res.scores):
                 retrieved_ids.append(seg.index)
@@ -121,9 +116,7 @@ class MetaV2fMemoizeCache(BestshotBase):
                 }
             )
 
-        ranked = sorted(
-            score_map.keys(), key=lambda i: score_map[i], reverse=True
-        )
+        ranked = sorted(score_map.keys(), key=lambda i: score_map[i], reverse=True)
         all_segments = [seg_map[i] for i in ranked]
 
         return BestshotResult(
@@ -169,9 +162,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -189,9 +180,7 @@ def evaluate_question(arch, question: dict) -> dict:
         # Carry over memoize-specific metadata if present
         "nearest_exemplars": result.metadata.get("nearest_exemplars", []),
         "memoized_cues": result.metadata.get("memoized_cues", []),
-        "memoized_probe_outcomes": result.metadata.get(
-            "memoized_probe_outcomes", []
-        ),
+        "memoized_probe_outcomes": result.metadata.get("memoized_probe_outcomes", []),
         "v2f_cues": result.metadata.get("v2f_cues", []),
         "v2f_outcomes": result.metadata.get("v2f_outcomes", []),
         "ran_v2f": result.metadata.get("ran_v2f", False),
@@ -230,7 +219,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -239,6 +228,7 @@ def run_one(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         arch.save_caches()
@@ -373,12 +363,8 @@ def qualitative_samples(
                             "nearest_exemplar_question": probe.get(
                                 "source_question", ""
                             ),
-                            "nearest_exemplar_dataset": probe.get(
-                                "source_dataset", ""
-                            ),
-                            "nearest_exemplar_sim": probe.get(
-                                "source_sim", 0.0
-                            ),
+                            "nearest_exemplar_dataset": probe.get("source_dataset", ""),
+                            "nearest_exemplar_sim": probe.get("source_sim", 0.0),
                             "reused_cue": probe["cue"],
                             "gold_found_turn_id": sorted(hit)[0],
                             "novel_vs_v2f": is_novel,
@@ -412,9 +398,7 @@ def probe_top1_gold_rate(rows: list[dict], cue_key: str) -> dict:
                 hit_any_top_k += 1
     return {
         "total_cues": total_cues,
-        "top1_hit_rate": (
-            round(hit_top1 / total_cues, 4) if total_cues else 0.0
-        ),
+        "top1_hit_rate": (round(hit_top1 / total_cues, 4) if total_cues else 0.0),
         "any_topk_hit_rate": (
             round(hit_any_top_k / total_cues, 4) if total_cues else 0.0
         ),
@@ -474,9 +458,7 @@ def main() -> None:
                 arch = cls(store)
             else:
                 arch = cls(store, exemplars=exemplars)
-            results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(arch_name, arch, ds_name, questions)
             all_results[arch_name][ds_name] = {
                 "summary": summary,
                 "category_breakdown": by_cat,
@@ -510,17 +492,12 @@ def main() -> None:
             if ds_name not in all_results.get(arch_name, {}):
                 continue
             rows = all_results[arch_name][ds_name]["results"]
-            nearest_sim_stats[arch_name][ds_name] = mean_nearest_exemplar_sim(
-                rows
-            )
+            nearest_sim_stats[arch_name][ds_name] = mean_nearest_exemplar_sim(rows)
 
     # Top 2 gain / 2 loss categories for memoize_m2 on combined datasets
     top_gaining: list = []
     top_losing: list = []
-    if (
-        "memoize_m2" in all_results
-        and all_results["memoize_m2"]
-    ):
+    if all_results.get("memoize_m2"):
         # Merge category_breakdown across datasets
         merged: dict[str, dict] = {}
         for ds_name in all_results["memoize_m2"]:
@@ -588,9 +565,7 @@ def main() -> None:
             if ds_name not in all_results.get(arch_name, {}):
                 continue
             rows = all_results[arch_name][ds_name]["results"]
-            probe_stats[ds_name][arch_name] = probe_top1_gold_rate(
-                rows, cue_key
-            )
+            probe_stats[ds_name][arch_name] = probe_top1_gold_rate(rows, cue_key)
 
     # ---------------------------------------------------------------------
     # Persist raw + per-arch JSON
@@ -604,9 +579,7 @@ def main() -> None:
             a: {
                 d: {
                     "summary": all_results[a][d]["summary"],
-                    "category_breakdown": all_results[a][d][
-                        "category_breakdown"
-                    ],
+                    "category_breakdown": all_results[a][d]["category_breakdown"],
                 }
                 for d in all_results[a]
             }
@@ -634,9 +607,7 @@ def main() -> None:
                         "arch": a,
                         "dataset": d,
                         "summary": all_results[a][d]["summary"],
-                        "category_breakdown": all_results[a][d][
-                            "category_breakdown"
-                        ],
+                        "category_breakdown": all_results[a][d]["category_breakdown"],
                         "results": all_results[a][d]["results"],
                     },
                     f,
@@ -666,9 +637,7 @@ def main() -> None:
         dataset_counter[ex["dataset"]] += 1
         conv_pairs.add((ex["dataset"], ex["conversation_id"]))
     md.append(f"- Total exemplars: **{len(exemplars)}**")
-    md.append(
-        f"- Unique (dataset, conversation_id) pairs: **{len(conv_pairs)}**"
-    )
+    md.append(f"- Unique (dataset, conversation_id) pairs: **{len(conv_pairs)}**")
     md.append("- By dataset:")
     for ds, n in sorted(dataset_counter.items()):
         md.append(f"  - `{ds}`: {n}")
@@ -712,9 +681,7 @@ def main() -> None:
 
     if orthogonality:
         md.append("\n## Orthogonality vs v2f (K=50)\n")
-        md.append(
-            "Fraction of gold turns the variant found that v2f did NOT find.\n"
-        )
+        md.append("Fraction of gold turns the variant found that v2f did NOT find.\n")
         md.append("| Arch | Dataset | gold_found | novel_vs_v2f | frac_novel |")
         md.append("|---|---|---:|---:|---:|")
         for a in orthogonality:
@@ -742,9 +709,7 @@ def main() -> None:
                 )
 
     if top_gaining or top_losing:
-        md.append(
-            "\n## Top gain/loss categories for memoize_m2 (combined datasets)\n"
-        )
+        md.append("\n## Top gain/loss categories for memoize_m2 (combined datasets)\n")
         md.append("Gaining:")
         for g in top_gaining:
             md.append(
@@ -764,9 +729,7 @@ def main() -> None:
             "Each row: new_q → nearest_exemplar_q (sim) → reused_cue → gold_found_turn\n"
         )
         for s in samples:
-            novel_tag = (
-                " **(novel vs v2f)**" if s.get("novel_vs_v2f") else ""
-            )
+            novel_tag = " **(novel vs v2f)**" if s.get("novel_vs_v2f") else ""
             md.append(
                 f"- **{s['dataset']}** `{s['new_category']}`{novel_tag}\n"
                 f"  - new_q: {s['new_question']}\n"
@@ -789,12 +752,12 @@ def main() -> None:
         ds_entries = all_results[arch_name]
         if not ds_entries:
             return (0.0, 0.0)
-        d50 = sum(
-            e["summary"]["delta_r@50"] for e in ds_entries.values()
-        ) / len(ds_entries)
-        a50 = sum(
-            e["summary"]["arch_r@50"] for e in ds_entries.values()
-        ) / len(ds_entries)
+        d50 = sum(e["summary"]["delta_r@50"] for e in ds_entries.values()) / len(
+            ds_entries
+        )
+        a50 = sum(e["summary"]["arch_r@50"] for e in ds_entries.values()) / len(
+            ds_entries
+        )
         return (d50, a50)
 
     m2_delta, m2_arch = best_arch("memoize_m2")

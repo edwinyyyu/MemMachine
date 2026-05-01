@@ -30,19 +30,16 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from memmachine_server.common.filter.filter_parser import Comparison
-from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
-
 from em_architectures import (
     EMHit,
-    _MergedLLMCache,
     _dedupe_by_turn_id,
-    _merge_by_max_score,
+    _MergedLLMCache,
     _query_em,
     em_v2f,
 )
+from memmachine_server.common.filter.filter_parser import Comparison
+from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 from speaker_attributed import extract_name_mentions
-
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 CONV_TWO_SPEAKERS_FILE = RESULTS_DIR / "conversation_two_speakers.json"
@@ -142,9 +139,7 @@ async def em_two_speaker_filter(
     metadata["matched_name"] = matched_name
 
     # Property-filtered EM.query for the matched speaker.
-    speaker_filter = Comparison(
-        field="context.source", op="=", value=matched_name
-    )
+    speaker_filter = Comparison(field="context.source", op="=", value=matched_name)
     speaker_hits_raw = await memory.query(
         query=question,
         vector_search_limit=K + 10,
@@ -215,9 +210,7 @@ async def em_two_speaker_query_only(
         matched_name = user_name if side == "user" else asst_name
         metadata["applied_speaker_filter"] = True
         metadata["matched_name"] = matched_name
-        prop_filter = Comparison(
-            field="context.source", op="=", value=matched_name
-        )
+        prop_filter = Comparison(field="context.source", op="=", value=matched_name)
         hits = await _query_em(
             memory,
             question,
@@ -258,8 +251,6 @@ async def em_two_speaker_query_only(
         return TwoSpeakerResult(hits=kept[:K], metadata=metadata)
 
     # side in ("none", "both") -> plain retrieval.
-    hits = await _query_em(
-        memory, question, vector_search_limit=K, expand_context=0
-    )
+    hits = await _query_em(memory, question, vector_search_limit=K, expand_context=0)
     hits = _dedupe_by_turn_id(hits)
     return TwoSpeakerResult(hits=hits[:K], metadata=metadata)

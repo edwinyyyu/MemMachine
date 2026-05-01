@@ -6,7 +6,6 @@ monitoring hardware utilization via docker stats.
 import asyncio
 import random
 import statistics
-import sys
 import threading
 import time
 import uuid

@@ -19,18 +19,12 @@ Usage:
     uv run python fulleval_run.py
 """
 
-import hashlib
 import json
-import sys
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -38,8 +32,9 @@ from associative_recall import (
     LLMCache,
     Segment,
     SegmentStore,
-    RetrievalResult,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -193,8 +188,9 @@ def save_caches():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def format_segments(segments: list[Segment], max_items: int = 12,
-                    max_chars: int = 250) -> str:
+def format_segments(
+    segments: list[Segment], max_items: int = 12, max_chars: int = 250
+) -> str:
     if not segments:
         return "(no content retrieved yet)"
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
@@ -246,7 +242,8 @@ def retrieve_top_k(
 ) -> list[Segment]:
     query_emb = embed_text(query)
     result = store.search(
-        query_emb, top_k=top_k,
+        query_emb,
+        top_k=top_k,
         conversation_id=conversation_id,
         exclude_indices=exclude_indices,
     )
@@ -478,6 +475,7 @@ write: COMPLETE"""
 # Architecture implementations
 # ===========================================================================
 
+
 def run_v15_control(store: SegmentStore, question: str, conv_id: str) -> list[Segment]:
     """v15_control: question top-10 + 1 LLM call producing 2 cues, each top-10."""
     query_emb = embed_text(question)
@@ -485,9 +483,8 @@ def run_v15_control(store: SegmentStore, question: str, conv_id: str) -> list[Se
     all_segments = list(hop0.segments)
     exclude = {s.index for s in all_segments}
 
-    context_section = (
-        "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-        + format_segments(all_segments)
+    context_section = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + format_segments(
+        all_segments
     )
     prompt = V15_CONTROL_PROMPT.format(
         question=question, context_section=context_section
@@ -498,7 +495,9 @@ def run_v15_control(store: SegmentStore, question: str, conv_id: str) -> list[Se
     for cue in cues[:2]:
         cue_emb = embed_text(cue)
         result = store.search(
-            cue_emb, top_k=10, conversation_id=conv_id,
+            cue_emb,
+            top_k=10,
+            conversation_id=conv_id,
             exclude_indices=exclude,
         )
         for seg in result.segments:
@@ -516,20 +515,19 @@ def run_meta_v2f(store: SegmentStore, question: str, conv_id: str) -> list[Segme
     all_segments = list(hop0.segments)
     exclude = {s.index for s in all_segments}
 
-    context_section = (
-        "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-        + format_segments(all_segments)
+    context_section = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + format_segments(
+        all_segments
     )
-    prompt = V2F_PROMPT.format(
-        question=question, context_section=context_section
-    )
+    prompt = V2F_PROMPT.format(question=question, context_section=context_section)
     output = llm_call(prompt)
     cues = parse_cues(output)
 
     for cue in cues[:2]:
         cue_emb = embed_text(cue)
         result = store.search(
-            cue_emb, top_k=10, conversation_id=conv_id,
+            cue_emb,
+            top_k=10,
+            conversation_id=conv_id,
             exclude_indices=exclude,
         )
         for seg in result.segments:
@@ -541,7 +539,9 @@ def run_meta_v2f(store: SegmentStore, question: str, conv_id: str) -> list[Segme
 
 
 def run_frontier_v2_iterative(
-    store: SegmentStore, question: str, conv_id: str,
+    store: SegmentStore,
+    question: str,
+    conv_id: str,
     max_reflects: int = 4,
 ) -> list[Segment]:
     """frontier_v2_iterative: iterative reflect with 1 gap per round."""
@@ -597,7 +597,9 @@ def run_frontier_v2_iterative(
                 break
             gap_emb = embed_text(gap)
             result = store.search(
-                gap_emb, top_k=10, conversation_id=conv_id,
+                gap_emb,
+                top_k=10,
+                conversation_id=conv_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -609,7 +611,9 @@ def run_frontier_v2_iterative(
 
 
 def run_retrieve_then_decompose(
-    store: SegmentStore, question: str, conv_id: str,
+    store: SegmentStore,
+    question: str,
+    conv_id: str,
 ) -> list[Segment]:
     """retrieve_then_decompose: v15 first hop + single cue + gap decompose."""
     exclude: set[int] = set()
@@ -635,7 +639,9 @@ def run_retrieve_then_decompose(
         cue = v15_cues[0]
         cue_emb = embed_text(cue)
         result = store.search(
-            cue_emb, top_k=10, conversation_id=conv_id,
+            cue_emb,
+            top_k=10,
+            conversation_id=conv_id,
             exclude_indices=exclude,
         )
         for seg in result.segments:
@@ -660,7 +666,9 @@ def run_retrieve_then_decompose(
     for sq in sub_questions:
         sq_emb = embed_text(sq)
         result = store.search(
-            sq_emb, top_k=10, conversation_id=conv_id,
+            sq_emb,
+            top_k=10,
+            conversation_id=conv_id,
             exclude_indices=exclude,
         )
         for seg in result.segments:
@@ -672,7 +680,9 @@ def run_retrieve_then_decompose(
 
 
 def run_gen_check_v2(
-    store: SegmentStore, question: str, conv_id: str,
+    store: SegmentStore,
+    question: str,
+    conv_id: str,
     max_rounds: int = 6,
 ) -> list[Segment]:
     """gen_check_v2: retrieve-first, skeptical generation with NEED: triggers."""
@@ -685,7 +695,11 @@ def run_gen_check_v2(
     exclude_indices.update(s.index for s in initial_segments)
 
     for round_num in range(max_rounds):
-        formatted = format_segments(all_segments, max_items=16) if all_segments else "(none yet)"
+        formatted = (
+            format_segments(all_segments, max_items=16)
+            if all_segments
+            else "(none yet)"
+        )
 
         if round_num == 0:
             completeness_hint = (
@@ -716,7 +730,10 @@ def run_gen_check_v2(
             need_query = response.split("NEED:", 1)[1].strip()
             need_query = need_query.split("\n")[0].strip()
             new_segments = retrieve_top_k(
-                store, need_query, conv_id, top_k=10,
+                store,
+                need_query,
+                conv_id,
+                top_k=10,
                 exclude_indices=exclude_indices,
             )
             all_segments.extend(new_segments)
@@ -728,7 +745,9 @@ def run_gen_check_v2(
 
 
 def run_decompose_retrieve(
-    store: SegmentStore, question: str, conv_id: str,
+    store: SegmentStore,
+    question: str,
+    conv_id: str,
     max_refine_rounds: int = 2,
     top_k_per_query: int = 5,
 ) -> list[Segment]:
@@ -747,7 +766,10 @@ def run_decompose_retrieve(
     # Step 2: Retrieve for each
     for query in all_query_list:
         new_segments = retrieve_top_k(
-            store, query, conv_id, top_k=top_k_per_query,
+            store,
+            query,
+            conv_id,
+            top_k=top_k_per_query,
             exclude_indices=exclude_indices,
         )
         all_segments.extend(new_segments)
@@ -777,7 +799,10 @@ def run_decompose_retrieve(
 
         for query in refine_queries:
             new_segments = retrieve_top_k(
-                store, query, conv_id, top_k=top_k_per_query,
+                store,
+                query,
+                conv_id,
+                top_k=top_k_per_query,
                 exclude_indices=exclude_indices,
             )
             all_segments.extend(new_segments)
@@ -947,9 +972,9 @@ def print_dataset_table(
         "decompose_retrieve": "dec_ret",
     }
 
-    print(f"\n{'='*100}")
+    print(f"\n{'=' * 100}")
     print(f"DATASET: {dataset_name} | r@{budget}")
-    print(f"{'='*100}")
+    print(f"{'=' * 100}")
 
     header = f"{'Category':<28} | {'Baseline':>8}"
     for an in arch_names:
@@ -1000,9 +1025,9 @@ def print_cross_arch_summary(
     budget: int = 20,
 ):
     """Print which architecture is best for each category across all datasets."""
-    print(f"\n{'='*100}")
+    print(f"\n{'=' * 100}")
     print(f"CROSS-ARCHITECTURE SUMMARY: Best architecture per category (r@{budget})")
-    print(f"{'='*100}")
+    print(f"{'=' * 100}")
 
     arch_names = list(next(iter(all_dataset_results.values())).keys())
     short_names = {
@@ -1014,7 +1039,9 @@ def print_cross_arch_summary(
         "decompose_retrieve": "dec_ret",
     }
 
-    print(f"\n{'Dataset':<12} {'Category':<28} {'Best Arch':<12} {'Score':>6} {'2nd Best':<12} {'Score':>6} {'Baseline':>8}")
+    print(
+        f"\n{'Dataset':<12} {'Category':<28} {'Best Arch':<12} {'Score':>6} {'2nd Best':<12} {'Score':>6} {'Baseline':>8}"
+    )
     print("-" * 100)
 
     arch_win_counts: dict[str, int] = defaultdict(int)
@@ -1052,7 +1079,9 @@ def print_cross_arch_summary(
 
             arch_scores.sort(key=lambda x: x[1], reverse=True)
             best_arch, best_score = arch_scores[0]
-            second_arch, second_score = arch_scores[1] if len(arch_scores) > 1 else ("", 0)
+            second_arch, second_score = (
+                arch_scores[1] if len(arch_scores) > 1 else ("", 0)
+            )
             arch_win_counts[best_arch] += 1
 
             print(
@@ -1062,7 +1091,9 @@ def print_cross_arch_summary(
                 f"{bl_mean:>8.2f}"
             )
 
-    print(f"\n--- Win counts (number of categories where each architecture is best) ---")
+    print(
+        "\n--- Win counts (number of categories where each architecture is best) ---"
+    )
     for an in sorted(arch_win_counts, key=arch_win_counts.get, reverse=True):
         print(f"  {short_names.get(an, an)}: {arch_win_counts[an]}")
 
@@ -1083,9 +1114,9 @@ def main():
     all_dataset_results: dict[str, dict[str, list[dict]]] = {}
 
     for ds_name, ds_info in DATASETS.items():
-        print(f"\n{'#'*100}")
+        print(f"\n{'#' * 100}")
         print(f"# LOADING DATASET: {ds_info['label']}")
-        print(f"{'#'*100}")
+        print(f"{'#' * 100}")
 
         store = SegmentStore(DATA_DIR, ds_info["npz"])
         with open(DATA_DIR / ds_info["questions"]) as f:
@@ -1103,8 +1134,9 @@ def main():
                 q_short = question["question"][:55]
                 cat = question["category"]
                 print(
-                    f"  [{i+1}/{len(questions)}] {cat}: {q_short}...",
-                    end="", flush=True,
+                    f"  [{i + 1}/{len(questions)}] {cat}: {q_short}...",
+                    end="",
+                    flush=True,
                 )
                 try:
                     result = evaluate_one(store, arch_name, arch_fn, question)
@@ -1120,6 +1152,7 @@ def main():
                 except Exception as e:
                     print(f" ERROR: {e}")
                     import traceback
+
                     traceback.print_exc()
 
                 if (i + 1) % 5 == 0:
@@ -1143,7 +1176,9 @@ def main():
                     a_vals = [r["arch_recalls"][lbl] for r in results]
                     bl_mean = sum(bl_vals) / len(bl_vals)
                     a_mean = sum(a_vals) / len(a_vals)
-                    print(f"  {arch_name} {lbl}: baseline={bl_mean:.3f} arch={a_mean:.3f} delta={a_mean-bl_mean:+.3f}")
+                    print(
+                        f"  {arch_name} {lbl}: baseline={bl_mean:.3f} arch={a_mean:.3f} delta={a_mean - bl_mean:+.3f}"
+                    )
 
         all_dataset_results[ds_name] = ds_all_results
 
@@ -1166,8 +1201,12 @@ def main():
                 lbl = f"r@{budget}"
                 bl_vals = [r["baseline_recalls"][lbl] for r in results]
                 a_vals = [r["arch_recalls"][lbl] for r in results]
-                summary[ds_name][f"{arch_name}_{lbl}"] = round(sum(a_vals)/len(a_vals), 4)
-                summary[ds_name][f"baseline_{lbl}"] = round(sum(bl_vals)/len(bl_vals), 4)
+                summary[ds_name][f"{arch_name}_{lbl}"] = round(
+                    sum(a_vals) / len(a_vals), 4
+                )
+                summary[ds_name][f"baseline_{lbl}"] = round(
+                    sum(bl_vals) / len(bl_vals), 4
+                )
 
     summary_path = RESULTS_DIR / "fulleval_summary.json"
     with open(summary_path, "w") as f:

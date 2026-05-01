@@ -32,6 +32,7 @@ PROVIDERS: tuple[str, ...] = (PROVIDER_OPENAI, PROVIDER_GOOGLE)
 DEFAULT_ANSWER_MODEL = "gpt-4.1-nano"
 DEFAULT_JUDGE_MODEL = "gpt-4.1-mini"
 
+
 def _build_gemini_schema(schema_dict: dict[str, Any]) -> Any:
     """Translate an OpenAI-style JSON Schema dict to a Gemini `types.Schema`.
 
@@ -190,9 +191,7 @@ class GoogleChatClient(ChatClient):
         if max_tokens is not None:
             config_kwargs["max_output_tokens"] = max_tokens
 
-        config = (
-            types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
-        )
+        config = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
         resp = await self._client.aio.models.generate_content(
             model=model,
             contents=contents,

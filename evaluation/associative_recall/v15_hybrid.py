@@ -38,9 +38,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -49,7 +46,9 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
-from memory_index import MemoryIndex, MEMINDEX_INDEX_FILE
+from dotenv import load_dotenv
+from memory_index import MEMINDEX_INDEX_FILE, MemoryIndex
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -150,8 +149,7 @@ def _format_segments(
 ) -> str:
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
     return "\n".join(
-        f"[Turn {s.turn_id}, {s.role}]: {s.text[:max_chars]}"
-        for s in sorted_segs
+        f"[Turn {s.turn_id}, {s.role}]: {s.text[:max_chars]}" for s in sorted_segs
     )
 
 
@@ -160,7 +158,7 @@ def _parse_cues(text: str, key: str = "CUE:") -> list[str]:
     for line in text.strip().split("\n"):
         line = line.strip()
         if line.upper().startswith(key.upper()):
-            val = line[len(key):].strip()
+            val = line[len(key) :].strip()
             if val:
                 out.append(val)
     return out
@@ -338,9 +336,7 @@ class HybridBase:
         if cached is not None:
             self.embed_calls += 1
             return cached
-        response = self.client.embeddings.create(
-            model=EMBED_MODEL, input=[text]
-        )
+        response = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
         embedding = np.array(response.data[0].embedding, dtype=np.float32)
         self.embedding_cache.put(text, embedding)
         self.embed_calls += 1
@@ -396,7 +392,9 @@ class HybridV15CoT(HybridBase):
             explored.append(cue)
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=5, conversation_id=conversation_id,
+                cue_emb,
+                top_k=5,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for s in result.segments:
@@ -422,7 +420,9 @@ class HybridV15CoT(HybridBase):
             explored.append(cue)
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=5, conversation_id=conversation_id,
+                cue_emb,
+                top_k=5,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for s in result.segments:
@@ -484,7 +484,9 @@ class HybridV15MemIdx(HybridBase):
             explored.append(cue)
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=5, conversation_id=conversation_id,
+                cue_emb,
+                top_k=5,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for s in result.segments:
@@ -516,7 +518,9 @@ class HybridV15MemIdx(HybridBase):
             explored.append(cue)
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=5, conversation_id=conversation_id,
+                cue_emb,
+                top_k=5,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for s in result.segments:
@@ -578,7 +582,9 @@ class HybridV15Dual(HybridBase):
             explored.append(cue)
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for s in result.segments:
@@ -604,7 +610,9 @@ class HybridV15Dual(HybridBase):
             explored.append(cue)
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=5, conversation_id=conversation_id,
+                cue_emb,
+                top_k=5,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for s in result.segments:
@@ -635,7 +643,9 @@ class HybridV15Dual(HybridBase):
             explored.append(cue)
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=5, conversation_id=conversation_id,
+                cue_emb,
+                top_k=5,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for s in result.segments:
@@ -702,9 +712,7 @@ def load_dataset(key: str) -> tuple[list[dict], SegmentStore]:
 # ---------------------------------------------------------------------------
 # Fair K-budget evaluation
 # ---------------------------------------------------------------------------
-def compute_recall(
-    retrieved_turn_ids: set[int], source_turn_ids: set[int]
-) -> float:
+def compute_recall(retrieved_turn_ids: set[int], source_turn_ids: set[int]) -> float:
     if not source_turn_ids:
         return 1.0
     return len(retrieved_turn_ids & source_turn_ids) / len(source_turn_ids)
@@ -736,9 +744,7 @@ def evaluate_one(
     # Baseline cosine top-max(budgets) on question
     q_emb = arch.embed_text(q_text)
     max_b = max(budgets)
-    baseline = arch.store.search(
-        q_emb, top_k=max_b, conversation_id=conv_id
-    )
+    baseline = arch.store.search(q_emb, top_k=max_b, conversation_id=conv_id)
 
     # FAIR backfill: arch + baseline residual, in order, dedup
     arch_idx = {s.index for s in arch_segments}
@@ -803,8 +809,9 @@ ARCH_SPECS = {
 }
 
 
-def build_arch(arch_name: str, store: SegmentStore,
-               indices: dict[str, MemoryIndex]) -> HybridBase:
+def build_arch(
+    arch_name: str, store: SegmentStore, indices: dict[str, MemoryIndex]
+) -> HybridBase:
     spec = ARCH_SPECS[arch_name]
     if spec["use_index"]:
         return spec["cls"](store, indices)
@@ -815,9 +822,7 @@ def build_arch(arch_name: str, store: SegmentStore,
 # Baseline loaders for comparison (budget_v15_tight_*, budget_v2f_tight_*,
 # budget_baseline_*, cot_chain_of_thought_*)
 # ---------------------------------------------------------------------------
-def load_budget_recalls(
-    arch_name: str, K: int, dataset_key: str
-) -> dict[tuple, float]:
+def load_budget_recalls(arch_name: str, K: int, dataset_key: str) -> dict[tuple, float]:
     """Load recall per question from budget_<name>_<K>_<dataset>.json.
 
     Returns {(conversation_id, question_index): recall}.
@@ -834,9 +839,7 @@ def load_budget_recalls(
     return out
 
 
-def load_cot_recalls(
-    K: int, dataset_key: str
-) -> dict[tuple, float]:
+def load_cot_recalls(K: int, dataset_key: str) -> dict[tuple, float]:
     path = RESULTS_DIR / f"cot_chain_of_thought_{dataset_key}.json"
     if not path.exists():
         return {}
@@ -905,22 +908,24 @@ def compare_per_category(
         v2f = _mean(v2f_vals)
         cot = _mean(cot_vals)
 
-        out.append({
-            "arch_name": arch_name,
-            "dataset": dataset_key,
-            "category": cat,
-            "K": K,
-            "n": n,
-            "baseline": b,
-            "v15": v15,
-            "v2f": v2f,
-            "cot": cot,
-            "arch": arch_mean,
-            "vs_baseline": (arch_mean - b) if b is not None else None,
-            "vs_v15": (arch_mean - v15) if v15 is not None else None,
-            "vs_v2f": (arch_mean - v2f) if v2f is not None else None,
-            "vs_cot": (arch_mean - cot) if cot is not None else None,
-        })
+        out.append(
+            {
+                "arch_name": arch_name,
+                "dataset": dataset_key,
+                "category": cat,
+                "K": K,
+                "n": n,
+                "baseline": b,
+                "v15": v15,
+                "v2f": v2f,
+                "cot": cot,
+                "arch": arch_mean,
+                "vs_baseline": (arch_mean - b) if b is not None else None,
+                "vs_v15": (arch_mean - v15) if v15 is not None else None,
+                "vs_v2f": (arch_mean - v2f) if v2f is not None else None,
+                "vs_cot": (arch_mean - cot) if cot is not None else None,
+            }
+        )
     return out
 
 
@@ -950,7 +955,7 @@ def run_arch_on_dataset(
     for i, q in enumerate(qs):
         q_short = q["question"][:60].replace("\n", " ")
         print(
-            f"  [{i+1}/{len(qs)}] {q['category']}: {q_short}...",
+            f"  [{i + 1}/{len(qs)}] {q['category']}: {q_short}...",
             flush=True,
         )
         try:
@@ -959,6 +964,7 @@ def run_arch_on_dataset(
         except Exception as e:
             print(f"    ERROR: {type(e).__name__}: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -984,9 +990,9 @@ def print_per_category_table(rows: list[dict], K: int) -> None:
     if not sel:
         return
     archs = sorted({r["arch_name"] for r in sel})
-    print(f"\n{'='*130}")
+    print(f"\n{'=' * 130}")
     print(f"PER-CATEGORY RESULTS at K={K} (recall, fair backfill)")
-    print(f"{'='*130}")
+    print(f"{'=' * 130}")
     for arch in archs:
         print(f"\n--- {arch} ---")
         hdr = (
@@ -1000,7 +1006,7 @@ def print_per_category_table(rows: list[dict], K: int) -> None:
         last_ds = None
         for r in arch_rows:
             if last_ds is not None and r["dataset"] != last_ds:
-                print("")
+                print()
             last_ds = r["dataset"]
             print(
                 f"{r['dataset']:<14s} {r['category']:<26s} {r['n']:>3d} "
@@ -1019,9 +1025,9 @@ def print_overall_by_dataset(rows: list[dict], K: int) -> None:
     if not sel:
         return
     archs = sorted({r["arch_name"] for r in sel})
-    print(f"\n{'-'*130}")
+    print(f"\n{'-' * 130}")
     print(f"OVERALL per DATASET at K={K} (weighted by category n)")
-    print(f"{'-'*130}")
+    print(f"{'-' * 130}")
     hdr = (
         f"{'Arch':<20s} {'Dataset':<14s} {'n':>3s} "
         f"{'Base':>7s} {'v15':>7s} {'v2f':>7s} {'CoT':>7s} {'Arch':>7s}  "
@@ -1066,9 +1072,9 @@ def print_overall_by_dataset(rows: list[dict], K: int) -> None:
 
 def print_cot_regression_table(all_rows: list[dict]) -> None:
     """Focused view: did hybrid_v15_cot eliminate CoT's regressions?"""
-    print(f"\n{'='*110}")
+    print(f"\n{'=' * 110}")
     print("HYBRID_V15_COT vs CoT — regression elimination check (K=20)")
-    print(f"{'='*110}")
+    print(f"{'=' * 110}")
     sel = [r for r in all_rows if r["arch_name"] == "hybrid_v15_cot" and r["K"] == 20]
     hdr = (
         f"{'Dataset':<14s} {'Category':<28s} {'n':>3s} "
@@ -1117,14 +1123,23 @@ def print_cot_regression_table(all_rows: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--arch", type=str, default=None,
-                        choices=list(ARCH_SPECS.keys()),
-                        help="Run a single architecture (default: all)")
-    parser.add_argument("--dataset", type=str, default=None,
-                        choices=list(DATASETS.keys()),
-                        help="Run a single dataset (default: all)")
-    parser.add_argument("--force", action="store_true",
-                        help="Rerun even if result file exists")
+    parser.add_argument(
+        "--arch",
+        type=str,
+        default=None,
+        choices=list(ARCH_SPECS.keys()),
+        help="Run a single architecture (default: all)",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        choices=list(DATASETS.keys()),
+        help="Run a single dataset (default: all)",
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="Rerun even if result file exists"
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -1145,9 +1160,7 @@ def main() -> None:
                 arch_name, ds, indices, force=args.force, verbose=args.verbose
             )
             for K in spec["budgets"]:
-                all_comparisons.extend(
-                    compare_per_category(rows, arch_name, ds, K)
-                )
+                all_comparisons.extend(compare_per_category(rows, arch_name, ds, K))
 
     out_path = RESULTS_DIR / "v15_hybrid_summary.json"
     with open(out_path, "w") as f:

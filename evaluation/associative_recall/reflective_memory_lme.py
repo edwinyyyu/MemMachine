@@ -23,13 +23,11 @@ This module only contains prompts and helpers. The driver is reflmemlme_eval.py.
 from __future__ import annotations
 
 import json
-import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
 REFLMEMLME_CUE_ROUND1_CACHE = CACHE_DIR / "reflmemlme_cue_round1_cache.json"
@@ -168,7 +166,7 @@ def parse_speaker_cues(
         mm = SPEAKER_RE.match(raw)
         if mm:
             prefix = raw[: mm.end()]
-            rest = raw[mm.end():].strip()
+            rest = raw[mm.end() :].strip()
             if prefix.lower().startswith("user"):
                 raw = "User: " + rest
             else:
@@ -195,7 +193,7 @@ def parse_reflection_json(response: str) -> tuple[list[str], list[str]]:
     i = text.find("{")
     j = text.rfind("}")
     if i >= 0 and j > i:
-        text = text[i: j + 1]
+        text = text[i : j + 1]
     try:
         data = json.loads(text)
     except Exception:
@@ -322,7 +320,5 @@ def format_primer_context_lme(
     sorted_segs = sorted(segments, key=lambda s: s["turn_id"])
     lines = []
     for s in sorted_segs[:max_items]:
-        lines.append(
-            f"[Turn {s['turn_id']}, {s['role']}]: {s['text'][:max_len]}"
-        )
+        lines.append(f"[Turn {s['turn_id']}, {s['role']}]: {s['text'][:max_len]}")
     return "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + "\n".join(lines)

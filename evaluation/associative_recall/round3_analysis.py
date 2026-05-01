@@ -13,20 +13,30 @@ def load(label: str) -> list[dict]:
 
 
 def wtl(results: list[dict], budget: str) -> tuple[int, int, int]:
-    wins = sum(1 for r in results if r["assoc_recalls"][budget] > r["baseline_recalls"][budget] + 0.001)
-    losses = sum(1 for r in results if r["baseline_recalls"][budget] > r["assoc_recalls"][budget] + 0.001)
+    wins = sum(
+        1
+        for r in results
+        if r["assoc_recalls"][budget] > r["baseline_recalls"][budget] + 0.001
+    )
+    losses = sum(
+        1
+        for r in results
+        if r["baseline_recalls"][budget] > r["assoc_recalls"][budget] + 0.001
+    )
     ties = len(results) - wins - losses
     return wins, ties, losses
 
 
 def delta(results: list[dict], budget: str) -> float:
-    return sum(r["assoc_recalls"][budget] - r["baseline_recalls"][budget] for r in results) / len(results)
+    return sum(
+        r["assoc_recalls"][budget] - r["baseline_recalls"][budget] for r in results
+    ) / len(results)
 
 
 def print_section(title: str):
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(title)
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
 
 def main():
@@ -53,7 +63,9 @@ def main():
         d50 = delta(r, "r@50")
         d100 = delta(r, "r@100")
         w, t, l = wtl(r, "r@20")
-        print(f"{name:<35s} {d20:>+7.1%} {d50:>+7.1%} {d100:>+7.1%} {w:>2d}/{t:>2d}/{l:>2d}")
+        print(
+            f"{name:<35s} {d20:>+7.1%} {d50:>+7.1%} {d100:>+7.1%} {w:>2d}/{t:>2d}/{l:>2d}"
+        )
 
     # === SECTION 2: New prompt versions (30q BEAM) ===
     print_section("2. NEW CUE STRATEGIES vs v15 (30q BEAM)")
@@ -78,7 +90,9 @@ def main():
         d50 = delta(r, "r@50")
         d100 = delta(r, "r@100")
         w, t, l = wtl(r, "r@20")
-        print(f"{name:<35s} {d20:>+7.1%} {d50:>+7.1%} {d100:>+7.1%} {w:>2d}/{t:>2d}/{l:>2d}")
+        print(
+            f"{name:<35s} {d20:>+7.1%} {d50:>+7.1%} {d100:>+7.1%} {w:>2d}/{t:>2d}/{l:>2d}"
+        )
 
     # === SECTION 3: Configuration variants ===
     print_section("3. v15 CONFIGURATION VARIANTS (30q LoCoMo)")
@@ -104,7 +118,9 @@ def main():
 
     # === SECTION 4: Full-scale results ===
     print_section("4. FULL-SCALE RESULTS (all questions)")
-    print(f"{'Config':<45s} {'n':>3s} {'d@20':>7s} {'d@50':>7s} {'d@100':>7s} {'W/T/L@20':>10s}")
+    print(
+        f"{'Config':<45s} {'n':>3s} {'d@20':>7s} {'d@50':>7s} {'d@100':>7s} {'W/T/L@20':>10s}"
+    )
     print("-" * 80)
 
     full_configs = [
@@ -119,7 +135,9 @@ def main():
         d50 = delta(r, "r@50")
         d100 = delta(r, "r@100")
         w, t, l = wtl(r, "r@20")
-        print(f"{name:<45s} {len(r):>3d} {d20:>+7.1%} {d50:>+7.1%} {d100:>+7.1%} {w:>2d}/{t:>2d}/{l:>2d}")
+        print(
+            f"{name:<45s} {len(r):>3d} {d20:>+7.1%} {d50:>+7.1%} {d100:>+7.1%} {w:>2d}/{t:>2d}/{l:>2d}"
+        )
 
     # === SECTION 5: Benefit by conversation length ===
     print_section("5. BENEFIT BY CONVERSATION LENGTH (v15+backfill)")
@@ -138,7 +156,9 @@ def main():
         else:
             by_len["long (400+)"].append(r)
 
-    print(f"{'Length':<20s} {'n':>3s} {'Base@20':>8s} {'d@20':>7s} {'d@50':>7s} {'d@100':>7s} {'W/T/L@20':>10s}")
+    print(
+        f"{'Length':<20s} {'n':>3s} {'Base@20':>8s} {'d@20':>7s} {'d@50':>7s} {'d@100':>7s} {'W/T/L@20':>10s}"
+    )
     print("-" * 70)
     for bucket in ["short (<250)", "medium (250-400)", "long (400+)"]:
         rows = by_len[bucket]
@@ -147,7 +167,9 @@ def main():
         d50 = delta(rows, "r@50")
         d100 = delta(rows, "r@100")
         w, t, l = wtl(rows, "r@20")
-        print(f"{bucket:<20s} {len(rows):>3d} {b20:>8.3f} {d20:>+7.1%} {d50:>+7.1%} {d100:>+7.1%} {w:>2d}/{t:>2d}/{l:>2d}")
+        print(
+            f"{bucket:<20s} {len(rows):>3d} {b20:>8.3f} {d20:>+7.1%} {d50:>+7.1%} {d100:>+7.1%} {w:>2d}/{t:>2d}/{l:>2d}"
+        )
 
     # === SECTION 6: Cue length analysis ===
     print_section("6. CUE LENGTH vs PERFORMANCE (v15, 182q LoCoMo)")

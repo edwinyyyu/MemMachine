@@ -890,7 +890,7 @@ class AssociativeRecallEngine:
         """Build context section for v1-v4 prompts (legacy behavior)."""
         if new_segments or all_segments:
             context_lines = []
-            display_segments = new_segments if new_segments else all_segments[:8]
+            display_segments = new_segments or all_segments[:8]
             for seg in display_segments[:8]:
                 context_lines.append(
                     f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:300]}"
@@ -952,37 +952,49 @@ class AssociativeRecallEngine:
         context_lines = []
         display_limit = 12 if hop_number <= 2 else 16
         for seg in sorted_segs[:display_limit]:
-            context_lines.append(
-                f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:250]}"
-            )
+            context_lines.append(f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:250]}")
 
         # v26: scratchpad mode — show only brief summaries, not raw text
         if self.prompt_version == "v26":
             # Show only turn IDs and first 60 chars, forcing synthesis
             brief_lines = []
             for seg in sorted_segs[:16]:
-                brief_lines.append(
-                    f"[Turn {seg.turn_id}]: {seg.text[:60]}..."
-                )
+                brief_lines.append(f"[Turn {seg.turn_id}]: {seg.text[:60]}...")
             context_section = (
                 f"SCRATCHPAD — {len(covered_ids)} turns found so far:\n"
                 + "\n".join(brief_lines)
             )
             if previous_cues:
-                context_section += (
-                    "\n\nPREVIOUS CUES:\n"
-                    + "\n".join(f"- {c}" for c in previous_cues)
+                context_section += "\n\nPREVIOUS CUES:\n" + "\n".join(
+                    f"- {c}" for c in previous_cues
                 )
             return context_section
 
         # For v7+ prompts: simpler context without territory tracking emphasis
         if self.prompt_version in (
-            "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16",
-            "v17", "v18", "v19", "v20", "v21", "v22", "v23", "v24", "v25", "v28",
+            "v7",
+            "v8",
+            "v9",
+            "v10",
+            "v11",
+            "v12",
+            "v13",
+            "v14",
+            "v15",
+            "v16",
+            "v17",
+            "v18",
+            "v19",
+            "v20",
+            "v21",
+            "v22",
+            "v23",
+            "v24",
+            "v25",
+            "v28",
         ):
-            context_section = (
-                f"RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-                + "\n".join(context_lines)
+            context_section = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + "\n".join(
+                context_lines
             )
             # Also show what the latest hop found separately
             if new_segments and hop_number > 1:
@@ -991,9 +1003,8 @@ class AssociativeRecallEngine:
                     latest_lines.append(
                         f"[Turn {seg.turn_id}, {seg.role}]: {seg.text[:200]}"
                     )
-                context_section += (
-                    "\n\nMOST RECENTLY FOUND (last hop):\n"
-                    + "\n".join(latest_lines)
+                context_section += "\n\nMOST RECENTLY FOUND (last hop):\n" + "\n".join(
+                    latest_lines
                 )
         else:
             context_section = (
@@ -1027,19 +1038,45 @@ class AssociativeRecallEngine:
         v9 prompts that output EXPAND lines.
         """
         accumulated_versions = {
-            "v5", "v6", "v7", "v8", "v9",
-            "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18",
-            "v19", "v20", "v21", "v22", "v23", "v24", "v25", "v26", "v28",
+            "v5",
+            "v6",
+            "v7",
+            "v8",
+            "v9",
+            "v10",
+            "v11",
+            "v12",
+            "v13",
+            "v14",
+            "v15",
+            "v16",
+            "v17",
+            "v18",
+            "v19",
+            "v20",
+            "v21",
+            "v22",
+            "v23",
+            "v24",
+            "v25",
+            "v26",
+            "v28",
         }
         use_accumulated = self.prompt_version in accumulated_versions
 
         if use_accumulated:
             context_section = self._build_context_section_accumulated(
-                all_segments, hop_number, previous_cues, new_segments,
+                all_segments,
+                hop_number,
+                previous_cues,
+                new_segments,
             )
         else:
             context_section = self._build_context_section_legacy(
-                all_segments, new_segments, hop_number, previous_cues,
+                all_segments,
+                new_segments,
+                hop_number,
+                previous_cues,
             )
 
         format_kwargs = {
@@ -1112,7 +1149,9 @@ class AssociativeRecallEngine:
         """Return (num_segments, max_turn_id) for a conversation."""
         mask = self.store.conversation_ids == conversation_id
         conv_turn_ids = self.store.turn_ids[mask]
-        return int(mask.sum()), int(conv_turn_ids.max()) if len(conv_turn_ids) > 0 else 0
+        return int(mask.sum()), int(conv_turn_ids.max()) if len(
+            conv_turn_ids
+        ) > 0 else 0
 
     def associative_retrieve(
         self,
@@ -1134,12 +1173,14 @@ class AssociativeRecallEngine:
             conversation_id=conversation_id,
         )
         new_turn_ids = {s.turn_id for s in hop0_result.segments}
-        hops.append(HopResult(
-            hop_number=0,
-            cues=[question],
-            retrieved=hop0_result,
-            new_turn_ids=new_turn_ids,
-        ))
+        hops.append(
+            HopResult(
+                hop_number=0,
+                cues=[question],
+                retrieved=hop0_result,
+                new_turn_ids=new_turn_ids,
+            )
+        )
         all_segments.extend(hop0_result.segments)
         all_turn_ids.update(new_turn_ids)
         excluded_indices.update(s.index for s in hop0_result.segments)
@@ -1149,7 +1190,10 @@ class AssociativeRecallEngine:
 
         for hop_num in range(1, self.max_hops + 1):
             cues, expand_targets = self.generate_cues(
-                question, all_segments, last_hop_segments, hop_num,
+                question,
+                all_segments,
+                last_hop_segments,
+                hop_num,
                 previous_cues=all_previous_cues or None,
                 conv_length=conv_length,
                 max_turn_id=max_turn_id,
@@ -1183,7 +1227,8 @@ class AssociativeRecallEngine:
                 if self.prompt_version == "v9" and expand_targets:
                     # Selective expansion: only expand turns the model chose
                     segments_to_expand = [
-                        s for s in (all_segments + hop_segments)
+                        s
+                        for s in (all_segments + hop_segments)
                         if s.turn_id in expand_targets
                     ]
                 else:
@@ -1193,7 +1238,8 @@ class AssociativeRecallEngine:
                 num_expanded = len(segments_to_expand)
                 for seg in segments_to_expand:
                     neighbors = self.store.get_neighbors(
-                        seg, radius=self.neighbor_radius,
+                        seg,
+                        radius=self.neighbor_radius,
                         exclude_indices=excluded_indices,
                     )
                     for n in neighbors:
@@ -1204,16 +1250,16 @@ class AssociativeRecallEngine:
                 hop_scores.extend([0.0] * len(neighbor_segments))
 
             hop_new_ids = {s.turn_id for s in hop_segments} - all_turn_ids
-            hops.append(HopResult(
-                hop_number=hop_num,
-                cues=cues,
-                retrieved=RetrievalResult(
-                    segments=hop_segments, scores=hop_scores
-                ),
-                new_turn_ids=hop_new_ids,
-                expand_targets=expand_targets if expand_targets else None,
-                num_expanded=num_expanded,
-            ))
+            hops.append(
+                HopResult(
+                    hop_number=hop_num,
+                    cues=cues,
+                    retrieved=RetrievalResult(segments=hop_segments, scores=hop_scores),
+                    new_turn_ids=hop_new_ids,
+                    expand_targets=expand_targets or None,
+                    num_expanded=num_expanded,
+                )
+            )
             all_segments.extend(hop_segments)
             all_turn_ids.update(hop_new_ids)
             last_hop_segments = hop_segments

@@ -9,8 +9,9 @@ These test edge cases where keyword-dense cues might fail:
 """
 
 import json
-import numpy as np
 from pathlib import Path
+
+import numpy as np
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
@@ -41,7 +42,7 @@ def analyze_existing_failures():
             print(f"  Baseline r@all: {b_all:.3f}")
             print(f"  Assoc r@all: {a_all:.3f}")
             print(f"  Total retrieved: {r['total_retrieved']}")
-            print(f"  Missed IDs: ", end="")
+            print("  Missed IDs: ", end="")
             # Which source IDs were missed?
             all_retrieved_ids = set()
             for hop in r["hop_details"]:
@@ -78,7 +79,7 @@ def create_adversarial_for_beam():
 
     # Show a sample of segments to understand the conversation
     print("\nSample segments from conv 1:")
-    for i in range(0, min(20, len(conv1_texts))):
+    for i in range(min(20, len(conv1_texts))):
         print(f"  [{conv1_tids[i]}] {str(conv1_texts[i])[:100]}")
 
     # Adversarial question types we should create manually after

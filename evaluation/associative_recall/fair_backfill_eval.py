@@ -20,10 +20,9 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
+from associative_recall import Segment, SegmentStore
+from best_shot import MetaV2f, V15Control
 from dotenv import load_dotenv
-
-from associative_recall import SegmentStore, Segment
-from best_shot import V15Control, MetaV2f
 from hybrid_retrieval import HybridV2fGenCheck
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -153,9 +152,7 @@ def evaluate_question(
     # Retrieve cosine top-K (K = max budget) once
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -205,12 +202,8 @@ def summarize(results: list[dict], arch_name: str, dataset: str) -> dict:
     summary["avg_total_retrieved"] = round(
         sum(r["total_arch_retrieved"] for r in results) / n, 1
     )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1
-    )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
     return summary
 
 
@@ -257,7 +250,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -266,6 +259,7 @@ def run_one(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -288,7 +282,7 @@ def run_one(
         f"llm={summary['avg_llm_calls']:.1f} "
         f"embed={summary['avg_embed_calls']:.1f}"
     )
-    print(f"\n  Per-category:")
+    print("\n  Per-category:")
     for cat, c in by_cat.items():
         print(
             f"    {cat:24s} (n={c['n']}): "
@@ -307,13 +301,13 @@ def main() -> None:
 
     for ds_name in DATASETS:
         store, questions = load_dataset(ds_name)
-        print(f"\nLoaded {ds_name}: {len(questions)} questions, "
-              f"{len(store.segments)} segments")
+        print(
+            f"\nLoaded {ds_name}: {len(questions)} questions, "
+            f"{len(store.segments)} segments"
+        )
 
         for arch_name in ARCHITECTURES:
-            results, summary, by_cat = run_one(
-                arch_name, ds_name, store, questions
-            )
+            results, summary, by_cat = run_one(arch_name, ds_name, store, questions)
 
             out_path = RESULTS_DIR / f"fairbackfill_{arch_name}_{ds_name}.json"
             with open(out_path, "w") as f:

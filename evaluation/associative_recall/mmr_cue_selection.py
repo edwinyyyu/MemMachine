@@ -32,11 +32,8 @@ from __future__ import annotations
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -52,7 +49,7 @@ from best_shot import (
     _format_segments,
     _parse_cues,
 )
-
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Dedicated caches
@@ -257,6 +254,7 @@ Nothing else."""
 # MMR selection
 # ---------------------------------------------------------------------------
 
+
 def _cos(a: np.ndarray, b: np.ndarray) -> float:
     na = float(np.linalg.norm(a))
     nb = float(np.linalg.norm(b))
@@ -295,9 +293,7 @@ def mmr_select(
         best_idx = None
         best_score = -float("inf")
         for i in remaining:
-            max_sim_to_selected = max(
-                _cos(cue_embs[i], cue_embs[j]) for j in selected
-            )
+            max_sim_to_selected = max(_cos(cue_embs[i], cue_embs[j]) for j in selected)
             score = lam * rel[i] - (1.0 - lam) * max_sim_to_selected
             if score > best_score:
                 best_score = score
@@ -386,9 +382,7 @@ class _MMRBase(BestshotBase):
                 response = self.client.embeddings.create(
                     model=EMBED_MODEL, input=[text]
                 )
-                embedding = np.array(
-                    response.data[0].embedding, dtype=np.float32
-                )
+                embedding = np.array(response.data[0].embedding, dtype=np.float32)
                 self.embedding_cache.put(text, embedding)
                 self.embed_calls += 1
                 return embedding
@@ -402,9 +396,7 @@ class _MMRBase(BestshotBase):
     def retrieve(self, question: str, conversation_id: str) -> BestshotResult:
         # Hop 0: embed question, top-10 cosine as context
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         hop0_segments = list(hop0.segments)
         hop0_scores = list(hop0.scores)
 
@@ -427,24 +419,18 @@ class _MMRBase(BestshotBase):
         candidate_cues = _parse_cues(output)
 
         # Truncate/pad to expected count
-        candidate_cues = [c for c in candidate_cues if c.strip()][
-            : self.n_candidates
-        ]
+        candidate_cues = [c for c in candidate_cues if c.strip()][: self.n_candidates]
 
         # Embed candidates in parallel
         if candidate_cues:
-            with ThreadPoolExecutor(
-                max_workers=max(1, len(candidate_cues))
-            ) as pool:
+            with ThreadPoolExecutor(max_workers=max(1, len(candidate_cues))) as pool:
                 cand_embs = list(pool.map(self.embed_text, candidate_cues))
         else:
             cand_embs = []
 
         # Select
         if self.mmr_select_enabled and cand_embs:
-            selected_idx = mmr_select(
-                cand_embs, query_emb, k=self.k_cues, lam=self.lam
-            )
+            selected_idx = mmr_select(cand_embs, query_emb, k=self.k_cues, lam=self.lam)
         else:
             # Baseline: just first k_cues
             selected_idx = list(range(min(self.k_cues, len(cand_embs))))
@@ -495,12 +481,8 @@ class _MMRBase(BestshotBase):
                 "candidate_cues": candidate_cues,
                 "selected_cues": selected_cues,
                 "selected_indices": selected_idx,
-                "diversity_selected_pairwise_cos": round(
-                    diversity_selected, 4
-                ),
-                "diversity_all_candidates_pairwise_cos": round(
-                    diversity_all, 4
-                ),
+                "diversity_selected_pairwise_cos": round(diversity_selected, 4),
+                "diversity_all_candidates_pairwise_cos": round(diversity_all, 4),
                 "n_candidates": len(candidate_cues),
                 "n_selected": len(selected_cues),
                 "probe_outcomes": probe_outcomes,

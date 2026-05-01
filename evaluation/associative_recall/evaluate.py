@@ -82,13 +82,15 @@ def evaluate_question(
 
     hop_details = []
     for hop in assoc_result.hops:
-        hop_details.append({
-            "hop": hop.hop_number,
-            "cues": hop.cues,
-            "num_retrieved": len(hop.retrieved.segments),
-            "new_turn_ids_count": len(hop.new_turn_ids),
-            "new_source_hits": list(hop.new_turn_ids & source_ids),
-        })
+        hop_details.append(
+            {
+                "hop": hop.hop_number,
+                "cues": hop.cues,
+                "num_retrieved": len(hop.retrieved.segments),
+                "new_turn_ids_count": len(hop.new_turn_ids),
+                "new_source_hits": list(hop.new_turn_ids & source_ids),
+            }
+        )
 
     result = {
         "conversation_id": conv_id,
@@ -109,21 +111,27 @@ def evaluate_question(
     }
 
     if verbose:
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print(f"Q: {q_text[:100]}...")
         print(f"Category: {question['category']}")
         print(f"Source IDs: {source_ids}")
-        print(f"Baseline r@10={baseline_recalls['r@10']:.2f} "
-              f"r@20={baseline_recalls['r@20']:.2f} "
-              f"r@all={baseline_recalls['r@all']:.2f}")
-        print(f"Assoc    r@10={assoc_recalls['r@10']:.2f} "
-              f"r@20={assoc_recalls['r@20']:.2f} "
-              f"r@all={assoc_recalls['r@all']:.2f}")
+        print(
+            f"Baseline r@10={baseline_recalls['r@10']:.2f} "
+            f"r@20={baseline_recalls['r@20']:.2f} "
+            f"r@all={baseline_recalls['r@all']:.2f}"
+        )
+        print(
+            f"Assoc    r@10={assoc_recalls['r@10']:.2f} "
+            f"r@20={assoc_recalls['r@20']:.2f} "
+            f"r@all={assoc_recalls['r@all']:.2f}"
+        )
         print(f"Incremental hits: {incremental_hits}")
         for hop in hop_details:
-            print(f"  Hop {hop['hop']}: {hop['num_retrieved']} retrieved, "
-                  f"{hop['new_turn_ids_count']} new, "
-                  f"source hits={hop['new_source_hits']}")
+            print(
+                f"  Hop {hop['hop']}: {hop['num_retrieved']} retrieved, "
+                f"{hop['new_turn_ids_count']} new, "
+                f"source hits={hop['new_source_hits']}"
+            )
             for cue in hop["cues"]:
                 print(f"    Cue: {cue[:100]}")
 
@@ -131,9 +139,9 @@ def evaluate_question(
 
 
 def print_summary(results: list[dict], label: str) -> dict:
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"SUMMARY: {label}")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
     by_category: dict[str, list[dict]] = defaultdict(list)
     for r in results:
@@ -142,9 +150,9 @@ def print_summary(results: list[dict], label: str) -> dict:
     depth_labels = [f"r@{k}" for k in RECALL_DEPTHS] + ["r@all"]
     header = (
         f"{'category':30s} {'n':>3s}  "
-        + "  ".join(f"{'B-'+lbl:>7s}" for lbl in depth_labels)
+        + "  ".join(f"{'B-' + lbl:>7s}" for lbl in depth_labels)
         + "  |  "
-        + "  ".join(f"{'A-'+lbl:>7s}" for lbl in depth_labels)
+        + "  ".join(f"{'A-' + lbl:>7s}" for lbl in depth_labels)
         + "  {'incr':>5s}"
     )
     print(header)
@@ -174,15 +182,15 @@ def print_summary(results: list[dict], label: str) -> dict:
         b_overall = {}
         a_overall = {}
         for lbl in depth_labels:
-            b_overall[lbl] = sum(
-                r["baseline_recalls"][lbl] for r in all_results
-            ) / len(all_results)
-            a_overall[lbl] = sum(
-                r["assoc_recalls"][lbl] for r in all_results
-            ) / len(all_results)
-        avg_incr = sum(
-            r["num_incremental_hits"] for r in all_results
-        ) / len(all_results)
+            b_overall[lbl] = sum(r["baseline_recalls"][lbl] for r in all_results) / len(
+                all_results
+            )
+            a_overall[lbl] = sum(r["assoc_recalls"][lbl] for r in all_results) / len(
+                all_results
+            )
+        avg_incr = sum(r["num_incremental_hits"] for r in all_results) / len(
+            all_results
+        )
 
         print("-" * len(header))
         row_str = (
@@ -208,9 +216,8 @@ def print_summary(results: list[dict], label: str) -> dict:
                     lbl: sum(r["assoc_recalls"][lbl] for r in rows) / len(rows)
                     for lbl in depth_labels
                 },
-                "avg_incremental_hits": sum(
-                    r["num_incremental_hits"] for r in rows
-                ) / len(rows),
+                "avg_incremental_hits": sum(r["num_incremental_hits"] for r in rows)
+                / len(rows),
             }
             for cat, rows in by_category.items()
         },
@@ -220,24 +227,41 @@ def print_summary(results: list[dict], label: str) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="gpt-5-mini",
-                        help="LLM model for cue generation")
-    parser.add_argument("--prompt-version", default="v1",
-                        choices=["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"])
+    parser.add_argument(
+        "--model", default="gpt-5-mini", help="LLM model for cue generation"
+    )
+    parser.add_argument(
+        "--prompt-version",
+        default="v1",
+        choices=["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"],
+    )
     parser.add_argument("--max-hops", type=int, default=3)
     parser.add_argument("--num-cues", type=int, default=2)
     parser.add_argument("--top-k-per-hop", type=int, default=10)
-    parser.add_argument("--neighbor-radius", type=int, default=0,
-                        help="Include N neighboring turns around each found segment")
+    parser.add_argument(
+        "--neighbor-radius",
+        type=int,
+        default=0,
+        help="Include N neighboring turns around each found segment",
+    )
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--compare-models", action="store_true",
-                        help="Run both gpt-5-mini and gpt-5-nano")
-    parser.add_argument("--compare-prompts", action="store_true",
-                        help="Run all prompt versions")
-    parser.add_argument("--categories", nargs="+", default=None,
-                        help="Filter to specific categories")
-    parser.add_argument("--max-questions", type=int, default=None,
-                        help="Limit total number of questions")
+    parser.add_argument(
+        "--compare-models",
+        action="store_true",
+        help="Run both gpt-5-mini and gpt-5-nano",
+    )
+    parser.add_argument(
+        "--compare-prompts", action="store_true", help="Run all prompt versions"
+    )
+    parser.add_argument(
+        "--categories", nargs="+", default=None, help="Filter to specific categories"
+    )
+    parser.add_argument(
+        "--max-questions",
+        type=int,
+        default=None,
+        help="Limit total number of questions",
+    )
     args = parser.parse_args()
 
     questions_path = DATA_DIR / "questions.json"
@@ -248,7 +272,7 @@ def main() -> None:
         cat_set = set(args.categories)
         questions = [q for q in questions if q["category"] in cat_set]
     if args.max_questions:
-        questions = questions[:args.max_questions]
+        questions = questions[: args.max_questions]
 
     print(f"Loaded {len(questions)} questions")
 
@@ -260,30 +284,36 @@ def main() -> None:
     configs = []
     if args.compare_models:
         for model in ["gpt-5-mini", "gpt-5-nano"]:
-            configs.append({
-                "model": model,
-                "prompt_version": args.prompt_version,
-                "label": f"{model}/{args.prompt_version}",
-            })
+            configs.append(
+                {
+                    "model": model,
+                    "prompt_version": args.prompt_version,
+                    "label": f"{model}/{args.prompt_version}",
+                }
+            )
     elif args.compare_prompts:
         for pv in ["v1", "v2", "v3", "v4"]:
-            configs.append({
-                "model": args.model,
-                "prompt_version": pv,
-                "label": f"{args.model}/{pv}",
-            })
+            configs.append(
+                {
+                    "model": args.model,
+                    "prompt_version": pv,
+                    "label": f"{args.model}/{pv}",
+                }
+            )
     else:
-        configs.append({
-            "model": args.model,
-            "prompt_version": args.prompt_version,
-            "label": f"{args.model}/{args.prompt_version}",
-        })
+        configs.append(
+            {
+                "model": args.model,
+                "prompt_version": args.prompt_version,
+                "label": f"{args.model}/{args.prompt_version}",
+            }
+        )
 
     all_summaries = []
     for config in configs:
-        print(f"\n{'#'*80}")
+        print(f"\n{'#' * 80}")
         print(f"Running: {config['label']}")
-        print(f"{'#'*80}")
+        print(f"{'#' * 80}")
 
         engine = AssociativeRecallEngine(
             store=store,
@@ -297,8 +327,11 @@ def main() -> None:
 
         results = []
         for i, question in enumerate(questions):
-            print(f"\n[{i+1}/{len(questions)}] {question['category']}: "
-                  f"{question['question'][:60]}...", flush=True)
+            print(
+                f"\n[{i + 1}/{len(questions)}] {question['category']}: "
+                f"{question['question'][:60]}...",
+                flush=True,
+            )
             result = evaluate_question(engine, question, verbose=args.verbose)
             results.append(result)
             sys.stdout.flush()
@@ -312,17 +345,16 @@ def main() -> None:
         all_summaries.append(summary)
 
         results_file = (
-            RESULTS_DIR
-            / f"results_{config['model']}_{config['prompt_version']}.json"
+            RESULTS_DIR / f"results_{config['model']}_{config['prompt_version']}.json"
         )
         with open(results_file, "w") as f:
             json.dump(results, f, indent=2, default=str)
         print(f"\nSaved detailed results to {results_file}")
 
     if len(all_summaries) > 1:
-        print(f"\n\n{'='*80}")
+        print(f"\n\n{'=' * 80}")
         print("COMPARISON ACROSS CONFIGURATIONS")
-        print(f"{'='*80}")
+        print(f"{'=' * 80}")
         depth_labels = [f"r@{k}" for k in RECALL_DEPTHS] + ["r@all"]
         for s in all_summaries:
             if "OVERALL" not in str(s):
@@ -330,31 +362,33 @@ def main() -> None:
                 n = s["num_questions"]
                 overall_b = {
                     lbl: sum(
-                        cat["baseline"][lbl] * cat["count"]
-                        for cat in all_cats.values()
-                    ) / n
+                        cat["baseline"][lbl] * cat["count"] for cat in all_cats.values()
+                    )
+                    / n
                     for lbl in depth_labels
                 }
                 overall_a = {
                     lbl: sum(
                         cat["associative"][lbl] * cat["count"]
                         for cat in all_cats.values()
-                    ) / n
+                    )
+                    / n
                     for lbl in depth_labels
                 }
                 print(f"\n{s['label']} (n={n}):")
-                print(f"  Baseline:    " + "  ".join(
-                    f"{lbl}={overall_b[lbl]:.3f}" for lbl in depth_labels
-                ))
-                print(f"  Associative: " + "  ".join(
-                    f"{lbl}={overall_a[lbl]:.3f}" for lbl in depth_labels
-                ))
-                delta = {
-                    lbl: overall_a[lbl] - overall_b[lbl] for lbl in depth_labels
-                }
-                print(f"  Delta:       " + "  ".join(
-                    f"{lbl}={delta[lbl]:+.3f}" for lbl in depth_labels
-                ))
+                print(
+                    "  Baseline:    "
+                    + "  ".join(f"{lbl}={overall_b[lbl]:.3f}" for lbl in depth_labels)
+                )
+                print(
+                    "  Associative: "
+                    + "  ".join(f"{lbl}={overall_a[lbl]:.3f}" for lbl in depth_labels)
+                )
+                delta = {lbl: overall_a[lbl] - overall_b[lbl] for lbl in depth_labels}
+                print(
+                    "  Delta:       "
+                    + "  ".join(f"{lbl}={delta[lbl]:+.3f}" for lbl in depth_labels)
+                )
 
     summaries_file = RESULTS_DIR / "summaries.json"
     with open(summaries_file, "w") as f:

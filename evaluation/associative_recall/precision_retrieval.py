@@ -15,18 +15,13 @@ Usage:
     uv run python precision_retrieval.py [--verbose] [--investigation 1|2|both]
 """
 
-import hashlib
 import json
 import sys
 import time
-from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -34,8 +29,9 @@ from associative_recall import (
     LLMCache,
     Segment,
     SegmentStore,
-    RetrievalResult,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -277,8 +273,9 @@ Nothing else."""
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def format_segments(segments: list[Segment], max_items: int = 12,
-                    max_chars: int = 250) -> str:
+def format_segments(
+    segments: list[Segment], max_items: int = 12, max_chars: int = 250
+) -> str:
     if not segments:
         return "(no content retrieved yet)"
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
@@ -362,8 +359,9 @@ def compute_recall(retrieved_turn_ids: set[int], source_turn_ids: set[int]) -> f
 class PrecisionEngine:
     """Engine for precision retrieval experiments."""
 
-    def __init__(self, store: SegmentStore, client: OpenAI | None = None,
-                 investigation: int = 0):
+    def __init__(
+        self, store: SegmentStore, client: OpenAI | None = None, investigation: int = 0
+    ):
         self.store = store
         self.client = client or OpenAI(timeout=120.0)
         self.embedding_cache = PrecisionEmbeddingCache(investigation)
@@ -385,8 +383,7 @@ class PrecisionEngine:
         self.embed_calls += 1
         return embedding
 
-    def llm_call(self, prompt: str, model: str = MODEL,
-                 max_tokens: int = 2000) -> str:
+    def llm_call(self, prompt: str, model: str = MODEL, max_tokens: int = 2000) -> str:
         cached = self.llm_cache.get(model, prompt)
         if cached is not None:
             self.llm_calls += 1
@@ -405,7 +402,7 @@ class PrecisionEngine:
                 return text
             except Exception as e:
                 last_err = e
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
         raise last_err  # type: ignore[misc]
 
     def save_caches(self) -> None:
@@ -424,7 +421,8 @@ class PrecisionEngine:
         exclude_indices: set[int] | None = None,
     ) -> list[Segment]:
         result = self.store.search(
-            query_emb, top_k=top_k,
+            query_emb,
+            top_k=top_k,
             conversation_id=conversation_id,
             exclude_indices=exclude_indices,
         )
@@ -446,7 +444,7 @@ class PrecisionEngine:
         if len(segments) > batch_size:
             batches = []
             for i in range(0, len(segments), batch_size):
-                batches.append(segments[i:i + batch_size])
+                batches.append(segments[i : i + batch_size])
 
             candidates = []
             for batch in batches:
@@ -500,7 +498,9 @@ class PrecisionEngine:
     # ==================================================================
 
     def cosine_top60_rerank(
-        self, question: str, conversation_id: str,
+        self,
+        question: str,
+        conversation_id: str,
     ) -> dict:
         """Cosine top-60 -> LLM rerank -> top-20.
 
@@ -524,7 +524,9 @@ class PrecisionEngine:
         }
 
     def v2f_30_rerank(
-        self, question: str, conversation_id: str,
+        self,
+        question: str,
+        conversation_id: str,
     ) -> dict:
         """V2f retrieval (~30 segments) -> LLM rerank -> top-20."""
         all_segments: list[Segment] = []
@@ -554,15 +556,17 @@ class PrecisionEngine:
 
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
-            new_segs = self._retrieve(cue_emb, conversation_id, top_k=10,
-                                      exclude_indices=exclude)
+            new_segs = self._retrieve(
+                cue_emb, conversation_id, top_k=10, exclude_indices=exclude
+            )
             add_segments(new_segs)
 
         # Rerank the full pool -> top-20
         pool_size = len(all_segments)
         reranked = self._llm_rerank(question, all_segments, top_k=20)
-        remaining = [s for s in all_segments
-                     if s.index not in {r.index for r in reranked[:20]}]
+        remaining = [
+            s for s in all_segments if s.index not in {r.index for r in reranked[:20]}
+        ]
         final = reranked[:20] + remaining
 
         return {
@@ -575,7 +579,9 @@ class PrecisionEngine:
         }
 
     def v2f_gencheck_50_rerank(
-        self, question: str, conversation_id: str,
+        self,
+        question: str,
+        conversation_id: str,
     ) -> dict:
         """V2f + gencheck (~50 segments) -> LLM rerank -> top-20."""
         all_segments: list[Segment] = []
@@ -606,8 +612,9 @@ class PrecisionEngine:
 
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
-            new_segs = self._retrieve(cue_emb, conversation_id, top_k=10,
-                                      exclude_indices=exclude)
+            new_segs = self._retrieve(
+                cue_emb, conversation_id, top_k=10, exclude_indices=exclude
+            )
             add_segments(new_segs)
 
         # Stage 3: Gen-Check gap assessment
@@ -622,8 +629,9 @@ class PrecisionEngine:
         if not done and gaps:
             for gap in gaps[:2]:
                 gap_emb = self.embed_text(gap)
-                new_segs = self._retrieve(gap_emb, conversation_id, top_k=10,
-                                          exclude_indices=exclude)
+                new_segs = self._retrieve(
+                    gap_emb, conversation_id, top_k=10, exclude_indices=exclude
+                )
                 add_segments(new_segs)
 
         # Negative-space probe (0 LLM cost)
@@ -635,16 +643,18 @@ class PrecisionEngine:
             alpha = 0.3
             residual = query_norm + alpha * (query_norm - centroid)
             residual /= max(np.linalg.norm(residual), 1e-10)
-            ns_segs = self._retrieve(residual, conversation_id, top_k=10,
-                                     exclude_indices=exclude)
+            ns_segs = self._retrieve(
+                residual, conversation_id, top_k=10, exclude_indices=exclude
+            )
             add_segments(ns_segs)
             self.embed_calls += 1
 
         # Rerank the full pool -> top-20
         pool_size = len(all_segments)
         reranked = self._llm_rerank(question, all_segments, top_k=20)
-        remaining = [s for s in all_segments
-                     if s.index not in {r.index for r in reranked[:20]}]
+        remaining = [
+            s for s in all_segments if s.index not in {r.index for r in reranked[:20]}
+        ]
         final = reranked[:20] + remaining
 
         return {
@@ -663,7 +673,9 @@ class PrecisionEngine:
     # ==================================================================
 
     def backfill(
-        self, question: str, conversation_id: str,
+        self,
+        question: str,
+        conversation_id: str,
     ) -> dict:
         """Backfill mode: baseline top-20 stays fixed, cue-found fills 21-50.
 
@@ -692,7 +704,10 @@ class PrecisionEngine:
             cue_emb = self.embed_text(cue)
             cue_segs = self._retrieve(cue_emb, conversation_id, top_k=10)
             for seg in cue_segs:
-                if seg.index not in baseline_20_indices and seg.index not in cue_found_indices:
+                if (
+                    seg.index not in baseline_20_indices
+                    and seg.index not in cue_found_indices
+                ):
                     cue_found.append(seg)
                     cue_found_indices.add(seg.index)
 
@@ -721,7 +736,9 @@ class PrecisionEngine:
         }
 
     def embedding_filter(
-        self, question: str, conversation_id: str,
+        self,
+        question: str,
+        conversation_id: str,
         similarity_threshold: float = 0.7,
     ) -> dict:
         """Embedding distance filter: skip cues too similar to the question.
@@ -762,14 +779,17 @@ class PrecisionEngine:
             cue_norm = cue_emb / max(np.linalg.norm(cue_emb), 1e-10)
             similarity = float(np.dot(query_norm, cue_norm))
             used = similarity <= similarity_threshold
-            cue_details.append({
-                "cue": cue,
-                "similarity_to_question": round(similarity, 4),
-                "used": used,
-            })
+            cue_details.append(
+                {
+                    "cue": cue,
+                    "similarity_to_question": round(similarity, 4),
+                    "used": used,
+                }
+            )
             if used:
-                new_segs = self._retrieve(cue_emb, conversation_id, top_k=10,
-                                          exclude_indices=exclude)
+                new_segs = self._retrieve(
+                    cue_emb, conversation_id, top_k=10, exclude_indices=exclude
+                )
                 add_segments(new_segs)
 
         return {
@@ -783,7 +803,9 @@ class PrecisionEngine:
         }
 
     def cue_dedup_metric(
-        self, question: str, conversation_id: str,
+        self,
+        question: str,
+        conversation_id: str,
     ) -> dict:
         """Standard V2f with cue-found deduplication metric.
 
@@ -832,17 +854,20 @@ class PrecisionEngine:
             )
             raw_indices = {s.index for s in raw_result.segments}
             overlap = len(raw_indices & baseline_indices)
-            per_cue_overlap.append({
-                "cue": cue,
-                "raw_retrieved": len(raw_result.segments),
-                "overlap_with_baseline_top20": overlap,
-                "overlap_pct": round(overlap / max(len(raw_result.segments), 1), 3),
-                "unique_new": len(raw_indices - baseline_indices),
-            })
+            per_cue_overlap.append(
+                {
+                    "cue": cue,
+                    "raw_retrieved": len(raw_result.segments),
+                    "overlap_with_baseline_top20": overlap,
+                    "overlap_pct": round(overlap / max(len(raw_result.segments), 1), 3),
+                    "unique_new": len(raw_indices - baseline_indices),
+                }
+            )
 
             # Now retrieve with exclusion for actual segment list
-            new_segs = self._retrieve(cue_emb, conversation_id, top_k=10,
-                                      exclude_indices=exclude)
+            new_segs = self._retrieve(
+                cue_emb, conversation_id, top_k=10, exclude_indices=exclude
+            )
             add_segments(new_segs)
 
         # Aggregate overlap
@@ -862,7 +887,9 @@ class PrecisionEngine:
         }
 
     def what_baseline_missed(
-        self, question: str, conversation_id: str,
+        self,
+        question: str,
+        conversation_id: str,
     ) -> dict:
         """'What baseline missed' prompting: tell the LLM to find DIFFERENT
         vocabulary from the question."""
@@ -894,8 +921,9 @@ class PrecisionEngine:
 
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
-            new_segs = self._retrieve(cue_emb, conversation_id, top_k=10,
-                                      exclude_indices=exclude)
+            new_segs = self._retrieve(
+                cue_emb, conversation_id, top_k=10, exclude_indices=exclude
+            )
             add_segments(new_segs)
 
         return {
@@ -907,7 +935,9 @@ class PrecisionEngine:
         }
 
     def backfill_what_missed(
-        self, question: str, conversation_id: str,
+        self,
+        question: str,
+        conversation_id: str,
     ) -> dict:
         """Combination: 'what baseline missed' prompt + backfill mode.
 
@@ -936,7 +966,10 @@ class PrecisionEngine:
             cue_emb = self.embed_text(cue)
             cue_segs = self._retrieve(cue_emb, conversation_id, top_k=10)
             for seg in cue_segs:
-                if seg.index not in baseline_20_indices and seg.index not in cue_found_indices:
+                if (
+                    seg.index not in baseline_20_indices
+                    and seg.index not in cue_found_indices
+                ):
                     cue_found.append(seg)
                     cue_found_indices.add(seg.index)
 
@@ -952,7 +985,9 @@ class PrecisionEngine:
         }
 
     def v2f_standard(
-        self, question: str, conversation_id: str,
+        self,
+        question: str,
+        conversation_id: str,
     ) -> dict:
         """Standard V2f (no reranking) for comparison baseline."""
         query_emb = self.embed_text(question)
@@ -981,8 +1016,9 @@ class PrecisionEngine:
 
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
-            new_segs = self._retrieve(cue_emb, conversation_id, top_k=10,
-                                      exclude_indices=exclude)
+            new_segs = self._retrieve(
+                cue_emb, conversation_id, top_k=10, exclude_indices=exclude
+            )
             add_segments(new_segs)
 
         return {
@@ -1032,8 +1068,11 @@ DATASETS = [
 ]
 
 
-def load_questions(json_path: Path, benchmark_filter: str | None = None,
-                   max_questions: int | None = None) -> list[dict]:
+def load_questions(
+    json_path: Path,
+    benchmark_filter: str | None = None,
+    max_questions: int | None = None,
+) -> list[dict]:
     with open(json_path) as f:
         questions = json.load(f)
     if benchmark_filter:
@@ -1056,7 +1095,7 @@ RERANKER_APPROACHES = [
 # Investigation 2: Precision Cue Generation
 # ---------------------------------------------------------------------------
 PRECISION_APPROACHES = [
-    "v2f_standard",       # baseline v2f for comparison
+    "v2f_standard",  # baseline v2f for comparison
     "backfill",
     "embedding_filter",
     "cue_dedup_metric",
@@ -1078,16 +1117,16 @@ def run_investigation(
         approaches = PRECISION_APPROACHES
         label = "PRECISION CUE GENERATION"
 
-    print(f"\n{'='*70}", flush=True)
+    print(f"\n{'=' * 70}", flush=True)
     print(f"INVESTIGATION {investigation}: {label}", flush=True)
-    print(f"{'='*70}", flush=True)
+    print(f"{'=' * 70}", flush=True)
 
     all_dataset_results: dict[str, dict[str, list[dict]]] = {}
 
     for ds in DATASETS:
-        print(f"\n{'='*60}", flush=True)
+        print(f"\n{'=' * 60}", flush=True)
         print(f"DATASET: {ds.name}", flush=True)
-        print(f"{'='*60}", flush=True)
+        print(f"{'=' * 60}", flush=True)
 
         store = SegmentStore(DATA_DIR, ds.npz)
         questions = load_questions(
@@ -1098,10 +1137,13 @@ def run_investigation(
         print(f"  Loaded {len(questions)} questions", flush=True)
 
         client = OpenAI(timeout=120.0)
-        print(f"  Creating engine (loading caches)...", flush=True)
+        print("  Creating engine (loading caches)...", flush=True)
         engine = PrecisionEngine(store, client, investigation=investigation)
-        print(f"  Engine ready. LLM cache: {len(engine.llm_cache._cache)} entries, "
-              f"Embedding cache: {len(engine.embedding_cache._cache)} entries", flush=True)
+        print(
+            f"  Engine ready. LLM cache: {len(engine.llm_cache._cache)} entries, "
+            f"Embedding cache: {len(engine.embedding_cache._cache)} entries",
+            flush=True,
+        )
 
         dataset_results: dict[str, list[dict]] = {a: [] for a in approaches}
 
@@ -1117,8 +1159,12 @@ def run_investigation(
             baseline_20 = store.search(query_emb, top_k=20, conversation_id=conv_id)
             baseline_50 = store.search(query_emb, top_k=50, conversation_id=conv_id)
             baseline_recalls = {
-                "r@20": compute_recall({s.turn_id for s in baseline_20.segments}, source_ids),
-                "r@50": compute_recall({s.turn_id for s in baseline_50.segments}, source_ids),
+                "r@20": compute_recall(
+                    {s.turn_id for s in baseline_20.segments}, source_ids
+                ),
+                "r@50": compute_recall(
+                    {s.turn_id for s in baseline_50.segments}, source_ids
+                ),
             }
 
             for approach in approaches:
@@ -1135,7 +1181,9 @@ def run_investigation(
                 arch_recalls = {}
                 for budget in BUDGETS:
                     retrieved_at_k = {s.turn_id for s in segments[:budget]}
-                    arch_recalls[f"r@{budget}"] = compute_recall(retrieved_at_k, source_ids)
+                    arch_recalls[f"r@{budget}"] = compute_recall(
+                        retrieved_at_k, source_ids
+                    )
 
                 result_entry = {
                     "conversation_id": conv_id,
@@ -1155,20 +1203,24 @@ def run_investigation(
                 dataset_results[approach].append(result_entry)
 
                 delta_20 = arch_recalls["r@20"] - baseline_recalls["r@20"]
-                marker = "W" if delta_20 > 0.001 else ("L" if delta_20 < -0.001 else "T")
+                marker = (
+                    "W" if delta_20 > 0.001 else ("L" if delta_20 < -0.001 else "T")
+                )
 
                 if verbose:
-                    print(f"  Q{q_idx:2d} [{category:25s}] {approach:25s}: "
-                          f"r@20={arch_recalls['r@20']:.1%} "
-                          f"r@50={arch_recalls['r@50']:.1%} "
-                          f"(base r@20={baseline_recalls['r@20']:.1%} "
-                          f"r@50={baseline_recalls['r@50']:.1%} "
-                          f"delta20={delta_20:+.1%} {marker}) "
-                          f"LLM={engine.llm_calls} emb={engine.embed_calls}",
-                          flush=True)
+                    print(
+                        f"  Q{q_idx:2d} [{category:25s}] {approach:25s}: "
+                        f"r@20={arch_recalls['r@20']:.1%} "
+                        f"r@50={arch_recalls['r@50']:.1%} "
+                        f"(base r@20={baseline_recalls['r@20']:.1%} "
+                        f"r@50={baseline_recalls['r@50']:.1%} "
+                        f"delta20={delta_20:+.1%} {marker}) "
+                        f"LLM={engine.llm_calls} emb={engine.embed_calls}",
+                        flush=True,
+                    )
 
             if not verbose:
-                print(f"  Q{qi+1}/{len(questions)} done", flush=True)
+                print(f"  Q{qi + 1}/{len(questions)} done", flush=True)
 
             engine.save_caches()
 
@@ -1200,57 +1252,72 @@ def run_investigation(
             total_emb = sum(r["embed_calls"] for r in results)
 
             print(f"\n  {approach}:")
-            print(f"    r@20: {avg_r20:.1%} (baseline {avg_b20:.1%}, "
-                  f"delta {avg_r20 - avg_b20:+.1%}) "
-                  f"W/T/L={wins_20}/{ties_20}/{losses_20}")
-            print(f"    r@50: {avg_r50:.1%} (baseline {avg_b50:.1%}, "
-                  f"delta {avg_r50 - avg_b50:+.1%}) "
-                  f"W/T/L={wins_50}/{ties_50}/{losses_50}")
-            print(f"    LLM calls: {total_llm} ({total_llm/len(results):.1f}/q), "
-                  f"Embed calls: {total_emb} ({total_emb/len(results):.1f}/q)")
+            print(
+                f"    r@20: {avg_r20:.1%} (baseline {avg_b20:.1%}, "
+                f"delta {avg_r20 - avg_b20:+.1%}) "
+                f"W/T/L={wins_20}/{ties_20}/{losses_20}"
+            )
+            print(
+                f"    r@50: {avg_r50:.1%} (baseline {avg_b50:.1%}, "
+                f"delta {avg_r50 - avg_b50:+.1%}) "
+                f"W/T/L={wins_50}/{ties_50}/{losses_50}"
+            )
+            print(
+                f"    LLM calls: {total_llm} ({total_llm / len(results):.1f}/q), "
+                f"Embed calls: {total_emb} ({total_emb / len(results):.1f}/q)"
+            )
 
             # Cost efficiency: delta r@20 per LLM call
             delta_r20 = avg_r20 - avg_b20
             avg_llm = total_llm / len(results) if results else 0
             if avg_llm > 0:
                 efficiency = delta_r20 / avg_llm
-                print(f"    Cost efficiency: {delta_r20:+.1%} / {avg_llm:.1f} LLM = "
-                      f"{efficiency*100:+.2f}pp per LLM call")
+                print(
+                    f"    Cost efficiency: {delta_r20:+.1%} / {avg_llm:.1f} LLM = "
+                    f"{efficiency * 100:+.2f}pp per LLM call"
+                )
 
             # For cue_dedup_metric, print aggregate overlap
             if approach == "cue_dedup_metric":
                 overlap_pcts = [
-                    r["metadata"].get("aggregate_overlap_pct", 0)
-                    for r in results
+                    r["metadata"].get("aggregate_overlap_pct", 0) for r in results
                 ]
                 avg_overlap = sum(overlap_pcts) / max(len(overlap_pcts), 1)
                 unique_news = [
-                    r["metadata"].get("aggregate_unique_new", 0)
-                    for r in results
+                    r["metadata"].get("aggregate_unique_new", 0) for r in results
                 ]
                 avg_unique = sum(unique_news) / max(len(unique_news), 1)
-                print(f"    Cue overlap with baseline: {avg_overlap:.1%} "
-                      f"(avg unique new: {avg_unique:.1f})")
+                print(
+                    f"    Cue overlap with baseline: {avg_overlap:.1%} "
+                    f"(avg unique new: {avg_unique:.1f})"
+                )
 
             # For embedding_filter, print skip rate
             if approach == "embedding_filter":
                 skipped = [r["metadata"].get("cues_skipped", 0) for r in results]
                 total_cues = [
-                    r["metadata"].get("cues_used", 0) + r["metadata"].get("cues_skipped", 0)
+                    r["metadata"].get("cues_used", 0)
+                    + r["metadata"].get("cues_skipped", 0)
                     for r in results
                 ]
                 total_skipped = sum(skipped)
                 total_total = sum(total_cues)
-                print(f"    Cue skip rate: {total_skipped}/{total_total} "
-                      f"({total_skipped/max(total_total,1):.1%})")
+                print(
+                    f"    Cue skip rate: {total_skipped}/{total_total} "
+                    f"({total_skipped / max(total_total, 1):.1%})"
+                )
 
             # For backfill, print overlap
             if approach in ("backfill", "backfill_what_missed"):
-                unique_found = [r["metadata"].get("cue_unique_found", 0) for r in results]
+                unique_found = [
+                    r["metadata"].get("cue_unique_found", 0) for r in results
+                ]
                 avg_unique = sum(unique_found) / max(len(unique_found), 1)
                 print(f"    Avg unique cue-found segments: {avg_unique:.1f}")
                 if approach == "backfill":
-                    overlap_pcts = [r["metadata"].get("cue_overlap_pct", 0) for r in results]
+                    overlap_pcts = [
+                        r["metadata"].get("cue_overlap_pct", 0) for r in results
+                    ]
                     avg_overlap = sum(overlap_pcts) / max(len(overlap_pcts), 1)
                     print(f"    Avg cue-found overlap with baseline: {avg_overlap:.1%}")
 
@@ -1278,9 +1345,9 @@ def print_cross_dataset_summary(
 ):
     """Print a comparison table across all datasets."""
     label = "RERANKER FAIRNESS" if investigation == 1 else "PRECISION CUE GENERATION"
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"CROSS-DATASET COMPARISON: {label}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     ds_names = list(all_dataset_results.keys())
 
@@ -1309,18 +1376,20 @@ def print_cross_dataset_summary(
                     row += f"  {'N/A':>16s}"
                     continue
                 avg = sum(r["arch_recalls"][metric_key] for r in results) / len(results)
-                base = sum(r["baseline_recalls"][metric_key] for r in results) / len(results)
+                base = sum(r["baseline_recalls"][metric_key] for r in results) / len(
+                    results
+                )
                 delta = avg - base
                 row += f"  {avg:.1%}({delta:+.1%})"
                 # Pad to 16 chars
                 cell = f"{avg:.1%}({delta:+.1%})"
                 row_padding = 16 - len(cell)
                 if row_padding > 0:
-                    row = row[:-len(cell)] + " " * row_padding + cell
+                    row = row[: -len(cell)] + " " * row_padding + cell
             print(row)
 
     # LLM calls per question
-    print(f"\n  LLM calls/question:")
+    print("\n  LLM calls/question:")
     header = f"  {'Approach':28s}"
     for ds in ds_names:
         header += f"  {ds:>16s}"
@@ -1340,7 +1409,7 @@ def print_cross_dataset_summary(
         print(row)
 
     # Cost efficiency: delta r@20 per LLM call
-    print(f"\n  Cost efficiency (delta r@20 per LLM call, in pp):")
+    print("\n  Cost efficiency (delta r@20 per LLM call, in pp):")
     header = f"  {'Approach':28s}"
     for ds in ds_names:
         header += f"  {ds:>16s}"
@@ -1391,9 +1460,9 @@ def main():
 
     # Final combined summary if both ran
     if len(investigations) == 2:
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print("FINAL COMBINED ANALYSIS")
-        print(f"{'='*70}")
+        print(f"{'=' * 70}")
 
         for ds_name in DATASETS:
             ds = ds_name.name
@@ -1421,9 +1490,11 @@ def main():
                 avg_llm = sum(r["llm_calls"] for r in results) / len(results)
                 d20 = avg_r20 - avg_b20
                 d50 = avg_r50 - avg_b50
-                print(f"    {approach:28s}: r@20={avg_r20:.1%}({d20:+.1%}) "
-                      f"r@50={avg_r50:.1%}({d50:+.1%}) "
-                      f"LLM={avg_llm:.1f}/q")
+                print(
+                    f"    {approach:28s}: r@20={avg_r20:.1%}({d20:+.1%}) "
+                    f"r@50={avg_r50:.1%}({d50:+.1%}) "
+                    f"LLM={avg_llm:.1f}/q"
+                )
 
 
 if __name__ == "__main__":

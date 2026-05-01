@@ -15,7 +15,6 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-
 from associative_recall import AssociativeRecallEngine, SegmentStore
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -123,8 +122,7 @@ def evaluate_question_normalized(
     if backfill:
         assoc_indices = {seg.index for seg in assoc_segments_ordered}
         backfill_segments = [
-            seg for seg in baseline_result.segments
-            if seg.index not in assoc_indices
+            seg for seg in baseline_result.segments if seg.index not in assoc_indices
         ]
         assoc_segments_with_backfill = list(assoc_segments_ordered) + backfill_segments
     else:
@@ -136,14 +134,18 @@ def evaluate_question_normalized(
     for budget in BUDGETS:
         # Baseline: top-`budget` segments by embedding similarity
         baseline_ids_at_budget = {s.turn_id for s in baseline_result.segments[:budget]}
-        baseline_recalls[f"r@{budget}"] = compute_recall(baseline_ids_at_budget, source_ids)
+        baseline_recalls[f"r@{budget}"] = compute_recall(
+            baseline_ids_at_budget, source_ids
+        )
 
         # Associative: first `budget` segments in retrieval order (with backfill if enabled)
         assoc_ids_at_budget = {s.turn_id for s in assoc_segments_with_backfill[:budget]}
         assoc_recalls[f"r@{budget}"] = compute_recall(assoc_ids_at_budget, source_ids)
 
     # Also compute at the actual retrieval size (how many assoc actually retrieved)
-    baseline_ids_at_actual = {s.turn_id for s in baseline_result.segments[:total_assoc_retrieved]}
+    baseline_ids_at_actual = {
+        s.turn_id for s in baseline_result.segments[:total_assoc_retrieved]
+    }
     assoc_ids_at_actual = {s.turn_id for s in assoc_segments_ordered}
 
     baseline_recalls["r@actual"] = compute_recall(baseline_ids_at_actual, source_ids)
@@ -188,12 +190,14 @@ def evaluate_question_normalized(
     }
 
     if verbose:
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print(f"Q: {q_text[:100]}...")
         print(f"Category: {question['category']}")
         print(f"Source IDs: {sorted(source_ids)} ({len(source_ids)} turns)")
-        print(f"Conv size: {conv_length}, Assoc retrieved: {total_assoc_retrieved} "
-              f"({total_assoc_retrieved/conv_length:.0%})")
+        print(
+            f"Conv size: {conv_length}, Assoc retrieved: {total_assoc_retrieved} "
+            f"({total_assoc_retrieved / conv_length:.0%})"
+        )
         for budget in BUDGETS:
             b = baseline_recalls[f"r@{budget}"]
             a = assoc_recalls[f"r@{budget}"]
@@ -201,13 +205,17 @@ def evaluate_question_normalized(
             print(f"  @{budget:3d}: baseline={b:.3f} assoc={a:.3f} delta={delta:+.3f}")
         b = baseline_recalls["r@actual"]
         a = assoc_recalls["r@actual"]
-        print(f"  @{total_assoc_retrieved:3d}: baseline={b:.3f} assoc={a:.3f} "
-              f"delta={a-b:+.3f} (actual)")
+        print(
+            f"  @{total_assoc_retrieved:3d}: baseline={b:.3f} assoc={a:.3f} "
+            f"delta={a - b:+.3f} (actual)"
+        )
         for hop in hop_details:
-            print(f"  Hop {hop['hop']}: +{hop['num_retrieved']} segs, "
-                  f"+{hop['new_turn_ids_count']} new, "
-                  f"source_hits={hop['new_source_hits']} "
-                  f"cum_recall={hop['cumulative_recall']:.3f}")
+            print(
+                f"  Hop {hop['hop']}: +{hop['num_retrieved']} segs, "
+                f"+{hop['new_turn_ids_count']} new, "
+                f"source_hits={hop['new_source_hits']} "
+                f"cum_recall={hop['cumulative_recall']:.3f}"
+            )
             for cue in hop["cues"][:3]:
                 print(f"    Cue: {cue[:100]}")
 
@@ -215,9 +223,9 @@ def evaluate_question_normalized(
 
 
 def print_summary(results: list[dict], label: str) -> dict:
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"NORMALIZED EVALUATION: {label}")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
     by_category: dict[str, list[dict]] = defaultdict(list)
     for r in results:
@@ -226,9 +234,9 @@ def print_summary(results: list[dict], label: str) -> dict:
     budget_labels = [f"r@{b}" for b in BUDGETS] + ["r@actual"]
     header = (
         f"{'category':30s} {'n':>3s}  "
-        + "  ".join(f"{'B-'+lbl:>10s}" for lbl in budget_labels)
+        + "  ".join(f"{'B-' + lbl:>10s}" for lbl in budget_labels)
         + "  |  "
-        + "  ".join(f"{'A-'+lbl:>10s}" for lbl in budget_labels)
+        + "  ".join(f"{'A-' + lbl:>10s}" for lbl in budget_labels)
     )
     print(header)
     print("-" * len(header))
@@ -255,12 +263,12 @@ def print_summary(results: list[dict], label: str) -> dict:
         b_overall = {}
         a_overall = {}
         for lbl in budget_labels:
-            b_overall[lbl] = sum(
-                r["baseline_recalls"][lbl] for r in all_results
-            ) / len(all_results)
-            a_overall[lbl] = sum(
-                r["assoc_recalls"][lbl] for r in all_results
-            ) / len(all_results)
+            b_overall[lbl] = sum(r["baseline_recalls"][lbl] for r in all_results) / len(
+                all_results
+            )
+            a_overall[lbl] = sum(r["assoc_recalls"][lbl] for r in all_results) / len(
+                all_results
+            )
         avg_frac = sum(r["retrieval_fraction"] for r in all_results) / len(all_results)
 
         print("-" * len(header))
@@ -272,28 +280,23 @@ def print_summary(results: list[dict], label: str) -> dict:
         )
         print(row_str)
 
-        print(f"\nDELTAS (assoc - baseline):")
-        delta_str = (
-            f"{'':30s} {'':>3s}  "
-            + "  ".join(
-                f"{a_overall[lbl] - b_overall[lbl]:>+10.3f}" for lbl in budget_labels
-            )
+        print("\nDELTAS (assoc - baseline):")
+        delta_str = f"{'':30s} {'':>3s}  " + "  ".join(
+            f"{a_overall[lbl] - b_overall[lbl]:>+10.3f}" for lbl in budget_labels
         )
         print(delta_str)
         print(f"\nAvg retrieval fraction: {avg_frac:.2%}")
-        print(f"Avg total assoc segments: "
-              f"{sum(r['total_assoc_retrieved'] for r in all_results) / len(all_results):.0f}")
+        print(
+            f"Avg total assoc segments: "
+            f"{sum(r['total_assoc_retrieved'] for r in all_results) / len(all_results):.0f}"
+        )
 
     summary = {
         "label": label,
         "num_questions": len(all_results),
-        "overall": {
-            f"baseline_{lbl}": b_overall[lbl] for lbl in budget_labels
-        } | {
-            f"assoc_{lbl}": a_overall[lbl] for lbl in budget_labels
-        } | {
-            f"delta_{lbl}": a_overall[lbl] - b_overall[lbl] for lbl in budget_labels
-        },
+        "overall": {f"baseline_{lbl}": b_overall[lbl] for lbl in budget_labels}
+        | {f"assoc_{lbl}": a_overall[lbl] for lbl in budget_labels}
+        | {f"delta_{lbl}": a_overall[lbl] - b_overall[lbl] for lbl in budget_labels},
         "avg_retrieval_fraction": avg_frac,
     }
     return summary
@@ -302,37 +305,56 @@ def print_summary(results: list[dict], label: str) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="gpt-5-mini")
-    parser.add_argument("--prompt-version", default="v8",
-                        choices=list(f"v{i}" for i in range(1, 30)))
+    parser.add_argument(
+        "--prompt-version", default="v8", choices=list(f"v{i}" for i in range(1, 30))
+    )
     parser.add_argument("--max-hops", type=int, default=3)
     parser.add_argument("--num-cues", type=int, default=2)
     parser.add_argument("--top-k-per-hop", type=int, default=10)
     parser.add_argument("--neighbor-radius", type=int, default=0)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--max-questions", type=int, default=None)
-    parser.add_argument("--label", default=None,
-                        help="Label for this run")
-    parser.add_argument("--data-suffix", default="",
-                        help="Suffix for data files (e.g. '_extended')")
-    parser.add_argument("--benchmark-filter", default=None,
-                        help="Filter to specific benchmark (beam or locomo)")
-    parser.add_argument("--max-conv-questions", type=int, default=None,
-                        help="Max questions per conversation")
-    parser.add_argument("--rerank", action="store_true",
-                        help="Re-rank associative pool by cosine sim to original question")
-    parser.add_argument("--fusion", action="store_true",
-                        help="Fuse assoc pool + baseline pool, rank union by cosine sim")
-    parser.add_argument("--backfill", action="store_true",
-                        help="Backfill assoc pool with baseline results beyond assoc pool size")
+    parser.add_argument("--label", default=None, help="Label for this run")
+    parser.add_argument(
+        "--data-suffix", default="", help="Suffix for data files (e.g. '_extended')"
+    )
+    parser.add_argument(
+        "--benchmark-filter",
+        default=None,
+        help="Filter to specific benchmark (beam or locomo)",
+    )
+    parser.add_argument(
+        "--max-conv-questions",
+        type=int,
+        default=None,
+        help="Max questions per conversation",
+    )
+    parser.add_argument(
+        "--rerank",
+        action="store_true",
+        help="Re-rank associative pool by cosine sim to original question",
+    )
+    parser.add_argument(
+        "--fusion",
+        action="store_true",
+        help="Fuse assoc pool + baseline pool, rank union by cosine sim",
+    )
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="Backfill assoc pool with baseline results beyond assoc pool size",
+    )
     args = parser.parse_args()
 
     questions_path = DATA_DIR / f"questions{args.data_suffix}.json"
     with open(questions_path) as f:
         questions = json.load(f)
     if args.benchmark_filter:
-        questions = [q for q in questions if q.get("benchmark") == args.benchmark_filter]
+        questions = [
+            q for q in questions if q.get("benchmark") == args.benchmark_filter
+        ]
     if args.max_questions:
-        questions = questions[:args.max_questions]
+        questions = questions[: args.max_questions]
 
     print(f"Loaded {len(questions)} questions")
 
@@ -356,11 +378,17 @@ def main() -> None:
 
     results = []
     for i, question in enumerate(questions):
-        print(f"\n[{i+1}/{len(questions)}] {question['category']}: "
-              f"{question['question'][:60]}...", flush=True)
+        print(
+            f"\n[{i + 1}/{len(questions)}] {question['category']}: "
+            f"{question['question'][:60]}...",
+            flush=True,
+        )
         result = evaluate_question_normalized(
-            engine, question, verbose=args.verbose,
-            rerank=args.rerank, fusion=args.fusion,
+            engine,
+            question,
+            verbose=args.verbose,
+            rerank=args.rerank,
+            fusion=args.fusion,
             backfill=args.backfill,
         )
         results.append(result)

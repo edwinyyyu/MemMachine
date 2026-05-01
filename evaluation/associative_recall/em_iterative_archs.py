@@ -16,30 +16,28 @@ are IMPORTED not modified.
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from memmachine_server.common.filter.filter_parser import Comparison
-from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
-
 from em_architectures import (
     V2F_MODEL,
     EMHit,
-    _MergedLLMCache,
     _dedupe_by_turn_id,
     _merge_by_max_score,
+    _MergedLLMCache,
     _query_em,
     format_primer_context,
 )
 from em_retuned_cue_gen import (
-    V2F_SPEAKERFORMAT_PROMPT,
     build_v2f_speakerformat_prompt,
+)
+from em_retuned_cue_gen import (
     parse_cues as parse_sf_cues,
 )
 from em_two_speaker import classify_speaker_side
-
+from memmachine_server.common.filter.filter_parser import Comparison
+from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
 
@@ -226,10 +224,7 @@ async def _llm_call(
 
 def _hits_to_segments_dict(hits: list[EMHit], max_items: int = 12) -> list[dict]:
     sorted_hits = sorted(hits, key=lambda h: h.turn_id)[:max_items]
-    return [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in sorted_hits
-    ]
+    return [{"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in sorted_hits]
 
 
 def _format_iter_context(hits: list[EMHit], *, max_items: int = 12) -> str:
@@ -334,23 +329,23 @@ async def em_hypothesis_driven_sf(
                 hypothesis = rev_hyp
 
         cues = parse_sf_cues(raw, max_cues=2)
-        hypothesis_log.append({
-            "revision": revision,
-            "hypothesis": hypothesis,
-            "evaluation": evaluation,
-            "num_cues": len(cues),
-            "confirmed": confirmed,
-            "cues": cues,
-        })
+        hypothesis_log.append(
+            {
+                "revision": revision,
+                "hypothesis": hypothesis,
+                "evaluation": evaluation,
+                "num_cues": len(cues),
+                "confirmed": confirmed,
+                "cues": cues,
+            }
+        )
 
         if confirmed or not cues:
             break
 
         # Run cues: one retrieval each. Update seen-set for display; merge later.
         for cue in cues[:2]:
-            hits = await _query_em(
-                memory, cue, vector_search_limit=K, expand_context=0
-            )
+            hits = await _query_em(memory, cue, vector_search_limit=K, expand_context=0)
             cue_batches.append(hits)
             # Accumulate unseen hits for display context.
             for h in hits:
@@ -432,9 +427,7 @@ async def em_v15_conditional_hop2_sf(
     if not hop2_stopped:
         hop2_cues = parse_sf_cues(raw2, max_cues=2)
         for cue in hop2_cues[:2]:
-            hits = await _query_em(
-                memory, cue, vector_search_limit=K, expand_context=0
-            )
+            hits = await _query_em(memory, cue, vector_search_limit=K, expand_context=0)
             cue_batches.append(hits)
 
     merged = _merge_by_max_score(cue_batches)
@@ -589,8 +582,8 @@ async def em_working_memory_buffer_sf(
             )
         prev_cue_text = ""
         if previous_cues:
-            prev_cue_text = (
-                "\n\nPREVIOUS CUES:\n" + "\n".join(f"- {c}" for c in previous_cues)
+            prev_cue_text = "\n\nPREVIOUS CUES:\n" + "\n".join(
+                f"- {c}" for c in previous_cues
             )
 
         prompt = WMB_PROMPT.format(
@@ -623,14 +616,16 @@ async def em_working_memory_buffer_sf(
         if evict_ids:
             buffer = [h for h in buffer if h.turn_id not in evict_ids]
 
-        hop_log.append({
-            "hop": hop,
-            "assessment": assessment,
-            "evicted": sorted(evict_ids),
-            "buffer_size_after_evict": len(buffer),
-            "num_cues": len(cues),
-            "cues": cues,
-        })
+        hop_log.append(
+            {
+                "hop": hop,
+                "assessment": assessment,
+                "evicted": sorted(evict_ids),
+                "buffer_size_after_evict": len(buffer),
+                "num_cues": len(cues),
+                "cues": cues,
+            }
+        )
 
         if not cues:
             break
@@ -638,9 +633,7 @@ async def em_working_memory_buffer_sf(
         # Retrieve for each cue.
         new_this_hop: list[EMHit] = []
         for cue in cues[:2]:
-            hits = await _query_em(
-                memory, cue, vector_search_limit=K, expand_context=0
-            )
+            hits = await _query_em(memory, cue, vector_search_limit=K, expand_context=0)
             cue_batches.append(hits)
             for h in hits:
                 if h.turn_id not in seen:

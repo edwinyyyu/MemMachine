@@ -23,22 +23,19 @@ This module does not touch framework files or other specialists' sources.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Iterable
 
 import numpy as np
-
 from associative_recall import Segment, SegmentStore
 from best_shot import MetaV2f
 from domain_agnostic import (
-    DomainAgnosticVariant,
-    V2F_STYLE_EXPLICIT_PROMPT,
     NEUTRAL_HEADER,
+    V2F_STYLE_EXPLICIT_PROMPT,
+    DomainAgnosticVariant,
 )
 from goal_chain import GoalChainRetriever
 from type_enumerated import TypeEnumeratedVariant, V2fPlusTypesVariant
-
 
 SPECIALISTS = (
     "v2f",
@@ -75,8 +72,8 @@ RRF_K = 60  # standard reciprocal-rank-fusion constant
 @dataclass
 class SpecialistOutput:
     name: str
-    segments: list[Segment]           # ordered, deduped by index
-    cosine_scores: list[float]        # per-segment cosine vs raw query emb
+    segments: list[Segment]  # ordered, deduped by index
+    cosine_scores: list[float]  # per-segment cosine vs raw query emb
     llm_calls: int
 
 
@@ -174,10 +171,13 @@ def _gather_pools(
     pool: dict[int, dict] = {}
     for name, so in ensemble_outputs.items():
         for rank, (seg, cos) in enumerate(zip(so.segments, so.cosine_scores)):
-            entry = pool.setdefault(seg.index, {
-                "segment": seg,
-                "per_specialist": {},
-            })
+            entry = pool.setdefault(
+                seg.index,
+                {
+                    "segment": seg,
+                    "per_specialist": {},
+                },
+            )
             # Keep the first (best) rank for this specialist if duplicated,
             # though _dedupe_preserve_order already handled that per-spec.
             entry["per_specialist"][name] = (rank, cos)
@@ -233,11 +233,11 @@ def merge_round_robin(
     Score assigned is the inverse position in the fused list (higher is
     better) — used only for tie-breaking / reporting, not for ordering.
     """
-    names = list(specialist_order) if specialist_order else list(
-        ensemble_outputs.keys()
+    names = (
+        list(specialist_order) if specialist_order else list(ensemble_outputs.keys())
     )
     # Per-specialist pointer
-    pointers = {n: 0 for n in names}
+    pointers = dict.fromkeys(names, 0)
     chosen_indices: set[int] = set()
     fused: list[Segment] = []
     total = sum(len(ensemble_outputs[n].segments) for n in names)

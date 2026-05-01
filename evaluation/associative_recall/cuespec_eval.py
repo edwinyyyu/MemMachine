@@ -23,22 +23,17 @@ from __future__ import annotations
 
 import argparse
 import json
-import statistics
-import sys
 import time
 from pathlib import Path
-
-from dotenv import load_dotenv
 
 from associative_recall import Segment
 from cue_spec import (
     CueSpecBase,
     build_variants,
-    validate_cues,
 )
+from dotenv import load_dotenv
 from type_enumerated import (
     BUDGETS,
-    DATASETS,
     fair_backfill_evaluate,
     load_dataset,
     summarize,
@@ -78,16 +73,12 @@ def evaluate_one(arch: CueSpecBase, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     fair: dict[str, float] = {}
     for K in BUDGETS:
-        b, a = fair_backfill_evaluate(
-            arch_segments, cosine_segments, source_ids, K
-        )
+        b, a = fair_backfill_evaluate(arch_segments, cosine_segments, source_ids, K)
         fair[f"baseline_r@{K}"] = round(b, 4)
         fair[f"arch_r@{K}"] = round(a, 4)
         fair[f"delta_r@{K}"] = round(a - b, 4)
@@ -129,8 +120,7 @@ def run_variant_on_dataset(
     for i, q in enumerate(questions):
         q_short = q["question"][:60]
         print(
-            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: "
-            f"{q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -139,6 +129,7 @@ def run_variant_on_dataset(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
 
         if (i + 1) % 5 == 0:
@@ -302,9 +293,7 @@ def _sample_cues(runs: dict, n_samples: int = 4) -> list[dict]:
     mini_rows = runs.get("cuespec_mini", {}).get(ds, {}).get("results", [])
     v2f_nano_rows = runs.get("v2f_nano", {}).get(ds, {}).get("results", [])
     nano_noreprows = (
-        runs.get("cuespec_nano_no_repair", {})
-        .get(ds, {})
-        .get("results", [])
+        runs.get("cuespec_nano_no_repair", {}).get(ds, {}).get("results", [])
     )
 
     def _index_rows(rs: list[dict]) -> dict[tuple[str, int], dict]:
@@ -322,9 +311,7 @@ def _sample_cues(runs: dict, n_samples: int = 4) -> list[dict]:
             "question": row["question"],
             "category": row["category"],
             "cuespec_nano_cues": row["metadata"].get("cues", []),
-            "cuespec_nano_num_attempts": row["metadata"].get(
-                "num_attempts", 0
-            ),
+            "cuespec_nano_num_attempts": row["metadata"].get("num_attempts", 0),
             "cuespec_nano_attempt_0_cues": (
                 row["metadata"].get("attempts", [{}])[0].get("parsed_cues", [])
                 if row["metadata"].get("attempts")
@@ -334,9 +321,7 @@ def _sample_cues(runs: dict, n_samples: int = 4) -> list[dict]:
         if key in mi:
             entry["cuespec_mini_cues"] = mi[key]["metadata"].get("cues", [])
         if key in nr:
-            entry["cuespec_nano_no_repair_cues"] = (
-                nr[key]["metadata"].get("cues", [])
-            )
+            entry["cuespec_nano_no_repair_cues"] = nr[key]["metadata"].get("cues", [])
         if key in vn:
             entry["v2f_nano_cues"] = vn[key]["metadata"].get("cues", [])
         samples.append(entry)
@@ -364,9 +349,7 @@ def render_report(combined: dict, samples: list[dict]) -> str:
         "3. Anti-paraphrase: cue does not start with "
         "{what, when, how, why, who, which, where}."
     )
-    lines.append(
-        "4. Anti-duplication: Jaccard similarity with the query < 0.40."
-    )
+    lines.append("4. Anti-duplication: Jaccard similarity with the query < 0.40.")
     lines.append("5. Casual-chat register: at most 2 sentences.")
     lines.append("")
     lines.append("## Spec constraints (set level)")
@@ -388,9 +371,7 @@ def render_report(combined: dict, samples: list[dict]) -> str:
         "| Variant | Dataset | r@20 (arch) | r@50 (arch) | "
         "baseline r@20 | delta_r@20 | W/T/L@20 |"
     )
-    lines.append(
-        "|---|---|---|---|---|---|---|"
-    )
+    lines.append("|---|---|---|---|---|---|---|")
 
     # meta_v2f reference rows first
     for ds in TARGET_DATASETS:
@@ -426,9 +407,7 @@ def render_report(combined: dict, samples: list[dict]) -> str:
         "| Variant | Dataset | repair_rate | final_ok_rate | "
         "avg_repair_rounds | avg_llm_calls |"
     )
-    lines.append(
-        "|---|---|---|---|---|---|"
-    )
+    lines.append("|---|---|---|---|---|---|")
     for variant_name in VARIANT_NAMES:
         for ds in TARGET_DATASETS:
             v = combined["variants"].get(variant_name, {}).get(ds)
@@ -444,18 +423,11 @@ def render_report(combined: dict, samples: list[dict]) -> str:
             )
     lines.append("")
 
-    lines.append(
-        "## First-attempt failure reasons (cuespec_nano, locomo_30q)"
-    )
+    lines.append("## First-attempt failure reasons (cuespec_nano, locomo_30q)")
     lines.append("")
-    nano_locomo = (
-        combined["variants"]
-        .get("cuespec_nano", {})
-        .get("locomo_30q", {})
-    )
-    reasons = (
-        nano_locomo.get("repair_stats", {})
-        .get("first_attempt_failure_reasons", {})
+    nano_locomo = combined["variants"].get("cuespec_nano", {}).get("locomo_30q", {})
+    reasons = nano_locomo.get("repair_stats", {}).get(
+        "first_attempt_failure_reasons", {}
     )
     if reasons:
         for reason, count in reasons.items():
@@ -474,13 +446,11 @@ def render_report(combined: dict, samples: list[dict]) -> str:
             lines.append(f"- nano + v2f : {s['v2f_nano_cues']}")
         if s.get("cuespec_nano_no_repair_cues"):
             lines.append(
-                f"- nano + spec (no repair): "
-                f"{s['cuespec_nano_no_repair_cues']}"
+                f"- nano + spec (no repair): {s['cuespec_nano_no_repair_cues']}"
             )
         if s.get("cuespec_nano_attempt_0_cues"):
             lines.append(
-                f"- nano + spec attempt 0  : "
-                f"{s['cuespec_nano_attempt_0_cues']}"
+                f"- nano + spec attempt 0  : {s['cuespec_nano_attempt_0_cues']}"
             )
         lines.append(
             f"- nano + spec final     : {s['cuespec_nano_cues']} "
@@ -501,14 +471,13 @@ def render_report(combined: dict, samples: list[dict]) -> str:
     lines.append("- `results/cue_spec.json` (combined raw)")
     for variant_name in VARIANT_NAMES:
         for ds in TARGET_DATASETS:
-            lines.append(
-                f"- `results/cuespec_{variant_name}_{ds}.json`"
-            )
+            lines.append(f"- `results/cuespec_{variant_name}_{ds}.json`")
     return "\n".join(lines) + "\n"
 
 
 def _compute_verdict(combined: dict) -> list[str]:
     lines: list[str] = []
+
     # Reference (mini meta_v2f) averaged across K=20 on both datasets
     def _avg_metric(source: dict, metric: str) -> float:
         vals = []
@@ -520,22 +489,16 @@ def _compute_verdict(combined: dict) -> list[str]:
         return sum(vals) / len(vals) if vals else 0.0
 
     ref_20 = _avg_metric(combined.get("reference_meta_v2f", {}), "arch_r@20")
-    nano_rep_20 = _avg_metric(
-        combined["variants"].get("cuespec_nano", {}), "arch_r@20"
-    )
+    nano_rep_20 = _avg_metric(combined["variants"].get("cuespec_nano", {}), "arch_r@20")
     nano_noreprep_20 = _avg_metric(
         combined["variants"].get("cuespec_nano_no_repair", {}), "arch_r@20"
     )
-    v2f_nano_20 = _avg_metric(
-        combined["variants"].get("v2f_nano", {}), "arch_r@20"
-    )
+    v2f_nano_20 = _avg_metric(combined["variants"].get("v2f_nano", {}), "arch_r@20")
     mini_spec_20 = _avg_metric(
         combined["variants"].get("cuespec_mini", {}), "arch_r@20"
     )
 
-    lines.append(
-        f"- Reference mini+v2f (meta_v2f) r@20 avg: **{ref_20:.3f}**"
-    )
+    lines.append(f"- Reference mini+v2f (meta_v2f) r@20 avg: **{ref_20:.3f}**")
     lines.append(
         f"- nano + vanilla v2f          r@20 avg: **{v2f_nano_20:.3f}**  "
         f"(delta vs ref = {v2f_nano_20 - ref_20:+.3f})"
@@ -605,18 +568,20 @@ def _compute_verdict(combined: dict) -> list[str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Evaluate the cue-generation spec."
-    )
+    parser = argparse.ArgumentParser(description="Evaluate the cue-generation spec.")
     parser.add_argument(
         "--force", action="store_true", help="Overwrite cached result files."
     )
     parser.add_argument(
-        "--variant", type=str, default=None,
+        "--variant",
+        type=str,
+        default=None,
         help="Run a single variant only (for iterative debugging).",
     )
     parser.add_argument(
-        "--dataset", type=str, default=None,
+        "--dataset",
+        type=str,
+        default=None,
         help="Run a single dataset only.",
     )
     args = parser.parse_args()
@@ -649,7 +614,9 @@ def main() -> None:
     with open(json_path, "w") as f:
         json.dump(
             {"combined": combined, "samples": samples},
-            f, indent=2, default=str,
+            f,
+            indent=2,
+            default=str,
         )
     print(f"\nSaved combined raw: {json_path}")
 

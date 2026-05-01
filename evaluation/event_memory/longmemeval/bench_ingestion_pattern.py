@@ -15,8 +15,7 @@ import uuid
 
 import docker
 import numpy as np
-from qdrant_client import AsyncQdrantClient
-from qdrant_client import models
+from qdrant_client import AsyncQdrantClient, models
 
 # Scale parameters (from longmemeval_s_cleaned.json analysis)
 NUM_QUESTIONS = 50  # subset for benchmarking
@@ -126,7 +125,7 @@ async def run_benchmark(http_port: int, grpc_port: int, collection_name: str):
         )
 
     # Run
-    print(f"\nStarting benchmark...")
+    print("\nStarting benchmark...")
     print(
         f"  Question concurrency: {QUESTION_CONCURRENCY}, "
         f"Session concurrency per question: {SESSION_CONCURRENCY}"
@@ -164,7 +163,7 @@ async def run_benchmark(http_port: int, grpc_port: int, collection_name: str):
     print(f"Total vectors inserted:  {total_vectors_inserted}")
     print(f"Wall time:               {wall_time:.1f}s")
     print(f"Throughput:              {throughput:.0f} vecs/sec")
-    print(f"\nPer-session breakdown (ms):")
+    print("\nPer-session breakdown (ms):")
     print(
         f"  Query:      p50={pct(query_latencies, 0.5):.0f}  "
         f"p95={pct(query_latencies, 0.95):.0f}  "

@@ -16,14 +16,11 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-import numpy as np
-
-from associative_recall import SegmentStore
 from agent_architectures import (
     AGENT_ARCHITECTURES,
     AgentBase,
-    AgentArchResult,
 )
+from associative_recall import SegmentStore
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
@@ -79,7 +76,9 @@ def evaluate_one(
         arch_recalls[f"r@{budget}"] = compute_recall(arch_ids, source_ids)
 
     # Normalized: baseline gets same total as arch
-    baseline_ids_actual = {s.turn_id for s in baseline_result.segments[:total_retrieved]}
+    baseline_ids_actual = {
+        s.turn_id for s in baseline_result.segments[:total_retrieved]
+    }
     arch_ids_actual = {s.turn_id for s in arch_segments}
     baseline_recalls["r@actual"] = compute_recall(baseline_ids_actual, source_ids)
     arch_recalls["r@actual"] = compute_recall(arch_ids_actual, source_ids)
@@ -102,15 +101,19 @@ def evaluate_one(
 
     if verbose:
         print(f"  Source: {sorted(source_ids)} ({len(source_ids)} turns)")
-        print(f"  Retrieved: {total_retrieved}, Embed: {arch.embed_calls}, "
-              f"LLM: {arch.llm_calls}, Time: {elapsed:.1f}s")
+        print(
+            f"  Retrieved: {total_retrieved}, Embed: {arch.embed_calls}, "
+            f"LLM: {arch.llm_calls}, Time: {elapsed:.1f}s"
+        )
         for budget in BUDGETS:
             b = baseline_recalls[f"r@{budget}"]
             a = arch_recalls[f"r@{budget}"]
             delta = a - b
             marker = "W" if delta > 0.001 else ("L" if delta < -0.001 else "T")
-            print(f"  @{budget:3d}: baseline={b:.3f} arch={a:.3f} "
-                  f"delta={delta:+.3f} [{marker}]")
+            print(
+                f"  @{budget:3d}: baseline={b:.3f} arch={a:.3f} "
+                f"delta={delta:+.3f} [{marker}]"
+            )
 
     return result
 
@@ -139,13 +142,11 @@ def summarize(results: list[dict], arch_name: str, benchmark: str) -> dict:
         summary[f"W/T/L_{label}"] = f"{wins}/{ties}/{losses}"
 
     summary["avg_total_retrieved"] = round(
-        sum(r["total_retrieved"] for r in results) / n, 1)
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1)
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1)
-    summary["avg_time_s"] = round(
-        sum(r["time_s"] for r in results) / n, 2)
+        sum(r["total_retrieved"] for r in results) / n, 1
+    )
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
+    summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
 
     return summary
 
@@ -183,22 +184,26 @@ def run_architecture(
     verbose: bool = False,
 ) -> tuple[list[dict], dict]:
     """Run evaluation for one architecture on one benchmark."""
-    print(f"\n{'='*70}")
-    print(f"ARCH: {arch_name} | BENCHMARK: {benchmark_label} | "
-          f"{len(questions)} questions")
-    print(f"{'='*70}")
+    print(f"\n{'=' * 70}")
+    print(
+        f"ARCH: {arch_name} | BENCHMARK: {benchmark_label} | {len(questions)} questions"
+    )
+    print(f"{'=' * 70}")
 
     results = []
     for i, question in enumerate(questions):
         q_short = question["question"][:55]
-        print(f"  [{i+1}/{len(questions)}] {question['category']}: "
-              f"{q_short}...", flush=True)
+        print(
+            f"  [{i + 1}/{len(questions)}] {question['category']}: {q_short}...",
+            flush=True,
+        )
         try:
             result = evaluate_one(arch, question, verbose=verbose)
             results.append(result)
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -211,37 +216,53 @@ def run_architecture(
     print(f"\n--- {arch_name} on {benchmark_label} ---")
     for budget in BUDGETS:
         lbl = f"r@{budget}"
-        print(f"  {lbl}: baseline={summary.get(f'baseline_{lbl}', 0):.3f} "
-              f"arch={summary.get(f'arch_{lbl}', 0):.3f} "
-              f"delta={summary.get(f'delta_{lbl}', 0):+.3f} "
-              f"W/T/L={summary.get(f'W/T/L_{lbl}', '?')}")
-    print(f"  Avg retrieved: {summary.get('avg_total_retrieved', 0):.0f}, "
-          f"Embed: {summary.get('avg_embed_calls', 0):.1f}, "
-          f"LLM: {summary.get('avg_llm_calls', 0):.1f}, "
-          f"Time: {summary.get('avg_time_s', 0):.1f}s")
+        print(
+            f"  {lbl}: baseline={summary.get(f'baseline_{lbl}', 0):.3f} "
+            f"arch={summary.get(f'arch_{lbl}', 0):.3f} "
+            f"delta={summary.get(f'delta_{lbl}', 0):+.3f} "
+            f"W/T/L={summary.get(f'W/T/L_{lbl}', '?')}"
+        )
+    print(
+        f"  Avg retrieved: {summary.get('avg_total_retrieved', 0):.0f}, "
+        f"Embed: {summary.get('avg_embed_calls', 0):.1f}, "
+        f"LLM: {summary.get('avg_llm_calls', 0):.1f}, "
+        f"Time: {summary.get('avg_time_s', 0):.1f}s"
+    )
 
     # Per-category breakdown
     cat_summaries = summarize_by_category(results)
-    print(f"\n  Per-category (r@20):")
+    print("\n  Per-category (r@20):")
     for cat, cs in cat_summaries.items():
-        print(f"    {cat}: delta={cs['delta_r@20']:+.3f} "
-              f"W/T/L={cs['W/T/L']} (n={cs['n']})")
+        print(
+            f"    {cat}: delta={cs['delta_r@20']:+.3f} "
+            f"W/T/L={cs['W/T/L']} (n={cs['n']})"
+        )
 
     return results, summary
 
 
 def main() -> None:
     import argparse
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--arch", type=str, default=None,
-                        help="Run specific architecture (default: all)")
-    parser.add_argument("--benchmark", type=str, default=None,
-                        choices=["beam", "locomo", "both"],
-                        help="Run specific benchmark (default: both)")
+    parser.add_argument(
+        "--arch",
+        type=str,
+        default=None,
+        help="Run specific architecture (default: all)",
+    )
+    parser.add_argument(
+        "--benchmark",
+        type=str,
+        default=None,
+        choices=["beam", "locomo", "both"],
+        help="Run specific benchmark (default: both)",
+    )
     parser.add_argument("--num-questions", type=int, default=30)
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--force", action="store_true",
-                        help="Overwrite existing results")
+    parser.add_argument(
+        "--force", action="store_true", help="Overwrite existing results"
+    )
     args = parser.parse_args()
 
     # Load data
@@ -251,10 +272,12 @@ def main() -> None:
     store = SegmentStore(data_dir=DATA_DIR, npz_name="segments_extended.npz")
     print(f"Loaded {len(store.segments)} segments")
 
-    beam_qs = [q for q in all_questions
-               if q.get("benchmark") == "beam"][:args.num_questions]
-    locomo_qs = [q for q in all_questions
-                 if q.get("benchmark") == "locomo"][:args.num_questions]
+    beam_qs = [q for q in all_questions if q.get("benchmark") == "beam"][
+        : args.num_questions
+    ]
+    locomo_qs = [q for q in all_questions if q.get("benchmark") == "locomo"][
+        : args.num_questions
+    ]
     print(f"BEAM: {len(beam_qs)} questions, LoCoMo: {len(locomo_qs)} questions")
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -283,21 +306,28 @@ def main() -> None:
             results_file = RESULTS_DIR / f"agent_{arch_name}_{benchmark_label}.json"
 
             if results_file.exists() and not args.force:
-                print(f"\nSkipping {arch_name}/{benchmark_label} (exists, "
-                      f"use --force to overwrite)")
+                print(
+                    f"\nSkipping {arch_name}/{benchmark_label} (exists, "
+                    f"use --force to overwrite)"
+                )
                 existing = json.load(open(results_file))
                 summary = summarize(existing, arch_name, benchmark_label)
                 all_summaries.append(summary)
 
                 # Still print summary
-                print(f"  r@20: delta={summary.get('delta_r@20', 0):+.3f} "
-                      f"W/T/L={summary.get('W/T/L_r@20', '?')}")
+                print(
+                    f"  r@20: delta={summary.get('delta_r@20', 0):+.3f} "
+                    f"W/T/L={summary.get('W/T/L_r@20', '?')}"
+                )
                 continue
 
             arch_cls = AGENT_ARCHITECTURES[arch_name]
             arch = arch_cls(store)
             results, summary = run_architecture(
-                arch_name, arch, questions, benchmark_label,
+                arch_name,
+                arch,
+                questions,
+                benchmark_label,
                 verbose=args.verbose,
             )
             all_summaries.append(summary)
@@ -312,30 +342,38 @@ def main() -> None:
         json.dump(all_summaries, f, indent=2)
 
     # Grand summary table
-    print(f"\n{'='*110}")
+    print(f"\n{'=' * 110}")
     print("GRAND SUMMARY TABLE — Agent Architectures")
-    print(f"{'='*110}")
-    print(f"{'Architecture':<25s} {'Bench':>10s} {'B-r@20':>8s} {'A-r@20':>8s} "
-          f"{'Delta':>8s} {'W/T/L':>10s} {'#Ret':>6s} {'Emb':>5s} "
-          f"{'LLM':>5s} {'Time':>6s}")
+    print(f"{'=' * 110}")
+    print(
+        f"{'Architecture':<25s} {'Bench':>10s} {'B-r@20':>8s} {'A-r@20':>8s} "
+        f"{'Delta':>8s} {'W/T/L':>10s} {'#Ret':>6s} {'Emb':>5s} "
+        f"{'LLM':>5s} {'Time':>6s}"
+    )
     print("-" * 110)
     for s in all_summaries:
         if not s:
             continue
-        print(f"{s['arch']:<25s} {s['benchmark']:>10s} "
-              f"{s.get('baseline_r@20', 0):>8.3f} "
-              f"{s.get('arch_r@20', 0):>8.3f} "
-              f"{s.get('delta_r@20', 0):>+8.3f} "
-              f"{s.get('W/T/L_r@20', '?'):>10s} "
-              f"{s.get('avg_total_retrieved', 0):>6.0f} "
-              f"{s.get('avg_embed_calls', 0):>5.1f} "
-              f"{s.get('avg_llm_calls', 0):>5.0f} "
-              f"{s.get('avg_time_s', 0):>6.1f}")
+        print(
+            f"{s['arch']:<25s} {s['benchmark']:>10s} "
+            f"{s.get('baseline_r@20', 0):>8.3f} "
+            f"{s.get('arch_r@20', 0):>8.3f} "
+            f"{s.get('delta_r@20', 0):>+8.3f} "
+            f"{s.get('W/T/L_r@20', '?'):>10s} "
+            f"{s.get('avg_total_retrieved', 0):>6.0f} "
+            f"{s.get('avg_embed_calls', 0):>5.1f} "
+            f"{s.get('avg_llm_calls', 0):>5.0f} "
+            f"{s.get('avg_time_s', 0):>6.1f}"
+        )
     print("-" * 110)
-    print("Reference v15 (1 hop, 2 cues): LoCoMo +0.339 (13W/17T/0L) | "
-          "BEAM +0.066 (6W/22T/2L)")
-    print("Reference agent_working_set:   LoCoMo +0.192 (9W/18T/3L) | "
-          "BEAM -0.146 (1W/21T/8L)")
+    print(
+        "Reference v15 (1 hop, 2 cues): LoCoMo +0.339 (13W/17T/0L) | "
+        "BEAM +0.066 (6W/22T/2L)"
+    )
+    print(
+        "Reference agent_working_set:   LoCoMo +0.192 (9W/18T/3L) | "
+        "BEAM -0.146 (1W/21T/8L)"
+    )
 
 
 if __name__ == "__main__":

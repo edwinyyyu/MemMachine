@@ -26,9 +26,15 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
+from antipara_cue_gen import MetaV2fDedicated
 from associative_recall import Segment
+from clause_decomposition import (
+    ARCH_CLASSES as CLAUSE_ARCH_CLASSES,
+)
+from clause_decomposition import (
+    split_query_into_clauses,
+)
+from dotenv import load_dotenv
 from fair_backfill_eval import (
     BUDGETS,
     RESULTS_DIR,
@@ -36,11 +42,6 @@ from fair_backfill_eval import (
     load_dataset,
     summarize,
     summarize_by_category,
-)
-from antipara_cue_gen import MetaV2fDedicated
-from clause_decomposition import (
-    ARCH_CLASSES as CLAUSE_ARCH_CLASSES,
-    split_query_into_clauses,
 )
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -74,9 +75,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     md = result.metadata or {}
@@ -122,7 +121,7 @@ def run_one(arch_name, arch, dataset, questions):
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -131,6 +130,7 @@ def run_one(arch_name, arch, dataset, questions):
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -224,9 +224,7 @@ def main() -> None:
 
         for arch_name, cls in ARCH_CLASSES.items():
             arch = cls(store)
-            results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(arch_name, arch, ds_name, questions)
             all_results[arch_name][ds_name] = {
                 "summary": summary,
                 "category_breakdown": by_cat,
@@ -242,12 +240,8 @@ def main() -> None:
             a: {
                 d: {
                     "summary": all_results[a][d]["summary"],
-                    "category_breakdown": all_results[a][d][
-                        "category_breakdown"
-                    ],
-                    "multiclause_slice": all_results[a][d][
-                        "multiclause_slice"
-                    ],
+                    "category_breakdown": all_results[a][d]["category_breakdown"],
+                    "multiclause_slice": all_results[a][d]["multiclause_slice"],
                 }
                 for d in all_results[a]
             }
@@ -278,12 +272,8 @@ def main() -> None:
                         "arch": a,
                         "dataset": d,
                         "summary": all_results[a][d]["summary"],
-                        "category_breakdown": all_results[a][d][
-                            "category_breakdown"
-                        ],
-                        "multiclause_slice": all_results[a][d][
-                            "multiclause_slice"
-                        ],
+                        "category_breakdown": all_results[a][d]["category_breakdown"],
+                        "multiclause_slice": all_results[a][d]["multiclause_slice"],
                         "results": all_results[a][d]["results"],
                     },
                     f,
@@ -307,8 +297,7 @@ def main() -> None:
     md.append("|---|---:|---:|---:|---:|")
     for d, cd in clause_dist_by_ds.items():
         md.append(
-            f"| {d} | {cd['n_questions']} | {cd['n=1']} | "
-            f"{cd['n=2']} | {cd['n>=3']} |"
+            f"| {d} | {cd['n_questions']} | {cd['n=1']} | {cd['n=2']} | {cd['n>=3']} |"
         )
     md.append("")
 
@@ -344,9 +333,7 @@ def main() -> None:
             m = all_results[a][d]["multiclause_slice"]
             n = m.get("n_multiclause", 0)
             if n == 0:
-                md.append(
-                    f"| {a} | {d} | 0 | - | - | - | - | - | - | - |"
-                )
+                md.append(f"| {a} | {d} | 0 | - | - | - | - | - | - | - |")
                 continue
             md.append(
                 f"| {a} | {d} | {n} | "
@@ -381,11 +368,7 @@ def main() -> None:
     for d in EVAL_DATASETS:
         cd = clause_dist_by_ds[d]
         md.append(f"### {d}\n")
-        sample = [
-            e
-            for e in cd["per_query"]
-            if e["n_clauses_n3"] >= 2
-        ][:6]
+        sample = [e for e in cd["per_query"] if e["n_clauses_n3"] >= 2][:6]
         for e in sample:
             md.append(
                 f"- **{e.get('category')}** `{e['question'][:120]}`  \n"

@@ -29,21 +29,25 @@ from __future__ import annotations
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
-from associative_recall import CACHE_DIR, EMBED_MODEL, EmbeddingCache, LLMCache, Segment, SegmentStore
+from associative_recall import (
+    CACHE_DIR,
+    EMBED_MODEL,
+    EmbeddingCache,
+    LLMCache,
+    Segment,
+    SegmentStore,
+)
 from best_shot import (
     MODEL,
+    V2F_PROMPT,
     BestshotBase,
     BestshotResult,
-    V2F_PROMPT,
     _format_segments,
     _parse_cues,
 )
-
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Dedicated caches — read many shared caches for hits, write only to own files
@@ -280,9 +284,7 @@ class _AnchorExpansionBase(BestshotBase):
             question=question,
         )
 
-    def generate_anchor_cues(
-        self, anchors: list[Segment], question: str
-    ) -> list[dict]:
+    def generate_anchor_cues(self, anchors: list[Segment], question: str) -> list[dict]:
         """One LLM call per anchor, executed in parallel threads. Returns
         list of dicts with source_turn_id, source_index, cue.
         """
@@ -312,9 +314,7 @@ class _AnchorExpansionBase(BestshotBase):
         # Step 1: raw query top-10 (need at least n_anchors, keep 10 for
         # merging fallback)
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         hop0_segments = list(hop0.segments)
         hop0_scores = list(hop0.scores)
 

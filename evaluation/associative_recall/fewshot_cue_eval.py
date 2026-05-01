@@ -17,19 +17,15 @@ import argparse
 import json
 import sys
 import time
-from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-from associative_recall import Segment, SegmentStore
+from associative_recall import Segment
 from best_shot import MetaV2f
+from dotenv import load_dotenv
 from fair_backfill_eval import (
     BUDGETS,
-    DATA_DIR,
     DATASETS,
     RESULTS_DIR,
-    compute_recall,
     fair_backfill_evaluate,
     load_dataset,
     summarize,
@@ -79,9 +75,7 @@ def evaluate_question(
     # Cosine top-K
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -126,7 +120,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -135,6 +129,7 @@ def run_one(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -167,11 +162,14 @@ ARCH_CLASSES = {
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--category", action="store_true",
+        "--category",
+        action="store_true",
         help="Also run fewshot_v2f_category_k2 variant",
     )
     parser.add_argument(
-        "--archs", type=str, default=None,
+        "--archs",
+        type=str,
+        default=None,
         help="Comma-separated archs to run (default: baseline + k2 + k3)",
     )
     args = parser.parse_args()
@@ -206,22 +204,30 @@ def main():
             else:
                 arch = cls(store, exemplars=exemplars)
 
-            set_category = (arch_name == "fewshot_v2f_category_k2")
+            set_category = arch_name == "fewshot_v2f_category_k2"
 
             results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions,
+                arch_name,
+                arch,
+                ds_name,
+                questions,
                 set_category=set_category,
             )
 
             out_path = RESULTS_DIR / f"fewshot_{arch_name}_{ds_name}.json"
             with open(out_path, "w") as f:
-                json.dump({
-                    "arch": arch_name,
-                    "dataset": ds_name,
-                    "summary": summary,
-                    "category_breakdown": by_cat,
-                    "results": results,
-                }, f, indent=2, default=str)
+                json.dump(
+                    {
+                        "arch": arch_name,
+                        "dataset": ds_name,
+                        "summary": summary,
+                        "category_breakdown": by_cat,
+                        "results": results,
+                    },
+                    f,
+                    indent=2,
+                    default=str,
+                )
             print(f"  Saved: {out_path}")
 
             all_summaries.setdefault(arch_name, {})[ds_name] = {

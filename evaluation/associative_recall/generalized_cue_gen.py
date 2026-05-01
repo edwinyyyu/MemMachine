@@ -12,14 +12,10 @@ Both are designed as minimal rewrites of V2F_PROMPT (from best_shot.py) --
 session insight: v2f is a local optimum, elaborations degrade recall.
 """
 
-import hashlib
 import json
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -28,6 +24,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -157,9 +155,7 @@ class GenpromptLLMCache(LLMCache):
         self.cache_dir = CACHE_DIR
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, str] = {}
-        for name in (
-            "genprompt_llm_cache.json",
-        ):
+        for name in ("genprompt_llm_cache.json",):
             p = self.cache_dir / name
             if p.exists():
                 with open(p) as f:
@@ -192,8 +188,9 @@ class GenpromptLLMCache(LLMCache):
 # ---------------------------------------------------------------------------
 # Architecture: v2f_general variants
 # ---------------------------------------------------------------------------
-def _format_segments(segments: list[Segment], max_items: int = 12,
-                     max_chars: int = 250) -> str:
+def _format_segments(
+    segments: list[Segment], max_items: int = 12, max_chars: int = 250
+) -> str:
     if not segments:
         return "(no content retrieved yet)"
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
@@ -273,15 +270,12 @@ class GeneralizedV2f:
     def retrieve(self, user_input: str, conversation_id: str):
         """Retrieve segments for a user input (question, task, or synthesis)."""
         query_emb = self.embed_text(user_input)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(all_segments)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
         )
 
         prompt = self.prompt_template.format(
@@ -293,7 +287,9 @@ class GeneralizedV2f:
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:

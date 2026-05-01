@@ -27,14 +27,12 @@ from __future__ import annotations
 
 import json
 import re
-import sys
 import time
 from pathlib import Path
 
+from associative_recall import CACHE_DIR, LLMCache
 from dotenv import load_dotenv
 from openai import OpenAI
-
-from associative_recall import CACHE_DIR, LLMCache
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -143,9 +141,7 @@ def generate_one(
 def main() -> None:
     with open(DATA_DIR / "questions_extended.json") as f:
         all_qs = json.load(f)
-    locomo_qs = [q for q in all_qs if q.get("benchmark") == "locomo"][
-        :N_QUESTIONS
-    ]
+    locomo_qs = [q for q in all_qs if q.get("benchmark") == "locomo"][:N_QUESTIONS]
     print(f"Loaded {len(locomo_qs)} LoCoMo questions", flush=True)
 
     client = OpenAI(timeout=60.0)
@@ -166,18 +162,20 @@ def main() -> None:
             )
         for shape in ("CMD", "DRAFT", "META"):
             variant_text = rewrites.get(shape, orig)  # fallback: keep orig
-            out_rows.append({
-                "orig_row_index": i,
-                "conversation_id": q["conversation_id"],
-                "category": q["category"],
-                "question_index": q["question_index"],
-                "shape": shape,
-                "original_question": orig,
-                "question": variant_text,
-                "source_chat_ids": q["source_chat_ids"],
-                "ideal_response": q.get("ideal_response", ""),
-                "benchmark": q["benchmark"],
-            })
+            out_rows.append(
+                {
+                    "orig_row_index": i,
+                    "conversation_id": q["conversation_id"],
+                    "category": q["category"],
+                    "question_index": q["question_index"],
+                    "shape": shape,
+                    "original_question": orig,
+                    "question": variant_text,
+                    "source_chat_ids": q["source_chat_ids"],
+                    "ideal_response": q.get("ideal_response", ""),
+                    "benchmark": q["benchmark"],
+                }
+            )
         print(
             f"  [{i + 1}/{len(locomo_qs)}] {q['category']}: {orig[:55]}... "
             f"({elapsed:.1f}s)",
@@ -200,8 +198,11 @@ def main() -> None:
         print(f"\nORIG ({locomo_qs[i]['category']}): {orig}")
         for shape in ("CMD", "DRAFT", "META"):
             row = next(
-                (r for r in out_rows
-                 if r["orig_row_index"] == i and r["shape"] == shape),
+                (
+                    r
+                    for r in out_rows
+                    if r["orig_row_index"] == i and r["shape"] == shape
+                ),
                 None,
             )
             if row:

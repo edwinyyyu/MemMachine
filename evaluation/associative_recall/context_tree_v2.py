@@ -27,7 +27,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import time
@@ -35,9 +34,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     DATA_DIR,
@@ -47,6 +43,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -233,8 +231,8 @@ Nothing else."""
 class TreeNode:
     description: str
     depth: int
-    parent: "TreeNode | None" = None
-    children: list["TreeNode"] = field(default_factory=list)
+    parent: TreeNode | None = None
+    children: list[TreeNode] = field(default_factory=list)
     retrieved_segments: list[Segment] = field(default_factory=list)
     summary: str = ""
     popped: bool = False
@@ -242,7 +240,7 @@ class TreeNode:
     grounding_segments: list[Segment] = field(default_factory=list)
 
 
-def _subtree_has_retrieve(node: "TreeNode") -> bool:
+def _subtree_has_retrieve(node: TreeNode) -> bool:
     if node.is_retrieve_leaf:
         return True
     return any(_subtree_has_retrieve(c) for c in node.children)
@@ -263,10 +261,10 @@ class ActionLogEntry:
 class TreeRunResult:
     root_task: str
     conversation_id: str
-    all_segments: list[Segment]           # in insertion order
+    all_segments: list[Segment]  # in insertion order
     leaf_segments_by_leaf: list[list[Segment]]
     leaf_descriptions: list[str]
-    leaf_queries: list[str]               # what was actually embedded at leaf
+    leaf_queries: list[str]  # what was actually embedded at leaf
     action_log: list[ActionLogEntry]
     num_leaves: int
     num_retrieve_actions: int
@@ -438,9 +436,7 @@ class ContextTreeV2:
         actions_remaining: int,
     ) -> tuple[str, str]:
         if node.children:
-            existing = "\n".join(
-                f"- {c.description}" for c in node.children
-            )
+            existing = "\n".join(f"- {c.description}" for c in node.children)
             existing_block = (
                 "CHILDREN ALREADY PUSHED AT THIS NODE (do NOT repeat or "
                 "paraphrase these; pick a DIFFERENT subject-matter topic, "
@@ -461,8 +457,8 @@ class ContextTreeV2:
         if grounding:
             grounding_block = (
                 "GROUNDING — brief scan of the memory (use this to guide "
-                "decomposition toward topics actually discussed):\n" +
-                self._format_segments(grounding, limit=6)
+                "decomposition toward topics actually discussed):\n"
+                + self._format_segments(grounding, limit=6)
             )
         else:
             grounding_block = "GROUNDING: (none)"
@@ -517,7 +513,8 @@ class ContextTreeV2:
         if GROUNDING_SIZE > 0:
             ground_emb = self.embed(root_task)
             ground_result = self.store.search(
-                ground_emb, top_k=GROUNDING_SIZE,
+                ground_emb,
+                top_k=GROUNDING_SIZE,
                 conversation_id=conversation_id,
             )
             grounding_segs = list(ground_result.segments)[:GROUNDING_SIZE]
@@ -525,14 +522,17 @@ class ContextTreeV2:
             exclude.update(s.index for s in grounding_segs)
             root.grounding_segments = grounding_segs
             leaf_queries.append(root_task)  # tracks that we embedded the question
-            action_log.append(ActionLogEntry(
-                step=-1, depth=0,
-                description=root_task[:120],
-                action="GROUNDING",
-                argument=root_task[:120],
-                num_retrieved=len(grounding_segs),
-                cues=[root_task],
-            ))
+            action_log.append(
+                ActionLogEntry(
+                    step=-1,
+                    depth=0,
+                    description=root_task[:120],
+                    action="GROUNDING",
+                    argument=root_task[:120],
+                    num_retrieved=len(grounding_segs),
+                    cues=[root_task],
+                )
+            )
 
         MAX_EXPECTED_LEAVES = 5  # used for minimum per-leaf allocation
         MIN_PER_LEAF = max(2, self.budget // MAX_EXPECTED_LEAVES)
@@ -548,7 +548,9 @@ class ContextTreeV2:
 
             actions_remaining = self.max_actions - step
             action, argument = self._decide_action(
-                root_task, node, actions_remaining,
+                root_task,
+                node,
+                actions_remaining,
             )
 
             # At MAX_DEPTH, PUSH is not allowed.
@@ -567,29 +569,37 @@ class ContextTreeV2:
             # If all children popped and none of them marked as retrieve-leaf,
             # and this node isn't a retrieve-leaf either -> force RETRIEVE
             # here before POP.
-            if (action == "POP" and all_kids_done
-                    and not node.is_retrieve_leaf
-                    and not any(_subtree_has_retrieve(c) for c in node.children)):
+            if (
+                action == "POP"
+                and all_kids_done
+                and not node.is_retrieve_leaf
+                and not any(_subtree_has_retrieve(c) for c in node.children)
+            ):
                 action = "RETRIEVE"
                 argument = ""
 
             if verbose:
                 indent = "  " * node.depth
-                print(f"{indent}[d{node.depth}] action={action} "
-                      f"arg='{argument[:60]}' node='{node.description[:40]}'")
+                print(
+                    f"{indent}[d{node.depth}] action={action} "
+                    f"arg='{argument[:60]}' node='{node.description[:40]}'"
+                )
 
             if action == "PUSH":
                 if not argument:
                     action = "RETRIEVE"
                 elif len(node.children) >= 4:
                     # Hard cap on siblings per parent (budget dilution).
-                    action_log.append(ActionLogEntry(
-                        step=step, depth=node.depth,
-                        description=node.description[:120],
-                        action="PUSH_REJECTED_CAP",
-                        argument=argument.strip()[:120],
-                        num_retrieved=0,
-                    ))
+                    action_log.append(
+                        ActionLogEntry(
+                            step=step,
+                            depth=node.depth,
+                            description=node.description[:120],
+                            action="PUSH_REJECTED_CAP",
+                            argument=argument.strip()[:120],
+                            num_retrieved=0,
+                        )
+                    )
                     step += 1
                     # Force POP on parent (enough siblings).
                     node.summary = "(sibling cap reached)"
@@ -597,34 +607,44 @@ class ContextTreeV2:
                     stack.pop()
                     continue
                 elif _too_similar(argument.strip(), node.description):
-                    action_log.append(ActionLogEntry(
-                        step=step, depth=node.depth,
-                        description=node.description[:120],
-                        action="PUSH_REJECTED_DUPLICATE_PARENT",
-                        argument=argument.strip()[:120],
-                        num_retrieved=0,
-                    ))
+                    action_log.append(
+                        ActionLogEntry(
+                            step=step,
+                            depth=node.depth,
+                            description=node.description[:120],
+                            action="PUSH_REJECTED_DUPLICATE_PARENT",
+                            argument=argument.strip()[:120],
+                            num_retrieved=0,
+                        )
+                    )
                     step += 1
                     action = "RETRIEVE"
-                elif any(_too_similar(argument.strip(), c.description, threshold=0.7)
-                         for c in node.children):
+                elif any(
+                    _too_similar(argument.strip(), c.description, threshold=0.7)
+                    for c in node.children
+                ):
                     # Sibling duplicate — ignore this child silently.
                     # Let the parent try again or POP on its own.
-                    action_log.append(ActionLogEntry(
-                        step=step, depth=node.depth,
-                        description=node.description[:120],
-                        action="PUSH_REJECTED_DUPLICATE_SIBLING",
-                        argument=argument.strip()[:120],
-                        num_retrieved=0,
-                    ))
+                    action_log.append(
+                        ActionLogEntry(
+                            step=step,
+                            depth=node.depth,
+                            description=node.description[:120],
+                            action="PUSH_REJECTED_DUPLICATE_SIBLING",
+                            argument=argument.strip()[:120],
+                            num_retrieved=0,
+                        )
+                    )
                     step += 1
                     # If this is the Nth sibling dup in a row, force POP.
                     # Track by counting recent PUSH_REJECTED_DUPLICATE_SIBLING
                     # entries at the same depth.
                     recent_rejects = 0
                     for e in reversed(action_log):
-                        if (e.action == "PUSH_REJECTED_DUPLICATE_SIBLING"
-                                and e.depth == node.depth):
+                        if (
+                            e.action == "PUSH_REJECTED_DUPLICATE_SIBLING"
+                            and e.depth == node.depth
+                        ):
                             recent_rejects += 1
                         elif e.action in {"PUSH", "RETRIEVE_MARK", "POP"}:
                             break
@@ -632,13 +652,16 @@ class ContextTreeV2:
                         # Give up on this parent; pop it.
                         node.summary = "(too many sibling dups)"
                         node.popped = True
-                        action_log.append(ActionLogEntry(
-                            step=step, depth=node.depth,
-                            description=node.description[:120],
-                            action="POP_FORCED_SIBDUPS",
-                            argument=node.summary,
-                            num_retrieved=0,
-                        ))
+                        action_log.append(
+                            ActionLogEntry(
+                                step=step,
+                                depth=node.depth,
+                                description=node.description[:120],
+                                action="POP_FORCED_SIBDUPS",
+                                argument=node.summary,
+                                num_retrieved=0,
+                            )
+                        )
                         step += 1
                         stack.pop()
                     continue
@@ -650,12 +673,16 @@ class ContextTreeV2:
                     )
                     node.children.append(child)
                     stack.append(child)
-                    action_log.append(ActionLogEntry(
-                        step=step, depth=node.depth,
-                        description=node.description[:120],
-                        action="PUSH", argument=argument[:120],
-                        num_retrieved=0,
-                    ))
+                    action_log.append(
+                        ActionLogEntry(
+                            step=step,
+                            depth=node.depth,
+                            description=node.description[:120],
+                            action="PUSH",
+                            argument=argument[:120],
+                            num_retrieved=0,
+                        )
+                    )
                     step += 1
                     continue
 
@@ -663,12 +690,16 @@ class ContextTreeV2:
                 if node.is_retrieve_leaf:
                     node.summary = "(already retrieved; auto-pop)"
                     node.popped = True
-                    action_log.append(ActionLogEntry(
-                        step=step, depth=node.depth,
-                        description=node.description[:120],
-                        action="POP_DUPMARK", argument=node.summary,
-                        num_retrieved=len(node.retrieved_segments),
-                    ))
+                    action_log.append(
+                        ActionLogEntry(
+                            step=step,
+                            depth=node.depth,
+                            description=node.description[:120],
+                            action="POP_DUPMARK",
+                            argument=node.summary,
+                            num_retrieved=len(node.retrieved_segments),
+                        )
+                    )
                     step += 1
                     stack.pop()
                     continue
@@ -680,20 +711,28 @@ class ContextTreeV2:
                 if per_leaf <= 0:
                     node.summary = "(no budget left)"
                     node.popped = True
-                    action_log.append(ActionLogEntry(
-                        step=step, depth=node.depth,
-                        description=node.description[:120],
-                        action="POP_NOBUDGET", argument=node.summary,
-                        num_retrieved=0,
-                    ))
+                    action_log.append(
+                        ActionLogEntry(
+                            step=step,
+                            depth=node.depth,
+                            description=node.description[:120],
+                            action="POP_NOBUDGET",
+                            argument=node.summary,
+                            num_retrieved=0,
+                        )
+                    )
                     step += 1
                     stack.pop()
                     continue
 
                 segs, cues, query_text = self._leaf_retrieve(
-                    root_task, node, per_leaf, exclude, conversation_id,
+                    root_task,
+                    node,
+                    per_leaf,
+                    exclude,
+                    conversation_id,
                 )
-                segs = segs[:remaining()]
+                segs = segs[: remaining()]
                 node.retrieved_segments.extend(segs)
                 all_segments.extend(segs)
                 node.is_retrieve_leaf = True
@@ -706,19 +745,21 @@ class ContextTreeV2:
                 for s in segs[:3]:
                     text_trim = s.text[:120].replace("\n", " ")
                     summary_parts.append(f"turn {s.turn_id}: {text_trim}")
-                node.summary = (
-                    f"retrieved {len(segs)} segments. " +
-                    " | ".join(summary_parts)
+                node.summary = f"retrieved {len(segs)} segments. " + " | ".join(
+                    summary_parts
                 )
 
-                action_log.append(ActionLogEntry(
-                    step=step, depth=node.depth,
-                    description=node.description[:120],
-                    action="RETRIEVE",
-                    argument=query_text[:120],
-                    num_retrieved=len(segs),
-                    cues=cues,
-                ))
+                action_log.append(
+                    ActionLogEntry(
+                        step=step,
+                        depth=node.depth,
+                        description=node.description[:120],
+                        action="RETRIEVE",
+                        argument=query_text[:120],
+                        num_retrieved=len(segs),
+                        cues=cues,
+                    )
+                )
                 step += 1
                 node.popped = True
                 stack.pop()
@@ -727,12 +768,16 @@ class ContextTreeV2:
             # POP
             node.summary = argument or "(no summary)"
             node.popped = True
-            action_log.append(ActionLogEntry(
-                step=step, depth=node.depth,
-                description=node.description[:120],
-                action="POP", argument=argument[:120],
-                num_retrieved=0,
-            ))
+            action_log.append(
+                ActionLogEntry(
+                    step=step,
+                    depth=node.depth,
+                    description=node.description[:120],
+                    action="POP",
+                    argument=argument[:120],
+                    num_retrieved=0,
+                )
+            )
             step += 1
             stack.pop()
 
@@ -740,21 +785,28 @@ class ContextTreeV2:
         # on the root.
         if not leaves and remaining() > 0:
             segs, cues, query_text = self._leaf_retrieve(
-                root_task, root, remaining(), exclude, conversation_id,
+                root_task,
+                root,
+                remaining(),
+                exclude,
+                conversation_id,
             )
             root.retrieved_segments.extend(segs)
             all_segments.extend(segs)
             root.is_retrieve_leaf = True
             leaves.append(root)
             leaf_queries.append(query_text)
-            action_log.append(ActionLogEntry(
-                step=step, depth=0,
-                description=root.description[:120],
-                action="RETRIEVE_FALLBACK_ROOT",
-                argument=query_text[:120],
-                num_retrieved=len(segs),
-                cues=cues,
-            ))
+            action_log.append(
+                ActionLogEntry(
+                    step=step,
+                    depth=0,
+                    description=root.description[:120],
+                    action="RETRIEVE_FALLBACK_ROOT",
+                    argument=query_text[:120],
+                    num_retrieved=len(segs),
+                    cues=cues,
+                )
+            )
 
         # ---- Phase 2: top-up unused budget across leaves ----
         # If we reserved MIN_PER_LEAF but ended up with only 2-3 leaves,
@@ -772,9 +824,13 @@ class ContextTreeV2:
                 room = remaining()
                 top_share = min(top_share, room)
                 extra, cues_extra, _ = self._leaf_retrieve(
-                    root_task, leaf, top_share, exclude, conversation_id,
+                    root_task,
+                    leaf,
+                    top_share,
+                    exclude,
+                    conversation_id,
                 )
-                extra = extra[:remaining()]
+                extra = extra[: remaining()]
                 if extra:
                     leaf.retrieved_segments.extend(extra)
                     all_segments.extend(extra)
@@ -797,7 +853,9 @@ class ContextTreeV2:
             leaf_queries=leaf_queries,
             action_log=action_log,
             num_leaves=len(leaves),
-            num_retrieve_actions=sum(1 for e in action_log if e.action.startswith("RETRIEVE")),
+            num_retrieve_actions=sum(
+                1 for e in action_log if e.action.startswith("RETRIEVE")
+            ),
             num_push_actions=sum(1 for e in action_log if e.action == "PUSH"),
             num_pop_actions=sum(1 for e in action_log if e.action.startswith("POP")),
             budget_per_leaf=(self.budget // max(1, len(leaves))),
@@ -948,7 +1006,11 @@ def evaluate(
 
         # Cosine baseline at the PRIMARY budget
         baseline_segs_primary = cosine_baseline(
-            engine.store, engine.embed, q_text, conv_id, engine.budget,
+            engine.store,
+            engine.embed,
+            q_text,
+            conv_id,
+            engine.budget,
         )
 
         # Recall at all budgets (but tree is capped at primary budget;
@@ -960,14 +1022,20 @@ def evaluate(
             recalls_tree[f"r@{b}"] = recall_at_k(tree_segs, source_ids, k_tree)
             recalls_base[f"r@{b}"] = recall_at_k(
                 cosine_baseline(
-                    engine.store, engine.embed, q_text, conv_id, b,
+                    engine.store,
+                    engine.embed,
+                    q_text,
+                    conv_id,
+                    b,
                 ),
                 source_ids,
                 b,
             )
 
         avg_sim = avg_leaf_similarity(
-            engine.embed, q_text, tree_result.leaf_queries,
+            engine.embed,
+            q_text,
+            tree_result.leaf_queries,
         )
 
         row = {
@@ -1010,7 +1078,7 @@ def evaluate(
         d = recalls_tree[f"r@{primary}"] - recalls_base[f"r@{primary}"]
         marker = "+" if d > 0.001 else ("-" if d < -0.001 else "=")
         print(
-            f"[{i+1}/{len(questions)}] {marker} "
+            f"[{i + 1}/{len(questions)}] {marker} "
             f"B={recalls_base[f'r@{primary}']:.3f} "
             f"T={recalls_tree[f'r@{primary}']:.3f} "
             f"d={d:+.3f} "
@@ -1026,7 +1094,7 @@ def evaluate(
 
 def summarize(results: list[dict], budgets: tuple[int, ...], label: str) -> dict:
     n = len(results)
-    print(f"\n{'='*70}\n{label} ({n} questions)\n{'='*70}")
+    print(f"\n{'=' * 70}\n{label} ({n} questions)\n{'=' * 70}")
     summary = {"label": label, "n": n}
     for b in budgets:
         key = f"r@{b}"
@@ -1039,7 +1107,9 @@ def summarize(results: list[dict], budgets: tuple[int, ...], label: str) -> dict
         avg_b = sum(bvs) / n
         avg_t = sum(tvs) / n
         avg_d = sum(deltas) / n
-        print(f"  {key:>8s}: B={avg_b:.3f} T={avg_t:.3f} Δ={avg_d:+.3f} W/T/L={w}/{ties}/{l}")
+        print(
+            f"  {key:>8s}: B={avg_b:.3f} T={avg_t:.3f} Δ={avg_d:+.3f} W/T/L={w}/{ties}/{l}"
+        )
         summary[f"baseline_{key}"] = round(avg_b, 4)
         summary[f"tree_{key}"] = round(avg_t, 4)
         summary[f"delta_{key}"] = round(avg_d, 4)
@@ -1049,18 +1119,27 @@ def summarize(results: list[dict], budgets: tuple[int, ...], label: str) -> dict
     avg_push = sum(r["tree_num_push"] for r in results) / n
     avg_pop = sum(r["tree_num_pop"] for r in results) / n
     avg_ret = sum(r["tree_num_retrieve"] for r in results) / n
-    sims = [r["avg_leaf_query_sim_to_question"] for r in results
-            if r["avg_leaf_query_sim_to_question"] is not None]
+    sims = [
+        r["avg_leaf_query_sim_to_question"]
+        for r in results
+        if r["avg_leaf_query_sim_to_question"] is not None
+    ]
     avg_sim = (sum(sims) / len(sims)) if sims else None
     avg_total = sum(r["tree_total_retrieved"] for r in results) / n
     avg_llm = sum(r["llm_calls"] for r in results) / n
     avg_emb = sum(r["embed_calls"] for r in results) / n
 
-    print(f"\n  Avg leaves/q: {avg_leaves:.2f}   "
-          f"PUSH/RETRIEVE/POP = {avg_push:.1f}/{avg_ret:.1f}/{avg_pop:.1f}")
-    print(f"  Avg segs retrieved: {avg_total:.1f}   "
-          f"Avg leaf-query cosine to Q: "
-          f"{avg_sim:.3f}" if avg_sim is not None else "  (n/a)")
+    print(
+        f"\n  Avg leaves/q: {avg_leaves:.2f}   "
+        f"PUSH/RETRIEVE/POP = {avg_push:.1f}/{avg_ret:.1f}/{avg_pop:.1f}"
+    )
+    print(
+        f"  Avg segs retrieved: {avg_total:.1f}   "
+        f"Avg leaf-query cosine to Q: "
+        f"{avg_sim:.3f}"
+        if avg_sim is not None
+        else "  (n/a)"
+    )
     print(f"  Avg LLM calls: {avg_llm:.1f}   Avg embed calls: {avg_emb:.1f}")
 
     summary["avg_num_leaves"] = round(avg_leaves, 2)
@@ -1110,15 +1189,20 @@ def load_target_questions() -> list[dict]:
 # ---------------------------------------------------------------------------
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--budget", type=int, default=20,
-                        help="Total retrieved segments cap (K).")
-    parser.add_argument("--all-budgets", action="store_true",
-                        help="Run both K=20 and K=50.")
+    parser.add_argument(
+        "--budget", type=int, default=20, help="Total retrieved segments cap (K)."
+    )
+    parser.add_argument(
+        "--all-budgets", action="store_true", help="Run both K=20 and K=50."
+    )
     parser.add_argument("--max-depth", type=int, default=MAX_DEPTH)
     parser.add_argument("--max-actions", type=int, default=MAX_ACTIONS)
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--category", default=None,
-                        help="Filter by category (proactive|procedural|constraint_propagation).")
+    parser.add_argument(
+        "--category",
+        default=None,
+        help="Filter by category (proactive|procedural|constraint_propagation).",
+    )
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1134,7 +1218,7 @@ def main() -> None:
 
     for budget in budgets_to_run:
         eval_budgets = (20, 50) if budget >= 50 else (20,)
-        print(f"\n{'#'*70}\n# RUN WITH BUDGET K={budget}\n{'#'*70}")
+        print(f"\n{'#' * 70}\n# RUN WITH BUDGET K={budget}\n{'#' * 70}")
         engine = ContextTreeV2(
             store=store,
             budget=budget,

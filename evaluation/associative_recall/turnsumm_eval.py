@@ -37,9 +37,20 @@ from pathlib import Path
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    V2F_MODEL,
+    V2F_PROMPT,
+    _MergedLLMCache,
+    format_primer_context,
+    parse_v2f_cues,
+)
+from em_retuned_cue_gen import (
+    build_v2f_speakerformat_prompt,
+)
+from em_retuned_cue_gen import (
+    parse_cues as parse_retuned_cues,
+)
+from em_two_speaker import classify_speaker_side, load_two_speaker_map
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -57,23 +68,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import (
-    V2F_MODEL,
-    V2F_PROMPT,
-    EMHit,
-    _MergedLLMCache,
-    _dedupe_by_turn_id,
-    _merge_by_max_score,
-    format_primer_context,
-    parse_v2f_cues,
-)
-from em_retuned_cue_gen import (
-    build_v2f_speakerformat_prompt,
-    parse_cues as parse_retuned_cues,
-)
-from em_two_speaker import classify_speaker_side, load_two_speaker_map
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -103,6 +99,7 @@ OVERSAMPLE = 2
 @dataclass
 class DualEMHit:
     """Like EMHit but tags which view produced the score."""
+
     turn_id: int
     score: float
     seed_segment_uuid: object
@@ -191,9 +188,7 @@ def _merge_dual_by_max_score(
     return sorted(best.values(), key=lambda h: -h.score)
 
 
-def _view_coverage(
-    hits: list[DualEMHit], gold: set[int], K: int
-) -> dict:
+def _view_coverage(hits: list[DualEMHit], gold: set[int], K: int) -> dict:
     """For each gold turn found in top-K hits, record which view produced
     the winning entry."""
     topk = hits[:K]
@@ -201,9 +196,7 @@ def _view_coverage(
     for h in topk:
         if h.turn_id in gold and h.turn_id not in per_turn:
             per_turn[h.turn_id] = h.view
-    return {
-        str(tid): per_turn[tid] for tid in sorted(per_turn.keys())
-    }
+    return {str(tid): per_turn[tid] for tid in sorted(per_turn.keys())}
 
 
 # --------------------------------------------------------------------------
@@ -258,8 +251,7 @@ async def em_v2f_summ(
         )
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer
     ]
     context_section = format_primer_context(primer_segments)
     prompt = V2F_PROMPT.format(question=question, context_section=context_section)
@@ -296,14 +288,11 @@ async def em_v2f_summ_sf(
         )
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer
     ]
     context_section = format_primer_context(primer_segments)
     p_user, p_asst = participants
-    prompt = build_v2f_speakerformat_prompt(
-        question, context_section, p_user, p_asst
-    )
+    prompt = build_v2f_speakerformat_prompt(question, context_section, p_user, p_asst)
     raw, hit = await _llm_v2f(openai_client, prompt, cache)
     cues = parse_retuned_cues(raw, max_cues=2)
 
@@ -337,8 +326,12 @@ async def em_v2f_summ_sf_spkfilter(
     hits and top up with property_filter=context.source=<matched_name>.
     """
     base_hits, meta = await em_v2f_summ_sf(
-        memory, question, participants, K=max(K, 50),
-        cache=cache, openai_client=openai_client,
+        memory,
+        question,
+        participants,
+        K=max(K, 50),
+        cache=cache,
+        openai_client=openai_client,
     )
     side, user_name, asst_name, name_tokens = classify_speaker_side(
         question, conversation_id, speaker_map
@@ -359,12 +352,11 @@ async def em_v2f_summ_sf_spkfilter(
     meta["applied_speaker_filter"] = True
     meta["matched_name"] = matched_name
 
-    prop_filter = Comparison(
-        field="context.source", op="=", value=matched_name
-    )
+    prop_filter = Comparison(field="context.source", op="=", value=matched_name)
     filtered_hits = _dedupe_dual_by_turn_id(
         await _query_em_dual(
-            memory, question,
+            memory,
+            question,
             vector_search_limit=(K + 10) * OVERSAMPLE,
             expand_context=0,
             property_filter=prop_filter,
@@ -413,18 +405,31 @@ async def evaluate_question(
         hits = await em_cosine_baseline_summ(memory, q_text, K=max_K)
     elif variant == "em_v2f_summ":
         hits, meta = await em_v2f_summ(
-            memory, q_text, K=max_K,
-            cache=v2f_cache, openai_client=openai_client,
+            memory,
+            q_text,
+            K=max_K,
+            cache=v2f_cache,
+            openai_client=openai_client,
         )
     elif variant == "em_v2f_summ_sf":
         hits, meta = await em_v2f_summ_sf(
-            memory, q_text, participants, K=max_K,
-            cache=v2f_sf_cache, openai_client=openai_client,
+            memory,
+            q_text,
+            participants,
+            K=max_K,
+            cache=v2f_sf_cache,
+            openai_client=openai_client,
         )
     elif variant == "em_v2f_summ_sf_spkfilter":
         hits, meta = await em_v2f_summ_sf_spkfilter(
-            memory, q_text, conv_id, participants, speaker_map,
-            K=max_K, cache=v2f_sf_cache, openai_client=openai_client,
+            memory,
+            q_text,
+            conv_id,
+            participants,
+            speaker_map,
+            K=max_K,
+            cache=v2f_sf_cache,
+            openai_client=openai_client,
         )
     else:
         raise KeyError(variant)
@@ -496,10 +501,12 @@ async def main() -> None:
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     v2f_cache = _MergedLLMCache(
-        reader_paths=[V2F_CACHE_FILE], writer_path=V2F_CACHE_FILE,
+        reader_paths=[V2F_CACHE_FILE],
+        writer_path=V2F_CACHE_FILE,
     )
     v2f_sf_cache = _MergedLLMCache(
-        reader_paths=[V2F_SF_CACHE_FILE], writer_path=V2F_SF_CACHE_FILE,
+        reader_paths=[V2F_SF_CACHE_FILE],
+        writer_path=V2F_SF_CACHE_FILE,
     )
 
     # Open EM per conversation.
@@ -544,8 +551,14 @@ async def main() -> None:
                 mem = memories[cid]
                 participants = participants_by_conv[cid]
                 row = await evaluate_question(
-                    variant, mem, q, participants, speaker_map,
-                    v2f_cache, v2f_sf_cache, openai_client,
+                    variant,
+                    mem,
+                    q,
+                    participants,
+                    speaker_map,
+                    v2f_cache,
+                    v2f_sf_cache,
+                    openai_client,
                     max_K=max_K,
                 )
                 rows.append(row)
@@ -623,9 +636,7 @@ async def main() -> None:
             "summary_wins_top50": summ_wins,
             "raw_wins_top50": raw_wins,
             "unknown_view_top50": unknown,
-            "summary_share_top50": (
-                round(summ_wins / max(tot_gold, 1), 4)
-            ),
+            "summary_share_top50": (round(summ_wins / max(tot_gold, 1), 4)),
         }
     results["view_coverage"] = coverage_stats
 
@@ -642,7 +653,9 @@ async def main() -> None:
     print(f"Saved: {out_md}")
 
 
-def build_markdown_report(results: dict, coll_meta: dict, questions: list[dict]) -> list[str]:
+def build_markdown_report(
+    results: dict, coll_meta: dict, questions: list[dict]
+) -> list[str]:
     lines = [
         "# Turn-Summary Dual-View EventMemory Evaluation (LoCoMo-30)",
         "",
@@ -656,7 +669,7 @@ def build_markdown_report(results: dict, coll_meta: dict, questions: list[dict])
         "- `text-embedding-3-small`, `gpt-5-mini` fixed.",
         "- Raw view: speaker-baked MessageContext + raw chat text.",
         "- Summary view: same speaker-baked context, items=[Text(text=<1-sentence summary>)], "
-        "with properties `view=\"summary\"`. Non-filler summaries only.",
+        'with properties `view="summary"`. Non-filler summaries only.',
         "",
         "## Per-conversation ingestion counts",
         "",

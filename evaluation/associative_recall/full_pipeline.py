@@ -15,18 +15,14 @@ Usage:
     uv run python full_pipeline.py [--verbose]
 """
 
-import hashlib
 import json
 import sys
 import time
-from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -34,8 +30,9 @@ from associative_recall import (
     LLMCache,
     Segment,
     SegmentStore,
-    RetrievalResult,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -275,8 +272,9 @@ Nothing else."""
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def format_segments(segments: list[Segment], max_items: int = 12,
-                    max_chars: int = 250) -> str:
+def format_segments(
+    segments: list[Segment], max_items: int = 12, max_chars: int = 250
+) -> str:
     if not segments:
         return "(no content retrieved yet)"
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
@@ -385,8 +383,7 @@ class PipelineEngine:
         self.embed_calls += 1
         return embedding
 
-    def llm_call(self, prompt: str, model: str = MODEL,
-                 max_tokens: int = 2000) -> str:
+    def llm_call(self, prompt: str, model: str = MODEL, max_tokens: int = 2000) -> str:
         cached = self.llm_cache.get(model, prompt)
         if cached is not None:
             self.llm_calls += 1
@@ -405,7 +402,7 @@ class PipelineEngine:
                 return text
             except Exception as e:
                 last_err = e
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
         raise last_err  # type: ignore[misc]
 
     def save_caches(self) -> None:
@@ -424,7 +421,8 @@ class PipelineEngine:
         exclude_indices: set[int] | None = None,
     ) -> list[Segment]:
         result = self.store.search(
-            query_emb, top_k=top_k,
+            query_emb,
+            top_k=top_k,
             conversation_id=conversation_id,
             exclude_indices=exclude_indices,
         )
@@ -470,8 +468,9 @@ class PipelineEngine:
 
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
-            new_segs = self._retrieve(cue_emb, conversation_id, top_k=10,
-                                      exclude_indices=exclude)
+            new_segs = self._retrieve(
+                cue_emb, conversation_id, top_k=10, exclude_indices=exclude
+            )
             add_segments(new_segs)
 
         # Stage 3: Gen-Check gap assessment (1 LLM + 1-2 embed calls)
@@ -486,8 +485,9 @@ class PipelineEngine:
         if not done and gaps:
             for gap in gaps[:2]:
                 gap_emb = self.embed_text(gap)
-                new_segs = self._retrieve(gap_emb, conversation_id, top_k=10,
-                                          exclude_indices=exclude)
+                new_segs = self._retrieve(
+                    gap_emb, conversation_id, top_k=10, exclude_indices=exclude
+                )
                 add_segments(new_segs)
                 all_cues.append(gap)
 
@@ -506,8 +506,9 @@ class PipelineEngine:
             constraint_cues = parse_cues(constraint_output)
             for cue in constraint_cues[:3]:
                 cue_emb = self.embed_text(cue)
-                new_segs = self._retrieve(cue_emb, conversation_id, top_k=10,
-                                          exclude_indices=exclude)
+                new_segs = self._retrieve(
+                    cue_emb, conversation_id, top_k=10, exclude_indices=exclude
+                )
                 add_segments(new_segs)
                 all_cues.append(cue)
 
@@ -526,8 +527,9 @@ class PipelineEngine:
             residual /= max(np.linalg.norm(residual), 1e-10)
 
             # Negative-space uses the residual vector directly (no embed call)
-            ns_segs = self._retrieve(residual, conversation_id, top_k=10,
-                                     exclude_indices=exclude)
+            ns_segs = self._retrieve(
+                residual, conversation_id, top_k=10, exclude_indices=exclude
+            )
             ns_count = add_segments(ns_segs)
             metadata["ns_new_count"] = ns_count
             # Count as 1 embed call even though it's computed, for budget tracking
@@ -588,8 +590,9 @@ class PipelineEngine:
 
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
-            new_segs = self._retrieve(cue_emb, conversation_id, top_k=10,
-                                      exclude_indices=exclude)
+            new_segs = self._retrieve(
+                cue_emb, conversation_id, top_k=10, exclude_indices=exclude
+            )
             add_segments(new_segs)
 
         # Stage 3: Gen-Check gap assessment
@@ -604,8 +607,9 @@ class PipelineEngine:
         if not done and gaps:
             for gap in gaps[:2]:
                 gap_emb = self.embed_text(gap)
-                new_segs = self._retrieve(gap_emb, conversation_id, top_k=10,
-                                          exclude_indices=exclude)
+                new_segs = self._retrieve(
+                    gap_emb, conversation_id, top_k=10, exclude_indices=exclude
+                )
                 add_segments(new_segs)
                 all_cues.append(gap)
 
@@ -624,8 +628,9 @@ class PipelineEngine:
             residual = query_norm + alpha * (query_norm - centroid)
             residual /= max(np.linalg.norm(residual), 1e-10)
 
-            ns_segs = self._retrieve(residual, conversation_id, top_k=10,
-                                     exclude_indices=exclude)
+            ns_segs = self._retrieve(
+                residual, conversation_id, top_k=10, exclude_indices=exclude
+            )
             ns_count = add_segments(ns_segs)
             metadata["ns_new_count"] = ns_count
             self.embed_calls += 1
@@ -671,8 +676,9 @@ class PipelineEngine:
 
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
-            new_segs = self._retrieve(cue_emb, conversation_id, top_k=10,
-                                      exclude_indices=exclude)
+            new_segs = self._retrieve(
+                cue_emb, conversation_id, top_k=10, exclude_indices=exclude
+            )
             add_segments(new_segs)
 
         metadata["cues"] = cues[:2]
@@ -729,16 +735,15 @@ Nothing else."""
         add_segments(initial)
 
         context_section = build_context_section(all_segments)
-        prompt = V15_PROMPT.format(
-            question=question, context_section=context_section
-        )
+        prompt = V15_PROMPT.format(question=question, context_section=context_section)
         output = self.llm_call(prompt)
         cues = parse_cues(output)
 
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
-            new_segs = self._retrieve(cue_emb, conversation_id, top_k=10,
-                                      exclude_indices=exclude)
+            new_segs = self._retrieve(
+                cue_emb, conversation_id, top_k=10, exclude_indices=exclude
+            )
             add_segments(new_segs)
 
         metadata["cues"] = cues[:2]
@@ -775,7 +780,7 @@ Nothing else."""
             # Multi-batch: rerank each batch, then merge-rerank
             batches = []
             for i in range(0, len(segments), batch_size):
-                batches.append(segments[i:i + batch_size])
+                batches.append(segments[i : i + batch_size])
 
             candidates = []
             for batch in batches:
@@ -866,8 +871,11 @@ DATASETS = [
 PIPELINES = ["full_pipeline", "lite_pipeline", "v2f_only", "v15_control"]
 
 
-def load_questions(json_path: Path, benchmark_filter: str | None = None,
-                   max_questions: int | None = None) -> list[dict]:
+def load_questions(
+    json_path: Path,
+    benchmark_filter: str | None = None,
+    max_questions: int | None = None,
+) -> list[dict]:
     with open(json_path) as f:
         questions = json.load(f)
     if benchmark_filter:
@@ -882,9 +890,9 @@ def evaluate_dataset(
     verbose: bool = False,
 ) -> dict:
     """Run all 4 pipelines on one dataset, return results."""
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"DATASET: {ds.name}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     store = SegmentStore(DATA_DIR, ds.npz)
     questions = load_questions(
@@ -911,8 +919,12 @@ def evaluate_dataset(
         baseline_20 = store.search(query_emb, top_k=20, conversation_id=conv_id)
         baseline_50 = store.search(query_emb, top_k=50, conversation_id=conv_id)
         baseline_recalls = {
-            "r@20": compute_recall({s.turn_id for s in baseline_20.segments}, source_ids),
-            "r@50": compute_recall({s.turn_id for s in baseline_50.segments}, source_ids),
+            "r@20": compute_recall(
+                {s.turn_id for s in baseline_20.segments}, source_ids
+            ),
+            "r@50": compute_recall(
+                {s.turn_id for s in baseline_50.segments}, source_ids
+            ),
         }
 
         for pipeline_name in PIPELINES:
@@ -956,12 +968,14 @@ def evaluate_dataset(
             marker = "W" if delta_20 > 0.001 else ("L" if delta_20 < -0.001 else "T")
 
             if verbose:
-                print(f"  Q{q_idx:2d} [{category:25s}] {pipeline_name:15s}: "
-                      f"r@20={arch_recalls['r@20']:.1%} "
-                      f"(baseline={baseline_recalls['r@20']:.1%}, "
-                      f"delta={delta_20:+.1%} {marker}) "
-                      f"pool={len(segments)} "
-                      f"LLM={engine.llm_calls} emb={engine.embed_calls}")
+                print(
+                    f"  Q{q_idx:2d} [{category:25s}] {pipeline_name:15s}: "
+                    f"r@20={arch_recalls['r@20']:.1%} "
+                    f"(baseline={baseline_recalls['r@20']:.1%}, "
+                    f"delta={delta_20:+.1%} {marker}) "
+                    f"pool={len(segments)} "
+                    f"LLM={engine.llm_calls} emb={engine.embed_calls}"
+                )
 
         engine.save_caches()
 
@@ -1005,14 +1019,20 @@ def evaluate_dataset(
         total_emb = sum(r["embed_calls"] for r in results)
 
         print(f"\n  {pipeline_name}:")
-        print(f"    r@20: {avg_r20:.1%} (baseline {avg_b20:.1%}, "
-              f"delta {avg_r20 - avg_b20:+.1%}) "
-              f"W/T/L={wins_20}/{ties_20}/{losses_20}")
-        print(f"    r@50: {avg_r50:.1%} (baseline {avg_b50:.1%}, "
-              f"delta {avg_r50 - avg_b50:+.1%}) "
-              f"W/T/L={wins_50}/{ties_50}/{losses_50}")
-        print(f"    LLM calls: {total_llm} ({total_llm/len(results):.1f}/q), "
-              f"Embed calls: {total_emb} ({total_emb/len(results):.1f}/q)")
+        print(
+            f"    r@20: {avg_r20:.1%} (baseline {avg_b20:.1%}, "
+            f"delta {avg_r20 - avg_b20:+.1%}) "
+            f"W/T/L={wins_20}/{ties_20}/{losses_20}"
+        )
+        print(
+            f"    r@50: {avg_r50:.1%} (baseline {avg_b50:.1%}, "
+            f"delta {avg_r50 - avg_b50:+.1%}) "
+            f"W/T/L={wins_50}/{ties_50}/{losses_50}"
+        )
+        print(
+            f"    LLM calls: {total_llm} ({total_llm / len(results):.1f}/q), "
+            f"Embed calls: {total_emb} ({total_emb / len(results):.1f}/q)"
+        )
 
         # Per-category breakdown at r@20
         cat_results: dict[str, list[float]] = defaultdict(list)
@@ -1020,12 +1040,14 @@ def evaluate_dataset(
         for r in results:
             cat_results[r["category"]].append(r["arch_recalls"]["r@20"])
             cat_baselines[r["category"]].append(r["baseline_recalls"]["r@20"])
-        print(f"    Per-category r@20:")
+        print("    Per-category r@20:")
         for cat in sorted(cat_results.keys()):
             cat_avg = sum(cat_results[cat]) / len(cat_results[cat])
             cat_base = sum(cat_baselines[cat]) / len(cat_baselines[cat])
-            print(f"      {cat:30s}: {cat_avg:.1%} (base {cat_base:.1%}, "
-                  f"delta {cat_avg - cat_base:+.1%}, n={len(cat_results[cat])})")
+            print(
+                f"      {cat:30s}: {cat_avg:.1%} (base {cat_base:.1%}, "
+                f"delta {cat_avg - cat_base:+.1%}, n={len(cat_results[cat])})"
+            )
 
     # Save results
     for pipeline_name in PIPELINES:
@@ -1051,9 +1073,9 @@ def evaluate_dataset(
 # ---------------------------------------------------------------------------
 def print_cross_dataset_summary(all_dataset_results: dict[str, dict[str, list[dict]]]):
     """Print a comparison table across all datasets."""
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("CROSS-DATASET COMPARISON")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     # Header
     ds_names = list(all_dataset_results.keys())
@@ -1087,13 +1109,15 @@ def print_cross_dataset_summary(all_dataset_results: dict[str, dict[str, list[di
                     print(f"  {'N/A':>8s} {'N/A':>8s}", end="")
                     continue
                 avg = sum(r["arch_recalls"][metric_key] for r in results) / len(results)
-                base = sum(r["baseline_recalls"][metric_key] for r in results) / len(results)
+                base = sum(r["baseline_recalls"][metric_key] for r in results) / len(
+                    results
+                )
                 delta = avg - base
                 print(f"  {avg:8.1%} {delta:+8.1%}", end="")
             print()
 
     # W/T/L summary
-    print(f"\n  W/T/L at r@20:")
+    print("\n  W/T/L at r@20:")
     for pipeline_name in PIPELINES:
         print(f"  {pipeline_name:18s}", end="")
         for ds in ds_names:
@@ -1114,7 +1138,7 @@ def print_cross_dataset_summary(all_dataset_results: dict[str, dict[str, list[di
         print()
 
     # Head-to-head: full vs lite
-    print(f"\n  Full vs Lite (r@20):")
+    print("\n  Full vs Lite (r@20):")
     for ds in ds_names:
         full_results = all_dataset_results[ds].get("full_pipeline", [])
         lite_results = all_dataset_results[ds].get("lite_pipeline", [])
@@ -1131,10 +1155,16 @@ def print_cross_dataset_summary(all_dataset_results: dict[str, dict[str, list[di
                 l += 1
             else:
                 t += 1
-        avg_full = sum(r["arch_recalls"]["r@20"] for r in full_results) / len(full_results)
-        avg_lite = sum(r["arch_recalls"]["r@20"] for r in lite_results) / len(lite_results)
-        print(f"    {ds}: full={avg_full:.1%} lite={avg_lite:.1%} "
-              f"full_wins={w} ties={t} lite_wins={l}")
+        avg_full = sum(r["arch_recalls"]["r@20"] for r in full_results) / len(
+            full_results
+        )
+        avg_lite = sum(r["arch_recalls"]["r@20"] for r in lite_results) / len(
+            lite_results
+        )
+        print(
+            f"    {ds}: full={avg_full:.1%} lite={avg_lite:.1%} "
+            f"full_wins={w} ties={t} lite_wins={l}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1152,6 +1182,7 @@ def main():
         except Exception as e:
             print(f"\nERROR on {ds.name}: {e}")
             import traceback
+
             traceback.print_exc()
             continue
 

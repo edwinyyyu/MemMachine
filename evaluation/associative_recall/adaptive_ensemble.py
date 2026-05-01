@@ -31,7 +31,6 @@ from ensemble_retrieval import (
     fair_backfill,
 )
 
-
 # Ordered specialist list for adaptive gating (v2f must be first).
 ADAPTIVE_ORDER: tuple[str, ...] = (
     "v2f",
@@ -55,7 +54,7 @@ SPECIALIST_COST: dict[str, float] = {
 class AdaptiveResult:
     segments: list[Segment]
     specialists_called: list[str]
-    novelty_per_step: list[float]     # length = len(specialists_called) - 1
+    novelty_per_step: list[float]  # length = len(specialists_called) - 1
     llm_cost: float
 
 
@@ -130,9 +129,7 @@ def adaptive_ensemble(
     # Sequentially consider subsequent specialists.
     for name in order[1:]:
         # Compute novelty of this specialist's top-K vs accumulated turn_ids.
-        incoming_tids = _top_k_turn_ids(
-            ensemble_outputs[name].segments, budget
-        )
+        incoming_tids = _top_k_turn_ids(ensemble_outputs[name].segments, budget)
         if not incoming_tids:
             novelty = 0.0
         else:

@@ -23,25 +23,21 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Sequence
 
 import numpy as np
-
-from memmachine_server.common.embedder.openai_embedder import OpenAIEmbedder
-from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
-
 from active_steering import (
     EmbeddingCache,
     _query_em_by_vector,
     cached_embed,
 )
 from em_architectures import (
-    EMHit,
     V2F_MODEL,
-    _MergedLLMCache,
+    EMHit,
     _dedupe_by_turn_id,
+    _MergedLLMCache,
 )
-
+from memmachine_server.common.embedder.openai_embedder import OpenAIEmbedder
+from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 
 # --------------------------------------------------------------------------
 # V2 prompt (evidence-grounded)
@@ -109,13 +105,17 @@ def _parse_v2_json(response: str) -> dict:
     out = dict(empty)
     try:
         out["distractor_indices"] = [
-            int(x) for x in obj.get("distractor_indices", []) if isinstance(x, (int, float))
+            int(x)
+            for x in obj.get("distractor_indices", [])
+            if isinstance(x, (int, float))
         ]
     except Exception:
         out["distractor_indices"] = []
     try:
         out["gold_likely_indices"] = [
-            int(x) for x in obj.get("gold_likely_indices", []) if isinstance(x, (int, float))
+            int(x)
+            for x in obj.get("gold_likely_indices", [])
+            if isinstance(x, (int, float))
         ]
     except Exception:
         out["gold_likely_indices"] = []
@@ -223,9 +223,7 @@ async def active_steer_v2(
     if gold is not None:
         for K in K_budgets:
             r = {h.turn_id for h in r0_dedup[:K]}
-            initial_recall[f"r@{K}"] = (
-                len(r & gold) / len(gold) if gold else 1.0
-            )
+            initial_recall[f"r@{K}"] = len(r & gold) / len(gold) if gold else 1.0
     traces.append(
         RoundTraceV2(
             round_idx=0,
@@ -244,7 +242,9 @@ async def active_steer_v2(
     current_hits = r0_dedup
     for rnd in range(1, config.max_rounds + 1):
         topk_hits = current_hits[: config.topk_for_llm]
-        retrieved_str = _format_retrieved_snippet_indexed(topk_hits, n=config.topk_for_llm)
+        retrieved_str = _format_retrieved_snippet_indexed(
+            topk_hits, n=config.topk_for_llm
+        )
         prompt = STEER_V2_PROMPT.format(
             query=query_text,
             cue=initial_cue_text,
@@ -321,9 +321,7 @@ async def active_steer_v2(
         if gold is not None:
             for K in K_budgets:
                 r = {h.turn_id for h in next_dedup[:K]}
-                round_recall[f"r@{K}"] = (
-                    len(r & gold) / len(gold) if gold else 1.0
-                )
+                round_recall[f"r@{K}"] = len(r & gold) / len(gold) if gold else 1.0
 
         traces.append(
             RoundTraceV2(

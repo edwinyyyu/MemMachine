@@ -39,9 +39,26 @@ from pathlib import Path
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    EMHit,
+    _dedupe_by_turn_id,
+    _MergedLLMCache,
+)
+from em_hyde_orient import (
+    HYDE_FIRST_PERSON_CACHE,
+    HYDE_NARRATIVE_CACHE,
+    HYDE_TURN_CACHE,
+    ORIENT_BRIEF_STAGE1_CACHE,
+    ORIENT_BRIEF_STAGE2_CACHE,
+    ORIENT_TERM_STAGE1_CACHE,
+    ORIENT_TERM_STAGE2_CACHE,
+    em_hyde_first_person,
+    em_hyde_narrative,
+    em_hyde_turn_format,
+    em_orient_brief,
+    em_orient_terminology,
+)
+from em_two_speaker import classify_speaker_side, load_two_speaker_map
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -59,28 +76,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import (
-    EMHit,
-    _MergedLLMCache,
-    _dedupe_by_turn_id,
-)
-from em_hyde_orient import (
-    HYDE_NARRATIVE_CACHE,
-    HYDE_TURN_CACHE,
-    HYDE_FIRST_PERSON_CACHE,
-    ORIENT_BRIEF_STAGE1_CACHE,
-    ORIENT_BRIEF_STAGE2_CACHE,
-    ORIENT_TERM_STAGE1_CACHE,
-    ORIENT_TERM_STAGE2_CACHE,
-    em_hyde_first_person,
-    em_hyde_narrative,
-    em_hyde_turn_format,
-    em_orient_brief,
-    em_orient_terminology,
-)
-from em_two_speaker import classify_speaker_side, load_two_speaker_map
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -145,25 +142,36 @@ async def run_variant(
 ):
     if variant == "em_hyde_narrative":
         return await em_hyde_narrative(
-            memory, question, participants,
-            K=K, cache=caches["em_hyde_narrative"],
+            memory,
+            question,
+            participants,
+            K=K,
+            cache=caches["em_hyde_narrative"],
             openai_client=openai_client,
         )
     if variant == "em_hyde_turn_format":
         return await em_hyde_turn_format(
-            memory, question, participants,
-            K=K, cache=caches["em_hyde_turn_format"],
+            memory,
+            question,
+            participants,
+            K=K,
+            cache=caches["em_hyde_turn_format"],
             openai_client=openai_client,
         )
     if variant == "em_hyde_first_person":
         return await em_hyde_first_person(
-            memory, question, participants,
-            K=K, cache=caches["em_hyde_first_person"],
+            memory,
+            question,
+            participants,
+            K=K,
+            cache=caches["em_hyde_first_person"],
             openai_client=openai_client,
         )
     if variant == "em_orient_brief":
         return await em_orient_brief(
-            memory, question, participants,
+            memory,
+            question,
+            participants,
             K=K,
             stage1_cache=caches["em_orient_brief_stage1"],
             stage2_cache=caches["em_orient_brief_stage2"],
@@ -171,7 +179,9 @@ async def run_variant(
         )
     if variant == "em_orient_terminology":
         return await em_orient_terminology(
-            memory, question, participants,
+            memory,
+            question,
+            participants,
             K=K,
             stage1_cache=caches["em_orient_terminology_stage1"],
             stage2_cache=caches["em_orient_terminology_stage2"],
@@ -218,9 +228,7 @@ async def compose_with_speaker_filter(
     meta["applied_speaker_filter"] = True
     meta["matched_name"] = matched_name
 
-    prop_filter = Comparison(
-        field="context.source", op="=", value=matched_name
-    )
+    prop_filter = Comparison(field="context.source", op="=", value=matched_name)
     q_resp = await memory.query(
         query=question,
         vector_search_limit=K + topup_extra,
@@ -270,11 +278,14 @@ async def main() -> None:
         help="Comma-separated variants to run",
     )
     parser.add_argument(
-        "--limit", type=int, default=None,
+        "--limit",
+        type=int,
+        default=None,
         help="Only run first N questions (smoke test)",
     )
     parser.add_argument(
-        "--skip_composition", action="store_true",
+        "--skip_composition",
+        action="store_true",
         help="Skip the speaker_filter composition step",
     )
     args = parser.parse_args()
@@ -394,8 +405,13 @@ async def main() -> None:
                 gold = set(q.get("source_chat_ids", []))
                 t0 = time.monotonic()
                 vr = await run_variant(
-                    variant, mem, q_text, participants,
-                    K=max_K, caches=caches, openai_client=openai_client,
+                    variant,
+                    mem,
+                    q_text,
+                    participants,
+                    K=max_K,
+                    caches=caches,
+                    openai_client=openai_client,
                 )
                 elapsed = time.monotonic() - t0
 
@@ -431,8 +447,7 @@ async def main() -> None:
                 d = {"n": len(cat_rows)}
                 for K in BUDGETS:
                     d[f"mean_r@{K}"] = round(
-                        sum(r[f"r@{K}"] for r in cat_rows)
-                        / max(len(cat_rows), 1), 4
+                        sum(r[f"r@{K}"] for r in cat_rows) / max(len(cat_rows), 1), 4
                     )
                 cat_summary[cat] = d
 
@@ -467,8 +482,12 @@ async def main() -> None:
                 above = sum(1 for r in v_rows if r[f"r@{K}"] > base_scalar)
                 equal = sum(1 for r in v_rows if r[f"r@{K}"] == base_scalar)
                 below = sum(1 for r in v_rows if r[f"r@{K}"] < base_scalar)
-                results["variants"][variant].setdefault("per_question_vs_baseline_scalar", {})[f"r@{K}"] = {
-                    "above": above, "equal": equal, "below": below,
+                results["variants"][variant].setdefault(
+                    "per_question_vs_baseline_scalar", {}
+                )[f"r@{K}"] = {
+                    "above": above,
+                    "equal": equal,
+                    "below": below,
                     "baseline_scalar": base_scalar,
                 }
 
@@ -495,12 +514,21 @@ async def main() -> None:
                     # Re-run variant (cached) to get ranked hits.
                     t0 = time.monotonic()
                     vr = await run_variant(
-                        variant, mem, q_text, participants,
-                        K=max_K, caches=caches, openai_client=openai_client,
+                        variant,
+                        mem,
+                        q_text,
+                        participants,
+                        K=max_K,
+                        caches=caches,
+                        openai_client=openai_client,
                     )
                     merged, cmeta = await compose_with_speaker_filter(
-                        mem, q_text, cid, vr.hits,
-                        K=max_K, speaker_map=speaker_map,
+                        mem,
+                        q_text,
+                        cid,
+                        vr.hits,
+                        K=max_K,
+                        speaker_map=speaker_map,
                     )
                     elapsed = time.monotonic() - t0
                     row: dict = {
@@ -578,8 +606,8 @@ VARIANT_BLURB = {
         "each is a separate probe unioned by max score."
     ),
     "em_hyde_first_person": (
-        "HyDE first person -- LLM writes one first-person \"I remember when "
-        "<speaker> said ...\" chat turn; single probe."
+        'HyDE first person -- LLM writes one first-person "I remember when '
+        '<speaker> said ..." chat turn; single probe.'
     ),
     "em_orient_brief": (
         "Orient brief -- stage 1 writes a 1-sentence orientation describing "
@@ -609,12 +637,12 @@ def _sample_key(variant: str, row: dict) -> str:
         return f"turn: {turn[:280]}"
     if variant == "em_orient_brief":
         return (
-            f"orientation: {meta.get('orientation','')[:200]}\n"
+            f"orientation: {meta.get('orientation', '')[:200]}\n"
             f"  cues: {meta.get('cues', [])}"
         )
     if variant == "em_orient_terminology":
         return (
-            f"vocabulary: {meta.get('vocabulary','')[:200]}\n"
+            f"vocabulary: {meta.get('vocabulary', '')[:200]}\n"
             f"  cues: {meta.get('cues', [])}"
         )
     return str(meta)
@@ -631,7 +659,7 @@ def build_markdown_report(
         "",
         f"- n_questions = {len(questions)} (benchmark=locomo, first 30)",
         "- EventMemory backend (arc_em_lc30_v1_{26,30,41}); "
-        "speaker-baked embedded format `\"{source}: {text}\"`",
+        'speaker-baked embedded format `"{source}: {text}"`',
         "- Model: text-embedding-3-small + gpt-5-mini (fixed)",
         "- Caches: `cache/hydeorient_<variant>_cache.json` (dedicated)",
         "",
@@ -676,9 +704,7 @@ def build_markdown_report(
         ]
         for name, data in results["compositions"].items():
             s = data["summary"]
-            lines.append(
-                f"| `{name}` | {s['mean_r@20']:.4f} | {s['mean_r@50']:.4f} |"
-            )
+            lines.append(f"| `{name}` | {s['mean_r@20']:.4f} | {s['mean_r@50']:.4f} |")
         lines.append("")
         lines.append(
             "Reference: `em_two_speaker_filter` "
@@ -692,9 +718,7 @@ def build_markdown_report(
             "(K=50 leader)."
         )
     else:
-        lines.append(
-            "_No variant reached the baseline; composition not run._"
-        )
+        lines.append("_No variant reached the baseline; composition not run._")
 
     # Sample outputs.
     lines += [
@@ -715,7 +739,7 @@ def build_markdown_report(
         q_row = first_rows[idx]
         lines.append(
             f"### Q{idx} (`{q_row['conversation_id']}`, "
-            f"{q_row.get('category','?')}): "
+            f"{q_row.get('category', '?')}): "
             f"{q_row['question']!r}"
         )
         lines.append("")
@@ -723,9 +747,7 @@ def build_markdown_report(
         lines.append("")
         for v in variants:
             row = results["variants"][v]["per_question"][idx]
-            lines.append(
-                f"- `{v}` (R@20={row['r@20']:.2f}, R@50={row['r@50']:.2f})"
-            )
+            lines.append(f"- `{v}` (R@20={row['r@20']:.2f}, R@50={row['r@50']:.2f})")
             lines.append(f"  {_sample_key(v, row)}")
         lines.append("")
 
@@ -746,15 +768,11 @@ def build_markdown_report(
             one_side.append((v, d20, d50))
 
     if ship:
-        lines.append(
-            "**SHIP candidates (>=1pp at both K vs em_v2f_speakerformat):**"
-        )
+        lines.append("**SHIP candidates (>=1pp at both K vs em_v2f_speakerformat):**")
         for v, d20, d50 in ship:
             lines.append(f"- `{v}`: d20={d20:+.4f}, d50={d50:+.4f}")
     elif one_side:
-        lines.append(
-            "**Narrow (one-sided lift only vs em_v2f_speakerformat):**"
-        )
+        lines.append("**Narrow (one-sided lift only vs em_v2f_speakerformat):**")
         for v, d20, d50 in one_side:
             lines.append(f"- `{v}`: d20={d20:+.4f}, d50={d50:+.4f}")
     else:
@@ -816,9 +834,7 @@ def build_markdown_report(
                 "coverage."
             )
         else:
-            lines.append(
-                "Multi-probe does NOT win over single-probe HyDE here."
-            )
+            lines.append("Multi-probe does NOT win over single-probe HyDE here.")
 
     lines += [
         "",

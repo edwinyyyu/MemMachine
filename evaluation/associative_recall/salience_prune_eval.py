@@ -24,15 +24,13 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-
 from associative_recall import Segment, SegmentStore
 from best_shot import MetaV2f
+from dotenv import load_dotenv
 from fair_backfill_eval import compute_recall
 from salience_pruning import (
     PrunedSegmentStore,
     SalienceLLMCache,
-    SalienceMask,
     build_mask,
     false_prune_stats,
 )
@@ -149,9 +147,7 @@ def evaluate_variant(
             arch_idx_set = {s.index for s in arch_at_K}
             if len(arch_at_K) < K:
                 # backfill from baseline_segs (original store)
-                backfill = [
-                    s for s in baseline_segs if s.index not in arch_idx_set
-                ]
+                backfill = [s for s in baseline_segs if s.index not in arch_idx_set]
                 arch_at_K = arch_at_K + backfill[: K - len(arch_at_K)]
             arch_at_K = arch_at_K[:K]
             baseline_at_K = baseline_segs[:K]
@@ -166,8 +162,7 @@ def evaluate_variant(
                 compute_recall(base_tids, source_ids), 4
             )
             row["recalls"][f"delta_r@{K}"] = round(
-                row["recalls"][f"arch_r@{K}"]
-                - row["recalls"][f"baseline_r@{K}"],
+                row["recalls"][f"arch_r@{K}"] - row["recalls"][f"baseline_r@{K}"],
                 4,
             )
 
@@ -178,7 +173,7 @@ def evaluate_variant(
             d20 = row["recalls"]["delta_r@20"]
             d50 = row["recalls"]["delta_r@50"]
             print(
-                f"    [{i+1}/{n}] {cat[:18]:18s}: r@20={r20:.3f} (d{d20:+.3f}) "
+                f"    [{i + 1}/{n}] {cat[:18]:18s}: r@20={r20:.3f} (d{d20:+.3f}) "
                 f"r@50={r50:.3f} (d{d50:+.3f}) "
                 f"retrieved={len(arch_segs)}",
                 flush=True,
@@ -258,7 +253,7 @@ def format_markdown(
         "- `prune_regex_conservative`: word_count<=3 AND backchannel-first-token "
         "too narrow; matched 0 segments across both datasets.\n"
         "- `prune_llm` (gpt-5-mini YES/NO): classifier said YES on 100% of 881 "
-        "turns classified across both datasets. Even short acks look \"askable\" "
+        'turns classified across both datasets. Even short acks look "askable" '
         "to the LLM. False-prune rate 0% by default, pool reduction 0%.\n"
     )
     lines.append(
@@ -287,9 +282,9 @@ def format_markdown(
             fps = v_entry.get("false_prune_stats", {})
             lines.append(
                 f"| {ds} | {variant} | {m.get('pool', 0)} | "
-                f"{m.get('pruned', 0)} | {m.get('pct', 0.0)*100:.1f}% | "
+                f"{m.get('pruned', 0)} | {m.get('pct', 0.0) * 100:.1f}% | "
                 f"{fps.get('gold_total', 0)} | {fps.get('gold_pruned', 0)} | "
-                f"{fps.get('false_prune_rate', 0.0)*100:.1f}% |"
+                f"{fps.get('false_prune_rate', 0.0) * 100:.1f}% |"
             )
 
     lines.append("\n## Recall results\n")
@@ -322,9 +317,7 @@ def format_markdown(
                 cats.add(c)
         for cat in sorted(cats):
             lines.append(f"\n### {cat}\n")
-            lines.append(
-                "| Variant | n | r@20 | d@20 | r@50 | d@50 |"
-            )
+            lines.append("| Variant | n | r@20 | d@20 | r@50 | d@50 |")
             lines.append("|---|---:|---:|---:|---:|---:|")
             for variant, v_entry in locomo["variants"].items():
                 c = v_entry.get("by_category", {}).get(cat)
@@ -347,7 +340,7 @@ def main() -> None:
     llm_cache = SalienceLLMCache() if RUN_LLM_VARIANT else None
 
     for ds in DATASETS:
-        print(f"\n{'='*70}\nDATASET {ds}\n{'='*70}")
+        print(f"\n{'=' * 70}\nDATASET {ds}\n{'=' * 70}")
         store, questions = load_dataset(ds)
         ds_out = {"variants": {}}
         print(f"Loaded {len(store.segments)} segments, {len(questions)} questions")
@@ -359,8 +352,7 @@ def main() -> None:
                 mask = None
                 used_convs = {q["conversation_id"] for q in questions}
                 pool = sum(
-                    1 for seg in store.segments
-                    if seg.conversation_id in used_convs
+                    1 for seg in store.segments if seg.conversation_id in used_convs
                 )
                 mask_stats = {
                     "pool": pool,
@@ -368,9 +360,7 @@ def main() -> None:
                     "pct": 0.0,
                 }
                 # gold_total computed from questions (for reference)
-                gold_total = sum(
-                    len(set(q["source_chat_ids"])) for q in questions
-                )
+                gold_total = sum(len(set(q["source_chat_ids"])) for q in questions)
                 fps = {
                     "gold_total": gold_total,
                     "gold_pruned": 0,
@@ -386,12 +376,16 @@ def main() -> None:
                         print("  skipping (LLM variant disabled)")
                         continue
                     mask = build_mask(
-                        store, variant, llm_cache=llm_cache, verbose=True,
+                        store,
+                        variant,
+                        llm_cache=llm_cache,
+                        verbose=True,
                         restrict_to_conv_ids=used_convs,
                     )
                 else:
                     mask = build_mask(
-                        store, variant,
+                        store,
+                        variant,
                         restrict_to_conv_ids=used_convs,
                     )
 
@@ -419,9 +413,9 @@ def main() -> None:
                 }
                 print(
                     f"  pool={pool} pruned={pruned} "
-                    f"({mask_stats['pct']*100:.1f}%) "
+                    f"({mask_stats['pct'] * 100:.1f}%) "
                     f"gold_pruned={fps['gold_pruned']}/{fps['gold_total']} "
-                    f"({fps['false_prune_rate']*100:.1f}%)"
+                    f"({fps['false_prune_rate'] * 100:.1f}%)"
                 )
 
                 # Decision rule: skip aggressive prune if >10% false-prune on LoCoMo

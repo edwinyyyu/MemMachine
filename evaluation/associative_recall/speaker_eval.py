@@ -21,9 +21,9 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
+from antipara_cue_gen import MetaV2fDedicated
 from associative_recall import Segment
+from dotenv import load_dotenv
 from fair_backfill_eval import (
     BUDGETS,
     RESULTS_DIR,
@@ -32,11 +32,11 @@ from fair_backfill_eval import (
     summarize,
     summarize_by_category,
 )
-from antipara_cue_gen import MetaV2fDedicated
+from speaker_attributed import (
+    _CONV_SPEAKERS_FILE,
+)
 from speaker_attributed import (
     ARCH_CLASSES as SPEAKER_ARCH_CLASSES,
-    extract_name_mentions,
-    _CONV_SPEAKERS_FILE,
 )
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -68,9 +68,7 @@ def evaluate_question(arch, question: dict, is_speaker_arch: bool) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     md = result.metadata or {}
@@ -93,16 +91,10 @@ def evaluate_question(arch, question: dict, is_speaker_arch: bool) -> dict:
             {
                 "conv_user_name": md.get("conv_user_name"),
                 "query_name_tokens": md.get("query_name_tokens", []),
-                "query_mentions_conv_user": md.get(
-                    "query_mentions_conv_user", False
-                ),
-                "applied_speaker_transform": md.get(
-                    "applied_speaker_transform", False
-                ),
+                "query_mentions_conv_user": md.get("query_mentions_conv_user", False),
+                "applied_speaker_transform": md.get("applied_speaker_transform", False),
                 "n_user_in_v2f": md.get("n_user_in_v2f"),
-                "appended_user_only_indices": md.get(
-                    "appended_user_only_indices", []
-                ),
+                "appended_user_only_indices": md.get("appended_user_only_indices", []),
             }
         )
 
@@ -148,7 +140,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -157,6 +149,7 @@ def run_one(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -192,9 +185,7 @@ def mention_coverage(speaker_results: list[dict]) -> dict:
     n = len(speaker_results)
     if n == 0:
         return {}
-    n_mentions = sum(
-        1 for r in speaker_results if r.get("query_mentions_conv_user")
-    )
+    n_mentions = sum(1 for r in speaker_results if r.get("query_mentions_conv_user"))
     mentioned_cats: dict[str, int] = defaultdict(int)
     for r in speaker_results:
         if r.get("query_mentions_conv_user"):
@@ -213,9 +204,7 @@ def mentioned_delta_table(
     v2f_results: list[dict],
 ) -> dict:
     """Per-K recall on the MENTIONED subset: speaker-arch vs meta_v2f."""
-    v2f_by_key = {
-        (r["conversation_id"], r["question_index"]): r for r in v2f_results
-    }
+    v2f_by_key = {(r["conversation_id"], r["question_index"]): r for r in v2f_results}
     subset = [r for r in speaker_results if r.get("query_mentions_conv_user")]
     n = len(subset)
     out: dict[str, object] = {"n_mentioned": n}
@@ -300,13 +289,9 @@ def main() -> None:
     # --- Mentioned-subset delta table vs meta_v2f ---
     mentioned_delta: dict[str, dict] = defaultdict(dict)
     for ds_name in EVAL_DATASETS:
-        v2f_rs = all_results.get("meta_v2f", {}).get(ds_name, {}).get(
-            "results", []
-        )
+        v2f_rs = all_results.get("meta_v2f", {}).get(ds_name, {}).get("results", [])
         for arch_name in SPEAKER_ARCH_CLASSES:
-            sp_rs = all_results.get(arch_name, {}).get(ds_name, {}).get(
-                "results", []
-            )
+            sp_rs = all_results.get(arch_name, {}).get(ds_name, {}).get("results", [])
             if not sp_rs or not v2f_rs:
                 continue
             mentioned_delta[arch_name][ds_name] = mentioned_delta_table(
@@ -324,9 +309,7 @@ def main() -> None:
             a: {
                 d: {
                     "summary": all_results[a][d]["summary"],
-                    "category_breakdown": all_results[a][d][
-                        "category_breakdown"
-                    ],
+                    "category_breakdown": all_results[a][d]["category_breakdown"],
                 }
                 for d in all_results[a]
             }
@@ -348,9 +331,7 @@ def main() -> None:
                         "arch": a,
                         "dataset": d,
                         "summary": all_results[a][d]["summary"],
-                        "category_breakdown": all_results[a][d][
-                            "category_breakdown"
-                        ],
+                        "category_breakdown": all_results[a][d]["category_breakdown"],
                         "results": all_results[a][d]["results"],
                     },
                     f,
@@ -373,9 +354,7 @@ def main() -> None:
 
     # Speaker IDs
     md.append("## Speaker identification\n")
-    md.append(
-        f"- Conversations scanned: {sid_summary['n_conversations']}"
-    )
+    md.append(f"- Conversations scanned: {sid_summary['n_conversations']}")
     md.append(f"- Identified (non-UNKNOWN): {sid_summary['n_identified']}")
     md.append(f"- Hit rate: {sid_summary['hit_rate']:.2%}\n")
     md.append("| Conversation | user speaker |")
@@ -471,15 +450,9 @@ def main() -> None:
     # - narrow if only mentioned subset helps but full-set is flat.
     # - abandon if loses or mechanism barely fires.
     verdict_lines: list[str] = []
-    coverage_locomo = coverage.get("locomo_30q", {}).get(
-        "frac_query_mentions", 0.0
-    )
-    coverage_synth = coverage.get("synthetic_19q", {}).get(
-        "frac_query_mentions", 0.0
-    )
-    v2f_lc = all_results.get("meta_v2f", {}).get("locomo_30q", {}).get(
-        "summary", {}
-    )
+    coverage_locomo = coverage.get("locomo_30q", {}).get("frac_query_mentions", 0.0)
+    coverage_synth = coverage.get("synthetic_19q", {}).get("frac_query_mentions", 0.0)
+    v2f_lc = all_results.get("meta_v2f", {}).get("locomo_30q", {}).get("summary", {})
     verdict_lines.append(
         f"- Speaker-ID hit rate: {sid_summary['hit_rate']:.1%} "
         f"({sid_summary['n_identified']}/{sid_summary['n_conversations']})"

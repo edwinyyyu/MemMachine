@@ -39,9 +39,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -50,9 +47,12 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from chain_retrieval import COT_PROMPT
+from dotenv import load_dotenv
+from openai import OpenAI
+
 # Import the SPECIALIST prompts verbatim so they are byte-identical.
 from prompt_optimization import META_V2F_PROMPT
-from chain_retrieval import COT_PROMPT
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -200,8 +200,7 @@ def _format_segments_v2f(
     Used to build the v2f context section byte-identically."""
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
     return "\n".join(
-        f"[Turn {s.turn_id}, {s.role}]: {s.text[:max_chars]}"
-        for s in sorted_segs
+        f"[Turn {s.turn_id}, {s.role}]: {s.text[:max_chars]}" for s in sorted_segs
     )
 
 
@@ -217,8 +216,7 @@ def _format_segments_cot(
     """Mirror chain_retrieval._format_segments (max_items=14, max_chars=260)."""
     sorted_segs = sorted(segments, key=lambda s: s.turn_id)[:max_items]
     return "\n".join(
-        f"[Turn {s.turn_id}, {s.role}]: {s.text[:max_chars]}"
-        for s in sorted_segs
+        f"[Turn {s.turn_id}, {s.role}]: {s.text[:max_chars]}" for s in sorted_segs
     )
 
 
@@ -227,7 +225,7 @@ def _parse_cues(text: str, key: str = "CUE:") -> list[str]:
     for line in text.strip().split("\n"):
         line = line.strip()
         if line.upper().startswith(key.upper()):
-            val = line[len(key):].strip()
+            val = line[len(key) :].strip()
             if val:
                 out.append(val)
     return out
@@ -298,16 +296,13 @@ class TwoCallDispatch:
         if cached is not None:
             self.embed_calls += 1
             return cached
-        response = self.client.embeddings.create(
-            model=EMBED_MODEL, input=[text]
-        )
+        response = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
         embedding = np.array(response.data[0].embedding, dtype=np.float32)
         self.embedding_cache.put(text, embedding)
         self.embed_calls += 1
         return embedding
 
-    def llm_call(self, prompt: str, model: str = MODEL,
-                 max_tokens: int = 2000) -> str:
+    def llm_call(self, prompt: str, model: str = MODEL, max_tokens: int = 2000) -> str:
         cached = self.llm_cache.get(model, prompt)
         if cached is not None:
             self.llm_calls += 1
@@ -363,8 +358,9 @@ class TwoCallDispatch:
             question=question,
             all_segs=_format_segments_cot(all_segs, max_items=14),
             num_segs=len(all_segs),
-            explored=("\n".join(f"- {c}" for c in explored)
-                      if explored else "(none yet)"),
+            explored=(
+                "\n".join(f"- {c}" for c in explored) if explored else "(none yet)"
+            ),
             num_cues=self.num_cues_complex,
         )
         response = self.llm_call(prompt)
@@ -404,15 +400,15 @@ class TwoCallDispatch:
             if classification == "SIMPLE":
                 cues, spec_raw = self.specialist_simple(question, all_segs)
             else:
-                cues, spec_raw = self.specialist_complex(
-                    question, all_segs, explored
-                )
+                cues, spec_raw = self.specialist_complex(question, all_segs, explored)
 
-            round_log.append({
-                "round": round_i,
-                "specialist": classification,
-                "cues": cues,
-            })
+            round_log.append(
+                {
+                    "round": round_i,
+                    "specialist": classification,
+                    "cues": cues,
+                }
+            )
             if not cues:
                 break
 
@@ -422,8 +418,10 @@ class TwoCallDispatch:
                 explored.append(cue)
                 cue_emb = self.embed_text(cue)
                 result = self.store.search(
-                    cue_emb, top_k=per_cue_k,
-                    conversation_id=conversation_id, exclude_indices=exclude,
+                    cue_emb,
+                    top_k=per_cue_k,
+                    conversation_id=conversation_id,
+                    exclude_indices=exclude,
                 )
                 for s in result.segments:
                     if s.index not in exclude:
@@ -447,15 +445,13 @@ class TwoCallDispatch:
 # ---------------------------------------------------------------------------
 # Fair K-budget evaluation (mirrors self_v3.evaluate_one)
 # ---------------------------------------------------------------------------
-def compute_recall(retrieved_turn_ids: set[int],
-                   source_turn_ids: set[int]) -> float:
+def compute_recall(retrieved_turn_ids: set[int], source_turn_ids: set[int]) -> float:
     if not source_turn_ids:
         return 1.0
     return len(retrieved_turn_ids & source_turn_ids) / len(source_turn_ids)
 
 
-def evaluate_one(arch: TwoCallDispatch, question: dict,
-                 verbose: bool = False) -> dict:
+def evaluate_one(arch: TwoCallDispatch, question: dict, verbose: bool = False) -> dict:
     q_text = question["question"]
     conv_id = question["conversation_id"]
     source_ids = set(question["source_chat_ids"])
@@ -474,9 +470,7 @@ def evaluate_one(arch: TwoCallDispatch, question: dict,
 
     q_emb = arch.embed_text(q_text)
     max_b = max(BUDGETS)
-    baseline = arch.store.search(
-        q_emb, top_k=max_b, conversation_id=conv_id
-    )
+    baseline = arch.store.search(q_emb, top_k=max_b, conversation_id=conv_id)
 
     arch_idx = {s.index for s in arch_segments}
     backfilled = list(arch_segments) + [
@@ -564,9 +558,7 @@ def load_dataset(key: str) -> tuple[list[dict], SegmentStore]:
 # ---------------------------------------------------------------------------
 # Load prior results for comparison (baseline, v2f, CoT, self_v2, self_v3)
 # ---------------------------------------------------------------------------
-def load_budget_recall_by_qkey(
-    arch_name: str, dataset_key: str
-) -> dict[tuple, float]:
+def load_budget_recall_by_qkey(arch_name: str, dataset_key: str) -> dict[tuple, float]:
     path = RESULTS_DIR / f"budget_{arch_name}_{dataset_key}.json"
     if not path.exists():
         return {}
@@ -596,7 +588,8 @@ def load_cot_recall_by_qkey(dataset_key: str) -> dict[tuple, dict[int, float]]:
 
 
 def load_self_vN_recall_by_qkey(
-    version: str, dataset_key: str,
+    version: str,
+    dataset_key: str,
 ) -> dict[tuple, dict[int, float]]:
     path = RESULTS_DIR / f"self_{version}_{dataset_key}.json"
     if not path.exists():
@@ -636,7 +629,7 @@ def two_call_run(
     for i, q in enumerate(qs):
         q_short = q["question"][:60].replace("\n", " ")
         print(
-            f"  [{i+1}/{len(qs)}] {q['category']}: {q_short}...",
+            f"  [{i + 1}/{len(qs)}] {q['category']}: {q_short}...",
             flush=True,
         )
         try:
@@ -645,6 +638,7 @@ def two_call_run(
         except Exception as e:
             print(f"    ERROR: {type(e).__name__}: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         # Save incrementally per question.
@@ -662,14 +656,11 @@ def two_call_run(
 # ---------------------------------------------------------------------------
 # Per-dataset + per-category summary (mirrors self_v3.compare_per_category)
 # ---------------------------------------------------------------------------
-def compare_per_category(
-    dataset_key: str, two_call_rows: list[dict]
-) -> list[dict]:
+def compare_per_category(dataset_key: str, two_call_rows: list[dict]) -> list[dict]:
     budget_by_arch: dict[str, dict[int, dict]] = {}
     for arch in ("baseline", "v2f_tight"):
         budget_by_arch[arch] = {
-            K: load_budget_recall_by_qkey(f"{arch}_{K}", dataset_key)
-            for K in BUDGETS
+            K: load_budget_recall_by_qkey(f"{arch}_{K}", dataset_key) for K in BUDGETS
         }
     cot_by_q = load_cot_recall_by_qkey(dataset_key)
     sv2_by_q = load_self_vN_recall_by_qkey("v2", dataset_key)
@@ -727,21 +718,11 @@ def compare_per_category(
                 "self_v2": sv2_mean,
                 "self_v3": sv3_mean,
                 "two_call": tc_mean,
-                "vs_v2f": (
-                    tc_mean - v2f_mean if v2f_mean is not None else None
-                ),
-                "vs_cot": (
-                    tc_mean - cot_mean if cot_mean is not None else None
-                ),
-                "vs_sv2": (
-                    tc_mean - sv2_mean if sv2_mean is not None else None
-                ),
-                "vs_sv3": (
-                    tc_mean - sv3_mean if sv3_mean is not None else None
-                ),
-                "vs_baseline": (
-                    tc_mean - b_mean if b_mean is not None else None
-                ),
+                "vs_v2f": (tc_mean - v2f_mean if v2f_mean is not None else None),
+                "vs_cot": (tc_mean - cot_mean if cot_mean is not None else None),
+                "vs_sv2": (tc_mean - sv2_mean if sv2_mean is not None else None),
+                "vs_sv3": (tc_mean - sv3_mean if sv3_mean is not None else None),
+                "vs_baseline": (tc_mean - b_mean if b_mean is not None else None),
                 "simple_n": simple_n,
                 "complex_n": complex_n,
             }
@@ -760,9 +741,9 @@ def print_overall_by_dataset(all_rows: list[dict], K: int) -> None:
     rows_k = [r for r in all_rows if r["K"] == K]
     if not rows_k:
         return
-    print(f"\n{'-'*140}")
+    print(f"\n{'-' * 140}")
     print(f"OVERALL per DATASET at K={K}")
-    print(f"{'-'*140}")
+    print(f"{'-' * 140}")
     by_ds: dict[str, list[dict]] = defaultdict(list)
     for r in rows_k:
         by_ds[r["dataset"]].append(r)
@@ -813,9 +794,9 @@ def print_per_category(all_rows: list[dict], K: int) -> None:
     rows_k = [r for r in all_rows if r["K"] == K]
     if not rows_k:
         return
-    print(f"\n{'='*140}")
+    print(f"\n{'=' * 140}")
     print(f"PER-CATEGORY BREAKDOWN at K={K}")
-    print(f"{'='*140}")
+    print(f"{'=' * 140}")
     hdr = (
         f"{'Dataset':<14s} {'Category':<24s} {'n':>3s} {'S/C':>7s} "
         f"{'Base':>6s} {'v2f':>6s} {'CoT':>6s} {'SV2':>6s} {'SV3':>6s} "
@@ -838,21 +819,26 @@ def print_per_category(all_rows: list[dict], K: int) -> None:
         )
 
 
-def print_specialist_match_check(all_two_call_rows: dict[str, list[dict]],
-                                 K: int = 20) -> None:
+def print_specialist_match_check(
+    all_two_call_rows: dict[str, list[dict]], K: int = 20
+) -> None:
     """Decompose recall by classification outcome and compare to the specialist.
 
     For SIMPLE-classified questions: does two_call >= v2f? (It should if the
     fix works — same prompt in a clean context.)
     For COMPLEX-classified questions: does two_call >= CoT? (Same logic.)
     """
-    print(f"\n{'='*120}")
+    print(f"\n{'=' * 120}")
     print(f"SPECIALIST MATCH CHECK at K={K}")
-    print("  Hypothesis: separating classifier from specialist removes the "
-          "self_v3 leakage.")
-    print("  Test: on SIMPLE-classified Qs, 2-call should match v2f; on "
-          "COMPLEX, should match CoT.")
-    print(f"{'='*120}")
+    print(
+        "  Hypothesis: separating classifier from specialist removes the "
+        "self_v3 leakage."
+    )
+    print(
+        "  Test: on SIMPLE-classified Qs, 2-call should match v2f; on "
+        "COMPLEX, should match CoT."
+    )
+    print(f"{'=' * 120}")
     hdr = (
         f"{'Dataset':<14s} {'Branch':<9s} {'n':>3s} "
         f"{'2Call':>6s} {'Specialist':>11s} {'delta':>7s}  {'vs_SV3':>7s}"
@@ -880,9 +866,7 @@ def print_specialist_match_check(all_two_call_rows: dict[str, list[dict]],
 
             if branch == "SIMPLE":
                 spec_vals = [
-                    v2f_by_q.get(
-                        (r["conversation_id"], r["question_index"])
-                    )
+                    v2f_by_q.get((r["conversation_id"], r["question_index"]))
                     for r in branch_rows
                 ]
                 spec_label = "v2f"
@@ -896,9 +880,7 @@ def print_specialist_match_check(all_two_call_rows: dict[str, list[dict]],
                 ]
                 spec_label = "CoT"
             spec_vals = [v for v in spec_vals if v is not None]
-            spec_mean = (
-                sum(spec_vals) / len(spec_vals) if spec_vals else None
-            )
+            spec_mean = sum(spec_vals) / len(spec_vals) if spec_vals else None
             sv3_vals = [
                 sv3_by_q.get(
                     (r["conversation_id"], r["question_index"]),
@@ -907,14 +889,10 @@ def print_specialist_match_check(all_two_call_rows: dict[str, list[dict]],
                 for r in branch_rows
             ]
             sv3_vals = [v for v in sv3_vals if v is not None]
-            sv3_mean = (
-                sum(sv3_vals) / len(sv3_vals) if sv3_vals else None
-            )
+            sv3_mean = sum(sv3_vals) / len(sv3_vals) if sv3_vals else None
 
             delta = (tc_mean - spec_mean) if spec_mean is not None else None
-            delta_sv3 = (
-                tc_mean - sv3_mean if sv3_mean is not None else None
-            )
+            delta_sv3 = tc_mean - sv3_mean if sv3_mean is not None else None
             print(
                 f"{ds:<14s} {branch:<9s} {len(branch_rows):>3d} "
                 f"{tc_mean:>6.3f} {spec_label + '=' + (f'{spec_mean:.3f}' if spec_mean is not None else '—'):>11s} "
@@ -925,10 +903,10 @@ def print_specialist_match_check(all_two_call_rows: dict[str, list[dict]],
 
 def print_dominance_vs_v2f_cot(all_rows: list[dict]) -> None:
     """Does two_call dominate v2f AND CoT on every dataset x K?"""
-    print(f"\n{'='*120}")
+    print(f"\n{'=' * 120}")
     print("UNIVERSAL DOMINANCE CHECK — two_call vs {v2f, CoT}")
     print("  (Key question: does splitting the call fix self_v3's failure?)")
-    print(f"{'='*120}")
+    print(f"{'=' * 120}")
     by_ds_k: dict[tuple, list[dict]] = defaultdict(list)
     for r in all_rows:
         by_ds_k[(r["dataset"], r["K"])].append(r)
@@ -968,18 +946,16 @@ def print_dominance_vs_v2f_cot(all_rows: list[dict]) -> None:
                 if d < -0.001:
                     dom_cot = False
             print("  ".join(parts))
-    print(f"\n  Universal dominance over v2f : "
-          f"{'YES' if dom_v2f else 'NO'}")
-    print(f"  Universal dominance over CoT : "
-          f"{'YES' if dom_cot else 'NO'}")
+    print(f"\n  Universal dominance over v2f : {'YES' if dom_v2f else 'NO'}")
+    print(f"  Universal dominance over CoT : {'YES' if dom_cot else 'NO'}")
 
 
 def print_classification_spotcheck(
     all_rows: dict[str, list[dict]],
 ) -> None:
-    print(f"\n{'='*108}")
+    print(f"\n{'=' * 108}")
     print("CLASSIFICATION SPOT-CHECK (per-dataset, per-category)")
-    print(f"{'='*108}")
+    print(f"{'=' * 108}")
     for ds, rows in all_rows.items():
         print(f"\n-- {ds} --")
         by_cat: dict[str, list[dict]] = defaultdict(list)
@@ -989,9 +965,11 @@ def print_classification_spotcheck(
             s_n = sum(1 for r in rs if r["classification"] == "SIMPLE")
             c_n = len(rs) - s_n
             pct_simple = 100 * s_n / len(rs)
-            print(f"  {cat:<28s} n={len(rs):>2d}  "
-                  f"SIMPLE={s_n:>2d}  COMPLEX={c_n:>2d}  "
-                  f"({pct_simple:.0f}% simple)")
+            print(
+                f"  {cat:<28s} n={len(rs):>2d}  "
+                f"SIMPLE={s_n:>2d}  COMPLEX={c_n:>2d}  "
+                f"({pct_simple:.0f}% simple)"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -999,18 +977,21 @@ def print_classification_spotcheck(
 # ---------------------------------------------------------------------------
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--force", action="store_true",
-                        help="Rerun even if result file exists")
+    parser.add_argument(
+        "--force", action="store_true", help="Rerun even if result file exists"
+    )
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--dataset", type=str, default=None,
-                        choices=list(DATASETS.keys()),
-                        help="Restrict to a single dataset")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        choices=list(DATASETS.keys()),
+        help="Restrict to a single dataset",
+    )
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    dataset_keys = (
-        [args.dataset] if args.dataset else list(DATASETS.keys())
-    )
+    dataset_keys = [args.dataset] if args.dataset else list(DATASETS.keys())
 
     all_rows: list[dict] = []
     all_two_call_rows: dict[str, list[dict]] = {}

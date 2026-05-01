@@ -9,16 +9,16 @@ Usage:
 """
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 from dotenv import load_dotenv
 
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from associative_recall import SegmentStore, Segment
-from best_shot import V15Control, MetaV2f
+from associative_recall import SegmentStore
+from best_shot import MetaV2f, V15Control
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -73,9 +73,8 @@ def main() -> None:
         cosine_hits = cosine_ids & source_ids
         cosine_misses = source_ids - cosine_ids
 
-        print(f"\nCOSINE TOP-20:")
-        print(f"  Found ({len(cosine_hits)}/{len(source_ids)}): "
-              f"{sorted(cosine_hits)}")
+        print("\nCOSINE TOP-20:")
+        print(f"  Found ({len(cosine_hits)}/{len(source_ids)}): {sorted(cosine_hits)}")
         print(f"  Missed: {sorted(cosine_misses)}")
 
         # Run v15 (will populate cache)
@@ -119,22 +118,26 @@ def main() -> None:
         gained_by_v15 = (v15_ids & source_ids) - cosine_hits
         gained_by_v2f = (v2f_ids & source_ids) - cosine_hits
 
-        print(f"\nV15 TOP-20 (fair-backfill):")
-        print(f"  Recall {len(v15_ids & source_ids)}/{len(source_ids)} = "
-              f"{len(v15_ids & source_ids)/len(source_ids):.1%}")
+        print("\nV15 TOP-20 (fair-backfill):")
+        print(
+            f"  Recall {len(v15_ids & source_ids)}/{len(source_ids)} = "
+            f"{len(v15_ids & source_ids) / len(source_ids):.1%}"
+        )
         print(f"  LOST vs cosine: {sorted(lost_by_v15)}")
         print(f"  GAINED vs cosine: {sorted(gained_by_v15)}")
 
-        print(f"\nV2F TOP-20 (fair-backfill):")
-        print(f"  Recall {len(v2f_ids & source_ids)}/{len(source_ids)} = "
-              f"{len(v2f_ids & source_ids)/len(source_ids):.1%}")
+        print("\nV2F TOP-20 (fair-backfill):")
+        print(
+            f"  Recall {len(v2f_ids & source_ids)}/{len(source_ids)} = "
+            f"{len(v2f_ids & source_ids) / len(source_ids):.1%}"
+        )
         print(f"  LOST vs cosine: {sorted(lost_by_v2f)}")
         print(f"  GAINED vs cosine: {sorted(gained_by_v2f)}")
 
         # Cues
-        print(f"\nV15 ASSESSMENT + CUES:")
+        print("\nV15 ASSESSMENT + CUES:")
         print(f"{v15_output}")
-        print(f"\nV2F ASSESSMENT + CUES:")
+        print("\nV2F ASSESSMENT + CUES:")
         print(f"{v2f_output}")
 
         # Cue-to-question cosine similarity
@@ -144,23 +147,26 @@ def main() -> None:
                 c_emb = v15.embed_text(cue)
                 sim_to_q = cos_sim(c_emb, q_emb)
                 # What did this cue retrieve at top-10?
-                cue_res = store.search(c_emb, top_k=10,
-                                       conversation_id=conv_id)
+                cue_res = store.search(c_emb, top_k=10, conversation_id=conv_id)
                 retr_ids = [s.turn_id for s in cue_res.segments]
                 hits = [t for t in retr_ids if t in source_ids]
-                cue_metrics.append({
-                    "arch": label,
-                    "cue_idx": i,
-                    "cue": cue,
-                    "cos_to_question": round(sim_to_q, 4),
-                    "top10_turns": retr_ids,
-                    "source_hits_top10": hits,
-                })
+                cue_metrics.append(
+                    {
+                        "arch": label,
+                        "cue_idx": i,
+                        "cue": cue,
+                        "cos_to_question": round(sim_to_q, 4),
+                        "top10_turns": retr_ids,
+                        "source_hits_top10": hits,
+                    }
+                )
 
-        print(f"\nCUE METRICS:")
+        print("\nCUE METRICS:")
         for cm in cue_metrics:
-            print(f"  [{cm['arch']} cue {cm['cue_idx']}] "
-                  f"cos(q, cue)={cm['cos_to_question']:.4f}")
+            print(
+                f"  [{cm['arch']} cue {cm['cue_idx']}] "
+                f"cos(q, cue)={cm['cos_to_question']:.4f}"
+            )
             print(f"    cue: {cm['cue'][:150]}")
             print(f"    top10 turns: {cm['top10_turns']}")
             print(f"    source hits: {cm['source_hits_top10']}")
@@ -169,7 +175,7 @@ def main() -> None:
         # and compute: (a) cosine to question, (b) cosine to each cue
         all_missed = (source_ids - v2f_ids) | (source_ids - v15_ids) | cosine_misses
         missed_analysis = []
-        print(f"\nMISSED SOURCE TURN CONTENT (all missed across any method):")
+        print("\nMISSED SOURCE TURN CONTENT (all missed across any method):")
         for t in sorted(all_missed):
             if t not in by_turn:
                 print(f"  Turn {t}: NOT IN STORE")
@@ -199,39 +205,42 @@ def main() -> None:
                 status.append("V2F")
             status_str = "+".join(status) if status else "MISSED_ALL"
 
-            print(f"  Turn {t:3d} [{seg.role}] ({status_str}) "
-                  f"cos(q)={sim_q:.3f}:")
+            print(f"  Turn {t:3d} [{seg.role}] ({status_str}) cos(q)={sim_q:.3f}:")
             print(f"    {seg.text[:220]}")
             print(f"    cue_sims: {cue_sims}")
-            missed_analysis.append({
-                "turn_id": t,
-                "role": seg.role,
-                "text": seg.text,
-                "in_cosine_top20": in_cosine,
-                "in_v15_top20": in_v15,
-                "in_v2f_top20": in_v2f,
-                "cos_to_question": round(sim_q, 4),
-                "cos_to_cues": cue_sims,
-            })
+            missed_analysis.append(
+                {
+                    "turn_id": t,
+                    "role": seg.role,
+                    "text": seg.text,
+                    "in_cosine_top20": in_cosine,
+                    "in_v15_top20": in_v15,
+                    "in_v2f_top20": in_v2f,
+                    "cos_to_question": round(sim_q, 4),
+                    "cos_to_cues": cue_sims,
+                }
+            )
 
-        output["questions"].append({
-            "question_index": q_idx,
-            "conversation_id": conv_id,
-            "question": q_text,
-            "source_ids": sorted(source_ids),
-            "cosine_top20_ids": sorted(cosine_ids),
-            "cosine_hits": sorted(cosine_hits),
-            "v15_top20_ids": sorted(v15_ids),
-            "v2f_top20_ids": sorted(v2f_ids),
-            "v15_lost_vs_cosine": sorted(lost_by_v15),
-            "v2f_lost_vs_cosine": sorted(lost_by_v2f),
-            "v15_gained_vs_cosine": sorted(gained_by_v15),
-            "v2f_gained_vs_cosine": sorted(gained_by_v2f),
-            "v15_output": v15_output,
-            "v2f_output": v2f_output,
-            "cue_metrics": cue_metrics,
-            "missed_turns": missed_analysis,
-        })
+        output["questions"].append(
+            {
+                "question_index": q_idx,
+                "conversation_id": conv_id,
+                "question": q_text,
+                "source_ids": sorted(source_ids),
+                "cosine_top20_ids": sorted(cosine_ids),
+                "cosine_hits": sorted(cosine_hits),
+                "v15_top20_ids": sorted(v15_ids),
+                "v2f_top20_ids": sorted(v2f_ids),
+                "v15_lost_vs_cosine": sorted(lost_by_v15),
+                "v2f_lost_vs_cosine": sorted(lost_by_v2f),
+                "v15_gained_vs_cosine": sorted(gained_by_v15),
+                "v2f_gained_vs_cosine": sorted(gained_by_v2f),
+                "v15_output": v15_output,
+                "v2f_output": v2f_output,
+                "cue_metrics": cue_metrics,
+                "missed_turns": missed_analysis,
+            }
+        )
 
     # Save caches
     v15.save_caches()

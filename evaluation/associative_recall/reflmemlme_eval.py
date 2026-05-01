@@ -36,9 +36,15 @@ from pathlib import Path
 import numpy as np
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    V2F_MODEL,
+    EMHit,
+    _dedupe_by_turn_id,
+    _merge_by_max_score,
+    _MergedLLMCache,
+    _query_em,
+)
+from em_lme_tuned_cues import LMETUNE_V2F_MIXED7030_CACHE
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -55,21 +61,12 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import (
-    EMHit,
-    V2F_MODEL,
-    _MergedLLMCache,
-    _dedupe_by_turn_id,
-    _merge_by_max_score,
-    _query_em,
-)
-from em_lme_tuned_cues import LMETUNE_V2F_MIXED7030_CACHE
+from qdrant_client import AsyncQdrantClient
 from reflective_memory_lme import (
+    REFLECTION_PROMPT,
     REFLMEMLME_CUE_ROUND1_CACHE,
     REFLMEMLME_CUE_ROUNDN_CACHE,
     REFLMEMLME_REFLECT_CACHE,
-    REFLECTION_PROMPT,
     ROUND_N_CUE_PROMPT,
     V2F_LME_MIXED_7030_PROMPT,
     ScratchMemory,
@@ -80,7 +77,7 @@ from reflective_memory_lme import (
     parse_reflection_json,
     parse_speaker_cues,
 )
-
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -101,13 +98,13 @@ EXPAND_CONTEXT = 3
 ARCH_CONCURRENCY = 8
 
 # References from prior LME runs.
-REF_EM_V2F_EXPAND_3 = 0.832              # em_v2f_expand_3 R@50 overall
-REF_EM_V2F_LME_MIXED_7030 = 0.8631       # em_v2f_lme_mixed_7030 R@50 overall
-REF_EM_ENS_2_LME_RETUNED = 0.8499        # em_ens_2_lme_retuned R@50 overall
+REF_EM_V2F_EXPAND_3 = 0.832  # em_v2f_expand_3 R@50 overall
+REF_EM_V2F_LME_MIXED_7030 = 0.8631  # em_v2f_lme_mixed_7030 R@50 overall
+REF_EM_ENS_2_LME_RETUNED = 0.8499  # em_ens_2_lme_retuned R@50 overall
 # per-category on em_v2f_lme_mixed_7030 (R@50)
-REF_MS_MIXED_7030 = 0.8484               # multi-session
-REF_SSP_MIXED_7030 = 0.9449              # single-session-preference
-REF_TR_MIXED_7030 = 0.7961               # temporal-reasoning
+REF_MS_MIXED_7030 = 0.8484  # multi-session
+REF_SSP_MIXED_7030 = 0.9449  # single-session-preference
+REF_TR_MIXED_7030 = 0.7961  # temporal-reasoning
 
 
 def _ensure_user_prefix(text: str) -> str:
@@ -136,13 +133,10 @@ async def _primer_context_for_round1(memory: EventMemory, question: str) -> str:
     """
     prefixed_q = _ensure_user_prefix(question)
     primer_hits = _dedupe_by_turn_id(
-        await _query_em(
-            memory, prefixed_q, vector_search_limit=10, expand_context=0
-        )
+        await _query_em(memory, prefixed_q, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer_hits
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer_hits
     ]
     return format_primer_context_lme(primer_segments)
 
@@ -229,9 +223,7 @@ async def _retrieve_with_cues_and_scratch(
 # -----------------------------------------------------------------------------
 
 
-async def _embed_texts(
-    embedder: OpenAIEmbedder, texts: list[str]
-) -> list[np.ndarray]:
+async def _embed_texts(embedder: OpenAIEmbedder, texts: list[str]) -> list[np.ndarray]:
     if not texts:
         return []
     prefixed = [_ensure_user_prefix(t) for t in texts]
@@ -296,10 +288,7 @@ async def run_reflmem_query(
 
     # Reflect after round 1.
     turns_ctx = format_turns_section(
-        [
-            {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-            for h in r1_hits[:20]
-        ]
+        [{"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in r1_hits[:20]]
     )
     reflect_prompt_1 = REFLECTION_PROMPT.format(
         question=question,
@@ -319,9 +308,7 @@ async def run_reflmem_query(
 
     # Embed reflection and add to scratch.
     r1_scratch_texts = learned_1 + still_need_1
-    r1_kinds = (
-        ["learned"] * len(learned_1) + ["still_need"] * len(still_need_1)
-    )
+    r1_kinds = ["learned"] * len(learned_1) + ["still_need"] * len(still_need_1)
     r1_embs = await _embed_texts(embedder, r1_scratch_texts)
     for t, k, e in zip(r1_scratch_texts, r1_kinds, r1_embs):
         scratch.add(text=t, kind=k, embedding=e)
@@ -392,9 +379,7 @@ async def run_reflmem_query(
         learned_r, still_need_r = parse_reflection_json(reflect_text_r)
 
         new_texts = learned_r + still_need_r
-        new_kinds = (
-            ["learned"] * len(learned_r) + ["still_need"] * len(still_need_r)
-        )
+        new_kinds = ["learned"] * len(learned_r) + ["still_need"] * len(still_need_r)
         new_embs = await _embed_texts(embedder, new_texts)
         for t, k, e in zip(new_texts, new_kinds, new_embs):
             scratch.add(text=t, kind=k, embedding=e)
@@ -681,7 +666,11 @@ async def main() -> None:
                             continue
                         this_set = set(pr[r_idx - 1][f"retrieved_set_at_{K}"])
                         q = next(
-                            (qq for qq in questions if qq["question_id"] == row["question_id"]),
+                            (
+                                qq
+                                for qq in questions
+                                if qq["question_id"] == row["question_id"]
+                            ),
                             None,
                         )
                         if q is None:
@@ -703,11 +692,7 @@ async def main() -> None:
                         if delta > 0.0001:
                             n_nontrivial += 1
                         recall_delta_sum += delta
-                    total = sum(
-                        1
-                        for qq in questions
-                        if qq.get("source_chat_ids")
-                    )
+                    total = sum(1 for qq in questions if qq.get("source_chat_ids"))
                     entry["rounds"][str(r_idx)] = {
                         "frac_queries_with_novel_gold": round(
                             n_gain_any / max(total, 1), 4
@@ -715,9 +700,7 @@ async def main() -> None:
                         "frac_queries_with_recall_gain": round(
                             n_nontrivial / max(total, 1), 4
                         ),
-                        "mean_recall_delta": round(
-                            recall_delta_sum / max(total, 1), 4
-                        ),
+                        "mean_recall_delta": round(recall_delta_sum / max(total, 1), 4),
                     }
                 round_novelty[f"K={K}"] = entry
 
@@ -729,7 +712,13 @@ async def main() -> None:
                 # shrink per_round_metrics (drop retrieved sets)
                 prm = []
                 for m in r["per_round_metrics"]:
-                    prm.append({k: v for k, v in m.items() if not k.startswith("retrieved_set")})
+                    prm.append(
+                        {
+                            k: v
+                            for k, v in m.items()
+                            if not k.startswith("retrieved_set")
+                        }
+                    )
                 rp["per_round_metrics"] = prm
                 persisted_rows.append(rp)
 
@@ -850,9 +839,7 @@ def write_markdown_report(results: dict) -> None:
     # Sample: pick 2 questions from 2round where round-2 added novel gold,
     # fall back to first 2.
     sample_arch = (
-        "reflmemlme_2round"
-        if "reflmemlme_2round" in archs
-        else list(archs.keys())[0]
+        "reflmemlme_2round" if "reflmemlme_2round" in archs else list(archs.keys())[0]
     )
     md += ["", f"## Sample scratch state + round-2 gains (from `{sample_arch}`)"]
     sample_rows = archs[sample_arch]["per_question"]
@@ -917,9 +904,11 @@ def write_markdown_report(results: dict) -> None:
     ]
     # Temporal-reasoning check at K=50.
     if best_name is not None:
-        tr_best = archs[best_name]["by_category"].get(
-            "temporal-reasoning", {}
-        ).get("mean_r@50", 0.0)
+        tr_best = (
+            archs[best_name]["by_category"]
+            .get("temporal-reasoning", {})
+            .get("mean_r@50", 0.0)
+        )
         md.append(
             f"- Temporal-reasoning (best variant @ K=50): {tr_best:.4f} "
             f"(ref {REF_TR_MIXED_7030:.4f}; "

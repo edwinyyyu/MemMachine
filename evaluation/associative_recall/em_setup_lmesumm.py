@@ -39,9 +39,6 @@ from uuid import uuid4
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -68,7 +65,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -521,12 +519,14 @@ async def main() -> None:
         t_summ = time.monotonic()
         for i, qid in enumerate(poc_ids):
             print(
-                f"[summarize {i+1}/{len(poc_ids)}] {qid} "
+                f"[summarize {i + 1}/{len(poc_ids)}] {qid} "
                 f"({len(turns_by_q[qid])} turns)",
                 flush=True,
             )
             summ = await generate_summaries_for_question(
-                turns_by_q[qid], openai_client, cache,
+                turns_by_q[qid],
+                openai_client,
+                cache,
             )
             n_filler = sum(1 for v in summ.values() if v == FILLER_MARKER)
             print(f"  -> {len(summ)} summaries, {n_filler} filler", flush=True)

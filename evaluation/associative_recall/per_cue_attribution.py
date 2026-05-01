@@ -4,13 +4,14 @@ For each (question, cue) pair cached from v2f/meta_v2f runs, measure which
 cues actually retrieved gold turns and extract features to distinguish winners
 from losers. Pure analysis — no new LLM calls, embeddings are cache hits.
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
 import os
 import re
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -113,7 +114,9 @@ class Npz:
         for cid in set(self.conversation_ids):
             self._conv_idx[cid] = np.where(self.conversation_ids == cid)[0]
 
-    def search(self, query_emb: np.ndarray, conversation_id: str, top_k: int = 20) -> list[dict]:
+    def search(
+        self, query_emb: np.ndarray, conversation_id: str, top_k: int = 20
+    ) -> list[dict]:
         idx = self._conv_idx.get(conversation_id)
         if idx is None or len(idx) == 0:
             return []
@@ -123,14 +126,16 @@ class Npz:
         out = []
         for rank, local_i in enumerate(order):
             global_i = int(idx[local_i])
-            out.append({
-                "rank": rank,
-                "index": global_i,
-                "turn_id": int(self.turn_ids[global_i]),
-                "role": str(self.roles[global_i]),
-                "text": str(self.texts[global_i]),
-                "score": float(sims[local_i]),
-            })
+            out.append(
+                {
+                    "rank": rank,
+                    "index": global_i,
+                    "turn_id": int(self.turn_ids[global_i]),
+                    "role": str(self.roles[global_i]),
+                    "text": str(self.texts[global_i]),
+                    "score": float(sims[local_i]),
+                }
+            )
         return out
 
     def conv_size(self, conversation_id: str) -> int:
@@ -183,16 +188,23 @@ def collect_cue_entries() -> list[dict]:
                 if key in seen:
                     continue
                 seen.add(key)
-                entries.append({
-                    "conversation_id": conv_id,
-                    "category": category,
-                    "question_index": qidx,
-                    "question": question,
-                    "cue": cue,
-                    "cue_index": i,
-                    "source_chat_ids": [int(x) for x in sources if isinstance(x, (int, float, str)) and str(x).lstrip("-").isdigit()],
-                    "source_file": f,
-                })
+                entries.append(
+                    {
+                        "conversation_id": conv_id,
+                        "category": category,
+                        "question_index": qidx,
+                        "question": question,
+                        "cue": cue,
+                        "cue_index": i,
+                        "source_chat_ids": [
+                            int(x)
+                            for x in sources
+                            if isinstance(x, (int, float, str))
+                            and str(x).lstrip("-").isdigit()
+                        ],
+                        "source_file": f,
+                    }
+                )
     return entries
 
 
@@ -208,14 +220,76 @@ def tokens(text: str) -> list[str]:
 
 
 STOP = {
-    "a", "an", "the", "of", "to", "in", "on", "for", "and", "or", "but",
-    "at", "by", "is", "are", "was", "were", "be", "been", "being", "i", "you",
-    "he", "she", "it", "we", "they", "my", "your", "his", "her", "its",
-    "our", "their", "this", "that", "these", "those", "me", "him", "them",
-    "us", "mine", "yours", "as", "if", "with", "from", "up", "about",
-    "do", "did", "does", "have", "has", "had", "will", "would", "could",
-    "should", "may", "might", "can", "what", "when", "where", "who", "why",
-    "how", "which",
+    "a",
+    "an",
+    "the",
+    "of",
+    "to",
+    "in",
+    "on",
+    "for",
+    "and",
+    "or",
+    "but",
+    "at",
+    "by",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "i",
+    "you",
+    "he",
+    "she",
+    "it",
+    "we",
+    "they",
+    "my",
+    "your",
+    "his",
+    "her",
+    "its",
+    "our",
+    "their",
+    "this",
+    "that",
+    "these",
+    "those",
+    "me",
+    "him",
+    "them",
+    "us",
+    "mine",
+    "yours",
+    "as",
+    "if",
+    "with",
+    "from",
+    "up",
+    "about",
+    "do",
+    "did",
+    "does",
+    "have",
+    "has",
+    "had",
+    "will",
+    "would",
+    "could",
+    "should",
+    "may",
+    "might",
+    "can",
+    "what",
+    "when",
+    "where",
+    "who",
+    "why",
+    "how",
+    "which",
 }
 
 
@@ -235,10 +309,32 @@ def is_question(text: str) -> bool:
     if t.endswith("?"):
         return True
     first = t.split(" ", 1)[0].lower().strip(",.")
-    interrog = {"what", "when", "where", "who", "why", "how", "which",
-                "did", "do", "does", "is", "are", "was", "were",
-                "have", "has", "had", "will", "would", "could", "should",
-                "can", "may", "might"}
+    interrog = {
+        "what",
+        "when",
+        "where",
+        "who",
+        "why",
+        "how",
+        "which",
+        "did",
+        "do",
+        "does",
+        "is",
+        "are",
+        "was",
+        "were",
+        "have",
+        "has",
+        "had",
+        "will",
+        "would",
+        "could",
+        "should",
+        "can",
+        "may",
+        "might",
+    }
     return first in interrog
 
 
@@ -384,31 +480,35 @@ def main(top_k: int = 20):
                         retrieved_gold_text = h["text"]
                         break
 
-            per_cue.append({
-                "conversation_id": conv_id,
-                "category": e["category"],
-                "question": question,
-                "cue": cue,
-                "cue_index": e["cue_index"],
-                "source_chat_ids": source_ids,
-                "num_gold": len(gold_set),
-                "gold_hit": len(gold_hit_tids),
-                "gold_exclusive": len(gold_exclusive),
-                "marginal": len(marginal),
-                "baseline_gold_hit": len(baseline_turn_ids & gold_set),
-                "cue_len_words": cue_len_words,
-                "jaccard_with_q": jac,
-                "is_question": is_question(cue),
-                "entity_count": entity_count(cue),
-                "number_count": number_count(cue),
-                "cue_q_cos": cue_q_cos,
-                "best_gold_cos": best_gold_cos,
-                "retrieved_gold_text": retrieved_gold_text,
-                "source_file": e["source_file"],
-            })
+            per_cue.append(
+                {
+                    "conversation_id": conv_id,
+                    "category": e["category"],
+                    "question": question,
+                    "cue": cue,
+                    "cue_index": e["cue_index"],
+                    "source_chat_ids": source_ids,
+                    "num_gold": len(gold_set),
+                    "gold_hit": len(gold_hit_tids),
+                    "gold_exclusive": len(gold_exclusive),
+                    "marginal": len(marginal),
+                    "baseline_gold_hit": len(baseline_turn_ids & gold_set),
+                    "cue_len_words": cue_len_words,
+                    "jaccard_with_q": jac,
+                    "is_question": is_question(cue),
+                    "entity_count": entity_count(cue),
+                    "number_count": number_count(cue),
+                    "cue_q_cos": cue_q_cos,
+                    "best_gold_cos": best_gold_cos,
+                    "retrieved_gold_text": retrieved_gold_text,
+                    "source_file": e["source_file"],
+                }
+            )
 
     print(f"Analyzed {len(per_cue)} cues")
-    print(f"Skipped: no_npz={skipped_no_npz}, no_q_emb={skipped_no_q_emb}, no_cue_emb={skipped_no_cue_emb}")
+    print(
+        f"Skipped: no_npz={skipped_no_npz}, no_q_emb={skipped_no_q_emb}, no_cue_emb={skipped_no_cue_emb}"
+    )
 
     # Save raw JSON
     out_json = RESULTS_DIR / "per_cue_attribution.json"
@@ -426,7 +526,9 @@ def summarize(per_cue: list[dict], top_k: int = 20):
     n = len(per_cue)
     winners = [c for c in per_cue if c["gold_exclusive"] > 0]
     losers = [c for c in per_cue if c["gold_hit"] == 0]
-    hitters = [c for c in per_cue if c["gold_hit"] > 0]  # any gold hit (including non-exclusive)
+    hitters = [
+        c for c in per_cue if c["gold_hit"] > 0
+    ]  # any gold hit (including non-exclusive)
 
     def mean(xs):
         xs = [x for x in xs if x is not None]
@@ -547,12 +649,16 @@ def write_report(per_cue: list[dict], top_k: int = 20):
     lines.append("# Per-Cue Attribution Analysis")
     lines.append("")
     lines.append(f"- Total (question, cue) pairs analyzed: **{stats['total_cues']}**")
-    n_q = len({(c['conversation_id'], c['question']) for c in per_cue})
+    n_q = len({(c["conversation_id"], c["question"]) for c in per_cue})
     lines.append(f"- Unique questions: **{n_q}**")
     lines.append(f"- Top-K used for retrieval: **{top_k}**")
-    lines.append(f"- Winners (≥1 gold hit exclusive vs baseline): **{stats['winners_(gold_exclusive>0)']}** ({stats['winners_pct']:.1f}%)")
+    lines.append(
+        f"- Winners (≥1 gold hit exclusive vs baseline): **{stats['winners_(gold_exclusive>0)']}** ({stats['winners_pct']:.1f}%)"
+    )
     lines.append(f"- Any-gold hitters: **{stats['hitters_(any_gold)']}**")
-    lines.append(f"- Losers (0 gold in top-{top_k}): **{stats['losers_(no_gold)']}** ({stats['losers_pct']:.1f}%)")
+    lines.append(
+        f"- Losers (0 gold in top-{top_k}): **{stats['losers_(no_gold)']}** ({stats['losers_pct']:.1f}%)"
+    )
     lines.append("")
 
     # Feature table
@@ -561,9 +667,16 @@ def write_report(per_cue: list[dict], top_k: int = 20):
     lines.append("")
     lines.append("| feature | all | winners | hitters (any gold) | losers |")
     lines.append("|---|---|---|---|---|")
-    for feat in ["mean_len_words", "median_len_words", "mean_jaccard",
-                 "pct_is_question", "mean_entity_count", "mean_number_count",
-                 "mean_cue_q_cos", "mean_best_gold_cos"]:
+    for feat in [
+        "mean_len_words",
+        "median_len_words",
+        "mean_jaccard",
+        "pct_is_question",
+        "mean_entity_count",
+        "mean_number_count",
+        "mean_cue_q_cos",
+        "mean_best_gold_cos",
+    ]:
         row = [feat]
         for g in ["all", "winners", "hitters", "losers"]:
             v = ft[g].get(feat, 0.0)
@@ -578,9 +691,15 @@ def write_report(per_cue: list[dict], top_k: int = 20):
     wf = ft["winners"]
     lf = ft["losers"]
     deltas = []
-    for feat in ["mean_len_words", "mean_jaccard", "pct_is_question",
-                 "mean_entity_count", "mean_number_count", "mean_cue_q_cos",
-                 "mean_best_gold_cos"]:
+    for feat in [
+        "mean_len_words",
+        "mean_jaccard",
+        "pct_is_question",
+        "mean_entity_count",
+        "mean_number_count",
+        "mean_cue_q_cos",
+        "mean_best_gold_cos",
+    ]:
         w = wf.get(feat, 0.0)
         l = lf.get(feat, 0.0)
         # Normalize delta by loser value to get relative effect
@@ -601,14 +720,18 @@ def write_report(per_cue: list[dict], top_k: int = 20):
 
     lines.append("## Category-specific patterns")
     lines.append("")
-    lines.append("| category | n | winner rate | hitter rate | win_len | lose_len | win_cos | lose_cos |")
+    lines.append(
+        "| category | n | winner rate | hitter rate | win_len | lose_len | win_cos | lose_cos |"
+    )
     lines.append("|---|---|---|---|---|---|---|---|")
     for cat, s in sorted(cat_stats.items(), key=lambda x: -x[1]["n"])[:20]:
         wl = s["winners_features"].get("mean_len_words", 0.0)
         ll = s["losers_features"].get("mean_len_words", 0.0)
         wc = s["winners_features"].get("mean_best_gold_cos", 0.0)
         lc = s["losers_features"].get("mean_best_gold_cos", 0.0)
-        lines.append(f"| {cat} | {s['n']} | {s['winner_rate']:.2f} | {s['hitter_rate']:.2f} | {wl:.1f} | {ll:.1f} | {wc:.3f} | {lc:.3f} |")
+        lines.append(
+            f"| {cat} | {s['n']} | {s['winner_rate']:.2f} | {s['hitter_rate']:.2f} | {wl:.1f} | {ll:.1f} | {wc:.3f} | {lc:.3f} |"
+        )
     lines.append("")
 
     lines.append("## 10 Winning cue examples")
@@ -617,7 +740,9 @@ def write_report(per_cue: list[dict], top_k: int = 20):
         lines.append(f"### Winner #{i}  [{c['category']}]")
         lines.append(f"- **Question:** {c['question']}")
         lines.append(f"- **Cue:** {c['cue']}")
-        lines.append(f"- gold_hit={c['gold_hit']}, gold_exclusive={c['gold_exclusive']}, cue_q_cos={c['cue_q_cos']:.3f}, best_gold_cos={c['best_gold_cos']:.3f}, len={c['cue_len_words']}")
+        lines.append(
+            f"- gold_hit={c['gold_hit']}, gold_exclusive={c['gold_exclusive']}, cue_q_cos={c['cue_q_cos']:.3f}, best_gold_cos={c['best_gold_cos']:.3f}, len={c['cue_len_words']}"
+        )
         if c.get("retrieved_gold_text"):
             txt = c["retrieved_gold_text"][:240].replace("\n", " ")
             lines.append(f"- **Retrieved gold turn:** {txt}")
@@ -629,7 +754,9 @@ def write_report(per_cue: list[dict], top_k: int = 20):
         lines.append(f"### Loser #{i}  [{c['category']}]")
         lines.append(f"- **Question:** {c['question']}")
         lines.append(f"- **Cue:** {c['cue']}")
-        lines.append(f"- gold_hit=0, cue_q_cos={c['cue_q_cos']:.3f}, best_gold_cos={c['best_gold_cos']:.3f}, len={c['cue_len_words']}, entities={c['entity_count']}, is_question={c['is_question']}")
+        lines.append(
+            f"- gold_hit=0, cue_q_cos={c['cue_q_cos']:.3f}, best_gold_cos={c['best_gold_cos']:.3f}, len={c['cue_len_words']}, entities={c['entity_count']}, is_question={c['is_question']}"
+        )
         lines.append("")
 
     # Local mean helper (write_report scope)
@@ -643,8 +770,15 @@ def write_report(per_cue: list[dict], top_k: int = 20):
     for c in per_cue:
         local_by_cat[c["category"]].append(c)
     cat_deltas = defaultdict(list)
-    feats = ["cue_len_words", "jaccard_with_q", "is_question", "entity_count",
-             "number_count", "cue_q_cos", "best_gold_cos"]
+    feats = [
+        "cue_len_words",
+        "jaccard_with_q",
+        "is_question",
+        "entity_count",
+        "number_count",
+        "cue_q_cos",
+        "best_gold_cos",
+    ]
     for cat, group in local_by_cat.items():
         gwin = [c for c in group if c["gold_exclusive"] > 0]
         glose = [c for c in group if c["gold_hit"] == 0]
@@ -655,9 +789,13 @@ def write_report(per_cue: list[dict], top_k: int = 20):
             l = _mean([float(c[fkey]) for c in glose])
             cat_deltas[fkey].append(w - l)
 
-    lines.append("## Within-category deltas (winners − losers, averaged across categories)")
+    lines.append(
+        "## Within-category deltas (winners − losers, averaged across categories)"
+    )
     lines.append("")
-    lines.append("Controls for the confound that some categories have inherently longer/shorter cues.")
+    lines.append(
+        "Controls for the confound that some categories have inherently longer/shorter cues."
+    )
     lines.append("")
     lines.append("| feature | avg Δ (winner − loser) | #cats with data |")
     lines.append("|---|---|---|")
@@ -684,33 +822,65 @@ def write_report(per_cue: list[dict], top_k: int = 20):
     wins_jac = ft["winners"]["mean_jaccard"]
     loss_jac = ft["losers"]["mean_jaccard"]
 
-    lines.append(f"- **Length:** winners average {wins_len:.1f} words vs losers {loss_len:.1f}. {'Shorter' if wins_len < loss_len else 'Longer'} cues win.")
-    lines.append(f"- **Embedding distance from question:** winners' cues sit at cos={ft['winners']['mean_cue_q_cos']:.3f} from the question vs losers' {ft['losers']['mean_cue_q_cos']:.3f}. "
-                 f"{'Winners probe further from the query' if ft['winners']['mean_cue_q_cos'] < ft['losers']['mean_cue_q_cos'] else 'Winners stay closer to the query'}.")
-    lines.append(f"- **Question-form cues:** {wins_iq:.1f}% of winners are questions vs {loss_iq:.1f}% of losers. {'Statement form wins' if wins_iq < loss_iq else 'Question form wins'}.")
-    lines.append(f"- **Entity density:** winners {wins_ent:.2f} entities/cue vs losers {loss_ent:.2f}. "
-                 f"{'More entity-dense' if wins_ent > loss_ent else 'Less entity-dense'} cues win.")
-    lines.append(f"- **Lexical overlap with question:** winners Jaccard={wins_jac:.3f} vs losers {loss_jac:.3f}. Counterintuitively, high question-token overlap is a loser signal — good cues probe *around* the question with chat-style text, not by echoing it.")
-    lines.append(f"- **Best-gold cosine (how close cue got to any gold turn):** winners {wins_cos:.3f} vs losers {loss_cos:.3f}. This is the strongest signal — cues that geometrically approach a gold turn succeed.")
+    lines.append(
+        f"- **Length:** winners average {wins_len:.1f} words vs losers {loss_len:.1f}. {'Shorter' if wins_len < loss_len else 'Longer'} cues win."
+    )
+    lines.append(
+        f"- **Embedding distance from question:** winners' cues sit at cos={ft['winners']['mean_cue_q_cos']:.3f} from the question vs losers' {ft['losers']['mean_cue_q_cos']:.3f}. "
+        f"{'Winners probe further from the query' if ft['winners']['mean_cue_q_cos'] < ft['losers']['mean_cue_q_cos'] else 'Winners stay closer to the query'}."
+    )
+    lines.append(
+        f"- **Question-form cues:** {wins_iq:.1f}% of winners are questions vs {loss_iq:.1f}% of losers. {'Statement form wins' if wins_iq < loss_iq else 'Question form wins'}."
+    )
+    lines.append(
+        f"- **Entity density:** winners {wins_ent:.2f} entities/cue vs losers {loss_ent:.2f}. "
+        f"{'More entity-dense' if wins_ent > loss_ent else 'Less entity-dense'} cues win."
+    )
+    lines.append(
+        f"- **Lexical overlap with question:** winners Jaccard={wins_jac:.3f} vs losers {loss_jac:.3f}. Counterintuitively, high question-token overlap is a loser signal — good cues probe *around* the question with chat-style text, not by echoing it."
+    )
+    lines.append(
+        f"- **Best-gold cosine (how close cue got to any gold turn):** winners {wins_cos:.3f} vs losers {loss_cos:.3f}. This is the strongest signal — cues that geometrically approach a gold turn succeed."
+    )
     lines.append("")
     lines.append("### Loser archetype (from top 10)")
     lines.append("")
-    lines.append("The dominant failure mode is the **\"interrogative paraphrase\"**: cues like `\"Melanie painted that sunrise last year\"` or `\"When was Caroline's 18th birthday? ten years ago\"`. They:")
-    lines.append("- Are short declarative paraphrases of the question or question+guessed-answer.")
-    lines.append("- Sit at high cosine to the question (0.78–0.92) but low cosine to the actual gold turn (<0.35).")
-    lines.append("- Hallucinate/guess the answer inline, polluting the embedding with tokens not in the chat log.")
-    lines.append("- Concentrate in locomo_temporal / locomo_single_hop where gold is a short chat turn whose vocabulary the LLM cannot predict from the question alone.")
+    lines.append(
+        'The dominant failure mode is the **"interrogative paraphrase"**: cues like `"Melanie painted that sunrise last year"` or `"When was Caroline\'s 18th birthday? ten years ago"`. They:'
+    )
+    lines.append(
+        "- Are short declarative paraphrases of the question or question+guessed-answer."
+    )
+    lines.append(
+        "- Sit at high cosine to the question (0.78–0.92) but low cosine to the actual gold turn (<0.35)."
+    )
+    lines.append(
+        "- Hallucinate/guess the answer inline, polluting the embedding with tokens not in the chat log."
+    )
+    lines.append(
+        "- Concentrate in locomo_temporal / locomo_single_hop where gold is a short chat turn whose vocabulary the LLM cannot predict from the question alone."
+    )
     lines.append("")
     lines.append("### Winner archetype (from top 10)")
     lines.append("")
-    lines.append("- Chat-message text with named entities + specific nouns + timestamps or numbers. Sequential-chain, logic-constraint, and evolving-terminology questions produce the best cues because the LLM can draw vocabulary from the already-retrieved context rather than guessing.")
-    lines.append("- Notable: many winners have LOW cue_q_cos (0.23–0.37). The LLM is productively *pivoting* — inventing new vocabulary that matches the gold turn's voice rather than the question's.")
+    lines.append(
+        "- Chat-message text with named entities + specific nouns + timestamps or numbers. Sequential-chain, logic-constraint, and evolving-terminology questions produce the best cues because the LLM can draw vocabulary from the already-retrieved context rather than guessing."
+    )
+    lines.append(
+        "- Notable: many winners have LOW cue_q_cos (0.23–0.37). The LLM is productively *pivoting* — inventing new vocabulary that matches the gold turn's voice rather than the question's."
+    )
     lines.append("")
     lines.append("### v2f-successor variants to test")
     lines.append("")
-    lines.append("1. **Anti-paraphrase prompt hardening.** The existing v2f prompt already says \"Do NOT write questions\", but losers still echo question tokens. Add: \"Do NOT restate the question. Do NOT guess an answer. Write a quote that might appear verbatim in the chat.\" Test: expect biggest lift on locomo_temporal (25% winner rate currently).")
-    lines.append("2. **Context-anchored cues for sparse retrieval.** When the context_section is empty or weak (locomo_temporal, locomo_single_hop), v2f has nothing to seed cues with and falls back to paraphrasing. Add a mandatory 2-stage: hop0 retrieves 10, then force the LLM to *quote* 1–2 phrases from the retrieved context verbatim and extend each into a cue. Gold-cosine lift should be large because cues inherit real chat vocabulary.")
-    lines.append("3. **Entity/number injection for proactive and completeness categories.** Entity density is the 2nd-strongest feature (+1.9 per cue; rel Δ +1.4). For categories where recall is already >80% (constraint_propagation, negation), focus instead on recall@all by generating multiple entity-specific cue variants.")
+    lines.append(
+        '1. **Anti-paraphrase prompt hardening.** The existing v2f prompt already says "Do NOT write questions", but losers still echo question tokens. Add: "Do NOT restate the question. Do NOT guess an answer. Write a quote that might appear verbatim in the chat." Test: expect biggest lift on locomo_temporal (25% winner rate currently).'
+    )
+    lines.append(
+        "2. **Context-anchored cues for sparse retrieval.** When the context_section is empty or weak (locomo_temporal, locomo_single_hop), v2f has nothing to seed cues with and falls back to paraphrasing. Add a mandatory 2-stage: hop0 retrieves 10, then force the LLM to *quote* 1–2 phrases from the retrieved context verbatim and extend each into a cue. Gold-cosine lift should be large because cues inherit real chat vocabulary."
+    )
+    lines.append(
+        "3. **Entity/number injection for proactive and completeness categories.** Entity density is the 2nd-strongest feature (+1.9 per cue; rel Δ +1.4). For categories where recall is already >80% (constraint_propagation, negation), focus instead on recall@all by generating multiple entity-specific cue variants."
+    )
     lines.append("")
 
     out_md = RESULTS_DIR / "per_cue_attribution.md"

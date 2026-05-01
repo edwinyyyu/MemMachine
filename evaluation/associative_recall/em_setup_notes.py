@@ -36,9 +36,6 @@ from uuid import uuid4
 import numpy as np
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -65,7 +62,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -490,7 +488,7 @@ async def ingest_conversation(
                 prior_notes_prose=prior_notes_prose,
                 recent_turns=recent_turns,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             # Degrade gracefully: ingest a stub note so the pipeline continues.
             print(f"[note-gen] conv={conv_id} turn={turn_id} error={exc!r}")
             prose = ""
@@ -528,9 +526,12 @@ async def ingest_conversation(
         # Sample early/mid/late turns per conv for qualitative inspection.
         n_total_turns = len(segments) if limit is None else min(limit, len(segments))
         if n_total_turns > 0 and (
-            turn_id in {segments[0][0],
-                        segments[min(n_total_turns // 2, len(segments) - 1)][0],
-                        segments[n_total_turns - 1][0]}
+            turn_id
+            in {
+                segments[0][0],
+                segments[min(n_total_turns // 2, len(segments) - 1)][0],
+                segments[n_total_turns - 1][0],
+            }
         ):
             samples.append(
                 {

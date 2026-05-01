@@ -23,11 +23,8 @@ Variants:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import numpy as np
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EmbeddingCache,
@@ -36,13 +33,13 @@ from associative_recall import (
     SegmentStore,
 )
 from best_shot import (
+    V2F_PROMPT,
     BestshotBase,
     BestshotResult,
-    V2F_PROMPT,
     _format_segments,
     _parse_cues,
 )
-
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Dedicated caches — read many shared caches for hits, write only to own files
@@ -220,9 +217,7 @@ class _IQRBase(BestshotBase):
             return None
 
         # Gather normalized stored embeddings (store keeps normalized versions)
-        vecs = np.stack(
-            [self.store.normalized_embeddings[s.index] for s in segments]
-        )
+        vecs = np.stack([self.store.normalized_embeddings[s.index] for s in segments])
         if self.filter_by_median and len(scores) >= 2:
             median = float(np.median(scores))
             mask = np.array([sc >= median for sc in scores])
@@ -294,9 +289,7 @@ class _IQRBase(BestshotBase):
             q_t = q_next
 
         # Rank by max score across all probe rounds
-        ranked = sorted(
-            score_map.keys(), key=lambda idx: score_map[idx], reverse=True
-        )
+        ranked = sorted(score_map.keys(), key=lambda idx: score_map[idx], reverse=True)
         all_segments = [seg_map[idx] for idx in ranked][: self.max_return]
 
         # Build q_refined for diagnostics
@@ -431,18 +424,14 @@ class IqrPlusV2f(BestshotBase):
 
         for cue in v2f_cues:
             cue_emb = self.embed_text(cue)
-            res = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id
-            )
+            res = self.store.search(cue_emb, top_k=10, conversation_id=conversation_id)
             for seg, sc in zip(res.segments, res.scores):
                 if seg.index not in score_map or sc > score_map[seg.index]:
                     score_map[seg.index] = sc
                 if seg.index not in seg_map:
                     seg_map[seg.index] = seg
 
-        ranked = sorted(
-            score_map.keys(), key=lambda idx: score_map[idx], reverse=True
-        )
+        ranked = sorted(score_map.keys(), key=lambda idx: score_map[idx], reverse=True)
         all_segments = [seg_map[idx] for idx in ranked]
 
         return BestshotResult(

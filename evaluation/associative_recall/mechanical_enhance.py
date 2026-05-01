@@ -30,8 +30,6 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-
 from associative_recall import Segment, SegmentStore
 from best_shot import (
     V2F_PROMPT,
@@ -40,6 +38,7 @@ from best_shot import (
     _format_segments,
     _parse_cues,
 )
+from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -94,8 +93,8 @@ def run_v2f_pool(
     all_segments = list(hop0.segments)
     exclude = {s.index for s in all_segments}
 
-    context_section = (
-        "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(all_segments)
+    context_section = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(
+        all_segments
     )
     prompt = V2F_PROMPT.format(question=question, context_section=context_section)
     output = arch.llm_call(prompt)
@@ -120,9 +119,7 @@ def run_v2f_pool(
 # ---------------------------------------------------------------------------
 # Embedding helpers
 # ---------------------------------------------------------------------------
-def get_segment_embeddings(
-    store: SegmentStore, segments: list[Segment]
-) -> np.ndarray:
+def get_segment_embeddings(store: SegmentStore, segments: list[Segment]) -> np.ndarray:
     """Return normalized embeddings for the given segments (shape: n x d)."""
     if not segments:
         return np.zeros((0, store.normalized_embeddings.shape[1]), dtype=np.float32)
@@ -382,13 +379,21 @@ class ExpandTopCueSegs(MechanicalBase):
         pool, cues = self.run_v2f(question, conversation_id)
         # First 10 are question-retrieved; rest are cue-retrieved
         expanded = expand_cue_segments(
-            self, pool, cue_retrieved_start_idx=10, conv_id=conversation_id,
-            n_seed=5, top_k_per_expansion=3,
+            self,
+            pool,
+            cue_retrieved_start_idx=10,
+            conv_id=conversation_id,
+            n_seed=5,
+            top_k_per_expansion=3,
         )
         return BestshotResult(
             segments=expanded,
-            metadata={"name": self.variant_name, "cues": cues,
-                      "pool_size": len(pool), "expanded_size": len(expanded)},
+            metadata={
+                "name": self.variant_name,
+                "cues": cues,
+                "pool_size": len(pool),
+                "expanded_size": len(expanded),
+            },
         )
 
 
@@ -399,13 +404,21 @@ class ExpandAllCueSegs(MechanicalBase):
         pool, cues = self.run_v2f(question, conversation_id)
         cue_count = len(pool) - 10
         expanded = expand_cue_segments(
-            self, pool, cue_retrieved_start_idx=10, conv_id=conversation_id,
-            n_seed=max(cue_count, 0), top_k_per_expansion=2,
+            self,
+            pool,
+            cue_retrieved_start_idx=10,
+            conv_id=conversation_id,
+            n_seed=max(cue_count, 0),
+            top_k_per_expansion=2,
         )
         return BestshotResult(
             segments=expanded,
-            metadata={"name": self.variant_name, "cues": cues,
-                      "pool_size": len(pool), "expanded_size": len(expanded)},
+            metadata={
+                "name": self.variant_name,
+                "cues": cues,
+                "pool_size": len(pool),
+                "expanded_size": len(expanded),
+            },
         )
 
 
@@ -419,18 +432,20 @@ class ExpandAndSecondPass(MechanicalBase):
         pool, cues = self.run_v2f(question, conversation_id)
         query_emb = self.embed_text(question)
         expanded = expand_cue_segments(
-            self, pool, cue_retrieved_start_idx=10, conv_id=conversation_id,
-            n_seed=5, top_k_per_expansion=3,
+            self,
+            pool,
+            cue_retrieved_start_idx=10,
+            conv_id=conversation_id,
+            n_seed=5,
+            top_k_per_expansion=3,
         )
         # Re-rank expansion segments (those beyond original pool) by cosine
         # to the question, pick top-5, use as secondary queries.
-        new_segs = expanded[len(pool):]
+        new_segs = expanded[len(pool) :]
         if new_segs:
             new_embs = get_segment_embeddings(self.store, new_segs)
             sims = new_embs @ (query_emb / max(np.linalg.norm(query_emb), 1e-10))
-            ordered = sorted(
-                zip(new_segs, sims.tolist()), key=lambda x: -x[1]
-            )
+            ordered = sorted(zip(new_segs, sims.tolist()), key=lambda x: -x[1])
             top5 = [s for s, _ in ordered[:5]]
 
             exclude = {s.index for s in expanded}
@@ -454,8 +469,12 @@ class ExpandAndSecondPass(MechanicalBase):
 
         return BestshotResult(
             segments=expanded,
-            metadata={"name": self.variant_name, "cues": cues,
-                      "pool_size": len(pool), "expanded_size": len(expanded)},
+            metadata={
+                "name": self.variant_name,
+                "cues": cues,
+                "pool_size": len(pool),
+                "expanded_size": len(expanded),
+            },
         )
 
 
@@ -479,7 +498,9 @@ class ClusterThenExpand(MechanicalBase):
         for seg in cue_rep_segs:
             q_emb = self.embed_text(seg.text.strip())
             result = self.store.search(
-                q_emb, top_k=5, conversation_id=conversation_id,
+                q_emb,
+                top_k=5,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             added = 0
@@ -498,8 +519,12 @@ class ClusterThenExpand(MechanicalBase):
 
         return BestshotResult(
             segments=final,
-            metadata={"name": self.variant_name, "cues": cues,
-                      "n_reps": len(reps), "final_size": len(final)},
+            metadata={
+                "name": self.variant_name,
+                "cues": cues,
+                "n_reps": len(reps),
+                "final_size": len(final),
+            },
         )
 
 
@@ -511,8 +536,12 @@ class ExpandThenCluster(MechanicalBase):
     def retrieve(self, question: str, conversation_id: str) -> BestshotResult:
         pool, cues = self.run_v2f(question, conversation_id)
         expanded = expand_cue_segments(
-            self, pool, cue_retrieved_start_idx=10, conv_id=conversation_id,
-            n_seed=5, top_k_per_expansion=3,
+            self,
+            pool,
+            cue_retrieved_start_idx=10,
+            conv_id=conversation_id,
+            n_seed=5,
+            top_k_per_expansion=3,
         )
         embs = get_segment_embeddings(self.store, expanded)
         reps = cluster_sample(expanded, embs, n_clusters=20)
@@ -521,9 +550,13 @@ class ExpandThenCluster(MechanicalBase):
         final = reps + tail
         return BestshotResult(
             segments=final,
-            metadata={"name": self.variant_name, "cues": cues,
-                      "pool_size": len(pool), "expanded_size": len(expanded),
-                      "n_reps": len(reps)},
+            metadata={
+                "name": self.variant_name,
+                "cues": cues,
+                "pool_size": len(pool),
+                "expanded_size": len(expanded),
+                "n_reps": len(reps),
+            },
         )
 
 
@@ -583,7 +616,9 @@ def fair_backfill_evaluate(
     baseline_at_K = cosine_segments[:budget]
     arch_ids = {s.turn_id for s in arch_at_K}
     baseline_ids = {s.turn_id for s in baseline_at_K}
-    return compute_recall(baseline_ids, source_ids), compute_recall(arch_ids, source_ids)
+    return compute_recall(baseline_ids, source_ids), compute_recall(
+        arch_ids, source_ids
+    )
 
 
 def evaluate_question(arch: BestshotBase, question: dict) -> dict:
@@ -605,9 +640,7 @@ def evaluate_question(arch: BestshotBase, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -655,12 +688,8 @@ def summarize(results: list[dict], arch_name: str, dataset: str) -> dict:
     summary["avg_total_retrieved"] = round(
         sum(r["total_arch_retrieved"] for r in results) / n, 1
     )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1
-    )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
     return summary
 
 
@@ -731,7 +760,7 @@ def run_variant_on_dataset(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -740,6 +769,7 @@ def run_variant_on_dataset(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -770,7 +800,11 @@ def run_variant_on_dataset(
 # ---------------------------------------------------------------------------
 V2F_REFERENCE = {
     "locomo_30q": {"arch_r@20": 0.7556, "arch_r@50": 0.8583, "baseline_r@20": 0.3833},
-    "synthetic_19q": {"arch_r@20": 0.6130, "arch_r@50": 0.8513, "baseline_r@20": 0.5694},
+    "synthetic_19q": {
+        "arch_r@20": 0.6130,
+        "arch_r@50": 0.8513,
+        "baseline_r@20": 0.5694,
+    },
     "puzzle_16q": {"arch_r@20": 0.4804, "arch_r@50": 0.9169, "baseline_r@20": 0.4316},
     "advanced_23q": {"arch_r@20": 0.5931, "arch_r@50": 0.9021, "baseline_r@20": 0.4866},
 }
@@ -794,16 +828,29 @@ def compare_to_v2f(summaries_by_ds: dict[str, dict]) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Mechanical enhancements over v2f")
-    parser.add_argument("--quick", action="store_true",
-                        help="Quick sanity test: 5 questions per dataset")
-    parser.add_argument("--full", action="store_true",
-                        help="Full eval across all 4 datasets")
-    parser.add_argument("--variant", type=str, default=None,
-                        help="Run a specific variant only")
-    parser.add_argument("--variants", type=str, default=None,
-                        help="Comma-separated list of variants to run")
-    parser.add_argument("--datasets", type=str, default=None,
-                        help="Comma-separated list of datasets to run")
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Quick sanity test: 5 questions per dataset",
+    )
+    parser.add_argument(
+        "--full", action="store_true", help="Full eval across all 4 datasets"
+    )
+    parser.add_argument(
+        "--variant", type=str, default=None, help="Run a specific variant only"
+    )
+    parser.add_argument(
+        "--variants",
+        type=str,
+        default=None,
+        help="Comma-separated list of variants to run",
+    )
+    parser.add_argument(
+        "--datasets",
+        type=str,
+        default=None,
+        help="Comma-separated list of datasets to run",
+    )
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
 

@@ -25,9 +25,10 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-
+from antipara_cue_gen import MetaV2fDedicated
 from associative_recall import Segment
+from best_shot import BestshotBase, BestshotResult
+from dotenv import load_dotenv
 from fair_backfill_eval import (
     BUDGETS,
     DATASETS,
@@ -38,17 +39,14 @@ from fair_backfill_eval import (
     summarize_by_category,
 )
 from iterative_query_refinement import (
-    ARCH_CLASSES as IQR_ARCH_CLASSES,
     IqrBeta02T1,
-    IqrBeta04T1,
-    IqrBeta06T1,
-    IqrBeta04T2,
     IqrBeta04Filtered,
+    IqrBeta04T1,
+    IqrBeta04T2,
+    IqrBeta06T1,
     IqrPlusV2f,
     _normalize,
 )
-from antipara_cue_gen import MetaV2fDedicated
-from best_shot import BestshotBase, BestshotResult
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -63,9 +61,7 @@ class CosineBaseline(BestshotBase):
 
     def retrieve(self, question: str, conversation_id: str) -> BestshotResult:
         q = self.embed_text(question)
-        res = self.store.search(
-            q, top_k=100, conversation_id=conversation_id
-        )
+        res = self.store.search(q, top_k=100, conversation_id=conversation_id)
         return BestshotResult(
             segments=list(res.segments),
             metadata={"name": self.arch_name, "num_probes": 1},
@@ -124,9 +120,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     # Geometry check — only meaningful for IQR variants exposing q_0/q_refined
@@ -163,16 +157,12 @@ def evaluate_question(arch, question: dict) -> dict:
         "num_iterations": result.metadata.get("num_iterations"),
         "filter_by_median": result.metadata.get("filter_by_median"),
         "geometry": {
-            "cos_q0_gold": (
-                round(cos_q0_gold, 4) if cos_q0_gold is not None else None
-            ),
+            "cos_q0_gold": (round(cos_q0_gold, 4) if cos_q0_gold is not None else None),
             "cos_qref_gold": (
                 round(cos_qref_gold, 4) if cos_qref_gold is not None else None
             ),
             "delta_cos_to_gold": (
-                round(delta_cos_to_gold, 4)
-                if delta_cos_to_gold is not None
-                else None
+                round(delta_cos_to_gold, 4) if delta_cos_to_gold is not None else None
             ),
         },
     }
@@ -205,7 +195,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -266,10 +256,7 @@ def summarize_geometry(results: list[dict]) -> dict:
     if not deltas:
         return {"n": 0}
     mean_d = sum(deltas) / len(deltas)
-    cat_means = {
-        cat: round(sum(vs) / len(vs), 4)
-        for cat, vs in per_cat.items()
-    }
+    cat_means = {cat: round(sum(vs) / len(vs), 4) for cat, vs in per_cat.items()}
     return {
         "n": q_total,
         "mean_delta_cos_to_gold": round(mean_d, 4),
@@ -374,9 +361,7 @@ def main() -> None:
         for arch_name in arch_names:
             cls = ARCH_CLASSES[arch_name]
             arch = cls(store)
-            results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(arch_name, arch, ds_name, questions)
             all_results[arch_name][ds_name] = {
                 "summary": summary,
                 "category_breakdown": by_cat,
@@ -418,9 +403,7 @@ def main() -> None:
             a: {
                 d: {
                     "summary": all_results[a][d]["summary"],
-                    "category_breakdown": all_results[a][d][
-                        "category_breakdown"
-                    ],
+                    "category_breakdown": all_results[a][d]["category_breakdown"],
                     "geometry": all_results[a][d]["geometry"],
                 }
                 for d in all_results[a]
@@ -447,9 +430,7 @@ def main() -> None:
                         "arch": a,
                         "dataset": d,
                         "summary": all_results[a][d]["summary"],
-                        "category_breakdown": all_results[a][d][
-                            "category_breakdown"
-                        ],
+                        "category_breakdown": all_results[a][d]["category_breakdown"],
                         "geometry": all_results[a][d]["geometry"],
                         "results": all_results[a][d]["results"],
                     },
@@ -509,9 +490,7 @@ def main() -> None:
             )
 
     if top_gaining or top_losing:
-        md.append(
-            "\n## Top categories by Δr@50 (iqr_beta_0.4_t1, LoCoMo-30)\n"
-        )
+        md.append("\n## Top categories by Δr@50 (iqr_beta_0.4_t1, LoCoMo-30)\n")
         md.append("Gaining:")
         for g in top_gaining:
             md.append(
@@ -548,9 +527,7 @@ def main() -> None:
         and "meta_v2f" in all_results
         and "locomo_30q" in all_results["meta_v2f"]
     ):
-        cos50 = all_results["cosine_baseline"]["locomo_30q"]["summary"][
-            "arch_r@50"
-        ]
+        cos50 = all_results["cosine_baseline"]["locomo_30q"]["summary"]["arch_r@50"]
         v2f50 = all_results["meta_v2f"]["locomo_30q"]["summary"]["arch_r@50"]
         # Collect best IQR variant at K=50 on LoCoMo (among pure variants)
         pure_names = [
@@ -570,9 +547,7 @@ def main() -> None:
             "iqr_plus_v2f" in all_results
             and "locomo_30q" in all_results["iqr_plus_v2f"]
         ):
-            plus50 = all_results["iqr_plus_v2f"]["locomo_30q"]["summary"][
-                "arch_r@50"
-            ]
+            plus50 = all_results["iqr_plus_v2f"]["locomo_30q"]["summary"]["arch_r@50"]
 
         if plus50 is not None and plus50 > v2f50 + 0.005:
             verdict = (

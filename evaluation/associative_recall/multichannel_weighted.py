@@ -49,12 +49,13 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
+from alias_expansion import (
+    AliasExtractor,
+    build_expanded_queries,
+    find_alias_matches,
+)
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -64,11 +65,8 @@ from associative_recall import (
     SegmentStore,
 )
 from best_shot import V2F_PROMPT, _format_segments, _parse_cues
-from alias_expansion import (
-    AliasExtractor,
-    build_expanded_queries,
-    find_alias_matches,
-)
+from dotenv import load_dotenv
+from openai import OpenAI
 from speaker_attributed import extract_name_mentions
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -146,9 +144,7 @@ class MultichEmbeddingCache(EmbeddingCache):
             except (json.JSONDecodeError, OSError):
                 existing = {}
         existing.update(self._new_entries)
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         with open(tmp, "w") as f:
             json.dump(existing, f)
         os.replace(tmp, self.cache_file)
@@ -191,9 +187,7 @@ class MultichLLMCache(LLMCache):
             except (json.JSONDecodeError, OSError):
                 existing = {}
         existing.update(self._new_entries)
-        tmp = self.cache_file.parent / (
-            self.cache_file.name + f".tmp.{os.getpid()}"
-        )
+        tmp = self.cache_file.parent / (self.cache_file.name + f".tmp.{os.getpid()}")
         with open(tmp, "w") as f:
             json.dump(existing, f)
         os.replace(tmp, self.cache_file)
@@ -214,18 +208,12 @@ CHANNEL_NAMES = (
 )
 
 CHANNEL_DESCRIPTIONS = {
-    "cosine_baseline": (
-        "raw cosine; general-purpose, works for most queries"
-    ),
+    "cosine_baseline": ("raw cosine; general-purpose, works for most queries"),
     "v2f_cosine": (
         "LLM-imagined cue cosine; best for open queries with complex intent"
     ),
-    "speaker_filter": (
-        "filter/boost turns spoken by a named person in the query"
-    ),
-    "alias_context": (
-        "boost when query mentions an entity with known aliases"
-    ),
+    "speaker_filter": ("filter/boost turns spoken by a named person in the query"),
+    "alias_context": ("boost when query mentions an entity with known aliases"),
     "critical_info": (
         "boost turns containing facts of enduring importance (dates, "
         "preferences, commitments)"
@@ -233,9 +221,7 @@ CHANNEL_DESCRIPTIONS = {
     "temporal_tokens": (
         "boost turns with dates/time/sequence words; use for temporal queries"
     ),
-    "entity_exact_match": (
-        "boost turns exact-matching proper nouns in query"
-    ),
+    "entity_exact_match": ("boost turns exact-matching proper nouns in query"),
 }
 
 ROUTING_PROMPT = """\
@@ -271,7 +257,7 @@ the JSON object, no prose before or after."""
 def parse_weights(raw: str) -> tuple[dict[str, float], str]:
     """Parse routing JSON. Returns (weights, reasoning). Fallback: uniform
     over {cosine_baseline, v2f_cosine}."""
-    default = {ch: 0.0 for ch in CHANNEL_NAMES}
+    default = dict.fromkeys(CHANNEL_NAMES, 0.0)
     default["cosine_baseline"] = 1.0
     default["v2f_cosine"] = 1.0
     fallback_reason = "parse_failed_uniform_fallback"
@@ -288,7 +274,7 @@ def parse_weights(raw: str) -> tuple[dict[str, float], str]:
         start = text.find("{")
         end = text.rfind("}")
         if start >= 0 and end > start:
-            text = text[start:end + 1]
+            text = text[start : end + 1]
 
     try:
         obj = json.loads(text)
@@ -342,17 +328,92 @@ _RE_DATE_DIGIT = re.compile(
 )
 
 _NAME_STOPWORDS = {
-    "I", "You", "Me", "My", "We", "Us", "Our", "Your", "They", "Them",
-    "He", "She", "It", "This", "That", "These", "Those", "There", "Here",
-    "What", "When", "Where", "Who", "Why", "How", "Which", "Whom", "Whose",
-    "The", "A", "An", "Is", "Are", "Was", "Were", "Be", "Been", "Being",
-    "Have", "Has", "Had", "Do", "Does", "Did", "Will", "Would", "Should",
-    "Could", "Can", "May", "Might", "Must", "Shall",
-    "Yes", "No", "Not", "Never", "Always", "Maybe",
-    "And", "Or", "But", "If", "So", "Then", "Else", "Because", "Since",
-    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
-    "Sunday", "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
+    "I",
+    "You",
+    "Me",
+    "My",
+    "We",
+    "Us",
+    "Our",
+    "Your",
+    "They",
+    "Them",
+    "He",
+    "She",
+    "It",
+    "This",
+    "That",
+    "These",
+    "Those",
+    "There",
+    "Here",
+    "What",
+    "When",
+    "Where",
+    "Who",
+    "Why",
+    "How",
+    "Which",
+    "Whom",
+    "Whose",
+    "The",
+    "A",
+    "An",
+    "Is",
+    "Are",
+    "Was",
+    "Were",
+    "Be",
+    "Been",
+    "Being",
+    "Have",
+    "Has",
+    "Had",
+    "Do",
+    "Does",
+    "Did",
+    "Will",
+    "Would",
+    "Should",
+    "Could",
+    "Can",
+    "May",
+    "Might",
+    "Must",
+    "Shall",
+    "Yes",
+    "No",
+    "Not",
+    "Never",
+    "Always",
+    "Maybe",
+    "And",
+    "Or",
+    "But",
+    "If",
+    "So",
+    "Then",
+    "Else",
+    "Because",
+    "Since",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+    "January",
+    "February",
+    "March",
+    "April",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 }
 
 _RE_CAPWORD = re.compile(r"\b([A-Z][a-zA-Z\-']+)\b")
@@ -390,9 +451,7 @@ _CONV_SPEAKERS_FILE = (
     Path(__file__).resolve().parent / "results" / "conversation_speakers.json"
 )
 _CONV_TWO_SPEAKERS_FILE = (
-    Path(__file__).resolve().parent
-    / "results"
-    / "conversation_two_speakers.json"
+    Path(__file__).resolve().parent / "results" / "conversation_two_speakers.json"
 )
 
 
@@ -411,11 +470,8 @@ def load_speaker_map() -> dict[str, dict[str, str]]:
             for cid, pair in raw.items():
                 if isinstance(pair, dict):
                     out[cid] = {
-                        "user": (pair.get("user") or "UNKNOWN").strip()
-                        or "UNKNOWN",
-                        "assistant": (
-                            pair.get("assistant") or "UNKNOWN"
-                        ).strip()
+                        "user": (pair.get("user") or "UNKNOWN").strip() or "UNKNOWN",
+                        "assistant": (pair.get("assistant") or "UNKNOWN").strip()
                         or "UNKNOWN",
                     }
         except (json.JSONDecodeError, OSError):
@@ -461,14 +517,13 @@ class _CriticalClassifier:
         """Return (is_critical, alt_keys) for a segment. Uses cached
         critical_info_store prompts if available."""
         if seg_index in self._critical_flags:
-            return self._critical_flags[seg_index], self._alt_keys.get(
-                seg_index, []
-            )
+            return self._critical_flags[seg_index], self._alt_keys.get(seg_index, [])
         seg = self.store.segments[seg_index]
         # Build the same cache key as critical_info_store v3
         from critical_info_store import build_prompt, parse_response
+
         prompt = build_prompt("v3", seg.role, seg.text)
-        ck = f"[critical_info_store/v3]\n" + prompt
+        ck = "[critical_info_store/v3]\n" + prompt
         raw = self.llm_cache.get(MODEL, ck)
         if raw is None:
             self._critical_flags[seg_index] = False
@@ -548,9 +603,7 @@ class MultichannelWeighted:
 
         # Per-store role masks for speaker channel
         self.role_masks = {
-            "user": np.array(
-                [s.role == "user" for s in store.segments], dtype=bool
-            ),
+            "user": np.array([s.role == "user" for s in store.segments], dtype=bool),
             "assistant": np.array(
                 [s.role == "assistant" for s in store.segments], dtype=bool
             ),
@@ -582,9 +635,7 @@ class MultichannelWeighted:
         if cached is not None:
             self.embed_calls += 1
             return cached
-        response = self.client.embeddings.create(
-            model=EMBED_MODEL, input=[text]
-        )
+        response = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
         emb = np.array(response.data[0].embedding, dtype=np.float32)
         self.embedding_cache.put(text, emb)
         self.embed_calls += 1
@@ -633,15 +684,13 @@ class MultichannelWeighted:
     def get_weights(self, query: str) -> tuple[dict[str, float], str, str]:
         """Returns (weights, reasoning, raw_response)."""
         if self.mode == "uniform":
-            w = {ch: 1.0 for ch in CHANNEL_NAMES}
+            w = dict.fromkeys(CHANNEL_NAMES, 1.0)
             return w, "uniform_mode", ""
         prompt = ROUTING_PROMPT.format(query=query)
         raw = self.llm_call(prompt)
         weights, reasoning = parse_weights(raw)
         if self.mode == "binary":
-            weights = {
-                k: (1.0 if v >= 0.5 else 0.0) for k, v in weights.items()
-            }
+            weights = {k: (1.0 if v >= 0.5 else 0.0) for k, v in weights.items()}
             # Ensure at least one channel fires.
             if sum(weights.values()) < 1e-6:
                 weights["cosine_baseline"] = 1.0
@@ -688,17 +737,12 @@ class MultichannelWeighted:
         self, query: str, query_emb: np.ndarray, conversation_id: str
     ) -> ChannelResult:
         # Primer top-10 from raw cosine
-        primer = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        primer = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         primer_segs = list(primer.segments)
         context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n"
-            + _format_segments(primer_segs)
+            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + _format_segments(primer_segs)
         )
-        prompt = V2F_PROMPT.format(
-            question=query, context_section=context_section
-        )
+        prompt = V2F_PROMPT.format(question=query, context_section=context_section)
         output = self.llm_call(prompt)
         cues = _parse_cues(output)[:2]
         # For each cue, retrieve top-K by cosine; merge by max score per
@@ -712,9 +756,7 @@ class MultichannelWeighted:
             for idx, sc in res:
                 if idx not in agg or sc > agg[idx]:
                     agg[idx] = sc
-        ordered = sorted(agg.items(), key=lambda x: -x[1])[
-            : self.per_channel_top_k
-        ]
+        ordered = sorted(agg.items(), key=lambda x: -x[1])[: self.per_channel_top_k]
         return ChannelResult("v2f_cosine", ordered)
 
     def ch_speaker_filter(
@@ -734,9 +776,7 @@ class MultichannelWeighted:
             mask = self.role_masks["assistant"]
         else:
             return ChannelResult("speaker_filter", [], executed=False)
-        cands = self._cosine_search_in_conv(
-            query_emb, conversation_id, mask=mask
-        )
+        cands = self._cosine_search_in_conv(query_emb, conversation_id, mask=mask)
         return ChannelResult("speaker_filter", cands)
 
     def ch_alias_context(
@@ -767,9 +807,7 @@ class MultichannelWeighted:
                     agg[idx] = sc
         if not agg:
             return ChannelResult("alias_context", [], executed=False)
-        ordered = sorted(agg.items(), key=lambda x: -x[1])[
-            : self.per_channel_top_k
-        ]
+        ordered = sorted(agg.items(), key=lambda x: -x[1])[: self.per_channel_top_k]
         return ChannelResult("alias_context", ordered)
 
     def ch_critical_info(
@@ -777,9 +815,7 @@ class MultichannelWeighted:
     ) -> ChannelResult:
         if conversation_id not in self._crit_conv_cache:
             self._crit_conv_cache[conversation_id] = (
-                self.crit_classifier.build_critical_set_for_conv(
-                    conversation_id
-                )
+                self.crit_classifier.build_critical_set_for_conv(conversation_id)
             )
         crit_items = self._crit_conv_cache[conversation_id]
         if not crit_items:
@@ -832,16 +868,12 @@ class MultichannelWeighted:
             hits = 0
             for e in ents_lower:
                 # word-boundary
-                if re.search(
-                    r"\b" + re.escape(e) + r"\b", tl
-                ):
+                if re.search(r"\b" + re.escape(e) + r"\b", tl):
                     hits += 1
             if hits > 0:
                 scores.append((i, float(hits) / float(len(ents_lower))))
         scores.sort(key=lambda x: -x[1])
-        return ChannelResult(
-            "entity_exact_match", scores[: self.per_channel_top_k]
-        )
+        return ChannelResult("entity_exact_match", scores[: self.per_channel_top_k])
 
     # --- merge ---
     @staticmethod
@@ -853,9 +885,7 @@ class MultichannelWeighted:
             return [(i, 0.0) for i, _ in cands]
         return [(i, sc / top) for i, sc in cands]
 
-    def retrieve(
-        self, question: str, conversation_id: str
-    ) -> MultichResult:
+    def retrieve(self, question: str, conversation_id: str) -> MultichResult:
         weights, reasoning, raw_weights = self.get_weights(question)
         query_emb = self.embed_text(question)
 
@@ -893,9 +923,7 @@ class MultichannelWeighted:
         # Always fall back to cosine_baseline if nothing found (e.g.
         # LLM chose channels that all returned empty).
         if not final_scores:
-            fallback = self.ch_cosine_baseline(
-                question, query_emb, conversation_id
-            )
+            fallback = self.ch_cosine_baseline(question, query_emb, conversation_id)
             normalized = self._normalize(fallback.candidates)
             for idx, nsc in normalized:
                 final_scores[idx] = nsc
@@ -914,8 +942,7 @@ class MultichannelWeighted:
             "num_channels_executed": len(executed),
             "raw_weights_response": raw_weights[:500],
             "final_score_top5": [
-                (self.store.segments[i].turn_id, float(sc))
-                for i, sc in ranked[:5]
+                (self.store.segments[i].turn_id, float(sc)) for i, sc in ranked[:5]
             ],
         }
         return MultichResult(segments=segments, metadata=metadata)

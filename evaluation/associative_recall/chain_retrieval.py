@@ -27,7 +27,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 import time
@@ -35,9 +34,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -46,6 +42,8 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -236,7 +234,7 @@ def _parse_cues(text: str, key: str = "CUE:") -> list[str]:
     for line in text.strip().split("\n"):
         line = line.strip()
         if line.upper().startswith(key.upper()):
-            val = line[len(key):].strip()
+            val = line[len(key) :].strip()
             if val:
                 out.append(val)
     return out
@@ -248,13 +246,13 @@ def _parse_names(text: str) -> list[str]:
     for line in text.strip().split("\n"):
         line = line.strip()
         if line.upper().startswith("NAME:"):
-            val = line[5:].strip().strip('"\'`').strip()
+            val = line[5:].strip().strip("\"'`").strip()
             # Strip enclosing brackets/parens
             while val and val[0] in "[(<":
                 val = val[1:].strip()
             while val and val[-1] in "])>":
                 val = val[:-1].strip()
-            val = val.strip('"\'`').strip()
+            val = val.strip("\"'`").strip()
             if val:
                 names.append(val)
     return names
@@ -330,7 +328,9 @@ class IterativeChain(ChainBase):
 
         # Round 0: question embedding
         q_emb = self.embed_text(question)
-        r0 = self.store.search(q_emb, top_k=self.initial_k, conversation_id=conversation_id)
+        r0 = self.store.search(
+            q_emb, top_k=self.initial_k, conversation_id=conversation_id
+        )
         for s in r0.segments:
             if s.index not in exclude:
                 all_segs.append(s)
@@ -342,8 +342,9 @@ class IterativeChain(ChainBase):
                 latest=_format_segments_latest(all_segs, n=6),
                 all_segs=_format_segments(all_segs, max_items=14),
                 num_segs=len(all_segs),
-                explored=("\n".join(f"- {c}" for c in explored)
-                          if explored else "(none yet)"),
+                explored=(
+                    "\n".join(f"- {c}" for c in explored) if explored else "(none yet)"
+                ),
             )
             response = self.llm_call(prompt)
 
@@ -359,19 +360,23 @@ class IterativeChain(ChainBase):
                 elif line.upper() == "DONE":
                     done = True
 
-            round_log.append({
-                "iter": it,
-                "reason": reason,
-                "cue": cue,
-                "done": done,
-            })
+            round_log.append(
+                {
+                    "iter": it,
+                    "reason": reason,
+                    "cue": cue,
+                    "done": done,
+                }
+            )
             if done or not cue:
                 break
             explored.append(cue)
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_iter_k,
-                conversation_id=conversation_id, exclude_indices=exclude,
+                cue_emb,
+                top_k=self.per_iter_k,
+                conversation_id=conversation_id,
+                exclude_indices=exclude,
             )
             for s in result.segments:
                 if s.index not in exclude:
@@ -449,7 +454,9 @@ class TerminologyDiscovery(ChainBase):
         all_segs: list[Segment] = []
 
         q_emb = self.embed_text(question)
-        r0 = self.store.search(q_emb, top_k=self.initial_k, conversation_id=conversation_id)
+        r0 = self.store.search(
+            q_emb, top_k=self.initial_k, conversation_id=conversation_id
+        )
         for s in r0.segments:
             if s.index not in exclude:
                 all_segs.append(s)
@@ -467,8 +474,10 @@ class TerminologyDiscovery(ChainBase):
         for name in names:
             cue_emb = self.embed_text(name)
             result = self.store.search(
-                cue_emb, top_k=self.per_name_k,
-                conversation_id=conversation_id, exclude_indices=exclude,
+                cue_emb,
+                top_k=self.per_name_k,
+                conversation_id=conversation_id,
+                exclude_indices=exclude,
             )
             for s in result.segments:
                 if s.index not in exclude:
@@ -558,7 +567,9 @@ class ChainOfThoughtCue(ChainBase):
         round_log: list[dict] = []
 
         q_emb = self.embed_text(question)
-        r0 = self.store.search(q_emb, top_k=self.initial_k, conversation_id=conversation_id)
+        r0 = self.store.search(
+            q_emb, top_k=self.initial_k, conversation_id=conversation_id
+        )
         for s in r0.segments:
             if s.index not in exclude:
                 all_segs.append(s)
@@ -569,8 +580,9 @@ class ChainOfThoughtCue(ChainBase):
                 question=question,
                 all_segs=_format_segments(all_segs, max_items=14),
                 num_segs=len(all_segs),
-                explored=("\n".join(f"- {c}" for c in explored)
-                          if explored else "(none yet)"),
+                explored=(
+                    "\n".join(f"- {c}" for c in explored) if explored else "(none yet)"
+                ),
                 num_cues=self.num_cues,
             )
             response = self.llm_call(prompt)
@@ -591,8 +603,10 @@ class ChainOfThoughtCue(ChainBase):
                 explored.append(cue)
                 cue_emb = self.embed_text(cue)
                 result = self.store.search(
-                    cue_emb, top_k=self.per_cue_k,
-                    conversation_id=conversation_id, exclude_indices=exclude,
+                    cue_emb,
+                    top_k=self.per_cue_k,
+                    conversation_id=conversation_id,
+                    exclude_indices=exclude,
                 )
                 for s in result.segments:
                     if s.index not in exclude:
@@ -668,8 +682,9 @@ class IterativeChainNoStop(IterativeChain):
                 question=question,
                 num_segs=len(all_segs),
                 all_segs=_format_segments(all_segs, max_items=14),
-                explored=("\n".join(f"- {c}" for c in explored)
-                          if explored else "(none yet)"),
+                explored=(
+                    "\n".join(f"- {c}" for c in explored) if explored else "(none yet)"
+                ),
             )
             response = self.llm_call(prompt)
             reason = ""
@@ -687,8 +702,10 @@ class IterativeChainNoStop(IterativeChain):
             explored.append(cue)
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=self.per_iter_k,
-                conversation_id=conversation_id, exclude_indices=exclude,
+                cue_emb,
+                top_k=self.per_iter_k,
+                conversation_id=conversation_id,
+                exclude_indices=exclude,
             )
             for s in result.segments:
                 if s.index not in exclude:
@@ -747,7 +764,9 @@ class EmbeddingExplore(ChainBase):
         all_segs: list[Segment] = []
 
         q_emb = self.embed_text(question)
-        r0 = self.store.search(q_emb, top_k=self.initial_k, conversation_id=conversation_id)
+        r0 = self.store.search(
+            q_emb, top_k=self.initial_k, conversation_id=conversation_id
+        )
         for s in r0.segments:
             if s.index not in exclude:
                 all_segs.append(s)
@@ -776,22 +795,31 @@ class EmbeddingExplore(ChainBase):
             probe = 0.6 * a_emb + 0.4 * resid_norm
             probe = probe / max(np.linalg.norm(probe), 1e-10)
             result = self.store.search(
-                probe, top_k=self.per_anchor_k,
-                conversation_id=conversation_id, exclude_indices=exclude,
+                probe,
+                top_k=self.per_anchor_k,
+                conversation_id=conversation_id,
+                exclude_indices=exclude,
             )
             for s in result.segments:
                 if s.index not in exclude:
                     all_segs.append(s)
                     exclude.add(s.index)
-            anchors_used.append({"turn_id": a.turn_id, "align": float(alignments[anchor_order[anchors_used.__len__()]])})
+            anchors_used.append(
+                {
+                    "turn_id": a.turn_id,
+                    "align": float(alignments[anchor_order[anchors_used.__len__()]]),
+                }
+            )
 
         # Anti-centroid sweep: q - alpha * centroid
         q_norm = q_emb / max(np.linalg.norm(q_emb), 1e-10)
         anti = q_norm - self.alpha * c_norm
         anti = anti / max(np.linalg.norm(anti), 1e-10)
         result = self.store.search(
-            anti, top_k=self.per_anchor_k,
-            conversation_id=conversation_id, exclude_indices=exclude,
+            anti,
+            top_k=self.per_anchor_k,
+            conversation_id=conversation_id,
+            exclude_indices=exclude,
         )
         for s in result.segments:
             if s.index not in exclude:
@@ -875,7 +903,9 @@ class HybridV15Term(ChainBase):
         for cue in cues:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for s in result.segments:
@@ -894,8 +924,10 @@ class HybridV15Term(ChainBase):
         for name in names:
             name_emb = self.embed_text(name)
             result = self.store.search(
-                name_emb, top_k=self.per_name_k,
-                conversation_id=conversation_id, exclude_indices=exclude,
+                name_emb,
+                top_k=self.per_name_k,
+                conversation_id=conversation_id,
+                exclude_indices=exclude,
             )
             for s in result.segments:
                 if s.index not in exclude:
@@ -950,7 +982,9 @@ class HybridFull(ChainBase):
         for cue in v15_cues:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for s in result.segments:
@@ -969,7 +1003,9 @@ class HybridFull(ChainBase):
         for name in names:
             name_emb = self.embed_text(name)
             result = self.store.search(
-                name_emb, top_k=2, conversation_id=conversation_id,
+                name_emb,
+                top_k=2,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for s in result.segments:
@@ -1000,7 +1036,9 @@ class HybridFull(ChainBase):
         if chain_cue:
             cue_emb = self.embed_text(chain_cue)
             result = self.store.search(
-                cue_emb, top_k=5, conversation_id=conversation_id,
+                cue_emb,
+                top_k=5,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for s in result.segments:
@@ -1052,7 +1090,9 @@ class V15Reference(ChainBase):
         for cue in cues:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for s in result.segments:
@@ -1064,8 +1104,11 @@ class V15Reference(ChainBase):
             segments=all_segs,
             embed_calls=self.embed_calls,
             llm_calls=self.llm_calls,
-            metadata={"name": "v15_reference", "cues": cues,
-                      "total_segments": len(all_segs)},
+            metadata={
+                "name": "v15_reference",
+                "cues": cues,
+                "total_segments": len(all_segs),
+            },
         )
 
 
@@ -1079,7 +1122,9 @@ def compute_recall(retrieved_turn_ids: set[int], source_turn_ids: set[int]) -> f
 
 
 def evaluate_one(
-    arch: ChainBase, question: dict, verbose: bool = False,
+    arch: ChainBase,
+    question: dict,
+    verbose: bool = False,
 ) -> dict:
     q_text = question["question"]
     conv_id = question["conversation_id"]
@@ -1134,17 +1179,20 @@ def evaluate_one(
         "metadata": result.metadata,
     }
     if verbose:
-        print(f"    arch_pool={len(arch_segments)} "
-              f"r@20: base={baseline_recalls['r@20']:.3f} "
-              f"arch={arch_recalls['r@20']:.3f}  "
-              f"r@50: base={baseline_recalls['r@50']:.3f} "
-              f"arch={arch_recalls['r@50']:.3f}  "
-              f"llm={arch.llm_calls} emb={arch.embed_calls}")
+        print(
+            f"    arch_pool={len(arch_segments)} "
+            f"r@20: base={baseline_recalls['r@20']:.3f} "
+            f"arch={arch_recalls['r@20']:.3f}  "
+            f"r@50: base={baseline_recalls['r@50']:.3f} "
+            f"arch={arch_recalls['r@50']:.3f}  "
+            f"llm={arch.llm_calls} emb={arch.embed_calls}"
+        )
     return out
 
 
-def summarize(results: list[dict], arch_name: str, benchmark: str,
-              category: str | None = None) -> dict:
+def summarize(
+    results: list[dict], arch_name: str, benchmark: str, category: str | None = None
+) -> dict:
     if category is not None:
         results = [r for r in results if r["category"] == category]
     n = len(results)
@@ -1159,43 +1207,51 @@ def summarize(results: list[dict], arch_name: str, benchmark: str,
     for K in BUDGETS:
         b = sum(r["baseline_recalls"][f"r@{K}"] for r in results) / n
         a = sum(r["arch_recalls"][f"r@{K}"] for r in results) / n
-        wins = sum(1 for r in results
-                   if r["arch_recalls"][f"r@{K}"]
-                   > r["baseline_recalls"][f"r@{K}"] + 0.001)
-        losses = sum(1 for r in results
-                     if r["baseline_recalls"][f"r@{K}"]
-                     > r["arch_recalls"][f"r@{K}"] + 0.001)
+        wins = sum(
+            1
+            for r in results
+            if r["arch_recalls"][f"r@{K}"] > r["baseline_recalls"][f"r@{K}"] + 0.001
+        )
+        losses = sum(
+            1
+            for r in results
+            if r["baseline_recalls"][f"r@{K}"] > r["arch_recalls"][f"r@{K}"] + 0.001
+        )
         ties = n - wins - losses
         summary[f"baseline_r@{K}"] = round(b, 4)
         summary[f"arch_r@{K}"] = round(a, 4)
         summary[f"delta_r@{K}"] = round(a - b, 4)
         summary[f"WTL_r@{K}"] = f"{wins}/{ties}/{losses}"
     summary["avg_total_retrieved"] = round(
-        sum(r["total_retrieved"] for r in results) / n, 1)
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1)
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1)
-    summary["avg_time_s"] = round(
-        sum(r["time_s"] for r in results) / n, 2)
+        sum(r["total_retrieved"] for r in results) / n, 1
+    )
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
+    summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
     return summary
 
 
 def print_summary(summary: dict) -> None:
     if not summary:
         return
-    print(f"  {summary['arch']:<22s} {summary['benchmark']:<12s} "
-          f"{summary['category']:<22s} n={summary['n']}")
+    print(
+        f"  {summary['arch']:<22s} {summary['benchmark']:<12s} "
+        f"{summary['category']:<22s} n={summary['n']}"
+    )
     for K in BUDGETS:
         b = summary[f"baseline_r@{K}"]
         a = summary[f"arch_r@{K}"]
         d = summary[f"delta_r@{K}"]
-        print(f"    r@{K:<2d}: base={b:.3f} arch={a:.3f} "
-              f"delta={d:+.3f} WTL={summary[f'WTL_r@{K}']}")
-    print(f"    #pool={summary['avg_total_retrieved']:.1f} "
-          f"llm={summary['avg_llm_calls']:.1f} "
-          f"emb={summary['avg_embed_calls']:.1f} "
-          f"time={summary['avg_time_s']:.1f}s")
+        print(
+            f"    r@{K:<2d}: base={b:.3f} arch={a:.3f} "
+            f"delta={d:+.3f} WTL={summary[f'WTL_r@{K}']}"
+        )
+    print(
+        f"    #pool={summary['avg_total_retrieved']:.1f} "
+        f"llm={summary['avg_llm_calls']:.1f} "
+        f"emb={summary['avg_embed_calls']:.1f} "
+        f"time={summary['avg_time_s']:.1f}s"
+    )
 
 
 # ===========================================================================
@@ -1233,10 +1289,15 @@ BENCHMARKS = {
 # ===========================================================================
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--arch", type=str, default=None,
-                        help="Run a single architecture (default: all)")
-    parser.add_argument("--benchmark", type=str, default="all",
-                        choices=["all", "puzzle", "advanced"])
+    parser.add_argument(
+        "--arch",
+        type=str,
+        default=None,
+        help="Run a single architecture (default: all)",
+    )
+    parser.add_argument(
+        "--benchmark", type=str, default="all", choices=["all", "puzzle", "advanced"]
+    )
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--verbose", action="store_true")
@@ -1253,9 +1314,7 @@ def main() -> None:
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    bench_names = (
-        list(BENCHMARKS) if args.benchmark == "all" else [args.benchmark]
-    )
+    bench_names = list(BENCHMARKS) if args.benchmark == "all" else [args.benchmark]
     arch_names = list(ARCHS) if args.arch is None else [args.arch]
 
     all_summaries: list[dict] = []
@@ -1266,8 +1325,10 @@ def main() -> None:
         with open(DATA_DIR / cfg["questions"]) as f:
             all_qs = json.load(f)
         questions = [q for q in all_qs if q["category"] == cfg["category"]]
-        print(f"\n=== {bench.upper()} | {cfg['category']} | "
-              f"{len(questions)} questions ===")
+        print(
+            f"\n=== {bench.upper()} | {cfg['category']} | "
+            f"{len(questions)} questions ==="
+        )
 
         for arch_name in arch_names:
             if arch_name not in ARCHS:
@@ -1289,13 +1350,14 @@ def main() -> None:
             results: list[dict] = []
             for i, q in enumerate(questions):
                 q_short = q["question"][:55]
-                print(f"  [{i+1}/{len(questions)}] {q_short}...", flush=True)
+                print(f"  [{i + 1}/{len(questions)}] {q_short}...", flush=True)
                 try:
                     out = evaluate_one(arch, q, verbose=args.verbose)
                     results.append(out)
                 except Exception as e:
                     print(f"    ERROR: {e}", flush=True)
                     import traceback
+
                     traceback.print_exc()
                 sys.stdout.flush()
 
@@ -1309,14 +1371,16 @@ def main() -> None:
             print(f"  Saved -> {results_file}")
 
     # ---- GRAND SUMMARY TABLE ----
-    print(f"\n{'='*100}")
+    print(f"\n{'=' * 100}")
     print("CHAIN RETRIEVAL — GRAND SUMMARY (FAIR BUDGET)")
-    print(f"{'='*100}")
-    print(f"{'Arch':<22s} {'Benchmark':<11s} {'Category':<22s} "
-          f"{'n':>3s} "
-          f"{'B@20':>6s} {'A@20':>6s} {'D@20':>7s} "
-          f"{'B@50':>6s} {'A@50':>6s} {'D@50':>7s} "
-          f"{'LLM':>5s} {'Emb':>5s} {'#Pool':>6s}")
+    print(f"{'=' * 100}")
+    print(
+        f"{'Arch':<22s} {'Benchmark':<11s} {'Category':<22s} "
+        f"{'n':>3s} "
+        f"{'B@20':>6s} {'A@20':>6s} {'D@20':>7s} "
+        f"{'B@50':>6s} {'A@50':>6s} {'D@50':>7s} "
+        f"{'LLM':>5s} {'Emb':>5s} {'#Pool':>6s}"
+    )
     print("-" * 100)
     for s in all_summaries:
         if not s:

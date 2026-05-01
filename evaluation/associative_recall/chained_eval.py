@@ -22,10 +22,25 @@ import time
 from pathlib import Path
 
 import openai
+from chained_proactive import (
+    CHAINED_CUEGEN_CACHE,
+    CHAINED_ENTITY_CACHE,
+    CHAINED_FLAT_CACHE,
+    CHAINED_PLAN_CACHE,
+    CHAINED_SUFF_CACHE,
+    RetrievalResult,
+    _extract_json,
+    run_chained_proactive,
+    run_flat_proactive,
+    run_single_shot,
+)
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    BESTSHOT_LLM_CACHE,
+    EM_V2F_LLM_CACHE,
+    EMHit,
+    _MergedLLMCache,
+)
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -42,26 +57,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import (
-    BESTSHOT_LLM_CACHE,
-    EM_V2F_LLM_CACHE,
-    EMHit,
-    _MergedLLMCache,
-)
-from chained_proactive import (
-    CHAINED_CUEGEN_CACHE,
-    CHAINED_ENTITY_CACHE,
-    CHAINED_FLAT_CACHE,
-    CHAINED_PLAN_CACHE,
-    CHAINED_SUFF_CACHE,
-    RetrievalResult,
-    run_chained_proactive,
-    run_flat_proactive,
-    run_single_shot,
-    _extract_json,
-)
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -108,7 +105,9 @@ Output ONLY JSON:
   "notes": "<one-sentence rationale>"}}"""
 
 
-def _format_hits_for_judge(hits: list[EMHit], max_items: int = 20, max_len: int = 200) -> str:
+def _format_hits_for_judge(
+    hits: list[EMHit], max_items: int = 20, max_len: int = 200
+) -> str:
     if not hits:
         return "(empty)"
     top = sorted(hits, key=lambda h: -h.score)[:max_items]
@@ -142,10 +141,15 @@ async def judge_retrieval(
     p1, p2 = participants
     hits_block = _format_hits_for_judge(result.hits, max_items=20, max_len=200)
     prompt = JUDGE_PROMPT.format(
-        participant_1=p1, participant_2=p2,
+        participant_1=p1,
+        participant_2=p2,
         task_prompt=task["task_prompt"],
-        expected_implicit_entity_types=", ".join(task.get("expected_implicit_entity_types") or []) or "(none)",
-        expected_per_entity_facts=", ".join(task.get("expected_per_entity_facts") or []) or "(none)",
+        expected_implicit_entity_types=", ".join(
+            task.get("expected_implicit_entity_types") or []
+        )
+        or "(none)",
+        expected_per_entity_facts=", ".join(task.get("expected_per_entity_facts") or [])
+        or "(none)",
         n_shown=min(20, len(result.hits)),
         n_total=len(result.hits),
         hits_block=hits_block,
@@ -218,26 +222,40 @@ async def evaluate_task(
 ) -> dict:
     t_single = time.monotonic()
     single_res = await run_single_shot(
-        memory, task["task_prompt"], participants,
-        K=K_FINAL, cuegen_cache=single_shot_cache, openai_client=openai_client,
+        memory,
+        task["task_prompt"],
+        participants,
+        K=K_FINAL,
+        cuegen_cache=single_shot_cache,
+        openai_client=openai_client,
     )
     t_single = time.monotonic() - t_single
 
     t_flat = time.monotonic()
     flat_res = await run_flat_proactive(
-        memory, task["task_prompt"], participants,
-        K_per_need=15, K_final=K_FINAL,
-        flat_cache=flat_cache, cuegen_cache=cuegen_cache,
+        memory,
+        task["task_prompt"],
+        participants,
+        K_per_need=15,
+        K_final=K_FINAL,
+        flat_cache=flat_cache,
+        cuegen_cache=cuegen_cache,
         openai_client=openai_client,
     )
     t_flat = time.monotonic() - t_flat
 
     t_chain = time.monotonic()
     chain_res = await run_chained_proactive(
-        memory, task["task_prompt"], participants,
-        K_per_cue=10, K_final=K_FINAL, max_iterations=2,
-        plan_cache=plan_cache, cuegen_cache=cuegen_cache,
-        entity_cache=entity_cache, suff_cache=suff_cache,
+        memory,
+        task["task_prompt"],
+        participants,
+        K_per_cue=10,
+        K_final=K_FINAL,
+        max_iterations=2,
+        plan_cache=plan_cache,
+        cuegen_cache=cuegen_cache,
+        entity_cache=entity_cache,
+        suff_cache=suff_cache,
         openai_client=openai_client,
     )
     t_chain = time.monotonic() - t_chain
@@ -265,7 +283,9 @@ async def evaluate_task(
         "task_id": task["task_id"],
         "conversation_id": task["conversation_id"],
         "task_prompt": task["task_prompt"],
-        "expected_implicit_entity_types": task.get("expected_implicit_entity_types", []),
+        "expected_implicit_entity_types": task.get(
+            "expected_implicit_entity_types", []
+        ),
         "expected_per_entity_facts": task.get("expected_per_entity_facts", []),
         "participants": list(participants),
         "single_shot": {
@@ -300,15 +320,22 @@ def summarise(rows: list[dict]) -> dict:
             "task_completion": [r[variant]["judge"]["task_completion"] for r in rows],
             "total": [r[variant]["judge"]["total"] for r in rows],
             "time_s": [r[variant]["time_s"] for r in rows],
-            "n_llm_calls": [r[variant]["result"]["metadata"].get("n_llm_calls", 0) for r in rows],
-            "n_turns_retrieved": [r[variant]["result"]["metadata"].get("n_turns_retrieved", 0) for r in rows],
+            "n_llm_calls": [
+                r[variant]["result"]["metadata"].get("n_llm_calls", 0) for r in rows
+            ],
+            "n_turns_retrieved": [
+                r[variant]["result"]["metadata"].get("n_turns_retrieved", 0)
+                for r in rows
+            ],
         }
         summary["by_variant"][variant] = {k: _avg(v) for k, v in vals.items()}
 
     # Pair comparisons
-    wins = {"chained_vs_flat": {"chain": 0, "flat": 0, "tie": 0},
-            "chained_vs_single": {"chain": 0, "single": 0, "tie": 0},
-            "flat_vs_single": {"flat": 0, "single": 0, "tie": 0}}
+    wins = {
+        "chained_vs_flat": {"chain": 0, "flat": 0, "tie": 0},
+        "chained_vs_single": {"chain": 0, "single": 0, "tie": 0},
+        "flat_vs_single": {"flat": 0, "single": 0, "tie": 0},
+    }
     deltas_cf = []
     for r in rows:
         tc_chain = r["chained_proactive"]["judge"]["task_completion"]
@@ -418,9 +445,11 @@ def render_markdown(summary: dict, rows: list[dict]) -> str:
     # Qualitative examples: top 2 tasks where chain beats flat the most.
     ranked = sorted(
         rows,
-        key=lambda r: -(
-            r["chained_proactive"]["judge"]["task_completion"]
-            - r["flat_proactive"]["judge"]["task_completion"]
+        key=lambda r: (
+            -(
+                r["chained_proactive"]["judge"]["task_completion"]
+                - r["flat_proactive"]["judge"]["task_completion"]
+            )
         ),
     )
     lines += ["", "## Qualitative examples — chain vs flat", ""]
@@ -436,7 +465,11 @@ def render_markdown(summary: dict, rows: list[dict]) -> str:
         for n in r["chained_proactive"]["result"]["metadata"].get("nodes", []):
             lines.append(
                 f"- `{n['id']}` ({n['type']}): {n['target']}"
-                + (f" — discovered: {n.get('extracted_entities')}" if n.get("extracted_entities") else "")
+                + (
+                    f" — discovered: {n.get('extracted_entities')}"
+                    if n.get("extracted_entities")
+                    else ""
+                )
                 + (f" — for_each={n.get('for_each')}" if n.get("for_each") else "")
             )
         lines += [
@@ -575,7 +608,7 @@ async def main() -> None:
     try:
         for i, task in enumerate(tasks):
             conv_id = task["conversation_id"]
-            print(f"[{i+1}/{len(tasks)}] {task['task_id']} ({conv_id}) ...")
+            print(f"[{i + 1}/{len(tasks)}] {task['task_id']} ({conv_id}) ...")
             row = await evaluate_task(
                 task,
                 memories[conv_id],

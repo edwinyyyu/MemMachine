@@ -30,19 +30,18 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 from associative_recall import Segment, SegmentStore
 from best_shot import MetaV2f
+from dotenv import load_dotenv
 from gated_overlay import build_variant as build_gated_v1
-from intent_parser import build_variant as build_intent_variant
 from gated_v2 import (
+    K_EXPANDER_NAME,
     SUPPLEMENT_DESCRIPTIONS_V2,
     SUPPLEMENT_NAMES_V2,
     VARIANTS_V2,
-    K_EXPANDER_NAME,
     build_variant_v2,
 )
+from intent_parser import build_variant as build_intent_variant
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -146,9 +145,7 @@ def evaluate_per_k_question(arch, question: dict, k_dependent: bool) -> dict:
     # Cosine baseline for fair-backfill
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -200,9 +197,7 @@ def evaluate_metav2f_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -237,9 +232,7 @@ def evaluate_metav2f_question(arch, question: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Summarization
 # ---------------------------------------------------------------------------
-def summarize(
-    results: list[dict], arch_name: str, dataset: str
-) -> dict:
+def summarize(results: list[dict], arch_name: str, dataset: str) -> dict:
     n = len(results)
     if n == 0:
         return {"arch": arch_name, "dataset": dataset, "n": 0}
@@ -259,21 +252,13 @@ def summarize(
     summary["avg_total_retrieved"] = round(
         sum(r["total_arch_retrieved"] for r in results) / n, 1
     )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 2
-    )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 2
-    )
-    summary["avg_time_s"] = round(
-        sum(r["time_s"] for r in results) / n, 2
-    )
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 2)
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 2)
+    summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
     return summary
 
 
-def per_question_wtl(
-    v2_rows: list[dict], ref_rows: list[dict], K: int
-) -> dict:
+def per_question_wtl(v2_rows: list[dict], ref_rows: list[dict], K: int) -> dict:
     """W/T/L of v2 architecture vs a reference arch (e.g. gated v1 or
     intent_parser_full) at budget K keyed by question_index."""
     ref_map = {r["question_index"]: r for r in ref_rows}
@@ -290,35 +275,43 @@ def per_question_wtl(
         if g_rec > v_rec + 0.001:
             wins += 1
             if len(win_examples) < 3:
-                win_examples.append({
-                    "question": gr["question"][:140],
-                    "category": gr["category"],
-                    "ref_recall": v_rec,
-                    "v2_recall": g_rec,
-                    "firing": gr["metadata"].get("firing_channels", []),
-                    "confidences": gr["metadata"].get("confidences", {}),
-                    "overlay": gr["metadata"].get("overlay", {}),
-                    "list_expander_on":
-                        gr["metadata"].get("list_expander_on", False),
-                })
+                win_examples.append(
+                    {
+                        "question": gr["question"][:140],
+                        "category": gr["category"],
+                        "ref_recall": v_rec,
+                        "v2_recall": g_rec,
+                        "firing": gr["metadata"].get("firing_channels", []),
+                        "confidences": gr["metadata"].get("confidences", {}),
+                        "overlay": gr["metadata"].get("overlay", {}),
+                        "list_expander_on": gr["metadata"].get(
+                            "list_expander_on", False
+                        ),
+                    }
+                )
         elif v_rec > g_rec + 0.001:
             losses += 1
             if len(loss_examples) < 3:
-                loss_examples.append({
-                    "question": gr["question"][:140],
-                    "category": gr["category"],
-                    "ref_recall": v_rec,
-                    "v2_recall": g_rec,
-                    "firing": gr["metadata"].get("firing_channels", []),
-                    "confidences": gr["metadata"].get("confidences", {}),
-                    "overlay": gr["metadata"].get("overlay", {}),
-                    "list_expander_on":
-                        gr["metadata"].get("list_expander_on", False),
-                })
+                loss_examples.append(
+                    {
+                        "question": gr["question"][:140],
+                        "category": gr["category"],
+                        "ref_recall": v_rec,
+                        "v2_recall": g_rec,
+                        "firing": gr["metadata"].get("firing_channels", []),
+                        "confidences": gr["metadata"].get("confidences", {}),
+                        "overlay": gr["metadata"].get("overlay", {}),
+                        "list_expander_on": gr["metadata"].get(
+                            "list_expander_on", False
+                        ),
+                    }
+                )
         else:
             ties += 1
     return {
-        "wins": wins, "ties": ties, "losses": losses,
+        "wins": wins,
+        "ties": ties,
+        "losses": losses,
         "win_examples": win_examples,
         "loss_examples": loss_examples,
     }
@@ -326,11 +319,9 @@ def per_question_wtl(
 
 def summarize_firing_v2(rows: list[dict]) -> dict:
     """Aggregate channel-fire statistics; v2-aware (tracks list_expander)."""
-    fire_counts: dict[str, int] = {ch: 0 for ch in SUPPLEMENT_NAMES_V2}
-    contrib_counts: dict[str, int] = {ch: 0 for ch in SUPPLEMENT_NAMES_V2}
-    conf_sums: dict[str, float] = {
-        ch: 0.0 for ch in list(SUPPLEMENT_NAMES_V2) + [K_EXPANDER_NAME]
-    }
+    fire_counts: dict[str, int] = dict.fromkeys(SUPPLEMENT_NAMES_V2, 0)
+    contrib_counts: dict[str, int] = dict.fromkeys(SUPPLEMENT_NAMES_V2, 0)
+    conf_sums: dict[str, float] = dict.fromkeys(list(SUPPLEMENT_NAMES_V2) + [K_EXPANDER_NAME], 0.0)
     list_expander_fire = 0
     per_q_firing_counts: list[int] = []
     n = 0
@@ -360,17 +351,13 @@ def summarize_firing_v2(rows: list[dict]) -> dict:
 
     return {
         "n": n,
-        "avg_firing_per_query": round(
-            sum(per_q_firing_counts) / max(n, 1), 3
-        ),
+        "avg_firing_per_query": round(sum(per_q_firing_counts) / max(n, 1), 3),
         "firing_distribution": firing_dist,
         "fire_rate_per_channel": {
-            ch: round(fire_counts[ch] / max(n, 1), 3)
-            for ch in SUPPLEMENT_NAMES_V2
+            ch: round(fire_counts[ch] / max(n, 1), 3) for ch in SUPPLEMENT_NAMES_V2
         },
         "contribution_rate_per_channel": {
-            ch: round(contrib_counts[ch] / max(n, 1), 3)
-            for ch in SUPPLEMENT_NAMES_V2
+            ch: round(contrib_counts[ch] / max(n, 1), 3) for ch in SUPPLEMENT_NAMES_V2
         },
         "avg_confidence_per_channel": {
             ch: round(conf_sums[ch] / max(n, 1), 3)
@@ -404,10 +391,7 @@ def summarize_by_category(results: list[dict]) -> dict[str, dict]:
 def run_arch_on_dataset(
     arch_name: str, store: SegmentStore, questions: list[dict]
 ) -> tuple[list[dict], dict, dict]:
-    print(
-        f"\n{'=' * 70}\n{arch_name} | {len(questions)} questions\n"
-        f"{'=' * 70}"
-    )
+    print(f"\n{'=' * 70}\n{arch_name} | {len(questions)} questions\n{'=' * 70}")
     if arch_name == "meta_v2f":
         arch = MetaV2f(store)
         evaluator = evaluate_metav2f_question
@@ -431,7 +415,7 @@ def run_arch_on_dataset(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}",
             flush=True,
         )
         try:
@@ -443,6 +427,7 @@ def run_arch_on_dataset(
         except Exception as e:
             print(f"  ERROR on question {i}: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -560,10 +545,7 @@ def render_report(all_data: dict) -> str:
             ):
                 lines.append(f"- {k} channels: {c}")
             lines.append("")
-            lines.append(
-                "| channel | avg confidence | fire rate | contribution "
-                "rate |"
-            )
+            lines.append("| channel | avg confidence | fire rate | contribution rate |")
             lines.append("|---|---|---|---|")
             for ch in SUPPLEMENT_NAMES_V2:
                 lines.append(
@@ -588,53 +570,35 @@ def render_report(all_data: dict) -> str:
         wtl50 = entry.get("wtl", {}).get(ref_primary, {}).get("K50", {})
         if not wtl50:
             continue
-        lines.append(
-            f"\n### Sample W/L ({primary} vs {ref_primary} @ K=50, {ds})\n"
-        )
+        lines.append(f"\n### Sample W/L ({primary} vs {ref_primary} @ K=50, {ds})\n")
         lines.append("Wins:")
         for ex in wtl50.get("win_examples", [])[:3]:
             lines.append(f"- **[{ex['category']}]** {ex['question']}")
-            lines.append(
-                f"  - ref={ex['ref_recall']:.3f} -> v2="
-                f"{ex['v2_recall']:.3f}"
-            )
+            lines.append(f"  - ref={ex['ref_recall']:.3f} -> v2={ex['v2_recall']:.3f}")
             lines.append(f"  - fired: {ex['firing']}")
             lines.append(
                 f"  - contributed: "
                 f"{ex.get('overlay', {}).get('channels_contributing', [])}"
             )
-            lines.append(
-                f"  - list_expander: {ex.get('list_expander_on', False)}"
-            )
+            lines.append(f"  - list_expander: {ex.get('list_expander_on', False)}")
         lines.append("\nLosses:")
         for ex in wtl50.get("loss_examples", [])[:3]:
             lines.append(f"- **[{ex['category']}]** {ex['question']}")
-            lines.append(
-                f"  - ref={ex['ref_recall']:.3f} -> v2="
-                f"{ex['v2_recall']:.3f}"
-            )
+            lines.append(f"  - ref={ex['ref_recall']:.3f} -> v2={ex['v2_recall']:.3f}")
             lines.append(f"  - fired: {ex['firing']}")
             lines.append(
                 f"  - contributed: "
                 f"{ex.get('overlay', {}).get('channels_contributing', [])}"
             )
-            lines.append(
-                f"  - list_expander: {ex.get('list_expander_on', False)}"
-            )
+            lines.append(f"  - list_expander: {ex.get('list_expander_on', False)}")
         lines.append("")
 
     # Verdict
     lines.append("\n## Verdict\n")
     for ds in DATASETS:
         ref_v2f = all_data.get("meta_v2f", {}).get(ds, {}).get("summary", {})
-        ref_g1 = (
-            all_data.get("gated_threshold_0.7", {}).get(ds, {}).get("summary",
-                                                                    {})
-        )
-        ref_ip = (
-            all_data.get("intent_parser_full", {}).get(ds, {}).get("summary",
-                                                                   {})
-        )
+        ref_g1 = all_data.get("gated_threshold_0.7", {}).get(ds, {}).get("summary", {})
+        ref_ip = all_data.get("intent_parser_full", {}).get(ds, {}).get("summary", {})
         if not ref_v2f:
             continue
         lines.append(f"### {ds}\n")
@@ -691,9 +655,7 @@ def main() -> None:
         ip_rows = None
 
         for arch_name in arch_order:
-            rows, summary, by_cat = run_arch_on_dataset(
-                arch_name, store, questions
-            )
+            rows, summary, by_cat = run_arch_on_dataset(arch_name, store, questions)
             entry: dict = {
                 "arch": arch_name,
                 "dataset": ds_name,

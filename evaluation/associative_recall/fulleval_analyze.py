@@ -51,7 +51,9 @@ def load_results() -> dict[str, dict[str, list[dict]]]:
     return all_data
 
 
-def print_table(dataset_name: str, ds_label: str, results: dict[str, list[dict]], budget: int = 20):
+def print_table(
+    dataset_name: str, ds_label: str, results: dict[str, list[dict]], budget: int = 20
+):
     """Print per-category table for one dataset."""
     if not results:
         print(f"\n  No results for {ds_label}")
@@ -65,9 +67,9 @@ def print_table(dataset_name: str, ds_label: str, results: dict[str, list[dict]]
 
     available_archs = [a for a in ARCH_ORDER if a in results]
 
-    print(f"\n{'='*120}")
+    print(f"\n{'=' * 120}")
     print(f"DATASET: {ds_label} | r@{budget}")
-    print(f"{'='*120}")
+    print(f"{'=' * 120}")
 
     # Header
     header = f"{'Category':<28} | {'Baseline':>8}"
@@ -130,13 +132,17 @@ def print_table(dataset_name: str, ds_label: str, results: dict[str, list[dict]]
     print()
 
 
-def print_cross_arch_summary(all_data: dict[str, dict[str, list[dict]]], budget: int = 20):
+def print_cross_arch_summary(
+    all_data: dict[str, dict[str, list[dict]]], budget: int = 20
+):
     """Print which architecture is best for each category across all datasets."""
-    print(f"\n{'='*120}")
+    print(f"\n{'=' * 120}")
     print(f"CROSS-ARCHITECTURE SUMMARY: Best architecture per category (r@{budget})")
-    print(f"{'='*120}")
+    print(f"{'=' * 120}")
 
-    print(f"\n{'Dataset':<12} {'Category':<28} {'Best Arch':<12} {'Score':>6} {'2nd Best':<12} {'Score':>6} {'Baseline':>8} {'Delta':>8}")
+    print(
+        f"\n{'Dataset':<12} {'Category':<28} {'Best Arch':<12} {'Score':>6} {'2nd Best':<12} {'Score':>6} {'Baseline':>8} {'Delta':>8}"
+    )
     print("-" * 110)
 
     arch_win_counts: dict[str, int] = defaultdict(int)
@@ -175,7 +181,9 @@ def print_cross_arch_summary(all_data: dict[str, dict[str, list[dict]]], budget:
 
             arch_scores.sort(key=lambda x: x[1], reverse=True)
             best_arch, best_score = arch_scores[0]
-            second_arch, second_score = arch_scores[1] if len(arch_scores) > 1 else ("", 0)
+            second_arch, second_score = (
+                arch_scores[1] if len(arch_scores) > 1 else ("", 0)
+            )
             arch_win_counts[best_arch] += 1
 
             delta = best_score - bl_mean
@@ -187,7 +195,7 @@ def print_cross_arch_summary(all_data: dict[str, dict[str, list[dict]]], budget:
                 f"{bl_mean:>8.2f} {delta:>+8.2f}"
             )
 
-    print(f"\n--- Win counts (categories where each arch is best) ---")
+    print("\n--- Win counts (categories where each arch is best) ---")
     for an in sorted(arch_win_counts, key=arch_win_counts.get, reverse=True):
         print(f"  {ARCH_SHORT_NAMES.get(an, an)}: {arch_win_counts[an]}")
 

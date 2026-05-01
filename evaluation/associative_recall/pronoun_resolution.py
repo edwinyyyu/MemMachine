@@ -32,18 +32,14 @@ Exports:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import time
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from pathlib import Path
 from threading import Lock
-from typing import Iterable
 
 import numpy as np
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -52,6 +48,7 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Dedicated caches (pronoun_*_cache.json) -- do not pollute other agents'
@@ -228,8 +225,9 @@ def build_prev_context(prev_turns: list[tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
-def build_prompt(prompt_version: str, role: str, text: str,
-                 prev_turns: list[tuple[str, str]]) -> str:
+def build_prompt(
+    prompt_version: str, role: str, text: str, prev_turns: list[tuple[str, str]]
+) -> str:
     tpl = PROMPT_VERSIONS[prompt_version]
     prev_ctx = build_prev_context(prev_turns[-3:])
     return tpl.format(prev_context=prev_ctx, role=role, text=text[:1200])
@@ -261,7 +259,7 @@ def parse_response(response: str) -> tuple[bool, str]:
             return False, ""
         if up.startswith("RESOLVED:") or up.startswith("RESOLVED "):
             idx = line.find(":")
-            payload = line[idx + 1:].strip() if idx >= 0 else line[9:].strip()
+            payload = line[idx + 1 :].strip() if idx >= 0 else line[9:].strip()
             payload = payload.strip().strip("'\"`").strip()
             if payload:
                 saw_resolved = True
@@ -302,9 +300,7 @@ class PronounResolver:
         # critical_info_store prompt-cache entries.
         return f"[pronoun_resolution/{self.prompt_version}]\n" + prompt
 
-    def call_one(
-        self, role: str, text: str, prev_turns: list[tuple[str, str]]
-    ) -> str:
+    def call_one(self, role: str, text: str, prev_turns: list[tuple[str, str]]) -> str:
         prompt = build_prompt(self.prompt_version, role, text, prev_turns)
         ck = self._cache_key_prompt(prompt)
 
@@ -551,14 +547,12 @@ def embed_resolved_texts(
             flush=True,
         )
     for start in range(0, len(pending), batch_size):
-        batch = pending[start:start + batch_size]
+        batch = pending[start : start + batch_size]
         batch_texts = [bt for _, bt in batch]
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
-                resp = client.embeddings.create(
-                    model=EMBED_MODEL, input=batch_texts
-                )
+                resp = client.embeddings.create(model=EMBED_MODEL, input=batch_texts)
                 break
             except Exception as e:
                 last_exc = e
@@ -617,9 +611,7 @@ def stacked_merge_with_bonus(
     resolved hit displaces the weakest main item beyond position K.
     """
     # Split main into a mutable list (seg, score) keeping relative order.
-    main_list: list[tuple[Segment, float]] = [
-        (s, sc) for s, sc in main_ranked
-    ]
+    main_list: list[tuple[Segment, float]] = [(s, sc) for s, sc in main_ranked]
     seen: set[int] = {s.index for s, _ in main_list[:K]}
 
     # Resolved hits sorted by boosted score.

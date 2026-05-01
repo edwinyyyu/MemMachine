@@ -28,17 +28,15 @@ Exports:
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from threading import Lock
-from typing import Iterable
 
 import numpy as np
+from associative_recall import Segment, SegmentStore
+from best_shot import BestshotLLMCache
 from openai import OpenAI
-
-from associative_recall import EMBED_MODEL, Segment, SegmentStore
-from best_shot import BestshotEmbeddingCache, BestshotLLMCache
-
 
 # ---------------------------------------------------------------------------
 # Classification prompt — strict "critical info" filter
@@ -211,7 +209,7 @@ def parse_response(response: str) -> tuple[bool, list[str]]:
             continue
         if up.startswith("ALT:") or up.startswith("ALT "):
             idx = line.find(":")
-            alt = line[idx + 1:].strip() if idx >= 0 else line[3:].strip()
+            alt = line[idx + 1 :].strip() if idx >= 0 else line[3:].strip()
             alt = alt.strip().strip("'\"<>").strip()
             if alt and len(alt) >= 3:
                 alts.append(alt)
@@ -387,7 +385,8 @@ class CriticalInfoStore:
             norms = np.maximum(norms, 1e-10)
             self.alt_normalized = (alt_embeddings / norms).astype(np.float32)
             self.alt_parent_index = np.array(
-                [k.parent_index for k in alt_keys], dtype=np.int64,
+                [k.parent_index for k in alt_keys],
+                dtype=np.int64,
             )
             parent_convs = [
                 base.segments[k.parent_index].conversation_id for k in alt_keys

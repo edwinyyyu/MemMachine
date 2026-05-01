@@ -37,18 +37,16 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
-
 from em_architectures import (
     V2F_MODEL,
     EMHit,
-    _MergedLLMCache,
     _dedupe_by_turn_id,
     _merge_by_max_score,
+    _MergedLLMCache,
     _query_em,
     format_primer_context,
 )
-
+from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
 
@@ -316,8 +314,7 @@ async def _primer(
         await _query_em(memory, question, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer_hits
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer_hits
     ]
     context_section = format_primer_context(primer_segments)
     primer_full = await _query_em(
@@ -346,9 +343,11 @@ async def em_hyde_narrative(
     raw, cache_hit = await _llm_call(openai_client, prompt, cache)
     probe = raw.strip()
 
-    probe_hits = await _query_em(
-        memory, probe, vector_search_limit=K, expand_context=0
-    ) if probe else []
+    probe_hits = (
+        await _query_em(memory, probe, vector_search_limit=K, expand_context=0)
+        if probe
+        else []
+    )
 
     merged = _merge_by_max_score([primer_full, probe_hits])
     return HydeOrientResult(
@@ -385,9 +384,7 @@ async def em_hyde_turn_format(
     batches = [primer_full]
     for t in turns:
         batches.append(
-            await _query_em(
-                memory, t, vector_search_limit=K, expand_context=0
-            )
+            await _query_em(memory, t, vector_search_limit=K, expand_context=0)
         )
     merged = _merge_by_max_score(batches)
     return HydeOrientResult(
@@ -465,17 +462,13 @@ async def em_orient_brief(
         participant_1=p_user,
         participant_2=p_asst,
     )
-    cues_raw, s2_hit = await _llm_call(
-        openai_client, stage2_prompt, stage2_cache
-    )
+    cues_raw, s2_hit = await _llm_call(openai_client, stage2_prompt, stage2_cache)
     cues = parse_cues(cues_raw, max_cues=2)
 
     batches = [primer_full]
     for cue in cues:
         batches.append(
-            await _query_em(
-                memory, cue, vector_search_limit=K, expand_context=0
-            )
+            await _query_em(memory, cue, vector_search_limit=K, expand_context=0)
         )
     merged = _merge_by_max_score(batches)
     return HydeOrientResult(
@@ -506,9 +499,7 @@ async def em_orient_terminology(
     stage1_prompt = ORIENT_TERMINOLOGY_STAGE1_PROMPT.format(
         question=question, participant_1=p_user, participant_2=p_asst
     )
-    vocab_raw, s1_hit = await _llm_call(
-        openai_client, stage1_prompt, stage1_cache
-    )
+    vocab_raw, s1_hit = await _llm_call(openai_client, stage1_prompt, stage1_cache)
     vocabulary = vocab_raw.strip().splitlines()[0] if vocab_raw else ""
 
     stage2_prompt = ORIENT_TERMINOLOGY_STAGE2_PROMPT.format(
@@ -518,17 +509,13 @@ async def em_orient_terminology(
         participant_1=p_user,
         participant_2=p_asst,
     )
-    cues_raw, s2_hit = await _llm_call(
-        openai_client, stage2_prompt, stage2_cache
-    )
+    cues_raw, s2_hit = await _llm_call(openai_client, stage2_prompt, stage2_cache)
     cues = parse_cues(cues_raw, max_cues=2)
 
     batches = [primer_full]
     for cue in cues:
         batches.append(
-            await _query_em(
-                memory, cue, vector_search_limit=K, expand_context=0
-            )
+            await _query_em(memory, cue, vector_search_limit=K, expand_context=0)
         )
     merged = _merge_by_max_score(batches)
     return HydeOrientResult(

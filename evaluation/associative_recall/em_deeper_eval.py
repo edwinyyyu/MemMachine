@@ -31,10 +31,36 @@ from collections import defaultdict
 from pathlib import Path
 
 import openai
+from alias_expansion import (
+    build_expanded_queries,
+    find_alias_matches,
+)
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    V2F_MODEL,
+    EMHit,
+    _dedupe_by_turn_id,
+    _merge_by_max_score,
+    _MergedLLMCache,
+    _query_em,
+    format_primer_context,
+)
+from em_deeper_tune import (
+    build_chain_scratchpad_speakerformat_prompt,
+    build_speakerformat_5cues_prompt,
+    build_speakerformat_natural_turn_prompt,
+    build_speakerformat_short_prompt,
+    build_type_enum_em_retuned_prompt,
+)
+from em_deeper_tune import (
+    parse_cues as parse_deeper_cues,
+)
+from em_retuned_cue_gen import (
+    build_v2f_speakerformat_prompt,
+)
+from em_retuned_cue_gen import (
+    parse_cues as parse_retuned_cues,
+)
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -52,34 +78,9 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import (
-    V2F_MODEL,
-    EMHit,
-    _MergedLLMCache,
-    _dedupe_by_turn_id,
-    _merge_by_max_score,
-    _query_em,
-    format_primer_context,
-)
-from em_retuned_cue_gen import (
-    build_v2f_speakerformat_prompt,
-    parse_cues as parse_retuned_cues,
-)
-from em_deeper_tune import (
-    build_speakerformat_short_prompt,
-    build_speakerformat_5cues_prompt,
-    build_speakerformat_natural_turn_prompt,
-    build_chain_scratchpad_speakerformat_prompt,
-    build_type_enum_em_retuned_prompt,
-    parse_cues as parse_deeper_cues,
-)
-from alias_expansion import (
-    build_expanded_queries,
-    find_alias_matches,
-)
+from qdrant_client import AsyncQdrantClient
 from speaker_attributed import extract_name_mentions
-
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -101,25 +102,34 @@ LOCOMO_CONV_IDS = ("locomo_conv-26", "locomo_conv-30", "locomo_conv-41")
 CUE_VARIANTS: dict[str, tuple] = {
     # Baseline re-run of the current retuned default.
     "em_v2f_speakerformat": (
-        build_v2f_speakerformat_prompt, 2, "emtune_v2f_speakerformat_cache.json"
+        build_v2f_speakerformat_prompt,
+        2,
+        "emtune_v2f_speakerformat_cache.json",
     ),
     "v2f_speakerformat_short": (
-        build_speakerformat_short_prompt, 2, "emtune_sf_short_cache.json"
+        build_speakerformat_short_prompt,
+        2,
+        "emtune_sf_short_cache.json",
     ),
     "v2f_speakerformat_5cues": (
-        build_speakerformat_5cues_prompt, 5, "emtune_sf_5cues_cache.json"
+        build_speakerformat_5cues_prompt,
+        5,
+        "emtune_sf_5cues_cache.json",
     ),
     "v2f_speakerformat_natural_turn": (
-        build_speakerformat_natural_turn_prompt, 2,
-        "emtune_sf_natural_turn_cache.json"
+        build_speakerformat_natural_turn_prompt,
+        2,
+        "emtune_sf_natural_turn_cache.json",
     ),
     "chain_with_scratchpad_speakerformat": (
-        build_chain_scratchpad_speakerformat_prompt, 2,
-        "emtune_chain_scratchpad_cache.json"
+        build_chain_scratchpad_speakerformat_prompt,
+        2,
+        "emtune_chain_scratchpad_cache.json",
     ),
     "type_enumerated_em_retuned": (
-        build_type_enum_em_retuned_prompt, 5,
-        "emtune_type_enum_em_retuned_cache.json"
+        build_type_enum_em_retuned_prompt,
+        5,
+        "emtune_type_enum_em_retuned_cache.json",
     ),
 }
 
@@ -146,9 +156,7 @@ BASELINE_NO_CUE_VARIANTS = [
 # should be >= two_speaker_filter.
 
 ALL_VARIANTS = (
-    list(CUE_VARIANTS.keys())
-    + COMPOSITION_VARIANTS
-    + BASELINE_NO_CUE_VARIANTS
+    list(CUE_VARIANTS.keys()) + COMPOSITION_VARIANTS + BASELINE_NO_CUE_VARIANTS
 )
 
 BASELINE_VARIANT = "em_v2f_speakerformat"
@@ -190,7 +198,8 @@ def compute_recall(retrieved: set[int], gold: set[int]) -> float:
 
 
 def classify_speaker_side(
-    question: str, conversation_id: str,
+    question: str,
+    conversation_id: str,
     speaker_map: dict[str, dict[str, str]],
 ) -> tuple[str, str, str, list[str]]:
     pair = speaker_map.get(conversation_id, {})
@@ -217,7 +226,9 @@ def classify_speaker_side(
 
 
 async def _llm_call(
-    openai_client, prompt: str, cache: _MergedLLMCache,
+    openai_client,
+    prompt: str,
+    cache: _MergedLLMCache,
 ) -> tuple[str, bool]:
     cached = cache.get(V2F_MODEL, prompt)
     if cached is not None:
@@ -236,8 +247,7 @@ async def build_primer_context(memory: EventMemory, question: str) -> str:
         await _query_em(memory, question, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer_hits
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer_hits
     ]
     return format_primer_context(primer_segments)
 
@@ -285,11 +295,12 @@ async def _primer_then_cues_merge_max(
 
 
 async def _speaker_filtered_query(
-    memory: EventMemory, question: str, matched_name: str, K: int,
+    memory: EventMemory,
+    question: str,
+    matched_name: str,
+    K: int,
 ) -> list[EMHit]:
-    prop_filter = Comparison(
-        field="context.source", op="=", value=matched_name
-    )
+    prop_filter = Comparison(field="context.source", op="=", value=matched_name)
     raw = await memory.query(
         query=question,
         vector_search_limit=K,
@@ -340,9 +351,13 @@ async def evaluate_question(
     if variant in CUE_VARIANTS:
         context_section = await build_primer_context(memory, q_text)
         cues, _raw, cache_hit = await generate_cues_for(
-            variant, q_text, context_section,
-            user_name, asst_name,
-            caches[variant], openai_client,
+            variant,
+            q_text,
+            context_section,
+            user_name,
+            asst_name,
+            caches[variant],
+            openai_client,
         )
         cues_for_report = cues
         row_extras["n_cues"] = len(cues)
@@ -396,7 +411,9 @@ async def evaluate_question(
                 all_cues.extend(cues_v)
                 for c in cues_v:
                     batches.append(
-                        await _query_em(memory, c, vector_search_limit=10, expand_context=0)
+                        await _query_em(
+                            memory, c, vector_search_limit=10, expand_context=0
+                        )
                     )
 
             # sibling-only probes
@@ -411,7 +428,9 @@ async def evaluate_question(
                 )
             # full-K fallback on original
             batches.append(
-                await _query_em(memory, q_text, vector_search_limit=MAX_K, expand_context=0)
+                await _query_em(
+                    memory, q_text, vector_search_limit=MAX_K, expand_context=0
+                )
             )
 
             # sum-of-cosines per turn_id, one contribution per batch
@@ -441,15 +460,19 @@ async def evaluate_question(
             )
             hits = ranked[:MAX_K]
             cues_for_report = all_cues[:2]  # first variant's cues, for display
-            row_extras.update({
-                "alias_variants": len(variants_list),
-                "alias_matches": [
-                    {"matched": r["matched_in_query"], "siblings": r["siblings"]}
-                    for r in match_records
-                ],
-                "n_sibling_probes": len(sibling_probes[:8]),
-                "cache_hit_rate": (cache_hits / cache_total) if cache_total else 1.0,
-            })
+            row_extras.update(
+                {
+                    "alias_variants": len(variants_list),
+                    "alias_matches": [
+                        {"matched": r["matched_in_query"], "siblings": r["siblings"]}
+                        for r in match_records
+                    ],
+                    "n_sibling_probes": len(sibling_probes[:8]),
+                    "cache_hit_rate": (cache_hits / cache_total)
+                    if cache_total
+                    else 1.0,
+                }
+            )
 
     # ---- 3) Composition: two_speaker_filter with speakerformat cues ----
     elif variant == "two_speaker_filter_sf_cues":
@@ -469,12 +492,14 @@ async def evaluate_question(
         side, user_n, asst_n, name_tokens = classify_speaker_side(
             q_text, cid, speaker_map
         )
-        row_extras.update({
-            "matched_side": side,
-            "query_name_tokens": name_tokens,
-            "cache_hit": cache_hit,
-            "applied_speaker_filter": False,
-        })
+        row_extras.update(
+            {
+                "matched_side": side,
+                "query_name_tokens": name_tokens,
+                "cache_hit": cache_hit,
+                "applied_speaker_filter": False,
+            }
+        )
 
         if side not in ("user", "assistant"):
             hits = v2f_hits[:MAX_K]
@@ -507,17 +532,21 @@ async def evaluate_question(
         side, user_n, asst_n, name_tokens = classify_speaker_side(
             q_text, cid, speaker_map
         )
-        row_extras.update({
-            "matched_side": side,
-            "query_name_tokens": name_tokens,
-            "applied_speaker_filter": False,
-        })
+        row_extras.update(
+            {
+                "matched_side": side,
+                "query_name_tokens": name_tokens,
+                "applied_speaker_filter": False,
+            }
+        )
         if side in ("user", "assistant"):
             matched_name = user_n if side == "user" else asst_n
             row_extras["applied_speaker_filter"] = True
             row_extras["matched_name"] = matched_name
             cosine_hits = _dedupe_by_turn_id(
-                await _query_em(memory, q_text, vector_search_limit=MAX_K, expand_context=0)
+                await _query_em(
+                    memory, q_text, vector_search_limit=MAX_K, expand_context=0
+                )
             )
             speaker_hits = await _speaker_filtered_query(
                 memory, q_text, matched_name, K=MAX_K
@@ -533,7 +562,9 @@ async def evaluate_question(
             hits = kept[:MAX_K]
         else:
             hits = _dedupe_by_turn_id(
-                await _query_em(memory, q_text, vector_search_limit=MAX_K, expand_context=0)
+                await _query_em(
+                    memory, q_text, vector_search_limit=MAX_K, expand_context=0
+                )
             )[:MAX_K]
     else:
         raise KeyError(variant)
@@ -633,9 +664,7 @@ async def main() -> None:
             readers.append(sf_legacy)
         if sf_new.exists() and sf_new != writer:
             readers.append(sf_new)
-        caches[variant] = _MergedLLMCache(
-            reader_paths=readers, writer_path=writer
-        )
+        caches[variant] = _MergedLLMCache(reader_paths=readers, writer_path=writer)
 
     # Open EM per conversation.
     memories: dict[str, EventMemory] = {}
@@ -681,8 +710,14 @@ async def main() -> None:
             mem = memories[cid]
             participants = participants_by_conv[cid]
             row = await evaluate_question(
-                variant, mem, q, participants, caches, openai_client,
-                speaker_map, alias_groups,
+                variant,
+                mem,
+                q,
+                participants,
+                caches,
+                openai_client,
+                speaker_map,
+                alias_groups,
             )
             rows.append(row)
         elapsed = time.monotonic() - t_variant
@@ -782,7 +817,7 @@ def build_markdown_report(results: dict, questions: list[dict]) -> list[str]:
         "",
         f"- n_questions = {len(questions)} (benchmark=locomo, first 30)",
         "- EventMemory backend, `text-embedding-3-small`, `gpt-5-mini`",
-        "- Speaker-baked embedded format: `\"{source}: {text}\"`",
+        '- Speaker-baked embedded format: `"{source}: {text}"`',
         "- Retrieval at max_K=50, sliced to K=20 / K=50 (fair backfill)",
         "- Caches: `cache/emtune_<variant>_cache.json` (dedicated)",
         "",
@@ -792,7 +827,9 @@ def build_markdown_report(results: dict, questions: list[dict]) -> list[str]:
         "| --- | --- | --- | --- | --- | --- |",
     ]
     # Order variants: cue-gen first, then composition, then no-cue baselines.
-    ordered = list(CUE_VARIANTS.keys()) + COMPOSITION_VARIANTS + BASELINE_NO_CUE_VARIANTS
+    ordered = (
+        list(CUE_VARIANTS.keys()) + COMPOSITION_VARIANTS + BASELINE_NO_CUE_VARIANTS
+    )
     for variant in ordered:
         s = results["variants"][variant]["summary"]
         d20 = s["mean_r@20"] - base["mean_r@20"]
@@ -809,8 +846,7 @@ def build_markdown_report(results: dict, questions: list[dict]) -> list[str]:
         f"{anchors['em_two_speaker_filter_prior']}",
         f"- em_two_speaker_query_only prior: "
         f"{anchors['em_two_speaker_query_only_prior']}",
-        f"- em_alias_expand_v2f prior: "
-        f"{anchors['em_alias_expand_v2f_prior']}",
+        f"- em_alias_expand_v2f prior: {anchors['em_alias_expand_v2f_prior']}",
         "",
         "## W/T/L per variant vs em_v2f_speakerformat",
         "",
@@ -868,12 +904,16 @@ def build_markdown_report(results: dict, questions: list[dict]) -> list[str]:
         lines.append(
             f"### Q{idx}: `{q_old['conversation_id']}` -- {q_old['question']!r}"
         )
-        lines.append(f"- OLD `{BASELINE_VARIANT}` "
-                     f"(R@20={q_old['r@20']:.2f}, R@50={q_old['r@50']:.2f}):")
+        lines.append(
+            f"- OLD `{BASELINE_VARIANT}` "
+            f"(R@20={q_old['r@20']:.2f}, R@50={q_old['r@50']:.2f}):"
+        )
         for c in q_old["cues"]:
             lines.append(f"  - `{c}`")
-        lines.append(f"- NEW `{best_variant}` "
-                     f"(R@20={q_new['r@20']:.2f}, R@50={q_new['r@50']:.2f}):")
+        lines.append(
+            f"- NEW `{best_variant}` "
+            f"(R@20={q_new['r@20']:.2f}, R@50={q_new['r@50']:.2f}):"
+        )
         for c in q_new["cues"]:
             lines.append(f"  - `{c}`")
         lines.append("")
@@ -909,8 +949,12 @@ def build_markdown_report(results: dict, questions: list[dict]) -> list[str]:
         lines.append(f"| `{variant}` | {d20:+.4f} | {d50:+.4f} | {decision} |")
 
     # Check composition vs their own references.
-    ts_filter = results["variants"].get("two_speaker_filter_sf_cues", {}).get("summary", {})
-    ts_qonly = results["variants"].get("em_two_speaker_query_only", {}).get("summary", {})
+    ts_filter = (
+        results["variants"].get("two_speaker_filter_sf_cues", {}).get("summary", {})
+    )
+    ts_qonly = (
+        results["variants"].get("em_two_speaker_query_only", {}).get("summary", {})
+    )
 
     lines += [
         "",
@@ -948,8 +992,12 @@ def build_markdown_report(results: dict, questions: list[dict]) -> list[str]:
         k50_candidates.append((v, s["mean_r@50"]))
     k50_candidates.sort(key=lambda t: -t[1])
 
-    lines.append(f"- K=20 winner: `{k20_candidates[0][0]}` @ {k20_candidates[0][1]:.4f}")
-    lines.append(f"- K=50 winner: `{k50_candidates[0][0]}` @ {k50_candidates[0][1]:.4f}")
+    lines.append(
+        f"- K=20 winner: `{k20_candidates[0][0]}` @ {k20_candidates[0][1]:.4f}"
+    )
+    lines.append(
+        f"- K=50 winner: `{k50_candidates[0][0]}` @ {k50_candidates[0][1]:.4f}"
+    )
 
     # Ship narrative.
     if ship_both:

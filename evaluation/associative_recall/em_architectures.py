@@ -23,7 +23,6 @@ specialists' caches.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import re
@@ -32,7 +31,6 @@ from pathlib import Path
 from uuid import UUID
 
 from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
-
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
 BESTSHOT_LLM_CACHE = CACHE_DIR / "bestshot_llm_cache.json"
@@ -185,9 +183,7 @@ def format_primer_context(
     sorted_segs = sorted(segments, key=lambda s: s["turn_id"])
     lines = []
     for s in sorted_segs[:max_items]:
-        lines.append(
-            f"[Turn {s['turn_id']}, {s['role']}]: {s['text'][:max_len]}"
-        )
+        lines.append(f"[Turn {s['turn_id']}, {s['role']}]: {s['text'][:max_len]}")
     return "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + "\n".join(lines)
 
 
@@ -293,9 +289,7 @@ async def em_v2f(
     """
     # Hop 0: raw-query retrieval with K=10 (same as best_shot MetaV2f).
     primer_hits = _dedupe_by_turn_id(
-        await _query_em(
-            memory, question, vector_search_limit=10, expand_context=0
-        )
+        await _query_em(memory, question, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
         {
@@ -306,9 +300,7 @@ async def em_v2f(
         for h in primer_hits
     ]
     context_section = format_primer_context(primer_segments)
-    prompt = V2F_PROMPT.format(
-        question=question, context_section=context_section
-    )
+    prompt = V2F_PROMPT.format(question=question, context_section=context_section)
 
     cached = llm_cache.get(V2F_MODEL, prompt)
     if cached is None:
@@ -382,20 +374,15 @@ async def em_ens_2(
     """Ensemble: v2f's 2 cues + type_enumerated's 7 cues, all via EM.query,
     merged by sum of scores per turn_id (sum_cosine)."""
     primer_hits = _dedupe_by_turn_id(
-        await _query_em(
-            memory, question, vector_search_limit=10, expand_context=0
-        )
+        await _query_em(memory, question, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer_hits
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer_hits
     ]
     context_section = format_primer_context(primer_segments)
 
     # v2f cues
-    v2f_prompt = V2F_PROMPT.format(
-        question=question, context_section=context_section
-    )
+    v2f_prompt = V2F_PROMPT.format(question=question, context_section=context_section)
     v2f_resp = v2f_cache.get(V2F_MODEL, v2f_prompt)
     v2f_cache_hit = v2f_resp is not None
     if v2f_resp is None and openai_client is not None:

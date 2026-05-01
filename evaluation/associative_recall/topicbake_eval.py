@@ -34,15 +34,21 @@ import os
 import re
 import time
 from collections import defaultdict
-from dataclasses import dataclass
 from pathlib import Path
-from uuid import UUID
 
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
+from em_architectures import (
+    V2F_MODEL,
+    EMHit,
+    _dedupe_by_turn_id,
+    _merge_by_max_score,
+    _MergedLLMCache,
+    _query_em,
+    em_cosine,
+    em_v2f,
+    format_primer_context,
+)
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -60,21 +66,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
-from em_architectures import (
-    V2F_MODEL,
-    V2F_PROMPT,
-    EMHit,
-    _MergedLLMCache,
-    _dedupe_by_turn_id,
-    _merge_by_max_score,
-    _query_em,
-    em_cosine,
-    em_v2f,
-    format_primer_context,
-    parse_v2f_cues,
-)
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -308,8 +301,7 @@ async def run_v2f_topic_prefix(
         await _query_em(memory, question, vector_search_limit=10, expand_context=0)
     )[:10]
     primer_segments = [
-        {"turn_id": h.turn_id, "role": h.role, "text": h.text}
-        for h in primer_hits
+        {"turn_id": h.turn_id, "role": h.role, "text": h.text} for h in primer_hits
     ]
     context_section = format_primer_context(primer_segments)
 
@@ -328,9 +320,7 @@ async def run_v2f_topic_prefix(
     batches = [primer_for_merge]
     for cue in cues[:2]:
         batches.append(
-            await _query_em(
-                memory, cue, vector_search_limit=max_K, expand_context=0
-            )
+            await _query_em(memory, cue, vector_search_limit=max_K, expand_context=0)
         )
     merged = _merge_by_max_score(batches)
     return merged[:max_K], {"cues": cues, "cache_hit": hit}
@@ -375,9 +365,7 @@ async def run_topic_plus_speaker_filter(
     meta["applied_speaker_filter"] = True
     meta["matched_name"] = matched_name
 
-    speaker_filter = Comparison(
-        field="context.source", op="=", value=matched_name
-    )
+    speaker_filter = Comparison(field="context.source", op="=", value=matched_name)
     speaker_hits = await _em_query_with_filter(
         memory,
         question,
@@ -431,9 +419,7 @@ async def evaluate_question(
     meta: dict = {}
 
     if variant == "em_cosine_baseline_topic":
-        hits, meta = await run_cosine_baseline_topic(
-            memory, q_text, max_K=max_K
-        )
+        hits, meta = await run_cosine_baseline_topic(memory, q_text, max_K=max_K)
     elif variant == "em_v2f_topic":
         hits, meta = await run_v2f_topic(
             memory,
@@ -493,7 +479,9 @@ async def main() -> None:
         help="Comma-separated variants to run",
     )
     parser.add_argument(
-        "--limit", type=int, default=None,
+        "--limit",
+        type=int,
+        default=None,
         help="Run only the first N questions (smoke test)",
     )
     args = parser.parse_args()
@@ -657,8 +645,8 @@ async def main() -> None:
 # Comparison baselines (standard EM, no topic baking, from em_eval):
 BASELINES = {
     "em_cosine_baseline (standard ingest)": {"r@20": 0.7333, "r@50": 0.8833},
-    "em_v2f (standard ingest)":            {"r@20": 0.7417, "r@50": 0.8833},
-    "v2f_em_speakerformat (retune)":        {"r@20": 0.8167, "r@50": 0.8917},
+    "em_v2f (standard ingest)": {"r@20": 0.7417, "r@50": 0.8833},
+    "v2f_em_speakerformat (retune)": {"r@20": 0.8167, "r@50": 0.8917},
     "em_two_speaker_filter (standard+filter)": {"r@20": 0.8417, "r@50": 0.9},
     "em_two_speaker_query_only (filter only)": {"r@20": 0.8, "r@50": 0.9333},
 }
@@ -672,7 +660,7 @@ def write_markdown(results: dict, questions: list[dict], *, out_md: Path) -> Non
         "",
         f"- n_questions = {len(questions)} (benchmark=locomo, first 30)",
         "- EventMemory backend, `text-embedding-3-small`, `gpt-5-mini`",
-        "- Embedded text format: `\"{source}: [topic: <topic>] <text>\"` "
+        '- Embedded text format: `"{source}: [topic: <topic>] <text>"` '
         "(speaker via MessageContext.source, topic prefix in Text item).",
         "- New Qdrant collection prefix `arc_em_lc30_topic_v1_{26,30,41}`, "
         "new SQLite `results/eventmemory_topic.sqlite3`.",
@@ -710,8 +698,7 @@ def write_markdown(results: dict, questions: list[dict], *, out_md: Path) -> Non
         lines.append("| --- | --- | --- | --- |")
         for cat, cs in sorted(data.get("by_category", {}).items()):
             lines.append(
-                f"| {cat} | {cs['n']} | {cs['mean_r@20']:.4f} | "
-                f"{cs['mean_r@50']:.4f} |"
+                f"| {cat} | {cs['n']} | {cs['mean_r@20']:.4f} | {cs['mean_r@50']:.4f} |"
             )
         lines.append("")
 
@@ -723,8 +710,10 @@ def write_markdown(results: dict, questions: list[dict], *, out_md: Path) -> Non
         idxs = [0, n // 2, n - 1] if n >= 3 else list(range(n))
         for i in idxs:
             r = prefix_rows[i]
-            lines.append(f"- Q{i} [{r['conversation_id']}] `{r['question']!r}` "
-                         f"(R@20={r['r@20']:.2f}, R@50={r['r@50']:.2f}):")
+            lines.append(
+                f"- Q{i} [{r['conversation_id']}] `{r['question']!r}` "
+                f"(R@20={r['r@20']:.2f}, R@50={r['r@50']:.2f}):"
+            )
             for c in r.get("cues", []):
                 lines.append(f"  - `{c}`")
             lines.append("")

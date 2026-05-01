@@ -9,7 +9,6 @@ Usage:
     uv run python eval_v2f_experiments.py --all
 """
 
-import hashlib
 import json
 import sys
 import time
@@ -18,9 +17,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     EMBED_MODEL,
@@ -28,8 +24,9 @@ from associative_recall import (
     LLMCache,
     Segment,
     SegmentStore,
-    RetrievalResult,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -293,17 +290,13 @@ class MetaV2fVariant(ExperimentBase):
     def retrieve(self, question: str, conversation_id: str) -> ExperimentResult:
         # Hop 0: embed question, retrieve top-10
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude_indices = {s.index for s in all_segments}
 
         # Build context section
         context = _format_segments(all_segments)
-        context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + context
-        )
+        context_section = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + context
 
         # Single LLM call
         prompt = self.prompt_template.format(
@@ -322,7 +315,9 @@ class MetaV2fVariant(ExperimentBase):
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude_indices,
             )
             for seg in result.segments:
@@ -370,9 +365,7 @@ class DoubleV2f(ExperimentBase):
         """
         # Build context section showing all accumulated segments
         context = _format_segments(existing_segments, max_items=16)
-        context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + context
-        )
+        context_section = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + context
         if previous_cues:
             context_section += (
                 "\n\nPREVIOUS CUES ALREADY TRIED (do NOT repeat or paraphrase):\n"
@@ -389,7 +382,9 @@ class DoubleV2f(ExperimentBase):
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude_indices,
             )
             for seg in result.segments:
@@ -402,9 +397,7 @@ class DoubleV2f(ExperimentBase):
     def retrieve(self, question: str, conversation_id: str) -> ExperimentResult:
         # Hop 0: embed question, retrieve top-10
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments = list(hop0.segments)
         exclude_indices = {s.index for s in all_segments}
 
@@ -554,12 +547,8 @@ def summarize(results: list[dict], variant_name: str, benchmark: str) -> dict:
     summary["avg_total_retrieved"] = round(
         sum(r["total_retrieved"] for r in results) / n, 1
     )
-    summary["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
-    summary["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1
-    )
+    summary["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
+    summary["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
     summary["avg_time_s"] = round(sum(r["time_s"] for r in results) / n, 2)
 
     return summary
@@ -598,19 +587,18 @@ def run_variant(
     verbose: bool = False,
 ) -> tuple[list[dict], dict]:
     """Run one variant, return (results, summary)."""
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(
         f"VARIANT: {variant_name} | BENCHMARK: {benchmark_label} | "
         f"{len(questions)} questions"
     )
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     results = []
     for i, question in enumerate(questions):
         q_short = question["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {question['category']}: "
-            f"{q_short}...",
+            f"  [{i + 1}/{len(questions)}] {question['category']}: {q_short}...",
             flush=True,
         )
         try:
@@ -619,6 +607,7 @@ def run_variant(
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
             import traceback
+
             traceback.print_exc()
         sys.stdout.flush()
         if (i + 1) % 5 == 0:
@@ -645,7 +634,7 @@ def run_variant(
     )
 
     cat_summaries = summarize_by_category(results)
-    print(f"\n  Per-category (r@20):")
+    print("\n  Per-category (r@20):")
     for cat, cs in cat_summaries.items():
         print(
             f"    {cat}: delta={cs['delta_r@20']:+.3f} "
@@ -673,12 +662,8 @@ def compare_v2f_vs_variant(
         v2f_mean = sum(v2f_vals) / n
         var_mean = sum(var_vals) / n
 
-        wins = sum(
-            1 for v, a in zip(v2f_vals, var_vals) if a > v + 0.001
-        )
-        losses = sum(
-            1 for v, a in zip(v2f_vals, var_vals) if v > a + 0.001
-        )
+        wins = sum(1 for v, a in zip(v2f_vals, var_vals) if a > v + 0.001)
+        losses = sum(1 for v, a in zip(v2f_vals, var_vals) if v > a + 0.001)
         ties = n - wins - losses
 
         comparison[f"v2f_{label}"] = round(v2f_mean, 4)
@@ -729,13 +714,17 @@ def main() -> None:
         experiments_to_run = ["v2f_general", "double_v2f"]
 
     # Always run V2f control first (needed for head-to-head comparison)
-    v2f_results_file = RESULTS_DIR / f"optim_meta_v2f_antipattern_locomo_{args.num_questions}q.json"
+    v2f_results_file = (
+        RESULTS_DIR / f"optim_meta_v2f_antipattern_locomo_{args.num_questions}q.json"
+    )
     v2f_results = None
     if v2f_results_file.exists():
         print(f"\nLoading V2f control from {v2f_results_file}")
         with open(v2f_results_file) as f:
             v2f_results = json.load(f)
-        v2f_summary = summarize(v2f_results, "v2f_control", f"locomo_{args.num_questions}q")
+        v2f_summary = summarize(
+            v2f_results, "v2f_control", f"locomo_{args.num_questions}q"
+        )
         print(
             f"  V2f control r@20: arch={v2f_summary.get('arch_r@20', 0):.3f} "
             f"delta={v2f_summary.get('delta_r@20', 0):+.3f}"
@@ -758,7 +747,9 @@ def main() -> None:
 
     # ----- Experiment 1: V2f General -----
     if "v2f_general" in experiments_to_run:
-        results_file = RESULTS_DIR / f"optim_v2f_general_locomo_{args.num_questions}q.json"
+        results_file = (
+            RESULTS_DIR / f"optim_v2f_general_locomo_{args.num_questions}q.json"
+        )
 
         if results_file.exists() and not args.force:
             print(f"\nLoading existing V2f_general from {results_file}")
@@ -785,9 +776,9 @@ def main() -> None:
             comparison = compare_v2f_vs_variant(
                 v2f_results, general_results, "v2f_general"
             )
-            print(f"\n{'='*70}")
+            print(f"\n{'=' * 70}")
             print("HEAD-TO-HEAD: V2f_general vs V2f (original)")
-            print(f"{'='*70}")
+            print(f"{'=' * 70}")
             for budget in BUDGETS:
                 lbl = f"r@{budget}"
                 print(
@@ -799,7 +790,9 @@ def main() -> None:
 
     # ----- Experiment 2: Double V2f -----
     if "double_v2f" in experiments_to_run:
-        results_file = RESULTS_DIR / f"optim_double_v2f_locomo_{args.num_questions}q.json"
+        results_file = (
+            RESULTS_DIR / f"optim_double_v2f_locomo_{args.num_questions}q.json"
+        )
 
         if results_file.exists() and not args.force:
             print(f"\nLoading existing double_v2f from {results_file}")
@@ -826,9 +819,9 @@ def main() -> None:
             comparison = compare_v2f_vs_variant(
                 v2f_results, double_results, "double_v2f"
             )
-            print(f"\n{'='*70}")
+            print(f"\n{'=' * 70}")
             print("HEAD-TO-HEAD: double_v2f vs V2f (original)")
-            print(f"{'='*70}")
+            print(f"{'=' * 70}")
             for budget in BUDGETS:
                 lbl = f"r@{budget}"
                 print(

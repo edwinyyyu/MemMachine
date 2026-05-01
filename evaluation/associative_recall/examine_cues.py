@@ -44,7 +44,9 @@ def examine_cues(versions_labels: list[tuple[str, str]], n_examples: int = 8) ->
 
     interesting.sort(key=lambda x: x[0], reverse=True)
 
-    print(f"Found {len(interesting)} questions with varying performance across versions")
+    print(
+        f"Found {len(interesting)} questions with varying performance across versions"
+    )
     print()
 
     for spread, idx, base_r in interesting[:n_examples]:
@@ -53,7 +55,7 @@ def examine_cues(versions_labels: list[tuple[str, str]], n_examples: int = 8) ->
         b20 = base_r["baseline_recalls"]["r@20"]
         src = base_r["source_chat_ids"]
 
-        print(f"{'='*100}")
+        print(f"{'=' * 100}")
         print(f"Q: {q}")
         print(f"Cat: {cat}  Source: {src}  Baseline r@20: {b20:.3f}")
         print()
@@ -73,7 +75,9 @@ def examine_cues(versions_labels: list[tuple[str, str]], n_examples: int = 8) ->
                     hop1_cues = h["cues"]
                     hop1_hits = h.get("new_source_hits", [])
 
-            print(f"  [{vn:>5s}] r@20={a20:.3f} (delta={delta:+.3f}) hop1_hits={hop1_hits}")
+            print(
+                f"  [{vn:>5s}] r@20={a20:.3f} (delta={delta:+.3f}) hop1_hits={hop1_hits}"
+            )
             for c in hop1_cues:
                 print(f"    CUE: {c[:120]}")
             print()

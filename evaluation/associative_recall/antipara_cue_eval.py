@@ -20,28 +20,24 @@ import argparse
 import json
 import sys
 import time
-from collections import defaultdict
 from pathlib import Path
 
+from antipara_cue_gen import (
+    MetaV2fDedicated,
+    V2fAntiParaphrase,
+    V2fAntiParaphraseVerbatim,
+    V2fVerbatimQuote,
+)
+from associative_recall import Segment
 from dotenv import load_dotenv
-
-from associative_recall import Segment, SegmentStore
 from fair_backfill_eval import (
     BUDGETS,
-    DATA_DIR,
     DATASETS,
     RESULTS_DIR,
     fair_backfill_evaluate,
     load_dataset,
     summarize,
     summarize_by_category,
-)
-from antipara_cue_gen import (
-    MetaV2fDedicated,
-    V2fAntiParaphrase,
-    V2fAntiParaphraseVerbatim,
-    V2fVerbatimQuote,
-    verbatim_check,
 )
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -78,9 +74,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -126,7 +120,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -198,12 +192,60 @@ def paraphrase_rate(rows: list[dict]) -> float:
     OR cue shares >=60% of non-stopword tokens with the question.
     """
     STOP = {
-        "the", "a", "an", "and", "or", "of", "to", "in", "on", "for",
-        "with", "at", "by", "is", "are", "was", "were", "be", "been",
-        "what", "who", "where", "when", "why", "how", "did", "do", "does",
-        "i", "you", "they", "we", "he", "she", "it", "that", "this",
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "of",
+        "to",
+        "in",
+        "on",
+        "for",
+        "with",
+        "at",
+        "by",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "what",
+        "who",
+        "where",
+        "when",
+        "why",
+        "how",
+        "did",
+        "do",
+        "does",
+        "i",
+        "you",
+        "they",
+        "we",
+        "he",
+        "she",
+        "it",
+        "that",
+        "this",
     }
-    q_words = ("what", "who", "where", "when", "why", "how", "which", "did", "do", "does", "is", "are", "was", "were")
+    q_words = (
+        "what",
+        "who",
+        "where",
+        "when",
+        "why",
+        "how",
+        "which",
+        "did",
+        "do",
+        "does",
+        "is",
+        "are",
+        "was",
+        "were",
+    )
 
     def toks(s: str) -> set[str]:
         return {
@@ -281,9 +323,7 @@ def render_markdown(
         "verbatim phrase from hop0 excerpts; 15-40 word length cap; "
         "post-filter drops cues that fail `verbatim_check`."
     )
-    lines.append(
-        "- `v2f_anti_paraphrase_verbatim` — both together.\n"
-    )
+    lines.append("- `v2f_anti_paraphrase_verbatim` — both together.\n")
 
     # Overall recall
     lines.append("## Overall recall (avg over 4 datasets)")
@@ -322,13 +362,13 @@ def render_markdown(
     base_arch = "meta_v2f"
     if base_arch in all_summaries:
         lines.append("## Deltas vs `meta_v2f` (arch_r@K)")
-        lines.append("| Dataset | K | " + " | ".join(
-            a for a in arch_names if a != base_arch
-        ) + " |")
         lines.append(
-            "|---------|---|"
-            + "|".join(["------:"] * (len(arch_names) - 1))
-            + "|"
+            "| Dataset | K | "
+            + " | ".join(a for a in arch_names if a != base_arch)
+            + " |"
+        )
+        lines.append(
+            "|---------|---|" + "|".join(["------:"] * (len(arch_names) - 1)) + "|"
         )
         for ds in ds_order:
             for K in BUDGETS:
@@ -457,14 +497,9 @@ def render_markdown(
             lines.append(f"- Q: _{r['question']}_")
             for cue in r.get("cues", []):
                 lines.append(f"    - CUE: {cue}")
-            dropped = [
-                o for o in r.get("cue_outcomes", [])
-                if not o.get("kept")
-            ]
+            dropped = [o for o in r.get("cue_outcomes", []) if not o.get("kept")]
             for o in dropped:
-                lines.append(
-                    f"    - DROPPED ({o.get('reason')}): {o.get('cue')}"
-                )
+                lines.append(f"    - DROPPED ({o.get('reason')}): {o.get('cue')}")
     lines.append("")
 
     # Verdict
@@ -518,9 +553,7 @@ def main() -> None:
             cls = ARCH_CLASSES[arch_name]
             arch = cls(store)
 
-            results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(arch_name, arch, ds_name, questions)
 
             out_path = RESULTS_DIR / f"antipara_{arch_name}_{ds_name}.json"
             with open(out_path, "w") as f:

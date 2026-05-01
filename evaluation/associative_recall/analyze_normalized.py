@@ -8,7 +8,6 @@ Reads results from normalized evaluations and produces:
 """
 
 import json
-import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -27,14 +26,14 @@ def load_results(label: str) -> list[dict] | None:
 
 def analyze_single(results: list[dict], label: str) -> dict:
     """Analyze a single configuration's results."""
-    print(f"\n{'='*100}")
+    print(f"\n{'=' * 100}")
     print(f"ANALYSIS: {label} ({len(results)} questions)")
-    print(f"{'='*100}")
+    print(f"{'=' * 100}")
 
     budget_labels = [f"r@{b}" for b in BUDGETS] + ["r@actual"]
 
     # Overall
-    print(f"\n  OVERALL:")
+    print("\n  OVERALL:")
     for lbl in budget_labels:
         b_vals = [r["baseline_recalls"].get(lbl, 0) for r in results]
         a_vals = [r["assoc_recalls"].get(lbl, 0) for r in results]
@@ -45,8 +44,10 @@ def analyze_single(results: list[dict], label: str) -> dict:
         wins = sum(1 for b, a in zip(b_vals, a_vals) if a > b + 0.001)
         losses = sum(1 for b, a in zip(b_vals, a_vals) if b > a + 0.001)
         ties = len(b_vals) - wins - losses
-        print(f"    {lbl:>10s}: baseline={b_mean:.3f}  assoc={a_mean:.3f}  "
-              f"delta={delta:+.3f}  W/T/L={wins}/{ties}/{losses}")
+        print(
+            f"    {lbl:>10s}: baseline={b_mean:.3f}  assoc={a_mean:.3f}  "
+            f"delta={delta:+.3f}  W/T/L={wins}/{ties}/{losses}"
+        )
 
     avg_frac = sum(r["retrieval_fraction"] for r in results) / len(results)
     avg_total = sum(r["total_assoc_retrieved"] for r in results) / len(results)
@@ -58,10 +59,10 @@ def analyze_single(results: list[dict], label: str) -> dict:
     for r in results:
         by_cat[r["category"]].append(r)
 
-    print(f"\n  PER CATEGORY (delta at each budget):")
+    print("\n  PER CATEGORY (delta at each budget):")
     print(f"    {'category':30s} {'n':>3s}", end="")
     for lbl in budget_labels:
-        print(f"  {'D-'+lbl:>10s}", end="")
+        print(f"  {'D-' + lbl:>10s}", end="")
     print()
     print("    " + "-" * 90)
 
@@ -76,37 +77,47 @@ def analyze_single(results: list[dict], label: str) -> dict:
         print()
 
     # Questions where assoc does WORSE than baseline
-    print(f"\n  QUESTIONS WHERE ASSOCIATIVE IS WORSE (at r@50):")
+    print("\n  QUESTIONS WHERE ASSOCIATIVE IS WORSE (at r@50):")
     for r in results:
         b50 = r["baseline_recalls"].get("r@50", 0)
         a50 = r["assoc_recalls"].get("r@50", 0)
         if b50 > a50 + 0.001:
             print(f"    Q: {r['question'][:80]}")
-            print(f"      cat={r['category']} conv={r['conversation_id']} "
-                  f"src={r['source_chat_ids']}")
-            print(f"      baseline r@50={b50:.3f}  assoc r@50={a50:.3f}  "
-                  f"delta={a50-b50:+.3f}")
-            print(f"      total_assoc={r['total_assoc_retrieved']} "
-                  f"({r['retrieval_fraction']:.0%})")
+            print(
+                f"      cat={r['category']} conv={r['conversation_id']} "
+                f"src={r['source_chat_ids']}"
+            )
+            print(
+                f"      baseline r@50={b50:.3f}  assoc r@50={a50:.3f}  "
+                f"delta={a50 - b50:+.3f}"
+            )
+            print(
+                f"      total_assoc={r['total_assoc_retrieved']} "
+                f"({r['retrieval_fraction']:.0%})"
+            )
 
     # Questions where assoc HELPS at r@20
-    print(f"\n  QUESTIONS WHERE ASSOCIATIVE HELPS (at r@20):")
+    print("\n  QUESTIONS WHERE ASSOCIATIVE HELPS (at r@20):")
     for r in results:
         b20 = r["baseline_recalls"].get("r@20", 0)
         a20 = r["assoc_recalls"].get("r@20", 0)
         if a20 > b20 + 0.001:
             print(f"    Q: {r['question'][:80]}")
-            print(f"      cat={r['category']} "
-                  f"baseline r@20={b20:.3f}  assoc r@20={a20:.3f}  "
-                  f"delta={a20-b20:+.3f}")
+            print(
+                f"      cat={r['category']} "
+                f"baseline r@20={b20:.3f}  assoc r@20={a20:.3f}  "
+                f"delta={a20 - b20:+.3f}"
+            )
 
     return {
         "label": label,
         "num_questions": len(results),
         "overall": {
             lbl: {
-                "baseline": sum(r["baseline_recalls"].get(lbl, 0) for r in results) / len(results),
-                "assoc": sum(r["assoc_recalls"].get(lbl, 0) for r in results) / len(results),
+                "baseline": sum(r["baseline_recalls"].get(lbl, 0) for r in results)
+                / len(results),
+                "assoc": sum(r["assoc_recalls"].get(lbl, 0) for r in results)
+                / len(results),
             }
             for lbl in budget_labels
         },
@@ -115,15 +126,15 @@ def analyze_single(results: list[dict], label: str) -> dict:
 
 def compare_configs(configs: list[tuple[str, list[dict]]]) -> None:
     """Compare multiple configurations side by side."""
-    print(f"\n{'='*100}")
+    print(f"\n{'=' * 100}")
     print("COMPARISON ACROSS CONFIGURATIONS")
-    print(f"{'='*100}")
+    print(f"{'=' * 100}")
 
     budget_labels = [f"r@{b}" for b in BUDGETS]
 
     print(f"\n  {'Config':30s}", end="")
     for lbl in budget_labels:
-        print(f"  {'B-'+lbl:>7s} {'A-'+lbl:>7s} {'D':>6s}", end="")
+        print(f"  {'B-' + lbl:>7s} {'A-' + lbl:>7s} {'D':>6s}", end="")
     print(f"  {'AvgSegs':>7s}")
     print("  " + "-" * 100)
 
@@ -140,6 +151,7 @@ def compare_configs(configs: list[tuple[str, list[dict]]]) -> None:
 
 def main() -> None:
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("labels", nargs="*", default=[])
     args = parser.parse_args()

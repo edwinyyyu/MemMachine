@@ -40,9 +40,6 @@ from uuid import uuid4
 import numpy as np
 import openai
 from dotenv import load_dotenv
-from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import create_async_engine
-
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -69,7 +66,8 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
-
+from qdrant_client import AsyncQdrantClient
+from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -217,9 +215,7 @@ def load_conversation_segments(
         cid = str(cids[i])
         if cid not in LOCOMO_CONV_IDS:
             continue
-        out.setdefault(cid, []).append(
-            (int(tids[i]), str(roles[i]), str(texts[i]))
-        )
+        out.setdefault(cid, []).append((int(tids[i]), str(roles[i]), str(texts[i])))
     for cid in out:
         out[cid].sort(key=lambda t: t[0])
     return out
@@ -309,7 +305,7 @@ def _extract_note_fields(raw: str) -> dict:
             prefix = key + ":"
             if lower.startswith(prefix):
                 current_field = key
-                rest = lo[len(prefix):].strip()
+                rest = lo[len(prefix) :].strip()
                 if rest:
                     buckets[key].append(rest)
                 break
@@ -384,12 +380,14 @@ async def _retrieve_related(
             text = seg.block.text if hasattr(seg.block, "text") else ""
             if not text:
                 break
-            out.append({
-                "source": source,
-                "text": text,
-                "event_type": etype,
-                "turn_id": tid,
-            })
+            out.append(
+                {
+                    "source": source,
+                    "text": text,
+                    "event_type": etype,
+                    "turn_id": tid,
+                }
+            )
             seen_seg_uuids.add(sc.seed_segment_uuid)
             break
         if len(out) >= K:
@@ -547,11 +545,16 @@ async def ingest_conversation(
         prior_by_tid: dict[int, str] = {}
         msgs_by_tid: dict[int, tuple[str, str]] = {}
         import json as _json
+
         from sqlalchemy import text as _sql_text
+
         async with segment_store._engine.connect() as conn:  # noqa: SLF001
-            res = await conn.execute(_sql_text(
-                "SELECT properties, block FROM segment_store_sg WHERE partition_key = :pk"
-            ), {"pk": partition_key})
+            res = await conn.execute(
+                _sql_text(
+                    "SELECT properties, block FROM segment_store_sg WHERE partition_key = :pk"
+                ),
+                {"pk": partition_key},
+            )
             for props_json, block_json in res:
                 if not props_json:
                     continue
@@ -609,11 +612,17 @@ async def ingest_conversation(
         t_iter = time.monotonic()
 
         # Skip turns already ingested (resume mode).
-        if resume and turn_id in already_ingested_turn_ids and turn_id in already_ingested_note_turn_ids:
+        if (
+            resume
+            and turn_id in already_ingested_turn_ids
+            and turn_id in already_ingested_note_turn_ids
+        ):
             continue
 
         if os.environ.get("NOTES_V3_VERBOSE"):
-            print(f"[{conv_id}] turn {turn_id} ({speaker_name}) starting...", flush=True)
+            print(
+                f"[{conv_id}] turn {turn_id} ({speaker_name}) starting...", flush=True
+            )
 
         if not (resume and turn_id in already_ingested_turn_ids):
             turn_event = Event(
@@ -655,7 +664,7 @@ async def ingest_conversation(
                     prior_notes_prose=prior_notes_prose,
                     recent_turns=recent_turns,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 print(f"[note-gen] conv={conv_id} turn={turn_id} err={exc!r}")
                 prose = ""
                 fields = {}
@@ -688,25 +697,37 @@ async def ingest_conversation(
                 prior_notes_prose = prior_notes_prose[-8:]
 
         if i in sample_idx:
-            samples.append({
-                "conv_id": conv_id,
-                "position": "early" if i == 0 else "late" if i == n_total - 1 else "mid",
-                "turn_id": turn_id,
-                "speaker": speaker_name,
-                "turn_text": text.strip()[:400],
-                "note_fields": fields,
-                "note_prose": prose,
-                "related_used": [
-                    {"source": r["source"], "text": r["text"][:200],
-                     "event_type": r["event_type"]}
-                    for r in related
-                ],
-            })
+            samples.append(
+                {
+                    "conv_id": conv_id,
+                    "position": "early"
+                    if i == 0
+                    else "late"
+                    if i == n_total - 1
+                    else "mid",
+                    "turn_id": turn_id,
+                    "speaker": speaker_name,
+                    "turn_text": text.strip()[:400],
+                    "note_fields": fields,
+                    "note_prose": prose,
+                    "related_used": [
+                        {
+                            "source": r["source"],
+                            "text": r["text"][:200],
+                            "event_type": r["event_type"],
+                        }
+                        for r in related
+                    ],
+                }
+            )
 
         if (n_turns % 25) == 0:
             notes_cache.save()
         if os.environ.get("NOTES_V3_VERBOSE"):
-            print(f"[{conv_id}] turn {turn_id} done in {time.monotonic()-t_iter:.1f}s (n_notes={n_notes}, cache_hits={n_note_cache_hits})", flush=True)
+            print(
+                f"[{conv_id}] turn {turn_id} done in {time.monotonic() - t_iter:.1f}s (n_notes={n_notes}, cache_hits={n_note_cache_hits})",
+                flush=True,
+            )
 
     ingest_time = time.monotonic() - t0
     notes_cache.save()
@@ -732,14 +753,26 @@ async def ingest_conversation(
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--limit", type=int, default=None,
-                        help="Only ingest first N turns per conversation (smoke)")
-    parser.add_argument("--conv", default=None,
-                        help="Single conversation id, e.g. locomo_conv-26")
-    parser.add_argument("--concurrent_convs", type=int, default=3,
-                        help="# of conversations concurrently (each conv is sequential inside)")
-    parser.add_argument("--resume", action="store_true",
-                        help="Skip delete of existing collection/partition; skip already-ingested turns")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Only ingest first N turns per conversation (smoke)",
+    )
+    parser.add_argument(
+        "--conv", default=None, help="Single conversation id, e.g. locomo_conv-26"
+    )
+    parser.add_argument(
+        "--concurrent_convs",
+        type=int,
+        default=3,
+        help="# of conversations concurrently (each conv is sequential inside)",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip delete of existing collection/partition; skip already-ingested turns",
+    )
     args = parser.parse_args()
 
     speakers_map = load_speaker_map()
@@ -810,20 +843,24 @@ async def main() -> None:
 
     out_collections = RESULTS_DIR / "eventmemory_notes_v3_collections.json"
     with open(out_collections, "w") as f:
-        json.dump({
-            "namespace": NAMESPACE,
-            "prefix": COLLECTION_PREFIX,
-            "logical_prefix": LOGICAL_PREFIX,
-            "sql_url": sql_url,
-            "max_text_chunk_length": 500,
-            "derive_sentences": False,
-            "notes_model": NOTES_MODEL,
-            "notes_cache_path": str(NOTES_GEN_CACHE_FILE),
-            "retrieval_query_variant": "V_combined",
-            "conversations": [
-                {k: v for k, v in r.items() if k != "samples"} for r in records
-            ],
-        }, f, indent=2)
+        json.dump(
+            {
+                "namespace": NAMESPACE,
+                "prefix": COLLECTION_PREFIX,
+                "logical_prefix": LOGICAL_PREFIX,
+                "sql_url": sql_url,
+                "max_text_chunk_length": 500,
+                "derive_sentences": False,
+                "notes_model": NOTES_MODEL,
+                "notes_cache_path": str(NOTES_GEN_CACHE_FILE),
+                "retrieval_query_variant": "V_combined",
+                "conversations": [
+                    {k: v for k, v in r.items() if k != "samples"} for r in records
+                ],
+            },
+            f,
+            indent=2,
+        )
 
     all_samples = [s for r in records for s in r.get("samples", [])]
     with open(NOTES_SAMPLES_FILE, "w") as f:

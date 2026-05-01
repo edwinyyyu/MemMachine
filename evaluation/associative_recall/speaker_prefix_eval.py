@@ -27,7 +27,6 @@ Usage:
 """
 
 import argparse
-import hashlib
 import json
 import re
 import sys
@@ -36,9 +35,6 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
-from openai import OpenAI
-
 from associative_recall import (
     CACHE_DIR,
     DATA_DIR,
@@ -48,9 +44,11 @@ from associative_recall import (
     Segment,
     SegmentStore,
 )
+from dotenv import load_dotenv
+from openai import OpenAI
 from prompt_optimization import (
-    V15_CONTROL_PROMPT,
     META_V2F_V2_PROMPT,
+    V15_CONTROL_PROMPT,
     _format_segments,
     _parse_cues,
 )
@@ -59,9 +57,7 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 MODEL = "gpt-5-mini"
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
-LOCOMO_RAW_PATH = (
-    Path(__file__).resolve().parents[1] / "data" / "locomo10.json"
-)
+LOCOMO_RAW_PATH = Path(__file__).resolve().parents[1] / "data" / "locomo10.json"
 
 # Budgets requested by the task
 BUDGETS = [20, 50]
@@ -88,8 +84,10 @@ EMBED_MAX_CHARS = 8000
 
 def _make_role_pass_through():
     """For synthetic/puzzle/advanced: the role itself is the speaker label."""
+
     def f(conversation_id: str, role: str) -> str:
         return role
+
     return f
 
 
@@ -299,7 +297,9 @@ def _embed_with_cache(
 
 
 def embed_prefixed_dataset(
-    dataset_name: str, client: OpenAI, cache: PrefixEmbeddingCache,
+    dataset_name: str,
+    client: OpenAI,
+    cache: PrefixEmbeddingCache,
     force: bool = False,
 ) -> None:
     """Load source npz, build '{speaker}: {text}' strings, embed, save npz."""
@@ -308,8 +308,10 @@ def embed_prefixed_dataset(
     output_path = DATA_DIR / cfg["output_npz"]
 
     if output_path.exists() and not force:
-        print(f"[{dataset_name}] Skipping — {output_path.name} exists "
-              f"(use --force to rebuild)")
+        print(
+            f"[{dataset_name}] Skipping — {output_path.name} exists "
+            f"(use --force to rebuild)"
+        )
         return
 
     print(f"[{dataset_name}] Loading {source_path.name}...")
@@ -321,29 +323,23 @@ def embed_prefixed_dataset(
 
     # Apply segment filter if present (locomo: keep only LoCoMo conversations)
     if cfg["segment_filter"] is not None:
-        mask = np.array(
-            [cfg["segment_filter"](str(cid)) for cid in conversation_ids]
-        )
+        mask = np.array([cfg["segment_filter"](str(cid)) for cid in conversation_ids])
         conversation_ids = conversation_ids[mask]
         turn_ids = turn_ids[mask]
         roles = roles[mask]
         texts = texts[mask]
-        print(f"[{dataset_name}] Filtered to {mask.sum()} segments "
-              f"(of {len(mask)})")
+        print(f"[{dataset_name}] Filtered to {mask.sum()} segments (of {len(mask)})")
     else:
         print(f"[{dataset_name}] {len(texts)} segments")
 
     # Build speaker label for each segment
     role_fn = cfg["role_to_speaker"]
     speakers = [
-        role_fn(str(cid), str(role))
-        for cid, role in zip(conversation_ids, roles)
+        role_fn(str(cid), str(role)) for cid, role in zip(conversation_ids, roles)
     ]
 
     # Build prefixed text
-    prefixed_texts = [
-        f"{speaker}: {text}" for speaker, text in zip(speakers, texts)
-    ]
+    prefixed_texts = [f"{speaker}: {text}" for speaker, text in zip(speakers, texts)]
 
     # Show a few examples
     print(f"[{dataset_name}] Examples of prefixed text:")
@@ -362,9 +358,7 @@ def embed_prefixed_dataset(
     np.savez(
         output_path,
         embeddings=embeddings,
-        conversation_ids=np.array(
-            [str(c) for c in conversation_ids], dtype=object
-        ),
+        conversation_ids=np.array([str(c) for c in conversation_ids], dtype=object),
         turn_ids=np.array(turn_ids, dtype=np.int32),
         roles=np.array([str(r) for r in roles], dtype=object),
         texts=np.array([str(t) for t in texts], dtype=object),
@@ -400,9 +394,7 @@ class ArchBase:
         if cached is not None:
             self.embed_calls += 1
             return cached
-        response = self.client.embeddings.create(
-            model=EMBED_MODEL, input=[text]
-        )
+        response = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
         emb = np.array(response.data[0].embedding, dtype=np.float32)
         self.embedding_cache.put(text, emb)
         self.embed_calls += 1
@@ -437,8 +429,9 @@ class CosineArch(ArchBase):
 
     name = "cosine"
 
-    def retrieve(self, question: str, conversation_id: str,
-                 budget: int) -> list[Segment]:
+    def retrieve(
+        self, question: str, conversation_id: str, budget: int
+    ) -> list[Segment]:
         query_emb = self.embed_text(question)
         result = self.store.search(
             query_emb, top_k=budget, conversation_id=conversation_id
@@ -465,20 +458,17 @@ class PromptArch(ArchBase):
         self.prompt_template = prompt_template
         self.name = name
 
-    def retrieve(self, question: str, conversation_id: str,
-                 budget: int) -> list[Segment]:
+    def retrieve(
+        self, question: str, conversation_id: str, budget: int
+    ) -> list[Segment]:
         # Hop 0: embed question, retrieve top-10
         query_emb = self.embed_text(question)
-        hop0 = self.store.search(
-            query_emb, top_k=10, conversation_id=conversation_id
-        )
+        hop0 = self.store.search(query_emb, top_k=10, conversation_id=conversation_id)
         all_segments: list[Segment] = list(hop0.segments)
         exclude = {s.index for s in all_segments}
 
         context = _format_segments(all_segments)
-        context_section = (
-            "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + context
-        )
+        context_section = "RETRIEVED CONVERSATION EXCERPTS SO FAR:\n" + context
         prompt = self.prompt_template.format(
             question=question, context_section=context_section
         )
@@ -488,7 +478,9 @@ class PromptArch(ArchBase):
         for cue in cues[:2]:
             cue_emb = self.embed_text(cue)
             result = self.store.search(
-                cue_emb, top_k=10, conversation_id=conversation_id,
+                cue_emb,
+                top_k=10,
+                conversation_id=conversation_id,
                 exclude_indices=exclude,
             )
             for seg in result.segments:
@@ -499,8 +491,7 @@ class PromptArch(ArchBase):
         return all_segments[:budget]
 
 
-def compute_recall(retrieved_turn_ids: set[int],
-                   source_turn_ids: set[int]) -> float:
+def compute_recall(retrieved_turn_ids: set[int], source_turn_ids: set[int]) -> float:
     if not source_turn_ids:
         return 1.0
     return len(retrieved_turn_ids & source_turn_ids) / len(source_turn_ids)
@@ -510,13 +501,64 @@ def compute_recall(retrieved_turn_ids: set[int],
 _NAME_TOKEN_RE = re.compile(r"\b[A-Z][a-z]{2,}\b")
 # Words capitalized at start of sentence that are NOT names
 _COMMON_WORDS = {
-    "What", "When", "Where", "Why", "Who", "Which", "How", "Is", "Are",
-    "Was", "Were", "Do", "Does", "Did", "Can", "Could", "Would", "Should",
-    "Will", "Have", "Has", "Had", "The", "A", "An", "This", "That", "These",
-    "Those", "My", "Your", "His", "Her", "Their", "Our", "If", "List",
-    "Include", "Based", "Given", "Help", "Draft", "Create", "Tell", "Please",
-    "Name", "Describe", "Explain", "Summarize", "Identify", "Find", "Show",
-    "Dr", "Mr", "Mrs", "Ms", "Am", "Im",
+    "What",
+    "When",
+    "Where",
+    "Why",
+    "Who",
+    "Which",
+    "How",
+    "Is",
+    "Are",
+    "Was",
+    "Were",
+    "Do",
+    "Does",
+    "Did",
+    "Can",
+    "Could",
+    "Would",
+    "Should",
+    "Will",
+    "Have",
+    "Has",
+    "Had",
+    "The",
+    "A",
+    "An",
+    "This",
+    "That",
+    "These",
+    "Those",
+    "My",
+    "Your",
+    "His",
+    "Her",
+    "Their",
+    "Our",
+    "If",
+    "List",
+    "Include",
+    "Based",
+    "Given",
+    "Help",
+    "Draft",
+    "Create",
+    "Tell",
+    "Please",
+    "Name",
+    "Describe",
+    "Explain",
+    "Summarize",
+    "Identify",
+    "Find",
+    "Show",
+    "Dr",
+    "Mr",
+    "Mrs",
+    "Ms",
+    "Am",
+    "Im",
 }
 
 
@@ -585,15 +627,9 @@ def summarize(results: list[dict]) -> dict:
     for b in BUDGETS:
         vals = [r["recalls"][f"r@{b}"] for r in results]
         out[f"r@{b}"] = round(sum(vals) / n, 4)
-    out["avg_retrieved"] = round(
-        sum(r["total_retrieved"] for r in results) / n, 1
-    )
-    out["avg_embed_calls"] = round(
-        sum(r["embed_calls"] for r in results) / n, 1
-    )
-    out["avg_llm_calls"] = round(
-        sum(r["llm_calls"] for r in results) / n, 1
-    )
+    out["avg_retrieved"] = round(sum(r["total_retrieved"] for r in results) / n, 1)
+    out["avg_embed_calls"] = round(sum(r["embed_calls"] for r in results) / n, 1)
+    out["avg_llm_calls"] = round(sum(r["llm_calls"] for r in results) / n, 1)
     return out
 
 
@@ -653,17 +689,13 @@ def evaluate_dataset(
     variants = []
 
     # Variant A: original (raw text embedded)
-    print(f"\n--- Variant A: RAW (no speaker prefix) ---")
-    store_raw = SegmentStore(
-        data_dir=DATA_DIR, npz_name=cfg["source_npz"]
-    )
+    print("\n--- Variant A: RAW (no speaker prefix) ---")
+    store_raw = SegmentStore(data_dir=DATA_DIR, npz_name=cfg["source_npz"])
     variants.append(("raw", store_raw))
 
     # Variant B: prefixed
-    print(f"\n--- Variant B: PREFIXED (speaker: text) ---")
-    store_prefixed = SegmentStore(
-        data_dir=DATA_DIR, npz_name=cfg["output_npz"]
-    )
+    print("\n--- Variant B: PREFIXED (speaker: text) ---")
+    store_prefixed = SegmentStore(data_dir=DATA_DIR, npz_name=cfg["output_npz"])
     variants.append(("prefixed", store_prefixed))
 
     archs_spec = [
@@ -686,8 +718,12 @@ def evaluate_dataset(
                 arch = CosineArch(store, embedding_cache, llm_cache, client)
             else:
                 arch = PromptArch(
-                    store, embedding_cache, llm_cache, client,
-                    prompt_template=tmpl, name=arch_name,
+                    store,
+                    embedding_cache,
+                    llm_cache,
+                    client,
+                    prompt_template=tmpl,
+                    name=arch_name,
                 )
 
             results = []
@@ -699,12 +735,15 @@ def evaluate_dataset(
                 except Exception as e:
                     print(f"    ERROR on q[{i}]: {e}", flush=True)
                     import traceback
+
                     traceback.print_exc()
                 if verbose:
                     r20 = row["recalls"].get("r@20", 0)
                     r50 = row["recalls"].get("r@50", 0)
-                    print(f"    [{i+1}/{len(questions)}] "
-                          f"r@20={r20:.3f} r@50={r50:.3f} | {q_short}")
+                    print(
+                        f"    [{i + 1}/{len(questions)}] "
+                        f"r@20={r20:.3f} r@50={r50:.3f} | {q_short}"
+                    )
                 if (i + 1) % 10 == 0:
                     arch.save_caches()
                     sys.stdout.flush()
@@ -721,9 +760,11 @@ def evaluate_dataset(
                 "results": results,
             }
 
-            print(f"    r@20={summary.get('r@20', 0):.4f} "
-                  f"r@50={summary.get('r@50', 0):.4f} "
-                  f"avg_llm={summary.get('avg_llm_calls', 0):.1f}")
+            print(
+                f"    r@20={summary.get('r@20', 0):.4f} "
+                f"r@50={summary.get('r@50', 0):.4f} "
+                f"avg_llm={summary.get('avg_llm_calls', 0):.1f}"
+            )
 
         dataset_output["variants"][variant_label] = variant_out
 
@@ -733,8 +774,7 @@ def evaluate_dataset(
         raw_s = dataset_output["variants"]["raw"][arch_name]["summary"]
         pref_s = dataset_output["variants"]["prefixed"][arch_name]["summary"]
         deltas[arch_name] = {
-            f"r@{b}": round(pref_s[f"r@{b}"] - raw_s[f"r@{b}"], 4)
-            for b in BUDGETS
+            f"r@{b}": round(pref_s[f"r@{b}"] - raw_s[f"r@{b}"], 4) for b in BUDGETS
         }
         deltas[arch_name]["raw_r@20"] = raw_s["r@20"]
         deltas[arch_name]["prefixed_r@20"] = pref_s["r@20"]
@@ -748,9 +788,9 @@ def evaluate_dataset(
     for cat in cats_raw:
         cat_deltas[cat] = {}
         for arch_name, _ in archs_spec:
-            r_by_cat = dataset_output["variants"]["raw"][arch_name][
-                "by_category"
-            ].get(cat, {})
+            r_by_cat = dataset_output["variants"]["raw"][arch_name]["by_category"].get(
+                cat, {}
+            )
             p_by_cat = dataset_output["variants"]["prefixed"][arch_name][
                 "by_category"
             ].get(cat, {})
@@ -776,9 +816,9 @@ def evaluate_dataset(
     for arch_name, _ in archs_spec:
         name_deltas[arch_name] = {}
         for slot in ("mentions_name", "no_name"):
-            r = dataset_output["variants"]["raw"][arch_name][
-                "by_name_mention"
-            ].get(slot, {})
+            r = dataset_output["variants"]["raw"][arch_name]["by_name_mention"].get(
+                slot, {}
+            )
             p = dataset_output["variants"]["prefixed"][arch_name][
                 "by_name_mention"
             ].get(slot, {})
@@ -788,14 +828,10 @@ def evaluate_dataset(
                 "n": r.get("n", 0),
                 "raw_r@20": r.get("r@20", 0),
                 "prefixed_r@20": p.get("r@20", 0),
-                "delta_r@20": round(
-                    p.get("r@20", 0) - r.get("r@20", 0), 4
-                ),
+                "delta_r@20": round(p.get("r@20", 0) - r.get("r@20", 0), 4),
                 "raw_r@50": r.get("r@50", 0),
                 "prefixed_r@50": p.get("r@50", 0),
-                "delta_r@50": round(
-                    p.get("r@50", 0) - r.get("r@50", 0), 4
-                ),
+                "delta_r@50": round(p.get("r@50", 0) - r.get("r@50", 0), 4),
             }
     dataset_output["name_mention_deltas"] = name_deltas
 
@@ -806,9 +842,11 @@ def print_summary_table(per_dataset: dict[str, dict]) -> None:
     print("\n" + "=" * 100)
     print("SPEAKER-PREFIX SUMMARY — Overall (r@20, r@50)")
     print("=" * 100)
-    header = (f"{'Dataset':<14} {'Arch':<14} "
-              f"{'raw @20':>8} {'pre @20':>8} {'Δ @20':>8} "
-              f"{'raw @50':>8} {'pre @50':>8} {'Δ @50':>8}")
+    header = (
+        f"{'Dataset':<14} {'Arch':<14} "
+        f"{'raw @20':>8} {'pre @20':>8} {'Δ @20':>8} "
+        f"{'raw @50':>8} {'pre @50':>8} {'Δ @50':>8}"
+    )
     print(header)
     print("-" * 100)
     for ds_name, ds in per_dataset.items():
@@ -826,8 +864,10 @@ def print_summary_table(per_dataset: dict[str, dict]) -> None:
     print("\n" + "=" * 100)
     print("SPEAKER-PREFIX SUMMARY — By name-mention in question (r@20)")
     print("=" * 100)
-    print(f"{'Dataset':<14} {'Arch':<14} {'Slot':<16} "
-          f"{'n':>4} {'raw @20':>8} {'pre @20':>8} {'Δ @20':>8} {'Δ @50':>8}")
+    print(
+        f"{'Dataset':<14} {'Arch':<14} {'Slot':<16} "
+        f"{'n':>4} {'raw @20':>8} {'pre @20':>8} {'Δ @20':>8} {'Δ @50':>8}"
+    )
     print("-" * 100)
     for ds_name, ds in per_dataset.items():
         for arch_name in ("cosine", "v15_control", "v2f_v2"):
@@ -849,9 +889,11 @@ def print_summary_table(per_dataset: dict[str, dict]) -> None:
     print("=" * 100)
     for ds_name, ds in per_dataset.items():
         print(f"\n  Dataset: {ds_name}")
-        print(f"  {'Category':<40} {'Arch':<14} "
-              f"{'n':>4} {'raw @20':>8} {'pre @20':>8} {'Δ @20':>8} "
-              f"{'Δ @50':>8}")
+        print(
+            f"  {'Category':<40} {'Arch':<14} "
+            f"{'n':>4} {'raw @20':>8} {'pre @20':>8} {'Δ @20':>8} "
+            f"{'Δ @50':>8}"
+        )
         print("  " + "-" * 96)
         for cat, arch_map in ds["category_deltas"].items():
             for arch_name in ("cosine", "v15_control", "v2f_v2"):
@@ -871,22 +913,28 @@ def print_summary_table(per_dataset: dict[str, dict]) -> None:
 # Main
 # ---------------------------------------------------------------------------
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Speaker-prefix embedding study"
-    )
-    parser.add_argument("--embed", action="store_true",
-                        help="Step 1: build prefixed npz files")
-    parser.add_argument("--evaluate", action="store_true",
-                        help="Step 2: run retrieval evaluation")
-    parser.add_argument("--all", action="store_true",
-                        help="Run both steps (default if neither flag set)")
+    parser = argparse.ArgumentParser(description="Speaker-prefix embedding study")
     parser.add_argument(
-        "--dataset", type=str, default=None,
+        "--embed", action="store_true", help="Step 1: build prefixed npz files"
+    )
+    parser.add_argument(
+        "--evaluate", action="store_true", help="Step 2: run retrieval evaluation"
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Run both steps (default if neither flag set)",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
         choices=list(DATASETS.keys()) + ["all"],
         help="Which dataset(s) to process (default: all)",
     )
-    parser.add_argument("--force", action="store_true",
-                        help="Rebuild npz / overwrite results")
+    parser.add_argument(
+        "--force", action="store_true", help="Rebuild npz / overwrite results"
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -913,9 +961,7 @@ def main() -> None:
     # ---------- Step 1: embed ----------
     if args.embed:
         for ds in datasets:
-            embed_prefixed_dataset(
-                ds, client, embedding_cache, force=args.force
-            )
+            embed_prefixed_dataset(ds, client, embedding_cache, force=args.force)
         embedding_cache.save()
 
     # ---------- Step 2: evaluate ----------
@@ -931,8 +977,12 @@ def main() -> None:
                 continue
 
             ds_out = evaluate_dataset(
-                ds, client, embedding_cache, llm_cache,
-                verbose=args.verbose, force=args.force,
+                ds,
+                client,
+                embedding_cache,
+                llm_cache,
+                verbose=args.verbose,
+                force=args.force,
             )
             # Trim verbose per-question results before saving to keep the
             # file readable; still keep per-question recalls for later

@@ -23,9 +23,14 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
+from anchor_expansion import (
+    AnchorExp3Anchors,
+    AnchorExp5Anchors,
+    AnchorExpPlusV2f,
+)
+from antipara_cue_gen import MetaV2fDedicated
 from associative_recall import Segment
+from dotenv import load_dotenv
 from fair_backfill_eval import (
     BUDGETS,
     DATASETS,
@@ -35,13 +40,6 @@ from fair_backfill_eval import (
     summarize,
     summarize_by_category,
 )
-from anchor_expansion import (
-    ARCH_CLASSES as ANCHOR_ARCH_CLASSES,
-    AnchorExp3Anchors,
-    AnchorExp5Anchors,
-    AnchorExpPlusV2f,
-)
-from antipara_cue_gen import MetaV2fDedicated
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -77,9 +75,7 @@ def evaluate_question(arch, question: dict) -> dict:
 
     query_emb = arch.embed_text(q_text)
     max_K = max(BUDGETS)
-    cosine_result = arch.store.search(
-        query_emb, top_k=max_K, conversation_id=conv_id
-    )
+    cosine_result = arch.store.search(query_emb, top_k=max_K, conversation_id=conv_id)
     cosine_segments = list(cosine_result.segments)
 
     row = {
@@ -134,7 +130,7 @@ def run_one(
     for i, q in enumerate(questions):
         q_short = q["question"][:55]
         print(
-            f"  [{i+1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
+            f"  [{i + 1}/{len(questions)}] {q.get('category', '?')}: {q_short}...",
             flush=True,
         )
         try:
@@ -296,10 +292,7 @@ def drift_audit(anchor_rows: list[dict], max_cues: int = 30) -> dict:
     import re
 
     def toks(s: str) -> set[str]:
-        return {
-            t.lower()
-            for t in re.findall(r"[A-Za-z][A-Za-z0-9_'-]{2,}", s)
-        }
+        return {t.lower() for t in re.findall(r"[A-Za-z][A-Za-z0-9_'-]{2,}", s)}
 
     cue_anchor_overlaps: list[float] = []
     cue_question_overlaps: list[float] = []
@@ -315,12 +308,8 @@ def drift_audit(anchor_rows: list[dict], max_cues: int = 30) -> dict:
             c_toks = toks(cue)
             if not c_toks:
                 continue
-            cue_anchor_overlaps.append(
-                len(c_toks & a_toks) / len(c_toks)
-            )
-            cue_question_overlaps.append(
-                len(c_toks & q_toks) / len(c_toks)
-            )
+            cue_anchor_overlaps.append(len(c_toks & a_toks) / len(c_toks))
+            cue_question_overlaps.append(len(c_toks & q_toks) / len(c_toks))
             n_cues += 1
             if n_cues >= max_cues * 20:
                 break
@@ -375,9 +364,7 @@ def main() -> None:
         for arch_name in arch_names:
             cls = ARCH_CLASSES[arch_name]
             arch = cls(store)
-            results, summary, by_cat = run_one(
-                arch_name, arch, ds_name, questions
-            )
+            results, summary, by_cat = run_one(arch_name, arch, ds_name, questions)
             all_results[arch_name][ds_name] = {
                 "summary": summary,
                 "category_breakdown": by_cat,
@@ -428,9 +415,7 @@ def main() -> None:
         and "locomo_30q" in all_results["anchor_exp_3anchors"]
     ):
         top_gaining, top_losing = top_categories_delta(
-            all_results["anchor_exp_3anchors"]["locomo_30q"][
-                "category_breakdown"
-            ],
+            all_results["anchor_exp_3anchors"]["locomo_30q"]["category_breakdown"],
             K=50,
         )
 
@@ -441,9 +426,7 @@ def main() -> None:
         "anchor_exp_3anchors" in all_results
         and "locomo_30q" in all_results["anchor_exp_3anchors"]
     ):
-        drift = drift_audit(
-            all_results["anchor_exp_3anchors"]["locomo_30q"]["results"]
-        )
+        drift = drift_audit(all_results["anchor_exp_3anchors"]["locomo_30q"]["results"])
 
     raw: dict = {
         "archs": arch_names,
@@ -480,9 +463,7 @@ def main() -> None:
                         "arch": a,
                         "dataset": d,
                         "summary": all_results[a][d]["summary"],
-                        "category_breakdown": all_results[a][d][
-                            "category_breakdown"
-                        ],
+                        "category_breakdown": all_results[a][d]["category_breakdown"],
                         "results": all_results[a][d]["results"],
                     },
                     f,
@@ -537,17 +518,13 @@ def main() -> None:
                 )
 
     if trios:
-        md.append(
-            "\n## Qualitative trios (anchor_exp_3anchors, LoCoMo, K=50)\n"
-        )
+        md.append("\n## Qualitative trios (anchor_exp_3anchors, LoCoMo, K=50)\n")
         md.append(
             "Each row: anchor turn the LLM imagined around → imagined cue → "
             "gold turn that cue retrieved."
         )
         for ex in trios:
-            novel_tag = (
-                " **(novel vs v2f)**" if ex.get("novel_vs_v2f") else ""
-            )
+            novel_tag = " **(novel vs v2f)**" if ex.get("novel_vs_v2f") else ""
             md.append(
                 f"\n- **Q:** {ex['question']}{novel_tag}\n"
                 f"  - Anchor ({ex['anchor_role']}, turn_id="
@@ -557,9 +534,7 @@ def main() -> None:
             )
 
     if top_gaining or top_losing:
-        md.append(
-            "\n## Top categories by Δr@50 (anchor_exp_3anchors, LoCoMo-30)\n"
-        )
+        md.append("\n## Top categories by Δr@50 (anchor_exp_3anchors, LoCoMo-30)\n")
         md.append("Gaining:")
         for g in top_gaining:
             md.append(
@@ -593,17 +568,17 @@ def main() -> None:
         and "locomo_30q" in all_results["anchor_exp_3anchors"]
     ):
         v2f50 = all_results["meta_v2f"]["locomo_30q"]["summary"]["arch_r@50"]
-        anchor50 = all_results["anchor_exp_3anchors"]["locomo_30q"][
-            "summary"
-        ]["arch_r@50"]
+        anchor50 = all_results["anchor_exp_3anchors"]["locomo_30q"]["summary"][
+            "arch_r@50"
+        ]
         union50 = None
         if (
             "anchor_exp_plus_v2f" in all_results
             and "locomo_30q" in all_results["anchor_exp_plus_v2f"]
         ):
-            union50 = all_results["anchor_exp_plus_v2f"]["locomo_30q"][
-                "summary"
-            ]["arch_r@50"]
+            union50 = all_results["anchor_exp_plus_v2f"]["locomo_30q"]["summary"][
+                "arch_r@50"
+            ]
 
         if anchor50 > v2f50 + 0.005:
             verdict = (
