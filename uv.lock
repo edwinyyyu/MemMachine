@@ -1806,7 +1806,6 @@ dependencies = [
     { name = "fastapi" },
     { name = "fastmcp" },
     { name = "greenlet" },
-    { name = "hnswlib" },
     { name = "instructor", extra = ["bedrock"] },
     { name = "json-repair" },
     { name = "langchain-aws" },
@@ -1832,6 +1831,9 @@ dependencies = [
 gpu = [
     { name = "sentence-transformers" },
 ]
+hnswlib = [
+    { name = "hnswlib" },
+]
 nebula = [
     { name = "nebula5-python" },
 ]
@@ -1851,7 +1853,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.116.1" },
     { name = "fastmcp", specifier = ">=3.2.0" },
     { name = "greenlet", specifier = ">=3.2.4" },
-    { name = "hnswlib", specifier = ">=0.8.0" },
+    { name = "hnswlib", marker = "extra == 'hnswlib'", specifier = ">=0.8.0" },
     { name = "instructor", extras = ["bedrock"], specifier = ">=1.12.0" },
     { name = "json-repair", specifier = ">=0.54" },
     { name = "langchain-aws", specifier = ">=0.2.33" },
@@ -1875,7 +1877,7 @@ requires-dist = [
     { name = "usearch", specifier = ">=2.25.1" },
     { name = "uvicorn", specifier = ">=0.35.0" },
 ]
-provides-extras = ["gpu", "nebula", "qdrant"]
+provides-extras = ["gpu", "hnswlib", "nebula", "qdrant"]
 
 [[package]]
 name = "minijinja"
