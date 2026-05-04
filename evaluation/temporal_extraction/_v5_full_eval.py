@@ -1,42 +1,36 @@
-"""Run the v4 DNF stack across all 12 benches. Headline: macro R@1 vs the
-prior 0.769 (q10 hybrid + v2 planner) baseline.
+"""v5.0 — phrase-class gating via LLM, no regex.
 
-This wraps the v4 composition test logic for each bench, swapping data
-files and accumulating per-bench R@1.
+Replaces v4.5's looks_calendar / looks_anaphoric / _PERSONAL_ERA_RE /
+_RECURRING_PERIOD_WORD_RE / strip_fabricated_year regexes with a single
+LLM phrase classifier (`phrase_classifier.PhraseClassifier`). Each
+planner-emitted leaf is classified into one of:
 
-Pipeline version log:
-  v4.0: anaphoric phrase ("the X", no year) always prefers corpus-anchor
-        Macro 0.778. Composition 0.60. era_refs 0.083 (regressed).
-  v4.1: anaphoric phrase prefers corpus-anchor only when extractor conf
-        < 0.7. Macro 0.775. NOT shipping.
-  v4.2: planner prompt v4.1 (tightened rule e). FAILED: macro 0.754. LLM
-        ignored the SKIP examples because rule (b) listed "back in college"
-        as a deictic to keep.
-  v4.3: revert to planner v4.0 + harness conf floor 0.5. Macro 0.778.
-        era_refs unchanged.
-  v4.4: corpus-anchor restricted to anaphoric only. Macro 0.797. era_refs
-        recovered. latest_recent still -0.134.
-  v4.4b: phrase-class gating (looks_calendar). Macro 0.788. relative_time
-        regressed because calendar regex too narrow.
-  v4.4c: broadened calendar regex + personal-era blocklist.
-        MACRO R@1 = 0.809 (+0.040 over baseline). R@5 = 0.933.
-        composition +0.20, causal_relative +0.267, no regressions.
-  v4.5 (CURRENT): bare-month/quarter no longer matches looks_calendar
-        (require year qualifier or determiner). Bare-phrase queries
-        ("What did I work on in March?") fall through to no-mask
-        fusion, matching the bare-season behavior in v4.4c. Targets
-        ambiguous_year bench (all_recall@5 0.528 -> ?).
+    calendar_pin     -> use extraction-based mask
+    anaphoric_event  -> use corpus-anchor mask
+    recurring_period -> no-op (fuse via rerank)
+    personal_era     -> no-op (fuse via rerank)
+    generic_skip     -> no-op
+
+Iteration log:
+  v5.0 (CURRENT): regex-free phrase classifier. Targets ambiguous_year +
+        ambiguous_year_adv benches, expected to maintain 12-bench parity
+        with v4.5 (0.802 macro R@1, 0.933 macro R@5).
+
+Runs over 14 benches (12 standard + ambiguous_year + ambiguous_year_adv).
+The two ambiguous benches use a separate `all_recall@K` metric (see
+`_v5_ambiguous_test.py`); standard `R@K` (any-gold-in-top-K) is reported
+here for compatibility but it saturates trivially on multi-gold queries.
 """
 
 from __future__ import annotations
 
-PIPELINE_VERSION = "pipeline-v4.5"
-PLANNER_PROMPT_VERSION = "v4.0"  # ships v4.0 prompt; harness gates instead
+PIPELINE_VERSION = "pipeline-v5.0"
+PLANNER_PROMPT_VERSION = "v4.0"
+CLASSIFIER_PROMPT_VERSION = "v5.0"
 
 import asyncio
 import json
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -70,6 +64,7 @@ from composition_eval_v3 import (
     rank_from_scores,
 )
 from force_pick_optimizers_eval import rerank_topk
+from phrase_classifier import PhraseClassifier
 from query_planner_v4 import QueryPlannerV4, QueryPlanV4, evaluate_dnf_mask
 from salience_eval import (
     DATA_DIR,
@@ -169,106 +164,7 @@ BENCHES = [
 ]
 
 
-# v4.5: phrases like "the winter holidays" / "the holidays" / "the summer"
-# look anaphoric (start with "the ") but actually denote recurring periods,
-# not single corpus events. Treating them as anaphoric makes corpus-anchor
-# pick the top-1 matching doc and mask away other valid years. Skip these.
-_RECURRING_PERIOD_WORD_RE = re.compile(
-    r"\b(summer|winter|spring|fall|autumn|holidays?|holiday\s+season)\b",
-    re.IGNORECASE,
-)
-
-
-def looks_anaphoric(phrase: str) -> bool:
-    """Phrase explicitly refers to a corpus event ("the X", no year)."""
-    if re.search(r"\b(19|20|21)\d{2}\b", phrase):
-        return False
-    if _RECURRING_PERIOD_WORD_RE.search(phrase):
-        return False
-    return phrase.strip().lower().startswith("the ")
-
-
-# v4.5: bare months/quarters no longer match. They require either a year
-# qualifier or a determiner ("last March", "March 2024"). Bare seasons
-# already required this. The asymmetry was the source of the ambiguous_year
-# regression: "March" got grounded to a single year, "winter" fell through
-# to fusion. Unify by requiring qualification for ALL period words.
-_MONTH_FULL = (
-    r"january|february|march|april|june|july|august|september|"
-    r"october|november|december|may"
-)
-_MONTH_SHORT = r"jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec"
-_SEASON = r"summer|winter|spring|fall|autumn"
-_DETERMINER = r"last|this|next|past"
-
-_CALENDAR_TOKEN_RE = re.compile(
-    r"\b("
-    r"(19|20|21)\d{2}|"  # year alone (carries unambiguous signal)
-    r"yesterday|today|tomorrow|tonight|"
-    # Determiner + period (deictic, resolves to one specific instance)
-    rf"({_DETERMINER})\s+(week|month|year|quarter|"
-    rf"{_SEASON}|{_MONTH_FULL}|{_MONTH_SHORT})|"
-    r"last\s+(mon|tue|wed|thu|fri|sat|sun)|"
-    r"earlier\s+(this|last)\s+(week|month|year|quarter)|"
-    # Year-qualified period (the year carries the signal, but match the
-    # combo too so "Q1 2025"/"summer 2024" obviously count)
-    rf"({_MONTH_FULL}|{_MONTH_SHORT}|{_SEASON})\s+\d{{4}}|"
-    rf"\d{{4}}\s+({_MONTH_FULL}|{_MONTH_SHORT}|{_SEASON})|"
-    r"Q[1-4]\s+\d{4}|"
-    # Offset-from-now expressions (deictic)
-    r"(a few|several|\d+|couple|couple of)\s+"
-    r"(day|week|month|year|hour|minute)s?\s+ago|"
-    r"days?\s+ago|weeks?\s+ago|months?\s+ago|years?\s+ago"
-    r")\b",
-    re.IGNORECASE,
-)
-
-
-_PERSONAL_ERA_RE = re.compile(
-    r"\b("
-    r"(my|our) [a-z]+|"  # "my parental leave", "my fitness phase"
-    r"(grad|high|middle|elementary) school|"
-    r"college|"
-    r"(when|while) i [a-z]+|"  # "when I worked at Acme", "while I lived in Boston"
-    r"i (worked|lived|graduated|studied) [a-z]+|"
-    r"back in [a-z]+|"  # "back in college"
-    r"during [a-z]+ phase|"
-    r"training for [a-z]+"
-    r")\b",
-    re.IGNORECASE,
-)
-
-
-def looks_calendar(phrase: str) -> bool:
-    """Phrase has a concrete calendar/deictic token that the extractor can
-    ground against ref_time. Trust extraction. Filters out personal-era
-    phrases ("grad school", "my parental leave") that hallucinate."""
-    if _PERSONAL_ERA_RE.search(phrase):
-        return False
-    return bool(_CALENDAR_TOKEN_RE.search(phrase))
-
-
-_YEAR_RE = re.compile(r"\b(?:19|20|21)\d{2}\b")
-
-
-def strip_fabricated_year(phrase: str, query: str) -> str:
-    """Remove year tokens from `phrase` that don't appear in `query`.
-
-    The planner sometimes "completes" a year-unspecified phrase with a
-    deictic year ("What did I publish in May?" -> phrase "May 2025"). The
-    fabricated year makes downstream extraction commit to one specific
-    May, masking out other plausible years. If the user didn't say a year,
-    the system shouldn't either.
-
-    Year tokens that ARE in the query are kept (genuine user intent).
-    """
-    query_years = set(_YEAR_RE.findall(query))
-    out = phrase
-    for m in _YEAR_RE.finditer(phrase):
-        year = m.group(0)
-        if year not in query_years:
-            out = re.sub(rf"\s*\b{year}\b\s*", " ", out)
-    return re.sub(r"\s+", " ", out).strip()
+CONF_FLOOR = 0.5
 
 
 async def run_bench(
@@ -279,6 +175,7 @@ async def run_bench(
     cache_label,
     reranker,
     planner: QueryPlannerV4,
+    classifier: PhraseClassifier,
 ):
     docs = [json.loads(l) for l in open(DATA_DIR / docs_path)]
     queries = [json.loads(l) for l in open(DATA_DIR / queries_path)]
@@ -290,7 +187,7 @@ async def run_bench(
     doc_items = [(d["doc_id"], d["text"], parse_iso(d["ref_time"])) for d in docs]
     q_items = [(q["query_id"], q["text"], parse_iso(q["ref_time"])) for q in queries]
     doc_ext = await run_v2_extract(doc_items, f"{name}-docs", cache_label)
-    q_ext = await run_v2_extract(q_items, f"{name}-queries", cache_label)
+    _ = await run_v2_extract(q_items, f"{name}-queries", cache_label)
 
     doc_text = {d["doc_id"]: d["text"] for d in docs}
     q_text = {q["query_id"]: q["text"] for q in queries}
@@ -300,20 +197,37 @@ async def run_bench(
     plan_items = [(q["query_id"], q["text"], q["ref_time"]) for q in queries]
     plans: dict[str, QueryPlanV4] = await planner.plan_many(plan_items)
 
-    win_items = []
+    # Classify every leaf phrase via LLM. Tag uses the same scheme as
+    # extraction so we can join later: f"{qid}__c{ci}__l{li}".
+    classify_items = []
+    leaf_lookup: dict[str, tuple] = {}  # tag -> (qid, ci, li, leaf)
     for q in queries:
         qid = q["query_id"]
-        ref = parse_iso(q["ref_time"])
         plan = plans.get(qid)
         if not plan:
             continue
         for ci, clause in enumerate(plan.expr):
             for li, leaf in enumerate(clause):
                 tag = f"{qid}__c{ci}__l{li}"
-                win_items.append((tag, leaf.phrase, ref))
+                classify_items.append(
+                    (tag, q_text[qid], q["ref_time"], leaf.phrase, leaf.direction)
+                )
+                leaf_lookup[tag] = (qid, ci, li, leaf)
+    classes = await classifier.classify_many(classify_items) if classify_items else {}
+
+    # Build win_items only for calendar_pin leaves (others don't need a
+    # mask interval extracted).
+    win_items = []
+    for tag, (qid, ci, li, leaf) in leaf_lookup.items():
+        cls = classes.get(tag)
+        if cls and cls.kind == "calendar_pin":
+            ref = parse_iso(
+                next(q["ref_time"] for q in queries if q["query_id"] == qid)
+            )
+            win_items.append((tag, leaf.phrase, ref))
     win_ext = (
         await run_v2_extract(
-            win_items, f"{name}-constraints-v4", f"{cache_label}-constraints-v4"
+            win_items, f"{name}-constraints-v5", f"{cache_label}-constraints-v5"
         )
         if win_items
         else {}
@@ -345,25 +259,12 @@ async def run_bench(
     qids = [q["query_id"] for q in queries]
     per_q_s = {qid: rank_semantic(qid, q_embs, doc_embs) for qid in qids}
 
-    # corpus-anchor: leaves with empty extraction OR anaphoric phrase.
-    # v4.2 reverts conf-gating; era_refs is fixed at the planner side
-    # by tightening rule (e) to only emit "the X" patterns (planner v4.1).
+    # Corpus-anchor lookup for anaphoric_event leaves only.
     anchor_keys_to_resolve = []
-    for q in queries:
-        qid = q["query_id"]
-        plan = plans.get(qid)
-        if not plan:
-            continue
-        for ci, clause in enumerate(plan.expr):
-            for li, leaf in enumerate(clause):
-                # v4.3: corpus-anchor fires ONLY for anaphoric "the X"
-                # phrases. For non-anaphoric phrases ("grad school", "back
-                # in college") that the planner emitted but the extractor
-                # couldn't ground, skip corpus-anchor — matching the v2
-                # baseline's "no constraint" behavior is better than picking
-                # a wrong corpus doc and masking out gold.
-                if looks_anaphoric(leaf.phrase):
-                    anchor_keys_to_resolve.append((qid, ci, li, leaf.phrase))
+    for tag, (qid, ci, li, leaf) in leaf_lookup.items():
+        cls = classes.get(tag)
+        if cls and cls.kind == "anaphoric_event":
+            anchor_keys_to_resolve.append((qid, ci, li, leaf.phrase))
     corpus_anchor_ivs = {}
     if anchor_keys_to_resolve:
         phrase_texts = [ph for _, _, _, ph in anchor_keys_to_resolve]
@@ -388,30 +289,24 @@ async def run_bench(
                 if ivs:
                     corpus_anchor_ivs[(qid, ci, li)] = ivs
 
-    # v4.4: phrase-class gating. Trust extraction ONLY for calendar phrases
-    # (years, months, quarters, deictic terms with clean ref_time resolution).
-    # For other phrases (era refs, "last X", anaphoric "the X" without
-    # corpus anchor), let the leaf become a no-op so we fall back to pure
-    # rerank — matches v2 baseline behavior where the planner skipped
-    # these phrases entirely.
-    CONF_FLOOR = 0.5
-
-    def leaf_anchor_from_extraction(qid, ci, li, leaf):
-        # v4.5: strip planner-fabricated year before phrase-class gating,
-        # so "May 2025" emitted for "What did I publish in May?" becomes
-        # bare "May" and falls through to no-op (fusion via rerank).
-        eff_phrase = strip_fabricated_year(leaf.phrase, q_text[qid])
-        if not looks_calendar(eff_phrase):
-            return [], 0.0
+    def leaf_anchor(qid, ci, li, leaf):
+        """Return (intervals, source) for a leaf based on its class.
+        intervals=[] means no-op (fuse via rerank)."""
         tag = f"{qid}__c{ci}__l{li}"
-        tes = win_ext.get(tag, [])
-        max_conf = max((te.confidence for te in tes), default=0.0)
-        if max_conf < CONF_FLOOR:
-            return [], max_conf
-        ivs = []
-        for te in tes:
-            ivs.extend(flatten_intervals(te))
-        return ivs, max_conf
+        cls = classes.get(tag)
+        kind = cls.kind if cls else "recurring_period"
+        if kind == "calendar_pin":
+            tes = win_ext.get(tag, [])
+            max_conf = max((te.confidence for te in tes), default=0.0)
+            if max_conf < CONF_FLOOR:
+                return [], "low_conf"
+            ivs = []
+            for te in tes:
+                ivs.extend(flatten_intervals(te))
+            return ivs, "calendar_pin"
+        if kind == "anaphoric_event":
+            return corpus_anchor_ivs.get((qid, ci, li), []), "anaphoric_event"
+        return [], kind  # recurring_period / personal_era / generic_skip
 
     rows = []
     for q in queries:
@@ -422,7 +317,7 @@ async def run_bench(
         valid_excludes_filt = []
         for ci, clause in enumerate(plan.expr):
             for li, leaf in enumerate(clause):
-                anchor_ivs, _ = leaf_anchor_from_extraction(qid, ci, li, leaf)
+                anchor_ivs, _src = leaf_anchor(qid, ci, li, leaf)
                 if not anchor_ivs:
                     continue
                 if leaf.direction == "not_in":
@@ -442,14 +337,8 @@ async def run_bench(
         r_full = normalize_rerank_full(rs_partial, [d["doc_id"] for d in docs], 0.0)
 
         def leaf_resolver(ci, li, leaf, qid=qid):
-            # Corpus-anchor only for anaphoric "the X" phrases. Non-anaphoric
-            # phrases use extraction; if extraction is empty, return empty
-            # (no-op leaf — better than masking against a wrong corpus doc).
-            corpus_ivs = corpus_anchor_ivs.get((qid, ci, li))
-            if looks_anaphoric(leaf.phrase) and corpus_ivs:
-                return corpus_ivs
-            anchor_ivs, _max_conf = leaf_anchor_from_extraction(qid, ci, li, leaf)
-            return anchor_ivs
+            ivs, _ = leaf_anchor(qid, ci, li, leaf)
+            return ivs
 
         mask = {
             did: evaluate_dnf_mask(plan, doc_ivs_flat.get(did, []), leaf_resolver)
@@ -488,13 +377,8 @@ async def run_bench(
         rank = [d for d in rank_from_scores(rs) if d in pool_set and rs[d] > 0.0]
         gold_set = set(gold.get(qid, []))
         h = hit_rank(rank, gold_set, k=10)
-        rows.append(
-            {
-                "qid": qid,
-                "rank": h,
-                "gold_in_pool": bool(gold_set & pool_set),
-            }
-        )
+        rows.append({"qid": qid, "rank": h, "gold_in_pool": bool(gold_set & pool_set)})
+
     n = len(rows)
     r1 = sum(1 for r in rows if r["rank"] is not None and r["rank"] <= 1)
     r5 = sum(1 for r in rows if r["rank"] is not None and r["rank"] <= 5)
@@ -514,14 +398,18 @@ async def main():
         CrossEncoderRerankerParams(cross_encoder=ce, max_input_length=512)
     )
     planner = QueryPlannerV4(prompt_version=PLANNER_PROMPT_VERSION)
+    classifier = PhraseClassifier()
 
     out = {}
     for spec in BENCHES:
         try:
-            res = await run_bench(*spec, reranker=reranker, planner=planner)
+            res = await run_bench(
+                *spec, reranker=reranker, planner=planner, classifier=classifier
+            )
             out[spec[0]] = res
             print(
-                f"  {spec[0]:20s} R@1={res['R@1']:.3f} ({res['r1']}/{res['n']})  R@5={res['R@5']:.3f}",
+                f"  {spec[0]:20s} R@1={res['R@1']:.3f} ({res['r1']}/{res['n']})  "
+                f"R@5={res['R@5']:.3f}",
                 flush=True,
             )
         except Exception as e:
@@ -545,14 +433,17 @@ async def main():
 
     out_dir = ROOT / "results"
     out_dir.mkdir(parents=True, exist_ok=True)
-    json_path = out_dir / "T_v4_full_eval.json"
+    json_path = out_dir / "T_v5_full_eval.json"
     with open(json_path, "w") as f:
         json.dump(
             {
+                "pipeline_version": PIPELINE_VERSION,
+                "classifier_prompt_version": CLASSIFIER_PROMPT_VERSION,
                 "benches": out,
                 "macro_r1": macro_r1,
                 "macro_r5": macro_r5,
                 "planner_stats": planner.stats(),
+                "classifier_stats": classifier.stats(),
             },
             f,
             indent=2,
