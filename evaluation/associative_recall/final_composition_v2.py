@@ -1196,8 +1196,7 @@ def render_markdown(all_results: dict, total_elapsed: float) -> str:
     L.append(f"- Δ composition_v2_all vs ens_all_plus_crit = {d2:+.4f}")
     if v2_all_50 > 0.922:
         L.append(
-            "  => **NEW K=50 CEILING (LoCoMo): composition_v2_all** "
-            "(beats prior 0.922)"
+            "  => **NEW K=50 CEILING (LoCoMo): composition_v2_all** (beats prior 0.922)"
         )
     elif d2 > 0.01:
         L.append(

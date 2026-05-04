@@ -38,28 +38,39 @@ WEEKDAY_NAMES = [
 _GRAN_SURFACE_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\b(yesterday|today|tomorrow|tonight)\b", re.IGNORECASE), "day"),
     (
-        re.compile(r"\b(last|this|next|earlier\s+this|later\s+this)\s+week\b", re.IGNORECASE),
+        re.compile(
+            r"\b(last|this|next|earlier\s+this|later\s+this)\s+week\b", re.IGNORECASE
+        ),
         "week",
     ),
     (
-        re.compile(r"\b(last|this|next|earlier\s+this|later\s+this)\s+month\b", re.IGNORECASE),
+        re.compile(
+            r"\b(last|this|next|earlier\s+this|later\s+this)\s+month\b", re.IGNORECASE
+        ),
         "month",
     ),
     (
-        re.compile(r"\b(last|this|next|earlier\s+this|later\s+this)\s+quarter\b", re.IGNORECASE),
+        re.compile(
+            r"\b(last|this|next|earlier\s+this|later\s+this)\s+quarter\b", re.IGNORECASE
+        ),
         "quarter",
     ),
     (
-        re.compile(r"\b(last|this|next|earlier\s+this|later\s+this)\s+year\b", re.IGNORECASE),
+        re.compile(
+            r"\b(last|this|next|earlier\s+this|later\s+this)\s+year\b", re.IGNORECASE
+        ),
         "year",
     ),
     (
-        re.compile(r"\bthe\s+(?:(?:early|mid|late)\s+)?(?:\d{2}0|\d{4}0)s\b", re.IGNORECASE),
+        re.compile(
+            r"\bthe\s+(?:(?:early|mid|late)\s+)?(?:\d{2}0|\d{4}0)s\b", re.IGNORECASE
+        ),
         "decade",
     ),
     (
         re.compile(
-            r"\bthe\s+(?:first|second|third|fourth|last)\s+week\s+of\s+\w+", re.IGNORECASE
+            r"\bthe\s+(?:first|second|third|fourth|last)\s+week\s+of\s+\w+",
+            re.IGNORECASE,
         ),
         "week",
     ),

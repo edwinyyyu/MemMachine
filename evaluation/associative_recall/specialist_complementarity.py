@@ -311,9 +311,7 @@ def analyze(retrievals: dict) -> dict:
                         "recall_union_all": len(union_gold) / len(source),
                         # Best single specialist for this question
                         "recall_best_single": max(
-                            len(
-                                retrieved_by_spec.get(name, {}).get(K, set()) & source
-                            )
+                            len(retrieved_by_spec.get(name, {}).get(K, set()) & source)
                             / len(source)
                             for name in SPECIALISTS
                         ),

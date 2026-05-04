@@ -508,7 +508,8 @@ _ROUTE_RULES: list[tuple[re.Pattern[str], set[str]]] = [
     # Explicit question-hunting: "still need to", "open question", "unanswered"
     (
         re.compile(
-            r"\b(open question|unanswered|unresolved|TBD|pending|waiting)\b", re.IGNORECASE
+            r"\b(open question|unanswered|unresolved|TBD|pending|waiting)\b",
+            re.IGNORECASE,
         ),
         {"UNRESOLVED"},
     ),

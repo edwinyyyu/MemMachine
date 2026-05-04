@@ -390,7 +390,8 @@ KEYWORD_RULES: list[tuple[re.Pattern, str]] = [
     ),
     (
         re.compile(
-            r"\b(every|all of the).+\b(with|having|that (?:are|were|have))\b", re.IGNORECASE
+            r"\b(every|all of the).+\b(with|having|that (?:are|were|have))\b",
+            re.IGNORECASE,
         ),
         "v2f_plus_types",
     ),

@@ -368,9 +368,7 @@ class GatedOverlay:
         self.client = client or OpenAI(timeout=60.0, max_retries=3)
         self.threshold = threshold
         self.strict_min = strict_min
-        self.allowed_channels = (
-            allowed_channels or SUPPLEMENT_NAMES
-        )
+        self.allowed_channels = allowed_channels or SUPPLEMENT_NAMES
         self.per_channel_top_m = per_channel_top_m
         self.per_channel_retrieval_k = per_channel_retrieval_k
         self.arch_name = name

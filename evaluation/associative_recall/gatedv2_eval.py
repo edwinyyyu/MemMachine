@@ -321,7 +321,9 @@ def summarize_firing_v2(rows: list[dict]) -> dict:
     """Aggregate channel-fire statistics; v2-aware (tracks list_expander)."""
     fire_counts: dict[str, int] = dict.fromkeys(SUPPLEMENT_NAMES_V2, 0)
     contrib_counts: dict[str, int] = dict.fromkeys(SUPPLEMENT_NAMES_V2, 0)
-    conf_sums: dict[str, float] = dict.fromkeys(list(SUPPLEMENT_NAMES_V2) + [K_EXPANDER_NAME], 0.0)
+    conf_sums: dict[str, float] = dict.fromkeys(
+        list(SUPPLEMENT_NAMES_V2) + [K_EXPANDER_NAME], 0.0
+    )
     list_expander_fire = 0
     per_q_firing_counts: list[int] = []
     n = 0

@@ -305,7 +305,10 @@ def _retrieve_with(arch, arch_name: str, question: str, conv_id: str, K: int):
         arch.reset_counters()
 
     t0 = time.time()
-    if arch_name in ("gated_threshold_0.7",) or arch_name in ("meta_router", "meta_router_inverted"):
+    if arch_name in ("gated_threshold_0.7",) or arch_name in (
+        "meta_router",
+        "meta_router_inverted",
+    ):
         res = arch.retrieve(question, conv_id, K=K)
     else:
         res = arch.retrieve(question, conv_id)

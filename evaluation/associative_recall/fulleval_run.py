@@ -1091,9 +1091,7 @@ def print_cross_arch_summary(
                 f"{bl_mean:>8.2f}"
             )
 
-    print(
-        "\n--- Win counts (number of categories where each architecture is best) ---"
-    )
+    print("\n--- Win counts (number of categories where each architecture is best) ---")
     for an in sorted(arch_win_counts, key=arch_win_counts.get, reverse=True):
         print(f"  {short_names.get(an, an)}: {arch_win_counts[an]}")
 
