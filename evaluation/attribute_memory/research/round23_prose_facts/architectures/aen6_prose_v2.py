@@ -1217,9 +1217,20 @@ ENTITIES IN RETRIEVED FACTS (sidebar):
 RETRIEVED FACTS (chronological):
 {facts_block}
 
+DEJA VU CANDIDATES — memories not directly answering the question, but flagged
+as sharing a deeper STRUCTURAL pattern with the query (e.g., same mathematical
+form, same narrative arc, same strategic shape across different surface
+domains). Use these only if relevant to the user's underlying question;
+otherwise ignore them. They are presented separately so they don't crowd out
+direct facts.
+{deja_vu_block}
+
 QUESTION: {question}
 
-Answer concisely. For yes/no questions, start with "Yes" or "No".
+Answer concisely. For yes/no questions, start with "Yes" or "No". When a
+deja-vu candidate is genuinely useful, mention it explicitly as an analogy
+("this is structurally similar to X you noted earlier"). When the question
+is direct/factual, ignore the deja-vu section.
 """
 
 
@@ -1337,6 +1348,470 @@ def format_resolution_map(
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Deja vu / structural-pattern retrieval
+# ---------------------------------------------------------------------------
+#
+# Motivation: direct embedding kNN captures topic-similarity well but misses
+# cross-domain structural analogies (capacitor↔spring, rank-nullity↔
+# constant-rank-theorem, river-flow↔political-strategy). Probe v8 on
+# 5 cross-domain test cases showed:
+#   - Direct embedding lands the structural target in top-20 in all 5 cases
+#     (4 at #1, one at #13 for the loosest case).
+#   - An LLM judge with a generic prompt (no example leakage) reliably
+#     labels the target as DEEP and surfaces additional genuine analogs.
+#
+# So the architecture is: high-K retrieval for recall + LLM judge for
+# structural depth. Cost is ~K small LLM calls per "deja vu" query.
+
+DEJA_VU_JUDGE_PROMPT = """You are evaluating whether a MEMORY shares an
+underlying STRUCTURE with a CURRENT QUERY — a form, schema, or pattern that
+transfers across different surface domains.
+
+Categories:
+  - DEEP: they share an underlying form that transfers across surface
+    domains. The connection is non-obvious — a thoughtful observer would
+    find the juxtaposition illuminating, like noticing that two seemingly
+    different things obey the same rule, follow the same shape, or are
+    instances of the same abstraction.
+  - SURFACE: they share topic words, domain, or context but no deeper
+    transferable form.
+  - UNRELATED: no meaningful connection.
+
+CURRENT QUERY:
+{query}
+
+CANDIDATE MEMORY:
+{memory}
+
+Output JSON only:
+{{"category": "DEEP" | "SURFACE" | "UNRELATED", "reason": "<one short sentence>"}}
+"""
+
+
+def judge_structural_match(
+    query: str,
+    memory_text: str,
+    cache: Cache,
+    budget: Budget,
+) -> tuple[str, str]:
+    """Returns (category, reason). category ∈ {DEEP, SURFACE, UNRELATED, ?}."""
+    raw = llm(
+        DEJA_VU_JUDGE_PROMPT.format(query=query, memory=memory_text),
+        cache,
+        budget,
+        reasoning_effort="medium",
+    )
+    obj = extract_json(raw)
+    if isinstance(obj, dict):
+        cat = obj.get("category", "?")
+        reason = obj.get("reason", "")
+        return str(cat), str(reason)
+    return "?", "(no json)"
+
+
+QUERY_EXPANSION_PROMPT = """Given a USER QUERY, generate {n} paraphrased
+VARIANTS that ask about the SAME underlying structural/relational pattern
+but in TOTALLY DIFFERENT surface domains.
+
+Goal: text-embedding-3-small ranks candidates by surface-semantic similarity,
+so it tends to surface same-domain memories. To find cross-domain analogs,
+we re-cast the query into different surface domains while preserving the
+underlying form. Each variant becomes its own retrieval probe.
+
+Each variant should:
+  - Preserve the underlying RELATIONAL structure (the "shape" of what's
+    being asked).
+  - Use TOTALLY DIFFERENT surface vocabulary, drawn from a different
+    domain (physics, biology, narrative, sport, cooking, music, social
+    dynamics, geometry, networks, etc.).
+  - Be a complete, sensible question or statement on its own.
+
+USER QUERY:
+{query}
+
+Output JSON only:
+{{"variants": ["variant 1 in domain A", "variant 2 in domain B", ...]}}
+"""
+
+
+def expand_query_for_deja_vu(
+    query: str,
+    cache: Cache,
+    budget: Budget,
+    n: int = 4,
+) -> list[str]:
+    """Generate structural-pattern-preserving query variants in different
+    surface domains. Used for multi-probe retrieval.
+    """
+    raw = llm(
+        QUERY_EXPANSION_PROMPT.format(query=query, n=n),
+        cache,
+        budget,
+        reasoning_effort="medium",
+    )
+    obj = extract_json(raw)
+    if isinstance(obj, dict):
+        variants = obj.get("variants", [])
+        if isinstance(variants, list):
+            return [str(v) for v in variants if v]
+    return []
+
+
+def retrieve_deja_vu(
+    query: str,
+    store: MemoryStore,
+    cache: Cache,
+    budget: Budget,
+    top_k: int = 20,
+    collections: list[str] | None = None,
+    multi_probe: bool = False,
+    n_variants: int = 4,
+) -> list[tuple[Fact, str]]:
+    """Surface DEEP structural analogs for the query.
+
+    Steps:
+      1. retrieve top_k candidates by direct embedding (high recall).
+         If multi_probe=True, also expand the query into N variants in
+         different surface domains, retrieve top_k per variant, union.
+      2. LLM judge each candidate as DEEP / SURFACE / UNRELATED.
+      3. Return DEEP facts paired with the judge's reason.
+    """
+    candidate_uuids: dict[str, Fact] = {}
+    facts, _ = retrieve(
+        query, store, cache, budget, top_k=top_k, collections=collections
+    )
+    for f in facts:
+        candidate_uuids[f.fact_uuid] = f
+
+    if multi_probe:
+        variants = expand_query_for_deja_vu(query, cache, budget, n=n_variants)
+        for v in variants:
+            v_facts, _ = retrieve(
+                v, store, cache, budget, top_k=top_k, collections=collections
+            )
+            for f in v_facts:
+                candidate_uuids.setdefault(f.fact_uuid, f)
+
+    deep_results: list[tuple[Fact, str]] = []
+    for f in candidate_uuids.values():
+        cat, reason = judge_structural_match(query, f.text, cache, budget)
+        if cat == "DEEP":
+            deep_results.append((f, reason))
+    return deep_results
+
+
+# ---------------------------------------------------------------------------
+# Structural-tag inverted index — the path to true sub-linear recall scaling
+# ---------------------------------------------------------------------------
+#
+# Why: pure embedding kNN doesn't scale sub-linearly for constant recall.
+# Target rank grows roughly linearly with N (under fixed embedding-z-score),
+# so top-K must grow with N to maintain recall. Multi-probe is a constant-
+# factor win, not asymptotic.
+#
+# Sub-linear path: tag each memory with a small set of image-schema-grounded
+# structural patterns from a CONTROLLED VOCABULARY (~30 patterns drawn from
+# cognitive science / Lakoff's image schemas / mathematical primitives).
+# Tag the query similarly. Retrieval = inverted-index lookup: union of
+# memories whose tags overlap query tags. Bucket size is O(N/T_q) where
+# T_q is the number of query tags, much smaller than N. Within the
+# filtered pool, kNN by embedding for top-K, then LLM judge as before.
+#
+# Recall ceiling: tagging accuracy. If the right analog memory was tagged
+# with no overlapping pattern, the filter excludes it. Multi-probe via
+# query-tag expansion mitigates: ask the LLM for a few likely tags, union
+# their buckets.
+
+STRUCTURAL_TAG_VOCAB: list[tuple[str, str]] = [
+    # Image schemas (Lakoff/Johnson) — pre-conceptual primitives grounded
+    # in bodily experience. The brain reuses these across domains.
+    (
+        "CONTAINER",
+        "Something inside vs. outside; bounded region; entry/exit (sets, organs, rooms, classes, states)",
+    ),
+    (
+        "PATH",
+        "Source → trajectory → goal; movement along a route (rivers, careers, plot arcs, programs)",
+    ),
+    (
+        "FORCE-AGAINST-FORCE",
+        "Two opposing influences; pushback, blocker, counterforce (politics, debates, mechanics)",
+    ),
+    (
+        "OBSTACLE-BYPASS",
+        "Going around vs. through a barrier; finding indirect path (river/CTO, immune evasion, lockpicking)",
+    ),
+    (
+        "ACCUMULATION",
+        "Building up over time; storing quantity in proportion to state (capacitor, savings, learning)",
+    ),
+    (
+        "THRESHOLD",
+        "Crossing a critical level triggers qualitative change (phase transition, social tipping, anger)",
+    ),
+    (
+        "BALANCE-EQUILIBRIUM",
+        "Stable point under opposing forces; perturbation returns (pendulum, market, ecosystems)",
+    ),
+    (
+        "CYCLE-OSCILLATION",
+        "Repeating return to a state; periodic dynamics (seasons, business cycles, harmonic oscillator)",
+    ),
+    (
+        "LINK-NETWORK",
+        "Items connected by relations; graph structure (social networks, citations, neural)",
+    ),
+    (
+        "HIERARCHY-NESTING",
+        "Levels of containment or abstraction; coarse → fine (org charts, taxonomies, recursion)",
+    ),
+    (
+        "BOUNDARY-MEMBERSHIP",
+        "Inside-vs-outside class assignment; categorization (immune self/non-self, group identity)",
+    ),
+    (
+        "CENTER-PERIPHERY",
+        "Important core vs. less-important fringe (attention, reputation, urban planning)",
+    ),
+    # Mathematical / logical primitives
+    (
+        "DIMENSION-COUNT",
+        "Counting degrees of freedom, ranks, fibers; rank-nullity / pigeonhole / combinatorial counting",
+    ),
+    (
+        "BIJECTION-CORRESPONDENCE",
+        "One-to-one matching between sets; isomorphism, equivalence (Galois, dictionary, model-data)",
+    ),
+    (
+        "FIXED-POINT",
+        "Self-consistent state where map(x) = x; equilibrium, recursion base, attractor (Banach, Brouwer, Tarski)",
+    ),
+    (
+        "INVARIANT",
+        "Quantity preserved under operations; conservation law, homological invariant, loop invariant",
+    ),
+    (
+        "UNIVERSAL-PROPERTY",
+        "Object characterized abstractly by mapping behavior (categorical product, free objects, initial/terminal)",
+    ),
+    (
+        "RECURSION-SELF-SIMILARITY",
+        "Whole defined in terms of parts of itself; fractals, induction, recursion in code",
+    ),
+    (
+        "DUALITY-OPPOSITE",
+        "Pair of structures swapping roles; LP duality, Fourier, op-categories",
+    ),
+    (
+        "OPTIMIZATION",
+        "Minimizing/maximizing under constraints (least action, gradient descent, evolution, economics)",
+    ),
+    # Strategic / narrative / social primitives
+    (
+        "MENTOR-REMOVED-AT-TRANSITION",
+        "Guide figure leaves/dies as protégé becomes independent (Hero's Journey)",
+    ),
+    (
+        "REFUSAL-THEN-ACCEPTANCE",
+        "Initial rejection of a call/role then later acceptance (Hero's Journey opening)",
+    ),
+    (
+        "CALL-AND-RESPONSE",
+        "Stimulus prompts paired action; dialogic structure (poetry, music, conversation)",
+    ),
+    (
+        "UNDERDOG-OVERCOMES",
+        "Weaker party prevails through ingenuity / persistence (sports, politics, biology)",
+    ),
+    (
+        "BETRAYAL-FROM-INSIDE",
+        "Threat from trusted insider rather than external enemy (history, fiction, security)",
+    ),
+    # Process / control primitives
+    (
+        "FEEDBACK-LOOP",
+        "Output influences subsequent input; reinforcing or balancing (PID, dieting, hype cycles)",
+    ),
+    (
+        "RESOURCE-DEPLETION",
+        "Finite supply consumed over time; running out (battery, attention, fossil fuel)",
+    ),
+    (
+        "PROXY-SUBSTITUTION",
+        "Stand-in for the real thing because the real is unavailable (proxy variable, emoji, metaphor)",
+    ),
+    (
+        "PROTECTION-BYPASS",
+        "Subverting an enforcement mechanism (lockpick, exploit, social engineering)",
+    ),
+    (
+        "SUCCESSION-REPLACEMENT",
+        "New entity fills role of departing entity (manager change, dynasty, brand)",
+    ),
+]
+
+
+TAG_PROMPT = """You are tagging a TEXT with structural patterns from a fixed
+controlled vocabulary. The goal is to identify the underlying RELATIONAL/
+ABSTRACT patterns the text exhibits — patterns that transfer across surface
+domains.
+
+Tag selection rules:
+  - Only tag with patterns that are CLEARLY present in the text.
+  - Pick 0-5 tags. Empty list is fine if the text is just personal-life
+    noise with no recognizable structural pattern.
+  - Pick the MOST SPECIFIC tag(s) that fit. Avoid tagging things just
+    because they vaguely involve a tag's domain.
+
+VOCABULARY:
+{vocab}
+
+TEXT:
+{text}
+
+Output JSON only:
+{{"tags": ["TAG_NAME_1", "TAG_NAME_2", ...]}}
+"""
+
+
+def _vocab_block() -> str:
+    return "\n".join(f"  - {name}: {desc}" for name, desc in STRUCTURAL_TAG_VOCAB)
+
+
+def tag_text(
+    text: str,
+    cache: Cache,
+    budget: Budget,
+    reasoning_effort: str = "medium",
+) -> list[str]:
+    """Tag a text with structural-pattern labels from STRUCTURAL_TAG_VOCAB.
+    Returns up to 5 tag names (subset of vocab keys)."""
+    valid = {name for name, _ in STRUCTURAL_TAG_VOCAB}
+    raw = llm(
+        TAG_PROMPT.format(vocab=_vocab_block(), text=text),
+        cache,
+        budget,
+        reasoning_effort=reasoning_effort,
+    )
+    obj = extract_json(raw)
+    if not isinstance(obj, dict):
+        return []
+    tags_raw = obj.get("tags", [])
+    if not isinstance(tags_raw, list):
+        return []
+    return [str(t) for t in tags_raw if str(t) in valid][:5]
+
+
+@dataclass
+class TagIndex:
+    """Inverted index from structural tag → fact_uuids carrying that tag."""
+
+    tag_to_fact_uuids: dict[str, set[str]] = field(default_factory=dict)
+    fact_uuid_to_tags: dict[str, list[str]] = field(default_factory=dict)
+
+    def add(self, fact_uuid: str, tags: list[str]) -> None:
+        self.fact_uuid_to_tags[fact_uuid] = list(tags)
+        for tag in tags:
+            self.tag_to_fact_uuids.setdefault(tag, set()).add(fact_uuid)
+
+    def lookup(self, tags: list[str]) -> set[str]:
+        """Union of fact_uuids carrying any of the given tags."""
+        out: set[str] = set()
+        for tag in tags:
+            out |= self.tag_to_fact_uuids.get(tag, set())
+        return out
+
+    def stats(self) -> dict:
+        return {
+            "n_tags": len(self.tag_to_fact_uuids),
+            "n_facts": len(self.fact_uuid_to_tags),
+            "avg_facts_per_tag": (
+                sum(len(s) for s in self.tag_to_fact_uuids.values())
+                / max(1, len(self.tag_to_fact_uuids))
+            ),
+            "avg_tags_per_fact": (
+                sum(len(t) for t in self.fact_uuid_to_tags.values())
+                / max(1, len(self.fact_uuid_to_tags))
+            ),
+        }
+
+
+def build_tag_index(
+    facts: list[Fact],
+    cache: Cache,
+    budget: Budget,
+) -> TagIndex:
+    """Tag all facts and build the inverted index. One LLM call per fact."""
+    idx = TagIndex()
+    for f in facts:
+        tags = tag_text(f.text, cache, budget)
+        idx.add(f.fact_uuid, tags)
+    return idx
+
+
+def retrieve_deja_vu_tagged(
+    query: str,
+    store: MemoryStore,
+    tag_index: TagIndex,
+    cache: Cache,
+    budget: Budget,
+    top_k: int = 20,
+    collections: list[str] | None = None,
+    judge_all: bool = False,
+) -> list[tuple[Fact, str, list[str]]]:
+    """Tag-filtered deja-vu retrieval.
+
+    Steps:
+      1. Tag the query.
+      2. Lookup memories whose tags overlap the query's tags (sub-linear:
+         scan only those buckets, not all of N).
+      3. Optionally also include direct embedding top_k as a backstop.
+      4. LLM judge each candidate (or skip judge if judge_all=False).
+      5. Return DEEP set with (fact, reason, tags).
+    """
+    query_tags = tag_text(query, cache, budget)
+    if not query_tags:
+        # Fall back to plain embedding retrieval if the query has no tags.
+        results = retrieve_deja_vu(
+            query, store, cache, budget, top_k=top_k, collections=collections
+        )
+        return [(f, r, []) for f, r in results]
+
+    candidate_uuids = tag_index.lookup(query_tags)
+
+    # Resolve uuids back to Fact objects using the store.
+    cols = collections or ["observations"]
+    candidate_facts: list[Fact] = []
+    for col_name in cols:
+        col = store.collections.get(col_name)
+        if col is None:
+            continue
+        for uuid in candidate_uuids:
+            if uuid in col.by_uuid:
+                candidate_facts.append(col.by_uuid[uuid])
+
+    deep_results: list[tuple[Fact, str, list[str]]] = []
+    for f in candidate_facts:
+        cat, reason = judge_structural_match(query, f.text, cache, budget)
+        if cat == "DEEP":
+            deep_results.append(
+                (f, reason, tag_index.fact_uuid_to_tags.get(f.fact_uuid, []))
+            )
+    return deep_results
+
+
+def format_deja_vu_block(deja_vu_results: list[tuple[Fact, str]]) -> str:
+    """Render the DEJA VU CANDIDATES block for the reader prompt."""
+    if not deja_vu_results:
+        return "(none — direct facts above are sufficient)"
+    lines = []
+    for i, (f, reason) in enumerate(deja_vu_results, start=1):
+        lines.append(f"  ({i}) [t={f.ts}] {f.text[:140]}")
+        lines.append(f"      → why this is structurally similar: {reason[:200]}")
+    return "\n".join(lines)
+
+
 def _build_eid_alias(resolution_map: dict[str, set[str]]) -> dict[str, str]:
     def _alias(idx: int) -> str:
         s = ""
@@ -1352,15 +1827,36 @@ def _build_eid_alias(resolution_map: dict[str, set[str]]) -> dict[str, str]:
 
 
 def answer_question(
-    question: str, store: MemoryStore, cache: Cache, budget: Budget, top_k: int = 14
+    question: str,
+    store: MemoryStore,
+    cache: Cache,
+    budget: Budget,
+    top_k: int = 14,
+    enable_deja_vu: bool = False,
+    deja_vu_top_k: int = 20,
 ) -> str:
     facts, resolution_map = retrieve(question, store, cache, budget, top_k=top_k)
     eid_alias = _build_eid_alias(resolution_map)
     facts_block = format_facts_for_read(facts, store, eid_alias=eid_alias)
     resolution_block = format_resolution_map(resolution_map, store, eid_alias=eid_alias)
+
+    if enable_deja_vu:
+        deja_vu_results = retrieve_deja_vu(
+            question, store, cache, budget, top_k=deja_vu_top_k
+        )
+        # Filter out facts already returned by direct retrieval to avoid duplication.
+        direct_uuids = {f.fact_uuid for f in facts}
+        deja_vu_results = [
+            (f, r) for (f, r) in deja_vu_results if f.fact_uuid not in direct_uuids
+        ]
+        deja_vu_block = format_deja_vu_block(deja_vu_results)
+    else:
+        deja_vu_block = "(deja-vu mode disabled)"
+
     prompt = READ_PROMPT.format(
         resolution_map=resolution_block,
         facts_block=facts_block,
+        deja_vu_block=deja_vu_block,
         question=question,
     )
     return llm(prompt, cache, budget, reasoning_effort="medium").strip()

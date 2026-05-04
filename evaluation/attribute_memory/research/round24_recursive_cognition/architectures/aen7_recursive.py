@@ -785,6 +785,8 @@ def answer_question(
     budget: Budget,
     top_k: int = 14,
     collections: list[str] | None = None,
+    enable_deja_vu: bool = False,
+    deja_vu_top_k: int = 20,
 ) -> str:
     if collections is None:
         # Default: associative recall spans observations AND cognition
@@ -806,9 +808,28 @@ def answer_question(
     eid_alias = v2._build_eid_alias(resolution_map)
     facts_block = format_facts_for_read(facts, store, eid_alias=eid_alias)
     resolution_block = format_resolution_map(resolution_map, store, eid_alias=eid_alias)
+
+    if enable_deja_vu:
+        deja_vu_results = v2.retrieve_deja_vu(
+            question,
+            store,
+            cache,
+            budget,
+            top_k=deja_vu_top_k,
+            collections=collections,
+        )
+        direct_uuids = {f.fact_uuid for f in facts}
+        deja_vu_results = [
+            (f, r) for (f, r) in deja_vu_results if f.fact_uuid not in direct_uuids
+        ]
+        deja_vu_block = v2.format_deja_vu_block(deja_vu_results)
+    else:
+        deja_vu_block = "(deja-vu mode disabled)"
+
     prompt = READ_PROMPT.format(
         resolution_map=resolution_block,
         facts_block=facts_block,
+        deja_vu_block=deja_vu_block,
         question=question,
     )
     return llm(prompt, cache, budget, reasoning_effort="medium").strip()
