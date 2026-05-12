@@ -14,11 +14,11 @@ gpt-5-nano @ low: v64 had 3 catastrophic + 7 partial drops; v65 has 0.
 Rule placement matters -- the reminder must be adjacent to the
 "ONE derivative" trigger; moving it to EACH DERIVATIVE regressed.
 
-The LLM returns derivative strings as natural-language text. By default
-this deriver emits each derivative as a `TextBlock` *without* speaker
-prefix, since the LLM does not see speaker context. Set
-`include_producer_prefix=True` to wrap each derivative with the
-segment's `ProducerContext` (mirroring `WholeTextDeriver`).
+Each derivative is wrapped with the segment's context the same way
+`SentenceTextDeriver` / `WholeTextDeriver` wrap theirs -- a
+`ProducerContext` prepends "Speaker: ", a `NullContext` is a no-op.
+The LLM only sees the segment text (without speaker), so the wrapping
+is applied to whatever it returns.
 """
 
 from __future__ import annotations
@@ -144,10 +144,6 @@ class LLMTextDeriver(Deriver):
             `generate_parsed_response(output_format=_DeriverResponse, ...)`.
         prompt_template: A `.format(segment=...)` template producing the
             full prompt. Defaults to the validated v65 prompt.
-        include_producer_prefix: When True, each derivative is wrapped
-            with the segment's producer context ("Speaker: text"),
-            matching `WholeTextDeriver`'s behavior. Default False — the
-            LLM's text is embedded as-is.
         emit_at_least_one: When True (default), if the LLM returns no
             derivatives, fall back to a single derivative containing the
             segment's text. This preserves the invariant that every
@@ -160,14 +156,12 @@ class LLMTextDeriver(Deriver):
         *,
         language_model: LanguageModel,
         prompt_template: str = PROMPT_DERIVER_V65,
-        include_producer_prefix: bool = False,
         emit_at_least_one: bool = True,
         max_attempts: int = 3,
     ) -> None:
         """Initialize the deriver; see class docstring for arguments."""
         self._language_model = language_model
         self._prompt_template = prompt_template
-        self._include_producer_prefix = include_producer_prefix
         self._emit_at_least_one = emit_at_least_one
         self._max_attempts = max_attempts
 
@@ -196,19 +190,15 @@ class LLMTextDeriver(Deriver):
         if not derivative_texts and self._emit_at_least_one:
             derivative_texts = [text]
 
-        if self._include_producer_prefix:
-            derivative_texts = [
-                _format_with_context(segment.context, derivative_text)
-                for derivative_text in derivative_texts
-            ]
-
         return [
             Derivative(
                 uuid=uuid4(),
                 segment_uuid=segment.uuid,
                 timestamp=segment.timestamp,
                 context=segment.context,
-                block=TextBlock(text=derivative_text),
+                block=TextBlock(
+                    text=_format_with_context(segment.context, derivative_text)
+                ),
                 properties=segment.properties,
             )
             for derivative_text in derivative_texts

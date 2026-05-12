@@ -245,9 +245,7 @@ class LLMTextSegmenter(Segmenter):
         return stitched
 
     @staticmethod
-    def _anchor_segment(
-        seg: str, source: str, cursor: int
-    ) -> tuple[int, str] | None:
+    def _anchor_segment(seg: str, source: str, cursor: int) -> tuple[int, str] | None:
         """Locate `seg` in `source` starting at `cursor`.
 
         If direct match fails, retry once with JSON-escape sequences
@@ -272,9 +270,7 @@ class LLMTextSegmenter(Segmenter):
         return idx, unescaped
 
     @staticmethod
-    def _expand_segment_span(
-        idx: int, end: int, source: str
-    ) -> tuple[int, int]:
+    def _expand_segment_span(idx: int, end: int, source: str) -> tuple[int, int]:
         """Extend an anchored span both directions per the stitching rules.
 
         Forward eats trailing horizontal ws then newlines; backward
