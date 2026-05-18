@@ -49,11 +49,15 @@ load_dotenv("/Users/eyu/edwinyyyu/mmcc/segment_store/.env")
 @dataclass
 class TestCase:
     id: str
-    area: str  # "F1" / "F2" / "F3"
+    area: str  # "F1" / "F2" / "F3" / "F4"
     description: str
     passage: str
     must_keep: list[str] = field(default_factory=list)  # substrings ⊆ some seg
     must_drop: list[str] = field(default_factory=list)  # substrings ⊈ all segs
+    # Optional cap on number of segments. F4 (over-fragmentation) cases set
+    # this to 1 to assert the model keeps short single-thought conversational
+    # messages as ONE segment. None means no cap.
+    max_segs: int | None = None
 
 
 # F1 OPINION VS FILLER ------------------------------------------------------
@@ -238,7 +242,82 @@ F3_CASES: list[TestCase] = [
     ),
 ]
 
-ALL_CASES: list[TestCase] = F1_CASES + F2_CASES + F3_CASES
+# F4 OVER-FRAGMENTATION ----------------------------------------------------
+#
+# v33/v34 over-fragment short conversational messages on LoCoMo: avg 2.8
+# segments per ingested event vs 1.0 for the deterministic baseline. The
+# model splits at sentence/clause boundaries even when the message stays
+# on one reaction or one acknowledgment. Each F4 case asserts the model
+# keeps the message as ONE segment via `max_segs=1`. Passages are drawn
+# verbatim from real LoCoMo over-fragmentation samples (with surface
+# names neutralized).
+
+F4_CASES: list[TestCase] = [
+    TestCase(
+        id="F4-reaction-three-sentences",
+        area="F4",
+        description="Pure reaction expressed across three short sentences -- "
+        "should be ONE segment, not three.",
+        passage=(
+            "Wow! That sounds amazing! The connection to nature must be incredible."
+        ),
+        must_keep=["amazing", "connection to nature"],
+        must_drop=[],
+        max_segs=1,
+    ),
+    TestCase(
+        id="F4-acknowledgment-three-sentences",
+        area="F4",
+        description="Acknowledgment + offer + sign-off in one short message -- "
+        "ONE segment (or zero if all framing); never three.",
+        passage=(
+            "No problem, Pat! Let me know whenever you need assistance. Take care!"
+        ),
+        # These are all framing. If the model drops them entirely (0 segs)
+        # that's also acceptable -- the failure mode we're guarding against
+        # is 3 separate filler segments cluttering retrieval.
+        must_keep=[],
+        must_drop=[],
+        max_segs=1,
+    ),
+    TestCase(
+        id="F4-praise-two-sentences",
+        area="F4",
+        description="Praise + elaboration of same praise -- ONE segment.",
+        passage=(
+            "Wow, Riley - you and Casey are so in tune! "
+            "It's clear you both rock on stage."
+        ),
+        must_keep=["Riley", "Casey"],
+        must_drop=[],
+        max_segs=1,
+    ),
+    TestCase(
+        id="F4-thanks-with-content",
+        area="F4",
+        description="Greeting + substantive answer -- ONE segment (greeting "
+        "stays attached to the content under rule 4, not split off).",
+        passage="Thanks, Jordan! It's a mix of drama and romance!",
+        must_keep=["drama and romance"],
+        must_drop=[],
+        max_segs=1,
+    ),
+    TestCase(
+        id="F4-two-topics-stays-two",
+        area="F4",
+        description="GENUINE topic shift -- should remain two segments. "
+        "Anti-regression check that v35 still splits when topics differ.",
+        passage=(
+            "I finally finished the kitchen renovation last weekend. "
+            "By the way, I'm flying to Lisbon on June 14 for a conference."
+        ),
+        must_keep=["kitchen renovation", "Lisbon", "June 14"],
+        must_drop=[],
+        max_segs=2,
+    ),
+]
+
+ALL_CASES: list[TestCase] = F1_CASES + F2_CASES + F3_CASES + F4_CASES
 
 
 # --------------------------------------------------------------------------
@@ -697,6 +776,7 @@ def evaluate(case: TestCase, segs: list[str]) -> dict:
     keep_miss = [t for t in case.must_keep if not _ci_in(t, joined)]
     drop_violations = [t for t in case.must_drop if _ci_in(t, joined)]
     drop_clean = [t for t in case.must_drop if not _ci_in(t, joined)]
+    ok_count = case.max_segs is None or len(segs) <= case.max_segs
     return {
         "n_segs": len(segs),
         "keep_hits": keep_hits,
@@ -705,16 +785,22 @@ def evaluate(case: TestCase, segs: list[str]) -> dict:
         "drop_clean": drop_clean,
         "ok_keep": len(keep_miss) == 0,
         "ok_drop": len(drop_violations) == 0,
+        "ok_count": ok_count,
+        "has_count_check": case.max_segs is not None,
     }
 
 
 def fmt_case(case: TestCase, segs: list[str], ev: dict) -> str:
     verdict_keep = "✓" if ev["ok_keep"] else "✗"
     verdict_drop = "✓" if ev["ok_drop"] else "✗"
+    count_part = ""
+    if ev["has_count_check"]:
+        verdict_count = "✓" if ev["ok_count"] else "✗"
+        count_part = f"  count(<={case.max_segs}):{verdict_count}"
     lines = [
         f"--- [{case.area}] {case.id} ---",
         f"  desc: {case.description}",
-        f"  n_segs: {ev['n_segs']}  keep:{verdict_keep}  drop:{verdict_drop}",
+        f"  n_segs: {ev['n_segs']}  keep:{verdict_keep}  drop:{verdict_drop}{count_part}",
     ]
     for i, s in enumerate(segs):
         lines.append(f"    seg[{i}]: {s[:200]}{'…' if len(s) > 200 else ''}")
@@ -722,6 +808,8 @@ def fmt_case(case: TestCase, segs: list[str], ev: dict) -> str:
         lines.append(f"  MISSED (should have been in some seg): {ev['keep_miss']}")
     if ev["drop_violations"]:
         lines.append(f"  KEPT BUT SHOULD HAVE DROPPED: {ev['drop_violations']}")
+    if ev["has_count_check"] and not ev["ok_count"]:
+        lines.append(f"  TOO MANY SEGMENTS: {ev['n_segs']} > max_segs={case.max_segs}")
     return "\n".join(lines)
 
 
@@ -743,16 +831,56 @@ async def run_bench(
 
 def summary(results, label: str) -> None:
     print(f"\n## {label} summary")
-    for area in ["F1", "F2", "F3"]:
+    for area in ["F1", "F2", "F3", "F4"]:
         area_results = [(c, s, e) for c, s, e in results if c.area == area]
+        if not area_results:
+            continue
         ok_keep = sum(1 for _, _, e in area_results if e["ok_keep"])
         ok_drop = sum(1 for _, _, e in area_results if e["ok_drop"])
         total = len(area_results)
-        print(f"  {area}: keep {ok_keep}/{total}  drop {ok_drop}/{total}")
+        # Split count check into "overfrag" (max_segs=1, the over-fragmentation
+        # cases that motivated F4) and "anti_reg" (max_segs>1, anti-regression).
+        # The anti-regression case passes trivially at almost any segmentation
+        # and pollutes the area total; report them separately.
+        overfrag = [
+            (c, s, e)
+            for c, s, e in area_results
+            if e["has_count_check"] and c.max_segs == 1
+        ]
+        anti_reg = [
+            (c, s, e)
+            for c, s, e in area_results
+            if e["has_count_check"] and c.max_segs is not None and c.max_segs > 1
+        ]
+        count_parts: list[str] = []
+        if overfrag:
+            ok = sum(1 for _, _, e in overfrag if e["ok_count"])
+            count_parts.append(f"overfrag {ok}/{len(overfrag)}")
+        if anti_reg:
+            ok = sum(1 for _, _, e in anti_reg if e["ok_count"])
+            count_parts.append(f"anti_reg {ok}/{len(anti_reg)}")
+        count_str = ("  " + "  ".join(count_parts)) if count_parts else ""
+        print(f"  {area}: keep {ok_keep}/{total}  drop {ok_drop}/{total}{count_str}")
     total_keep = sum(1 for _, _, e in results if e["ok_keep"])
     total_drop = sum(1 for _, _, e in results if e["ok_drop"])
     n = len(results)
-    print(f"  TOTAL: keep {total_keep}/{n}  drop {total_drop}/{n}")
+    overfrag_all = [
+        (c, s, e) for c, s, e in results if e["has_count_check"] and c.max_segs == 1
+    ]
+    anti_reg_all = [
+        (c, s, e)
+        for c, s, e in results
+        if e["has_count_check"] and c.max_segs is not None and c.max_segs > 1
+    ]
+    count_total_parts: list[str] = []
+    if overfrag_all:
+        ok = sum(1 for _, _, e in overfrag_all if e["ok_count"])
+        count_total_parts.append(f"overfrag {ok}/{len(overfrag_all)}")
+    if anti_reg_all:
+        ok = sum(1 for _, _, e in anti_reg_all if e["ok_count"])
+        count_total_parts.append(f"anti_reg {ok}/{len(anti_reg_all)}")
+    count_total = ("  " + "  ".join(count_total_parts)) if count_total_parts else ""
+    print(f"  TOTAL: keep {total_keep}/{n}  drop {total_drop}/{n}{count_total}")
 
 
 async def main() -> None:
@@ -796,6 +924,21 @@ async def main() -> None:
             "v31",
             "v32",
             "v33",
+            "v34",
+            "v35",
+            "v36",
+            "v37",
+            "v38",
+            "v39",
+            "v40",
+            "v41",
+            "v42",
+            "v43",
+            "v44",
+            "v45",
+            "v46",
+            "v47s",
+            "v48s",
         ],
     )
     parser.add_argument("--reps", type=int, default=1)
@@ -825,6 +968,21 @@ async def main() -> None:
     from probe_segmenter_F_natural_v31 import PROMPT_F_NATURAL_V31
     from probe_segmenter_F_natural_v32 import PROMPT_F_NATURAL_V32
     from probe_segmenter_F_natural_v33 import PROMPT_F_NATURAL_V33
+    from probe_segmenter_F_natural_v34 import PROMPT_F_NATURAL_V34
+    from probe_segmenter_F_natural_v35 import PROMPT_F_NATURAL_V35
+    from probe_segmenter_F_natural_v36 import PROMPT_F_NATURAL_V36
+    from probe_segmenter_F_natural_v37 import PROMPT_F_NATURAL_V37
+    from probe_segmenter_F_natural_v38 import PROMPT_F_NATURAL_V38
+    from probe_segmenter_F_natural_v39 import PROMPT_F_NATURAL_V39
+    from probe_segmenter_F_natural_v40 import PROMPT_F_NATURAL_V40
+    from probe_segmenter_F_natural_v41 import PROMPT_F_NATURAL_V41
+    from probe_segmenter_F_natural_v42 import PROMPT_F_NATURAL_V42
+    from probe_segmenter_F_natural_v43 import PROMPT_F_NATURAL_V43
+    from probe_segmenter_F_natural_v44 import PROMPT_F_NATURAL_V44
+    from probe_segmenter_F_natural_v45 import PROMPT_F_NATURAL_V45
+    from probe_segmenter_F_natural_v46 import PROMPT_F_NATURAL_V46
+    from probe_segmenter_short_v47 import PROMPT_SHORT_V47
+    from probe_segmenter_short_v48 import PROMPT_SHORT_V48
 
     prompts = {
         "v1": PROMPT_V1_BASELINE,
@@ -860,6 +1018,21 @@ async def main() -> None:
         "v31": PROMPT_F_NATURAL_V31,
         "v32": PROMPT_F_NATURAL_V32,
         "v33": PROMPT_F_NATURAL_V33,
+        "v34": PROMPT_F_NATURAL_V34,
+        "v35": PROMPT_F_NATURAL_V35,
+        "v36": PROMPT_F_NATURAL_V36,
+        "v37": PROMPT_F_NATURAL_V37,
+        "v38": PROMPT_F_NATURAL_V38,
+        "v39": PROMPT_F_NATURAL_V39,
+        "v40": PROMPT_F_NATURAL_V40,
+        "v41": PROMPT_F_NATURAL_V41,
+        "v42": PROMPT_F_NATURAL_V42,
+        "v43": PROMPT_F_NATURAL_V43,
+        "v44": PROMPT_F_NATURAL_V44,
+        "v45": PROMPT_F_NATURAL_V45,
+        "v46": PROMPT_F_NATURAL_V46,
+        "v47s": PROMPT_SHORT_V47,
+        "v48s": PROMPT_SHORT_V48,
     }
     prompt = prompts[args.prompt]
     print(
@@ -889,8 +1062,13 @@ async def main() -> None:
         for i, case in enumerate(ALL_CASES):
             keep_ok = sum(1 for r in all_runs if r[i][2]["ok_keep"])
             drop_ok = sum(1 for r in all_runs if r[i][2]["ok_drop"])
+            count_part = ""
+            if case.max_segs is not None:
+                count_ok = sum(1 for r in all_runs if r[i][2]["ok_count"])
+                count_part = f"  count {count_ok}/{args.reps}"
             print(
-                f"  [{case.area}] {case.id}: keep {keep_ok}/{args.reps}  drop {drop_ok}/{args.reps}"
+                f"  [{case.area}] {case.id}: "
+                f"keep {keep_ok}/{args.reps}  drop {drop_ok}/{args.reps}{count_part}"
             )
 
     await client.close()

@@ -59,7 +59,45 @@ class NullContext(BaseModel):
     context_type: Literal["null"] = "null"
 
 
-ContextUnion = ProducerContext | NullContext
+class RewriteContext(BaseModel):
+    """Carries a separate text to embed/derive while keeping the segment
+    text intact for display.
+
+    Used when the segment has been rewritten or transformed for display
+    purposes but we want the embedding/derivation step to see a
+    different (e.g. verbatim-augmented or multi-form) text. Display
+    formatting treats this like NullContext (no header prefix).
+    """
+
+    context_type: Literal["rewrite"] = "rewrite"
+    text_to_embed: str
+
+
+class SurroundingEvent(BaseModel):
+    """A neighboring event the producer of the current event was exposed to."""
+
+    producer: str
+    text: str
+
+
+class SurroundingEventsContext(BaseModel):
+    """Producer context augmented with the immediately surrounding events.
+
+    Equivalent to `ProducerContext` for display and embedding purposes
+    (the producer is prepended to the text), but additionally carries
+    the events occurring before and after the current event in the same
+    sequence. Segmenters and derivers that benefit from neighbor
+    awareness (e.g. resolving second-person addressees, anaphora, or
+    references to prior turns) can read `before` and `after`.
+    """
+
+    context_type: Literal["surrounding_events"] = "surrounding_events"
+    producer: str
+    before: list[SurroundingEvent] = Field(default_factory=list)
+    after: list[SurroundingEvent] = Field(default_factory=list)
+
+
+ContextUnion = ProducerContext | NullContext | RewriteContext | SurroundingEventsContext
 
 Context = Annotated[
     ContextUnion,

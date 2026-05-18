@@ -10,19 +10,32 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     Derivative,
     NullContext,
     ProducerContext,
+    RewriteContext,
     Segment,
+    SurroundingEventsContext,
     TextBlock,
 )
 from memmachine_server.episodic_memory.event_memory.deriver.deriver import Deriver
 
 
 def _format_with_context(context: Context, text: str) -> str:
-    """Format text within its context."""
+    """Format text within its context.
+
+    For embedding/derivation purposes: ProducerContext prefixes the
+    producer; NullContext returns the text unchanged; RewriteContext
+    returns the context's text_to_embed (ignoring the passed text),
+    which lets the rewriting segmenter feed a different surface to the
+    embedder than what gets stored in the segment block.
+    """
     match context:
         case ProducerContext(producer=producer):
             return f"{producer}: {text}"
+        case SurroundingEventsContext(producer=producer):
+            return f"{producer}: {text}"
         case NullContext():
             return text
+        case RewriteContext(text_to_embed=text_to_embed):
+            return text_to_embed
         case _:
             raise NotImplementedError(
                 f"Unsupported context type: {type(context).__name__}"

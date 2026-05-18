@@ -34,7 +34,9 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     Derivative,
     NullContext,
     ProducerContext,
+    RewriteContext,
     Segment,
+    SurroundingEventsContext,
     TextBlock,
 )
 from memmachine_server.episodic_memory.event_memory.deriver.deriver import Deriver
@@ -126,8 +128,12 @@ def _format_with_context(context: Context, text: str) -> str:
     match context:
         case ProducerContext(producer=producer):
             return f"{producer}: {text}"
+        case SurroundingEventsContext(producer=producer):
+            return f"{producer}: {text}"
         case NullContext():
             return text
+        case RewriteContext(text_to_embed=text_to_embed):
+            return text_to_embed
         case _:
             raise NotImplementedError(
                 f"Unsupported context type: {type(context).__name__}"

@@ -4,13 +4,17 @@ import asyncio
 import datetime
 import json
 import logging
+import math
+import threading
 import time
 from collections.abc import Iterable, Sequence
 from typing import ClassVar, cast
 from uuid import UUID
 
+import spacy
 from babel.dates import format_date, format_time, get_datetime_format
 from pydantic import BaseModel, Field, InstanceOf
+from rank_bm25 import BM25Okapi
 
 from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.embedder import Embedder
@@ -39,8 +43,10 @@ from .data_types import (
     NullContext,
     ProducerContext,
     QueryResult,
+    RewriteContext,
     ScoredSegmentContext,
     Segment,
+    SurroundingEventsContext,
     TextBlock,
 )
 from .deriver import Deriver
@@ -51,6 +57,37 @@ logger = logging.getLogger(__name__)
 
 # CLDR datetime style levels, ordered from compact to verbose.
 _DATETIME_STYLE_LEVELS: tuple[DateTimeStyle, ...] = ("short", "medium", "long", "full")
+
+# Supported BM25 fusion modes for EventMemory.query.
+_BM25_FUSION_MODES: frozenset[str] = frozenset({"none", "additive", "rrf", "rsf"})
+
+# Reciprocal Rank Fusion smoothing constant.
+_RRF_K: float = 60.0
+
+# Lazy spaCy lookup-mode lemma pipeline for BM25 fusion tokenization.
+# A blank English model + lookup lemmatizer (lemma table from
+# spacy-lookups-data) is ~100x faster than `en_core_web_sm` because it
+# skips tok2vec/tagger inference. POS-dependent lemma ambiguity (e.g.
+# "meeting" noun vs verb) is hedged by also retaining the original `-ing`
+# surface form, matching mem0's `lemmatize_for_bm25`.
+_bm25_lemma_nlp: spacy.language.Language | None = None
+_bm25_lemma_lock = threading.Lock()
+
+
+def _get_bm25_lemma_nlp() -> spacy.language.Language:
+    global _bm25_lemma_nlp
+    if _bm25_lemma_nlp is not None:
+        return _bm25_lemma_nlp
+    with _bm25_lemma_lock:
+        if _bm25_lemma_nlp is not None:
+            return _bm25_lemma_nlp
+        from spacy.lookups import load_lookups
+
+        nlp = spacy.blank("en")
+        lemmatizer = nlp.add_pipe("lemmatizer", config={"mode": "lookup"})
+        lemmatizer.initialize(lookups=load_lookups("en", ["lemma_lookup"]))
+        _bm25_lemma_nlp = nlp
+        return _bm25_lemma_nlp
 
 
 class EventMemoryParams(BaseModel):
@@ -349,6 +386,8 @@ class EventMemory:
         expand_context: int = 0,
         property_filter: FilterExpr | None = None,
         format_options: FormatOptions | None = None,
+        bm25_fusion: str = "none",
+        bm25_fusion_weight: float = 0.5,
     ) -> QueryResult:
         """
         Query event memory for segments relevant to the query.
@@ -371,6 +410,31 @@ class EventMemory:
             format_options (FormatOptions | None):
                 Options for formatting.
                 (default: None).
+            bm25_fusion (str):
+                BM25 fusion mode applied to the vector-retrieved candidate
+                pool (each segment context is rendered to a single string
+                and treated as one BM25 document). One of:
+
+                - ``"none"``: skip fusion (default).
+                - ``"additive"``: calibrated additive fusion.
+                  ``combined = w_sem * semantic + w_bm25 * sigmoid(bm25)``
+                  with a length-adaptive sigmoid; weights from
+                  ``bm25_fusion_weight``. Requires higher-is-better
+                  underlying scores.
+                - ``"rrf"``: Reciprocal Rank Fusion (k=60).
+                  ``combined = 1/(k + rank_sem) + 1/(k + rank_bm25)``.
+                  Weight knob does not apply. Works with either
+                  similarity metric direction.
+                - ``"rsf"``: Weaviate-style Relative Score Fusion.
+                  Max-normalize each channel within the result set then
+                  weight-sum with ``bm25_fusion_weight``. Requires
+                  higher-is-better underlying scores.
+
+            bm25_fusion_weight (float):
+                BM25 channel weight in ``[0.0, 1.0]`` for ``"additive"``
+                and ``"rsf"`` modes; semantic weight is ``1 - weight``.
+                ``0.5`` (default) is equal weighting. Ignored for
+                ``"rrf"``.
 
         Returns:
             QueryResult:
@@ -384,6 +448,8 @@ class EventMemory:
                 expand_context=expand_context,
                 property_filter=property_filter,
                 format_options=format_options,
+                bm25_fusion=bm25_fusion,
+                bm25_fusion_weight=bm25_fusion_weight,
             )
 
     async def _query(
@@ -394,7 +460,18 @@ class EventMemory:
         expand_context: int,
         property_filter: FilterExpr | None,
         format_options: FormatOptions | None,
+        bm25_fusion: str,
+        bm25_fusion_weight: float,
     ) -> QueryResult:
+        if bm25_fusion not in _BM25_FUSION_MODES:
+            raise ValueError(
+                f"bm25_fusion={bm25_fusion!r} is not one of "
+                f"{sorted(_BM25_FUSION_MODES)!r}."
+            )
+        if not 0.0 <= bm25_fusion_weight <= 1.0:
+            raise ValueError(
+                f"bm25_fusion_weight={bm25_fusion_weight!r} must be in [0.0, 1.0]."
+            )
         if format_options is None:
             format_options = FormatOptions()
 
@@ -484,6 +561,26 @@ class EventMemory:
             or self._vector_store_collection.config.similarity_metric.higher_is_better
         )
 
+        if bm25_fusion != "none":
+            if bm25_fusion in {"additive", "rsf"} and not higher_is_better:
+                raise ValueError(
+                    f"bm25_fusion={bm25_fusion!r} requires higher-is-better "
+                    "underlying scores; reranker is not set and similarity "
+                    "metric is lower-is-better."
+                )
+            scores = await EventMemory._fuse_bm25_scores(
+                mode=bm25_fusion,
+                query=query,
+                segment_contexts=segment_contexts,
+                semantic_scores=scores,
+                higher_is_better=higher_is_better,
+                bm25_weight=bm25_fusion_weight,
+                format_options=format_options,
+            )
+            # All fusion modes produce higher-is-better outputs.
+            higher_is_better = True
+        t_bm25_fusion = time.monotonic()
+
         # Return scored contexts ordered by score.
         scored_segment_contexts = [
             ScoredSegmentContext(
@@ -506,6 +603,7 @@ class EventMemory:
             "vector_query": t_vector_query - t_embedding,
             "segment_query": t_segment_query - t_vector_query,
             "scoring": t_scoring - t_segment_query,
+            "bm25_fusion": t_bm25_fusion - t_scoring,
         }
 
         logger.debug(
@@ -538,6 +636,234 @@ class EventMemory:
             for segment_context in segment_contexts
         ]
         return await self._reranker.score(query, context_strings)
+
+    @staticmethod
+    async def _fuse_bm25_scores(
+        *,
+        mode: str,
+        query: str,
+        segment_contexts: Sequence[Sequence[Segment]],
+        semantic_scores: Sequence[float],
+        higher_is_better: bool,
+        bm25_weight: float,
+        format_options: FormatOptions,
+    ) -> list[float]:
+        """
+        Fuse BM25 over the candidate pool with the underlying scores.
+
+        Dispatches on ``mode``:
+
+        - ``"additive"``: mem0-style calibrated additive fusion with the
+          length-adaptive sigmoid + max_possible divisor.
+        - ``"rrf"``: Reciprocal Rank Fusion (k=60), ranks computed within
+          the candidate pool and respecting the semantic metric direction.
+        - ``"rsf"``: Weaviate-style Relative Score Fusion, max-normalize
+          each channel within the pool then equally weight-average.
+
+        Each segment context is rendered to one string and treated as one
+        BM25 document. The output is always higher-is-better.
+        """
+        if not segment_contexts:
+            return list(semantic_scores)
+
+        context_strings = [
+            EventMemory.string_from_segment_context(
+                context, format_options=format_options
+            )
+            for context in segment_contexts
+        ]
+
+        raw_bm25, num_query_terms = await asyncio.to_thread(
+            EventMemory._compute_raw_bm25, query, context_strings
+        )
+
+        if mode == "additive":
+            return EventMemory._fuse_additive(
+                semantic_scores=semantic_scores,
+                raw_bm25=raw_bm25,
+                num_query_terms=num_query_terms,
+                bm25_weight=bm25_weight,
+            )
+        if mode == "rrf":
+            # RRF combines ranks; weights don't apply.
+            return EventMemory._fuse_rrf(
+                semantic_scores=semantic_scores,
+                raw_bm25=raw_bm25,
+                higher_is_better=higher_is_better,
+            )
+        if mode == "rsf":
+            return EventMemory._fuse_rsf(
+                semantic_scores=semantic_scores,
+                raw_bm25=raw_bm25,
+                bm25_weight=bm25_weight,
+            )
+        raise ValueError(f"Unsupported bm25_fusion mode: {mode!r}")
+
+    @staticmethod
+    def _compute_raw_bm25(
+        query: str, context_strings: Sequence[str]
+    ) -> tuple[list[float], int]:
+        """
+        Compute raw ``BM25Okapi`` scores for each context.
+
+        Returns ``(raw_scores, num_query_terms)``. Negative raw scores are
+        clamped to 0. ``num_query_terms`` is the count of query lemmas
+        after stopword/punct removal, used to pick sigmoid params for the
+        additive fusion mode.
+        """
+        # Batch query + corpus through one nlp.pipe() call so spaCy can
+        # amortize tok2vec/tagger overhead across the batch.
+        nlp = _get_bm25_lemma_nlp()
+        texts = [query.lower()] + [s.lower() for s in context_strings]
+        docs = list(nlp.pipe(texts, batch_size=64))
+        tokenized = [EventMemory._lemmas_from_doc(doc) for doc in docs]
+        tokenized_query = tokenized[0]
+        tokenized_corpus = tokenized[1:]
+
+        if not tokenized_query or not any(tokenized_corpus):
+            return [0.0 for _ in context_strings], len(tokenized_query)
+
+        bm25 = BM25Okapi(tokenized_corpus)
+        raw_scores = bm25.get_scores(tokenized_query)
+        return [max(0.0, float(s)) for s in raw_scores], len(tokenized_query)
+
+    @staticmethod
+    def _fuse_additive(
+        *,
+        semantic_scores: Sequence[float],
+        raw_bm25: Sequence[float],
+        num_query_terms: int,
+        bm25_weight: float,
+    ) -> list[float]:
+        """
+        Weighted calibrated additive fusion. Higher-is-better output.
+
+        ``combined = (1 - bm25_weight) * semantic + bm25_weight * sigmoid(bm25)``,
+        clamped to ``[0, 1]``. With ``bm25_weight = 0.5`` this is the mem0
+        equal-weighting recipe.
+        """
+        midpoint, steepness = EventMemory._bm25_sigmoid_params(num_query_terms)
+        normalized_bm25 = [
+            EventMemory._bm25_sigmoid(float(raw), midpoint, steepness)
+            if raw > 0.0
+            else 0.0
+            for raw in raw_bm25
+        ]
+        sem_weight = 1.0 - bm25_weight
+        return [
+            min(sem_weight * float(semantic) + bm25_weight * bm25_score, 1.0)
+            for semantic, bm25_score in zip(
+                semantic_scores, normalized_bm25, strict=True
+            )
+        ]
+
+    @staticmethod
+    def _fuse_rrf(
+        *,
+        semantic_scores: Sequence[float],
+        raw_bm25: Sequence[float],
+        higher_is_better: bool,
+    ) -> list[float]:
+        """
+        Reciprocal Rank Fusion within the candidate pool. ``k=_RRF_K``.
+
+        Combined score is ``1/(k + rank_sem) + 1/(k + rank_bm25)`` with
+        ranks 0-indexed. Ties resolve to the position of first appearance
+        (stable sort), so candidates with identical scores share the
+        nearby rank and pick up the same RRF contribution within rounding.
+        """
+        sem_ranks = EventMemory._ranks(
+            semantic_scores, higher_is_better=higher_is_better
+        )
+        bm25_ranks = EventMemory._ranks(raw_bm25, higher_is_better=True)
+        return [
+            1.0 / (_RRF_K + sem_ranks[i]) + 1.0 / (_RRF_K + bm25_ranks[i])
+            for i in range(len(semantic_scores))
+        ]
+
+    @staticmethod
+    def _fuse_rsf(
+        *,
+        semantic_scores: Sequence[float],
+        raw_bm25: Sequence[float],
+        bm25_weight: float,
+    ) -> list[float]:
+        """
+        Weaviate-style Relative Score Fusion within the candidate pool.
+
+        Each channel is max-normalized (score / max_in_pool) then
+        weight-summed using ``bm25_weight`` (semantic weight is
+        ``1 - bm25_weight``). When a channel's max is 0 (e.g. BM25 has
+        no token overlap with any candidate), that channel contributes
+        0. Output is in ``[0, 1]`` and higher-is-better.
+        """
+        sem = [float(s) for s in semantic_scores]
+        bm = [float(s) for s in raw_bm25]
+
+        max_sem = max(sem, default=0.0)
+        max_bm = max(bm, default=0.0)
+
+        def _norm(score: float, channel_max: float) -> float:
+            return (score / channel_max) if channel_max > 0.0 else 0.0
+
+        sem_weight = 1.0 - bm25_weight
+        return [
+            sem_weight * _norm(s, max_sem) + bm25_weight * _norm(b, max_bm)
+            for s, b in zip(sem, bm, strict=True)
+        ]
+
+    @staticmethod
+    def _ranks(scores: Sequence[float], *, higher_is_better: bool) -> list[int]:
+        """0-indexed ranks via stable sort; ties keep insertion order."""
+        indexed = list(enumerate(scores))
+        indexed.sort(key=lambda pair: pair[1], reverse=higher_is_better)
+        ranks = [0] * len(scores)
+        for rank, (original_index, _) in enumerate(indexed):
+            ranks[original_index] = rank
+        return ranks
+
+    @staticmethod
+    def _bm25_sigmoid_params(num_terms: int) -> tuple[float, float]:
+        """Length-adaptive sigmoid (midpoint, steepness) from mem0."""
+        if num_terms <= 3:
+            return 5.0, 0.7
+        if num_terms <= 6:
+            return 7.0, 0.6
+        if num_terms <= 9:
+            return 9.0, 0.5
+        if num_terms <= 15:
+            return 10.0, 0.5
+        return 12.0, 0.5
+
+    @staticmethod
+    def _bm25_sigmoid(raw: float, midpoint: float, steepness: float) -> float:
+        """Logistic sigmoid mapping a raw BM25 score to [0, 1]."""
+        return 1.0 / (1.0 + math.exp(-steepness * (raw - midpoint)))
+
+    @staticmethod
+    def _lemmas_from_doc(doc: spacy.tokens.Doc) -> list[str]:
+        """
+        Extract BM25 tokens from a spaCy ``Doc`` (verbatim port of mem0).
+
+        Drops punctuation and stopwords, keeps alphanumeric lemmas, and
+        additionally retains the original ``-ing`` surface form when it
+        differs from the lemma to hedge against noun/verb ambiguity
+        (e.g. "meeting" vs "meet").
+        """
+        tokens: list[str] = []
+        for token in doc:
+            if token.is_punct or token.is_stop:
+                continue
+            lemma = token.lemma_
+            if lemma.isalnum():
+                tokens.append(lemma)
+            if (
+                token.text.endswith("ing")
+                and token.text != lemma
+                and token.text.isalnum()
+            ):
+                tokens.append(token.text)
+        return tokens
 
     @staticmethod
     def string_from_segment_context(
@@ -658,7 +984,12 @@ class EventMemory:
         match segment.context:
             case ProducerContext(producer=producer):
                 return f"{timestamp_prefix}{producer}: "
-            case NullContext():
+            case SurroundingEventsContext(producer=producer):
+                return f"{timestamp_prefix}{producer}: "
+            case NullContext() | RewriteContext():
+                # RewriteContext displays like NullContext -- its
+                # text_to_embed is for derivation only, not for the
+                # rendered header.
                 return timestamp_prefix
             case _:
                 raise NotImplementedError(

@@ -18,6 +18,20 @@ solvable via prompting. The stitching code catches this case
 Feedback bench unchanged: 13/14 keep+drop on gpt-5.4-nano @ low and
 gpt-5-mini @ low.
 
+KNOWN LIMITATION: v33 over-fragments LoCoMo conversational data at
+avg 2.8 segments per message (vs the deterministic baseline's 1.0)
+by splitting at sentence boundaries inside single reactions or
+acknowledgments. Five principle-only rewrites of rule 6 (v36-v40)
+under the constraint "no segment-count bias, no inline example"
+were unable to move the F4 over-fragmentation bench above v33's
+0-1/12 floor at gpt-5.4-nano @ low. The model defaults to its
+sentence-split prior and does not execute the rule procedurally at
+low reasoning. Combining v40's reframing with medium reasoning
+reaches 3/12 (vs v33+medium 0/12) but the absolute number is
+small and the cost increase is 3x. No principle-only fix has been
+found that the model actually understands at the deployed
+configuration.
+
 v24's unified principle: KEEP what is specific to this passage; DROP
 what is interchangeable across similar passages. "Specific" means
 content that differentiates this passage from others -- names, places,
