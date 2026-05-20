@@ -6,14 +6,14 @@ from datetime import datetime
 from typing import cast
 from uuid import UUID
 
-from memmachine_server.episodic_memory.data_types import ContentType, Episode
+from memmachine_core.episodic_memory.data_types import ContentType, Episode
 from neo4j import AsyncGraphDatabase
 from pydantic import BaseModel, JsonValue
 
-from memmachine_server.common.vector_graph_store.neo4j_vector_graph_store import (
+from memmachine_core.common.vector_graph_store.neo4j_vector_graph_store import (
     Neo4jVectorGraphStore,
 )
-from memmachine_server.episodic_memory.declarative_memory import DeclarativeMemory
+from memmachine_core.episodic_memory.declarative_memory import DeclarativeMemory
 
 
 class EpisodeModel(BaseModel):
