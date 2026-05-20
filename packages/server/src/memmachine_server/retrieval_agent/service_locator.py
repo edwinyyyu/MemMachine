@@ -2,9 +2,10 @@
 
 from typing import Any
 
+from memmachine_core.common.language_model import LanguageModel
+from memmachine_core.common.reranker import Reranker
+
 from memmachine_server.common.configuration.retrieval_config import OptimizedCoqConf
-from memmachine_server.common.language_model import LanguageModel
-from memmachine_server.common.reranker import Reranker
 from memmachine_server.retrieval_agent.agents import (
     ChainOfQueryAgent,
     MemMachineAgent,
