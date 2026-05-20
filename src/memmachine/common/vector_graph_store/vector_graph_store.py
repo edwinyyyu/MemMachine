@@ -73,7 +73,7 @@ class VectorGraphStore(ABC):
         similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
         limit: int | None = 100,
         property_filter: FilterExpr | None = None,
-    ) -> list[Node]:
+    ) -> tuple[list[Node], list[float]]:
         """
         Search for nodes with embeddings similar to the query embedding.
 
@@ -97,9 +97,9 @@ class VectorGraphStore(ABC):
                 (default: None).
 
         Returns:
-            list[Node]:
-                List of Node objects
-                that are similar to the query embedding.
+            tuple[list[Node], list[float]]:
+                Tuple of (similar nodes, parallel similarity scores)
+                with respect to the query embedding.
 
         """
         raise NotImplementedError

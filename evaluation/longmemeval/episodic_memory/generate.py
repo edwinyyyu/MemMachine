@@ -1,10 +1,5 @@
-# This is adapted from Mem0 (https://github.com/mem0ai/mem0/blob/main/evaluation/generate_scores.py).
-# It has been modified to print category names and only report LLM judge scores.
-
 import argparse
 import json
-
-import pandas as pd
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--data-path", type=str, default="evaluation.json")

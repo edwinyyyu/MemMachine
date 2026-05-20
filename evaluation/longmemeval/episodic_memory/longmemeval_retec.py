@@ -3,28 +3,22 @@ import asyncio
 import json
 import os
 import time
-from datetime import datetime, timedelta
 
-import boto3
 import neo4j
 from dotenv import load_dotenv
 from longmemeval_models import (
     LongMemEvalItem,
-    get_datetime_from_timestamp,
     load_longmemeval_dataset,
 )
-from openai import AsyncOpenAI
+from sentence_transformers import CrossEncoder, SentenceTransformer
 
-from memmachine.common.embedder.openai_embedder import (
-    OpenAIEmbedder,
-    OpenAIEmbedderParams,
+from memmachine.common.embedder.sentence_transformer_embedder import (
+    SentenceTransformerEmbedder,
+    SentenceTransformerEmbedderParams,
 )
-from memmachine.common.reranker.amazon_bedrock_reranker import (
-    AmazonBedrockReranker,
-    AmazonBedrockRerankerParams,
-)
-from memmachine.common.reranker.identity_reranker import (
-    IdentityReranker,
+from memmachine.common.reranker.cross_encoder_reranker import (
+    CrossEncoderReranker,
+    CrossEncoderRerankerParams,
 )
 from memmachine.common.utils import async_with
 from memmachine.common.vector_graph_store.neo4j_vector_graph_store import (
@@ -35,6 +29,9 @@ from memmachine.episodic_memory.declarative_memory import (
     DeclarativeMemory,
     DeclarativeMemoryParams,
 )
+
+EMBEDDER_MODEL = "nomic-ai/nomic-embed-text-v1.5"
+RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L12-v2"
 
 
 async def main():
@@ -65,40 +62,31 @@ async def main():
     vector_graph_store = Neo4jVectorGraphStore(
         Neo4jVectorGraphStoreParams(
             driver=neo4j_driver,
-            max_concurrent_transactions=1000,
         )
     )
 
-    openai_client = AsyncOpenAI(
-        api_key=os.getenv("OPENAI_API_KEY"),
+    sentence_transformer = SentenceTransformer(
+        EMBEDDER_MODEL,
+        trust_remote_code=True,
     )
+    # Pre-warm the rotary-embedding cache at full sequence length so concurrent
+    # encode calls don't race on cache reallocation (nomic-bert isn't
+    # thread-safe with respect to its cos/sin cache).
+    sentence_transformer.encode(["x " * 2048], show_progress_bar=False)
 
-    embedder = OpenAIEmbedder(
-        OpenAIEmbedderParams(
-            client=openai_client,
-            model="text-embedding-3-small",
-            dimensions=1536,
+    embedder = SentenceTransformerEmbedder(
+        SentenceTransformerEmbedderParams(
+            model_name=EMBEDDER_MODEL,
+            sentence_transformer=sentence_transformer,
             max_input_length=2048,
         )
     )
 
-    region = "us-west-2"
-    aws_client = boto3.client(
-        "bedrock-agent-runtime",
-        region_name=region,
-        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    reranker = CrossEncoderReranker(
+        CrossEncoderRerankerParams(
+            cross_encoder=CrossEncoder(RERANKER_MODEL),
+        )
     )
-
-    # reranker = AmazonBedrockReranker(
-    #     AmazonBedrockRerankerParams(
-    #         client=aws_client,
-    #         region=region,
-    #         model_id="cohere.rerank-v3-5:0",
-    #     )
-    # )
-
-    reranker = IdentityReranker()
 
     async def process_question(
         question: LongMemEvalItem,
@@ -150,7 +138,6 @@ async def main():
                             "source": episode.source,
                             "content_type": episode.content_type.value,
                             "content": episode.content,
-                            # "additional": episode.additional,
                             "filterable_properties": episode.filterable_properties,
                             "user_metadata": episode.user_metadata,
                         }

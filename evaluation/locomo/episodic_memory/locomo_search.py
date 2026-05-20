@@ -226,8 +226,9 @@ async def main():
                 session_id=group_id,
                 vector_graph_store=vector_graph_store,
                 embedder=embedder,
-                language_model=language_model,
+                # language_model=language_model,
                 reranker=reranker,
+                derivative_dedup_threshold=0.9,
             )
         )
 

@@ -4,26 +4,21 @@ import os
 from datetime import datetime
 from uuid import uuid4
 
-import boto3
 import neo4j
-import openai
 from dotenv import load_dotenv
 from longmemeval_models import (
     LongMemEvalItem,
     load_longmemeval_dataset,
 )
+from sentence_transformers import CrossEncoder, SentenceTransformer
 
-from memmachine.common.embedder.openai_embedder import (
-    OpenAIEmbedder,
-    OpenAIEmbedderParams,
+from memmachine.common.embedder.sentence_transformer_embedder import (
+    SentenceTransformerEmbedder,
+    SentenceTransformerEmbedderParams,
 )
-from memmachine.common.language_model.openai_responses_language_model import (
-    OpenAIResponsesLanguageModel,
-    OpenAIResponsesLanguageModelParams,
-)
-from memmachine.common.reranker.amazon_bedrock_reranker import (
-    AmazonBedrockReranker,
-    AmazonBedrockRerankerParams,
+from memmachine.common.reranker.cross_encoder_reranker import (
+    CrossEncoderReranker,
+    CrossEncoderRerankerParams,
 )
 from memmachine.common.utils import async_with
 from memmachine.common.vector_graph_store.neo4j_vector_graph_store import (
@@ -36,6 +31,9 @@ from memmachine.episodic_memory.declarative_memory import (
     DeclarativeMemoryParams,
     Episode,
 )
+
+EMBEDDER_MODEL = "nomic-ai/nomic-embed-text-v1.5"
+RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L12-v2"
 
 
 async def main():
@@ -67,39 +65,26 @@ async def main():
         )
     )
 
-    openai_client = openai.AsyncOpenAI(
-        api_key=os.getenv("OPENAI_API_KEY"),
+    sentence_transformer = SentenceTransformer(
+        EMBEDDER_MODEL,
+        trust_remote_code=True,
     )
+    # Pre-warm the rotary-embedding cache at full sequence length so concurrent
+    # encode calls don't race on cache reallocation (nomic-bert isn't
+    # thread-safe with respect to its cos/sin cache).
+    sentence_transformer.encode(["x " * 2048], show_progress_bar=False)
 
-    embedder = OpenAIEmbedder(
-        OpenAIEmbedderParams(
-            client=openai_client,
-            model="text-embedding-3-small",
-            dimensions=1536,
+    embedder = SentenceTransformerEmbedder(
+        SentenceTransformerEmbedderParams(
+            model_name=EMBEDDER_MODEL,
+            sentence_transformer=sentence_transformer,
             max_input_length=2048,
         )
     )
 
-    language_model = OpenAIResponsesLanguageModel(
-        OpenAIResponsesLanguageModelParams(
-            client=openai_client,
-            model="gpt-4.1-nano",
-        )
-    )
-
-    region = "us-west-2"
-    aws_client = boto3.client(
-        "bedrock-agent-runtime",
-        region_name=region,
-        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-    )
-
-    reranker = AmazonBedrockReranker(
-        AmazonBedrockRerankerParams(
-            client=aws_client,
-            region=region,
-            model_id="cohere.rerank-v3-5:0",
+    reranker = CrossEncoderReranker(
+        CrossEncoderRerankerParams(
+            cross_encoder=CrossEncoder(RERANKER_MODEL),
         )
     )
 
@@ -113,11 +98,11 @@ async def main():
                 vector_graph_store=vector_graph_store,
                 embedder=embedder,
                 reranker=reranker,
-                language_model=language_model,
             )
         )
 
-        session_tasks = []
+        # Sessions run sequentially: parallel add_episodes calls would fire
+        # parallel embedder threads, racing nomic-bert's rotary cache.
         for session_id in session_ids:
             session = question.get_session(session_id)
 
@@ -139,9 +124,7 @@ async def main():
                     )
                 )
 
-            session_tasks.append(memory.add_episodes(episodes=episodes))
-
-        await asyncio.gather(*session_tasks)
+            await memory.add_episodes(episodes=episodes)
 
     semaphore = asyncio.Semaphore(1)
     tasks = [

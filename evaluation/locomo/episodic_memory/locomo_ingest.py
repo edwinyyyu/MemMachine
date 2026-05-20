@@ -122,8 +122,8 @@ async def main():
                 vector_graph_store=vector_graph_store,
                 embedder=embedder,
                 reranker=reranker,
-                language_model=language_model,
-                derivative_dedup_threshold=0.9,
+                # language_model=language_model,
+                derivative_dedup_threshold=0.85,
                 message_sentence_chunking=True,
             )
         )
