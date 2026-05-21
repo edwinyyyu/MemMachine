@@ -23,6 +23,8 @@ jobs:
         test-paths: [
           # Core common provider/storage tests
           "packages/core/core_tests/memmachine_core/common/",
+          # Core event storage tests
+          "packages/core/core_tests/memmachine_core/event/",
           # Core episodic memory tests
           "packages/core/core_tests/memmachine_core/episodic_memory/",
           # Core semantic memory tests
