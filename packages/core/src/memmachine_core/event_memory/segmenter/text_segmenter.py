@@ -5,12 +5,12 @@ from uuid import uuid4
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from memmachine_core.episodic_memory.event_memory.data_types import (
+from memmachine_core.event_memory.data_types import (
     Event,
     Segment,
     TextBlock,
 )
-from memmachine_core.episodic_memory.event_memory.segmenter.segmenter import (
+from memmachine_core.event_memory.segmenter.segmenter import (
     Segmenter,
 )
 

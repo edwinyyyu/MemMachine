@@ -9,27 +9,27 @@ from memmachine_core.common.data_types import (
     PropertyValue,
 )
 from memmachine_core.common.vector_store import VectorStoreCollectionConfig
-from memmachine_core.episodic_memory.event_memory.deriver import Deriver
-from memmachine_core.episodic_memory.event_memory.deriver.text_deriver import (
-    SentenceTextDeriver,
-    WholeTextDeriver,
-)
-from memmachine_core.episodic_memory.event_memory.event_memory import EventMemory
-from memmachine_core.episodic_memory.event_memory.segment_store import (
-    SegmentStorePartitionConfig,
-)
-from memmachine_core.episodic_memory.event_memory.segmenter import Segmenter
-from memmachine_core.episodic_memory.event_memory.segmenter.passthrough_segmenter import (
-    PassthroughSegmenter,
-)
-from memmachine_core.episodic_memory.event_memory.segmenter.text_segmenter import (
-    TextSegmenter,
-)
 from memmachine_core.episodic_memory.long_term_memory.long_term_memory import (
     EVENT_BACKEND_SYSTEM_FIELDS,
     DeclarativeBackendParams,
     EventBackendParams,
     LongTermMemoryParams,
+)
+from memmachine_core.event_memory.deriver import Deriver
+from memmachine_core.event_memory.deriver.text_deriver import (
+    SentenceTextDeriver,
+    WholeTextDeriver,
+)
+from memmachine_core.event_memory.event_memory import EventMemory
+from memmachine_core.event_memory.segment_store import (
+    SegmentStorePartitionConfig,
+)
+from memmachine_core.event_memory.segmenter import Segmenter
+from memmachine_core.event_memory.segmenter.passthrough_segmenter import (
+    PassthroughSegmenter,
+)
+from memmachine_core.event_memory.segmenter.text_segmenter import (
+    TextSegmenter,
 )
 from pydantic import InstanceOf
 

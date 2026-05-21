@@ -22,7 +22,7 @@ from core_tests.memmachine_core.common.reranker.fake_embedder import FakeEmbedde
 from core_tests.memmachine_core.common.vector_store.in_memory_vector_store_collection import (
     InMemoryVectorStoreCollection,
 )
-from core_tests.memmachine_core.episodic_memory.event_memory.conftest import (
+from core_tests.memmachine_core.event_memory.conftest import (
     InMemorySegmentStorePartition,
 )
 from memmachine_core.common.data_types import SimilarityMetric
@@ -39,20 +39,20 @@ from memmachine_core.common.vector_store import VectorStore
 from memmachine_core.common.vector_store.data_types import (
     VectorStoreCollectionConfig,
 )
-from memmachine_core.episodic_memory.event_memory.deriver.text_deriver import (
-    WholeTextDeriver,
-)
-from memmachine_core.episodic_memory.event_memory.event_memory import EventMemory
-from memmachine_core.episodic_memory.event_memory.segment_store import (
-    SegmentStore,
-)
-from memmachine_core.episodic_memory.event_memory.segmenter.passthrough_segmenter import (
-    PassthroughSegmenter,
-)
 from memmachine_core.episodic_memory.long_term_memory import (
     EVENT_BACKEND_SYSTEM_FIELDS,
     EventBackendParams,
     LongTermMemory,
+)
+from memmachine_core.event_memory.deriver.text_deriver import (
+    WholeTextDeriver,
+)
+from memmachine_core.event_memory.event_memory import EventMemory
+from memmachine_core.event_memory.segment_store import (
+    SegmentStore,
+)
+from memmachine_core.event_memory.segmenter.passthrough_segmenter import (
+    PassthroughSegmenter,
 )
 
 pytestmark = pytest.mark.asyncio

@@ -10,14 +10,14 @@ from memmachine_core.common.episode_store import (
     Episode,
     EpisodeType,
 )
-from memmachine_core.episodic_memory.event_memory.data_types import (
-    NullContext,
-    ProducerContext,
-    TextBlock,
-)
 from memmachine_core.episodic_memory.long_term_memory.long_term_memory import (
     _EVENT_UUID_NAMESPACE,
     LongTermMemory,
+)
+from memmachine_core.event_memory.data_types import (
+    NullContext,
+    ProducerContext,
+    TextBlock,
 )
 
 

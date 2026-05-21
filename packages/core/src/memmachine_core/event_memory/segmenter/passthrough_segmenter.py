@@ -3,11 +3,11 @@
 from typing import override
 from uuid import uuid4
 
-from memmachine_core.episodic_memory.event_memory.data_types import (
+from memmachine_core.event_memory.data_types import (
     Event,
     Segment,
 )
-from memmachine_core.episodic_memory.event_memory.segmenter.segmenter import (
+from memmachine_core.event_memory.segmenter.segmenter import (
     Segmenter,
 )
 

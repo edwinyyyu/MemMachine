@@ -38,22 +38,22 @@ from memmachine_core.episodic_memory.declarative_memory.data_types import (
 from memmachine_core.episodic_memory.declarative_memory.data_types import (
     Episode as DeclarativeMemoryEpisode,
 )
-from memmachine_core.episodic_memory.event_memory.data_types import (
+from memmachine_core.event_memory.data_types import (
     Event,
     NullContext,
     ProducerContext,
     TextBlock,
 )
-from memmachine_core.episodic_memory.event_memory.deriver import Deriver
-from memmachine_core.episodic_memory.event_memory.event_memory import (
+from memmachine_core.event_memory.deriver import Deriver
+from memmachine_core.event_memory.event_memory import (
     EventMemory,
     EventMemoryParams,
 )
-from memmachine_core.episodic_memory.event_memory.segment_store import (
+from memmachine_core.event_memory.segment_store import (
     SegmentStore,
     SegmentStorePartition,
 )
-from memmachine_core.episodic_memory.event_memory.segmenter import Segmenter
+from memmachine_core.event_memory.segmenter import Segmenter
 
 logger = logging.getLogger(__name__)
 

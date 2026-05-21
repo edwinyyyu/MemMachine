@@ -5,7 +5,7 @@ from typing import override
 from uuid import uuid4
 
 from memmachine_core.common.utils import extract_sentences
-from memmachine_core.episodic_memory.event_memory.data_types import (
+from memmachine_core.event_memory.data_types import (
     Context,
     Derivative,
     NullContext,
@@ -13,7 +13,7 @@ from memmachine_core.episodic_memory.event_memory.data_types import (
     Segment,
     TextBlock,
 )
-from memmachine_core.episodic_memory.event_memory.deriver.deriver import Deriver
+from memmachine_core.event_memory.deriver.deriver import Deriver
 
 
 def _format_with_context(context: Context, text: str) -> str:

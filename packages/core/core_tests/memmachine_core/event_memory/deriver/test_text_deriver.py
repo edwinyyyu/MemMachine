@@ -7,14 +7,14 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-from memmachine_core.episodic_memory.event_memory.data_types import (
+from memmachine_core.event_memory.data_types import (
     Block,
     NullContext,
     ProducerContext,
     Segment,
     TextBlock,
 )
-from memmachine_core.episodic_memory.event_memory.deriver.text_deriver import (
+from memmachine_core.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
     WholeTextDeriver,
 )

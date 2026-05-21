@@ -24,20 +24,20 @@ from memmachine_core.common.reranker import Reranker
 from memmachine_core.common.vector_store.data_types import (
     VectorStoreCollectionConfig,
 )
-from memmachine_core.episodic_memory.event_memory.data_types import Segment
-from memmachine_core.episodic_memory.event_memory.deriver.text_deriver import (
+from memmachine_core.event_memory.data_types import Segment
+from memmachine_core.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
     WholeTextDeriver,
 )
-from memmachine_core.episodic_memory.event_memory.event_memory import (
+from memmachine_core.event_memory.event_memory import (
     EventMemory,
     EventMemoryParams,
 )
-from memmachine_core.episodic_memory.event_memory.segment_store import (
+from memmachine_core.event_memory.segment_store import (
     SegmentStorePartition,
     SegmentStorePartitionConfig,
 )
-from memmachine_core.episodic_memory.event_memory.segmenter.text_segmenter import (
+from memmachine_core.event_memory.segmenter.text_segmenter import (
     TextSegmenter,
 )
 

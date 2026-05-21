@@ -9,7 +9,7 @@ from memmachine_core.common.metrics_factory import MetricsFactory
 from memmachine_core.common.reranker import Reranker
 from memmachine_core.common.vector_graph_store import VectorGraphStore
 from memmachine_core.common.vector_store import VectorStore
-from memmachine_core.episodic_memory.event_memory.segment_store import (
+from memmachine_core.event_memory.segment_store import (
     SegmentStore,
 )
 from neo4j import AsyncDriver
