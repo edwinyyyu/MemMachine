@@ -27,8 +27,6 @@ jobs:
           "packages/core/core_tests/memmachine_core/event/",
           # Core event memory tests
           "packages/core/core_tests/memmachine_core/event_memory/",
-          # Core episodic memory tests
-          "packages/core/core_tests/memmachine_core/episodic_memory/",
           # Core semantic memory tests
           "packages/core/core_tests/memmachine_core/semantic_memory/",
           # Server common (configuration, resource manager, session manager) tests

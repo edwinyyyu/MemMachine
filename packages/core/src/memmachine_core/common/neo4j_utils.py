@@ -8,12 +8,24 @@ from typing import TypeVar
 from neo4j.time import DateTime as _Neo4jDateTime
 
 from memmachine_core.common.data_types import FilterValue, PropertyValue
-from memmachine_core.common.vector_graph_store.data_types import (
-    PropertyValue as VGSPropertyValue,
-)
 
 TScalar = TypeVar("TScalar", bound=object)
 Neo4jSanitizedValue = TScalar | list[TScalar]
+
+# Property values as they appear in Neo4j graph nodes and edges.
+GraphPropertyValue = (
+    bool
+    | int
+    | float
+    | str
+    | _dt.datetime
+    | list[bool]
+    | list[int]
+    | list[float]
+    | list[str]
+    | list[_dt.datetime]
+    | None
+)
 
 
 def sanitize_value_for_neo4j(value: Neo4jSanitizedValue) -> Neo4jSanitizedValue:
@@ -31,7 +43,7 @@ def sanitize_value_for_neo4j(value: Neo4jSanitizedValue) -> Neo4jSanitizedValue:
     return value
 
 
-def value_from_neo4j(value: VGSPropertyValue) -> VGSPropertyValue:
+def value_from_neo4j(value: GraphPropertyValue) -> GraphPropertyValue:
     """Convert Neo4j driver values into native Python equivalents."""
     if isinstance(value, _Neo4jDateTime):
         return value.to_native()
