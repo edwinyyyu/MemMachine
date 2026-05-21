@@ -7,9 +7,11 @@ from uuid import uuid4
 from memmachine_server.common.utils import extract_sentences
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Context,
+    DecoupledRetrievalContext,
     Derivative,
     NullContext,
     ProducerContext,
+    RawSegmentEventContext,
     RewriteContext,
     Segment,
     SurroundingEventsContext,
@@ -32,9 +34,13 @@ def _format_with_context(context: Context, text: str) -> str:
             return f"{producer}: {text}"
         case SurroundingEventsContext(producer=producer):
             return f"{producer}: {text}"
+        case RawSegmentEventContext(producer=producer):
+            return f"{producer}: {text}"
         case NullContext():
             return text
         case RewriteContext(text_to_embed=text_to_embed):
+            return text_to_embed
+        case DecoupledRetrievalContext(text_to_embed=text_to_embed):
             return text_to_embed
         case _:
             raise NotImplementedError(

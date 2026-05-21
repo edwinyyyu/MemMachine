@@ -97,7 +97,56 @@ class SurroundingEventsContext(BaseModel):
     after: list[SurroundingEvent] = Field(default_factory=list)
 
 
-ContextUnion = ProducerContext | NullContext | RewriteContext | SurroundingEventsContext
+class RawSegmentEventContext(BaseModel):
+    """Experimental: bundles producer, before-neighbor events, and the
+    current event's full text.
+
+    Used by experimental raw-segmenter + LLM-deriver paradigms where the
+    segment's block.text stays a raw chunk shown to the answerer, while
+    the deriver generates retrieval-optimized derivatives using full
+    neighbor + current-event context. Display formatting matches
+    ProducerContext (``{producer}: <text>``).
+    """
+
+    context_type: Literal["raw_segment_event"] = "raw_segment_event"
+    producer: str
+    before: list[SurroundingEvent] = Field(default_factory=list)
+    current_event_text: str
+
+
+class DecoupledRetrievalContext(BaseModel):
+    """Decouples a segment's retrieval representations from its display
+    text.
+
+    ``block.text`` stays the verbatim text shown to the answering model
+    -- a raw conversation chunk -- and keeps its distinct role. The
+    retrieval channels instead score separate texts carried here:
+
+    - ``text_to_embed`` is embedded for semantic (vector) retrieval.
+    - ``text_to_score_bm25`` is concatenated across the segments of a
+      retrieved context and scored by BM25 lexical retrieval.
+
+    Both are typically clean, reference-resolved rewrites, so neither
+    retrieval channel sees the conversational vocatives, greetings, and
+    filler that the raw display text carries (those false-match
+    name-bearing queries when BM25 scores raw turns). Display formatting
+    matches ``ProducerContext`` (``{producer}: <block.text>``).
+    """
+
+    context_type: Literal["decoupled_retrieval"] = "decoupled_retrieval"
+    producer: str
+    text_to_embed: str
+    text_to_score_bm25: str
+
+
+ContextUnion = (
+    ProducerContext
+    | NullContext
+    | RewriteContext
+    | SurroundingEventsContext
+    | RawSegmentEventContext
+    | DecoupledRetrievalContext
+)
 
 Context = Annotated[
     ContextUnion,

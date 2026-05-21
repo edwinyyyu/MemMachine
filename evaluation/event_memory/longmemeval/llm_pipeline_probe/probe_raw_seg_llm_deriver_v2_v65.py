@@ -1,24 +1,30 @@
-"""LLM-driven text deriver.
+"""Raw-segmenter + v65-style LLM-deriver (v2).
 
-The deriver shows the segment's raw text to a `LanguageModel` and asks
-for one or more derivative strings that will be embedded for semantic
-search alongside the segment. The prompt is the validated v65
-(see `evaluation/event_memory/longmemeval/llm_pipeline_probe/probe_deriver_v65_completeness.py`).
-v65 = v64 + an explicit completeness reminder on the "ONE central
-subject -> ONE derivative" trigger ("...that still covers EVERY
-specific detail (names, dates, numbers, distinctive phrases). ONE
-derivative is one searchable string, not a short summary."). Closes a
-v64 failure mode where the model would emit a one-sentence summary
-that dropped specific details. N=40 content-drop stress on
-gpt-5-nano @ low: v64 had 3 catastrophic + 7 partial drops; v65 has 0.
-Rule placement matters -- the reminder must be adjacent to the
-"ONE derivative" trigger; moving it to EACH DERIVATIVE regressed.
+v2 uses the SHIPPED v65 LongMemEval deriver prompt verbatim, applied to
+LoCoMo raw-message segments. v65 has the same "free deriver" philosophy
+as v1 (empty list for pure filler, one-per-event for content) but with
+battle-tested rules for:
 
-Each derivative is wrapped with the segment's context the same way
-`SentenceTextDeriver` / `WholeTextDeriver` wrap theirs -- a
-`ProducerContext` prepends "Speaker: ", a `NullContext` is a no-op.
-The LLM only sees the segment text (without speaker), so the wrapping
-is applied to whatever it returns.
+- compound identifier preservation
+- multi-derivative scope-naming (entities + scope on every derivative)
+- non-prose surface handling
+- bare-term derivatives
+
+v65 was developed on LongMemEval segmenter output (LLMTextSegmenter)
+where segments are coherent passages. Applied to LoCoMo where each
+"segment" is a single raw message, the prompt should still work well
+but lacks LoCoMo-specific neighbor-context for addressee resolution.
+
+If v65 outperforms v1 on LoCoMo, the resolution gap may not matter or
+v65's structural rules dominate it.
+
+Architecture
+------------
+
+Segmenter: same RawChunkSegmenter as v1 (raw chunk = block.text)
+Deriver: v65 prompt operating on segment text alone (no neighbors,
+  no current_event_text -- since segment.block.text IS the event text
+  for LoCoMo's single-chunk events)
 """
 
 from __future__ import annotations
@@ -26,24 +32,19 @@ from __future__ import annotations
 from typing import override
 from uuid import uuid4
 
-from pydantic import BaseModel
-
 from memmachine_server.common.language_model import LanguageModel
 from memmachine_server.episodic_memory.event_memory.data_types import (
-    Context,
-    DecoupledRetrievalContext,
     Derivative,
-    NullContext,
-    ProducerContext,
-    RewriteContext,
+    RawSegmentEventContext,
     Segment,
-    SurroundingEventsContext,
     TextBlock,
 )
-from memmachine_server.episodic_memory.event_memory.deriver.deriver import Deriver
+from memmachine_server.episodic_memory.event_memory.deriver.deriver import (
+    Deriver,
+)
+from pydantic import BaseModel
 
-# v65 prompt -- see project_deriver_design.md memory for the
-# iteration history. Frozen here so the production class is standalone.
+
 PROMPT_DERIVER_V65 = """\
 A SEGMENT is stored verbatim in a retrieval system. Your DERIVATIVES are \
 additional strings embedded for semantic search alongside it.
@@ -118,97 +119,54 @@ SEGMENT:
 {segment}"""
 
 
-class _DeriverResponse(BaseModel):
-    """Structured response from the deriver language model."""
-
+class _DeriveResponse(BaseModel):
     derivatives: list[str]
 
 
-def _format_with_context(context: Context, text: str) -> str:
-    """Wrap text with its producer prefix when relevant."""
-    match context:
-        case ProducerContext(producer=producer):
-            return f"{producer}: {text}"
-        case SurroundingEventsContext(producer=producer):
-            return f"{producer}: {text}"
-        case NullContext():
-            return text
-        case RewriteContext(text_to_embed=text_to_embed):
-            return text_to_embed
-        case DecoupledRetrievalContext(text_to_embed=text_to_embed):
-            return text_to_embed
-        case _:
-            raise NotImplementedError(
-                f"Unsupported context type: {type(context).__name__}"
-            )
-
-
-class LLMTextDeriver(Deriver):
-    """Derives derivatives from TextBlock segments via a LanguageModel.
-
-    Args:
-        language_model: The LanguageModel used to produce derivatives.
-            Configure model and reasoning effort at LanguageModel
-            construction time; this deriver calls
-            `generate_parsed_response(output_format=_DeriverResponse, ...)`.
-        prompt_template: A `.format(segment=...)` template producing the
-            full prompt. Defaults to the validated v65 prompt.
-        emit_at_least_one: When True (default), if the LLM returns no
-            derivatives, fall back to a single derivative containing the
-            segment's text. This preserves the invariant that every
-            segment is searchable.
-        max_attempts: Retries on retryable language-model errors.
-    """
+class V65DeriverProbe(Deriver):
+    """v65 deriver prompt applied to LoCoMo raw segments."""
 
     def __init__(
         self,
         *,
         language_model: LanguageModel,
         prompt_template: str = PROMPT_DERIVER_V65,
-        emit_at_least_one: bool = True,
         max_attempts: int = 3,
     ) -> None:
-        """Initialize the deriver; see class docstring for arguments."""
         self._language_model = language_model
         self._prompt_template = prompt_template
-        self._emit_at_least_one = emit_at_least_one
         self._max_attempts = max_attempts
 
-    async def _derive_texts(self, segment_text: str) -> list[str]:
+    @override
+    async def derive(self, segment: Segment) -> list[Derivative]:
+        if not isinstance(segment.block, TextBlock):
+            return []
+        # For RawSegmentEventContext we use current_event_text as the segment
+        # passage (= the raw event text). For LoCoMo single-chunk events,
+        # this equals segment.block.text. For multi-chunk events it gives
+        # the deriver full event context. For other context types, fall back
+        # to segment.block.text.
+        segment_text = segment.block.text
+        if isinstance(segment.context, RawSegmentEventContext):
+            segment_text = segment.context.current_event_text
+
         prompt = self._prompt_template.format(segment=segment_text)
         response = await self._language_model.generate_parsed_response(
-            output_format=_DeriverResponse,
+            output_format=_DeriveResponse,
             user_prompt=prompt,
             max_attempts=self._max_attempts,
         )
         if response is None:
             return []
-        return list(response.derivatives)
-
-    @override
-    async def derive(self, segment: Segment) -> list[Derivative]:
-        match segment.block:
-            case TextBlock(text=text):
-                pass
-            case _:
-                raise NotImplementedError(
-                    f"Unsupported block type: {type(segment.block).__name__}"
-                )
-
-        derivative_texts = await self._derive_texts(text)
-        if not derivative_texts and self._emit_at_least_one:
-            derivative_texts = [text]
-
+        derivs = [d.strip() for d in response.derivatives if d and d.strip()]
         return [
             Derivative(
                 uuid=uuid4(),
                 segment_uuid=segment.uuid,
                 timestamp=segment.timestamp,
                 context=segment.context,
-                block=TextBlock(
-                    text=_format_with_context(segment.context, derivative_text)
-                ),
+                block=TextBlock(text=d),
                 properties=segment.properties,
             )
-            for derivative_text in derivative_texts
+            for d in derivs
         ]

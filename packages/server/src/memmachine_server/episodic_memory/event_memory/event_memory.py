@@ -37,12 +37,14 @@ from memmachine_server.common.vector_store import (
 from .data_types import (
     Block,
     DateTimeStyle,
+    DecoupledRetrievalContext,
     Derivative,
     Event,
     FormatOptions,
     NullContext,
     ProducerContext,
     QueryResult,
+    RawSegmentEventContext,
     RewriteContext,
     ScoredSegmentContext,
     Segment,
@@ -59,7 +61,7 @@ logger = logging.getLogger(__name__)
 _DATETIME_STYLE_LEVELS: tuple[DateTimeStyle, ...] = ("short", "medium", "long", "full")
 
 # Supported BM25 fusion modes for EventMemory.query.
-_BM25_FUSION_MODES: frozenset[str] = frozenset({"none", "additive", "rrf", "rsf"})
+_BM25_FUSION_MODES: frozenset[str] = frozenset({"none", "additive", "rrf", "rsf", "noisy-or"})
 
 # Reciprocal Rank Fusion smoothing constant.
 _RRF_K: float = 60.0
@@ -562,7 +564,7 @@ class EventMemory:
         )
 
         if bm25_fusion != "none":
-            if bm25_fusion in {"additive", "rsf"} and not higher_is_better:
+            if bm25_fusion in {"additive", "rsf", "noisy-or"} and not higher_is_better:
                 raise ValueError(
                     f"bm25_fusion={bm25_fusion!r} requires higher-is-better "
                     "underlying scores; reranker is not set and similarity "
@@ -668,7 +670,7 @@ class EventMemory:
 
         context_strings = [
             EventMemory.string_from_segment_context(
-                context, format_options=format_options
+                context, format_options=format_options, for_bm25=True
             )
             for context in segment_contexts
         ]
@@ -696,6 +698,12 @@ class EventMemory:
                 semantic_scores=semantic_scores,
                 raw_bm25=raw_bm25,
                 bm25_weight=bm25_weight,
+            )
+        if mode == "noisy-or":
+            return EventMemory._fuse_noisy_or(
+                semantic_scores=semantic_scores,
+                raw_bm25=raw_bm25,
+                num_query_terms=num_query_terms,
             )
         raise ValueError(f"Unsupported bm25_fusion mode: {mode!r}")
 
@@ -752,6 +760,41 @@ class EventMemory:
         sem_weight = 1.0 - bm25_weight
         return [
             min(sem_weight * float(semantic) + bm25_weight * bm25_score, 1.0)
+            for semantic, bm25_score in zip(
+                semantic_scores, normalized_bm25, strict=True
+            )
+        ]
+
+    @staticmethod
+    def _fuse_noisy_or(
+        *,
+        semantic_scores: Sequence[float],
+        raw_bm25: Sequence[float],
+        num_query_terms: int,
+    ) -> list[float]:
+        """
+        Noisy-OR / probabilistic-union fusion. Higher-is-better output.
+
+        ``combined = 1 - (1 - semantic) * (1 - bm25_normalized)``
+                  = ``semantic + bm25_normalized - semantic * bm25_normalized``
+                  = ``semantic + (1 - semantic) * bm25_normalized``
+
+        Treats each channel's score as P(relevant) and computes the
+        independent-event union. Output in ``[0, 1]``. BM25 is normalized
+        via the same length-adaptive sigmoid used by ``additive``, so the
+        normalization methodology matches the standard ``additive`` recipe.
+        Semantic scores are clamped to ``[0, 1]`` before combining.
+        """
+        midpoint, steepness = EventMemory._bm25_sigmoid_params(num_query_terms)
+        normalized_bm25 = [
+            EventMemory._bm25_sigmoid(float(raw), midpoint, steepness)
+            if raw > 0.0
+            else 0.0
+            for raw in raw_bm25
+        ]
+        return [
+            1.0 - (1.0 - max(0.0, min(1.0, float(semantic))))
+                * (1.0 - bm25_score)
             for semantic, bm25_score in zip(
                 semantic_scores, normalized_bm25, strict=True
             )
@@ -866,12 +909,38 @@ class EventMemory:
         return tokens
 
     @staticmethod
+    def _segment_text_for(segment: Segment, *, for_bm25: bool) -> str | None:
+        """Pick the text a segment contributes to a rendered context.
+
+        Display (``for_bm25=False``) always uses ``block.text`` -- the
+        verbatim text shown to the answering model. BM25 scoring
+        (``for_bm25=True``) uses ``context.text_to_score_bm25`` when the
+        segment carries a ``DecoupledRetrievalContext``, so lexical
+        retrieval scores the clean reference-resolved rewrite instead of
+        the raw conversational text (which false-matches vocatives /
+        filler). Segments without that context fall back to ``block.text``.
+        """
+        if for_bm25:
+            match segment.context:
+                case DecoupledRetrievalContext(text_to_score_bm25=bm25_text):
+                    return bm25_text
+        return EventMemory._extract_text(segment.block)
+
+    @staticmethod
     def string_from_segment_context(
         segment_context: Iterable[Segment],
         *,
         format_options: FormatOptions | None = None,
+        for_bm25: bool = False,
     ) -> str:
-        """Format segment context as a string."""
+        """Format segment context as a string.
+
+        When ``for_bm25`` is set, segments carrying a
+        ``DecoupledRetrievalContext`` contribute ``text_to_score_bm25``
+        instead of their display ``block.text``; the per-context
+        concatenation and headers are otherwise identical, so BM25 still
+        scores one string per concatenated segment context.
+        """
         if format_options is None:
             format_options = FormatOptions()
 
@@ -896,7 +965,7 @@ class EventMemory:
                 accumulated_text = ""
                 context_string += EventMemory._segment_header(segment, format_options)
 
-            text = EventMemory._extract_text(segment.block)
+            text = EventMemory._segment_text_for(segment, for_bm25=for_bm25)
             if text is not None:
                 accumulated_text += text
             elif not is_continuation:
@@ -986,10 +1055,13 @@ class EventMemory:
                 return f"{timestamp_prefix}{producer}: "
             case SurroundingEventsContext(producer=producer):
                 return f"{timestamp_prefix}{producer}: "
-            case NullContext() | RewriteContext():
-                # RewriteContext displays like NullContext -- its
-                # text_to_embed is for derivation only, not for the
-                # rendered header.
+            case RawSegmentEventContext(producer=producer):
+                return f"{timestamp_prefix}{producer}: "
+            case NullContext() | RewriteContext() | DecoupledRetrievalContext():
+                # RewriteContext / DecoupledRetrievalContext display like
+                # NullContext -- their retrieval texts are decoupled from
+                # the rendered block, and the block text itself is a
+                # self-contained statement that names its own subject.
                 return timestamp_prefix
             case _:
                 raise NotImplementedError(
