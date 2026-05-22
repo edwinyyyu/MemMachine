@@ -1,6 +1,7 @@
 """Payload codec configuration models and serialization helpers."""
 
-from base64 import urlsafe_b64decode, urlsafe_b64encode
+import binascii
+from base64 import b64decode, urlsafe_b64encode
 from collections.abc import Mapping
 from typing import Annotated, Literal
 
@@ -12,6 +13,15 @@ from pydantic import (
     field_serializer,
     field_validator,
 )
+
+
+def _decode_urlsafe_b64(value: str, field_name: str) -> bytes:
+    try:
+        return b64decode(value.encode("ascii"), altchars=b"-_", validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError(
+            f"{field_name} is not a valid base64url string: {exc}"
+        ) from exc
 
 
 class PlaintextPayloadCodecConfig(BaseModel):
@@ -33,7 +43,7 @@ class KMSEnvelopePayloadCodecConfig(BaseModel):
         if isinstance(value, bytes):
             return value
         if isinstance(value, str):
-            return urlsafe_b64decode(value.encode("ascii"))
+            return _decode_urlsafe_b64(value, "wrapped_dek")
         raise TypeError("wrapped_dek must be bytes or a base64url string")
 
     @field_serializer("wrapped_dek")
@@ -48,7 +58,7 @@ class KMSEnvelopePayloadCodecConfig(BaseModel):
         if isinstance(value, bytes):
             return value
         if isinstance(value, str):
-            return urlsafe_b64decode(value.encode("ascii"))
+            return _decode_urlsafe_b64(value, "associated_data")
         raise TypeError("associated_data must be bytes, base64url string, or None")
 
     @field_serializer("associated_data")
@@ -62,7 +72,7 @@ class AESGCMPayloadCodecConfig(KMSEnvelopePayloadCodecConfig):
     """Codec config for AES-GCM payload encryption."""
 
     type: Literal["aes_gcm"] = "aes_gcm"
-    nonce_size: int = 12
+    nonce_size: int = Field(default=12, ge=8, le=128)
 
 
 PayloadCodecConfigUnion = PlaintextPayloadCodecConfig | AESGCMPayloadCodecConfig

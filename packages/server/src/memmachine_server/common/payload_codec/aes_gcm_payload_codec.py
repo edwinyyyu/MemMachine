@@ -21,8 +21,8 @@ class AESGCMPayloadCodec(PayloadCodec):
         associated_data: bytes | None = None,
     ) -> None:
         """Initialize with a raw AES key."""
-        if nonce_size <= 0:
-            raise ValueError("nonce_size must be positive")
+        if not 8 <= nonce_size <= 128:
+            raise ValueError("nonce_size must be between 8 and 128 bytes")
 
         self._aead = AESGCM(key)
         self._nonce_size = nonce_size
