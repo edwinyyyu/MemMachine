@@ -9,6 +9,9 @@ from .payload_codec import (
     PayloadCodec,
 )
 
+# AESGCM in `cryptography` produces a fixed 128-bit authentication tag.
+_AES_GCM_TAG_SIZE = 16
+
 
 class AESGCMPayloadCodec(PayloadCodec):
     """Codec for AES-GCM payload encryption."""
@@ -36,7 +39,7 @@ class AESGCMPayloadCodec(PayloadCodec):
 
     @override
     def decode(self, value: bytes) -> bytes:
-        if len(value) < self._nonce_size:
+        if len(value) < self._nonce_size + _AES_GCM_TAG_SIZE:
             raise ValueError("Encrypted payload is too short")
         nonce = value[: self._nonce_size]
         ciphertext = value[self._nonce_size :]
