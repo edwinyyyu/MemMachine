@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     JsonValue,
     TypeAdapter,
@@ -24,14 +25,10 @@ def _decode_urlsafe_b64(value: str, field_name: str) -> bytes:
         ) from exc
 
 
-class PlaintextPayloadCodecConfig(BaseModel):
-    """Codec config for plaintext-serialized payloads."""
+class KMSEnvelopeParams(BaseModel):
+    """Parameters for KMS envelope encryption/decryption."""
 
-    type: Literal["plaintext"] = "plaintext"
-
-
-class KMSEnvelopePayloadCodecConfig(BaseModel):
-    """Shared fields for codec configs that rely on KMS envelope encryption."""
+    model_config = ConfigDict(frozen=True)
 
     key_ref: str
     wrapped_dek: bytes
@@ -68,11 +65,26 @@ class KMSEnvelopePayloadCodecConfig(BaseModel):
         return urlsafe_b64encode(value).decode("ascii")
 
 
-class AESGCMPayloadCodecConfig(KMSEnvelopePayloadCodecConfig):
+class PlaintextPayloadCodecConfig(BaseModel):
+    """Codec config for plaintext-serialized payloads."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["plaintext"] = "plaintext"
+
+
+class AESGCMPayloadCodecConfig(BaseModel):
     """Codec config for AES-GCM payload encryption."""
 
+    model_config = ConfigDict(frozen=True)
+
     type: Literal["aes_gcm"] = "aes_gcm"
+    envelope: KMSEnvelopeParams
     nonce_size: int = Field(default=12, ge=8, le=128)
+
+
+# Union of codec configs whose DEK is recovered via KMS envelope decryption.
+type KMSEnvelopePayloadCodecConfig = AESGCMPayloadCodecConfig
 
 
 PayloadCodecConfigUnion = PlaintextPayloadCodecConfig | AESGCMPayloadCodecConfig
