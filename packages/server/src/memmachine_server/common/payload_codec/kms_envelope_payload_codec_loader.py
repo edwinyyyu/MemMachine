@@ -32,14 +32,14 @@ class KMSEnvelopePayloadCodecLoader:
         match config:
             case AESGCMPayloadCodecConfig():
                 dek = await self._kms_crypto_client.decrypt(
-                    config.key_ref,
-                    config.wrapped_dek,
-                    associated_data=config.associated_data,
+                    config.envelope.key_ref,
+                    config.envelope.wrapped_dek,
+                    associated_data=config.envelope.associated_data,
                 )
                 return AESGCMPayloadCodec(
                     dek,
                     nonce_size=config.nonce_size,
-                    associated_data=config.associated_data,
+                    associated_data=config.envelope.associated_data,
                 )
             case _:
                 raise NotImplementedError(
