@@ -641,6 +641,7 @@ def evaluate_tree_match(
     or_aggregator: str = "max",
     noisy_alpha: float = 0.5,
     intersect_leaf: str = "binary",
+    disjoint_skip: bool = False,
 ) -> float:
     """Evaluate the boolean-tree expression against a doc's intervals.
 
@@ -682,7 +683,10 @@ def evaluate_tree_match(
     if or_aggregator == "zadeh":
         or_aggregator = "max"
 
-    def _and(vs: list[float]) -> float:
+    SKIP = object()  # sentinel for disjoint_skip leaves — excluded from aggregation
+
+    def _and(vs: list) -> float:
+        vs = [v for v in vs if v is not SKIP]
         if not vs:
             return 1.0
         if and_aggregator == "min":
@@ -703,7 +707,8 @@ def evaluate_tree_match(
             return min(1.0, sum(vs))
         raise AssertionError
 
-    def _or(vs: list[float]) -> float:
+    def _or(vs: list) -> float:
+        vs = [v for v in vs if v is not SKIP]
         if not vs:
             return 0.0
         if or_aggregator == "max":
@@ -746,6 +751,10 @@ def evaluate_tree_match(
             if not anchor_ivs:
                 return 1.0
             if node.relation == "disjoint":
+                if disjoint_skip:
+                    # Disjoint enforced by pool filter only; skip from
+                    # scoring entirely (filtered out by aggregators).
+                    return SKIP
                 cont = notin_fn(doc_ivs, anchor_ivs)
                 return max(0.0, 1.0 - cont)
             if node.relation == "intersect" and intersect_leaf == "min_norm":
@@ -772,6 +781,8 @@ def evaluate_tree_match(
             if not anchor_ivs:
                 continue
             if leaf.relation == "disjoint":
+                if disjoint_skip:
+                    continue
                 cont = notin_fn(doc_ivs, anchor_ivs)
                 factors.append(max(0.0, 1.0 - cont))
             elif leaf.relation == "intersect" and intersect_leaf == "min_norm":
@@ -783,4 +794,7 @@ def evaluate_tree_match(
             return 1.0
         return sum(factors) / len(factors)
 
-    return _eval(plan.expr)
+    result = _eval(plan.expr)
+    if result is SKIP:
+        return 1.0  # only disjoint at top level, filter-only
+    return result

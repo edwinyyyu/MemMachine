@@ -304,9 +304,8 @@ class TemporalRetriever:
 
         out: dict[tuple[int, int], list[Interval]] = {}
         for (ci, li, _), envs in zip(leaves_flat, envs_list, strict=False):
-            ivs = flatten_intervals(envs)
-            if ivs:
-                out[(ci, li)] = ivs
+            if envs:
+                out[(ci, li)] = envs
         return out
 
     def _compute_recency(

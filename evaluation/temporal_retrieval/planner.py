@@ -562,6 +562,9 @@ def evaluate_dnf_match(
     doc_ivs: list,
     leaf_anchor_resolver,  # callable: (clause_idx, leaf_idx, leaf) -> list[Interval]
     notin_aggregate: bool = False,
+    and_aggregator: str = "min",
+    or_aggregator: str = "max",
+    intersect_leaf: str = "binary",
 ) -> float:
     """Evaluate the DNF expression against a doc's intervals.
 
@@ -598,11 +601,48 @@ def evaluate_dnf_match(
         excluded_containment_aggregate if notin_aggregate else excluded_containment
     )
 
+    def _intersect_min_norm(d_ivs, a_ivs) -> float:
+        best = 0.0
+        for di in d_ivs:
+            d_w = di.latest_us - di.earliest_us
+            if d_w <= 0:
+                d_w = 1
+            for ai in a_ivs:
+                a_w = ai.latest_us - ai.earliest_us
+                if a_w <= 0:
+                    a_w = 1
+                lo = max(di.earliest_us, ai.earliest_us)
+                hi = min(di.latest_us, ai.latest_us)
+                inter = max(0, hi - lo)
+                denom = min(d_w, a_w)
+                f = min(1.0, inter / denom)
+                if f > best:
+                    best = f
+        return f if False else best  # nb: best is the right return
+
+    def _and(vs: list[float]) -> float:
+        if not vs:
+            return 1.0
+        if and_aggregator == "min":
+            return min(vs)
+        if and_aggregator == "mean":
+            return sum(vs) / len(vs)
+        raise ValueError(f"unknown and_aggregator: {and_aggregator!r}")
+
+    def _or(vs: list[float]) -> float:
+        if not vs:
+            return 0.0
+        if or_aggregator == "max":
+            return max(vs)
+        if or_aggregator == "mean":
+            return sum(vs) / len(vs)
+        raise ValueError(f"unknown or_aggregator: {or_aggregator!r}")
+
     if not plan.expr:
         return 1.0
-    or_max = 0.0
+    clause_scores: list[float] = []
     for ci, clause in enumerate(plan.expr):
-        and_min = 1.0
+        leaf_factors: list[float] = []
         for li, leaf in enumerate(clause):
             anchor_ivs = leaf_anchor_resolver(ci, li, leaf)
             if not anchor_ivs:
@@ -610,13 +650,13 @@ def evaluate_dnf_match(
             elif leaf.relation == "disjoint":
                 cont = notin_fn(doc_ivs, anchor_ivs)
                 f = max(0.0, 1.0 - cont)
+            elif leaf.relation == "intersect" and intersect_leaf == "min_norm":
+                f = _intersect_min_norm(doc_ivs, anchor_ivs)
             else:
                 f = constraint_factor_for_doc(doc_ivs, anchor_ivs, leaf.relation)
-            if f < and_min:
-                and_min = f
-        if and_min > or_max:
-            or_max = and_min
-    return or_max
+            leaf_factors.append(f)
+        clause_scores.append(_and(leaf_factors))
+    return _or(clause_scores)
 
 
 # Back-compat alias.
