@@ -34,9 +34,11 @@ from memmachine_server.episodic_memory.event_memory.segmenter.segmenter import (
     Segmenter,
 )
 
-# Each variant: (block_recipe, embed_recipe, bm25_recipe).
+# Each variant: (block_recipe, embed_recipe, bm25_recipe) or, optionally,
+# a 4-tuple (..., embed_sep) where embed_sep overrides the string joining
+# the embed-recipe components (default "\n"). block/bm25 always use "\n".
 # "cur" reproduces shipped terse-decoupled-v2.
-VARIANTS: dict[str, tuple[list[str], list[str], list[str]]] = {
+VARIANTS: dict[str, tuple] = {
     # shipped 3-way decoupled architecture
     "cur": (["T"], ["M", "Q", "C", "D"], ["M", "D"]),
     # drop synthetic queries from the embed text
@@ -74,6 +76,48 @@ VARIANTS: dict[str, tuple[list[str], list[str], list[str]]] = {
     "e_mq": (["T"], ["M", "Q"], ["M", "D"]),
     "e_mc": (["T"], ["M", "C"], ["M", "D"]),
     "e_qc": (["T"], ["Q", "C"], ["M", "D"]),
+    # SEPARATOR ablation: M,C,Q embed order (the reorder-ablation top),
+    # dates dropped (emb_nodate showed they are free to remove). Vary
+    # only the string joining the three embed components. bm25 keeps the
+    # date alias since BM25 cannot bridge "August" <-> "08".
+    "sep_mcq_nl": (["T"], ["M", "C", "Q"], ["M", "D"], "\n"),
+    "sep_mcq_sp": (["T"], ["M", "C", "Q"], ["M", "D"], " "),
+    "sep_mcq_nl2": (["T"], ["M", "C", "Q"], ["M", "D"], "\n\n"),
+    # LABEL ablation: lowercase q/c/d strip the "Queries:" / "Dates:" /
+    # producer header. Baseline = sep_mcq_nl (all labels on).
+    #   lab_q_off  -- drop "Queries:" header from the embed text
+    #   lab_d_off  -- drop "Dates:" header from the bm25 text
+    #   lab_qd_off -- drop both
+    "lab_q_off": (["T"], ["M", "C", "q"], ["M", "D"], "\n"),
+    "lab_d_off": (["T"], ["M", "C", "Q"], ["M", "d"], "\n"),
+    "lab_qd_off": (["T"], ["M", "C", "q"], ["M", "d"], "\n"),
+    # 4th-FRAMING ablation: does a fresh LLM-generated view beyond M/Q/C
+    # add signal? A = atomic-fact decomposition, P = topic labels.
+    # Baseline = emb_nodate (M,Q,C, no dates) = 91.30. Requires the
+    # augmented cache (augment_cache_framings.py -> cache-terse-v2-aug).
+    "f_mqca": (["T"], ["M", "Q", "C", "A"], ["M", "D"]),
+    "f_mqcp": (["T"], ["M", "Q", "C", "P"], ["M", "D"]),
+    "f_mqcap": (["T"], ["M", "Q", "C", "A", "P"], ["M", "D"]),
+    "f_a": (["T"], ["A"], ["M", "D"]),
+    "f_p": (["T"], ["P"], ["M", "D"]),
+    # BM25-text ablation: embed fixed at M,Q,C (the settled recipe);
+    # vary only text_to_score_bm25. BM25 is purely lexical, so the raw
+    # chunk C -- the actual conversation words a user may echo -- is the
+    # one lexically-motivated option untested so far. Baseline =
+    # emb_nodate (bm25 = M,D) = 91.30.
+    "bm25_c": (["T"], ["M", "Q", "C"], ["C"]),
+    "bm25_cd": (["T"], ["M", "Q", "C"], ["C", "D"]),
+    "bm25_mc": (["T"], ["M", "Q", "C"], ["M", "C"]),
+    "bm25_mcd": (["T"], ["M", "Q", "C"], ["M", "C", "D"]),
+    # T-as-anchor ablation: T is the compressed form of M. Does it work
+    # as the embedding/BM25 anchor too? If yes, the segmenter can drop
+    # the `memory` field entirely. Baseline = emb_nodate (M,Q,C) 91.30.
+    #   embed_t    -- T replaces M in the embed text
+    #   embed_mqct -- T added as a 4th embed item alongside M
+    #   all_t      -- T replaces M in BOTH embed and bm25 (M unused)
+    "embed_t": (["T"], ["T", "Q", "C"], ["M", "D"]),
+    "embed_mqct": (["T"], ["M", "Q", "C", "T"], ["M", "D"]),
+    "all_t": (["T"], ["T", "Q", "C"], ["T", "D"]),
 }
 
 
@@ -85,9 +129,9 @@ class CachedReassemblySegmenter(Segmenter):
             raise ValueError(
                 f"unknown variant {variant!r}; choices: {sorted(VARIANTS)}"
             )
-        self._block_recipe, self._embed_recipe, self._bm25_recipe = VARIANTS[
-            variant
-        ]
+        spec = VARIANTS[variant]
+        self._block_recipe, self._embed_recipe, self._bm25_recipe = spec[:3]
+        self._embed_sep: str = spec[3] if len(spec) > 3 else "\n"
         with open(cache_path) as f:
             records = json.load(f)
         # Key by (group_idx, session_id, dia_id) -- dia_id alone collides
@@ -115,11 +159,34 @@ class CachedReassemblySegmenter(Segmenter):
         if key == "D":
             d = rec["dates"].strip()
             return f"Dates: {d}" if d else None
+        # Lowercase keys = label-stripped: no "Queries:" / "Dates:" /
+        # producer header. Isolates whether the header tokens help.
+        if key == "q":
+            q = rec["queries"].strip()
+            return q or None
+        if key == "c":
+            c = rec["chunk"].strip()
+            return c or None
+        if key == "d":
+            d = rec["dates"].strip()
+            return d or None
+        # 4th-framing keys (require the augmented cache). A = atomic-fact
+        # decomposition (granularity axis); P = topic/theme labels
+        # (abstraction axis). See augment_cache_framings.py.
+        if key == "A":
+            atomic = rec.get("atomic") or []
+            joined = " ".join(a.strip() for a in atomic if a and a.strip())
+            return joined or None
+        if key == "P":
+            topic = (rec.get("topic") or "").strip()
+            return f"Topics: {topic}" if topic else None
         raise ValueError(f"unknown component {key!r}")
 
-    def _assemble(self, recipe: list[str], rec: dict) -> str:
+    def _assemble(
+        self, recipe: list[str], rec: dict, sep: str = "\n"
+    ) -> str:
         parts = [self._component(k, rec) for k in recipe]
-        return "\n".join(p for p in parts if p)
+        return sep.join(p for p in parts if p)
 
     @override
     async def segment(self, event: Event) -> list[Segment]:
@@ -133,7 +200,9 @@ class CachedReassemblySegmenter(Segmenter):
         out: list[Segment] = []
         for rec in self._by_key.get(key, []):
             block_text = self._assemble(self._block_recipe, rec)
-            embed_text = self._assemble(self._embed_recipe, rec)
+            embed_text = self._assemble(
+                self._embed_recipe, rec, self._embed_sep
+            )
             bm25_text = self._assemble(self._bm25_recipe, rec)
             out.append(
                 Segment(

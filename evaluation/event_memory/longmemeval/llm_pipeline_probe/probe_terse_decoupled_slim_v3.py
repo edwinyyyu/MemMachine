@@ -107,6 +107,40 @@ message has no topic worth remembering.
 {passage}"""
 
 
+# Ablation: "verbatim" date handling -- replaces the date subsection of
+# PROMPT_SLIM_V3 with an instruction to copy date references straight
+# from the source. The LLM does no date math. The .replace() asserts the
+# old block is found, so the constants stay in sync if PROMPT_SLIM_V3
+# changes.
+_DATE_BLOCK_RESOLVE = """Dates in the statement: the message's own date ({date}) is attached automatically when this memory is surfaced, so the statement text must never contain {date}. Resolve every relative time reference -- "yesterday", "last week", "three years ago", "next Friday", "the weekend", "today", "recently", "now", "just" -- to an absolute date anchored at {date}.
+  - If the resolved date EQUALS {date}, the statement carries no date and no relative phrase.
+  - If it DIFFERS from {date}, delete the relative phrase and weave the absolute date into the prose at its true precision: "on 2024-03-15" for a day, "in March 2024" for a month, "in 2024" for a year. Never leave a relative phrase beside the resolved date, and never write a date as a bracketed, parenthetical, or sentence-prefixed tag."""
+
+_DATE_BLOCK_VERBATIM = """Dates: copy date and time references verbatim from the message. Don't resolve relative phrases like "yesterday", "last week", or "next Friday" to absolute dates, don't rewrite a stated date into a different format, and don't drop a date because it matches the event date. The event date ({date}) is attached automatically when this memory is surfaced, so relative phrases stay meaningful in context."""
+
+# Hybrid: resolve the relative phrase to an absolute date (same as RESOLVE)
+# but match the source's register on output format instead of prescribing
+# ISO. Chat / prose -> "March 15, 2024", "March 2024", "2024". ISO source
+# ("2024-03-15") -> stay ISO. Precision stays at what the speaker stated.
+_DATE_BLOCK_RESOLVE_NATURAL = """Dates in the statement: the message's own date ({date}) is attached automatically when this memory is surfaced, so the statement text must never contain {date}. Resolve every relative time reference -- "yesterday", "last week", "three years ago", "next Friday", "the weekend", "today", "recently", "now", "just" -- to an absolute date anchored at {date}.
+  - If the resolved date EQUALS {date}, the statement carries no date and no relative phrase.
+  - If it DIFFERS from {date}, delete the relative phrase and weave the absolute date into the prose. Match the source's register: use ISO-like dates ("2024-03-15") only if the source itself uses ISO; for chat or prose, use natural language ("on March 15, 2024", "in March 2024", "in 2024"). Match the precision the speaker stated (don't invent a day if they only said a month). Never leave a relative phrase beside the resolved date, and never write a date as a bracketed, parenthetical, or sentence-prefixed tag."""
+
+PROMPT_SLIM_V3_VERBATIM_DATES = PROMPT_SLIM_V3.replace(
+    _DATE_BLOCK_RESOLVE, _DATE_BLOCK_VERBATIM
+)
+assert _DATE_BLOCK_VERBATIM in PROMPT_SLIM_V3_VERBATIM_DATES, (
+    "Date-block swap failed: _DATE_BLOCK_RESOLVE not found in PROMPT_SLIM_V3"
+)
+
+PROMPT_SLIM_V3_NATURAL_DATES = PROMPT_SLIM_V3.replace(
+    _DATE_BLOCK_RESOLVE, _DATE_BLOCK_RESOLVE_NATURAL
+)
+assert _DATE_BLOCK_RESOLVE_NATURAL in PROMPT_SLIM_V3_NATURAL_DATES, (
+    "Date-block swap failed: _DATE_BLOCK_RESOLVE not found in PROMPT_SLIM_V3"
+)
+
+
 _MONTHS = [
     "January", "February", "March", "April", "May", "June", "July",
     "August", "September", "October", "November", "December",
@@ -148,6 +182,76 @@ def _date_aliases(event_date: datetime, memory_text: str) -> str:
     return "; ".join(parts)
 
 
+def _long_form(year: int, month: int, day: int) -> str:
+    """CLDR-style long form for en-US, one canonical string per date.
+
+    Day-precise -> "Monday, January 15, 2024" (matches CLDR 'full');
+    month-precise -> "January 2024".
+    """
+    if day:
+        return datetime(year, month, day).strftime("%A, %B %d, %Y")
+    return f"{_MONTHS[month - 1]} {year}"
+
+
+def _date_aliases_cldr_all(event_date: datetime, memory_text: str) -> str:
+    """One CLDR-long form per date; regex still extracts dates from memory.
+
+    BM25 tokenizes the long form into its component lemmas, so the
+    abbreviated "Month YYYY" alias is a strict subset and unnecessary --
+    keep exactly one canonical form per date.
+    """
+    dates: set[tuple[int, int, int]] = {
+        (event_date.year, event_date.month, event_date.day)
+    }
+    for match in _ISO_RE.finditer(memory_text):
+        year = int(match.group(1))
+        month = int(match.group(2))
+        day = int(match.group(3)) if match.group(3) else 0
+        if 1 <= month <= 12:
+            dates.add((year, month, day))
+    parts: list[str] = []
+    seen: set[str] = set()
+    for year, month, day in sorted(dates):
+        alias = _long_form(year, month, day)
+        if alias not in seen:
+            seen.add(alias)
+            parts.append(alias)
+    return "; ".join(parts)
+
+
+def _date_aliases_cldr_event(event_date: datetime, memory_text: str) -> str:
+    """Single CLDR-long form for the event's own timestamp only -- no regex.
+
+    Drops the ISO-from-memory extraction: any other date the LLM wove
+    into `memory` already tokenizes inline, no extra alias for it.
+    """
+    return _long_form(
+        event_date.year, event_date.month, event_date.day
+    )
+
+
+def _date_aliases_verbose_event(event_date: datetime, memory_text: str) -> str:
+    """2-form alias (TF-boost preserved) for the event timestamp only.
+
+    Same shape as `verbose` -- "Month YYYY; Month D, YYYY" -- but with no
+    regex extraction. Isolates whether the regex's ISO-from-memory
+    contribution is doing useful work in 2-form mode.
+    """
+    year, month, day = event_date.year, event_date.month, event_date.day
+    parts: list[str] = [f"{_MONTHS[month - 1]} {year}"]
+    if day:
+        parts.append(f"{_MONTHS[month - 1]} {day}, {year}")
+    return "; ".join(parts)
+
+
+_ALIAS_FNS = {
+    "verbose": _date_aliases,
+    "cldr-all": _date_aliases_cldr_all,
+    "cldr-event": _date_aliases_cldr_event,
+    "verbose-event": _date_aliases_verbose_event,
+}
+
+
 class _MemoryItem(BaseModel):
     memory: str
     terse: str
@@ -184,7 +288,25 @@ class TerseDecoupledSegmenter(Segmenter):
         chunk_size: int = 1500,
         max_attempts: int = 3,
         include_raw_chunk_in_embed: bool = True,
+        date_aliases_in_embed: bool = True,
+        date_aliases_in_bm25: bool = True,
+        date_alias_mode: str = "verbose",
+        date_handling: str = "resolve",
     ) -> None:
+        if date_alias_mode not in _ALIAS_FNS:
+            raise ValueError(
+                f"date_alias_mode={date_alias_mode!r} not in {list(_ALIAS_FNS)}"
+            )
+        if date_handling not in ("resolve", "verbatim", "natural"):
+            raise ValueError(
+                f"date_handling={date_handling!r} not in ('resolve', 'verbatim', 'natural')"
+            )
+        # If the caller didn't override prompt_template, dispatch on
+        # date_handling. Explicit prompt_template wins.
+        if prompt_template is PROMPT_SLIM_V3 and date_handling == "verbatim":
+            prompt_template = PROMPT_SLIM_V3_VERBATIM_DATES
+        elif prompt_template is PROMPT_SLIM_V3 and date_handling == "natural":
+            prompt_template = PROMPT_SLIM_V3_NATURAL_DATES
         self._language_model = language_model
         self._prompt_template = prompt_template
         self._chunk_size = chunk_size
@@ -194,6 +316,22 @@ class TerseDecoupledSegmenter(Segmenter):
         # own clean text, the raw chunk's lexical-surface role is redundant
         # and its vocatives/filler may dilute the embedding vector.
         self._include_raw_chunk_in_embed = include_raw_chunk_in_embed
+        # Ablation: gate the programmatic "Dates:" alias line per channel.
+        # Default both True (production). When a channel is False, dates
+        # survive there only as ISO strings the LLM weaves into `memory`.
+        self._date_aliases_in_embed = date_aliases_in_embed
+        self._date_aliases_in_bm25 = date_aliases_in_bm25
+        # Ablation: alias-generation mode.
+        #   "verbose"   -- current (1-2 forms/date, regex on)
+        #   "cldr-all"  -- 1 long-form/date, regex on
+        #   "cldr-event"-- 1 long-form, event timestamp only, no regex
+        self._date_alias_mode = date_alias_mode
+        # Ablation: date_handling.
+        #   "resolve"  -- LLM resolves relative refs + rewrites in mixed
+        #                 ISO/natural at precision (current production).
+        #   "verbatim" -- LLM copies date refs from source as-said; no
+        #                 resolution, no format rewriting.
+        self._date_handling = date_handling
         self._splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=0,
@@ -280,10 +418,20 @@ class TerseDecoupledSegmenter(Segmenter):
                                 speaker,
                             )
                             bm25_text = memory
-                            aliases = _date_aliases(event.timestamp, memory)
-                            if aliases:
-                                embed_text = f"{embed_text}\nDates: {aliases}"
-                                bm25_text = f"{bm25_text}\nDates: {aliases}"
+                            if (self._date_aliases_in_embed
+                                    or self._date_aliases_in_bm25):
+                                aliases = _ALIAS_FNS[self._date_alias_mode](
+                                    event.timestamp, memory
+                                )
+                                if aliases:
+                                    if self._date_aliases_in_embed:
+                                        embed_text = (
+                                            f"{embed_text}\nDates: {aliases}"
+                                        )
+                                    if self._date_aliases_in_bm25:
+                                        bm25_text = (
+                                            f"{bm25_text}\nDates: {aliases}"
+                                        )
                             segments.append(
                                 Segment(
                                     uuid=uuid4(),

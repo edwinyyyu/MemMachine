@@ -21,10 +21,7 @@ from locomo_models import (
     datetime_from_locomo_time,
     load_locomo_dataset,
 )
-from memmachine_server.common.embedder.openai_embedder import (
-    OpenAIEmbedder,
-    OpenAIEmbedderParams,
-)
+from embedder_factory import EMBEDDING_CHOICES, build_embedder
 from memmachine_server.common.reranker import Reranker
 from memmachine_server.common.reranker.amazon_bedrock_reranker import (
     AmazonBedrockReranker,
@@ -277,7 +274,7 @@ async def main():
     parser.add_argument(
         "--embedding-model",
         default="text-embedding-3-small",
-        choices=["text-embedding-3-small", "text-embedding-3-large"],
+        choices=EMBEDDING_CHOICES,
         help="Must match the embedding model used at ingest.",
     )
     parser.add_argument(
@@ -323,19 +320,7 @@ async def main():
     await vector_store.startup()
 
     openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    if args.embedding_model == "text-embedding-3-small":
-        emb_dims = 1536
-    elif args.embedding_model == "text-embedding-3-large":
-        emb_dims = 3072
-    else:
-        raise ValueError(f"Unknown embedding model: {args.embedding_model}")
-    embedder = OpenAIEmbedder(
-        OpenAIEmbedderParams(
-            client=openai_client,
-            model=args.embedding_model,
-            dimensions=emb_dims,
-        )
-    )
+    embedder = build_embedder(args.embedding_model, openai_client)
 
     reranker: Reranker | None
     if args.no_reranker:

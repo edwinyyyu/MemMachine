@@ -24,10 +24,7 @@ from locomo_models import (
     datetime_from_locomo_time,
     load_locomo_dataset,
 )
-from memmachine_server.common.embedder.openai_embedder import (
-    OpenAIEmbedder,
-    OpenAIEmbedderParams,
-)
+from embedder_factory import EMBEDDING_CHOICES, build_embedder
 from memmachine_server.common.language_model.openai_responses_language_model import (
     OpenAIResponsesLanguageModel,
     OpenAIResponsesLanguageModelParams,
@@ -1200,6 +1197,249 @@ def _build_segmenter(args, openai_client):
                 )
             )
             return TerseDecoupledSegmenterSlimV3(language_model=lm)
+        case "terse-decoupled-slim-v3-nodatealias":
+            from probe_terse_decoupled_slim_v3 import (
+                TerseDecoupledSegmenter as TerseDecoupledSegmenterSlimV3NDA,
+            )
+
+            lm = OpenAIResponsesLanguageModel(
+                OpenAIResponsesLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterSlimV3NDA(
+                language_model=lm,
+                date_aliases_in_embed=False,
+                date_aliases_in_bm25=False,
+            )
+        case "terse-decoupled-slim-v3-datealias-embedonly":
+            from probe_terse_decoupled_slim_v3 import (
+                TerseDecoupledSegmenter as TerseDecoupledSegmenterSlimV3EO,
+            )
+
+            lm = OpenAIResponsesLanguageModel(
+                OpenAIResponsesLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterSlimV3EO(
+                language_model=lm,
+                date_aliases_in_embed=True,
+                date_aliases_in_bm25=False,
+            )
+        case "terse-decoupled-slim-v3-datealias-bm25only":
+            from probe_terse_decoupled_slim_v3 import (
+                TerseDecoupledSegmenter as TerseDecoupledSegmenterSlimV3BO,
+            )
+
+            lm = OpenAIResponsesLanguageModel(
+                OpenAIResponsesLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterSlimV3BO(
+                language_model=lm,
+                date_aliases_in_embed=False,
+                date_aliases_in_bm25=True,
+            )
+        case "terse-decoupled-slim-v3-verbatim-dates":
+            from probe_terse_decoupled_slim_v3 import (
+                TerseDecoupledSegmenter as TerseDecoupledSegmenterVerbatim,
+            )
+
+            lm = OpenAIResponsesLanguageModel(
+                OpenAIResponsesLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterVerbatim(
+                language_model=lm, date_handling="verbatim"
+            )
+        case "terse-decoupled-slim-v3-bo-verbatim":
+            from probe_terse_decoupled_slim_v3 import (
+                TerseDecoupledSegmenter as TerseDecoupledSegmenterBOVerbatim,
+            )
+
+            lm = OpenAIResponsesLanguageModel(
+                OpenAIResponsesLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBOVerbatim(
+                language_model=lm,
+                date_aliases_in_embed=False,
+                date_aliases_in_bm25=True,
+                date_handling="verbatim",
+            )
+        case "terse-decoupled-slim-v3-bo-verbatim-ve":
+            # SHIP CANDIDATE: BM25-only + verbatim dates + verbose-event
+            # alias mode (2-form event-date alias, no regex). Same output
+            # as -bo-verbatim in this regime but with the regex code path
+            # explicitly removed.
+            from probe_terse_decoupled_slim_v3 import (
+                TerseDecoupledSegmenter as TerseDecoupledSegmenterShip,
+            )
+
+            lm = OpenAIResponsesLanguageModel(
+                OpenAIResponsesLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterShip(
+                language_model=lm,
+                date_aliases_in_embed=False,
+                date_aliases_in_bm25=True,
+                date_handling="verbatim",
+                date_alias_mode="verbose-event",
+            )
+        case "terse-decoupled-slim-v3-bo-natural":
+            # Hybrid: resolve relative dates to absolute (like RESOLVE) but
+            # match the source's register on format (chat -> natural, ISO
+            # source -> ISO). BM25-only date aliases.
+            from probe_terse_decoupled_slim_v3 import (
+                TerseDecoupledSegmenter as TerseDecoupledSegmenterBONatural,
+            )
+
+            lm = OpenAIResponsesLanguageModel(
+                OpenAIResponsesLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatural(
+                language_model=lm,
+                date_aliases_in_embed=False,
+                date_aliases_in_bm25=True,
+                date_handling="natural",
+            )
+        case "terse-decoupled-slim-v3-bo-verbose-event":
+            from probe_terse_decoupled_slim_v3 import (
+                TerseDecoupledSegmenter as TerseDecoupledSegmenterBOVE,
+            )
+
+            lm = OpenAIResponsesLanguageModel(
+                OpenAIResponsesLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBOVE(
+                language_model=lm,
+                date_aliases_in_embed=False,
+                date_aliases_in_bm25=True,
+                date_alias_mode="verbose-event",
+            )
+        case "terse-decoupled-slim-v3-bo-cldr-all":
+            from probe_terse_decoupled_slim_v3 import (
+                TerseDecoupledSegmenter as TerseDecoupledSegmenterCLDRAll,
+            )
+
+            lm = OpenAIResponsesLanguageModel(
+                OpenAIResponsesLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterCLDRAll(
+                language_model=lm,
+                date_aliases_in_embed=False,
+                date_aliases_in_bm25=True,
+                date_alias_mode="cldr-all",
+            )
+        case "terse-decoupled-slim-v3-bo-cldr-event":
+            from probe_terse_decoupled_slim_v3 import (
+                TerseDecoupledSegmenter as TerseDecoupledSegmenterCLDREvent,
+            )
+
+            lm = OpenAIResponsesLanguageModel(
+                OpenAIResponsesLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterCLDREvent(
+                language_model=lm,
+                date_aliases_in_embed=False,
+                date_aliases_in_bm25=True,
+                date_alias_mode="cldr-event",
+            )
+        case (
+            "rawspan-spanfirst"
+            | "rawspan-spanlast"
+            | "rawspan-spanfirst-blockspan"
+            | "rawspan-spanlast-blockspan"
+        ):
+            from probe_terse_decoupled_rawspan import (
+                TerseDecoupledSegmenter as TerseDecoupledSegmenterRawSpan,
+            )
+
+            lm = OpenAIResponsesLanguageModel(
+                OpenAIResponsesLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterRawSpan(
+                language_model=lm,
+                span_first="spanfirst" in args.segmenter,
+                block_uses_span="blockspan" in args.segmenter,
+            )
+        case "terse-decoupled-slim-v4":
+            from probe_terse_decoupled_slim_v4 import (
+                TerseDecoupledSegmenter as TerseDecoupledSegmenterSlimV4,
+            )
+
+            lm = OpenAIResponsesLanguageModel(
+                OpenAIResponsesLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterSlimV4(language_model=lm)
+        case "terse-decoupled-slim-v5":
+            from probe_terse_decoupled_slim_v5 import (
+                TerseDecoupledSegmenter as TerseDecoupledSegmenterSlimV5,
+            )
+
+            lm = OpenAIResponsesLanguageModel(
+                OpenAIResponsesLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterSlimV5(language_model=lm)
+        case "terse-decoupled-slim-v6":
+            from probe_terse_decoupled_slim_v6 import (
+                TerseDecoupledSegmenter as TerseDecoupledSegmenterSlimV6,
+            )
+
+            lm = OpenAIResponsesLanguageModel(
+                OpenAIResponsesLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterSlimV6(language_model=lm)
         case "terse-decoupled-v3":
             from probe_terse_decoupled_v2 import (
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterV3,
@@ -1531,6 +1771,23 @@ async def main() -> None:
             "terse-decoupled-slim-v1",
             "terse-decoupled-slim-v2",
             "terse-decoupled-slim-v3",
+            "terse-decoupled-slim-v3-nodatealias",
+            "terse-decoupled-slim-v3-datealias-embedonly",
+            "terse-decoupled-slim-v3-datealias-bm25only",
+            "terse-decoupled-slim-v3-verbatim-dates",
+            "terse-decoupled-slim-v3-bo-verbatim",
+            "terse-decoupled-slim-v3-bo-verbatim-ve",
+            "terse-decoupled-slim-v3-bo-natural",
+            "terse-decoupled-slim-v3-bo-verbose-event",
+            "terse-decoupled-slim-v3-bo-cldr-all",
+            "terse-decoupled-slim-v3-bo-cldr-event",
+            "rawspan-spanfirst",
+            "rawspan-spanlast",
+            "rawspan-spanfirst-blockspan",
+            "rawspan-spanlast-blockspan",
+            "terse-decoupled-slim-v4",
+            "terse-decoupled-slim-v5",
+            "terse-decoupled-slim-v6",
             "terse-decoupled-v3",
             "rewrite-v22-says-v2",
             "rewrite-v22-headline-v2",
@@ -1638,8 +1895,9 @@ async def main() -> None:
     parser.add_argument(
         "--embedding-model",
         default="text-embedding-3-small",
-        choices=["text-embedding-3-small", "text-embedding-3-large"],
-        help="OpenAI embedding model. 'small' (default, 1536d) or 'large' (3072d).",
+        choices=EMBEDDING_CHOICES,
+        help="Embedding model. OpenAI (text-embedding-3-small/-large) or "
+        "local sentence-transformers (embeddinggemma, minilm).",
     )
 
     args = parser.parse_args()
@@ -1671,20 +1929,7 @@ async def main() -> None:
     await vector_store.startup()
 
     openai_client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    if args.embedding_model == "text-embedding-3-small":
-        emb_dims = 1536
-    elif args.embedding_model == "text-embedding-3-large":
-        emb_dims = 3072
-    else:
-        raise ValueError(f"Unknown embedding model: {args.embedding_model}")
-    embedder = OpenAIEmbedder(
-        OpenAIEmbedderParams(
-            client=openai_client,
-            model=args.embedding_model,
-            dimensions=emb_dims,
-            max_input_length=8192,
-        )
-    )
+    embedder = build_embedder(args.embedding_model, openai_client)
 
     segmenter = _build_segmenter(args, openai_client)
     deriver = _build_deriver(args, openai_client)
