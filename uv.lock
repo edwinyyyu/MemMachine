@@ -309,15 +309,15 @@ wheels = [
 
 [[package]]
 name = "boto3-stubs"
-version = "1.40.64"
+version = "1.43.13"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "botocore-stubs" },
     { name = "types-s3transfer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ab/af/362ed100e01551b36558da328dfdd4c3307a112915cef92a18cf3af7c8db/boto3_stubs-1.40.64.tar.gz", hash = "sha256:af4a7fb67bda0c1277afcd45a25065605567d260a8afd34bbdf1799d2492334f", size = 99647, upload-time = "2025-10-31T19:47:34.613Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5f/57/52ca31c8cd3356e7bdefb9e45cbb6ce558404f700cf46468b06a386dc16a/boto3_stubs-1.43.13.tar.gz", hash = "sha256:6e301825b4082dd8d121cf2aa4ac7d9c654e9bb3333b3fc1d1000f4ec4a70a51", size = 102684, upload-time = "2026-05-21T22:51:10.303Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c0/92/45cc1db83ebaaa26d2e4f200436aafbcddf8fb29a8c2b1d296921d9aa722/boto3_stubs-1.40.64-py3-none-any.whl", hash = "sha256:c0c0dd70c02b08550ca596e8799586b3669e9352844db22401e76556b05d71a3", size = 69067, upload-time = "2025-10-31T19:47:25.89Z" },
+    { url = "https://files.pythonhosted.org/packages/61/d5/6fb0120066ceed984cf0de24d038b890e369ed052c3fdcd13fd311525fe0/boto3_stubs-1.43.13-py3-none-any.whl", hash = "sha256:993a1a0b2fcd7e426b0a49473aa6c10da3cdee5a6858d9db6a7940e11d5cf370", size = 70667, upload-time = "2026-05-21T22:51:03.063Z" },
 ]
 
 [[package]]
@@ -1964,7 +1964,7 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "babel", specifier = ">=2.18.0" },
     { name = "boto3", specifier = ">=1.40.40" },
-    { name = "boto3-stubs", specifier = "==1.40.64" },
+    { name = "boto3-stubs", specifier = "==1.43.13" },
     { name = "cohere", specifier = ">=5.20.0" },
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "fastapi", specifier = ">=0.116.1" },
@@ -1975,7 +1975,7 @@ requires-dist = [
     { name = "json-repair", specifier = ">=0.54" },
     { name = "langchain-aws", specifier = ">=0.2.33" },
     { name = "langchain-text-splitters", specifier = ">=1.1.1" },
-    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.63.0,<1.85" },
+    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.63.0,<1.86" },
     { name = "memmachine-common", editable = "packages/common" },
     { name = "nebula5-python", marker = "extra == 'nebula'", specifier = ">=5.2.1" },
     { name = "neo4j", specifier = ">=5.28.2" },
@@ -1986,7 +1986,7 @@ requires-dist = [
     { name = "psutil", specifier = ">=7.1.0" },
     { name = "pydantic", specifier = ">=2.11.7" },
     { name = "pyyaml", specifier = ">=6.0.2" },
-    { name = "qdrant-client", marker = "extra == 'qdrant'", specifier = ">=1.18.0" },
+    { name = "qdrant-client", marker = "extra == 'qdrant'", specifier = ">=1.17.0" },
     { name = "rank-bm25", specifier = ">=0.2.2" },
     { name = "regex", specifier = ">=2023.0.0" },
     { name = "sentence-transformers", marker = "extra == 'gpu'", specifier = ">=5.1.0" },
