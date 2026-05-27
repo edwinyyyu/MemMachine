@@ -1,6 +1,6 @@
 """Tests for the KMS envelope payload codec loader."""
 
-from typing import Literal, override
+from typing import Literal, cast, override
 
 import pytest
 from cryptography.exceptions import InvalidTag
@@ -14,6 +14,7 @@ from memmachine_server.common.payload_codec.aes_gcm_payload_codec import (
 from memmachine_server.common.payload_codec.payload_codec_config import (
     AESGCMPayloadCodecConfig,
     KMSEnvelopeParams,
+    KMSEnvelopePayloadCodecConfig,
 )
 
 
@@ -136,7 +137,7 @@ async def test_loader_rejects_unsupported_codec_config() -> None:
         NotImplementedError,
         match="Unsupported KMS envelope payload codec config",
     ):
-        await loader.load(config)  # type: ignore[arg-type]
+        await loader.load(cast(KMSEnvelopePayloadCodecConfig, config))
 
     # Unsupported configs must not trigger a KMS decrypt.
     assert kms_client.decrypt_calls == []
