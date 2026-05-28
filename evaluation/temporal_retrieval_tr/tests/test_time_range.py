@@ -11,7 +11,6 @@ import pytest
 from temporal_retrieval_tr import (
     NEG_INF,
     POS_INF,
-    SENTINEL_THRESHOLD,
     Interval,
     IntervalSet,
     complement,

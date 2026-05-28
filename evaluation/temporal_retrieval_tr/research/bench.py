@@ -33,6 +33,8 @@ BENCH_NAMES = [
     "same_topic_recency_hard",
     "recency_stress_deep",
     "recency_vs_rerank",
+    "state_vs_event",
+    "state_vs_event_v2",
 ]
 
 

@@ -25,10 +25,10 @@ Boundary cases:
 from __future__ import annotations
 
 from .time_range import (
-    SENTINEL_THRESHOLD,
     IntervalSet,
     intersect,
     is_empty,
+    is_inf,
     measure,
 )
 
@@ -49,11 +49,12 @@ def pair_overlap(A: IntervalSet, B: IntervalSet) -> float:
     b_w = measure(B)
     inter_w = measure(inter)
 
-    a_inf = a_w >= SENTINEL_THRESHOLD
-    b_inf = b_w >= SENTINEL_THRESHOLD
-    if a_inf and b_inf:
+    if is_inf(a_w) and is_inf(b_w):
         return 1.0
 
+    # At this point at most one of a_w/b_w is infinite; the smaller is
+    # finite, so `min` selects it. inter_w is guaranteed finite because
+    # the intersection has at least one finite-bounded side.
     denom = min(a_w, b_w)
     if denom <= 0:
         return 0.0

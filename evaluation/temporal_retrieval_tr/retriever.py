@@ -21,9 +21,6 @@ from temporal_retrieval_min.core import (
 )
 from temporal_retrieval_min.core import (
     build_pool,
-    normalize_dict,
-    normalize_rerank_full,
-    recency_scores,
 )
 from temporal_retrieval_min.extractor_v3_3 import TemporalExtractorV3_3
 from temporal_retrieval_min.schema import parse_iso, to_us
@@ -274,52 +271,6 @@ class TemporalRetriever:
             vn = float(np.linalg.norm(v)) or 1e-9
             out[did] = float(np.dot(q_emb, v) / (qn * vn))
         return out
-
-    def _compute_recency(
-        self,
-        plan: Plan,
-        pool: list[str],
-        match: dict[str, float],
-    ) -> dict[str, float]:
-        if not (plan.latest_intent or plan.earliest_intent):
-            return {}
-        direction = "latest" if plan.latest_intent else "earliest"
-        match_passers = [d for d in pool if match.get(d, 0.0) > 0.0]
-        target = match_passers if len(match_passers) >= 2 else pool
-        if len(target) < 2:
-            return {}
-        bundles = {}
-        for did in target:
-            if self.recency_anchor == "ref_time":
-                # Bypass extracted intervals; recency_scores will fall back to ref_us
-                bundles[did] = []
-            elif self.recency_anchor == "median":
-                ivs = self._doc_ivs.get(did, [])
-                if ivs:
-                    mids = sorted((iv.earliest_us + iv.latest_us) // 2 for iv in ivs)
-                    med = mids[len(mids) // 2]
-                    # Wrap median as a single zero-width interval so recency_scores
-                    # picks it (the extreme-of-one is itself).
-                    bundles[did] = [{"intervals": [V1Interval(earliest_us=med, latest_us=med + 1)]}]
-                else:
-                    bundles[did] = []
-            elif self.recency_anchor == "primary":
-                ivs = self._doc_ivs.get(did, [])
-                pidx = self._doc_primary_idx.get(did)
-                if pidx is not None and 0 <= pidx < len(ivs):
-                    # Wrap primary as a single interval — recency_scores will pick its midpoint
-                    bundles[did] = [{"intervals": [ivs[pidx]]}]
-                else:
-                    # No primary marked → fall back to ref_time
-                    bundles[did] = []
-            else:  # "extreme" (default, current behavior)
-                ivs = self._doc_ivs.get(did, [])
-                bundles[did] = [{"intervals": ivs}] if ivs else []
-        return recency_scores(
-            bundles,
-            {d: self._doc_ref_us[d] for d in target},
-            direction=direction,
-        )
 
     def _copeland_rerank(
         self,

@@ -3,28 +3,124 @@
 The canonical temporal data type for the temporal-retrieval engine. An
 `IntervalSet` represents a set of moments in time as a sorted list of
 non-overlapping, non-adjacent half-open intervals `[earliest_us, latest_us)`.
-Endpoints may be the sentinel values `NEG_INF`/`POS_INF` to express
-unbounded extent.
+Endpoints may be the singleton sentinel values `NEG_INF`/`POS_INF` to
+express unbounded extent.
 
 All set operations (union, intersect, complement, difference,
-symmetric_difference) preserve canonical form. Pure integer arithmetic;
-no datetime / calendar logic at this layer.
+symmetric_difference) preserve canonical form. `_Inf` participates in
+comparison / arithmetic via Python's reflected operator protocol —
+mixed `int`/`_Inf` expressions just work in `max`, `min`, `<`, `<=`, etc.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# Sentinel for ±∞. Chosen well above any plausible real microsecond
-# timestamp (microseconds since epoch in 2024 is ~10^18; 2^62 is ~4.6e18)
-# so that any real measure stays below SENTINEL_THRESHOLD, and signed
-# arithmetic on the sentinel doesn't overflow Python's arbitrary
-# precision ints either.
-POS_INF = 2**62
-NEG_INF = -(2**62)
 
-# Threshold above which a measure is treated as "sentinel-large"
-# (i.e., touches ±∞). Any real bounded measure stays below this.
-SENTINEL_THRESHOLD = 2**60
+# ---------------------------------------------------------------------------
+# Typed sentinel: ±∞ as a singleton with sign
+# ---------------------------------------------------------------------------
+
+
+class _Inf:
+    """An extended-real infinity. `sign = +1` is +∞; `sign = -1` is -∞.
+
+    Implements comparison and arithmetic against both ints and other `_Inf`
+    instances so that `max`/`min`/`<`/`<=` / `-` / `+` all work in mixed
+    expressions without ad-hoc branching at the call sites.
+
+    Use the module-level constants `POS_INF` / `NEG_INF` rather than
+    instantiating this class directly.
+    """
+
+    __slots__ = ("sign",)
+
+    def __init__(self, sign: int) -> None:
+        if sign not in (-1, +1):
+            raise ValueError(f"_Inf.sign must be ±1; got {sign}")
+        self.sign = sign
+
+    # Comparison: _Inf vs _Inf compares signs; _Inf vs anything else uses
+    # sign-only heuristic (NEG_INF < any finite; POS_INF > any finite).
+    def __lt__(self, other: object) -> bool:
+        if isinstance(other, _Inf):
+            return self.sign < other.sign
+        return self.sign < 0
+
+    def __le__(self, other: object) -> bool:
+        if isinstance(other, _Inf):
+            return self.sign <= other.sign
+        return self.sign < 0
+
+    def __gt__(self, other: object) -> bool:
+        if isinstance(other, _Inf):
+            return self.sign > other.sign
+        return self.sign > 0
+
+    def __ge__(self, other: object) -> bool:
+        if isinstance(other, _Inf):
+            return self.sign >= other.sign
+        return self.sign > 0
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _Inf) and self.sign == other.sign
+
+    def __ne__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    def __hash__(self) -> int:
+        return hash(("_Inf", self.sign))
+
+    # Arithmetic: extended-real semantics.
+    # ±∞ ± finite = ±∞ (sign preserved).
+    # +∞ + (-∞), +∞ - (+∞), -∞ - (-∞) are undefined → raise.
+    def __neg__(self) -> "_Inf":
+        return _Inf(-self.sign)
+
+    def __add__(self, other: object) -> "_Inf":
+        if isinstance(other, _Inf):
+            if self.sign != other.sign:
+                raise ArithmeticError("∞ + (-∞) is undefined")
+            return self
+        return self
+
+    def __radd__(self, other: object) -> "_Inf":
+        return self.__add__(other)
+
+    def __sub__(self, other: object) -> "_Inf":
+        if isinstance(other, _Inf):
+            if self.sign == other.sign:
+                raise ArithmeticError("∞ − ∞ is undefined")
+            return self  # +∞ − (−∞) = +∞; −∞ − (+∞) = −∞
+        return self  # ±∞ − finite = ±∞
+
+    def __rsub__(self, other: object) -> "_Inf":
+        # finite − ±∞ = ∓∞
+        return -self
+
+    def __repr__(self) -> str:
+        return "+∞" if self.sign > 0 else "-∞"
+
+
+# Module-level singletons. Always use these; do not construct `_Inf` directly
+# at call sites.
+NEG_INF: _Inf = _Inf(-1)
+POS_INF: _Inf = _Inf(+1)
+
+
+# An interval endpoint: a microsecond-precision integer, or one of the
+# two infinite sentinels. Also used as the return type of `measure` and
+# arithmetic with endpoints, since both live in the same extended-real space.
+Endpoint = int | _Inf
+
+
+def is_inf(x: object) -> bool:
+    """True iff `x` is one of the infinite sentinels."""
+    return isinstance(x, _Inf)
+
+
+# ---------------------------------------------------------------------------
+# Interval / IntervalSet
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -35,28 +131,28 @@ class Interval:
     Invariant: `earliest_us < latest_us` (non-empty).
     """
 
-    earliest_us: int
-    latest_us: int
+    earliest_us: Endpoint
+    latest_us: Endpoint
 
     def __post_init__(self) -> None:
-        if self.earliest_us >= self.latest_us:
+        if not (self.earliest_us < self.latest_us):
             raise ValueError(
                 f"Interval must have earliest < latest; got "
-                f"[{self.earliest_us}, {self.latest_us})"
+                f"[{self.earliest_us!r}, {self.latest_us!r})"
             )
 
     @property
-    def width(self) -> int:
-        """Width in microseconds. Saturates near sentinel for unbounded."""
+    def width(self) -> Endpoint:
+        """Width in microseconds, or `POS_INF` if either endpoint is infinite."""
         return self.latest_us - self.earliest_us
 
     @property
     def left_unbounded(self) -> bool:
-        return self.earliest_us <= NEG_INF + 1
+        return isinstance(self.earliest_us, _Inf)
 
     @property
     def right_unbounded(self) -> bool:
-        return self.latest_us >= POS_INF - 1
+        return isinstance(self.latest_us, _Inf)
 
 
 @dataclass(frozen=True)
@@ -88,19 +184,19 @@ class IntervalSet:
         return cls(intervals=(Interval(NEG_INF, POS_INF),))
 
     @classmethod
-    def closed(cls, lo: int, hi: int) -> "IntervalSet":
+    def closed(cls, lo: Endpoint, hi: Endpoint) -> "IntervalSet":
         """Single half-open interval [lo, hi)."""
-        if lo >= hi:
+        if not (lo < hi):
             return cls.empty()
         return cls(intervals=(Interval(lo, hi),))
 
     @classmethod
-    def after(cls, t: int) -> "IntervalSet":
+    def after(cls, t: Endpoint) -> "IntervalSet":
         """[t, +∞)."""
         return cls.closed(t, POS_INF)
 
     @classmethod
-    def before(cls, t: int) -> "IntervalSet":
+    def before(cls, t: Endpoint) -> "IntervalSet":
         """(-∞, t)."""
         return cls.closed(NEG_INF, t)
 
@@ -122,10 +218,11 @@ def canonicalize(ivs: list[Interval]) -> list[Interval]:
     valid = [iv for iv in ivs if iv.earliest_us < iv.latest_us]
     if not valid:
         return []
-    valid.sort(key=lambda iv: (iv.earliest_us, iv.latest_us))
+    # Sort by (earliest, latest). _Inf supports tuple comparison via __lt__.
+    valid.sort(key=_sort_key)
     out: list[Interval] = []
-    cur_lo = valid[0].earliest_us
-    cur_hi = valid[0].latest_us
+    cur_lo: Endpoint = valid[0].earliest_us
+    cur_hi: Endpoint = valid[0].latest_us
     for iv in valid[1:]:
         if iv.earliest_us <= cur_hi:
             if iv.latest_us > cur_hi:
@@ -136,6 +233,23 @@ def canonicalize(ivs: list[Interval]) -> list[Interval]:
             cur_hi = iv.latest_us
     out.append(Interval(cur_lo, cur_hi))
     return out
+
+
+def _sort_key(iv: Interval) -> tuple:
+    """Key for sorting; maps ±∞ to comparable proxies for `tuple.__lt__`.
+
+    Python's default tuple comparison delegates to element `<`, which calls
+    `int.__lt__(_Inf)` → NotImplemented → falls through to `_Inf.__gt__(int)`.
+    That's correct for direct comparison, but `list.sort` requires a stable
+    key — and stability + reflected ops occasionally trip on equal keys.
+    Map each endpoint to a (rank, value) pair: rank=-1 for NEG_INF,
+    rank=0 for finite, rank=+1 for POS_INF.
+    """
+    def proxy(x: Endpoint) -> tuple[int, int]:
+        if isinstance(x, _Inf):
+            return (x.sign, 0)
+        return (0, x)
+    return (proxy(iv.earliest_us), proxy(iv.latest_us))
 
 
 # ---------------------------------------------------------------------------
@@ -171,8 +285,8 @@ def intersect(A: IntervalSet, B: IntervalSet) -> IntervalSet:
     b = B.intervals
     while i < len(a) and j < len(b):
         ai, bj = a[i], b[j]
-        lo = max(ai.earliest_us, bj.earliest_us)
-        hi = min(ai.latest_us, bj.latest_us)
+        lo = ai.earliest_us if ai.earliest_us > bj.earliest_us else bj.earliest_us
+        hi = ai.latest_us if ai.latest_us < bj.latest_us else bj.latest_us
         if lo < hi:
             out.append(Interval(lo, hi))
         if ai.latest_us < bj.latest_us:
@@ -202,7 +316,7 @@ def complement(A: IntervalSet) -> IntervalSet:
     if not A.intervals:
         return IntervalSet.universal()
     out: list[Interval] = []
-    prev = NEG_INF
+    prev: Endpoint = NEG_INF
     for iv in A.intervals:
         if prev < iv.earliest_us:
             out.append(Interval(prev, iv.earliest_us))
@@ -231,22 +345,22 @@ def is_empty(A: IntervalSet) -> bool:
     return not A.intervals
 
 
-def measure(A: IntervalSet) -> int:
+def measure(A: IntervalSet) -> Endpoint:
     """Sum of widths over A's intervals.
 
-    May saturate near sentinel range for unbounded intervals — callers
-    check `m >= SENTINEL_THRESHOLD` to detect "infinite" measure.
+    Returns `POS_INF` if any interval is unbounded (the `_Inf` value
+    propagates through addition).
     """
-    total = 0
+    total: Endpoint = 0
     for iv in A.intervals:
-        total += iv.latest_us - iv.earliest_us
+        total = total + (iv.latest_us - iv.earliest_us)
     return total
 
 
 def is_infinite_measure(A: IntervalSet) -> bool:
-    """True iff A has at least one ±∞ endpoint (so measure ≥ sentinel)."""
+    """True iff A has at least one ±∞ endpoint."""
     if not A.intervals:
         return False
     first = A.intervals[0]
     last = A.intervals[-1]
-    return first.earliest_us <= NEG_INF + 1 or last.latest_us >= POS_INF - 1
+    return isinstance(first.earliest_us, _Inf) or isinstance(last.latest_us, _Inf)

@@ -27,7 +27,7 @@ from openai.types.responses.response_format_text_json_schema_config_param import
     ResponseFormatTextJSONSchemaConfigParam,
 )
 
-from .time_range import NEG_INF, POS_INF, Interval, IntervalSet
+from .time_range import NEG_INF, POS_INF, Interval, IntervalSet, Endpoint, is_inf
 
 if not os.environ.get("OPENAI_API_KEY"):
     try:
@@ -425,13 +425,12 @@ class Plan:
 # ---------------------------------------------------------------------------
 
 
-def _iso_to_us(s: str | None) -> int:
+def _iso_to_us(s: str) -> int:
     """Parse YYYY-MM-DD (or full ISO) to µs timestamp.
 
-    `None` means unbounded; the caller maps None to NEG_INF or POS_INF.
+    Callers map `None` to NEG_INF/POS_INF before calling this; do not pass
+    `None` here.
     """
-    if s is None:
-        return None  # type: ignore[return-value]
     try:
         if "T" in s:
             dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
@@ -444,9 +443,9 @@ def _iso_to_us(s: str | None) -> int:
     return int(dt.timestamp() * 1_000_000)
 
 
-def _us_to_iso(us: int) -> str | None:
+def _us_to_iso(us: Endpoint) -> str | None:
     """Convert µs timestamp back to YYYY-MM-DD, with ±∞ → None."""
-    if us <= NEG_INF + 1 or us >= POS_INF - 1:
+    if is_inf(us):
         return None
     dt = datetime.fromtimestamp(us / 1_000_000, tz=timezone.utc)
     return dt.strftime("%Y-%m-%d")
