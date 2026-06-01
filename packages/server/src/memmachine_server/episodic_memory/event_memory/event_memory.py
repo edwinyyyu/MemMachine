@@ -32,6 +32,8 @@ from memmachine_server.common.vector_store import (
 
 from .data_types import (
     Block,
+    CompositeContext,
+    Context,
     DateTimeStyle,
     Derivative,
     Event,
@@ -42,6 +44,7 @@ from .data_types import (
     ScoredSegmentContext,
     Segment,
     TextBlock,
+    TimeRangesContext,
 )
 from .deriver import Deriver
 from .segment_store import SegmentStorePartition
@@ -655,14 +658,24 @@ class EventMemory:
         )
         timestamp_prefix = f"[{formatted_timestamp}] " if formatted_timestamp else ""
 
-        match segment.context:
+        return f"{timestamp_prefix}{EventMemory._context_prefix(segment.context)}"
+
+    @staticmethod
+    def _context_prefix(context: Context) -> str:
+        """Build the attribution prefix a context contributes to a header."""
+        match context:
             case ProducerContext(producer=producer):
-                return f"{timestamp_prefix}{producer}: "
-            case NullContext():
-                return timestamp_prefix
+                return f"{producer}: "
+            case NullContext() | TimeRangesContext():
+                return ""
+            case CompositeContext(contexts=contexts):
+                return "".join(
+                    EventMemory._context_prefix(member_context)
+                    for member_context in contexts
+                )
             case _:
                 raise NotImplementedError(
-                    f"Unsupported context type: {type(segment.context).__name__}"
+                    f"Unsupported context type: {type(context).__name__}"
                 )
 
     @staticmethod

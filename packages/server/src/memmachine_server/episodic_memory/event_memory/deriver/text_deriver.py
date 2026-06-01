@@ -6,12 +6,14 @@ from uuid import uuid4
 
 from memmachine_server.common.utils import extract_sentences
 from memmachine_server.episodic_memory.event_memory.data_types import (
+    CompositeContext,
     Context,
     Derivative,
     NullContext,
     ProducerContext,
     Segment,
     TextBlock,
+    TimeRangesContext,
 )
 from memmachine_server.episodic_memory.event_memory.deriver.deriver import Deriver
 
@@ -21,7 +23,11 @@ def _format_with_context(context: Context, text: str) -> str:
     match context:
         case ProducerContext(producer=producer):
             return f"{producer}: {text}"
-        case NullContext():
+        case NullContext() | TimeRangesContext():
+            return text
+        case CompositeContext(contexts=contexts):
+            for member in contexts:
+                text = _format_with_context(member, text)
             return text
         case _:
             raise NotImplementedError(
