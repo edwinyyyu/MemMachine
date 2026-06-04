@@ -8,6 +8,22 @@ one or more half-open intervals. Scoring is mean-of-per-target-bests
 over the flat list (see scoring.py). The planner's only structural
 decision is ONE multi-interval target ("set membership") vs MULTIPLE
 targets ("graded coverage").
+
+Recurring patterns are modeled as a SINGLE multi-interval target with
+4 intervals: the 3 most-recent past occurrences + 1 next upcoming
+occurrence (relative to REF_TIME). The matching doc anchor satisfies
+the target if it falls in ANY interval — so the LLM avoids
+overcommitting to specific dates that haven't happened ("every
+Thursday" → 4 Thursdays, not 13). Intra-day time-of-day qualifiers
+("morning", "evening") are encoded with standardized overlapping bands
+so morning vs evening docs stay distinguishable while boundary cases
+(5pm = afternoon or evening?) still match either qualifier.
+
+Anaphoric references ("since the v3 launch") and "most recently X"
+queries emit empty targets — date is unknown, let semantic search
+carry. See `research/_variant_b_*` for the A/Bs that validated this
+design and `research/_extractor_v3_5_recurring.py` for the matching
+doc-side extractor still under iteration.
 """
 from __future__ import annotations
 
@@ -41,7 +57,7 @@ if not os.environ.get("OPENAI_API_KEY"):
 MODEL = "gpt-5-mini"
 PER_CALL_TIMEOUT_S = 45.0
 CONCURRENCY = 8
-PROMPT_VERSION = "v2-anaphora"
+PROMPT_VERSION = "v7.1-point-day-and-deictic-now"
 
 ROOT = Path(__file__).resolve().parent
 CACHE_DIR = ROOT / "cache" / "planner"
@@ -66,17 +82,16 @@ OUTPUT SHAPE
   "targets": [
     {{"intervals": [{{"lo": "YYYY-MM-DD"|null, "hi": "YYYY-MM-DD"|null}}, ...]}}
   ],
-  "anaphora": [
-    {{"phrase": "the migration", "relation": "after"|"since"|"before"|"during"}}
-  ],
-  "extremum": "latest" | "earliest" | null
+  "proximity_anchor": "YYYY-MM-DD" | "latest" | "earliest" | null
 }}
 
-`targets` are concrete time sets you've already resolved. `anaphora`
-are references to named events whose date you DON'T know — the
-downstream resolver finds them in the corpus and converts each to a
-target. A doc anchor scores higher when it satisfies MORE of the
-(resolved) targets — mean of per-target overlap.
+`targets` are concrete time sets you have resolved. A doc anchor scores
+higher when it satisfies MORE targets — mean of per-target overlap.
+
+`proximity_anchor` is a SEPARATE channel: a single time-point used to
+break ties / re-rank by closeness. ORTHOGONAL to targets — set
+membership (overlap) and closeness ranking are independent decisions.
+See the PROXIMITY ANCHOR section below.
 
 KEY CONCEPTS
 ============
@@ -151,86 +166,191 @@ COMPOSITION RULES (do these AT THE LLM LEVEL — emit the composed result)
 
 EMPTY OUTPUT
 ============
-If the query has NO temporal scope at all (e.g., "how do I plan my
-morning?", "lessons from the launch", "how did the migration go?") emit
-{{"targets": [], "anaphora": []}}.
+Emit empty targets — {{"targets": []}} — for queries with no usable
+temporal anchor:
 
-"What did I do recently" / "show me what happened lately" → deictic;
-resolve to a recent window (e.g. last 60-90 days from REF_TIME) as a
-target with extremum="latest".
+1. No temporal flavor at all:
+   "how do I plan my morning?", "lessons from the launch",
+   "how did the migration go?"
 
-ANAPHORIC EVENT REFERENCES
-==========================
-If the query references an event by NAME without giving its date —
-"since the v3 launch", "after the redesign", "before the merger",
-"in Q3 2023 after the launch" — do NOT drop it. Emit the noun phrase
-and the relation in the `anaphora` field:
+2. Anaphoric references (named event, date unknown):
+   "since the v3 launch", "after the migration", "before the merger"
+   The event's date isn't in the query; let semantic search find
+   the doc by content.
 
-  {{"phrase": "the migration", "relation": "after"}}
+3. "Most recently X" / "most recent X" with a specific subject:
+   "When did I most recently restring my guitar?"
+   "my most recent dental cleaning"
+   The user is asking for the LATEST occurrence of a specific
+   activity, not "things in the last 60-90 days". Emit empty
+   targets with proximity_anchor="latest" so any-date docs about
+   that activity remain eligible and the closeness tournament
+   picks the latest.
 
-Relations:
-  "after X" / "post X" → relation: "after"   (strictly after the event)
-  "since X" / "from X onward" → relation: "since"   (from X inclusive)
-  "before X" / "pre X" → relation: "before"
-  "during X" / "while X" / "at X" → relation: "during"
+"What did I do recently" / "show me what happened lately" (without a
+specific subject) → deictic; resolve to a recent window (e.g. last
+60-90 days from REF_TIME) as a target with proximity_anchor="latest".
 
-CRUCIAL: any ABSOLUTE or DEICTIC temporal scope the query ALSO contains
-must STILL be emitted as a target. Only the anaphoric noun phrase goes
-in `anaphora`.
 
-  "since the v3 launch"
-    → targets: [], anaphora: [{{"phrase":"the v3 launch","relation":"since"}}]
-    (no absolute scope — only the anaphor)
+RECURRING / HABITUAL PATTERNS — past 3 + future 1
+=================================================
+Queries about a recurring or habitual day-of-week, weekend, month,
+quarter, etc. (pure recurring OR singular ambiguous between "this
+one" and "the pattern") emit ONE target with FOUR intervals:
 
-  "in Q3 2023 after the launch"
-    → targets: [Q3 2023], anaphora: [{{"phrase":"the launch","relation":"after"}}]
-    (BOTH the Q3 2023 target AND the anaphoric "after the launch")
+- The 3 most-recent past occurrences (relative to REF_TIME)
+- The 1 next upcoming occurrence
 
-  "what did I do in 2024 after the migration"
-    → targets: [2024], anaphora: [{{"phrase":"the migration","relation":"after"}}]
+This expresses the standing pattern without overcommitting to a
+year of specific dates that haven't happened. A doc anchored to any
+representative occurrence satisfies the target if its anchor falls
+in ANY of the four intervals.
 
-The phrase you emit should be the bare noun phrase WITHOUT the relation
-word — `"the migration"`, not `"after the migration"`. The relation
-goes in its own field.
+If REF_TIME itself falls ON an occurrence (e.g., REF_TIME is Thursday
+and the query is "Thursdays"), count it as the most-recent past
+occurrence.
 
-Multiple anaphoric references → emit each as its own entry in the array.
+# Per-occurrence within-day window
 
-  "before the launch and after the freeze"
-    → anaphora: [
-        {{"phrase":"the launch","relation":"before"}},
-        {{"phrase":"the freeze","relation":"after"}}
-      ]
+Each occurrence's lo/hi is determined by the time-of-day qualifier
+in the query, using STANDARDIZED overlapping bands. Adjacent bands
+overlap a few hours so a phrase real users would call by either
+name still matches.
 
-EXTREMUM
-========
-Set extremum ONLY when the query asks the system to PICK the most-recent /
-oldest from MULTIPLE candidates the user knows exist.
-  "Most recent meeting in March 2024" → extremum="latest"
-  "earliest job" → extremum="earliest"
-  "When did Marcus host his first dinner party?" → extremum=null (specific event)
+| Qualifier in query                 | Window (UTC, on that day)        |
+| ---------------------------------- | -------------------------------- |
+| "at HH:MM" / "at HHam/pm"          | [HH:00, HH+1:00)  — 1 hour       |
+| "morning"                          | [03:00, 13:00)                   |
+| "noon"                             | [10:00, 14:00)                   |
+| "afternoon"                        | [11:00, 19:00)                   |
+| "evening"                          | [16:00, 00:00 next day)                   |
+| "night"                            | [19:00, 07:00 next day)          |
+| no time qualifier                  | full day [00:00, 00:00 next day) |
 
-DO NOT set extremum for:
-  - "I just had X" / "we just shipped Y" / "I just ran into Z" — "just"
-    here means RECENTLY-DEICTIC, NOT a request for the latest-of-many.
-    These are statements about a single recent event, often followed by
-    a non-retrieval question ("…what severity is this?"). Use extremum=null.
+When emitting intra-day windows use full ISO 8601 with "Z":
+"2026-04-23T06:00:00Z". When the window IS a full day, you may emit
+date-only "2026-04-23".
+
+If multiple band qualifiers appear ("afternoon or evening"), use
+the UNION (one interval per occurrence per band).
+
+For monthly/quarterly patterns ("every March", "every Q4") use the
+full-month or full-quarter span (no within-day window — the unit IS
+the calendar block).
+
+Triggers (single rule, no pure-vs-ambiguous distinction):
+- Plural day-name: a weekday name in plural form, or after "on", or
+  in a possessive routine phrase ("my <weekday> meetings").
+- Bare singular day-name without explicit deictic marker: a weekday
+  used as a topic word with no "this"/"next"/"last" qualifier.
+- Bare weekend / month / quarter without year: "weekend X?",
+  "in <month-name>?", "Q<n> X?" with no year specified.
+- Possessive routine: "my <time-band> routine", "my <activity>
+  schedule".
+- "Every X" pattern: "every <weekday>", "every <month>", "every
+  <quarter>".
+
+EXCEPTIONS (still emit bounded targets):
+- Explicit deictic markers: "THIS Saturday", "NEXT Friday",
+  "tomorrow", "yesterday" → bounded to the specific occurrence
+  (still respecting the time-of-day qualifier if present).
+- Specific calendar period with year: "March 2024", "Q4 2023" →
+  bounded to that period.
+
+PROXIMITY ANCHOR
+================
+`proximity_anchor` is a separate channel from `targets`. It picks a
+single time-point to break ties / rerank by closeness. Set membership
+(overlap with targets) and closeness ranking are independent decisions —
+DO NOT use proximity to express set membership. Always emit `targets`
+for the bounded region; use proximity only when the user is pointing at
+a SPECIFIC TIME-POINT they want answers to cluster around.
+
+Four allowed values:
+
+  "latest"  — the user wants the MOST RECENT relevant doc.
+              Use when picking the most-recent FROM MULTIPLE candidates
+              the user knows exist, OR when asking about recency
+              without a specific subject ("what happened recently?",
+              "anything lately?").
+
+  "earliest" — the user wants the OLDEST relevant doc, again from
+              multiple candidates ("his earliest job", "the first
+              of these meetings"). Rare.
+
+  ISO date (e.g. "2024-06-15") — the user is pointing AROUND that
+              specific date. The doc's anchor closest in either
+              direction to that date wins. Use when the query says
+              "around / on / closest to / near / at the time of" a
+              specific date.
+
+  null      — no closeness scoring. Use for set-membership questions
+              ("in March 2024", "during 2023", "not in summer"),
+              for queries with no temporal cue at all, and for
+              comparative queries that name two alternatives (you want
+              BOTH events surfaced; firing a proximity anchor would
+              push one out of top-K).
+
+DO NOT set proximity_anchor for:
+  - "I just had X" / "we just shipped Y" — "just" here means
+    RECENTLY-DEICTIC about a SINGLE recent event, not a request for
+    the latest-of-many. Use null.
   - "first" / "last" describing a SPECIFIC occurrence the user has in
-    mind (e.g., "my first novel", "the first Utah road trip", "his last
-    surgery"). The user is naming ONE event, not asking to PICK from many.
-    Use extremum=null and let semantic search find that single event.
+    mind ("my first novel", "the first Utah road trip", "his last
+    surgery"). The user is naming ONE event. Use null.
+  - COMPARATIVE queries that name TWO OR MORE alternatives ("which
+    of A or B came first / later", "before or after Y", "X-er than"):
+    use null so both events stay surfaced.
+      "Which trip happened later, the Iceland trip or the Greece trip?" → null
+      "Did the lease signing come before or after the move?" → null
+      "Which sample arrived first, the green one or the blue one?" → null
+      "Was the conference earlier or later than the launch?" → null
+  - DEICTIC-CONTEXT queries where "today" / "this morning" / "right now" /
+    "just now" frames the user's CURRENT SITUATION as background and the
+    actual question asks about the PAST ("any prior cases?" / "have we
+    seen this before?" / "past similar issues?"). The deictic word
+    refers to NOW as context, NOT as a proximity target. The retrieval
+    intent is historical, so use null.
+      "Bakery stock count is off this morning — any past discrepancies?" → null
+      "Hit a memory leak just now — what have we seen before?" → null
+      "Audit notice arrived today — any prior audit gaps?" → null
+      "Server is misbehaving right now — historical similar bugs?" → null
+    Distinguishing marker: the query has TWO temporal frames — a
+    deictic NOW (the trigger) and an implicit PAST (the search target).
+    Fire proximity only if the user is actually asking for the latest
+    relevant doc; here they want historical precedents.
+
+Combining with targets:
+  "Most recent meeting in March 2024"  → targets=[2024-03-01..2024-04-01], proximity_anchor="latest"
+  "Anything around June 2022"          → targets=[],                       proximity_anchor="2022-06-15"
+  "Meetings closest to my birthday on 2024-09-12"
+                                       → targets=[],                       proximity_anchor="2024-09-12"
+  "What didn't happen in March 2024?"  → targets=[complement],             proximity_anchor=null
+  "Meetings in 2024"                   → targets=[2024],                   proximity_anchor=null
+
+POINT-DAY TARGETS ALSO GET PROXIMITY
+====================================
+When `targets` contains a SINGLE INTERVAL of ONE DAY OR LESS (a specific
+calendar day, or a within-day time-of-day window on a specific day),
+ALSO emit `proximity_anchor` set to that day. Set membership alone is
+not enough: docs whose ONLY temporal evidence is the metadata
+timestamp ("this conversation took place on YYYY-MM-DD" but the
+content doesn't restate the date) need closeness to surface.
+
+  "Find the inventory check from 2019-11-13"
+    → targets=[2019-11-13..2019-11-14], proximity_anchor="2019-11-13"
+  "Pull up the standup notes from 2022-05-08"
+    → targets=[2022-05-08..2022-05-09], proximity_anchor="2022-05-08"
+  "What's on the schedule for 2025-04-08?"
+    → targets=[2025-04-08..2025-04-09], proximity_anchor="2025-04-08"
+
+Multi-day or wider targets (months, quarters, years) do NOT auto-emit
+proximity — those are set-membership intent. The rule fires only for
+true point-day single-interval targets.
 
 DEICTIC RESOLUTION
 ==================
-Resolve deictic phrases against REF_TIME and emit them as targets. If a
-query mixes deictic AND anaphoric, emit BOTH — deictic to `targets`,
-anaphoric to `anaphora`.
-
-  "What issue did we hit during the migration last quarter?" → "last
-    quarter" is deictic (a target); "the migration" is anaphoric.
-    targets: [last quarter], anaphora: [{{"phrase":"the migration","relation":"during"}}]
-  "How was the launch this morning?" → "this morning" is deictic;
-    "the launch" is anaphoric.
-    targets: [this morning], anaphora: [{{"phrase":"the launch","relation":"during"}}]
+Resolve deictic phrases against REF_TIME and emit them as targets.
 
 Resolutions:
 - "this year" → [Jan 1 of ref_time year, Jan 1 of next year)
@@ -246,60 +366,106 @@ EXAMPLES
 ========
 
 Query: "in March 2024"
-{{"targets":[{{"intervals":[{{"lo":"2024-03-01","hi":"2024-04-01"}}]}}],"anaphora":[],"extremum":null}}
+{{"targets":[{{"intervals":[{{"lo":"2024-03-01","hi":"2024-04-01"}}]}}],"proximity_anchor":null}}
 
 Query: "after 2020"
-{{"targets":[{{"intervals":[{{"lo":"2021-01-01","hi":null}}]}}],"anaphora":[],"extremum":null}}
+{{"targets":[{{"intervals":[{{"lo":"2021-01-01","hi":null}}]}}],"proximity_anchor":null}}
 
 Query: "before 1999"
-{{"targets":[{{"intervals":[{{"lo":null,"hi":"1999-01-01"}}]}}],"anaphora":[],"extremum":null}}
+{{"targets":[{{"intervals":[{{"lo":null,"hi":"1999-01-01"}}]}}],"proximity_anchor":null}}
 
 Query: "not in 2023"
-{{"targets":[{{"intervals":[{{"lo":null,"hi":"2023-01-01"}},{{"lo":"2024-01-01","hi":null}}]}}],"anaphora":[],"extremum":null}}
+{{"targets":[{{"intervals":[{{"lo":null,"hi":"2023-01-01"}},{{"lo":"2024-01-01","hi":null}}]}}],"proximity_anchor":null}}
 
 Query: "in 2024 not in summer"
-{{"targets":[{{"intervals":[{{"lo":"2024-01-01","hi":"2024-06-01"}},{{"lo":"2024-09-01","hi":"2025-01-01"}}]}}],"anaphora":[],"extremum":null}}
+{{"targets":[{{"intervals":[{{"lo":"2024-01-01","hi":"2024-06-01"}},{{"lo":"2024-09-01","hi":"2025-01-01"}}]}}],"proximity_anchor":null}}
 
 Query: "in Q1 or Q4 of 2023"
 {{"targets":[
   {{"intervals":[{{"lo":"2023-01-01","hi":"2023-04-01"}}]}},
   {{"intervals":[{{"lo":"2023-10-01","hi":"2024-01-01"}}]}}
-],"anaphora":[],"extremum":null}}
+],"proximity_anchor":null}}
 
 Query: "in 2020 and 2024"
 {{"targets":[
   {{"intervals":[{{"lo":"2020-01-01","hi":"2021-01-01"}}]}},
   {{"intervals":[{{"lo":"2024-01-01","hi":"2025-01-01"}}]}}
-],"anaphora":[],"extremum":null}}
+],"proximity_anchor":null}}
 
 Query: "between 2020 and 2024"
-{{"targets":[{{"intervals":[{{"lo":"2020-01-01","hi":"2025-01-01"}}]}}],"anaphora":[],"extremum":null}}
+{{"targets":[{{"intervals":[{{"lo":"2020-01-01","hi":"2025-01-01"}}]}}],"proximity_anchor":null}}
 
-Query: "what did NOT happen on May 3 2024" (verb-polarity rule applies)
-{{"targets":[{{"intervals":[{{"lo":"2024-05-03","hi":"2024-05-04"}}]}}],"anaphora":[],"extremum":null}}
+Query: "what wasn't done on May 3 2024" (verb-polarity rule)
+{{"targets":[{{"intervals":[{{"lo":"2024-05-03","hi":"2024-05-04"}}]}}],"proximity_anchor":null}}
 
-Query: "latest budget review in Q2 2024"
-{{"targets":[{{"intervals":[{{"lo":"2024-04-01","hi":"2024-07-01"}}]}}],"anaphora":[],"extremum":"latest"}}
+Query: "latest X in Q2 2024" where X is a recurring activity type
+{{"targets":[{{"intervals":[{{"lo":"2024-04-01","hi":"2024-07-01"}}]}}],"proximity_anchor":"latest"}}
 
-Query: "How do I plan my morning?"
-{{"targets":[],"anaphora":[],"extremum":null}}
+Query: "anything around June 15 2022"
+{{"targets":[],"proximity_anchor":"2022-06-15"}}
 
-Anaphora examples — events the query names without a date:
+Query: "meetings closest to my birthday on 2024-09-12"
+{{"targets":[],"proximity_anchor":"2024-09-12"}}
 
-Query: "since the v3 launch"
-{{"targets":[],"anaphora":[{{"phrase":"the v3 launch","relation":"since"}}],"extremum":null}}
+Query: "no temporal scope at all"
+{{"targets":[],"proximity_anchor":null}}
 
-Query: "what happened in 2024 after the migration"
-{{"targets":[{{"intervals":[{{"lo":"2024-01-01","hi":"2025-01-01"}}]}}],"anaphora":[{{"phrase":"the migration","relation":"after"}}],"extremum":null}}
+Recurring / habitual examples (REF_TIME = 2026-04-23 = Thursday):
 
-Query: "in Q3 2023 after the launch"
-{{"targets":[{{"intervals":[{{"lo":"2023-07-01","hi":"2023-10-01"}}]}}],"anaphora":[{{"phrase":"the launch","relation":"after"}}],"extremum":null}}
+Query: "on Mondays"
+{{"targets":[{{"intervals":[
+  {{"lo":"2026-04-20","hi":"2026-04-21"}},
+  {{"lo":"2026-04-13","hi":"2026-04-14"}},
+  {{"lo":"2026-04-06","hi":"2026-04-07"}},
+  {{"lo":"2026-04-27","hi":"2026-04-28"}}
+]}}],"proximity_anchor":null}}
 
-Query: "things I did in Q4 2024 before year-end review"
-{{"targets":[{{"intervals":[{{"lo":"2024-10-01","hi":"2025-01-01"}}]}}],"anaphora":[{{"phrase":"year-end review","relation":"before"}}],"extremum":null}}
+Query: "Monday mornings"
+{{"targets":[{{"intervals":[
+  {{"lo":"2026-04-20T03:00:00Z","hi":"2026-04-20T13:00:00Z"}},
+  {{"lo":"2026-04-13T03:00:00Z","hi":"2026-04-13T13:00:00Z"}},
+  {{"lo":"2026-04-06T03:00:00Z","hi":"2026-04-06T13:00:00Z"}},
+  {{"lo":"2026-04-27T03:00:00Z","hi":"2026-04-27T13:00:00Z"}}
+]}}],"proximity_anchor":null}}
 
-Query: "my most recent update after the migration"
-{{"targets":[],"anaphora":[{{"phrase":"the migration","relation":"after"}}],"extremum":"latest"}}
+Query: "Friday at 3pm"
+{{"targets":[{{"intervals":[
+  {{"lo":"2026-04-17T15:00:00Z","hi":"2026-04-17T16:00:00Z"}},
+  {{"lo":"2026-04-10T15:00:00Z","hi":"2026-04-10T16:00:00Z"}},
+  {{"lo":"2026-04-03T15:00:00Z","hi":"2026-04-03T16:00:00Z"}},
+  {{"lo":"2026-04-24T15:00:00Z","hi":"2026-04-24T16:00:00Z"}}
+]}}],"proximity_anchor":null}}
+
+Query: "in Q3"
+{{"targets":[{{"intervals":[
+  {{"lo":"2025-07-01","hi":"2025-10-01"}},
+  {{"lo":"2024-07-01","hi":"2024-10-01"}},
+  {{"lo":"2023-07-01","hi":"2023-10-01"}},
+  {{"lo":"2026-07-01","hi":"2026-10-01"}}
+]}}],"proximity_anchor":null}}
+
+Query: "in March"
+{{"targets":[{{"intervals":[
+  {{"lo":"2026-03-01","hi":"2026-04-01"}},
+  {{"lo":"2025-03-01","hi":"2025-04-01"}},
+  {{"lo":"2024-03-01","hi":"2024-04-01"}},
+  {{"lo":"2027-03-01","hi":"2027-04-01"}}
+]}}],"proximity_anchor":null}}
+
+Query: "this Friday" (explicit deictic — bounded to that day)
+{{"targets":[{{"intervals":[{{"lo":"2026-04-24","hi":"2026-04-25"}}]}}],"proximity_anchor":null}}
+
+Query: "last night" (deictic + night band)
+{{"targets":[{{"intervals":[{{"lo":"2026-04-22T19:00:00Z","hi":"2026-04-23T07:00:00Z"}}]}}],"proximity_anchor":null}}
+
+Query: "yesterday morning" (deictic + morning band)
+{{"targets":[{{"intervals":[{{"lo":"2026-04-22T03:00:00Z","hi":"2026-04-22T13:00:00Z"}}]}}],"proximity_anchor":null}}
+
+Query: "since X" where X is a named event with no date in the query
+{{"targets":[],"proximity_anchor":null}}
+
+Query: "most recently X" where X is a specific activity
+{{"targets":[],"proximity_anchor":"latest"}}
 
 NOW PRODUCE THE PLAN FOR:
 
@@ -311,7 +477,7 @@ Reference time: {ref_time}
 _PLAN_JSON_SCHEMA: dict[str, object] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["targets", "anaphora", "extremum"],
+    "required": ["targets", "proximity_anchor"],
     "properties": {
         "targets": {
             "type": "array",
@@ -339,24 +505,15 @@ _PLAN_JSON_SCHEMA: dict[str, object] = {
                 },
             },
         },
-        "anaphora": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["phrase", "relation"],
-                "properties": {
-                    "phrase": {"type": "string"},
-                    "relation": {
-                        "type": "string",
-                        "enum": ["after", "since", "before", "during"],
-                    },
-                },
-            },
-        },
-        "extremum": {
+        # `proximity_anchor` is a closeness target for ranking (orthogonal
+        # to `targets` which is set-membership scope). Accepts:
+        # - null               : no closeness scoring
+        # - "latest"           : prefer later in time (POS_INF sentinel)
+        # - "earliest"         : prefer earlier in time (NEG_INF sentinel)
+        # - "YYYY-MM-DD"       : prefer docs whose anchor is closest to
+        #                        that date (bidirectional |D − T|)
+        "proximity_anchor": {
             "type": ["string", "null"],
-            "enum": ["latest", "earliest", None],
         },
     },
 }
@@ -367,36 +524,22 @@ _PLAN_JSON_SCHEMA: dict[str, object] = {
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class AnaphoricTarget:
-    """An unresolved temporal reference — the planner identifies the phrase
-    and its relation, the resolver finds the date in the corpus."""
-
-    phrase: str
-    relation: str  # "after" | "since" | "before" | "during"
-
-
-_VALID_RELATIONS = frozenset({"after", "since", "before", "during"})
-
-
 @dataclass
 class Plan:
-    """Resolved plan: targets (concrete IntervalSets) + anaphora (deferred
-    references resolved against the corpus) + extremum."""
+    """Resolved plan: a flat list of IntervalSet targets (set-membership scope)
+    + an optional proximity_anchor_us (closeness center for ranking).
+
+    The two fields are orthogonal:
+    - `targets` says WHERE the answer's time must fall (overlap-scored).
+    - `proximity_anchor_us` says WHICH TIME-POINT to score closeness against
+      (None = no closeness scoring; POS_INF = "later is better";
+      NEG_INF = "earlier is better"; finite int = "around this time").
+    """
 
     targets: list[IntervalSet] = field(default_factory=list)
-    anaphora: list[AnaphoricTarget] = field(default_factory=list)
-    extremum: str | None = None
+    proximity_anchor_us: Endpoint | None = None
     raw: str | None = field(default=None, repr=False)
     parse_error: str | None = field(default=None, repr=False)
-
-    @property
-    def latest_intent(self) -> bool:
-        return self.extremum == "latest"
-
-    @property
-    def earliest_intent(self) -> bool:
-        return self.extremum == "earliest"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -412,11 +555,7 @@ class Plan:
                 }
                 for t in self.targets
             ],
-            "anaphora": [
-                {"phrase": a.phrase, "relation": a.relation}
-                for a in self.anaphora
-            ],
-            "extremum": self.extremum,
+            "proximity_anchor": _proximity_to_str(self.proximity_anchor_us),
         }
 
 
@@ -451,6 +590,39 @@ def _us_to_iso(us: Endpoint) -> str | None:
     return dt.strftime("%Y-%m-%d")
 
 
+def _proximity_from_str(s: str | None) -> Endpoint | None:
+    """Parse the LLM's proximity_anchor JSON value to an Endpoint.
+
+    Accepts:
+    - null → None (no proximity scoring)
+    - "latest" → POS_INF (later in time is closer)
+    - "earliest" → NEG_INF (earlier in time is closer)
+    - ISO date string → µs timestamp (closeness to that specific date)
+    """
+    if s is None:
+        return None
+    if not isinstance(s, str):
+        return None
+    if s == "latest":
+        return POS_INF
+    if s == "earliest":
+        return NEG_INF
+    try:
+        return _iso_to_us(s)
+    except ValueError:
+        return None
+
+
+def _proximity_to_str(anchor: Endpoint | None) -> str | None:
+    """Serialize a proximity anchor for JSON / dict round-trip."""
+    if anchor is None:
+        return None
+    if is_inf(anchor):
+        # Distinguish +∞ vs −∞ by comparison against any finite int
+        return "latest" if anchor > 0 else "earliest"
+    return _us_to_iso(anchor)
+
+
 def _json_intervals_to_interval_set(json_intervals: list[dict]) -> IntervalSet:
     """Convert the LLM's interval JSON to an IntervalSet.
 
@@ -478,20 +650,6 @@ def _json_to_targets(json_targets: list[dict]) -> list[IntervalSet]:
         t = _json_intervals_to_interval_set(jt.get("intervals", []))
         if t.intervals:
             out.append(t)
-    return out
-
-
-def _json_to_anaphora(json_anaphora: list[dict]) -> list[AnaphoricTarget]:
-    """Convert the LLM's anaphora list to AnaphoricTarget dataclasses.
-
-    Drops entries with empty phrase or unknown relation."""
-    out: list[AnaphoricTarget] = []
-    for ja in json_anaphora:
-        phrase = (ja.get("phrase") or "").strip()
-        relation = ja.get("relation")
-        if not phrase or relation not in _VALID_RELATIONS:
-            continue
-        out.append(AnaphoricTarget(phrase=phrase, relation=relation))
     return out
 
 
@@ -584,8 +742,9 @@ class QueryPlanner:
                 obj = self._cache[key]
                 return Plan(
                     targets=_json_to_targets(obj.get("targets", [])),
-                    anaphora=_json_to_anaphora(obj.get("anaphora", [])),
-                    extremum=obj.get("extremum"),
+                    proximity_anchor_us=_proximity_from_str(
+                        obj.get("proximity_anchor")
+                    ),
                     raw=json.dumps(obj),
                 )
             except Exception:
@@ -610,14 +769,12 @@ class QueryPlanner:
                 raw = resp.output_text
                 obj = json.loads(raw)
                 targets = _json_to_targets(obj.get("targets", []))
-                anaphora = _json_to_anaphora(obj.get("anaphora", []))
-                extremum = obj.get("extremum")
-                if extremum not in ("latest", "earliest"):
-                    extremum = None
+                anchor = _proximity_from_str(obj.get("proximity_anchor"))
                 self._cache[key] = obj
                 self._save_cache()
-                return Plan(targets=targets, anaphora=anaphora,
-                            extremum=extremum, raw=raw)
+                return Plan(
+                    targets=targets, proximity_anchor_us=anchor, raw=raw,
+                )
             except Exception as e:
                 self._parse_failures += 1
                 return Plan(parse_error=str(e), raw="")

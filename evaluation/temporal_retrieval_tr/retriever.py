@@ -1,10 +1,15 @@
 """Temporal retriever: IntervalSet-based temporal layer.
 
-The retriever composes the `QueryPlanner` (IntervalSet targets from a
-single LLM call) with a doc-side extractor producing one envelope per
-temporal reference. Scoring is `final_score(query_targets, doc_anchors)`
-plus a semantic / rerank base, with optional recency boost when the
-planner flags an extremum.
+Symmetric query and doc sides:
+- Query side: `QueryPlanner` emits a list of IntervalSet targets.
+- Doc side: `TemporalExtractor` emits a list of IntervalSet anchors.
+
+Each side's IntervalSets can be multi-interval when the underlying
+claim has internal structure (gaps, complements, disjunctions).
+
+Scoring is `final_score(query_targets, doc_anchors)` — mean over
+query targets of the best per-anchor `pair_overlap` (frac-min on
+interval-set intersection).
 """
 from __future__ import annotations
 
@@ -22,9 +27,9 @@ from temporal_retrieval_min.core import (
 from temporal_retrieval_min.core import (
     build_pool,
 )
-from temporal_retrieval_min.extractor_v3_3 import TemporalExtractorV3_3
 from temporal_retrieval_min.schema import parse_iso, to_us
 
+from .extractor import TemporalExtractor
 from .planner import Plan, QueryPlanner
 from .scoring import final_score
 from .time_range import Interval, IntervalSet, is_infinite_measure
@@ -60,18 +65,6 @@ RerankFn = Callable[[str, list[str]], Awaitable[list[float]]]
 # ---------------------------------------------------------------------------
 
 
-def extractor_to_anchors(ivs: list[V1Interval]) -> list[IntervalSet]:
-    """Convert extractor envelopes → one IntervalSet per envelope.
-
-    Each envelope is already a half-open `[earliest_us, latest_us)`.
-    Wrap each as a single-interval IntervalSet (preserves the
-    per-mention granularity expected by per-anchor scoring).
-    """
-    out: list[IntervalSet] = []
-    for iv in ivs:
-        if iv.latest_us > iv.earliest_us:
-            out.append(IntervalSet(intervals=(Interval(iv.earliest_us, iv.latest_us),)))
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -80,11 +73,19 @@ def extractor_to_anchors(ivs: list[V1Interval]) -> list[IntervalSet]:
 
 
 class TemporalRetriever:
-    """Temporal retriever — IntervalSet semantics via the QueryPlanner.
+    """Temporal retriever — IntervalSet semantics on both query and doc sides.
 
-    The query side issues one LLM call per query (the planner emits
-    IntervalSet JSON directly). The doc side uses the production
-    single-pass extractor for envelope extraction.
+    Each side issues one LLM call per item:
+    - Query side: planner emits a list of IntervalSet targets, where
+      each target can be multi-interval (e.g. complement, disjoint
+      union).
+    - Doc side: extractor emits a list of IntervalSet anchors, where
+      each anchor can also be multi-interval when the doc describes
+      a single logical claim with internal structure (gaps,
+      complements, disjunctions).
+
+    The extractor contract is `extract_anchors(text, ref_time) ->
+    list[IntervalSet]`. The retriever does not adapt other interfaces.
     """
 
     def __init__(
@@ -94,10 +95,12 @@ class TemporalRetriever:
         cache_dir: str | Path = "cache/temporal_retrieval_tr",
         pool_size: int = 40,
         planner: QueryPlanner | None = None,
-        extractor: TemporalExtractorV3_3 | None = None,
+        extractor: TemporalExtractor | None = None,
         copeland_bonus: float = 0.40,
         copeland_tiebreak: str = "sim",
-        recency_anchor: str = "extreme",
+        timeless_match_in_scope: float | str = 0.8,
+        ranking_method: str = "copeland_pairwise",
+        proximity_copeland: bool = True,
     ) -> None:
         # pool_size=40 matches production overfetch=4× (final K=10).
         # Scoring (recency etc.) then has real effect on R@K because it
@@ -110,14 +113,38 @@ class TemporalRetriever:
         self.copeland_bonus = copeland_bonus
         # Copeland tertiary tiebreak ("sim" = base+match; "base" = rerank-only).
         self.copeland_tiebreak = copeland_tiebreak
-        # Per-doc recency anchor selection (Copeland uses these):
-        # - "extreme": extreme-midpoint of extracted intervals
-        #   (max for latest / min for earliest), fallback to ref_time
-        # - "ref_time": ignore extracted intervals; always use ref_time
-        # - "median": median midpoint of extracted intervals, fallback to ref_time
-        # - "primary": use the LLM-tagged primary interval (requires extractor
-        #              that emits primary_index), fallback to ref_time
-        self.recency_anchor = recency_anchor
+        # Per-doc proximity anchor for the closeness tournament is derived
+        # automatically from `plan.proximity_anchor_us`:
+        # - For finite query anchor T: pick the doc-interval midpoint
+        #   CLOSEST to T (min by |mid − T|), fallback to ref_us.
+        # - For POS_INF (latest): pick max midpoint, fallback ref_us.
+        # - For NEG_INF (earliest): pick min midpoint, fallback ref_us.
+        # See `_copeland_proximity_rerank`.
+
+        # Match score for timeless docs (no extracted anchors) when the
+        # query has bounded scope. Accepts:
+        #   float: fixed credit (0.0 = strict, 1.0 = vacuous match,
+        #          0.8 = empirical macro optimum on 44-bench sweep).
+        #   "base": adaptive — use the doc's own base (rerank) score
+        #          as match. High-semantic timeless docs get more
+        #          temporal credit; low-semantic noise gets less.
+        # When the query has NO bounded scope, timeless docs always
+        # get 1.0 (uniform with anchored docs that satisfy the
+        # unbounded targets vacuously).
+        self.timeless_match_in_scope = timeless_match_in_scope
+        # Ranking method for the pool:
+        # - "additive": score = base + match_eff; sort by score.
+        # - "copeland_pairwise": Copeland tournament where timed-vs-
+        #   timed pairs use base + match_eff; pairs involving a
+        #   timeless doc use base only. Avoids assigning timeless
+        #   docs an artificial temporal match value.
+        self.ranking_method = ranking_method
+        # When False, the proximity Copeland tournament is bypassed even
+        # when plan.proximity_anchor_us is set — queries fall through to
+        # the configured ranking_method (additive or copeland_pairwise)
+        # instead. Used for ablations isolating the non-proximity scoring
+        # policy.
+        self.proximity_copeland = proximity_copeland
         # Scoring substrate (shipped — see _SCORING_ARCHITECTURE.md for rationale):
         # - base = raw cosine (kept in native units, query-independent)
         # - match_eff = match * pool_cosine_spread (scales system-specific score)
@@ -127,7 +154,7 @@ class TemporalRetriever:
         self._cache_dir = Path(cache_dir)
 
         self._planner = planner or QueryPlanner()
-        self._extractor = extractor or TemporalExtractorV3_3()
+        self._extractor = extractor or TemporalExtractor()
 
         # Indexed state
         self._docs: dict[str, Doc] = {}
@@ -135,33 +162,40 @@ class TemporalRetriever:
         self._doc_anchors: dict[str, list[IntervalSet]] = {}
         self._doc_emb: dict[str, np.ndarray] = {}
         self._doc_ref_us: dict[str, int] = {}
-        # Optional per-doc primary index (None when extractor doesn't emit it
-        # or when the LLM declined to mark one)
-        self._doc_primary_idx: dict[str, int | None] = {}
 
     # ----------------------------------------------------------------- Index
     async def index(self, docs: list[Doc]) -> None:
         self._docs = {d.id: d for d in docs}
         self._doc_ref_us = {d.id: to_us(parse_iso(d.ref_time)) for d in docs}
 
-        async def _extract_one(d: Doc) -> tuple[str, list[V1Interval], int | None]:
+        async def _extract_one(
+            d: Doc,
+        ) -> tuple[str, list[V1Interval], list[IntervalSet]]:
             try:
-                out = await self._extractor.extract(d.text, parse_iso(d.ref_time))
-                # Backward-compatible: V3.3 returns list[Interval],
-                # V3.4 returns (list[Interval], primary_index | None)
-                if isinstance(out, tuple):
-                    ivs, primary_idx = out
-                else:
-                    ivs, primary_idx = out, None
+                anchors = await self._extractor.extract_anchors(
+                    d.text, parse_iso(d.ref_time)
+                )
+                # Flatten for recency-anchor computation in Copeland rerank.
+                # Each interval in each anchor is treated as a candidate
+                # midpoint for the extreme/median/ref_time selection.
+                # Skip unbounded intervals (e.g. 'since 2020', 'before X')
+                # — their midpoint is ±∞ and not meaningful for recency
+                # selection. They still contribute to overlap scoring via
+                # the anchor IntervalSet.
+                ivs = [
+                    V1Interval(iv.earliest_us, iv.latest_us)
+                    for a in anchors
+                    for iv in a.intervals
+                    if not iv.left_unbounded and not iv.right_unbounded
+                ]
             except Exception:
-                ivs, primary_idx = [], None
-            return d.id, ivs, primary_idx
+                ivs, anchors = [], []
+            return d.id, ivs, anchors
 
         results = await asyncio.gather(*(_extract_one(d) for d in docs))
-        for did, ivs, primary_idx in results:
+        for did, ivs, anchors in results:
             self._doc_ivs[did] = ivs
-            self._doc_anchors[did] = extractor_to_anchors(ivs)
-            self._doc_primary_idx[did] = primary_idx
+            self._doc_anchors[did] = anchors
         self._extractor.save_caches()
 
         embs = await self.embed_fn([d.text for d in docs])
@@ -200,14 +234,23 @@ class TemporalRetriever:
         #   semantic + rerank decide ordering for them within the pool.
         match_all: dict[str, float] = {}
         eligible: list[str] = []
+        timeless_in_scope: set[str] = set()  # for deferred match if "base" mode
         for did in all_dids:
             d_anchors = self._doc_anchors.get(did, [])
             if not d_anchors:
-                match_all[did] = 1.0
                 if not query_targets or not bounded_target_present:
+                    # Vacuous match: query has no bounded scope, timeless
+                    # doc trivially satisfies. Eligible.
+                    match_all[did] = 1.0
                     eligible.append(did)
-                # Bounded-target + timeless: pass-through for rank,
-                # but NOT filter-admitted (may still enter via top-up).
+                else:
+                    # Bounded scope present and doc has no temporal
+                    # evidence. Configurable rank credit; not filter-
+                    # admitted (may still enter via semantic top-up).
+                    if isinstance(self.timeless_match_in_scope, str):
+                        timeless_in_scope.add(did)  # defer until rerank
+                    else:
+                        match_all[did] = self.timeless_match_in_scope
             else:
                 s = final_score(query_targets, d_anchors)
                 match_all[did] = s
@@ -226,6 +269,15 @@ class TemporalRetriever:
         # Base = raw cosine (kept in native units, cross-query stable).
         base = dict(rerank_pool)
 
+        # Adaptive timeless match: if "base" mode, set match_all for
+        # timeless-in-scope docs to their own base score (higher
+        # semantic = more temporal credit).
+        if isinstance(self.timeless_match_in_scope, str) and \
+                self.timeless_match_in_scope == "base":
+            for did in pool:
+                if did in timeless_in_scope:
+                    match_all[did] = base.get(did, 0.0)
+
         # Pool cosine spread is used to scale the system-specific scores
         # (match, copeland_bonus) so they track the pool's natural scale.
         # This preserves the base-vs-match balance across pools without
@@ -237,11 +289,39 @@ class TemporalRetriever:
             pool_spread = 1.0
         match_eff = {did: match_all.get(did, 0.0) * pool_spread for did in pool}
 
-        # Extremum queries → Copeland tournament re-rank with per-pair
-        # bonus to the more-recent doc. Non-extremum queries → just
-        # base + match (no recency layer applies).
-        if plan.latest_intent or plan.earliest_intent:
-            return self._copeland_rerank(pool, base, match_eff, plan, k)
+        # Proximity-anchor queries → Copeland tournament re-rank with per-pair
+        # bonus to whichever doc's anchor is closer to plan.proximity_anchor_us.
+        # No proximity anchor → just base + match (no closeness layer).
+        # base_only_strict skips this too — true no-temporal-scoring floor.
+        # proximity_copeland=False disables dispatch for ablation.
+        if plan.proximity_anchor_us is not None \
+                and self.ranking_method != "base_only_strict" \
+                and self.proximity_copeland:
+            return self._copeland_proximity_rerank(
+                pool, base, match_eff, plan.proximity_anchor_us, k,
+            )
+
+        if self.ranking_method == "copeland_pairwise":
+            anchored = {did for did in pool if self._doc_anchors.get(did)}
+            return self._copeland_pairwise_rerank(
+                pool, base, match_eff, anchored, k
+            )
+
+        if self.ranking_method in ("base_only", "base_only_strict"):
+            # Rank by base (rerank/semantic) alone — no temporal layer.
+            # base_only:        skips additive/copeland_pairwise scoring
+            #                   but extremum Copeland still fires above.
+            # base_only_strict: skips extremum Copeland too — TRUE floor.
+            results_b: list[Result] = []
+            for did in pool:
+                base_s = base.get(did, 0.0)
+                if base_s > 0:
+                    results_b.append(Result(
+                        doc_id=did, score=base_s,
+                        rerank=base_s, match=0.0, recency=0.0,
+                    ))
+            results_b.sort(key=lambda r: r.score, reverse=True)
+            return results_b[:k]
 
         results: list[Result] = []
         for did in pool:
@@ -261,6 +341,53 @@ class TemporalRetriever:
         results.sort(key=lambda r: r.score, reverse=True)
         return results[:k]
 
+    def _copeland_pairwise_rerank(
+        self,
+        pool: list[str],
+        base: dict[str, float],
+        match_eff: dict[str, float],
+        anchored: set[str],
+        k: int,
+    ) -> list["Result"]:
+        """Copeland pairwise rerank with heterogeneous comparison rule.
+
+        - timed vs timed: compare by (base + match_eff)
+        - any pair involving a timeless doc: compare by base only
+
+        Avoids fabricating a temporal match value for timeless docs.
+        """
+        wins: dict[str, int] = dict.fromkeys(pool, 0)
+        margins: dict[str, float] = dict.fromkeys(pool, 0.0)
+        for a in pool:
+            for b in pool:
+                if a == b:
+                    continue
+                if a in anchored and b in anchored:
+                    sa = base.get(a, 0.0) + match_eff.get(a, 0.0)
+                    sb = base.get(b, 0.0) + match_eff.get(b, 0.0)
+                else:
+                    sa = base.get(a, 0.0)
+                    sb = base.get(b, 0.0)
+                if sa > sb:
+                    wins[a] += 1
+                    margins[a] += sa - sb
+        ranked = sorted(
+            pool, key=lambda d: (-wins[d], -margins[d], -base.get(d, 0.0))
+        )
+        results: list[Result] = []
+        for did in ranked:
+            score = float(wins[did]) + margins[did] * 1e-4
+            results.append(
+                Result(
+                    doc_id=did,
+                    score=score,
+                    rerank=base.get(did, 0.0),
+                    match=match_eff.get(did, 0.0),
+                    recency=0.0,
+                )
+            )
+        return results[:k]
+
     # ----------------------------------------------------------------- Util
     def _cosine_all(self, q_emb: np.ndarray) -> dict[str, float]:
         if not self._doc_emb:
@@ -272,105 +399,120 @@ class TemporalRetriever:
             out[did] = float(np.dot(q_emb, v) / (qn * vn))
         return out
 
-    def _copeland_rerank(
+    def _copeland_proximity_rerank(
         self,
         pool: list[str],
         base: dict[str, float],
-        match_all: dict[str, float],
-        plan: Plan,
+        match_eff: dict[str, float],
+        query_anchor_us,  # Endpoint: int µs, POS_INF, or NEG_INF
         k: int,
     ) -> list[Result]:
-        """Copeland tournament re-rank for extremum queries.
+        """Copeland proximity tournament.
 
-        For each pair (a, b) in the pool, the more-temporally-anchored
-        doc gets `+copeland_bonus` in the head-to-head comparison
-        against `sim = base + match`. Doc-level temporal anchor:
-        max-midpoint over intervals for "latest" (min for "earliest"),
-        falling back to the doc's ref_us when no intervals exist.
+        Two ORTHOGONAL concerns combined per-pair:
 
-        Final ranking is (wins, margin_sum) lexicographically. Synthetic
-        Result.score = wins + ε·margins for sortable monotonicity.
+        1. Match dimension (heterogeneous, from `_copeland_pairwise_rerank`):
+           - timed-vs-timed pairs compare on `base + match_eff`
+           - any pair involving a timeless doc compares on `base` only
+           Avoids fabricating an overlap match score for timeless docs.
 
-        Fixed-bonus property: A's pairwise advantage over any
-        less-recent doc B is exactly `bonus`, regardless of rank-gap
-        — what additive linear-rank cannot express.
+        2. Proximity dimension:
+           - Each doc has a proximity anchor: midpoint of its intervals
+             that is CLOSEST to `query_anchor_us` (for finite anchors),
+             or the MAX midpoint when query anchor is POS_INF, or MIN
+             when NEG_INF. Timeless docs use `ref_us` as their anchor.
+           - In each pair, whichever doc's anchor is closer to
+             `query_anchor_us` gets `+bonus` in the head-to-head.
+
+        The two dimensions add into the pairwise score independently.
         """
-        # Scale bonus by pool cosine spread (system-specific score tracks
-        # the pool's natural scale, while base stays in raw cosine).
+        from .time_range import is_inf
+
         bonus = float(self.copeland_bonus or 0.0)
         if base:
             vals = list(base.values())
             bonus = bonus * (max(vals) - min(vals))
-        direction_latest = plan.latest_intent
-        pool_set = set(pool)
 
-        # Per-doc temporal anchor — honors `self.recency_anchor` setting
-        # so this matches the additive path's anchor selection.
-        anchors: dict[str, int] = {}
+        anchored = {did for did in pool if self._doc_anchors.get(did)}
+
+        # Per-doc proximity anchor.
+        # - Finite query_anchor: pick midpoint closest to it.
+        # - POS_INF: max midpoint (later wins).
+        # - NEG_INF: min midpoint (earlier wins).
+        # - No intervals (timeless): use doc's ref_us — the message/event
+        #   metadata time. Timeless docs DO have a time, just not an
+        #   extracted content-derived interval.
+        doc_anchor: dict[str, int] = {}
         for did in pool:
             ivs = self._doc_ivs.get(did, [])
-            anchor: int | None = None
-            if ivs and self.recency_anchor == "extreme":
-                for iv in ivs:
-                    mid = (iv.earliest_us + iv.latest_us) // 2
-                    if anchor is None:
-                        anchor = mid
-                    elif direction_latest and mid > anchor:
-                        anchor = mid
-                    elif (not direction_latest) and mid < anchor:
-                        anchor = mid
-            elif ivs and self.recency_anchor == "median":
-                mids = sorted((iv.earliest_us + iv.latest_us) // 2 for iv in ivs)
-                anchor = mids[len(mids) // 2]
-            elif ivs and self.recency_anchor == "primary":
-                pidx = self._doc_primary_idx.get(did)
-                if pidx is not None and 0 <= pidx < len(ivs):
-                    iv = ivs[pidx]
-                    anchor = (iv.earliest_us + iv.latest_us) // 2
-            # "ref_time" mode (or no intervals / no primary): anchor stays None → fallback
-            anchors[did] = anchor if anchor is not None else self._doc_ref_us[did]
+            if ivs:
+                mids = [(iv.earliest_us + iv.latest_us) // 2 for iv in ivs]
+                if is_inf(query_anchor_us):
+                    # POS_INF → max, NEG_INF → min
+                    doc_anchor[did] = (
+                        max(mids) if query_anchor_us > 0 else min(mids)
+                    )
+                else:
+                    doc_anchor[did] = min(
+                        mids, key=lambda m: abs(m - query_anchor_us)
+                    )
+            else:
+                doc_anchor[did] = self._doc_ref_us[did]
 
-        sim: dict[str, float] = {}
-        for did in pool:
-            sim[did] = base.get(did, 0.0) + match_all[did]
+        def closeness(d: str):
+            """Closeness score; larger = closer. Handles ±∞ specially."""
+            da = doc_anchor[d]
+            if is_inf(query_anchor_us):
+                return da if query_anchor_us > 0 else -da
+            return -abs(da - query_anchor_us)
 
         wins: dict[str, int] = dict.fromkeys(pool, 0)
         margins: dict[str, float] = dict.fromkeys(pool, 0.0)
 
-        def is_more_recent(a: str, b: str) -> bool:
-            aa, ab = anchors[a], anchors[b]
-            if aa == ab:
-                return False
-            return (aa > ab) if direction_latest else (aa < ab)
-
         for a in pool:
+            ca = closeness(a)
             for b in pool:
                 if a == b:
                     continue
-                sa = sim[a] + (bonus if is_more_recent(a, b) else 0.0)
-                sb = sim[b] + (bonus if is_more_recent(b, a) else 0.0)
+                cb = closeness(b)
+                # Match dimension: heterogeneous (timeless = base only)
+                if a in anchored and b in anchored:
+                    sa = base.get(a, 0.0) + match_eff.get(a, 0.0)
+                    sb = base.get(b, 0.0) + match_eff.get(b, 0.0)
+                else:
+                    sa = base.get(a, 0.0)
+                    sb = base.get(b, 0.0)
+                # Proximity dimension: closer doc gets +bonus
+                if ca > cb:
+                    sa += bonus
+                elif cb > ca:
+                    sb += bonus
                 if sa > sb:
                     wins[a] += 1
                     margins[a] += sa - sb
 
         if self.copeland_tiebreak == "base":
             tertiary = base
-        else:  # "sim" (default)
-            tertiary = sim
+        else:
+            # "sim" mode tertiary uses heterogeneous match too
+            tertiary = {
+                d: base.get(d, 0.0)
+                + (match_eff.get(d, 0.0) if d in anchored else 0.0)
+                for d in pool
+            }
         ranked = sorted(
             pool,
             key=lambda d: (-wins[d], -margins[d], -tertiary.get(d, 0.0)),
         )
         results: list[Result] = []
         for did in ranked:
-            # Synthetic score: wins dominate, margins as fine tiebreak.
             score = float(wins[did]) + margins[did] * 1e-4
             results.append(
                 Result(
                     doc_id=did,
                     score=score,
                     rerank=base.get(did, 0.0),
-                    match=match_all[did],
+                    match=match_eff.get(did, 0.0),
                     recency=0.0,
                 )
             )
