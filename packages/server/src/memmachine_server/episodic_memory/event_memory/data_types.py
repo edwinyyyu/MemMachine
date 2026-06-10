@@ -59,12 +59,56 @@ class NullContext(BaseModel):
     context_type: Literal["null"] = "null"
 
 
-ContextUnion = ProducerContext | NullContext
+class AnnotationContext(BaseModel):
+    """A note attached to the content after the fact.
+
+    Display-only recontextualization: renderers for readers show the note
+    (labeled as such), while embedding anchors ignore it so stored vectors
+    are unaffected.
+    """
+
+    context_type: Literal["annotation"] = "annotation"
+    note: str
+
+    @field_validator("note")
+    @classmethod
+    def _reject_newlines(cls, v: str) -> str:
+        if "\n" in v or "\r" in v:
+            raise ValueError("annotation notes must not contain newlines")
+        return v
+
+
+class CompositeContext(BaseModel):
+    """A sequence of contexts applied to the same content, in order."""
+
+    context_type: Literal["composite"] = "composite"
+    contexts: list["Context"] = Field(default_factory=list)
+
+
+ContextUnion = ProducerContext | NullContext | AnnotationContext | CompositeContext
 
 Context = Annotated[
     ContextUnion,
     Field(discriminator="context_type"),
 ]
+
+# Resolve forward reference to Context.
+CompositeContext.model_rebuild()
+
+
+def find_contexts[ContextT: ContextUnion](
+    context: "Context | None",
+    context_type: type[ContextT],
+) -> list[ContextT]:
+    """Return every context of the given type, in depth-first order."""
+    if isinstance(context, CompositeContext):
+        return [
+            found
+            for member in context.contexts
+            for found in find_contexts(member, context_type)
+        ]
+    return [context] if isinstance(context, context_type) else []
+
 
 _CONTEXT_ADAPTER = TypeAdapter(Context | None)
 _BLOCK_ADAPTER = TypeAdapter(Block)

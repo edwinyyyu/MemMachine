@@ -17,7 +17,10 @@ from memmachine_server.common.reranker import Reranker
 from memmachine_server.common.vector_store.data_types import (
     VectorStoreCollectionConfig,
 )
-from memmachine_server.episodic_memory.event_memory.data_types import Segment
+from memmachine_server.episodic_memory.event_memory.data_types import (
+    Context,
+    Segment,
+)
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
     WholeTextDeriver,
@@ -153,6 +156,16 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         return result
 
     @override
+    async def update_segment_contexts(
+        self,
+        contexts_by_segment_uuid: Mapping[UUID, Context],
+    ) -> None:
+        for segment_uuid, context in contexts_by_segment_uuid.items():
+            segment = self.segments.get(segment_uuid)
+            if segment is not None:
+                segment.context = context
+
+    @override
     async def delete_segments(
         self,
         segment_uuids: Iterable[UUID],
@@ -255,5 +268,27 @@ def event_memory_with_sentences(
             segmenter=TextSegmenter(),
             deriver=SentenceTextDeriver(),
             embedder=fake_embedder,
+        )
+    )
+
+
+@pytest.fixture
+def event_memory_with_eviction(
+    fake_vector_store_collection,
+    fake_segment_store_partition,
+    fake_embedder,
+):
+    # FakeEmbedder maps every text onto direction [1, -1], so all derivatives
+    # are cosine-similar (1.0): any batch forms a single eviction cluster.
+    return EventMemory(
+        EventMemoryParams(
+            segment_store_partition=fake_segment_store_partition,
+            vector_store_collection=fake_vector_store_collection,
+            segmenter=TextSegmenter(),
+            deriver=WholeTextDeriver(),
+            embedder=fake_embedder,
+            eviction_similarity_threshold=0.5,
+            eviction_target_size=5,
+            serialize_encode=True,
         )
     )

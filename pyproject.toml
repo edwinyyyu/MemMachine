@@ -143,6 +143,9 @@ convention = "google"
     "PERF203",
     "PERF401",
 ]
+# The smoke tests and the install/hook CLI print their results (like tests/eval).
+"claude_memory/smoke.py" = ["T201"]
+"claude_memory/cli.py" = ["T201"]
 
 [tool.ty.environment]
 extra-paths = ["packages/common/src", "packages/server/src", "packages/client/src"]

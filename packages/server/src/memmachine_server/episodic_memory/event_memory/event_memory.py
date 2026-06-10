@@ -6,12 +6,14 @@ import json
 import logging
 import time
 from collections.abc import Iterable, Sequence
+from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import ClassVar, cast
 from uuid import UUID
 
+import numpy as np
 from pydantic import BaseModel, Field, InstanceOf
 
-from memmachine_server.common.data_types import PropertyValue
+from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
 from memmachine_server.common.embedder import Embedder
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
@@ -25,21 +27,25 @@ from memmachine_server.common.metrics_factory import (
 )
 from memmachine_server.common.reranker import Reranker
 from memmachine_server.common.vector_store import (
+    QueryResult as VectorStoreQueryResult,
+)
+from memmachine_server.common.vector_store import (
     Record,
     VectorStoreCollection,
 )
 
 from .data_types import (
+    AnnotationContext,
     Block,
     Derivative,
     Event,
     FormatOptions,
-    NullContext,
     ProducerContext,
     QueryResult,
     ScoredSegmentContext,
     Segment,
     TextBlock,
+    find_contexts,
 )
 from .deriver import Deriver
 from .formatting import format_timestamp
@@ -71,6 +77,19 @@ class EventMemoryParams(BaseModel):
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
+        eviction_similarity_threshold (float | None):
+            Similarity threshold at which vectors are considered part of the same cluster
+            for eviction evaluation. None disables eviction.
+            (default: None).
+        eviction_search_limit (int):
+            Maximum number of similar vectors to retrieve per derivative for eviction evaluation
+            (default: 20).
+        eviction_target_size (int):
+            Target cluster size; eviction starts when the number of similar vectors exceeds this
+            (default: 15).
+        serialize_encode (bool):
+            Serialize encode_events calls with an async lock
+            (default: False).
     """
 
     segment_store_partition: InstanceOf[SegmentStorePartition] = Field(
@@ -101,6 +120,23 @@ class EventMemoryParams(BaseModel):
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
         description="An instance of MetricsFactory for collecting usage metrics",
+    )
+    eviction_similarity_threshold: float | None = Field(
+        None,
+        description="Similarity threshold at which vectors are considered part of the same cluster "
+        "for eviction consideration. None disables eviction",
+    )
+    eviction_search_limit: int = Field(
+        20,
+        description="Maximum number of similar vectors to retrieve per derivative for eviction evaluation",
+    )
+    eviction_target_size: int = Field(
+        15,
+        description="Target cluster size; eviction starts when the number of similar vectors exceeds this",
+    )
+    serialize_encode: bool = Field(
+        False,
+        description="Serialize encode_events calls with an async lock",
     )
 
 
@@ -143,6 +179,14 @@ class EventMemory:
         self._deriver = params.deriver
         self._embedder = params.embedder
         self._reranker = params.reranker
+
+        self._eviction_similarity_threshold = params.eviction_similarity_threshold
+        self._eviction_search_limit = params.eviction_search_limit
+        self._eviction_target_size = params.eviction_target_size
+
+        self._encode_lock: AbstractAsyncContextManager[None] = (
+            asyncio.Lock() if params.serialize_encode else nullcontext()
+        )
 
         self._tracker = OperationTracker(
             params.metrics_factory,
@@ -231,6 +275,11 @@ class EventMemory:
         events = list(events)
         self._validate_events(events)
 
+        events = sorted(
+            events,
+            key=lambda event: (event.timestamp, event.uuid),
+        )
+
         segment_lists = await asyncio.gather(
             *(
                 self._segmenter.segment(event, format_options=format_options)
@@ -271,26 +320,64 @@ class EventMemory:
         derivative_embeddings = await self._embedder.ingest_embed(derivative_texts)
         t_embedding = time.monotonic()
 
-        await self._segment_store_partition.add_segments(
-            {
-                segment: [derivative.uuid for derivative in segment_derivatives]
-                for segment, segment_derivatives in segments_to_derivatives.items()
-            }
-        )
-        t_segment_store = time.monotonic()
-
-        derivative_records = [
-            EventMemory._build_derivative_record(derivative, derivative_embedding)
-            for derivative, derivative_embedding in zip(
-                derivatives,
+        batch_predecessors: list[set[int]] | None = None
+        if self._eviction_similarity_threshold is not None and derivative_embeddings:
+            batch_predecessors = EventMemory._compute_batch_predecessors(
                 derivative_embeddings,
-                strict=True,
+                self._eviction_similarity_threshold,
+                self._vector_store_collection.config.similarity_metric,
             )
-        ]
 
-        if derivative_records:
-            await self._vector_store_collection.upsert(records=derivative_records)
-        t_vector_store = time.monotonic()
+        async with self._encode_lock:
+            skipped_uuids: set[UUID] = set()
+            db_eviction_uuids: set[UUID] = set()
+
+            if batch_predecessors is not None:
+                eviction_query_results = await self._vector_store_collection.query(
+                    query_vectors=derivative_embeddings,
+                    score_threshold=self._eviction_similarity_threshold,
+                    limit=self._eviction_search_limit,
+                    return_vector=False,
+                    return_properties=True,
+                )
+                db_eviction_uuids, skipped_uuids = EventMemory._select_eviction_targets(
+                    derivatives=derivatives,
+                    query_results=eviction_query_results,
+                    batch_predecessors=batch_predecessors,
+                    eviction_target_size=self._eviction_target_size,
+                )
+
+            await self._segment_store_partition.add_segments(
+                {
+                    segment: [
+                        derivative.uuid
+                        for derivative in segment_derivatives
+                        if derivative.uuid not in skipped_uuids
+                    ]
+                    for segment, segment_derivatives in segments_to_derivatives.items()
+                }
+            )
+            t_segment_store = time.monotonic()
+
+            derivative_records = [
+                EventMemory._build_derivative_record(derivative, derivative_embedding)
+                for derivative, derivative_embedding in zip(
+                    derivatives,
+                    derivative_embeddings,
+                    strict=True,
+                )
+                if derivative.uuid not in skipped_uuids
+            ]
+
+            if derivative_records:
+                await self._vector_store_collection.upsert(records=derivative_records)
+            t_vector_store = time.monotonic()
+
+            if db_eviction_uuids:
+                await self._vector_store_collection.delete(
+                    record_uuids=db_eviction_uuids
+                )
+            t_eviction = time.monotonic()
 
         phase_durations = {
             "segmentation": t_segmentation - t_start,
@@ -298,6 +385,7 @@ class EventMemory:
             "embedding": t_embedding - t_derivation,
             "segment_store": t_segment_store - t_embedding,
             "vector_store": t_vector_store - t_segment_store,
+            "eviction": t_eviction - t_vector_store,
         }
 
         logger.debug(
@@ -306,7 +394,7 @@ class EventMemory:
                 f"{phase}={duration:.3f}s"
                 for phase, duration in phase_durations.items()
             ),
-            t_vector_store - t_start,
+            t_eviction - t_start,
         )
 
         if self._encode_events_phase_seconds is not None:
@@ -337,6 +425,121 @@ class EventMemory:
             properties=properties,
         )
 
+    @staticmethod
+    def _compute_batch_predecessors(
+        derivative_embeddings: Iterable[Sequence[float]],
+        eviction_similarity_threshold: float,
+        similarity_metric: SimilarityMetric,
+    ) -> list[set[int]]:
+        """
+        Compute batch predecessors for each derivative embedding.
+
+        The ith entry contains indices j < i that are similar to i.
+        Only predecessors are included to mimic serial ingestion.
+        """
+        embeddings = np.asarray(list(derivative_embeddings), dtype=np.float64)
+        num_embeddings = len(embeddings)
+        higher_is_better = similarity_metric.higher_is_better
+
+        match similarity_metric:
+            case SimilarityMetric.COSINE:
+                norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+                norms[norms == 0] = 1.0
+                normalized = embeddings / norms
+                similarity_matrix = normalized @ normalized.T
+            case SimilarityMetric.DOT:
+                similarity_matrix = embeddings @ embeddings.T
+            case SimilarityMetric.EUCLIDEAN:
+                norms_squared = np.sum(embeddings**2, axis=1)
+                distance_squared = np.add.outer(norms_squared, norms_squared) - 2.0 * (
+                    embeddings @ embeddings.T
+                )
+                similarity_matrix = np.sqrt(np.maximum(distance_squared, 0.0))
+            case SimilarityMetric.MANHATTAN:
+                # Compute row-by-row to avoid using excessive memory.
+                similarity_matrix = np.zeros(
+                    (num_embeddings, num_embeddings), dtype=np.float64
+                )
+                for i in range(1, num_embeddings):
+                    diff = embeddings[i] - embeddings[:i]
+                    similarity_matrix[i, :i] = np.sum(np.abs(diff), axis=1)
+
+        # Exclude diagonal and upper triangle by setting them to a value
+        # that can never pass the threshold comparison.
+        upper_indices = np.triu_indices(num_embeddings)
+        if higher_is_better:
+            similarity_matrix[upper_indices] = -np.inf
+            mask = similarity_matrix >= eviction_similarity_threshold
+        else:
+            similarity_matrix[upper_indices] = np.inf
+            mask = similarity_matrix <= eviction_similarity_threshold
+
+        return [set(np.where(mask[i])[0].tolist()) for i in range(num_embeddings)]
+
+    @staticmethod
+    def _select_eviction_targets(
+        derivatives: Iterable[Derivative],
+        query_results: Iterable[VectorStoreQueryResult],
+        batch_predecessors: list[set[int]],
+        eviction_target_size: int,
+    ) -> tuple[set[UUID], set[UUID]]:
+        """
+        Select eviction targets considering both DB and intra-batch similarity.
+
+        Returns a tuple of:
+        - a set of DB UUIDs to delete
+        - a set of batch UUIDs to skip
+        """
+        derivatives = list(derivatives)
+        query_results = list(query_results)
+
+        db_eviction_uuids: set[UUID] = set()
+        batch_skip_uuids: set[UUID] = set()
+
+        for derivative, query_result, predecessor_indexes in zip(
+            derivatives, query_results, batch_predecessors, strict=True
+        ):
+            # Build cluster members: (timestamp, uuid, is_from_db).
+            members: list[tuple[datetime.datetime, UUID, bool]] = []
+
+            # DB cluster members, excluding already-evicted.
+            for match in query_result.matches:
+                if match.record.uuid in db_eviction_uuids:
+                    continue
+                timestamp = cast(
+                    datetime.datetime,
+                    cast(dict[str, PropertyValue], match.record.properties)[
+                        EventMemory._TIMESTAMP_FIELD_NAME
+                    ],
+                )
+                members.append((timestamp, match.record.uuid, True))
+
+            # Batch predecessors, excluding already-skipped.
+            for index in predecessor_indexes:
+                neighbor = derivatives[index]
+                if neighbor.uuid not in batch_skip_uuids:
+                    members.append((neighbor.timestamp, neighbor.uuid, False))
+
+            # Self.
+            members.append((derivative.timestamp, derivative.uuid, False))
+
+            total_size = len(members)
+            if total_size <= eviction_target_size:
+                continue
+
+            # Cluster is oversized — evict from the temporal middle.
+            members.sort()
+            keep_early = eviction_target_size // 2
+            keep_late = eviction_target_size - keep_early
+
+            for _, uuid, is_from_db in members[keep_early : total_size - keep_late]:
+                if is_from_db:
+                    db_eviction_uuids.add(uuid)
+                else:
+                    batch_skip_uuids.add(uuid)
+
+        return db_eviction_uuids, batch_skip_uuids
+
     @classmethod
     def _to_vector_record_property(cls, field: str) -> str:
         """
@@ -358,6 +561,7 @@ class EventMemory:
         expand_context: int = 0,
         property_filter: FilterExpr | None = None,
         format_options: FormatOptions | None = None,
+        query_vector: Sequence[float] | None = None,
     ) -> QueryResult:
         """
         Query event memory for segments relevant to the query.
@@ -380,6 +584,10 @@ class EventMemory:
             format_options (FormatOptions | None):
                 Options for formatting.
                 (default: None).
+            query_vector (Sequence[float] | None):
+                Optional precomputed query embedding; when given, it is
+                used for the vector search instead of embedding ``query``
+                (default: None).
 
         Returns:
             QueryResult:
@@ -393,6 +601,7 @@ class EventMemory:
                 expand_context=expand_context,
                 property_filter=property_filter,
                 format_options=format_options,
+                query_vector=query_vector,
             )
 
     async def _query(
@@ -403,13 +612,14 @@ class EventMemory:
         expand_context: int,
         property_filter: FilterExpr | None,
         format_options: FormatOptions | None,
+        query_vector: Sequence[float] | None = None,
     ) -> QueryResult:
         t_start = time.monotonic()
         query_embedding = (
-            await self._embedder.search_embed(
-                [query],
-            )
-        )[0]
+            query_vector
+            if query_vector is not None
+            else (await self._embedder.search_embed([query]))[0]
+        )
         t_embedding = time.monotonic()
 
         # Translate filter fields for vector store.
@@ -554,13 +764,22 @@ class EventMemory:
         *,
         format_options: FormatOptions | None = None,
     ) -> str:
-        """Format segment context as a string."""
+        """Format segment context as a string.
+
+        Annotation notes are appended after the dumped content on the same
+        line, labeled so they read as notes rather than original content.
+        """
         if format_options is None:
             format_options = FormatOptions(time_style="short")
+
+        def entry_line(text: str, notes: list[str]) -> str:
+            dumped = json.dumps(text, ensure_ascii=False)
+            return dumped + "".join(f" [note: {note}]" for note in notes) + "\n"
 
         context_string = ""
         last_segment: Segment | None = None
         accumulated_text = ""
+        accumulated_notes: list[str] = []
         first = True
 
         for segment in segment_context:
@@ -572,11 +791,10 @@ class EventMemory:
 
             if not is_continuation:
                 if not first:
-                    context_string += (
-                        json.dumps(accumulated_text, ensure_ascii=False) + "\n"
-                    )
+                    context_string += entry_line(accumulated_text, accumulated_notes)
                 first = False
                 accumulated_text = ""
+                accumulated_notes = []
                 context_string += EventMemory._segment_header(segment, format_options)
 
             text = EventMemory._extract_text(segment.block)
@@ -585,10 +803,15 @@ class EventMemory:
             elif not is_continuation:
                 context_string += f"[{segment.block.block_type}]\n"
 
+            accumulated_notes.extend(
+                annotation.note
+                for annotation in find_contexts(segment.context, AnnotationContext)
+            )
+
             last_segment = segment
 
         if not first:
-            context_string += json.dumps(accumulated_text, ensure_ascii=False) + "\n"
+            context_string += entry_line(accumulated_text, accumulated_notes)
 
         return context_string.strip()
 
@@ -658,15 +881,10 @@ class EventMemory:
         formatted_timestamp = format_timestamp(segment.timestamp, format_options)
         timestamp_prefix = f"[{formatted_timestamp}] " if formatted_timestamp else ""
 
-        match segment.context:
-            case ProducerContext(producer=producer):
-                return f"{timestamp_prefix}{producer}: "
-            case NullContext():
-                return timestamp_prefix
-            case _:
-                raise NotImplementedError(
-                    f"Unsupported context type: {type(segment.context).__name__}"
-                )
+        producers = find_contexts(segment.context, ProducerContext)
+        if producers:
+            return f"{timestamp_prefix}{producers[0].producer}: "
+        return timestamp_prefix
 
     @staticmethod
     def _extract_text(block: Block) -> str | None:

@@ -33,6 +33,7 @@ from sqlalchemy import (
     text,
     true,
     tuple_,
+    update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine.interfaces import DBAPIConnection
@@ -80,6 +81,7 @@ from memmachine_server.common.properties_json import (
 )
 from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
 from memmachine_server.episodic_memory.event_memory.data_types import (
+    Context,
     NullContext,
     Segment,
     decode_block,
@@ -645,6 +647,36 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         for segment_uuid, derivative_uuid in rows:
             result[segment_uuid].append(derivative_uuid)
         return dict(result)
+
+    # Mutation
+
+    @override
+    async def update_segment_contexts(
+        self,
+        contexts_by_segment_uuid: Mapping[UUID, Context],
+    ) -> None:
+        if not contexts_by_segment_uuid:
+            return
+
+        async with (
+            self._tracker("update_segment_contexts"),
+            self._create_session() as session,
+            session.begin(),
+        ):
+            await self._lock_partition_for_write(session)
+            for segment_uuid, context in contexts_by_segment_uuid.items():
+                await session.execute(
+                    update(SegmentRow)
+                    .where(
+                        SegmentRow.partition_key == self._partition_key,
+                        SegmentRow.uuid == segment_uuid,
+                    )
+                    .values(
+                        context=self._payload_codec.encode(
+                            json.dumps(encode_context(context)).encode("utf-8")
+                        )
+                    )
+                )
 
     # Deletion
 

@@ -10,6 +10,7 @@ from uuid import UUID
 
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.episodic_memory.event_memory.data_types import (
+    Context,
     Segment,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.data_types import (
@@ -101,6 +102,20 @@ class SegmentStorePartition(ABC):
         Returns:
             dict[UUID, list[UUID]]:
                 A mapping from each segment UUID to the UUIDs of its associated derivatives.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update_segment_contexts(
+        self,
+        contexts_by_segment_uuid: Mapping[UUID, Context],
+    ) -> None:
+        """
+        Replace the stored context of segments given by their UUIDs.
+
+        Args:
+            contexts_by_segment_uuid (Mapping[UUID, Context]):
+                A mapping from each segment UUID to its new context.
         """
         raise NotImplementedError
 

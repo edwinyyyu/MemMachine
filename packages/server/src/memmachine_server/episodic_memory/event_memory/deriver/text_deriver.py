@@ -10,10 +10,10 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     Context,
     Derivative,
     FormatOptions,
-    NullContext,
     ProducerContext,
     Segment,
     TextBlock,
+    find_contexts,
 )
 from memmachine_server.episodic_memory.event_memory.deriver.deriver import Deriver
 from memmachine_server.episodic_memory.event_memory.formatting import (
@@ -22,16 +22,15 @@ from memmachine_server.episodic_memory.event_memory.formatting import (
 
 
 def _format_with_context(context: Context, text: str) -> str:
-    """Format text within its context."""
-    match context:
-        case ProducerContext(producer=producer):
-            return f"{producer}: {text}"
-        case NullContext():
-            return text
-        case _:
-            raise NotImplementedError(
-                f"Unsupported context type: {type(context).__name__}"
-            )
+    """Format text within its context.
+
+    Only the producer participates in the embedding anchor; annotations are
+    display-only and must not perturb stored vectors, so they are ignored here.
+    """
+    producers = find_contexts(context, ProducerContext)
+    if producers:
+        return f"{producers[0].producer}: {text}"
+    return text
 
 
 def _format_for_embedding(
