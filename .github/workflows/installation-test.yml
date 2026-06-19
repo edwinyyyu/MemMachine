@@ -119,7 +119,16 @@ jobs:
       - name: macOS - Install Ollama
         if: matrix.os == 'macos-latest' || matrix.os == 'macos-15-intel'
         run: |
-          brew install ollama
+          set -eo pipefail
+          # The Homebrew `ollama` bottle (0.30.x) ships without the
+          # `llama-server` inference binary, so GGUF models fail at runtime with
+          # "llama-server binary not found". Also install the `llama.cpp` formula
+          # and symlink its `llama-server` into the location ollama searches.
+          # See https://github.com/Homebrew/homebrew-core/issues/285917
+          brew install ollama llama.cpp
+          ollama_libexec="$(brew --prefix ollama)/libexec/lib/ollama"
+          mkdir -p "$ollama_libexec"
+          ln -sf "$(brew --prefix llama.cpp)/bin/llama-server" "$ollama_libexec/llama-server"
           brew services start ollama
 
       - name: macOS - Test installation
