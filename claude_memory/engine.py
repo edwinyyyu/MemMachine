@@ -114,6 +114,10 @@ def _home_config(home: Path) -> dict[str, Any]:
 # ``_EXTRA_INDEXED_PROPERTIES``). ``CLAUDE_MEMORY_PARTITION`` overrides it.
 _SHARED_PARTITION = "shared"
 
+# Eviction on by default at the embeddinggemma-calibrated cosine threshold (the
+# value our deployment runs). Disable with CLAUDE_MEMORY_EVICTION_THRESHOLD="".
+_DEFAULT_EVICTION_THRESHOLD = 0.9
+
 
 @dataclass(frozen=True)
 class MemoryConfig:
@@ -126,7 +130,10 @@ class MemoryConfig:
     namespace: str
     partition: str
     embedding_model: str
-    # Eviction (semantic compaction at ingest). None = off. See EventMemory.
+    # Eviction (semantic compaction at ingest): cosine threshold for near-dup
+    # clusters whose temporal middle is deleted. None = off. Defaults to
+    # _DEFAULT_EVICTION_THRESHOLD (on; calibrated for embeddinggemma) — set
+    # CLAUDE_MEMORY_EVICTION_THRESHOLD="" (or config null) to disable. See EventMemory.
     eviction_threshold: float | None
     eviction_target_size: int
     eviction_search_limit: int
@@ -159,7 +166,7 @@ class MemoryConfig:
             raw = home_config["eviction_threshold"]
             eviction_threshold = float(raw) if raw is not None else None
         else:
-            eviction_threshold = None
+            eviction_threshold = _DEFAULT_EVICTION_THRESHOLD
 
         env_reflect = os.environ.get("CLAUDE_MEMORY_REFLECT")
         if env_reflect is not None:

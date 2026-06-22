@@ -537,6 +537,10 @@ def main() -> None:
     base = Path(tempfile.mkdtemp(prefix="claude_memory_smoke_"))
     os.environ["CLAUDE_MEMORY_EMBEDDING"] = "hash"
     os.environ["CLAUDE_MEMORY_DAEMON_IDLE"] = "120"
+    # Pin eviction OFF: the suite asserts exact ingest/novelty counts, which the
+    # lossy eviction path (now on by default) would perturb — and hash-embedder
+    # near-dup behavior isn't representative anyway.
+    os.environ["CLAUDE_MEMORY_EVICTION_THRESHOLD"] = ""
     # Exercise the reflect op; threshold -1 lets hash-embedder scores through so
     # the check tests the mechanism (novelty + render), not semantic relevance.
     os.environ["CLAUDE_MEMORY_REFLECT"] = "1"

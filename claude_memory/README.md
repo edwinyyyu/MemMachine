@@ -117,17 +117,21 @@ no system services, no global env changes.)
 | `CLAUDE_MEMORY_PARTITION` | derived from cwd | Pin to share one memory across checkouts |
 | `CLAUDE_MEMORY_VECTOR_BACKEND` | `turbovec` | `turbovec` (compressed ANN, fast at scale, ~10× smaller vectors, approximate) or `sqlitevec` (exact float32). |
 | `CLAUDE_MEMORY_TURBOVEC_BITS` | `4` | turbovec quantization bits/dim (2/3/4). `2` halves the index at some recall cost. |
-| `CLAUDE_MEMORY_EVICTION_THRESHOLD` | unset (off) | Cosine similarity at/above which derivatives form one cluster. Set (e.g. `0.9`) to enable eviction; unset disables it. `0.90` ≈ OpenAI text-embedding-3-small `0.85` (calibrated); `0.95` is much stricter (≈ text-embedding-3-small `0.93`). |
-| `CLAUDE_MEMORY_EVICTION_TARGET` | `15` | Max cluster size kept; over this, temporally middle members are evicted (oldest/newest kept). |
+| `CLAUDE_MEMORY_EVICTION_THRESHOLD` | `0.9` (on) | Cosine similarity at/above which derivatives form one cluster. Default `0.9` (calibrated for embeddinggemma) enables eviction; set to empty (`CLAUDE_MEMORY_EVICTION_THRESHOLD=`) to disable. `0.90` ≈ OpenAI text-embedding-3-small `0.85`; `0.95` is much stricter (≈ `0.93`). |
+| `CLAUDE_MEMORY_EVICTION_TARGET` | `5` | Max cluster size kept; over this, temporally middle members are evicted (oldest/newest kept). |
 | `CLAUDE_MEMORY_EVICTION_SEARCH_LIMIT` | `20` | Max stored neighbours fetched per new derivative when evaluating eviction. |
 
-## Eviction (semantic compaction) — optional, off by default
+## Eviction (semantic compaction) — on by default (0.9)
 
-When `CLAUDE_MEMORY_EVICTION_THRESHOLD` is set, ingest caps each cluster of
-near-duplicate memories at `…_TARGET`, deleting the temporal middle and keeping
-the earliest + latest. This is implemented in `EventMemory` itself
-(`eviction_similarity_threshold=None` ⇒ disabled), so it works for any backend,
-not just this agent. Unset ⇒ identical to before (no eviction).
+Ingest caps each cluster of near-duplicate memories at `…_TARGET`, deleting the
+temporal middle and keeping the earliest + latest. **On by default** at
+`CLAUDE_MEMORY_EVICTION_THRESHOLD=0.9` (calibrated for the default embeddinggemma
+embedder — the value our deployment runs). It's implemented in `EventMemory`
+itself (`eviction_similarity_threshold=None` ⇒ disabled), so it works for any
+backend. To turn it **off**, set the threshold to empty
+(`CLAUDE_MEMORY_EVICTION_THRESHOLD=`) or `eviction_threshold: null` in
+`<home>/config.json`. Note it is **lossy** (it deletes segments), which is why a
+non-default embedder should recalibrate the threshold before relying on it.
 
 The setting is read when the **daemon starts**, so it's fixed for that daemon.
 To A/B *eviction off vs on* cleanly, give each its own home so both memories
