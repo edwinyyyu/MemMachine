@@ -17,6 +17,8 @@ if os.getenv("CI") == "true":
         allow_module_level=True,
     )
 
+pytest.importorskip("hnswlib")
+
 from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.vector_store.vector_search_engine.hnswlib_engine import (
     HnswlibVectorSearchEngine,

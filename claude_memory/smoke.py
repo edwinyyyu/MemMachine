@@ -208,6 +208,39 @@ async def _core_suite(checker: _Checker) -> None:
         checker.check(len(hop.hits) > 0, "follow-the-lead is just another search")
         _ = render_search_result(hop, cue="Caroline home country")
 
+        from claude_memory.cli import _AMBIENT_CURATION_NOTE, _render_ambient
+        from claude_memory.engine import Hit
+
+        amb = _render_ambient(
+            [Hit(memory_id="mem:deadbeef", score=0.5, text="a deploy note", is_new=True)]
+        )
+        checker.check(
+            amb.startswith(_AMBIENT_CURATION_NOTE) and "[mem:deadbeef]" in amb,
+            "ambient render leads with the curation affordance, then the memories",
+        )
+        checker.check(
+            _render_ambient([]) == "",
+            "ambient render is empty (no affordance) when nothing surfaced",
+        )
+
+        from mcp.server.fastmcp import FastMCP
+
+        from claude_memory.cli import _register_memory_tools
+
+        probe_mcp = FastMCP("probe")
+        _register_memory_tools(probe_mcp, wait=0.0)
+        meta_by = {t.name: (t.meta or {}) for t in await probe_mcp.list_tools()}
+        checker.check(
+            meta_by.get("memory_demote", {}).get("anthropic/alwaysLoad") is True
+            and meta_by.get("memory_annotate", {}).get("anthropic/alwaysLoad") is True,
+            "curation tools are marked alwaysLoad (pre-loaded, not deferred)",
+        )
+        checker.check(
+            "anthropic/alwaysLoad" not in meta_by.get("memory_search", {})
+            and "anthropic/alwaysLoad" not in meta_by.get("memory_expand", {}),
+            "read tools stay deferred (loaded on deliberate use)",
+        )
+
         [cue_vec] = await core.stores.embedder.search_embed(
             ["planning a trip to Sweden"]
         )

@@ -24,6 +24,10 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mcp.server.fastmcp import FastMCP
 
 from claude_memory.daemon import (
     DaemonUnavailableError,
@@ -55,14 +59,31 @@ def _stdin_json() -> dict:
 _AMBIENT_LIMIT = 4
 _SNIPPET_CHARS = 400
 
+# Standing curation affordance carried on the ambient block (the surfaced
+# mem:<id>s are already in front of me at the moment I judge their relevance,
+# so this is the cheapest seam to act on a wrong/stale one — no extra hook, no
+# blocking, no extra retrieval). Closes the recognition->action gap that leaves
+# the write tools dormant.
+_AMBIENT_CURATION_NOTE = (
+    "If a memory below is wrong, stale, or superseded for what you're doing, "
+    "curate it as you go rather than just skipping it: "
+    "memory_annotate(mem:<id>, note) to attach a lasting correction "
+    "(e.g. 'superseded by mem:<id>', 'this was abandoned'), or "
+    "memory_demote(mem:<id>, cue) if it shouldn't keep surfacing for a cue "
+    "you'll search again."
+)
+
 
 def _render_ambient(hits: list[Hit]) -> str:
-    # Same one-line format as search (no scores, no headers); snippet-capped
-    # because this is injected on every prompt.
-    return "\n".join(
+    # One line per hit (no scores/headers; snippet-capped because it's injected
+    # every prompt), led by the standing curation affordance.
+    if not hits:
+        return ""
+    lines = [
         format_memory_line(hit.memory_id, hit.text, max_chars=_SNIPPET_CHARS)
         for hit in hits
-    )
+    ]
+    return _AMBIENT_CURATION_NOTE + "\n\n" + "\n".join(lines)
 
 
 def cmd_ambient() -> None:
@@ -230,12 +251,16 @@ def _call_daemon(payload: dict, wait: float) -> dict | str:
     return response
 
 
-def cmd_mcp() -> None:
-    """Run the MCP server (stdio): search / expand / demote / annotate tools."""
-    from mcp.server.fastmcp import FastMCP
+# The curation tools fire opportunistically off the ambient affordance, so their
+# schemas must already be in context the moment a stale memory is noticed — not
+# behind a ToolSearch hop. alwaysLoad exempts a tool from MCP deferral (the wire
+# flag Claude Code reads). The read tools stay deferred: they're invoked
+# deliberately, so loading them is part of the intent to search.
+_ALWAYS_LOAD = {"anthropic/alwaysLoad": True}
 
-    mcp = FastMCP("claude-memory")
-    wait = 90.0
+
+def _register_memory_tools(mcp: "FastMCP", wait: float) -> None:
+    """Attach the memory tools to a FastMCP server (shared by stdio and HTTP)."""
 
     @mcp.tool()
     async def memory_search(
@@ -308,7 +333,7 @@ def cmd_mcp() -> None:
             return response
         return render_expand_result(expand_result_from_dict(response["result"]))
 
-    @mcp.tool()
+    @mcp.tool(meta=_ALWAYS_LOAD)
     async def memory_demote(memory_id: str, cue: str) -> str:
         """Make a memory rank lower for a cue (and similar cues) in future recall.
 
@@ -336,7 +361,7 @@ def cmd_mcp() -> None:
             return response
         return demote_result_from_dict(response["result"]).message
 
-    @mcp.tool()
+    @mcp.tool(meta=_ALWAYS_LOAD)
     async def memory_annotate(memory_id: str, note: str) -> str:
         """Attach a one-line note to a memory, visible on every future retrieval.
 
@@ -363,7 +388,29 @@ def cmd_mcp() -> None:
             return response
         return str(response.get("message", ""))
 
+
+def cmd_mcp() -> None:
+    """Run the MCP server (stdio): search / expand / demote / annotate tools."""
+    from mcp.server.fastmcp import FastMCP
+
+    mcp = FastMCP("claude-memory")
+    _register_memory_tools(mcp, wait=90.0)
     mcp.run()
+
+
+def cmd_mcp_http(port: int) -> None:
+    """Run the MCP server over streamable HTTP on 127.0.0.1 (URL-based clients).
+
+    A stateless transport bridge, independent of the per-session stdio shims:
+    it forwards every tool call to the same daemon, so URL clients (e.g. the
+    Desktop connectors UI) share one memory with CLI sessions. Localhost-only
+    by construction - the daemon has no auth, so this must never bind wider.
+    """
+    from mcp.server.fastmcp import FastMCP
+
+    mcp = FastMCP("claude-memory", host="127.0.0.1", port=port)
+    _register_memory_tools(mcp, wait=90.0)
+    mcp.run(transport="streamable-http")
 
 
 # ---------------------------------------------------------------------- install
@@ -383,6 +430,55 @@ def _repo_root() -> Path:
 
 def _venv_python(repo: Path) -> Path:
     return repo / ".venv" / "bin" / "python"
+
+
+_SKILL_NAME = "episodic-recall"
+
+
+def _skill_paths(repo: Path, scope: str) -> tuple[Path, Path]:
+    """(source skill dir in the repo, destination skill dir for the scope)."""
+    source = repo / "claude_memory" / "skills" / _SKILL_NAME
+    root = Path.cwd() / ".claude" if scope == "project" else Path.home() / ".claude"
+    return source, root / "skills" / _SKILL_NAME
+
+
+def _install_skill(repo: Path, scope: str) -> None:
+    """Copy the episodic-recall skill into the scope's skills dir (idempotent)."""
+    source, dest = _skill_paths(repo, scope)
+    if not source.exists():
+        print(f"\nSkill source missing at {source}; skipping skill install.")
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, dest, dirs_exist_ok=True)
+    print(f"Installed skill '{_SKILL_NAME}' to {dest}")
+
+
+def _remove_skill(repo: Path, scope: str) -> None:
+    """Remove the installed episodic-recall skill for the scope."""
+    _, dest = _skill_paths(repo, scope)
+    if dest.exists():
+        shutil.rmtree(dest, ignore_errors=True)
+        print(f"Removed skill '{_SKILL_NAME}' from {dest}")
+
+
+def _apply_skill(repo: Path, scope: str, *, disable: bool) -> None:
+    """Install or remove the skill for the scope."""
+    if disable:
+        _remove_skill(repo, scope)
+    else:
+        _install_skill(repo, scope)
+
+
+def _apply_mcp(scope: str, mcp_argv: list[str], *, disable: bool) -> None:
+    """Register or remove the MCP server for the scope."""
+    _run(["claude", "mcp", "remove", MCP_NAME, "-s", scope])
+    if disable:
+        print(f"Removed MCP server '{MCP_NAME}'.")
+    elif _run(mcp_argv) != 0:
+        print(
+            "\nCould not register the MCP server automatically. Run this "
+            "yourself:\n  " + " ".join(mcp_argv)
+        )
 
 
 def _hook_command(sub: str, *, repo: Path, venv_python: Path, db_home: Path) -> str:
@@ -469,6 +565,31 @@ def _stop_daemon(db_home: Path) -> None:
     print(stop_daemon(MemoryConfig.load()))
 
 
+def _print_install_plan(
+    settings: dict,
+    *,
+    settings_path: Path,
+    db_home: Path,
+    repo: Path,
+    venv_python: Path,
+    scope: str,
+    mcp_argv: list[str],
+    skip_skill: bool,
+) -> None:
+    """Print what `install` would write, changing nothing (dry run)."""
+    print("--- DRY RUN: nothing written ---\n")
+    print(f"scope         : {scope}")
+    print(f"settings file : {settings_path}")
+    print(f"database home : {db_home}")
+    print(f"repo / venv   : {repo}\n                {venv_python}\n")
+    print("settings.json would become:\n")
+    print(json.dumps(settings, indent=2))
+    print("\nMCP registration command:\n  " + " ".join(mcp_argv))
+    if not skip_skill:
+        _, skill_dest = _skill_paths(repo, scope)
+        print(f"\nSkill '{_SKILL_NAME}' would be installed to:\n  {skill_dest}")
+
+
 def cmd_install(args: argparse.Namespace) -> None:
     """Enable, preview, or remove the global (or project) claude_memory config."""
     repo = _repo_root()
@@ -501,14 +622,16 @@ def cmd_install(args: argparse.Namespace) -> None:
         _merge_hooks(settings, commands)
 
     if args.dry_run:
-        print("--- DRY RUN: nothing written ---\n")
-        print(f"scope         : {scope}")
-        print(f"settings file : {settings_path}")
-        print(f"database home : {db_home}")
-        print(f"repo / venv   : {repo}\n                {venv_python}\n")
-        print("settings.json would become:\n")
-        print(json.dumps(settings, indent=2))
-        print("\nMCP registration command:\n  " + " ".join(mcp_argv))
+        _print_install_plan(
+            settings,
+            settings_path=settings_path,
+            db_home=db_home,
+            repo=repo,
+            venv_python=venv_python,
+            scope=scope,
+            mcp_argv=mcp_argv,
+            skip_skill=args.skip_skill,
+        )
         return
 
     _write_settings(settings_path, settings)
@@ -516,14 +639,10 @@ def cmd_install(args: argparse.Namespace) -> None:
     print(f"(backup: {settings_path}.bak)")
 
     if not args.skip_mcp:
-        _run(["claude", "mcp", "remove", MCP_NAME, "-s", scope])
-        if args.disable:
-            print(f"Removed MCP server '{MCP_NAME}'.")
-        elif _run(mcp_argv) != 0:
-            print(
-                "\nCould not register the MCP server automatically. Run this "
-                "yourself:\n  " + " ".join(mcp_argv)
-            )
+        _apply_mcp(scope, mcp_argv, disable=args.disable)
+
+    if not args.skip_skill:
+        _apply_skill(repo, scope, disable=args.disable)
 
     if args.disable:
         _stop_daemon(db_home)
@@ -589,6 +708,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("mcp", help="Run the MCP server (stdio).")
+    mcp_http = sub.add_parser(
+        "mcp-http",
+        help="Run the MCP server over HTTP on 127.0.0.1 (URL clients, "
+        "e.g. Desktop connectors). Same daemon, same memory.",
+    )
+    mcp_http.add_argument(
+        "--port", type=int, default=8765, help="Localhost port (default 8765)."
+    )
     sub.add_parser("warm", help="SessionStart hook: warm the daemon.")
     sub.add_parser("ambient", help="UserPromptSubmit hook: ambient recall.")
     sub.add_parser("stop", help="Stop hook: reflective recall + verbatim capture.")
@@ -616,6 +743,9 @@ def main() -> None:
         "--skip-mcp", action="store_true", help="Skip MCP registration."
     )
     install.add_argument(
+        "--skip-skill", action="store_true", help="Skip episodic-recall skill install."
+    )
+    install.add_argument(
         "--purge",
         action="store_true",
         help="With --disable, also delete the memory databases.",
@@ -636,6 +766,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "mcp":
         cmd_mcp()
+    elif args.command == "mcp-http":
+        cmd_mcp_http(args.port)
     elif args.command == "warm":
         cmd_warm()
     elif args.command == "ambient":

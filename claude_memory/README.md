@@ -23,20 +23,33 @@ which holds the loaded model and all state — so the ~5-6s model load happens
 **once**. Everything lives under `$CLAUDE_MEMORY_HOME` (default
 `~/.claude/claude_memory`).
 
-## Prerequisites
+## Fresh-system install
 
-- Run everything from this repo (so `claude_memory` imports and the partition is
-  stable). Start Claude Code in `agentic_expansion/`.
-- The embedder is local **embeddinggemma-300m** — the only model this uses. It
-  needs `sentence-transformers` (and `torch`) installed and the model in the HF
-  cache: `uv pip install sentence-transformers`. **No cloud/OpenAI model is used,
-  no network, no API key.** The SessionStart hook warms the daemon so the first
-  prompt's recall is instant; warm calls are ~0.1s.
-- The default vector backend is **turbovec** (TurboQuant-compressed ANN index),
-  which needs `uv pip install turbovec`. (Both this and `sentence-transformers`
-  are installed ad-hoc, not via `uv sync` — and a `uv sync` will remove them, so
-  reinstall after one.) To avoid turbovec entirely, set
-  `CLAUDE_MEMORY_VECTOR_BACKEND=sqlitevec` (exact, no extra dep).
+From a clean clone, in `agentic_expansion/`:
+
+```bash
+uv sync                                       # 1. package + server deps (embedder, sqlitevec — all locked)
+uv pip install turbovec                       # 2. default ANN backend (see note); or skip + use sqlitevec
+uv run python -m claude_memory.smoke          # 3. optional sanity check (no network, no model)
+uv run python -m claude_memory.cli install    # 4. wire hooks + MCP + skill (--dry-run to preview)
+# 5. restart Claude Code
+```
+
+Step 4 is one idempotent installer that does everything; step 5 makes it live.
+
+- **Run everything from this repo** so `claude_memory` imports and the partition
+  is stable. Start Claude Code in `agentic_expansion/`.
+- **Embedder** — local **embeddinggemma-300m**, the only model. `sentence-transformers`
+  and `torch` are declared deps, so `uv sync` installs them; the model **weights**
+  download from HuggingFace into the HF cache on the first real turn (one-time,
+  network — set `HF_TOKEN` if rate-limited). **No cloud/OpenAI model, no API key.**
+- **Vector backend** — the default **turbovec** (TurboQuant-compressed ANN) is a
+  local wheel **not** in the lockfile, so `uv sync` neither installs it nor keeps
+  it: run `uv pip install turbovec` (step 2) and re-run after any later `uv sync`.
+  To avoid it entirely, set `CLAUDE_MEMORY_VECTOR_BACKEND=sqlitevec` (exact
+  float32, no extra dep — `sqlite-vec` is already locked) and skip step 2.
+- The SessionStart hook warms the daemon so the first prompt's recall is instant
+  (~0.1s warm calls).
 
 ## 1. Smoke test (no key, no network)
 
@@ -61,9 +74,10 @@ uv run python -m claude_memory.cli install --disable --purge   # uninstall + del
 ```
 
 It merges the three hooks into `~/.claude/settings.json` (backed up to
-`settings.json.bak`) and registers the MCP server at user scope via
-`claude mcp add`. Restart Claude Code afterward. Databases default to
-`~/.claude/claude_memory` (override with `--db-home PATH`).
+`settings.json.bak`), registers the MCP server at user scope via `claude mcp add`,
+and copies the **`episodic-recall` skill** into `~/.claude/skills/`. Restart
+Claude Code afterward. Databases default to `~/.claude/claude_memory` (override
+with `--db-home PATH`). Flags: `--skip-mcp` / `--skip-skill` to omit a piece.
 
 The hooks register `SessionStart`→`cli warm` (spawns/warms the daemon),
 `UserPromptSubmit`→`cli ambient` (non-blocking), `Stop`→`cli ingest` (capture).
@@ -87,10 +101,11 @@ uv run python -m claude_memory.cli install --disable --purge   # also delete dat
 
 `--disable` reverses everything install did: it removes the three hooks from
 `settings.json` (leaving your other hooks/settings untouched, with a fresh
-`.bak`), runs `claude mcp remove`, and shuts down the running daemon. It keeps the
-databases unless you add `--purge`. Match the scope you installed with
-(`--scope project` if you enabled per-project). After it, restart Claude Code.
-(There is nothing else to clean up — no system services, no global env changes.)
+`.bak`), runs `claude mcp remove`, removes the installed `episodic-recall` skill,
+and shuts down the running daemon. It keeps the databases unless you add
+`--purge`. Match the scope you installed with (`--scope project` if you enabled
+per-project). After it, restart Claude Code. (There is nothing else to clean up —
+no system services, no global env changes.)
 
 ## Configuration (environment)
 

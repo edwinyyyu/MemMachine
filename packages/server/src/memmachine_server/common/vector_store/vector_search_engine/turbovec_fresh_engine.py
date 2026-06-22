@@ -1,16 +1,17 @@
-"""Disk-primary turbovec (TurboQuant) implementation of VectorSearchEngine.
+"""Incrementally-updatable turbovec (SPFresh) VectorSearchEngine.
 
-Same quantized brute-force search as
-:class:`~.turbovec_engine.TurboVecVectorSearchEngine`, but backed by
-``turbovec.DiskIndex``: the quantized codes live in a memory-mapped ``.tvdm``
-file in the SIMD-blocked layout the scoring kernel consumes, so searches run
-directly over the mapped bytes. Resident memory stays bounded by the OS page
-cache plus a small in-RAM delta of vectors added since the last save;
-``save()`` compacts the delta and any tombstoned removals into a fresh file.
+Same quantized search, routing, and recall levers as
+:class:`~.turbovec_disk_engine.TurboVecDiskVectorSearchEngine`, but backed by
+``turbovec.FreshIndex``: the index is a *directory* with one append-only
+segment file per partition, a write-ahead log, and an atomically-replaced
+manifest. ``save()`` appends buffered vectors to the partitions they belong
+to and runs local split/merge/reassign maintenance — it never rewrites the
+whole index, untouched partitions keep their page-cache contents, and
+mutations since the last save survive a crash via the write-ahead log.
 
-Use with :class:`~..sqlite_vector_store.SQLiteVectorStore` and an
-``index_directory`` — without one, ``save()`` is never called and the delta
-grows unbounded, degenerating to the in-RAM engine's footprint.
+Prefer this engine over the ``.tvdm`` disk engine when the corpus sees
+ongoing inserts/removes; the single-file engine remains the simpler artifact
+for build-once corpora (and the two formats convert losslessly).
 """
 
 import asyncio
@@ -18,39 +19,21 @@ from collections.abc import Iterable
 from typing import override
 
 import numpy as np
-from turbovec import DiskIndex
+from turbovec import FreshIndex
 
 from memmachine_server.common.data_types import SimilarityMetric
 
 from .turbovec_engine import TurboVecVectorSearchEngine
 
 
-class TurboVecDiskVectorSearchEngine(TurboVecVectorSearchEngine):
-    """Vector search engine backed by a memory-mapped turbovec DiskIndex.
+class TurboVecFreshVectorSearchEngine(TurboVecVectorSearchEngine):
+    """Vector search engine backed by an incrementally-updatable FreshIndex.
 
-    ``target_partition_size``, when set, enables SPFresh-style partitioning:
-    at each save the codes are clustered into partitions of roughly that many
-    vectors and searches probe only the nearest partitions — queries touch a
-    fraction of the file instead of all of it, at the cost of approximate
-    routing. ``None`` (default) keeps the index flat and the quantized scan
-    exact.
-
-    Three opt-in recall levers on top of routed search:
-
-    * ``store_vectors=True`` keeps the full-precision vectors in the file
-      (and enables ``get_vectors``); searches then exact-rescore the top
-      quantized candidates by f32 inner product, lifting the quantization
-      ceiling for a handful of mapped page reads per query. ``rescore_k``
-      overrides the rescore depth (default ``4 * limit``; ``0`` disables).
-    * ``probe_epsilon`` switches a partitioned index to distance-bounded
-      adaptive probing: each query scans every partition whose centroid is
-      within ``(1 + probe_epsilon)`` of its nearest, up to the ``nprobe``
-      cap, so boundary queries probe more partitions than confident ones.
-    * ``replica_epsilon`` enables SPANN-style boundary multi-assignment at
-      save time: vectors near partition boundaries are also stored in the
-      adjacent partitions (RNG-rule pruned, at most 8 copies), making them
-      findable at small probe counts. Costs the replication factor in file
-      size.
+    Constructor knobs are identical to the disk engine:
+    ``target_partition_size`` (SPFresh partitioning), ``store_vectors``
+    (exact rescoring + ``get_vectors``), ``replica_epsilon`` (boundary
+    multi-assignment), and the per-search ``nprobe`` / ``probe_epsilon`` /
+    ``rescore_k``.
     """
 
     def __init__(
@@ -77,7 +60,7 @@ class TurboVecDiskVectorSearchEngine(TurboVecVectorSearchEngine):
         self._nprobe = nprobe
         self._probe_epsilon = probe_epsilon
         self._rescore_k = rescore_k
-        self._index = DiskIndex(
+        self._index = FreshIndex(
             dim=num_dimensions,
             bit_width=bit_width,
             target_partition_size=target_partition_size,
@@ -122,14 +105,17 @@ class TurboVecDiskVectorSearchEngine(TurboVecVectorSearchEngine):
         }
 
     @override
+    async def save(self, path: str) -> None:
+        async with self._lock.write_lock():
+            await asyncio.to_thread(self._index.save, path)
+
+    @override
     async def load(self, path: str) -> None:
         async with self._lock.write_lock():
-            index = await asyncio.to_thread(DiskIndex.open, path)
-            # The engine's configuration wins over what the file recorded,
-            # but only when explicitly configured — None means "follow the
-            # file" so reopening a partitioned/replicated index keeps its
-            # settings. store_vectors always follows the file: it is fixed
-            # at build time and cannot be retrofitted onto existing rows.
+            index = await asyncio.to_thread(FreshIndex.open, path)
+            # Explicit engine configuration wins over what the directory
+            # recorded; None means "follow the index". store_vectors always
+            # follows the index (fixed at build time).
             if self._target_partition_size is not None:
                 index.target_partition_size = self._target_partition_size
             if self._replica_epsilon is not None:

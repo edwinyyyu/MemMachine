@@ -88,7 +88,7 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
         query = self._prepare_vectors(vectors)
 
         if allowed_keys is None:
-            scores, ids = self._index.search(query, limit)
+            scores, ids = self._index_search(query, limit)
             return [
                 SearchResult(matches=self._to_matches(scores[i], ids[i], limit, None))
                 for i in range(query.shape[0])
@@ -99,6 +99,12 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
             for i in range(query.shape[0])
         ]
 
+    def _index_search(
+        self, queries: np.ndarray, limit: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Run the underlying index search; subclasses add their knobs."""
+        return self._index.search(queries, limit)
+
     def _search_one_filtered(
         self,
         query: np.ndarray,
@@ -107,7 +113,7 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
     ) -> SearchResult:
         fetch_limit = limit * self._OVERFETCH_BASE
         while True:
-            scores, ids = self._index.search(query, fetch_limit)
+            scores, ids = self._index_search(query, fetch_limit)
             matches = self._to_matches(scores[0], ids[0], limit, allowed_keys)
             exhausted = ids.shape[1] < fetch_limit
             if len(matches) >= limit or exhausted:

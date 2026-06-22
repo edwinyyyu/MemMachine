@@ -7,6 +7,7 @@ on startup, unfinalized operations are replayed.
 """
 
 import logging
+import shutil
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
@@ -130,6 +131,18 @@ class _PendingOperationRow(BaseSQLiteVectorStore):
     )  # "upsert" or "delete"
     vector: MappedColumn[bytes | None] = mapped_column(LargeBinary, nullable=True)
     applied: MappedColumn[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+def _remove_index_artifact(path: Path) -> None:
+    """Remove an on-disk index.
+
+    Handles both file-shaped indexes (e.g. ``.tvdm``) and directory-shaped
+    ones (e.g. a FreshIndex).
+    """
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+    elif path.exists():
+        path.unlink()
 
 
 async def _save_collection_index(
@@ -954,8 +967,8 @@ class SQLiteVectorStore(VectorStore):
         # If unlink fails, the orphan is harmless.
         # _clear_search_engine_state will clean it up if a new collection with the same name is created.
         index_path = self._index_path(namespace, name)
-        if index_path is not None and index_path.exists():
-            index_path.unlink()
+        if index_path is not None:
+            _remove_index_artifact(index_path)
         self._search_engines.pop((namespace, name), None)
 
     # Helpers.
@@ -986,8 +999,8 @@ class SQLiteVectorStore(VectorStore):
         """Remove any in-memory engine and on-disk index for a collection."""
         self._search_engines.pop((namespace, name), None)
         index_path = self._index_path(namespace, name)
-        if index_path is not None and index_path.exists():
-            index_path.unlink()
+        if index_path is not None:
+            _remove_index_artifact(index_path)
 
     async def _get_stored_config(
         self,
