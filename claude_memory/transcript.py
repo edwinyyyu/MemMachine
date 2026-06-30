@@ -19,20 +19,21 @@ transcript, so reasoning capture is best-effort. Hooks cannot see the model's
 hidden reasoning directly.
 """
 
+from __future__ import annotations
+
 import datetime
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from memmachine_server.episodic_memory.event_memory.data_types import (
-    Event,
-    ProducerContext,
-    TextBlock,
-)
+from claude_memory.wire import Source
 
-from claude_memory.engine import Source
+if TYPE_CHECKING:
+    # Annotation-only (resolved by the type checker); the runtime import lives in
+    # _Builder.build so importing this module stays free of the heavy stack.
+    from memmachine_server.episodic_memory.event_memory.data_types import Event
 
 
 def _as_dict(value: object) -> dict[str, Any] | None:
@@ -66,6 +67,16 @@ class _Builder:
         parsed_timestamp: datetime.datetime | None,
         extra_properties: dict[str, str] | None = None,
     ) -> Event:
+        # Lazy: this is the only runtime use of the memmachine event types, and
+        # importing them eagerly pulls in the heavy memmachine_server stack
+        # (numpy/sqlalchemy) — which the thin clients that import this module for
+        # last_compaction_time must not pay. Only the daemon's ingest builds events.
+        from memmachine_server.episodic_memory.event_memory.data_types import (
+            Event,
+            ProducerContext,
+            TextBlock,
+        )
+
         properties: dict[str, str] = {
             "source": str(source),
             "producer": producer,

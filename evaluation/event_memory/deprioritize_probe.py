@@ -98,14 +98,24 @@ async def promote_section(emb, q: np.ndarray, d: np.ndarray, g: np.ndarray) -> N
     print("\n================ E: promote the good doc (don't touch d) ================")
     corpus = {"TARGET d": d, "GOOD g": g}
     for i, x in enumerate(Q_UNREL):
-        corpus[f"distractor{i}"] = _n(np.asarray((await emb.ingest_embed([x]))[0], dtype=float))
+        corpus[f"distractor{i}"] = _n(
+            np.asarray((await emb.ingest_embed([x]))[0], dtype=float)
+        )
 
     def rank(qv: np.ndarray, store: dict[str, np.ndarray]) -> list[tuple[str, float]]:
-        return sorted(((k, round(float(qv @ v), 3)) for k, v in store.items()), key=lambda t: -t[1])
+        return sorted(
+            ((k, round(float(qv @ v), 3)) for k, v in store.items()),
+            key=lambda t: -t[1],
+        )
 
     g2 = _n(g + 0.6 * q)  # modest promote toward q (Rocchio on the good doc)
     print("rank for q BEFORE:", rank(q, corpus))
-    print("cos(q, GOOD) before/after:", round(float(q @ g), 3), "->", round(float(q @ g2), 3))
+    print(
+        "cos(q, GOOD) before/after:",
+        round(float(q @ g), 3),
+        "->",
+        round(float(q @ g2), 3),
+    )
     print("rank for q AFTER :", rank(q, {**corpus, "GOOD g": g2}))
     print("(TARGET d's absolute score is unchanged; only its RANK vs GOOD drops.)")
 
@@ -126,7 +136,9 @@ async def main() -> None:
     target = c0 - TARGET_DROP
     groups = {"q": [Q], "q_sim": Q_SIM, "q_preserve": Q_PRESERVE, "q_unrel": Q_UNREL}
 
-    print(f"baseline cos(q,d) = {c0:.3f}   target = {target:.3f} (drop {TARGET_DROP})\n")
+    print(
+        f"baseline cos(q,d) = {c0:.3f}   target = {target:.3f} (drop {TARGET_DROP})\n"
+    )
     print("how separable each group is from q (query-side cosine):")
     for gname, qs in groups.items():
         if gname != "q":

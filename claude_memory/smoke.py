@@ -62,17 +62,19 @@ async def _core_suite(checker: _Checker) -> None:
     )
 
     from claude_memory.engine import (
-        MemoryConfig,
         MemoryCore,
         MessageOnlyDeriver,
-        Source,
         WholeTextDeriver,
+    )
+    from claude_memory.transcript import events_from_transcript
+    from claude_memory.wire import (
+        MemoryConfig,
+        Source,
         in_context_exclusion_filter,
         render_expand_result,
         render_search_result,
         session_scope_filter,
     )
-    from claude_memory.transcript import events_from_transcript
 
     print("== core suite ==")
     core = await MemoryCore.open(MemoryConfig.load())
@@ -209,10 +211,17 @@ async def _core_suite(checker: _Checker) -> None:
         _ = render_search_result(hop, cue="Caroline home country")
 
         from claude_memory.cli import _AMBIENT_CURATION_NOTE, _render_ambient
-        from claude_memory.engine import Hit
+        from claude_memory.wire import Hit
 
         amb = _render_ambient(
-            [Hit(memory_id="mem:deadbeef", score=0.5, text="a deploy note", is_new=True)]
+            [
+                Hit(
+                    memory_id="mem:deadbeef",
+                    score=0.5,
+                    text="a deploy note",
+                    is_new=True,
+                )
+            ]
         )
         checker.check(
             amb.startswith(_AMBIENT_CURATION_NOTE) and "[mem:deadbeef]" in amb,
@@ -367,8 +376,8 @@ async def _core_suite(checker: _Checker) -> None:
 
 
 def _daemon_suite(checker: _Checker) -> None:
-    from claude_memory.daemon import DaemonUnavailableError, call
-    from claude_memory.engine import (
+    from claude_memory.daemon_client import DaemonUnavailableError, call
+    from claude_memory.wire import (
         demote_result_from_dict,
         expand_result_from_dict,
         render_expand_result,
@@ -417,7 +426,11 @@ def _daemon_suite(checker: _Checker) -> None:
     try:
         start = time.monotonic()
         ingest = call(
-            {"op": "ingest", "transcript_path": str(transcript), "session_id": "sess-1111-2222"},
+            {
+                "op": "ingest",
+                "transcript_path": str(transcript),
+                "session_id": "sess-1111-2222",
+            },
             wait_for_start=90.0,
         )
         print(f"  (daemon cold start + ingest: {time.monotonic() - start:.2f}s)")
@@ -428,7 +441,11 @@ def _daemon_suite(checker: _Checker) -> None:
 
         warm = time.monotonic()
         response = call(
-            {"op": "search", "cue": "how do I deploy to production", "session_id": "sess-1111-2222"}
+            {
+                "op": "search",
+                "cue": "how do I deploy to production",
+                "session_id": "sess-1111-2222",
+            }
         )
         print(f"  (warm search round trip: {time.monotonic() - warm:.3f}s)")
         checker.check(bool(response.get("ok")), "search via daemon (warm, no re-spawn)")
@@ -439,7 +456,13 @@ def _daemon_suite(checker: _Checker) -> None:
 
         seed = result.hits[0].memory_id
         exp = call(
-            {"op": "expand", "seed": seed, "before": 3, "after": 3, "session_id": "sess-1111-2222"}
+            {
+                "op": "expand",
+                "seed": seed,
+                "before": 3,
+                "after": 3,
+                "session_id": "sess-1111-2222",
+            }
         )
         expanded = expand_result_from_dict(exp["result"])
         checker.check(
@@ -448,7 +471,11 @@ def _daemon_suite(checker: _Checker) -> None:
         )
 
         again = call(
-            {"op": "search", "cue": "how do I deploy to production", "session_id": "sess-1111-2222"}
+            {
+                "op": "search",
+                "cue": "how do I deploy to production",
+                "session_id": "sess-1111-2222",
+            }
         )
         again_result = search_result_from_dict(again["result"])
         checker.check(
@@ -459,7 +486,11 @@ def _daemon_suite(checker: _Checker) -> None:
         # Reflective recall: a fresh session re-evokes memory from the model's
         # own last reply (the transcript's final assistant message).
         refl = call(
-            {"op": "reflect", "transcript_path": str(transcript), "session_id": "sess-3333-4444"}
+            {
+                "op": "reflect",
+                "transcript_path": str(transcript),
+                "session_id": "sess-3333-4444",
+            }
         )
         checker.check(
             bool(refl.get("ok")) and "deploy script" in (refl.get("memories") or ""),
@@ -475,7 +506,9 @@ def _daemon_suite(checker: _Checker) -> None:
         dm = call(
             {"op": "demote", "memory_id": seed, "cue": "how do I deploy to production"}
         )
-        dm_verdict = demote_result_from_dict(dm["result"]).verdict if dm.get("ok") else ""
+        dm_verdict = (
+            demote_result_from_dict(dm["result"]).verdict if dm.get("ok") else ""
+        )
         checker.check(
             dm_verdict in {"demoted", "saturated"},
             f"demote op returns a verdict ({dm_verdict})",

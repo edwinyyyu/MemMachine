@@ -78,11 +78,10 @@ async def main() -> None:
     from claude_memory.engine import (
         DISPLAY_FORMAT,
         EventMemory,
-        MemoryConfig,
         MemoryCore,
-        Source,
     )
     from claude_memory.transcript import events_from_transcript
+    from claude_memory.wire import MemoryConfig, Source
 
     seg_field = EventMemory._SEGMENT_UUID_FIELD_NAME
     ts_field = EventMemory._TIMESTAMP_FIELD_NAME
@@ -168,7 +167,9 @@ async def main() -> None:
             "baseline": cq,
             "run_q": _norm(rho * q_prev + (1 - rho) * cq) if q_prev is not None else cq,
             "run_d": _norm(rho * d_prev + (1 - rho) * cd) if d_prev is not None else cd,
-            "hybrid": _norm(rho * d_prev + (1 - rho) * cq) if d_prev is not None else cq,
+            "hybrid": _norm(rho * d_prev + (1 - rho) * cq)
+            if d_prev is not None
+            else cq,
         }
 
     # rho sweep: aggregate mean top1 + mean separation (top1 - mean of rest of pool)
@@ -191,7 +192,9 @@ async def main() -> None:
             words = len(text.split())
             terse = words <= TERSE_WORDS
             if show and (terse or i % 11 == 0):
-                print(f"── turn {i:>2} [{'TERSE' if terse else '    '}]: {_snippet(text, 78)}")
+                print(
+                    f"── turn {i:>2} [{'TERSE' if terse else '    '}]: {_snippet(text, 78)}"
+                )
                 for s in strategies:
                     r = results[s]
                     if not r:

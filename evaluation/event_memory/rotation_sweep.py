@@ -19,19 +19,29 @@ import numpy as np
 
 Q = "How do I deploy to production?"
 Q_SIM = ["What's the process to deploy to prod?", "steps for a production deployment"]
-Q_UNREL = ["How old am I?", "Who paid Alice?", "what animal did I see near the coffee shop?"]
+Q_UNREL = [
+    "How old am I?",
+    "Who paid Alice?",
+    "what animal did I see near the coffee shop?",
+]
 
 # scenario name -> (doc text, [other-facet preserve queries])
 SCENARIOS = {
     "MED c0  (AWS-profile doc)": (
         "I switched the deploy script to use AWS_PROFILE=prod and it now runs the "
         "database migrations automatically.",
-        ["What AWS profile does deployment use?", "Does the deploy run database migrations?"],
+        [
+            "What AWS profile does deployment use?",
+            "Does the deploy run database migrations?",
+        ],
     ),
     "HIGH c0 (deploy-steps doc)": (
         "To deploy to production: run scripts/deploy.sh, confirm the release, then "
         "watch the rollout dashboard until healthy.",
-        ["How do I check the rollout dashboard is healthy?", "Where do I confirm the release?"],
+        [
+            "How do I check the rollout dashboard is healthy?",
+            "Where do I confirm the release?",
+        ],
     ),
 }
 
@@ -67,10 +77,23 @@ async def main() -> None:
         pre0 = cos_avg(list(pv.values()), d)
         unr0 = cos_avg([qd[u] for u in Q_UNREL], d)
         print(f"\n=== {sname}:  c0 = {c0:.3f} ===")
-        print(f"  baseline   q_sim={sim0:.3f}  q_preserve={pre0:.3f}  q_unrel={unr0:.3f}")
-        print(f"  {'t(target)':>9} {'angle°':>7} {'q':>7} {'q_sim':>7} {'q_pres':>7} {'q_unrel':>7}  {'pres_keep%':>10}")
+        print(
+            f"  baseline   q_sim={sim0:.3f}  q_preserve={pre0:.3f}  q_unrel={unr0:.3f}"
+        )
+        print(
+            f"  {'t(target)':>9} {'angle°':>7} {'q':>7} {'q_sim':>7} {'q_pres':>7} {'q_unrel':>7}  {'pres_keep%':>10}"
+        )
         # grid of target cosines from c0 (no rotation) down past 0 into anti-q
-        for t in [c0, c0 - 0.05, c0 - 0.10, c0 - 0.15, c0 - 0.20, c0 - 0.30, 0.0, -0.15]:
+        for t in [
+            c0,
+            c0 - 0.05,
+            c0 - 0.10,
+            c0 - 0.15,
+            c0 - 0.20,
+            c0 - 0.30,
+            0.0,
+            -0.15,
+        ]:
             if t > 1.0:
                 continue
             tc = max(min(t, 1.0), -1.0)
@@ -82,7 +105,9 @@ async def main() -> None:
             unr = cos_avg([qd[u] for u in Q_UNREL], dprime)
             # how much of the doc's other-facet score is retained vs how much q dropped
             keep = 100.0 * (pre / pre0) if pre0 else 0.0
-            print(f"  {tc:>9.2f} {angle:>7.1f} {qd_:>7.3f} {sim:>7.3f} {pre:>7.3f} {unr:>7.3f}  {keep:>9.0f}%")
+            print(
+                f"  {tc:>9.2f} {angle:>7.1f} {qd_:>7.3f} {sim:>7.3f} {pre:>7.3f} {unr:>7.3f}  {keep:>9.0f}%"
+            )
 
 
 if __name__ == "__main__":

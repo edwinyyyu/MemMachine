@@ -59,8 +59,7 @@ def _mmr_order(rel: np.ndarray, doc_sim: np.ndarray, alpha: float) -> list[int]:
             sel = np.array(selected)
             pick = max(
                 remaining,
-                key=lambda i: alpha * rel[i]
-                - (1 - alpha) * doc_sim[i, sel].max(),
+                key=lambda i: alpha * rel[i] - (1 - alpha) * doc_sim[i, sel].max(),
             )
         selected.append(pick)
         remaining.discard(pick)
@@ -121,15 +120,21 @@ async def run_cue(core: MemoryCore, cue: str) -> None:
 
     fg_cos = _first_gold(cos_order, golds)
     above = cos_order[: (fg_cos - 1)] if fg_cos else cos_order
-    print(f"  redundancy(meanpair-cos): top20={redundancy(cos_order[:20]):.3f} "
-          f"top50={redundancy(cos_order[:50]):.3f} "
-          f"above-first-gold={redundancy(above):.3f}")
-    print(f"  first-gold rank | store-cosine={_first_gold(store_order, golds)} "
-          f"| reembed-cosine={fg_cos}")
+    print(
+        f"  redundancy(meanpair-cos): top20={redundancy(cos_order[:20]):.3f} "
+        f"top50={redundancy(cos_order[:50]):.3f} "
+        f"above-first-gold={redundancy(above):.3f}"
+    )
+    print(
+        f"  first-gold rank | store-cosine={_first_gold(store_order, golds)} "
+        f"| reembed-cosine={fg_cos}"
+    )
     # show the first gold's identity for eyeballing
     fg = next(i for i in cos_order if golds[i])
-    print(f"  first gold (reembed-cos): rank{cos_order.index(fg)+1} {ids[fg][:12]} "
-          f":: {texts[fg][:90].replace(chr(10),' ')}")
+    print(
+        f"  first gold (reembed-cos): rank{cos_order.index(fg) + 1} {ids[fg][:12]} "
+        f":: {texts[fg][:90].replace(chr(10), ' ')}"
+    )
     print("  alpha :  first-gold-rank  golds@top10  golds@top20")
     for alpha in ALPHAS:
         order = _mmr_order(rel, doc_sim, alpha)
@@ -137,7 +142,7 @@ async def run_cue(core: MemoryCore, cue: str) -> None:
         g10 = sum(golds[i] for i in order[:10])
         g20 = sum(golds[i] for i in order[:20])
         tag = "  (== cosine)" if alpha == 1.0 else ""
-        print(f"  {alpha:<5} :  {str(fgr):<15} {g10:<12} {g20}{tag}")
+        print(f"  {alpha:<5} :  {fgr!s:<15} {g10:<12} {g20}{tag}")
 
 
 async def main() -> None:

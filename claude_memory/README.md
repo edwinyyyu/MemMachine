@@ -28,8 +28,8 @@ which holds the loaded model and all state — so the ~5-6s model load happens
 From a clean clone, in `agentic_expansion/`:
 
 ```bash
-uv sync                                       # 1. package + server deps (embedder, sqlitevec — all locked)
-uv pip install turbovec                       # 2. default ANN backend (see note); or skip + use sqlitevec
+uv sync                                       # 1. base deps (sqlite-vec locked; NOT sentence-transformers/turbovec)
+uv pip install sentence-transformers turbovec # 2. embedder + default ANN backend (ad-hoc; see note)
 uv run python -m claude_memory.smoke          # 3. optional sanity check (no network, no model)
 uv run python -m claude_memory.cli install    # 4. wire hooks + MCP + skill (--dry-run to preview)
 # 5. restart Claude Code
@@ -40,7 +40,8 @@ Step 4 is one idempotent installer that does everything; step 5 makes it live.
 - **Run everything from this repo** so `claude_memory` imports and the partition
   is stable. Start Claude Code in `agentic_expansion/`.
 - **Embedder** — local **embeddinggemma-300m**, the only model. `sentence-transformers`
-  and `torch` are declared deps, so `uv sync` installs them; the model **weights**
+  (+ torch) is **not installed by a plain `uv sync`** and is pruned by one — install
+  it ad-hoc (step 2) and reinstall after any later `uv sync`. The model **weights**
   download from HuggingFace into the HF cache on the first real turn (one-time,
   network — set `HF_TOKEN` if rate-limited). **No cloud/OpenAI model, no API key.**
 - **Vector backend** — the default **turbovec** (TurboQuant-compressed ANN) is a

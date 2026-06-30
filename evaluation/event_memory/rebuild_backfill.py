@@ -55,7 +55,9 @@ def _prepare_home() -> Path:
     return home
 
 
-def stream_chunks(path: Path, session_id: str, project: str) -> Iterator[tuple[list, int]]:
+def stream_chunks(
+    path: Path, session_id: str, project: str
+) -> Iterator[tuple[list, int]]:
     """Yield (events_chunk, lines_seen_so_far); the final yield carries total lines."""
     builder = _Builder(session_id=session_id, project=project)
     batch: list = []

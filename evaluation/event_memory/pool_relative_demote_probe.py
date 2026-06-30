@@ -26,10 +26,22 @@ FLOOR = 0.42  # corpus random-pair p90 (sphere_density_probe): above => non-rand
 MARGIN = 0.02
 
 POOL = [
-    ("GOOD-steps", "To deploy to production: run scripts/deploy.sh, confirm the release, then watch the rollout dashboard until healthy."),
-    ("CI-pipeline", "Production deploys go through the CI pipeline; merging to main triggers the rollout."),
-    ("AWS-profile d", "I switched the deploy script to use AWS_PROFILE=prod and it now runs the database migrations automatically."),
-    ("staging", "The staging environment uses a separate AWS account and a nightly data refresh."),
+    (
+        "GOOD-steps",
+        "To deploy to production: run scripts/deploy.sh, confirm the release, then watch the rollout dashboard until healthy.",
+    ),
+    (
+        "CI-pipeline",
+        "Production deploys go through the CI pipeline; merging to main triggers the rollout.",
+    ),
+    (
+        "AWS-profile d",
+        "I switched the deploy script to use AWS_PROFILE=prod and it now runs the database migrations automatically.",
+    ),
+    (
+        "staging",
+        "The staging environment uses a separate AWS account and a nightly data refresh.",
+    ),
     ("api-keys", "Remember to rotate the API keys quarterly for compliance."),
     ("raccoon", "I saw a raccoon near the coffee shop on my way to work."),
 ]
@@ -73,7 +85,9 @@ async def main() -> None:
 
     for label, qtext in QUERIES.items():
         q = _n(np.asarray((await emb.search_embed([qtext]))[0], dtype=float))
-        ranked = sorted(((k, float(q @ v)) for k, v in docs.items()), key=lambda kv: -kv[1])
+        ranked = sorted(
+            ((k, float(q @ v)) for k, v in docs.items()), key=lambda kv: -kv[1]
+        )
         top_name, top_cos = ranked[0]
         print(f"\n=== {label.strip()}: {qtext!r}  (floor={FLOOR}) ===")
         for k, s in ranked:
@@ -82,23 +96,29 @@ async def main() -> None:
 
         # absence guard BEFORE acting on a demote of the current top item
         if top_cos <= FLOOR:
-            print("  VERDICT: whole pool <= floor -> NO relevant memory for this "
-                  "query. Demotion declined; tell the model 'nothing relevant exists'.")
+            print(
+                "  VERDICT: whole pool <= floor -> NO relevant memory for this "
+                "query. Demotion declined; tell the model 'nothing relevant exists'."
+            )
             continue
 
         best_remaining = ranked[1][1]  # best after demoting the top item
         if best_remaining <= FLOOR:
-            print(f"  VERDICT: top is the only above-floor hit (next-best "
-                  f"{best_remaining:.3f} <= floor). Demoting it surfaces only noise "
-                  "-> tell the model 'no BETTER memory exists; stop demoting'.")
+            print(
+                f"  VERDICT: top is the only above-floor hit (next-best "
+                f"{best_remaining:.3f} <= floor). Demoting it surfaces only noise "
+                "-> tell the model 'no BETTER memory exists; stop demoting'."
+            )
             continue
 
         # there IS a relevant alternative -> demotion is meaningful
         d = docs[top_name]
         c0 = top_cos
         pool_cos = [float(q @ v) for k, v in docs.items() if k != top_name]
-        print(f"  VERDICT: {ranked[1][0]} ({best_remaining:.3f}) is above floor -> "
-              f"a relevant alternative exists; demotion is meaningful.")
+        print(
+            f"  VERDICT: {ranked[1][0]} ({best_remaining:.3f}) is above floor -> "
+            f"a relevant alternative exists; demotion is meaningful."
+        )
         for strength in ("mild", "strong"):
             t = auto_target(c0, pool_cos, strength)
             d2 = rotate_to(d, q, t)
@@ -107,8 +127,10 @@ async def main() -> None:
                 key=lambda kv: -kv[1],
             )
             new_rank = [k for k, _ in new].index(top_name) + 1
-            print(f"    {strength:<6} auto t={t:.3f} (q-drop {c0 - t:.3f}, no score): "
-                  f"rank 1 -> {new_rank}; new top = {new[0][0]} ({new[0][1]:.3f})")
+            print(
+                f"    {strength:<6} auto t={t:.3f} (q-drop {c0 - t:.3f}, no score): "
+                f"rank 1 -> {new_rank}; new top = {new[0][0]} ({new[0][1]:.3f})"
+            )
 
 
 if __name__ == "__main__":

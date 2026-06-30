@@ -236,9 +236,7 @@ class TestRecallLevers:
     """store_vectors / rescoring, adaptive probing, and replication knobs."""
 
     @pytest.mark.asyncio
-    async def test_get_vectors_roundtrip_and_missing_keys_omitted(
-        self, tmp_path: Path
-    ):
+    async def test_get_vectors_roundtrip_and_missing_keys_omitted(self, tmp_path: Path):
         engine = _make_engine(store_vectors=True)
         vector_one = _normalize([1, 2, 3, 4, 5, 6, 7, 8])
         vector_two = _normalize(_one_hot(1))

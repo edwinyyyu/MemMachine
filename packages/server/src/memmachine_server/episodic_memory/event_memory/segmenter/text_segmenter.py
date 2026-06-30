@@ -3,13 +3,14 @@
 from typing import override
 from uuid import uuid4
 
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Event,
     FormatOptions,
     Segment,
     TextBlock,
+)
+from memmachine_server.episodic_memory.event_memory.segmenter.recursive_character_text_splitter import (
+    RecursiveCharacterTextSplitter,
 )
 from memmachine_server.episodic_memory.event_memory.segmenter.segmenter import (
     Segmenter,

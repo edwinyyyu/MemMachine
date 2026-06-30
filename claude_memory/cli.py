@@ -29,13 +29,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
-from claude_memory.daemon import (
+from claude_memory.daemon_client import (
     DaemonUnavailableError,
     call,
     daemon_status,
     stop_daemon,
 )
-from claude_memory.engine import (
+from claude_memory.transcript import last_compaction_time
+from claude_memory.wire import (
     Hit,
     MemoryConfig,
     demote_result_from_dict,
@@ -46,7 +47,6 @@ from claude_memory.engine import (
     render_search_result,
     search_result_from_dict,
 )
-from claude_memory.transcript import last_compaction_time
 
 # ------------------------------------------------------------------ hook helpers
 

@@ -100,8 +100,7 @@ class TurboVecFreshVectorSearchEngine(TurboVecVectorSearchEngine):
             return {}
         vectors = self._index.get_vectors(np.array(present, dtype=np.uint64))
         return {
-            key: vector.tolist()
-            for key, vector in zip(present, vectors, strict=True)
+            key: vector.tolist() for key, vector in zip(present, vectors, strict=True)
         }
 
     @override

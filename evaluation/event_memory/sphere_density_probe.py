@@ -33,8 +33,8 @@ def _n(m: np.ndarray) -> np.ndarray:
 
 
 def _sample_texts() -> list[str]:
-    from claude_memory.engine import Source
     from claude_memory.transcript import events_from_transcript
+    from claude_memory.wire import Source
 
     projects = Path.home() / ".claude" / "projects"
     files = sorted(projects.glob("*/*.jsonl"), key=lambda p: p.stat().st_size)
@@ -78,24 +78,30 @@ async def main() -> None:
 
     # --- geometry ---
     centroid = c_mat.mean(axis=0)
-    print(f"centroid norm = {np.linalg.norm(centroid):.3f}  "
-          "(0=isotropic on sphere, 1=single ray; >0 => a cone)")
+    print(
+        f"centroid norm = {np.linalg.norm(centroid):.3f}  "
+        "(0=isotropic on sphere, 1=single ray; >0 => a cone)"
+    )
     rng = np.random.default_rng(0)
     ia = rng.integers(0, n, 60000)
     ib = rng.integers(0, n, 60000)
     mask = ia != ib
     pair = np.sum(c_mat[ia[mask]] * c_mat[ib[mask]], axis=1)
     qs = np.percentile(pair, [50, 90, 99])
-    print(f"pairwise cosine (random pairs): mean {pair.mean():.3f}  "
-          f"p50 {qs[0]:.3f}  p90 {qs[1]:.3f}  p99 {qs[2]:.3f}  max {pair.max():.3f}")
+    print(
+        f"pairwise cosine (random pairs): mean {pair.mean():.3f}  "
+        f"p50 {qs[0]:.3f}  p90 {qs[1]:.3f}  p99 {qs[2]:.3f}  max {pair.max():.3f}"
+    )
     # nearest-neighbor + density at thresholds (subsample for the full NxN slice)
     sub = c_mat[rng.choice(n, min(400, n), replace=False)]
     sims = sub @ c_mat.T
     for i in range(len(sub)):  # null self-matches
         sims[i][np.argmax(sims[i])] = -1
     nn = sims.max(axis=1)
-    print(f"nearest-neighbor cosine: p50 {np.percentile(nn,50):.3f}  "
-          f"p90 {np.percentile(nn,90):.3f}  max {nn.max():.3f}")
+    print(
+        f"nearest-neighbor cosine: p50 {np.percentile(nn, 50):.3f}  "
+        f"p90 {np.percentile(nn, 90):.3f}  max {nn.max():.3f}"
+    )
     for tau in (0.5, 0.6, 0.7, 0.8):
         avg = float(np.mean(np.sum(sims > tau, axis=1)))
         print(f"  avg #corpus neighbors with cos > {tau}: {avg:.1f}  (of {n})")
@@ -115,8 +121,8 @@ async def main() -> None:
         order = np.argsort(-sims_c)
         top = order[0]
         print(
-            f"  {tc:>6.2f} {sims_c[top]:>9.3f} {int(np.sum(sims_c>0.6)):>6} "
-            f"{int(np.sum(sims_c>0.7)):>6}   {sims_c[top]:.2f} :: {texts[top][:60]!r}"
+            f"  {tc:>6.2f} {sims_c[top]:>9.3f} {int(np.sum(sims_c > 0.6)):>6} "
+            f"{int(np.sum(sims_c > 0.7)):>6}   {sims_c[top]:.2f} :: {texts[top][:60]!r}"
         )
 
 
