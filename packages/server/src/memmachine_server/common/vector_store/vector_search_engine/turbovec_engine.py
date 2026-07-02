@@ -10,6 +10,7 @@ from turbovec import IdMapIndex
 from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.rw_locks import AsyncRWLock
 
+from .index_persistence import atomic_index_write, clear_stale_index_temp
 from .vector_search_engine import SearchMatch, SearchResult, VectorSearchEngine
 
 
@@ -164,9 +165,17 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
     @override
     async def save(self, path: str) -> None:
         async with self._lock.write_lock():
-            await asyncio.to_thread(self._index.write, path)
+            await asyncio.to_thread(self._sync_save, path)
+
+    def _sync_save(self, path: str) -> None:
+        with atomic_index_write(path) as temp_path:
+            self._index.write(temp_path)
 
     @override
     async def load(self, path: str) -> None:
         async with self._lock.write_lock():
-            self._index = await asyncio.to_thread(IdMapIndex.load, path)
+            self._index = await asyncio.to_thread(self._sync_load, path)
+
+    def _sync_load(self, path: str) -> IdMapIndex:
+        clear_stale_index_temp(path)
+        return IdMapIndex.load(path)

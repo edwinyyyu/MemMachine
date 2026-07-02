@@ -22,6 +22,7 @@ from turbovec import DiskIndex
 
 from memmachine_server.common.data_types import SimilarityMetric
 
+from .index_persistence import clear_stale_index_temp
 from .turbovec_engine import TurboVecVectorSearchEngine
 
 
@@ -123,6 +124,7 @@ class TurboVecDiskVectorSearchEngine(TurboVecVectorSearchEngine):
     @override
     async def load(self, path: str) -> None:
         async with self._lock.write_lock():
+            clear_stale_index_temp(path)
             index = await asyncio.to_thread(DiskIndex.open, path)
             # The engine's configuration wins over what the file recorded,
             # but only when explicitly configured — None means "follow the
