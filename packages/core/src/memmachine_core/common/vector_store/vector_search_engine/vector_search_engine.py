@@ -122,7 +122,26 @@ class VectorSearchEngine(ABC):
     @abstractmethod
     async def save(self, path: str) -> None:
         """
-        Persist the index to disk.
+        Persist the index to `path`, atomically and durably.
+
+        Write elsewhere, flush, and replace `path` in one step, so a crash
+        leaves either the previous index or the new one and never a partial
+        file — then make that replacement durable by whatever means the
+        platform provides.
+
+        The caller trims its pending-operation log — its only other copy of
+        these vectors — once this returns, so an implementation that merely
+        writes and flushes, leaving a half-written file reachable at `path`,
+        does not satisfy this. An engine whose backend implements the whole
+        protocol natively may delegate to it; the rest should use
+        `index_persistence.atomic_index_write`, which implements it against a
+        backend that can only write to a path.
+
+        "As durably as the platform allows" is deliberate rather than a hedge.
+        On POSIX the replacement is made durable by fsyncing the parent
+        directory. Windows has no equivalent operation, so the replacement is
+        atomic through NTFS metadata journaling but is not necessarily flushed
+        when the call returns.
 
         Args:
             path (str):
@@ -133,6 +152,10 @@ class VectorSearchEngine(ABC):
     async def load(self, path: str) -> None:
         """
         Load the index from disk.
+
+        Implementations should clear any temp file a previously interrupted
+        save left beside `path` (`index_persistence.clear_stale_index_temp`),
+        so a crash does not leak one across restarts.
 
         Args:
             path (str):
