@@ -23,6 +23,42 @@ which holds the loaded model and all state — so the ~5-6s model load happens
 **once**. Everything lives under `$CLAUDE_MEMORY_HOME` (default
 `~/.claude/claude_memory`).
 
+## `roster.py` — cross-session index (optional, independent)
+
+Memory answers "what do I know about X?" once you think to ask. The roster
+answers the question before it: *which other conversations exist at all.* It
+injects a short list of your other recent sessions — one line each — so a
+session can tell that neighbouring work bears on its task and go search for it,
+instead of waiting to be told.
+
+```
+SessionStart     ─ roster.py session-start   a map of recent conversations
+UserPromptSubmit ─ roster.py delta           only what moved since your last turn
+Stop             ─ roster.py describe        re-describes THIS session (forks, returns at once)
+```
+
+It reads `~/.claude/projects/**/*.jsonl` directly rather than going through the
+daemon, so it has no ingestion lag and no dependency on the memory stack — the
+two systems share hook events but nothing else. State lives in `~/.claude/roster/`.
+See the module docstring for the line format and the design notes for why each
+half is built the way it is.
+
+**Turn it on and off independently of memory.** It installs its own hook groups
+and identifies them by this file's path, while `cli install` marks its groups
+with `claude_memory.cli`, so neither installer can match the other's entries:
+
+```bash
+python3 claude_memory/roster.py enable        # add just the roster's hooks
+python3 claude_memory/roster.py status        # which of the three are on
+python3 claude_memory/roster.py disable       # remove just the roster's hooks
+
+# --scope project writes ./.claude/settings.json instead of ~/.claude/settings.json
+# --dry-run prints the resulting file instead of writing it
+```
+
+Disabling the roster leaves memory running; `cli install --disable` leaves the
+roster running. Both back up `settings.json` before writing.
+
 ## Fresh-system install
 
 From a clean clone, in `agentic_expansion/`:
