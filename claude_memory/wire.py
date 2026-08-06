@@ -12,6 +12,7 @@ daemon-side code is unchanged.
 import datetime
 import json
 import os
+import re
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -167,6 +168,7 @@ class Source(StrEnum):
     REASONING = "reasoning"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    INJECTED = "injected"
 
 
 SEARCHABLE_SOURCES: frozenset[str] = frozenset(
@@ -177,6 +179,44 @@ SEARCHABLE_SOURCES: frozenset[str] = frozenset(
 def is_searchable(source: str) -> bool:
     """Whether events from this source are embedded (and thus directly searchable)."""
     return source in SEARCHABLE_SOURCES
+
+
+# Text injected INTO a session rather than typed in it: hook context, skill bodies,
+# system reminders, slash-command echoes, background-task notifications, and the
+# compaction summary a session is handed about itself. All of it arrives on the user
+# turn, so role alone cannot tell it from something the user wrote.
+#
+# Measured over the local corpus: 37% of user-role segments and 42% of their
+# characters. It is classified at INGEST rather than at read time because expansion
+# fills a LIMIT-bounded window — a filter has to push down into that walk to leave
+# the budget intact, and post-filtering a fetched window returns short instead.
+#
+# Kept off the search surface because it is not what happened in a conversation, it
+# is what was loaded into one. A compaction summary is the sharpest case: it stays in
+# the same session as the turns it describes (compaction does not fork a session),
+# and those turns are still present verbatim, so embedding the summary only lets a
+# paraphrase outrank its own source.
+_INJECTED_HEAD = re.compile(
+    r"""^\s*(?:
+          <(?:system-reminder|task-notification|local-command|command-name
+            |command-message|command-args)
+        | Caveat:\s+The\s+messages\s+below
+        | This\s+session\s+is\s+being\s+continued
+        | The\s+following\s+skills\s+were\s+invoked
+        | UserPromptSubmit\s+hook\s+additional\s+context
+        )""",
+    re.VERBOSE | re.IGNORECASE,
+)
+# Only the head is examined: these markers open the text they introduce, and
+# scanning further would misclassify a real message that merely quotes one.
+_INJECTED_HEAD_CHARS = 400
+
+
+def user_text_source(text: str) -> Source:
+    """USER_MESSAGE for something the user typed, INJECTED for anything loaded in."""
+    if _INJECTED_HEAD.match(text[:_INJECTED_HEAD_CHARS]):
+        return Source.INJECTED
+    return Source.USER_MESSAGE
 
 
 # ======================================================================= mem ids

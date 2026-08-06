@@ -4,7 +4,11 @@ The transcript at ``~/.claude/projects/<hash>/<session>.jsonl`` is the source of
 truth for verbatim capture. Each line is one record; this module converts the
 records into timeline ``Event``s:
 
-  * user text                -> source=user_message
+  * user text                -> source=user_message, or source=injected when the
+                                text was loaded into the session rather than typed
+                                in it (hook context, skill bodies, system reminders,
+                                slash-command echoes, task notifications, the
+                                session's own compaction summary)
   * assistant text           -> source=assistant_message
   * assistant thinking       -> source=reasoning      (only if present on disk)
   * assistant tool_use       -> source=tool_call      (name + full JSON input)
@@ -28,7 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from claude_memory.wire import Source
+from claude_memory.wire import Source, user_text_source
 
 if TYPE_CHECKING:
     # Annotation-only (resolved by the type checker); the runtime import lives in
@@ -145,9 +149,12 @@ def _string_message_event(
     if not content.strip():
         return []
     if role == "user":
+        # A user turn carries both what the user typed and what was injected into
+        # the session around them; only the text tells them apart. See
+        # wire.user_text_source.
         return [
             builder.build(
-                source=Source.USER_MESSAGE,
+                source=user_text_source(content),
                 producer="user",
                 text=content,
                 parsed_timestamp=parsed,
@@ -288,13 +295,35 @@ def _with_stable_uuids(events: list[Event], record_uuid: object) -> list[Event]:
 def _events_from_record(record: dict[str, Any], builder: _Builder) -> list[Event]:
     if record.get("type") not in ("user", "assistant"):
         return []
-    # Skip synthetic compaction summaries. After /compact (or auto-compact), which
-    # stays in the SAME session, Claude Code appends the summary as a type="user"
-    # record flagged ``isCompactSummary``. It is a condensed restatement of earlier
-    # turns we have already captured verbatim, so ingesting it would only create
-    # near-duplicate memories (the main source of verbatim-duplicate recall).
+    # After /compact (or auto-compact), which stays in the SAME session, Claude Code
+    # appends the summary as a type="user" record flagged ``isCompactSummary``.
+    #
+    # This was previously dropped outright, because it restates turns already captured
+    # verbatim and embedding it produced near-duplicate recall. That reason was about
+    # the SEARCH surface only, and Source.INJECTED now answers it directly — injected
+    # text is never embedded. So the summary is kept on the timeline, where it is the
+    # one record of where the session lost its context, and stays out of search, where
+    # it would only compete with the turns it paraphrases.
     if record.get("isCompactSummary"):
-        return []
+        message = _as_dict(record.get("message")) or {}
+        content = message.get("content")
+        text = (
+            content
+            if isinstance(content, str)
+            else _text_from_content_blocks(content)
+            if isinstance(content, list)
+            else ""
+        )
+        if not text.strip():
+            return []
+        return [
+            builder.build(
+                source=Source.INJECTED,
+                producer="user",
+                text=text,
+                parsed_timestamp=_parse_timestamp(record),
+            )
+        ]
     message = _as_dict(record.get("message"))
     if message is None:
         return []
