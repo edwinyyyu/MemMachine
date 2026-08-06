@@ -6,6 +6,9 @@ from pathlib import Path
 import pytest
 
 from memmachine_server.common.data_types import SimilarityMetric
+from memmachine_server.common.vector_store.vector_search_engine.index_persistence import (
+    published_index_path,
+)
 from memmachine_server.common.vector_store.vector_search_engine.usearch_engine import (
     USearchVectorSearchEngine,
 )
@@ -297,38 +300,47 @@ class TestPersistence:
         assert result.matches[0].score == pytest.approx(1.0, abs=0.01)
 
     @pytest.mark.asyncio
-    async def test_save_leaves_no_temp_file(self, tmp_path: Path):
+    async def test_save_publishes_under_the_base_path(self, tmp_path: Path):
         engine = USearchVectorSearchEngine(
             num_dimensions=NDIM, similarity_metric=SimilarityMetric.COSINE
         )
         await engine.add({1: _normalize([1, 0, 0])})
 
-        path = tmp_path / "test.idx"
-        await engine.save(str(path))
+        base = tmp_path / "test.idx"
+        await engine.save(str(base))
 
-        assert path.exists()
-        assert not (tmp_path / "test.idx.tmp").exists()
+        # The base path is a name, not a file: the engine owns what sits under
+        # it, and something is published there.
+        assert not base.exists()
+        assert published_index_path(str(base)) is not None
 
     @pytest.mark.asyncio
-    async def test_load_clears_stale_temp_file(self, tmp_path: Path):
+    async def test_load_without_a_published_index_raises(self, tmp_path: Path):
         engine = USearchVectorSearchEngine(
             num_dimensions=NDIM, similarity_metric=SimilarityMetric.COSINE
         )
-        await engine.add({1: _normalize([1, 0, 0]), 2: _normalize([0, 1, 0])})
 
-        path = tmp_path / "test.idx"
-        await engine.save(str(path))
+        with pytest.raises(OSError, match="No published index"):
+            await engine.load(str(tmp_path / "test.idx"))
 
-        # A temp file left behind by a previously interrupted save.
-        stale_temp = tmp_path / "test.idx.tmp"
-        stale_temp.write_text("STALE")
+    @pytest.mark.asyncio
+    async def test_load_sees_the_latest_checkpoint(self, tmp_path: Path):
+        engine = USearchVectorSearchEngine(
+            num_dimensions=NDIM, similarity_metric=SimilarityMetric.COSINE
+        )
+        base = tmp_path / "test.idx"
+
+        await engine.add({1: _normalize([1, 0, 0])})
+        await engine.save(str(base))
+        # A second checkpoint lands in the other slot; the load must follow it.
+        await engine.add({2: _normalize([0, 1, 0])})
+        await engine.save(str(base))
 
         engine2 = USearchVectorSearchEngine(
             num_dimensions=NDIM, similarity_metric=SimilarityMetric.COSINE
         )
-        await engine2.load(str(path))
+        await engine2.load(str(base))
 
-        assert not stale_temp.exists()
         result = await _search_one(engine2, _normalize([1, 0, 0]), limit=2)
         assert {m.key for m in result.matches} == {1, 2}
 

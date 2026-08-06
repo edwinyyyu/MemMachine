@@ -2,6 +2,7 @@
 
 import math
 from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -30,6 +31,9 @@ from memmachine_server.common.vector_store.sqlite_vector_store import (
     SQLiteVectorStoreParams,
     _CollectionRow,
     _PendingOperationRow,
+)
+from memmachine_server.common.vector_store.vector_search_engine.index_persistence import (
+    published_index_path,
 )
 from memmachine_server.common.vector_store.vector_search_engine.usearch_engine import (
     USearchVectorSearchEngine,
@@ -1339,6 +1343,16 @@ async def _get_index_saved(engine, namespace, name) -> bool | None:
         ).scalar_one_or_none()
 
 
+def _delete_file(path: str) -> None:
+    """Remove a file from under a running store."""
+    Path(path).unlink()
+
+
+def _overwrite_file(path: str, contents: bytes) -> None:
+    """Replace a file's contents from under a running store."""
+    Path(path).write_bytes(contents)
+
+
 class TestIndexFileDurability:
     """Once the index has been saved, the file is part of the durable contract."""
 
@@ -1404,11 +1418,14 @@ class TestIndexFileDurability:
         await store1.shutdown()
         await engine1.dispose()
 
-        # Operator deletes the index file out from under us.
+        # Operator deletes the published index out from under us, leaving the
+        # generation record that names it.
         index_dir = tmp_path / "indexes"
-        idx_files = list(index_dir.glob("*.idx"))
-        assert len(idx_files) == 1
-        idx_files[0].unlink()
+        bases = {p.with_suffix("") for p in index_dir.glob("*.idx.[01]")}
+        assert len(bases) == 1
+        published = published_index_path(str(next(iter(bases))))
+        assert published is not None
+        _delete_file(published)
 
         # Restart: open_collection must surface the failure, not return an
         # engine silently rebuilt empty.
@@ -1436,15 +1453,46 @@ class TestIndexFileDurability:
         await engine1.dispose()
 
         index_dir = tmp_path / "indexes"
-        idx_files = list(index_dir.glob("*.idx"))
-        assert len(idx_files) == 1
-        idx_files[0].write_bytes(b"not a valid index file")
+        bases = {p.with_suffix("") for p in index_dir.glob("*.idx.[01]")}
+        assert len(bases) == 1
+        published = published_index_path(str(next(iter(bases))))
+        assert published is not None
+        _overwrite_file(published, b"not a valid index file")
 
         store2, engine2 = await _fresh_store(db_path, tmp_path)
         with pytest.raises(IndexLoadError) as exc_info:
             await store2.open_collection(namespace=NAMESPACE, name=NAME)
         assert exc_info.value.namespace == NAMESPACE
         assert exc_info.value.name == NAME
+        assert exc_info.value.__cause__ is not None
+
+        await store2.shutdown()
+        await engine2.dispose()
+
+    @pytest.mark.asyncio
+    async def test_nothing_published_when_saved_raises(self, tmp_path):
+        """A saved collection whose engine publishes nothing is a fault."""
+        db_path = tmp_path / "test.db"
+        store1, engine1 = await _fresh_store(db_path, tmp_path)
+
+        coll = await store1.open_or_create_collection(
+            namespace=NAMESPACE, name=NAME, config=CONFIG
+        )
+        await coll.upsert(records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))])
+        await store1.shutdown()
+        await engine1.dispose()
+
+        # Both generation records lost: the slots may still hold indexes, but
+        # nothing names one, and an unnamed index is not a publication.
+        index_dir = tmp_path / "indexes"
+        records = list(index_dir.glob("*.gen"))
+        assert records
+        for record in records:
+            _delete_file(str(record))
+
+        store2, engine2 = await _fresh_store(db_path, tmp_path)
+        with pytest.raises(IndexLoadError) as exc_info:
+            await store2.open_collection(namespace=NAMESPACE, name=NAME)
         assert exc_info.value.__cause__ is not None
 
         await store2.shutdown()
