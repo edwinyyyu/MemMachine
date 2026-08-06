@@ -140,7 +140,9 @@ NOISE = re.compile(
 _INDEX_NOTE = (
     "This is an index, not content. If the current task touches any conversation "
     "listed, search memory before answering — memory_search(cue), or "
-    "memory_search(cue, filters=\"m.session_id='<id>'\") to read one. "
+    "memory_search(cue, filters=\"m.session_id='<id>'\") to read one, copying the "
+    "id exactly as printed: that filter is equality-only, so a shortened id "
+    "matches nothing rather than matching loosely. "
     "Then use what you find only where it changes the answer — the recommendation, "
     "the assumptions, or how the question should be read. Do not mention a past "
     "conversation merely to show continuity."
@@ -410,7 +412,12 @@ def line(sid, s, line_mode):
         body = clip(first, 110)  # single-turn conversation: do not repeat it
     else:
         body = f"{clip(first, 80)} → now: {clip(now, 110, keep_tail=True)}"
-    return f"[{when}] {proj[:28]} · {sid[:8]} — {body}"
+    # The id is printed WHOLE, not as a readable prefix. It exists to be pasted into
+    # m.session_id = '<id>', and that filter grammar has only equality — no LIKE, no
+    # prefix operator — so a truncated id does not narrow the search, it silently
+    # matches nothing at all. A short id is the more dangerous failure: it looks like
+    # a working filter and returns an empty result that reads as "no such memory".
+    return f"[{when}] {proj[:28]} · {sid} — {body}"
 
 
 def emit(text):
