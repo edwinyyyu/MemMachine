@@ -398,7 +398,7 @@ def session_scope_filter(session_id: str) -> str:
 #: happened in the conversation, and it arrives in runs: 12,664 task notifications
 #: cluster around tool activity, so a window landing in one is entirely boilerplate.
 #: Excluding it by default spends the budget on turns; `include` brings it back.
-DEFAULT_EXPAND_EXCLUDES: frozenset[str] = frozenset({Source.INJECTED})
+DEFAULT_EXPAND_EXCLUDES: frozenset[str] = frozenset({str(Source.INJECTED)})
 
 
 def kind_scope_filter(
@@ -409,25 +409,31 @@ def kind_scope_filter(
 ) -> str | None:
     """Filter selecting which sources an expansion window may spend its budget on.
 
-    Returns None when everything is allowed. ``include`` wins outright if given;
-    otherwise ``exclude`` (defaulting to DEFAULT_EXPAND_EXCLUDES) is removed.
-    ``always`` names a source that is kept regardless — the seed's own kind, since a
-    filter that hid the segment the caller named would answer a different question.
+    The two arguments compose as a set difference — start from ``include`` (or every
+    source), then subtract ``exclude`` — so they are not alternatives and neither is
+    discarded when both are given. Returns None when the result is everything.
+
+    ``always`` names a source kept regardless: the seed's own kind, since a filter
+    that hid the segment the caller named would answer a different question.
 
     This has to be a filter the store applies, not a pass over its result: the window
     is LIMIT-bounded, so dropping segments afterwards returns fewer than were asked
     for, and the excluded text has already spent the budget.
     """
-    if include:
-        kept = {str(source) for source in include}
-        if always:
-            kept.add(always)
-        return f"m.source IN ({', '.join(_filter_str(k) for k in sorted(kept))})"
-    dropped = {str(source) for source in (exclude or DEFAULT_EXPAND_EXCLUDES)}
-    dropped.discard(always or "")
-    if not dropped:
+    named = {str(source) for source in (include or ())}
+    kept = named or {str(source) for source in Source}
+    kept -= {str(source) for source in (exclude or ())}
+    # The default still applies alongside an explicit argument: asking to drop tool
+    # results says nothing about boilerplate, and silently re-admitting it would make
+    # a narrowing request widen the window. It yields only to a caller who names
+    # those kinds in `include`, or who passes `exclude=[]` to mean "keep everything".
+    if exclude != [] and not (named & DEFAULT_EXPAND_EXCLUDES):
+        kept -= {str(source) for source in DEFAULT_EXPAND_EXCLUDES}
+    if always:
+        kept.add(always)
+    if kept == {str(source) for source in Source}:
         return None
-    return f"m.source NOT IN ({', '.join(_filter_str(d) for d in sorted(dropped))})"
+    return f"m.source IN ({', '.join(_filter_str(k) for k in sorted(kept))})"
 
 
 def searchable_only(filter_spec: str | None) -> str:

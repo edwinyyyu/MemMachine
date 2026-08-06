@@ -327,7 +327,10 @@ def _register_memory_tools(mcp: "FastMCP", wait: float) -> None:
         fine); if it isn't enough, expand again from the first or last `mem:<id>`
         shown to reach further.
 
-        `include`/`exclude` choose which kinds of thing the window spends itself on:
+        `include`/`exclude` choose which kinds of thing the window spends itself on.
+        They compose as a set difference — start from `include` (or everything), then
+        subtract `exclude` — so passing both narrows twice rather than one overriding
+        the other. The kinds are:
         `user_message`, `assistant_message`, `reasoning`, `tool_call`, `tool_result`,
         `injected`. They are applied while the window is gathered, so the budget buys
         only what you asked for. Reach for them when a plain expand comes back thin:
@@ -342,8 +345,9 @@ def _register_memory_tools(mcp: "FastMCP", wait: float) -> None:
             seed: A `mem:<id>` from a prior search or expand.
             before: How much context to pull before the seed (default 5).
             after: How much context to pull after the seed (default 5).
-            include: Only these kinds (overrides `exclude`).
-            exclude: These kinds are skipped (default: `["injected"]`).
+            include: Start from only these kinds (default: all of them).
+            exclude: Subtract these kinds. `injected` is subtracted anyway unless you
+                name it in `include`, or pass `exclude=[]` to keep everything.
         """
         response = _call_daemon(
             {
