@@ -393,6 +393,23 @@ def session_scope_filter(session_id: str) -> str:
     return f"m.session_id = {_filter_str(session_id)}"
 
 
+def searchable_only(filter_spec: str | None) -> str:
+    """Add the search surface's own constraint to a caller's filter.
+
+    ``derive`` refuses to embed a non-searchable source, so nothing new can reach the
+    vector store from one. Records captured before a source became non-searchable are
+    already there, though, and the vector store keeps its own copy of the properties —
+    so without this the only thing removing them would be a full re-index.
+
+    Scoping the query is also simply more honest than trusting the index's contents:
+    the filter now states what search is *for*, rather than assuming write-side gating
+    was always in place.
+    """
+    sources = ", ".join(_filter_str(source) for source in sorted(SEARCHABLE_SOURCES))
+    mine = f"m.source IN ({sources})"
+    return f"({filter_spec}) AND {mine}" if filter_spec else mine
+
+
 def in_context_exclusion_filter(
     session_id: str, compaction_cutoff: datetime.datetime | None
 ) -> str | None:

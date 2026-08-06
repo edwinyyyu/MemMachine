@@ -99,6 +99,7 @@ from claude_memory.wire import (
     is_searchable,
     memory_id_for_segment_uuid,
     parse_memory_id,
+    searchable_only,
     session_scope_filter,
 )
 
@@ -637,7 +638,7 @@ class MemoryCore:
         """
         seen_set = seen if seen is not None else self.seen_segment_uuids
         try:
-            property_filter = parse_filter(filter_spec) if filter_spec else None
+            property_filter = parse_filter(searchable_only(filter_spec))
         except FilterParseError as error:
             return SearchResult(
                 hits=[], new_count=0, saturated=False, note=f"Invalid filter: {error}"
