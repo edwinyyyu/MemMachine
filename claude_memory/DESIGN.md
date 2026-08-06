@@ -90,10 +90,11 @@ of projects from the one loaded model. Start Claude in the project (or pin
 Two concerns that look like one but are not:
 
 - **Reconstruction substrate** — a *single ordered timeline* per project holding
-  everything: user/assistant messages, reasoning, tool calls, tool results. This
-  is what `expand` walks. It must be unified, because replaying "what happened"
-  means pulling a *contiguous slice* — e.g. a trip-planning request *and the tool
-  calls that fulfilled it*.
+  everything: user/assistant messages, reasoning, tool calls, tool results, and
+  text injected into the session rather than typed in it. This is what `expand`
+  walks. It must be unified, because replaying "what happened" means pulling a
+  *contiguous slice* — e.g. a trip-planning request *and the tool calls that
+  fulfilled it*.
 
 - **Search surface** — only **message** events are embedded (see `engine.py`:
   `MessageOnlyDeriver` emits no derivative for non-message segments). So the
@@ -106,6 +107,20 @@ out-rank or drown natural-language messages; and embedding large low-value blobs
 you would never search for by content is pure waste. You still get them back —
 by timeline adjacency to a message seed — which is exactly the replay path.
 
+The same reasoning puts `injected` outside the search surface. A user turn carries
+both what the user wrote and what was loaded in around them (hook context, skill
+bodies, system reminders, slash-command echoes, the session's own compaction
+summary); role cannot tell them apart, so `wire.user_text_source` classifies on the
+text at ingest. Measured on one real corpus it was 37% of user-role segments. The
+compaction summary is the sharpest case: compaction does not fork a session, so the
+summary sits among the very turns it paraphrases, and embedding it only lets a
+description outrank its own source. It stays on the timeline, where it is the one
+record of where the session lost its context.
+
+Search composes its own filter with the searchable sources rather than trusting the
+index's contents, since anything embedded before a source became non-searchable
+would otherwise need a full re-index to remove.
+
 Metadata: every event carries `source`, `producer` (speaker), `session_id`, and
 tool calls also carry `tool_name` / `path`. `producer`/`source`/`session_id` are
 indexed so the model can scope a search (`producer = "Caroline"`).
@@ -115,11 +130,19 @@ indexed so the model can scope a search (`producer = "Caroline"`).
 ## 4. The tool surface (and what was deliberately cut)
 
 ```
-memory_search(cue, limit=8, filters=None)  -> str
-memory_expand(seed, before=5, after=5)     -> str
-memory_demote(memory_id, cue)              -> str
-memory_annotate(memory_id, note)           -> str
+memory_search(cue, limit=8, filters=None)                  -> str
+memory_expand(seed, before=5, after=5, kinds=None,
+              blocklist=False)                             -> str
+memory_demote(memory_id, cue)                              -> str
+memory_annotate(memory_id, note)                           -> str
 ```
+
+- **`memory_expand`'s `kinds`** — which sources a window may spend its budget on,
+  read as an allowlist or (with `blocklist`) a blocklist. It is pushed into the
+  store's window walk rather than applied to its result, which is the whole point:
+  the walk is LIMIT-bounded, so filtering afterwards returns fewer segments than
+  were asked for, with the budget already spent on what was dropped. Naming kinds
+  replaces the default outright; the default blocks only `injected`.
 
 - **`memory_demote`** — score-free negative feedback: "this memory was wrong for
   this cue." Each call decays the memory's similarity to the cue geometrically

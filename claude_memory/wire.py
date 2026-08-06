@@ -393,46 +393,49 @@ def session_scope_filter(session_id: str) -> str:
     return f"m.session_id = {_filter_str(session_id)}"
 
 
-#: What expansion returns when the caller says nothing. Injected text is on the
+#: What expansion blocks when the caller names no kinds. Injected text stays on the
 #: timeline for fidelity — it is genuinely what the session saw — but it is not what
 #: happened in the conversation, and it arrives in runs: 12,664 task notifications
 #: cluster around tool activity, so a window landing in one is entirely boilerplate.
-#: Excluding it by default spends the budget on turns; `include` brings it back.
-DEFAULT_EXPAND_EXCLUDES: frozenset[str] = frozenset({str(Source.INJECTED)})
+DEFAULT_BLOCKED_KINDS: tuple[str, ...] = (str(Source.INJECTED),)
 
 
 def kind_scope_filter(
-    include: list[str] | None,
-    exclude: list[str] | None,
+    kinds: list[str] | None,
     *,
-    always: str | None = None,
+    blocklist: bool = False,
 ) -> str | None:
     """Filter selecting which sources an expansion window may spend its budget on.
 
-    The two arguments compose as a set difference — start from ``include`` (or every
-    source), then subtract ``exclude`` — so they are not alternatives and neither is
-    discarded when both are given. Returns None when the result is everything.
+    One list, read as an allowlist or — with ``blocklist`` — as a blocklist. A list
+    given by the caller REPLACES the default outright, so what a call does is read
+    off its own arguments and nothing is silently added or dropped behind them.
 
-    ``always`` names a source kept regardless: the seed's own kind, since a filter
-    that hid the segment the caller named would answer a different question.
+    The seed is NOT exempted here. Re-admitting the seed's whole kind would widen
+    the filter for every other segment too — and when that completes the set it
+    removes the filter altogether, so blocking a kind you happened to seed into
+    would quietly return everything.  ``MemoryCore.expand`` re-attaches the seed
+    segment itself instead, which is the narrow thing that was actually wanted.
 
-    This has to be a filter the store applies, not a pass over its result: the window
-    is LIMIT-bounded, so dropping segments afterwards returns fewer than were asked
-    for, and the excluded text has already spent the budget.
+    Returns None when everything is allowed. This has to be a filter the store
+    applies rather than a pass over its result: the window is LIMIT-bounded, so
+    dropping segments afterwards returns fewer than were asked for, and the unwanted
+    text has already spent the budget.
     """
-    named = {str(source) for source in (include or ())}
-    kept = named or {str(source) for source in Source}
-    kept -= {str(source) for source in (exclude or ())}
-    # The default still applies alongside an explicit argument: asking to drop tool
-    # results says nothing about boilerplate, and silently re-admitting it would make
-    # a narrowing request widen the window. It yields only to a caller who names
-    # those kinds in `include`, or who passes `exclude=[]` to mean "keep everything".
-    if exclude != [] and not (named & DEFAULT_EXPAND_EXCLUDES):
-        kept -= {str(source) for source in DEFAULT_EXPAND_EXCLUDES}
-    if always:
-        kept.add(always)
-    if kept == {str(source) for source in Source}:
+    every = {str(source) for source in Source}
+    if kinds is None:
+        kept = every - set(DEFAULT_BLOCKED_KINDS)
+    elif blocklist:
+        kept = every - {str(kind) for kind in kinds}
+    else:
+        kept = {str(kind) for kind in kinds} & every
+    if kept == every:
         return None
+    if not kept:
+        # An empty allowlist, taken literally. The grammar has no empty IN list, so
+        # match a value no segment carries; expansion then returns the seed alone,
+        # which is what asking for no kinds at all means.
+        return "m.source = ''"
     return f"m.source IN ({', '.join(_filter_str(k) for k in sorted(kept))})"
 
 

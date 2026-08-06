@@ -314,8 +314,8 @@ def _register_memory_tools(mcp: "FastMCP", wait: float) -> None:
         seed: str,
         before: int = 5,
         after: int = 5,
-        include: list[str] | None = None,
-        exclude: list[str] | None = None,
+        kinds: list[str] | None = None,
+        blocklist: bool = False,
     ) -> str:
         """Recall the surrounding timeline around a memory you already have.
 
@@ -327,27 +327,28 @@ def _register_memory_tools(mcp: "FastMCP", wait: float) -> None:
         fine); if it isn't enough, expand again from the first or last `mem:<id>`
         shown to reach further.
 
-        `include`/`exclude` choose which kinds of thing the window spends itself on.
-        They compose as a set difference — start from `include` (or everything), then
-        subtract `exclude` — so passing both narrows twice rather than one overriding
-        the other. The kinds are:
-        `user_message`, `assistant_message`, `reasoning`, `tool_call`, `tool_result`,
-        `injected`. They are applied while the window is gathered, so the budget buys
-        only what you asked for. Reach for them when a plain expand comes back thin:
-        `exclude=["tool_result"]` to read the argument in a session full of long
-        command output, `include=["tool_call","tool_result"]` to replay just the
-        procedure. `injected` (hook context, skill bodies, system reminders,
-        slash-command echoes, the session's own compaction summary) is dropped by
-        default because it arrives in runs and can fill a window on its own — pass
-        `include=["injected", ...]` to see exactly what the session was shown.
+        `kinds` chooses what the window spends itself on: `user_message`,
+        `assistant_message`, `reasoning`, `tool_call`, `tool_result`, `injected`. It
+        is an allowlist by default, a blocklist with `blocklist=True`, and it is
+        applied while the window is gathered, so the budget buys only what you asked
+        for. Reach for it when a plain expand comes back thin:
+        `kinds=["tool_result"], blocklist=True` to read the argument in a session full
+        of long command output, `kinds=["tool_call","tool_result"]` to replay just the
+        procedure.
+
+        With no `kinds`, `injected` is blocked — hook context, skill bodies, system
+        reminders, slash-command echoes, and the session's own compaction summary,
+        which arrive in runs and can fill a window on their own. Naming kinds replaces
+        that default outright, so `kinds=["injected"]` shows exactly what the session
+        was handed, and `kinds=[], blocklist=True` blocks nothing at all.
 
         Args:
             seed: A `mem:<id>` from a prior search or expand.
             before: How much context to pull before the seed (default 5).
             after: How much context to pull after the seed (default 5).
-            include: Start from only these kinds (default: all of them).
-            exclude: Subtract these kinds. `injected` is subtracted anyway unless you
-                name it in `include`, or pass `exclude=[]` to keep everything.
+            kinds: Which kinds to keep (or, with `blocklist`, to drop). Omit for
+                the default, which blocks only `injected`.
+            blocklist: Read `kinds` as a blocklist instead of an allowlist.
         """
         response = _call_daemon(
             {
@@ -355,8 +356,8 @@ def _register_memory_tools(mcp: "FastMCP", wait: float) -> None:
                 "seed": seed,
                 "before": before,
                 "after": after,
-                "include": include,
-                "exclude": exclude,
+                "kinds": kinds,
+                "blocklist": blocklist,
             },
             wait,
         )

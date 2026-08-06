@@ -685,15 +685,16 @@ class MemoryCore:
         before: int = 5,
         after: int = 5,
         seen: set[str] | None = None,
-        include: list[str] | None = None,
-        exclude: list[str] | None = None,
+        kinds: list[str] | None = None,
+        blocklist: bool = False,
     ) -> ExpandResult:
         """Return the seed's session timeline window, same-event segments merged.
 
-        ``include`` / ``exclude`` name sources (``message``-like kinds: user_message,
-        assistant_message, reasoning, tool_call, tool_result, injected). Both are
-        pushed into the store's window walk rather than applied to its result, so the
-        budget is spent only on segments the caller asked for.
+        ``kinds`` names sources (user_message, assistant_message, reasoning,
+        tool_call, tool_result, injected), read as an allowlist or — with
+        ``blocklist`` — as a blocklist. It is pushed into the store's window walk
+        rather than applied to its result, so the budget is spent only on segments
+        the caller asked for.
         """
         seen_set = seen if seen is not None else self.seen_segment_uuids
         seed_uuid = parse_memory_id(seed_id)
@@ -715,18 +716,13 @@ class MemoryCore:
         )
         seed_segments = seed_only.get(seed_uuid)
         scope: list[str] = []
-        seed_source = ""
         if seed_segments:
             session = seed_segments[0].properties.get("session_id")
             if isinstance(session, str) and session:
                 scope.append(session_scope_filter(session))
-            source = seed_segments[0].properties.get("source")
-            seed_source = source if isinstance(source, str) else ""
-        # A kind filter that excluded the seed would drop the very thing the caller
-        # named, so seeding INTO a kind opts that kind back in.
-        kinds = kind_scope_filter(include, exclude, always=seed_source or None)
-        if kinds:
-            scope.append(kinds)
+        kind_filter = kind_scope_filter(kinds, blocklist=blocklist)
+        if kind_filter:
+            scope.append(kind_filter)
         session_filter: FilterExpr | None = None
         if scope:
             with suppress(FilterParseError):
@@ -738,7 +734,15 @@ class MemoryCore:
             max_forward_segments=max(after, 0),
             property_filter=session_filter,
         )
-        window = contexts.get(seed_uuid)
+        window = list(contexts.get(seed_uuid) or [])
+        # A kind filter can exclude the seed's own kind, and then the walk returns a
+        # window that does not contain what the caller named. Re-attach the seed
+        # segment itself — not its kind, which would widen the filter for every
+        # other segment as well.
+        if seed_segments and all(segment.uuid != seed_uuid for segment in window):
+            window += [
+                segment for segment in seed_segments if segment.uuid == seed_uuid
+            ]
         if not window:
             return ExpandResult(
                 seed_id=seed_id,
