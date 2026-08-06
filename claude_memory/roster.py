@@ -77,6 +77,7 @@ EXCERPT_CHARS = 400  # stored; render decides how much to show
 DESCRIBE_TURNS = 3  # turns from each end fed to the describer
 SUMMARY_CHARS = 4000  # of a compaction summary's intent section, fed whole
 SUBJECT_CHARS = 80  # the describer's budget, stated in its prompt
+DESCRIBE_TIMEOUT = 120  # seconds; also bounds how long a describe claim can be held
 DESCRIBER = "claude-haiku-4-5"
 
 SKIP_PROJ = re.compile(r"private-tmp|scratchpad|neutral|fresh-test", re.IGNORECASE)
@@ -518,7 +519,7 @@ def describe(sid, s):
             cwd=str(Path.home()),
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=DESCRIBE_TIMEOUT,
         )
     except Exception:
         return ""
@@ -700,9 +701,21 @@ def cmd_describe_now(sid):
     stamp = s.get("excerpt_last_ts") or s.get("last_ts") or ""
     if cur.get("described_at") == stamp and described(sid):
         return
-    if describe(sid, s):
+    # Claim BEFORE the call, not after. A describe takes seconds, and turns sent
+    # inside that window would otherwise each spawn their own describe of the same
+    # session — the failure mode of firing off requests in quick succession. The
+    # claim expires on its own so a killed child cannot wedge the session shut.
+    if time.time() - cur.get("describing_since", 0) < DESCRIBE_TIMEOUT + 30:
+        return
+    cur["describing_since"] = time.time()
+    save_cursor(sid, cur)
+    got = describe(sid, s)
+    # Re-read: the map and delta commands write this same cursor on every prompt.
+    cur = load_cursor(sid)
+    cur["describing_since"] = 0
+    if got:
         cur["described_at"] = stamp
-        save_cursor(sid, cur)
+    save_cursor(sid, cur)
 
 
 def read_hook_input():
