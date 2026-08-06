@@ -1,41 +1,83 @@
 """
-Atomic on-disk index persistence helpers, shared by vector search engines.
+Crash-safe index publication, shared by vector search engines.
 
-Each engine owns its index file layout, so the atomic-swap logic lives here
-(shared by the engines) rather than in the vector store: the index save
-location and the number of files written differ across engine implementations.
-An engine whose backend implements this protocol natively can satisfy
-`VectorSearchEngine.save` by delegating to it and skip these helpers.
+An engine's `save` may only return once a later `load` would produce that index
+even if the machine lost power on the next instruction, because the vector store
+trims its pending-operation log — the only other copy of those vectors — as soon
+as it returns. This module implements that guarantee for engines whose backend
+writes an index to a path.
 
-The two guarantees fail differently, which is why they are separated below:
+Why not the obvious protocol
+----------------------------
 
-- **Atomic.** A reader never observes a partially written index at the target
-  path. The index is written to a sibling temp file and swapped into place with
-  ``Path.replace`` (``os.replace``), which is atomic on POSIX and Windows when
-  source and destination share a filesystem (guaranteed here, since the temp
-  file is a sibling of the target). A save that is interrupted (crash,
-  exception) leaves the previous index untouched rather than corrupting it,
-  which matters because the vector store treats a saved-but-unloadable index as
-  a hard error rather than silently rebuilding it empty.
-- **Durable.** A save that returns has put the new index on stable storage, and
-  on POSIX the swap itself too. This is not a bonus on top of the atomicity:
-  the vector store trims its pending-operation log — the only other copy of
-  these vectors — once ``save`` returns, so a swap that quietly fails to reach
-  disk costs data rather than performance.
+Writing a temp file and renaming it over the destination is atomic, but the
+rename cannot be made durable. A rename changes a *directory entry*, and the two
+kinds of state have very different guarantees:
 
-Durability is platform-limited in one place. On POSIX the swap is made durable
-by fsyncing the parent directory, since ``rename(2)`` leaves the new directory
-entry in the page cache. Windows has no equivalent operation: the swap is
-atomic through NTFS metadata journaling, but that journal record is not
-necessarily flushed when the call returns, so power loss (a process crash is
-not enough) within a sub-second window can roll it back. The residue is bounded
-— the previous index reappears, and the records whose vectors that checkpoint
-added are still in SQLite but no longer in the index, so they stop matching
-queries rather than matching them wrongly.
+===================  ==========================================  ==============
+state                make it durable                             available
+===================  ==========================================  ==============
+file contents        ``fsync`` / ``F_FULLFSYNC`` / FlushFileBuffers  everywhere
+directory entry      ``fsync`` on a directory file descriptor     POSIX only
+===================  ==========================================  ==============
+
+On POSIX a parent-directory fsync closes the gap, but only best-effort — network
+and FUSE filesystems refuse it. Windows has no equivalent at all: you cannot open
+a directory as a file, and `MOVEFILE_WRITE_THROUGH` does not help, since its
+documented guarantee is scoped to moves performed as a copy and delete. The
+decisive evidence is SQLite's own: its VFS threads a directory-sync flag through
+every commit-relevant directory operation, honors it in ``unixDelete``, and
+declares it ``/* Not used on win32 */`` in ``winDelete``. So the rename could
+return, the store's trim could commit durably behind it, and a power cut could
+still roll the rename back — leaving the mapping forward, the index back, and no
+copy of the difference anywhere.
+
+What we do instead
+------------------
+
+SQLite's answer was not to harden the directory operation but to stop using one
+as a commit point: ``PERSIST`` commits by zeroing a journal header, ``TRUNCATE``
+by truncating, WAL by appending frames. This module does the same.
+
+A base path expands into four files — two index slots and a generation record
+for each — created once and thereafter only overwritten. A checkpoint is:
+
+1. Write the index over the inactive slot and flush it. In-place file data,
+   which every platform can make durable.
+2. Write that slot's generation record and flush it. **This is the commit
+   point**, and it is a write into a file that already exists.
+3. Empty the retired slot and its record, so the spare costs no disk at rest.
+
+`load` reads both records, keeps the ones whose halves agree, and takes the
+higher generation. That comparison is the entire bookkeeping: no pointer,
+manifest, or generation is kept anywhere else, so nothing about this layout
+leaks into the vector store.
+
+The record is 16 bytes — a generation and its bitwise complement. That is what
+makes step 2 atomic without asking the hardware for single-sector-write
+atomicity: every byte of a torn write comes from either the new record or the
+slot's previous one, so the result is the new generation, the old one (which
+loses to the live slot, correctly, since the caller had not trimmed), or a mix
+whose halves disagree and is rejected. A torn record reads as *absent*, never as
+some other generation.
+
+Every crash window is benign:
+
+- **during step 1** — the damaged file is the inactive slot, which nothing
+  reads. The older record still wins and the log is intact.
+- **between steps 1 and 2** — a complete new index exists and is invisible,
+  because nothing published it. Correct: the caller has not trimmed either.
+- **during step 2** — torn record, reads as absent, previous generation wins.
+- **after step 2** — the index it names was flushed before it was written.
+- **between steps 2 and 3** — two valid records; the higher generation wins.
+
+There is no directory operation anywhere in this after the four files exist,
+which is the whole point.
 """
 
 import contextlib
 import os
+import struct
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -64,83 +106,169 @@ else:
         os.fsync(fd)
 
 
-# Deterministic suffix so a crash leaves at most one stale temp per index file.
-# The next save overwrites it and load clears it, rather than accumulating
-# uniquely named leftovers.
-_TEMP_SUFFIX = ".tmp"
+_SLOTS = (0, 1)
+
+# Generation, then its bitwise complement.
+_RECORD_FORMAT = "<QQ"
+_RECORD_SIZE = struct.calcsize(_RECORD_FORMAT)
+_COMPLEMENT_MASK = 0xFFFFFFFFFFFFFFFF
 
 
-def _temp_path(path: str) -> str:
-    """Return the sibling temp path used while writing the index at `path`."""
-    return f"{path}{_TEMP_SUFFIX}"
+def _slot_path(base: str, slot: int) -> Path:
+    """Path of an index slot under `base`."""
+    return Path(f"{base}.{slot}")
 
 
-def clear_stale_index_temp(path: str) -> None:
+def _record_path(base: str, slot: int) -> Path:
+    """Path of a slot's generation record."""
+    return Path(f"{base}.{slot}.gen")
+
+
+def index_artifact_paths(base: str) -> list[Path]:
     """
-    Remove a temp file left behind by a previously interrupted save.
+    Every file `base` expands into.
 
-    Call this on load/startup so a save that crashed before the atomic swap
-    does not leak a temp file across restarts. A missing temp file is a no-op.
+    The vector store uses this to discard a collection's index without having to
+    know how many files an engine keeps or what they are called.
 
     Args:
-        path (str):
-            The index file path whose sibling temp file should be cleared.
+        base (str):
+            The index base path.
+
+    Returns:
+        list[Path]:
+            The slot and generation-record paths, in no particular order.
     """
-    Path(_temp_path(path)).unlink(missing_ok=True)
+    return [
+        path
+        for slot in _SLOTS
+        for path in (_slot_path(base, slot), _record_path(base, slot))
+    ]
+
+
+def published_index_path(base: str) -> str | None:
+    """
+    The index a `load` should read, or None if nothing has been published.
+
+    Reads both generation records, discards any whose halves disagree — a torn
+    or absent record — and returns the slot holding the higher generation.
+
+    A caller must **not** fall back to the other slot when the returned index
+    fails to parse. The log was trimmed against the published one, so the other
+    is stale by exactly the operations that can no longer be replayed; failing
+    loudly is right, and quietly serving the previous generation would be data
+    loss dressed as success.
+
+    Args:
+        base (str):
+            The index base path.
+
+    Returns:
+        str | None:
+            Path of the published index slot, or None if there is none.
+    """
+    published = _published_slot(base)
+    return None if published is None else str(_slot_path(base, published[0]))
 
 
 @contextlib.contextmanager
-def atomic_index_write(path: str) -> Iterator[str]:
+def publish_index(base: str) -> Iterator[str]:
     """
-    Write an index to a temp file, then atomically swap it into `path`.
+    Write an index into the free slot and publish it.
 
-    Yields a sibling temp path for the caller to write the index to. On normal
-    exit the temp file is flushed, atomically renamed onto `path`, and the
-    rename itself flushed where the platform allows — so a reader sees either
-    the old index or the new one, never a partial write, and a return means the
-    new index is on disk. If the body raises, the temp file is removed and the
-    exception propagates, leaving any existing index at `path` intact.
+    Yields the path of the slot that is not currently published, for the caller
+    to write the index to. On normal exit that slot is flushed, its generation
+    record is written and flushed — the commit — and the retired slot is
+    emptied.
 
-    The rename is the commit point: nothing after it may raise, or a caller
-    would roll back against an index that has already been replaced.
+    If the body raises, nothing is published and the exception propagates: the
+    previously published index stays live, and the half-written slot is
+    invisible until the next checkpoint overwrites it. The same holds for a
+    failed flush, which is why flush errors are not suppressed — the store trims
+    its log on the strength of this call, and ``EIO`` from ``fsync`` means the
+    writeback already failed and the dirty pages were dropped.
 
     Args:
-        path (str):
-            The final index file path to swap the written index into.
+        base (str):
+            The index base path.
 
     Yields:
         str:
-            The temp path to write the index to.
+            Path of the slot to write the index to.
     """
-    temp = _temp_path(path)
-    # Clear any temp left by a previously interrupted save before reusing it.
-    Path(temp).unlink(missing_ok=True)
+    live = _published_slot(base)
+    if live is None:
+        target, generation = _SLOTS[0], 1
+    else:
+        live_slot, live_generation = live
+        target, generation = 1 - live_slot, live_generation + 1
+
+    _create_artifacts(base)
+
+    yield str(_slot_path(base, target))
+
+    # 1. The index itself, durable before anything names it.
+    _flush_file(_slot_path(base, target))
+    # 2. The commit point.
+    _write_generation(base, target, generation)
+    # 3. Reclaim the retired pair. Best-effort: this runs after the commit, so
+    #    it must not fail the save, and a slot left full is harmless — its
+    #    record holds the lower generation and loses the comparison.
+    if live is not None:
+        _empty_slot(base, live[0])
+
+
+def _published_slot(base: str) -> tuple[int, int] | None:
+    """The (slot, generation) with the highest believable generation, if any."""
+    published = [
+        (generation, slot)
+        for slot in _SLOTS
+        if (generation := _read_generation(base, slot)) is not None
+    ]
+    if not published:
+        return None
+    generation, slot = max(published)
+    return slot, generation
+
+
+def _read_generation(base: str, slot: int) -> int | None:
+    """The generation published in `slot`, or None if no believable record."""
     try:
-        yield temp
-        _flush_to_disk(temp)
-        Path(temp).replace(path)
-        _flush_parent_dir(path)
-    except BaseException:
-        Path(temp).unlink(missing_ok=True)
-        raise
+        record = _record_path(base, slot).read_bytes()
+    except OSError:
+        return None
+    if len(record) != _RECORD_SIZE:
+        return None
+    generation, complement = struct.unpack(_RECORD_FORMAT, record)
+    # Generations start at 1, so an all-zero record is never a publication.
+    if generation == 0 or complement != generation ^ _COMPLEMENT_MASK:
+        return None
+    return generation
 
 
-def _flush_to_disk(path: str) -> None:
-    """
-    Flush the temp file's bytes to disk before the swap. Errors propagate.
+def _write_generation(base: str, slot: int, generation: int) -> None:
+    """Publish `slot` by writing and flushing its generation record."""
+    record = struct.pack(_RECORD_FORMAT, generation, generation ^ _COMPLEMENT_MASK)
+    fd = os.open(_record_path(base, slot), os.O_RDWR)
+    try:
+        os.write(fd, record)
+        _fsync(fd)
+    finally:
+        os.close(fd)
 
-    The vector store trims its pending-operation log — its only other copy of
-    these vectors — once the save returns, so a failed flush has to fail the
-    save rather than be reported as success. ``EIO`` here is not hypothetical:
-    a writeback error is reported to ``fsync`` once and the dirty pages are
-    then dropped, which is exactly when the save must not be treated as
-    committed. `atomic_index_write` removes the temp file and leaves the
-    previous index in place, so the next save retries. (SQLite draws the same
-    line: a file fsync failure raises ``SQLITE_IOERR_FSYNC``, while a directory
-    fsync failure is ignored — see `_flush_parent_dir`.)
-    """
-    # O_RDWR rather than O_RDONLY: os.fsync is `_commit` on Windows, which
-    # needs a writable handle. Opening for write does not truncate.
+
+def _empty_slot(base: str, slot: int) -> None:
+    """Unpublish a slot and reclaim its space, best-effort."""
+    # The record first: no valid record may ever name an emptied slot.
+    for path in (_record_path(base, slot), _slot_path(base, slot)):
+        with contextlib.suppress(OSError):
+            os.truncate(path, 0)
+
+
+def _flush_file(path: Path) -> None:
+    """Flush a file's contents to stable storage. Errors propagate."""
+    # O_RDWR rather than O_RDONLY: os.fsync is `_commit` on Windows, which needs
+    # a writable handle. Opening for write does not truncate.
     fd = os.open(path, os.O_RDWR)
     try:
         _fsync(fd)
@@ -148,26 +276,30 @@ def _flush_to_disk(path: str) -> None:
         os.close(fd)
 
 
-def _flush_parent_dir(path: str) -> None:
+def _create_artifacts(base: str) -> None:
     """
-    Flush the directory holding `path`, making the swap itself durable.
+    Create any missing slot or record files, once per collection.
 
-    Without this the swap is atomic but not durable: POSIX ``rename(2)`` leaves
-    the new directory entry in the page cache, so power loss can roll it back to
-    the previous file.
-
-    Best-effort, matching SQLite's ``unixSync``, which fsyncs the directory
-    holding a journal for exactly this reason and treats a directory it cannot
-    open as success. A filesystem that refuses this gives the SQLite database
-    beside the index no guarantee either, so hardening the index alone would
-    buy nothing, and failing the save would instead grow the pending log
-    without bound. Windows cannot open a directory this way at all, so this is
-    a no-op there and the swap's durability follows NTFS metadata journaling.
+    This is the only directory operation in the protocol, and it happens when
+    there is nothing to lose: before anything has been published, the store's
+    log still holds every vector. The parent directory is flushed afterwards so
+    that even this is durable where the platform allows it — a POSIX-only,
+    best-effort step, and the one place where a filesystem that refuses it costs
+    nothing more than a loud missing-index error at the next open.
     """
+    created = False
+    for path in index_artifact_paths(base):
+        try:
+            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+        except FileExistsError:
+            continue
+        created = True
+
+    if not created:
+        return
+
     with contextlib.suppress(OSError):
-        # `.parent` before `.resolve()`: the entry the swap created lives in the
-        # directory the path names, not in a symlink target's directory.
-        fd = os.open(Path(path).parent.resolve(), os.O_RDONLY)
+        fd = os.open(Path(base).parent.resolve(), os.O_RDONLY)
         try:
             _fsync(fd)
         finally:

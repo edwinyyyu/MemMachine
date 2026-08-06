@@ -1,8 +1,18 @@
-"""Tests for the shared atomic index persistence helpers."""
+"""
+Tests for crash-safe index publication.
+
+The anomaly tests walk the crash points in the publish sequence by constructing
+the on-disk state each one would leave — stricter than killing a process, since
+every state is produced deterministically. The one property construction cannot
+observe is the *ordering* itself: a generation record written before its index
+would satisfy every state-based test here, so
+`test_a_failed_index_write_publishes_nothing` pins it separately.
+"""
 
 import errno
 import os
 import stat
+import struct
 import sys
 from pathlib import Path
 
@@ -12,144 +22,220 @@ from memmachine_server.common.vector_store.vector_search_engine import (
     index_persistence,
 )
 from memmachine_server.common.vector_store.vector_search_engine.index_persistence import (
-    atomic_index_write,
-    clear_stale_index_temp,
+    index_artifact_paths,
+    publish_index,
+    published_index_path,
 )
 
+_MASK = 0xFFFFFFFFFFFFFFFF
 
-class TestAtomicIndexWrite:
-    def test_swaps_temp_into_place_on_success(self, tmp_path: Path):
-        path = tmp_path / "index.idx"
-        path.write_text("OLD")
 
-        with atomic_index_write(str(path)) as temp:
-            Path(temp).write_text("NEW")
-            # Until the context exits, the target still holds the old contents.
-            assert path.read_text() == "OLD"
+def _write_index(base: str, contents: str) -> str:
+    """Publish `contents` as the next index generation, returning its slot."""
+    with publish_index(base) as slot:
+        Path(slot).write_text(contents)
+    return slot
 
-        assert path.read_text() == "NEW"
-        assert not (tmp_path / "index.idx.tmp").exists()
 
-    def test_creates_target_when_missing(self, tmp_path: Path):
-        path = tmp_path / "index.idx"
+def _record(base: str, slot: int) -> Path:
+    return Path(f"{base}.{slot}.gen")
 
-        with atomic_index_write(str(path)) as temp:
-            Path(temp).write_text("NEW")
 
-        assert path.read_text() == "NEW"
+def _slot(base: str, slot: int) -> Path:
+    return Path(f"{base}.{slot}")
 
-    def test_preserves_existing_index_on_failure(self, tmp_path: Path):
-        path = tmp_path / "index.idx"
-        path.write_text("GOOD")
 
+def _generation(base: str, slot: int) -> int | None:
+    """The generation stored in a record, ignoring the complement check."""
+    data = _record(base, slot).read_bytes()
+    if len(data) != 16:
+        return None
+    return struct.unpack("<QQ", data)[0]
+
+
+class TestPublish:
+    def test_nothing_is_published_before_the_first_save(self, tmp_path: Path):
+        assert published_index_path(str(tmp_path / "index.idx")) is None
+
+    def test_publishes_and_reads_back(self, tmp_path: Path):
+        base = str(tmp_path / "index.idx")
+
+        _write_index(base, "FIRST")
+
+        published = published_index_path(base)
+        assert published is not None
+        assert Path(published).read_text() == "FIRST"
+
+    def test_alternates_slots_across_checkpoints(self, tmp_path: Path):
+        base = str(tmp_path / "index.idx")
+
+        first = _write_index(base, "FIRST")
+        second = _write_index(base, "SECOND")
+        third = _write_index(base, "THIRD")
+
+        assert first != second
+        assert third == first
+        published = published_index_path(base)
+        assert published is not None
+        assert Path(published).read_text() == "THIRD"
+
+    def test_empties_the_retired_slot(self, tmp_path: Path):
+        base = str(tmp_path / "index.idx")
+
+        retired = _write_index(base, "FIRST")
+        _write_index(base, "SECOND")
+
+        # The spare costs no disk at rest, and its record no longer publishes.
+        assert Path(retired).stat().st_size == 0
+        retired_slot = int(retired[-1])
+        assert _record(base, retired_slot).stat().st_size == 0
+
+    def test_creates_its_files_once(self, tmp_path: Path):
+        base = str(tmp_path / "index.idx")
+
+        _write_index(base, "FIRST")
+
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+            p.name for p in index_artifact_paths(base)
+        )
+
+
+class TestCrashPoints:
+    def test_a_torn_index_write_is_invisible(self, tmp_path: Path):
+        base = str(tmp_path / "index.idx")
+        _write_index(base, "GOOD")
+        live = published_index_path(base)
+        assert live is not None
+
+        # Crash during step 1: the damaged file is the slot nobody reads.
+        free = 1 - int(live[-1])
+        _slot(base, free).write_text("HALF-WRITTEN")
+
+        assert published_index_path(base) == live
+        assert Path(live).read_text() == "GOOD"
+
+    def test_an_unpublished_index_is_invisible(self, tmp_path: Path):
+        base = str(tmp_path / "index.idx")
+        _write_index(base, "GOOD")
+        live = published_index_path(base)
+        assert live is not None
+
+        # Crash between steps 1 and 2: a complete new index that nothing named.
+        free = 1 - int(live[-1])
+        _slot(base, free).write_text("COMPLETE BUT UNPUBLISHED")
+
+        assert published_index_path(base) == live
+
+    def test_a_torn_record_reads_as_absent(self, tmp_path: Path):
+        base = str(tmp_path / "index.idx")
+        _write_index(base, "GOOD")
+        live = published_index_path(base)
+        assert live is not None
+        live_slot = int(live[-1])
+        free = 1 - live_slot
+
+        # Crash during step 2: halves from different writes. The higher
+        # generation is present but unbelievable, so the live slot still wins.
+        _slot(base, free).write_text("NEWER")
+        torn = struct.pack("<QQ", 2, 1 ^ _MASK)
+        _record(base, free).write_bytes(torn)
+
+        assert published_index_path(base) == live
+        assert Path(live).read_text() == "GOOD"
+
+    def test_a_short_record_reads_as_absent(self, tmp_path: Path):
+        base = str(tmp_path / "index.idx")
+        _write_index(base, "GOOD")
+        live = published_index_path(base)
+        assert live is not None
+        free = 1 - int(live[-1])
+
+        _slot(base, free).write_text("NEWER")
+        _record(base, free).write_bytes(struct.pack("<Q", 2))
+
+        assert published_index_path(base) == live
+
+    def test_the_higher_generation_wins(self, tmp_path: Path):
+        base = str(tmp_path / "index.idx")
+        first = _write_index(base, "FIRST")
+        second = _write_index(base, "SECOND")
+
+        # Crash between steps 2 and 3: both records valid, retired not yet
+        # emptied. Reconstruct that state by republishing the older record.
+        first_slot = int(first[-1])
+        _slot(base, first_slot).write_text("FIRST")
+        _record(base, first_slot).write_bytes(struct.pack("<QQ", 1, 1 ^ _MASK))
+
+        assert _generation(base, first_slot) == 1
+        assert published_index_path(base) == second
+
+    def test_a_failed_index_write_publishes_nothing(self, tmp_path: Path):
+        base = str(tmp_path / "index.idx")
+        _write_index(base, "GOOD")
+        live = published_index_path(base)
+        assert live is not None
+
+        # The ordering itself: no state-based test can see a record written
+        # before its index, because the end state is identical either way.
         def write_then_fail() -> None:
-            with atomic_index_write(str(path)) as temp:
-                Path(temp).write_text("PARTIAL")
-                raise RuntimeError("boom")
+            with publish_index(base) as slot:
+                Path(slot).write_text("PARTIAL")
+                raise RuntimeError("engine exploded")
 
-        with pytest.raises(RuntimeError, match="boom"):
+        with pytest.raises(RuntimeError, match="engine exploded"):
             write_then_fail()
 
-        # The existing index is untouched and the temp file is cleaned up.
-        assert path.read_text() == "GOOD"
-        assert not (tmp_path / "index.idx.tmp").exists()
+        assert published_index_path(base) == live
+        assert Path(live).read_text() == "GOOD"
 
-    def test_does_not_create_target_on_failure(self, tmp_path: Path):
-        path = tmp_path / "index.idx"
-
-        def write_then_fail() -> None:
-            with atomic_index_write(str(path)) as temp:
-                Path(temp).write_text("PARTIAL")
-                raise RuntimeError("boom")
-
-        with pytest.raises(RuntimeError):
-            write_then_fail()
-
-        assert not path.exists()
-        assert not (tmp_path / "index.idx.tmp").exists()
-
-    def test_clears_stale_temp_before_writing(self, tmp_path: Path):
-        path = tmp_path / "index.idx"
-        # A temp file left by a previously interrupted save.
-        (tmp_path / "index.idx.tmp").write_text("STALE")
-
-        with atomic_index_write(str(path)) as temp:
-            assert not Path(temp).exists()
-            Path(temp).write_text("NEW")
-
-        assert path.read_text() == "NEW"
-
-
-class TestDurability:
-    def test_flushes_the_file_then_the_parent_directory(
+    def test_a_failed_flush_publishes_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        real_fsync = index_persistence._fsync
-        # True for a directory fd, False for a regular file.
-        flushed: list[bool] = []
+        base = str(tmp_path / "index.idx")
+        _write_index(base, "GOOD")
+        live = published_index_path(base)
+        assert live is not None
 
-        def record(fd: int) -> None:
-            flushed.append(stat.S_ISDIR(os.fstat(fd).st_mode))
-            real_fsync(fd)
-
-        monkeypatch.setattr(index_persistence, "_fsync", record)
-
-        path = tmp_path / "index.idx"
-        with atomic_index_write(str(path)) as temp:
-            Path(temp).write_text("NEW")
-
-        if os.name == "nt":
-            # Windows cannot open a directory to flush it; the swap's
-            # durability follows NTFS metadata journaling instead.
-            assert flushed == [False]
-        else:
-            # The bytes first, then the directory entry the swap created.
-            assert flushed == [False, True]
-
-    def test_file_flush_failure_fails_the_save(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        def fail(fd: int) -> None:
+        def fail(_fd: int) -> None:
             raise OSError(errno.EIO, "Input/output error")
 
         monkeypatch.setattr(index_persistence, "_fsync", fail)
 
-        path = tmp_path / "index.idx"
-        path.write_text("GOOD")
-
+        # A flush that fails must fail the save: the caller trims its log on the
+        # strength of it, and EIO means the writeback already failed.
         def write_index() -> None:
-            with atomic_index_write(str(path)) as temp:
-                Path(temp).write_text("NEW")
+            with publish_index(base) as slot:
+                Path(slot).write_text("NEWER")
 
-        # Reported as a failure rather than swallowed: the caller trims its
-        # pending log on the strength of this save.
         with pytest.raises(OSError, match="Input/output error"):
             write_index()
 
-        assert path.read_text() == "GOOD"
-        assert not (tmp_path / "index.idx.tmp").exists()
+        assert published_index_path(base) == live
 
-    def test_parent_directory_flush_failure_is_ignored(
+
+class TestDurability:
+    def test_flushes_the_index_before_the_record(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
+        base = str(tmp_path / "index.idx")
         real_fsync = index_persistence._fsync
+        flushed: list[str] = []
 
-        def fail_for_directories(fd: int) -> None:
-            if stat.S_ISDIR(os.fstat(fd).st_mode):
-                raise OSError(errno.EINVAL, "Invalid argument")
+        def record(fd: int) -> None:
+            mode = os.fstat(fd).st_mode
+            flushed.append("dir" if stat.S_ISDIR(mode) else f"{os.fstat(fd).st_size}")
             real_fsync(fd)
 
-        monkeypatch.setattr(index_persistence, "_fsync", fail_for_directories)
+        monkeypatch.setattr(index_persistence, "_fsync", record)
 
-        path = tmp_path / "index.idx"
-        # Filesystems that refuse a directory fsync must not fail every save.
-        with atomic_index_write(str(path)) as temp:
-            Path(temp).write_text("NEW")
+        _write_index(base, "FIRST")
 
-        assert path.read_text() == "NEW"
+        # A one-time parent flush for the created files (POSIX only), then the
+        # index, then the 16-byte record that publishes it.
+        assert flushed[-2:] == ["5", "16"]
+        if os.name != "nt":
+            assert flushed[0] == "dir"
 
-
-class TestFsync:
     @pytest.mark.skipif(
         sys.platform != "darwin", reason="F_FULLFSYNC only exists on macOS"
     )
@@ -177,25 +263,13 @@ class TestFsync:
         assert calls == ["full_fsync", "fsync"]
 
 
-class TestClearStaleIndexTemp:
-    def test_removes_leftover_temp(self, tmp_path: Path):
-        path = tmp_path / "index.idx"
-        temp = tmp_path / "index.idx.tmp"
-        temp.write_text("STALE")
+class TestIndexArtifactPaths:
+    def test_lists_every_file_the_base_expands_into(self, tmp_path: Path):
+        base = str(tmp_path / "index.idx")
 
-        clear_stale_index_temp(str(path))
-
-        assert not temp.exists()
-
-    def test_no_temp_is_noop(self, tmp_path: Path):
-        path = tmp_path / "index.idx"
-        # Must not raise when there is nothing to clear.
-        clear_stale_index_temp(str(path))
-
-    def test_leaves_index_file_untouched(self, tmp_path: Path):
-        path = tmp_path / "index.idx"
-        path.write_text("GOOD")
-
-        clear_stale_index_temp(str(path))
-
-        assert path.read_text() == "GOOD"
+        assert sorted(p.name for p in index_artifact_paths(base)) == [
+            "index.idx.0",
+            "index.idx.0.gen",
+            "index.idx.1",
+            "index.idx.1.gen",
+        ]
