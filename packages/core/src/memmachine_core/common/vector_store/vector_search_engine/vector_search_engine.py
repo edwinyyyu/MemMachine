@@ -122,42 +122,42 @@ class VectorSearchEngine(ABC):
     @abstractmethod
     async def save(self, path: str) -> None:
         """
-        Persist the index to `path`, atomically and durably.
+        Persist the index under `path`, durably.
 
-        Write elsewhere, flush, and replace `path` in one step, so a crash
-        leaves either the previous index or the new one and never a partial
-        file — then make that replacement durable by whatever means the
-        platform provides.
+        Returning must mean that a later `load` produces this index even if the
+        machine loses power on the next instruction. Not "written", not "handed
+        to the OS", not "renamed on a filesystem that has yet to flush the
+        directory". The caller trims its pending-operation log — the only other
+        copy of these vectors — as soon as this returns, so anything weaker
+        loses data.
 
-        The caller trims its pending-operation log — its only other copy of
-        these vectors — once this returns, so an implementation that merely
-        writes and flushes, leaving a half-written file reachable at `path`,
-        does not satisfy this. An engine whose backend implements the whole
-        protocol natively may delegate to it; the rest should use
-        `index_persistence.atomic_index_write`, which implements it against a
-        backend that can only write to a path.
+        Durability is entirely the implementation's, including which artifact is
+        live: nothing about the layout may leak out, and the caller keeps no
+        pointer, manifest, or generation of its own. `path` is therefore a base
+        name rather than a promise about the files on disk — an engine may keep
+        one file, two slots, or a set of segments under it.
 
-        "As durably as the platform allows" is deliberate rather than a hedge.
-        On POSIX the replacement is made durable by fsyncing the parent
-        directory. Windows has no equivalent operation, so the replacement is
-        atomic through NTFS metadata journaling but is not necessarily flushed
-        when the call returns.
+        `index_persistence.publish_index` provides this for a backend that can
+        only write an index to a path; an engine whose backend publishes durably
+        on its own may delegate to that instead.
 
         Args:
             path (str):
-                File path to write the index to.
+                Base path for the index files.
         """
 
     @abstractmethod
     async def load(self, path: str) -> None:
         """
-        Load the index from disk.
+        Load the index most recently published under `path`.
 
-        Implementations should clear any temp file a previously interrupted
-        save left beside `path` (`index_persistence.clear_stale_index_temp`),
-        so a crash does not leak one across restarts.
+        Raising is correct when nothing is published or the published index does
+        not parse. Implementations must **not** substitute an older copy they
+        may still hold: the caller trimmed its log against the published one, so
+        an older copy is stale by exactly the operations that can no longer be
+        replayed, and serving it would be data loss dressed as success.
 
         Args:
             path (str):
-                File path to read the index from.
+                Base path for the index files.
         """

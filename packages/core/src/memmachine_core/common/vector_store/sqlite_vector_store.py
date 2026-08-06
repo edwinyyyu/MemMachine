@@ -59,16 +59,17 @@ from .data_types import (
 )
 from .utils import validate_filter, validate_identifier
 from .vector_search_engine import VectorSearchEngine
+from .vector_search_engine.index_persistence import index_artifact_paths
 from .vector_store import VectorStore, VectorStoreCollection
 
 logger = logging.getLogger(__name__)
 
 
 class IndexLoadError(RuntimeError):
-    """Raised when a collection's on-disk index file cannot be loaded."""
+    """Raised when a collection's on-disk index cannot be loaded."""
 
     def __init__(self, namespace: str, name: str, path: Path) -> None:
-        """Initialize with the collection namespace, name, and index file path."""
+        """Initialize with the collection namespace, name, and index base path."""
         self.namespace = namespace
         self.name = name
         self.path = path
@@ -90,9 +91,10 @@ class _CollectionRow(BaseSQLiteVectorStore):
     config_json: MappedColumn[dict[str, JsonValue]] = mapped_column(
         JSON, nullable=False
     )
-    # Flips to True after the first successful index save.
-    # Once True, the on-disk index file is part of the durable contract:
-    # missing or corrupt is treated as an error rather than silently rebuilt empty.
+    # Flips to True after the first successful index save. Bookkeeping about the
+    # collection's own lifecycle rather than the engine's layout: once True, an
+    # engine reporting nothing published is a fault to raise on, not an empty
+    # collection to serve.
     index_saved: MappedColumn[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
@@ -141,7 +143,12 @@ async def _save_collection_index(
     path: str,
 ) -> None:
     """Save a collection's index to disk."""
-    # Write index to path.
+    # The one rule this checkpoint rests on: never trim the log past what the
+    # engine says is durable. `save` returning is that statement — a later
+    # `load` produces this index even if the machine loses power on the next
+    # instruction — so these two steps need no shared transaction, only this
+    # order. A crash between them costs a replay of operations the index
+    # already holds, and replay is idempotent.
     await search_engine.save(path)
 
     # Delete applied pending operations and flip index_saved to True.
@@ -224,7 +231,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         namespace: str,
         name: str,
         config: VectorStoreCollectionConfig,
-        index_path: str | None,
+        index_base_path: str | None,
         save_threshold: int,
     ) -> None:
         """Initialize a collection handle."""
@@ -238,7 +245,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
 
         self._config = config
 
-        self._index_path = index_path
+        self._index_base_path = index_base_path
         self._save_threshold = save_threshold
 
     @property
@@ -248,7 +255,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
 
     async def _maybe_save_index(self) -> None:
         """Save the index to disk if applied pending operations exceed the threshold."""
-        if self._index_path is None:
+        if self._index_base_path is None:
             return
 
         async with self._create_session() as session:
@@ -268,7 +275,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                 namespace=self._namespace,
                 name=self._name,
                 search_engine=self._search_engine,
-                path=self._index_path,
+                path=self._index_base_path,
             )
 
     @override
@@ -787,7 +794,7 @@ class SQLiteVectorStore(VectorStore):
         self._require_started()
         if self._index_directory is not None:
             for (namespace, name), search_engine in self._search_engines.items():
-                path = self._index_path(namespace, name)
+                path = self._index_base_path(namespace, name)
                 assert path is not None
                 await _save_collection_index(
                     create_session=self._create_session,
@@ -838,7 +845,7 @@ class SQLiteVectorStore(VectorStore):
         if not validate_identifier(namespace) or not validate_identifier(name):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
 
-        index_path = self._index_path(namespace, name)
+        index_base_path = self._index_base_path(namespace, name)
 
         async with self._create_session() as session, session.begin():
             existing_config = await self._get_stored_config(session, namespace, name)
@@ -858,7 +865,9 @@ class SQLiteVectorStore(VectorStore):
                     namespace=namespace,
                     name=name,
                     config=existing_config,
-                    index_path=str(index_path) if index_path is not None else None,
+                    index_base_path=(
+                        str(index_base_path) if index_base_path is not None else None
+                    ),
                     save_threshold=self._save_threshold,
                 )
 
@@ -882,7 +891,9 @@ class SQLiteVectorStore(VectorStore):
             namespace=namespace,
             name=name,
             config=config,
-            index_path=str(index_path) if index_path is not None else None,
+            index_base_path=(
+                str(index_base_path) if index_base_path is not None else None
+            ),
             save_threshold=self._save_threshold,
         )
 
@@ -907,7 +918,7 @@ class SQLiteVectorStore(VectorStore):
             namespace, name, existing
         )
 
-        index_path = self._index_path(namespace, name)
+        index_base_path = self._index_base_path(namespace, name)
         return SQLiteVectorStoreCollection(
             create_session=self._create_session,
             sync_sqlalchemy_engine=self._sync_sqlalchemy_engine,
@@ -916,7 +927,9 @@ class SQLiteVectorStore(VectorStore):
             namespace=namespace,
             name=name,
             config=existing,
-            index_path=str(index_path) if index_path is not None else None,
+            index_base_path=(
+                str(index_base_path) if index_base_path is not None else None
+            ),
             save_threshold=self._save_threshold,
         )
 
@@ -953,9 +966,7 @@ class SQLiteVectorStore(VectorStore):
 
         # If unlink fails, the orphan is harmless.
         # _clear_search_engine_state will clean it up if a new collection with the same name is created.
-        index_path = self._index_path(namespace, name)
-        if index_path is not None and index_path.exists():
-            index_path.unlink()
+        self._remove_index_files(namespace, name)
         self._search_engines.pop((namespace, name), None)
 
     # Helpers.
@@ -976,18 +987,30 @@ class SQLiteVectorStore(VectorStore):
             extend_existing=True,
         )
 
-    def _index_path(self, namespace: str, name: str) -> Path | None:
-        """Return the on-disk index path for a collection, or None if in-memory."""
+    def _index_base_path(self, namespace: str, name: str) -> Path | None:
+        """
+        Return a collection's index base path, or None if in-memory.
+
+        A base name, not a file: what an engine keeps under it — one file, two
+        slots, a set of segments — is the engine's business, and no caller may
+        hold this believing it is the index.
+        """
         if self._index_directory is None:
             return None
         return self._index_directory / f"{self._collection_prefix(namespace, name)}.idx"
 
+    def _remove_index_files(self, namespace: str, name: str) -> None:
+        """Discard a collection's index, whatever the engine keeps under it."""
+        index_base_path = self._index_base_path(namespace, name)
+        if index_base_path is None:
+            return
+        for path in index_artifact_paths(str(index_base_path)):
+            path.unlink(missing_ok=True)
+
     def _clear_search_engine_state(self, namespace: str, name: str) -> None:
         """Remove any in-memory engine and on-disk index for a collection."""
         self._search_engines.pop((namespace, name), None)
-        index_path = self._index_path(namespace, name)
-        if index_path is not None and index_path.exists():
-            index_path.unlink()
+        self._remove_index_files(namespace, name)
 
     async def _get_stored_config(
         self,
@@ -1021,8 +1044,8 @@ class SQLiteVectorStore(VectorStore):
             config.vector_dimensions, config.similarity_metric
         )
 
-        index_path = self._index_path(namespace, name)
-        if index_path is not None:
+        index_base_path = self._index_base_path(namespace, name)
+        if index_base_path is not None:
             async with self._create_session() as session:
                 saved = (
                     await session.execute(
@@ -1037,9 +1060,9 @@ class SQLiteVectorStore(VectorStore):
                 # The engine just propagates whatever its backend raises.
                 # Wrap any failure as IndexLoadError so callers see one type.
                 try:
-                    await search_engine.load(str(index_path))
+                    await search_engine.load(str(index_base_path))
                 except Exception as e:
-                    raise IndexLoadError(namespace, name, index_path) from e
+                    raise IndexLoadError(namespace, name, index_base_path) from e
 
         self._search_engines[cache_key] = search_engine
         return search_engine
