@@ -788,14 +788,37 @@ class EventMemory:
                 and segment.event_uuid == last_segment.event_uuid
                 and segment.index == last_segment.index
             )
+            # Same event, but a block between these two is absent. Without a mark the
+            # remaining pieces read as one continuous statement, which is worse than
+            # showing less: it invents a claim nobody made.
+            is_gapped = (
+                last_segment is not None
+                and segment.event_uuid == last_segment.event_uuid
+                and segment.index > last_segment.index + 1
+            )
 
             if not is_continuation:
-                if not first:
-                    context_string += entry_line(accumulated_text, accumulated_notes)
-                first = False
-                accumulated_text = ""
-                accumulated_notes = []
-                context_string += EventMemory._segment_header(segment, format_options)
+                if is_gapped and format_options.gap_marker:
+                    # Closes the run so far and marks the hole, then keeps writing
+                    # under the SAME header — the gap is inside one event, so a new
+                    # header would misrepresent it as two.
+                    context_string += (
+                        entry_line(accumulated_text, accumulated_notes).rstrip("\n")
+                        + f" {format_options.gap_marker} "
+                    )
+                    accumulated_text = ""
+                    accumulated_notes = []
+                else:
+                    if not first:
+                        context_string += entry_line(
+                            accumulated_text, accumulated_notes
+                        )
+                    first = False
+                    accumulated_text = ""
+                    accumulated_notes = []
+                    context_string += EventMemory._segment_header(
+                        segment, format_options
+                    )
 
             text = EventMemory._extract_text(segment.block)
             if text is not None:

@@ -1109,3 +1109,58 @@ class TestEviction:
             [_make_event(f"b{i}", timestamp=_ts(5 + i)) for i in range(5)]
         )
         assert await _stored_minutes(fake_vector_store_collection) == [0, 1, 7, 8, 9]
+
+
+class TestGapMarker:
+    """A partial event must not read as a whole one.
+
+    Segments of one event are concatenated under a single header, so when a block
+    between two of them is missing the remaining pieces would otherwise join into a
+    statement nobody made. The marker sits OUTSIDE the quoted payload, which is what
+    keeps it from being mistaken for text the speaker wrote.
+    """
+
+    def test_gap_is_marked_within_one_event(self):
+        event = uuid4()
+        first = _make_segment(event_uuid=event, index=0, text="A")
+        third = _make_segment(event_uuid=event, index=2, text="C")
+
+        rendered = EventMemory.string_from_segment_context([first, third])
+
+        assert '"A" [...] "C"' in rendered
+        # One event renders as one line. A second header would present the two
+        # surviving pieces as though they had been separate events.
+        assert "\n" not in rendered
+
+    def test_contiguous_indices_are_not_marked(self):
+        event = uuid4()
+        first = _make_segment(event_uuid=event, index=0, text="A")
+        second = _make_segment(event_uuid=event, index=1, text="B")
+
+        rendered = EventMemory.string_from_segment_context([first, second])
+
+        assert "[...]" not in rendered
+
+    def test_gap_across_different_events_is_not_marked(self):
+        first = _make_segment(event_uuid=uuid4(), index=0, text="A")
+        second = _make_segment(event_uuid=uuid4(), index=5, text="C")
+
+        rendered = EventMemory.string_from_segment_context([first, second])
+
+        assert "[...]" not in rendered, "separate events already read as separate"
+
+    def test_marker_is_configurable_and_can_be_disabled(self):
+        event = uuid4()
+        first = _make_segment(event_uuid=event, index=0, text="A")
+        third = _make_segment(event_uuid=event, index=2, text="C")
+
+        custom = EventMemory.string_from_segment_context(
+            [first, third], format_options=FormatOptions(gap_marker="<<cut>>")
+        )
+        silent = EventMemory.string_from_segment_context(
+            [first, third], format_options=FormatOptions(gap_marker=None)
+        )
+
+        assert '"A" <<cut>> "C"' in custom
+        assert "<<cut>>" not in silent
+        assert "[...]" not in silent
