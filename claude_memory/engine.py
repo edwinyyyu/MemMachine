@@ -97,6 +97,7 @@ from claude_memory.wire import (
     _demote_message,
     format_memory_line,
     is_searchable,
+    kind_scope_filter,
     memory_id_for_segment_uuid,
     parse_memory_id,
     searchable_only,
@@ -684,8 +685,16 @@ class MemoryCore:
         before: int = 5,
         after: int = 5,
         seen: set[str] | None = None,
+        include: list[str] | None = None,
+        exclude: list[str] | None = None,
     ) -> ExpandResult:
-        """Return the seed's session timeline window, same-event segments merged."""
+        """Return the seed's session timeline window, same-event segments merged.
+
+        ``include`` / ``exclude`` name sources (``message``-like kinds: user_message,
+        assistant_message, reasoning, tool_call, tool_result, injected). Both are
+        pushed into the store's window walk rather than applied to its result, so the
+        budget is spent only on segments the caller asked for.
+        """
         seen_set = seen if seen is not None else self.seen_segment_uuids
         seed_uuid = parse_memory_id(seed_id)
         if seed_uuid is None:
@@ -705,12 +714,23 @@ class MemoryCore:
             property_filter=None,
         )
         seed_segments = seed_only.get(seed_uuid)
-        session_filter: FilterExpr | None = None
+        scope: list[str] = []
+        seed_source = ""
         if seed_segments:
             session = seed_segments[0].properties.get("session_id")
             if isinstance(session, str) and session:
-                with suppress(FilterParseError):
-                    session_filter = parse_filter(session_scope_filter(session))
+                scope.append(session_scope_filter(session))
+            source = seed_segments[0].properties.get("source")
+            seed_source = source if isinstance(source, str) else ""
+        # A kind filter that excluded the seed would drop the very thing the caller
+        # named, so seeding INTO a kind opts that kind back in.
+        kinds = kind_scope_filter(include, exclude, always=seed_source or None)
+        if kinds:
+            scope.append(kinds)
+        session_filter: FilterExpr | None = None
+        if scope:
+            with suppress(FilterParseError):
+                session_filter = parse_filter(" AND ".join(scope))
 
         contexts = await self.opened.partition.get_segment_contexts(
             seed_segment_uuids=[seed_uuid],

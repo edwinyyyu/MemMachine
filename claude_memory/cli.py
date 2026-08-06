@@ -310,7 +310,13 @@ def _register_memory_tools(mcp: "FastMCP", wait: float) -> None:
         )
 
     @mcp.tool()
-    async def memory_expand(seed: str, before: int = 5, after: int = 5) -> str:
+    async def memory_expand(
+        seed: str,
+        before: int = 5,
+        after: int = 5,
+        include: list[str] | None = None,
+        exclude: list[str] | None = None,
+    ) -> str:
         """Recall the surrounding timeline around a memory you already have.
 
         Pass a `mem:<id>` from memory_search. This walks the conversation around it
@@ -321,13 +327,34 @@ def _register_memory_tools(mcp: "FastMCP", wait: float) -> None:
         fine); if it isn't enough, expand again from the first or last `mem:<id>`
         shown to reach further.
 
+        `include`/`exclude` choose which kinds of thing the window spends itself on:
+        `user_message`, `assistant_message`, `reasoning`, `tool_call`, `tool_result`,
+        `injected`. They are applied while the window is gathered, so the budget buys
+        only what you asked for. Reach for them when a plain expand comes back thin:
+        `exclude=["tool_result"]` to read the argument in a session full of long
+        command output, `include=["tool_call","tool_result"]` to replay just the
+        procedure. `injected` (hook context, skill bodies, system reminders,
+        slash-command echoes, the session's own compaction summary) is dropped by
+        default because it arrives in runs and can fill a window on its own — pass
+        `include=["injected", ...]` to see exactly what the session was shown.
+
         Args:
             seed: A `mem:<id>` from a prior search or expand.
             before: How much context to pull before the seed (default 5).
             after: How much context to pull after the seed (default 5).
+            include: Only these kinds (overrides `exclude`).
+            exclude: These kinds are skipped (default: `["injected"]`).
         """
         response = _call_daemon(
-            {"op": "expand", "seed": seed, "before": before, "after": after}, wait
+            {
+                "op": "expand",
+                "seed": seed,
+                "before": before,
+                "after": after,
+                "include": include,
+                "exclude": exclude,
+            },
+            wait,
         )
         if isinstance(response, str):
             return response

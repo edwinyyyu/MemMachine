@@ -239,6 +239,8 @@ class MemoryService:
                 before=request.get("before", 5),
                 after=request.get("after", 5),
                 seen=self._seen_set(partition, session_id),
+                include=request.get("include"),
+                exclude=request.get("exclude"),
             )
             return {"ok": True, "result": asdict(result)}
 

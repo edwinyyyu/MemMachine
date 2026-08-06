@@ -393,6 +393,43 @@ def session_scope_filter(session_id: str) -> str:
     return f"m.session_id = {_filter_str(session_id)}"
 
 
+#: What expansion returns when the caller says nothing. Injected text is on the
+#: timeline for fidelity — it is genuinely what the session saw — but it is not what
+#: happened in the conversation, and it arrives in runs: 12,664 task notifications
+#: cluster around tool activity, so a window landing in one is entirely boilerplate.
+#: Excluding it by default spends the budget on turns; `include` brings it back.
+DEFAULT_EXPAND_EXCLUDES: frozenset[str] = frozenset({Source.INJECTED})
+
+
+def kind_scope_filter(
+    include: list[str] | None,
+    exclude: list[str] | None,
+    *,
+    always: str | None = None,
+) -> str | None:
+    """Filter selecting which sources an expansion window may spend its budget on.
+
+    Returns None when everything is allowed. ``include`` wins outright if given;
+    otherwise ``exclude`` (defaulting to DEFAULT_EXPAND_EXCLUDES) is removed.
+    ``always`` names a source that is kept regardless — the seed's own kind, since a
+    filter that hid the segment the caller named would answer a different question.
+
+    This has to be a filter the store applies, not a pass over its result: the window
+    is LIMIT-bounded, so dropping segments afterwards returns fewer than were asked
+    for, and the excluded text has already spent the budget.
+    """
+    if include:
+        kept = {str(source) for source in include}
+        if always:
+            kept.add(always)
+        return f"m.source IN ({', '.join(_filter_str(k) for k in sorted(kept))})"
+    dropped = {str(source) for source in (exclude or DEFAULT_EXPAND_EXCLUDES)}
+    dropped.discard(always or "")
+    if not dropped:
+        return None
+    return f"m.source NOT IN ({', '.join(_filter_str(d) for d in sorted(dropped))})"
+
+
 def searchable_only(filter_spec: str | None) -> str:
     """Add the search surface's own constraint to a caller's filter.
 
