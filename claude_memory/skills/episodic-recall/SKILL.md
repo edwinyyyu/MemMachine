@@ -76,14 +76,14 @@ number, an attribution or a decision, establish three things:
 
 ## Two thresholds
 
-Searching and surfacing are separate decisions with opposite economics.
+Searching and surfacing **to the user** are separate decisions with opposite economics.
 
 **Search on plausible bearing.** A search costs one call, and its payoff cannot be judged
 before reading the result. Search when the answer depends on decisions already taken, when a
 request builds on earlier work, or when a recommendation would change given what was already
 tried, rejected or measured.
 
-**Surface only what changes the answer** — the recommendation, the assumptions, or how the
+**Surface to the user only what changes the answer** — the recommendation, the assumptions, or how the
 question should be read. Citing a past conversation to demonstrate continuity adds nothing.
 Searching and then not mentioning the result is a normal outcome.
 

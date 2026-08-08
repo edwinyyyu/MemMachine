@@ -131,9 +131,12 @@ NOISE = re.compile(
 #   low: plausible bearing on the task is enough. (This wording is the one the
 #   144-run benchmark measured: 92% on positives, 0% on controls.)
 #
-#   SURFACING is expensive — it spends the reader's attention — and its payoff IS
+#   SURFACING TO THE USER is expensive — it spends the reader's attention — and its payoff IS
 #   knowable, because by then you have read the thing. So the bar to mention is
 #   high: it must change the answer, not decorate it.
+#
+# (Retrieval INTO the model's own context is neither of these two decisions;
+# it is automatic, and no threshold here governs it.)
 #
 # Putting the high bar on searching would be circular, and is the failure this
 # whole mechanism exists to prevent.
