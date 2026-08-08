@@ -68,6 +68,7 @@ from claude_memory.wire import (
     Source,
     format_memory_line,
     in_context_exclusion_filter,
+    observe,
     parse_memory_id,
 )
 
@@ -281,6 +282,16 @@ class MemoryService:
                 ingested = await core.ingest(events)
                 await self._fold_replies(core, partition, session_id, events)
             write_high_water_mark(self._config, session_key, total_lines)
+        observe(
+            self._config,
+            "ingest",
+            session=session_key,
+            from_line=start_line,
+            to_line=total_lines,
+            events=len(events),
+            ingested=ingested,
+            behind=0,
+        )
         return {"ok": True, "ingested": ingested}
 
     async def _reflect(

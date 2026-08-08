@@ -99,7 +99,9 @@ from claude_memory.wire import (
     is_searchable,
     kind_scope_filter,
     memory_id_for_segment_uuid,
+    observe,
     parse_memory_id,
+    score_shape,
     searchable_only,
     session_scope_filter,
 )
@@ -676,6 +678,22 @@ class MemoryCore:
             )
 
         saturated = bool(hits) and new_count == 0
+        # The score SHAPE, not just the top hit: a gate would need to tell "one
+        # strong match" from "everything equally mediocre", and only the spread
+        # carries that. Recorded so a threshold can be set from the distribution
+        # rather than guessed.
+        observe(
+            self.stores.config,
+            "search",
+            cue_chars=len(cue),
+            cue_words=len(cue.split()),
+            limit=limit,
+            filters=filter_spec or "",
+            new_count=new_count,
+            saturated=saturated,
+            chars=sum(len(hit.text) for hit in hits),
+            scores=score_shape([hit.score for hit in hits]),
+        )
         return SearchResult(hits=hits, new_count=new_count, saturated=saturated)
 
     async def expand(
@@ -762,6 +780,26 @@ class MemoryCore:
         # window's earliest and latest segments.
         window_text = EventMemory.string_from_segment_context(
             window, format_options=DISPLAY_FORMAT
+        )
+        # asked vs got is the yield signal: a window that returns far fewer
+        # segments than requested was eaten by something, and that is exactly the
+        # failure a kind filter exists to fix.
+        observe(
+            self.stores.config,
+            "expand",
+            asked=max(before, 0) + max(after, 0) + 1,
+            got=len(window),
+            events=len({segment.event_uuid for segment in window}),
+            kinds=kinds or [],
+            blocklist=blocklist,
+            chars=len(window_text),
+            sources=sorted(
+                {
+                    str(segment.properties.get("source", ""))
+                    for segment in window
+                    if segment.properties.get("source")
+                }
+            ),
         )
         return ExpandResult(
             seed_id=seed_id,

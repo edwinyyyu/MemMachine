@@ -86,6 +86,9 @@ class MemoryConfig:
     # for the same cue decay it geometrically. No relevance floor / pool target /
     # per-call strength is used. See MemoryCore.demote.
     demote_decay: float
+    # Observability: append one JSONL record per retrieval decision. Off by
+    # default (it writes on every prompt); see the observability section below.
+    observe: bool
 
     @classmethod
     def load(cls) -> "MemoryConfig":
@@ -141,6 +144,11 @@ class MemoryConfig:
             demote_decay=float(
                 os.environ.get("CLAUDE_MEMORY_DEMOTE_DECAY")
                 or home_config.get("demote_decay", 0.9)
+            ),
+            observe=(
+                os.environ.get("CLAUDE_MEMORY_OBSERVE", "").strip().lower()
+                in ("1", "true", "yes", "on")
+                or bool(home_config.get("observe", False))
             ),
         )
 
@@ -513,3 +521,57 @@ def expand_result_to_dict(result: ExpandResult) -> dict[str, Any]:
 def expand_result_from_dict(data: dict[str, Any]) -> ExpandResult:
     """Rebuild an ExpandResult received over the daemon socket."""
     return ExpandResult(**data)
+
+
+# ================================================================ observability
+
+# Every retrieval decision this system makes is currently invisible: what a cue
+# scored, how much was injected, whether a turn got memories it had no use for.
+# Thresholds cannot be set from a guess, so the log comes first and any gate comes
+# after — recording costs nothing and changes no behaviour.
+#
+# One JSONL record per event under <home>/observability.jsonl. Off unless the home
+# config says otherwise, because it writes to disk on every prompt.
+
+_OBSERVE_FILE = "observability.jsonl"
+
+
+def observing(config: "MemoryConfig") -> bool:
+    """Whether this home records observability events."""
+    return config.observe
+
+
+def observe(config: "MemoryConfig", event: str, **fields: object) -> None:
+    """Append one observability record. Never raises, never blocks a turn."""
+    if not config.observe:
+        return
+    try:
+        record = {
+            "ts": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+            "event": event,
+            **fields,
+        }
+        with (config.home / _OBSERVE_FILE).open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        # Observability must never be the reason a turn fails.
+        return
+
+
+def score_shape(scores: list[float]) -> dict[str, float]:
+    """Compact description of a result set's score distribution.
+
+    The top score alone cannot distinguish "one strong match" from "everything is
+    equally mediocre" — which is the distinction a relevance gate would need, and
+    the reason the spread is recorded rather than just the maximum.
+    """
+    if not scores:
+        return {"n": 0}
+    ordered = sorted(scores, reverse=True)
+    return {
+        "n": len(ordered),
+        "top": round(ordered[0], 4),
+        "median": round(ordered[len(ordered) // 2], 4),
+        "min": round(ordered[-1], 4),
+        "spread": round(ordered[0] - ordered[-1], 4),
+    }

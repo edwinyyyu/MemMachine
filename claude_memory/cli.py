@@ -43,8 +43,10 @@ from claude_memory.wire import (
     expand_result_from_dict,
     format_memory_line,
     in_context_exclusion_filter,
+    observe,
     render_expand_result,
     render_search_result,
+    score_shape,
     search_result_from_dict,
 )
 
@@ -119,6 +121,22 @@ def cmd_ambient() -> None:
         # Only inject genuinely-new memories: already-surfaced ones are still in
         # the conversation, so re-injecting them just bloats context.
         new_hits = [hit for hit in result.hits if hit.is_new]
+        # Logged BEFORE the early return, so silent turns are counted too — the
+        # fire RATE is the thing a relevance gate would be set from, and it is
+        # invisible if only the injections are recorded.
+        rendered = _render_ambient(new_hits)
+        observe(
+            MemoryConfig.load(),
+            "ambient",
+            cue_chars=len(prompt),
+            cue_words=len(prompt.split()),
+            hits=len(result.hits),
+            new_hits=len(new_hits),
+            injected=bool(new_hits),
+            chars=len(rendered),
+            scores=score_shape([hit.score for hit in result.hits]),
+            new_scores=score_shape([hit.score for hit in new_hits]),
+        )
         if not new_hits:
             return
         sys.stdout.write(
@@ -126,7 +144,7 @@ def cmd_ambient() -> None:
                 {
                     "hookSpecificOutput": {
                         "hookEventName": "UserPromptSubmit",
-                        "additionalContext": _render_ambient(new_hits),
+                        "additionalContext": rendered,
                     }
                 }
             )
