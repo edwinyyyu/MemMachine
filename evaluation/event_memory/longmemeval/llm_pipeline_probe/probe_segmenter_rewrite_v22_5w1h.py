@@ -133,8 +133,12 @@ def _format_neighbors(before: list, after: list, current_speaker: str) -> str:
 def _format_facets(f: _Facets) -> str:
     parts = []
     for label, val in (
-        ("WHO", f.who), ("WHAT", f.what), ("WHEN", f.when),
-        ("WHERE", f.where), ("HOW", f.how), ("WHY", f.why),
+        ("WHO", f.who),
+        ("WHAT", f.what),
+        ("WHEN", f.when),
+        ("WHERE", f.where),
+        ("HOW", f.how),
+        ("WHY", f.why),
     ):
         v = (val or "").strip()
         if v:
@@ -201,9 +205,7 @@ class RewriteSegmenter(Segmenter):
         if response is None:
             return []
         return [
-            item
-            for item in response.items
-            if item.summary and item.summary.strip()
+            item for item in response.items if item.summary and item.summary.strip()
         ]
 
     @staticmethod

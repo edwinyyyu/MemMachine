@@ -11,6 +11,7 @@ Baseline (option 1, already measured): 91.56% mini @ ~313t.
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import subprocess
 import sys
@@ -30,7 +31,7 @@ def main() -> None:
     # floor batch may still be searching -- wait for its done marker.
     for _ in range(160):  # up to ~40 min
         try:
-            if "MINILM FLOOR DONE" in open("log-minilm-floor.out").read():
+            if "MINILM FLOOR DONE" in open(A("log-minilm-floor.out")).read():
                 break
         except FileNotFoundError:
             break
@@ -40,7 +41,7 @@ def main() -> None:
     for rep in (1, 2, 3):
         db = f"locomo-tslimv3-54n-l-nb8-gemma-rep{rep}"
         tag = f"tslimv3-54n-l-nb8-gemmaqa-rep{rep}-v28-e0-rnullbmfa50-l10-tsshort-seg"
-        search = f"search-{tag}.json"
+        search = A(f"search-{tag}.json")
         rc = run([
             "uv", "run", "python", "locomo_search.py",
             "--data-path", DATA, "--target-path", search,
@@ -51,17 +52,17 @@ def main() -> None:
             "--bm25-fusion", "additive", "--bm25-fusion-weight", "0.5",
             "--timestamp-format", "short",
             "--embedding-model", "embeddinggemma-qa",
-        ], f"log-search-{tag}.out")
+        ], A(f"log-search-{tag}.out"))
         print(f"  rep{rep} search rc={rc}", flush=True)
         if rc != 0:
             continue
         rc = run([
             "uv", "run", "python", "locomo_evaluate.py",
             "--data-path", search,
-            "--target-path", f"eval-{tag}-mini-mb-c14.json",
+            "--target-path", A(f"eval-{tag}-mini-mb-c14.json"),
             "--judge-model", "gpt-5-mini", "--judge-variant", "mem0-bench",
             "--skip-category-5",
-        ], f"log-eval-{tag}.out")
+        ], A(f"log-eval-{tag}.out"))
         print(f"  rep{rep} eval rc={rc}", flush=True)
     print(f"=== GEMMA QA-PROMPT DONE in {time.time() - t0:.0f}s ===",
           flush=True)

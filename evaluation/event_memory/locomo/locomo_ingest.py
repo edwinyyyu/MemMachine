@@ -25,9 +25,9 @@ from locomo_models import (
     load_locomo_dataset,
 )
 from embedder_factory import EMBEDDING_CHOICES, build_embedder
-from memmachine_server.common.language_model.openai_responses_language_model import (
-    OpenAIResponsesLanguageModel,
-    OpenAIResponsesLanguageModelParams,
+from memmachine_server.common.language_model.openai_chat_completions_language_model import (
+    OpenAIChatCompletionsLanguageModel,
+    OpenAIChatCompletionsLanguageModelParams,
 )
 from memmachine_server.common.utils import async_with
 from memmachine_server.common.vector_store import (
@@ -124,8 +124,8 @@ def _build_segmenter(args, openai_client):
     """Build the segmenter selected by --segmenter."""
     match args.segmenter:
         case "llm":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -133,8 +133,8 @@ def _build_segmenter(args, openai_client):
             )
             return LLMTextSegmenter(language_model=lm)
         case "llm-routed":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -145,8 +145,8 @@ def _build_segmenter(args, openai_client):
                 threshold_chars=args.routed_threshold,
             )
         case "rewrite" | "rewrite-v2":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -154,8 +154,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenter(language_model=lm)
         case "rewrite-v3":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -163,8 +163,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV3(language_model=lm)
         case "rewrite-v2-fp":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -172,8 +172,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV2FP(language_model=lm)
         case "rewrite-v4":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -181,8 +181,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV4(language_model=lm)
         case "rewrite-v5":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -190,8 +190,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV5(language_model=lm)
         case "rewrite-v6":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -199,8 +199,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV6(language_model=lm)
         case "rewrite-v7":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -208,8 +208,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV7(language_model=lm)
         case "rewrite-v8":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -217,8 +217,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV8(language_model=lm)
         case "rewrite-v9":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -226,8 +226,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV9(language_model=lm)
         case "rewrite-v10":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -235,8 +235,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV10(language_model=lm)
         case "rewrite-v11":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -244,8 +244,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV11(language_model=lm)
         case "rewrite-v12":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -253,8 +253,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV12(language_model=lm)
         case "rewrite-v13":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -262,8 +262,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV13(language_model=lm)
         case "rewrite-v14":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -271,8 +271,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV14(language_model=lm)
         case "rewrite-v15":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -280,8 +280,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV15(language_model=lm)
         case "rewrite-v16":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -289,8 +289,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV16(language_model=lm)
         case "rewrite-v17":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -298,8 +298,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV17(language_model=lm)
         case "rewrite-v18":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -307,8 +307,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV18(language_model=lm)
         case "rewrite-v19":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -316,8 +316,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV19(language_model=lm)
         case "rewrite-v20":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -325,8 +325,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV20(language_model=lm)
         case "rewrite-v21":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -334,8 +334,8 @@ def _build_segmenter(args, openai_client):
             )
             return _RewriteSegmenterV21(language_model=lm)
         case "rewrite-v22":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -347,8 +347,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV25,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -360,8 +360,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV23,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -373,8 +373,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV24,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -386,8 +386,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22NBN,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -399,8 +399,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22OE,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -412,8 +412,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22RW,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -425,8 +425,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22Dates,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -438,8 +438,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22FP,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -451,8 +451,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22FPCot,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -464,8 +464,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22FPMin,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -477,8 +477,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22FPMinChg,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -490,8 +490,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22Says,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -503,8 +503,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22Min3p,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -516,8 +516,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22SaysMin,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -529,8 +529,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22Quoted,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -542,8 +542,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22Headline,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -555,8 +555,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22Temporal,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -568,8 +568,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22FPMinV2,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -581,8 +581,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22FPDualV1,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -594,8 +594,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22FPDualV2,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -607,8 +607,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22Min3pDual,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -620,8 +620,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22SaysDecoupled,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -633,8 +633,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22NaturalTime,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -646,8 +646,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22NoDateRule,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -659,8 +659,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22QKey,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -672,8 +672,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22QKeyTight,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -685,8 +685,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22QKey2X,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -698,8 +698,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV225W1H,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -711,8 +711,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22QKeyMin3p,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -724,8 +724,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22QKeyMin3pNQ,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -737,8 +737,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22QA,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -750,8 +750,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22Paraphrase,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -763,8 +763,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22Anchors,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -776,8 +776,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22RichBlock,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -789,8 +789,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22MemOnly,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -802,8 +802,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22NaturalTimeV2,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -818,8 +818,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22NaturalSaysV1,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -831,8 +831,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22FirstPersonCleanV1,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -844,8 +844,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22Min3pKeepdate,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -857,8 +857,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22NoMsgDate,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -870,8 +870,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22SaysV2,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -883,8 +883,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22HeadlineV2,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -896,8 +896,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22FPMinV3,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -909,8 +909,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22SaysV3,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -922,8 +922,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22QuotedV2,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -935,8 +935,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22TemporalV2,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -948,8 +948,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22Min3pV2,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -961,8 +961,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22ListFaith,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -974,8 +974,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV22QC,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -987,8 +987,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV26,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1000,8 +1000,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV27,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1013,8 +1013,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV28,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1026,8 +1026,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV29,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1039,8 +1039,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV30,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1052,8 +1052,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV31,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1065,8 +1065,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV32,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1078,8 +1078,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV33,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1106,8 +1106,8 @@ def _build_segmenter(args, openai_client):
                 RewriteSegmenter as _RewriteSegmenterV27Q,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1123,8 +1123,8 @@ def _build_segmenter(args, openai_client):
         case "decoupled-chunk-v1":
             from probe_decoupled_chunk_v1 import RawChunkRewriteSegmenter
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1137,8 +1137,8 @@ def _build_segmenter(args, openai_client):
         case "terse-decoupled-v1":
             from probe_terse_decoupled_v1 import TerseDecoupledSegmenter
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1150,8 +1150,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterV2,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1163,8 +1163,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterSlimV1,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1176,8 +1176,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterSlimV2,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1189,8 +1189,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterSlimV3,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1202,8 +1202,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterSlimV3NDA,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1219,8 +1219,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterSlimV3EO,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1236,8 +1236,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterSlimV3BO,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1253,8 +1253,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterVerbatim,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1268,8 +1268,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterBOVerbatim,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1290,8 +1290,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterShip,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1312,8 +1312,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterBONatural,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1325,13 +1325,470 @@ def _build_segmenter(args, openai_client):
                 date_aliases_in_bm25=True,
                 date_handling="natural",
             )
+        case "terse-decoupled-slim-v3-bo-natural-fp":
+            # NEW: first-person variant of bo-natural. Memory written in
+            # {speaker}'s voice (I/my/me); block.text/bm25/embed are
+            # speaker-prefixed for retrieval and answerer attribution.
+            # Tests hypothesis that 1p makes temporal resolution easier.
+            from probe_terse_decoupled_slim_v3_fp import (
+                FirstPersonSegmenter as TerseDecoupledSegmenterBONatFP,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatFP(language_model=lm)
+        case "terse-decoupled-slim-v3-bo-natural-temporal":
+            # NEW: bo-natural with strengthened WRONG/RIGHT temporal
+            # examples targeting unresolved-relative-phrase failure modes.
+            # Schema identical to bo-natural.
+            from probe_terse_decoupled_slim_v3_temporal import (
+                TemporalNaturalSegmenter as TerseDecoupledSegmenterBONatTemp,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatTemp(language_model=lm)
+        case "terse-decoupled-slim-v3-bo-natural-review":
+            # NEW: bo-natural with autoregressive review fields. Pydantic
+            # field order forces LLM to emit relative_phrases +
+            # date_resolutions BEFORE memory, making it harder to skip
+            # the resolution step.
+            from probe_terse_decoupled_slim_v3_review import (
+                ReviewSegmenter as TerseDecoupledSegmenterBONatReview,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatReview(language_model=lm)
+        case "terse-decoupled-slim-v3-bo-natural-review4":
+            from probe_terse_decoupled_slim_v3_review4 import (
+                Review4Segmenter as TerseDecoupledSegmenterBONatReview4,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatReview4(language_model=lm)
+        case "terse-decoupled-slim-v3-bo-natural-review3":
+            # REVIEW v3: stronger prompt language forcing substitution
+            # in memory field. Same schema as v1.
+            from probe_terse_decoupled_slim_v3_review3 import (
+                Review3Segmenter as TerseDecoupledSegmenterBONatReview3,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatReview3(language_model=lm)
+        case "terse-decoupled-slim-v3-bo-natural-sidecar":
+            # SIDECAR: verbatim memory/terse, date resolutions injected
+            # into bm25_text + embed_text only. Answerer reads relatives
+            # alongside the [event_date] header and computes.
+            from probe_terse_decoupled_slim_v3_sidecar import (
+                SidecarSegmenter as TerseDecoupledSegmenterBONatSidecar,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatSidecar(language_model=lm)
+        case "terse-decoupled-slim-v3-bo-natural-sidecar-verbatim":
+            # VERBATIM: xpurp2 retrieval signal (memory/queries/raw/dates
+            # in text_to_embed and text_to_score_bm25) + display = the
+            # speaker's verbatim message with personal/spatial deictics
+            # resolved, temporal deictics preserved.
+            from probe_terse_decoupled_slim_v3_sidecar_verbatim import (
+                SidecarSegmenter as TerseDecoupledVerbatimSegmenter,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledVerbatimSegmenter(language_model=lm)
+        case "deictic-resolved-verbatim":
+            # DEICTIC-RESOLVED-VERBATIM: from-scratch single-field
+            # segmenter. ONE LLM output: speaker's message verbatim with
+            # personal/spatial deictics resolved (temporal kept). Same
+            # text used for display, embedding, and BM25.
+            from probe_deictic_resolved_verbatim import (
+                DeicticResolvedSegmenter,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return DeicticResolvedSegmenter(language_model=lm)
+        case "deictic-resolved-verbatim-v8k":
+            # V8K: JSON-structured edits, prompt asks model to emit a
+            # list of {original, replacement} pairs applied to the
+            # original chunk. embed = "<speaker>: <resolved>\nDates:
+            # <aliases>".
+            from probe_deictic_resolved_verbatim_v8k import (
+                DeicticResolvedV8KSegmenter,
+            )
+
+            return DeicticResolvedV8KSegmenter(
+                client=openai_client,
+                model=args.segmenter_model,
+                reasoning_effort=args.segmenter_reasoning,
+            )
+        case "deictic-resolved-verbatim-v8l":
+            # V8L: V8K + date-prepended embed channel. embed =
+            # '[<full date>] <speaker>: "<resolved>"' (full date, no
+            # time). bm25 keeps the "Dates: <aliases>" append; display
+            # unchanged.
+            from probe_deictic_resolved_verbatim_v8l import (
+                DeicticResolvedV8LSegmenter,
+            )
+
+            return DeicticResolvedV8LSegmenter(
+                client=openai_client,
+                model=args.segmenter_model,
+                reasoning_effort=args.segmenter_reasoning,
+            )
+        case "textwhole-dateprefix":
+            # LLM-less raw-text chunker that prepends [full date] to
+            # the embed channel. Pair with --deriver whole.
+            from probe_textwhole_dateprefix import (
+                TextWholeDatePrefixSegmenter,
+            )
+
+            return TextWholeDatePrefixSegmenter()
+        case "terse-decoupled-slim-v3-bo-natural-sidecar-xpurp2-eventseg":
+            # XPURP2-EVENTSEG: ONE Segment per chunk with block.text =
+            # raw chunk verbatim. LLM's N memory items become N
+            # derivative components via segment.properties.embed_N for
+            # MultiComponentDeriver (--deriver multi). Retrieval dedups
+            # to segment_uuid -> one event per K slot. No K-slot waste
+            # when LLM emits >1 item for a single chunk.
+            from probe_terse_decoupled_slim_v3_sidecar_xpurp2_eventseg import (
+                SidecarSegmenter as TerseDecoupledSegmenterBONatSidecarXpurp2EventSeg,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatSidecarXpurp2EventSeg(language_model=lm)
+        case "terse-decoupled-slim-v3-bo-natural-sidecar-xpurp2-rawblock":
+            # XPURP2-RAWBLOCK: xpurp2 prompt unchanged, but block.text is
+            # the raw chunk (verbatim source) instead of the terse rewrite.
+            # text_to_embed and text_to_score_bm25 still carry the LLM
+            # rewrite for retrieval signal. Tests whether the +1.32pp gain
+            # from --answer-with-raw-events can be expressed cleanly as a
+            # segmenter-level architecture (no search-time hack).
+            from probe_terse_decoupled_slim_v3_sidecar_xpurp2_rawblock import (
+                SidecarSegmenter as TerseDecoupledSegmenterBONatSidecarXpurp2RawBlock,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatSidecarXpurp2RawBlock(language_model=lm)
+        case "terse-decoupled-slim-v3-bo-natural-sidecar-xpurp2":
+            # SIDECAR-XPURP2: strengthened narrow rule binding cross-turn
+            # purpose (agreement/commitment/answer messages must name the
+            # specific subject from prior turns; no generic placeholders).
+            from probe_terse_decoupled_slim_v3_sidecar_xpurp2 import (
+                SidecarSegmenter as TerseDecoupledSegmenterBONatSidecarXpurp2,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatSidecarXpurp2(language_model=lm)
+        case "terse-decoupled-slim-v3-bo-natural-sidecar-sc":
+            # SIDECAR-SC: generalized self-containment principle replacing
+            # the narrow pronoun-resolution rule with a broader rule
+            # covering pronouns, demonstratives, definite descriptions,
+            # elliptical predicates, and response acts.
+            from probe_terse_decoupled_slim_v3_sidecar_sc import (
+                SidecarSegmenter as TerseDecoupledSegmenterBONatSidecarSc,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatSidecarSc(language_model=lm)
+        case "terse-decoupled-slim-v3-bo-natural-sidecar-bm25only":
+            # SIDECAR-BM25-only: date resolutions go to bm25_text only,
+            # embed_text stays clean (matches bo-natural's channel
+            # pattern). Tests whether embed pollution from sidecar dates
+            # is what regressed cat1/cat3 in v1 SIDECAR.
+            from probe_terse_decoupled_slim_v3_sidecar import (
+                SidecarSegmenter as TerseDecoupledSegmenterBONatSidecarBM25,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatSidecarBM25(
+                language_model=lm, dates_in_embed=False
+            )
+        case "terse-decoupled-slim-v3-bo-natural-sidecar-resemb":
+            # SIDECAR-RESOLVED-EMBED: verbatim memory (visible + bm25) +
+            # resolved memory (embed only) + sidecar dates. Tests
+            # whether verbatim memory's reduced semantic content was
+            # what regressed cat1/cat3 in v1 SIDECAR.
+            from probe_terse_decoupled_slim_v3_sidecar_resemb import (
+                SidecarResolvedEmbedSegmenter as TerseDecoupledSegmenterBONatSidecarResemb,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatSidecarResemb(language_model=lm)
+        case "terse-decoupled-slim-v3-bo-natural-specifier":
+            # Reframing A: absolute date specifier. Enumerate valid date
+            # forms and name the bad class (deictic). No EQUALS rule.
+            from probe_terse_decoupled_slim_v3_journal import (
+                TerseDecoupledSegmenter as TerseDecoupledSegmenterBOSpec,
+            )
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBOSpec(
+                language_model=lm,
+                date_aliases_in_embed=False,
+                date_aliases_in_bm25=True,
+                date_handling="specifier",
+            )
+        case "terse-decoupled-slim-v3-bo-natural-standalone":
+            # Reframing B: standalone-readable property.
+            from probe_terse_decoupled_slim_v3_journal import (
+                TerseDecoupledSegmenter as TerseDecoupledSegmenterBOStand,
+            )
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBOStand(
+                language_model=lm,
+                date_aliases_in_embed=False,
+                date_aliases_in_bm25=True,
+                date_handling="standalone",
+            )
+        case "terse-decoupled-slim-v3-bo-natural-journal":
+            # Reframing C: journalistic convention.
+            from probe_terse_decoupled_slim_v3_journal import (
+                TerseDecoupledSegmenter as TerseDecoupledSegmenterBOJourn,
+            )
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBOJourn(
+                language_model=lm,
+                date_aliases_in_embed=False,
+                date_aliases_in_bm25=True,
+                date_handling="journal",
+            )
+        case "terse-decoupled-slim-v3-bo-natural-sidecar-preserve":
+            # SIDECAR_PRESERVE: SIDECAR + strict particular-preservation
+            # rule (no proper-noun loss, no dangling pronouns). Targets
+            # the lossy-compression failure mode found by 2026-05-27
+            # diagnostic on cat2 raw-only wins.
+            from probe_terse_decoupled_slim_v3_sidecar_preserve import (
+                SidecarPreserveSegmenter as TerseDecoupledSegmenterBONatSidecarPreserve,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatSidecarPreserve(language_model=lm)
+        case "terse-decoupled-slim-v3-bo-natural-sidecar-quote":
+            # SIDECAR_QUOTE: SIDECAR + per-item verbatim source-span in
+            # block.text (answerer-visible). Retrieval channels unchanged.
+            # Tests "show transcript framing to the answerer" hypothesis.
+            from probe_terse_decoupled_slim_v3_sidecar_quote import (
+                SidecarQuoteSegmenter as TerseDecoupledSegmenterBONatSidecarQuote,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatSidecarQuote(language_model=lm)
+        case "terse-decoupled-slim-v3-bo-natural-sidecar-fp":
+            # SIDECAR_FP: SIDECAR + 1p rewrite REPLACES terse in block.text.
+            # block.text = "{speaker}: {fp}" -- pronoun-resolved by prefix,
+            # all particulars preserved. Retrieval channels still 3p.
+            from probe_terse_decoupled_slim_v3_sidecar_fp import (
+                SidecarFpSegmenter as TerseDecoupledSegmenterBONatSidecarFp,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatSidecarFp(language_model=lm)
+        case "terse-decoupled-slim-v3-bo-natural-sidecar-multi":
+            # SIDECAR_MULTI: SIDECAR + components stored in
+            # segment.properties for the MultiComponentDeriver to emit
+            # one derivative per component. Pair with --deriver multi.
+            from probe_terse_decoupled_slim_v3_sidecar_multi import (
+                SidecarMultiSegmenter as TerseDecoupledSegmenterBONatSidecarMulti,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatSidecarMulti(language_model=lm)
+        case "terse-decoupled-slim-v3-sentence-multi":
+            # SENTENCE_MULTI: single LLM call per message, per-sentence
+            # items with context-resolved rewrite + queries; one
+            # derivative per sentence via MultiComponentDeriver.
+            # block.text = whole verbatim message (retrieve sentences,
+            # display whole messages, like rawev semantically).
+            from probe_terse_decoupled_slim_v3_sentence_multi import (
+                SentenceMultiSegmenter as TerseDecoupledSentenceMulti,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSentenceMulti(language_model=lm)
+        case "terse-decoupled-slim-v3-sentence":
+            # SENTENCE: N segments per message (one per sentence).
+            # block.text = verbatim sentence. Each segment's embed/bm25
+            # carries (sentence + rewrite + queries), all unique per
+            # segment. Single derivative per segment. K must be higher
+            # (~25-30) to fit ~340 token budget.
+            from probe_terse_decoupled_slim_v3_sentence import (
+                SentenceSegmenter as TerseDecoupledSentence,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSentence(language_model=lm)
+        case "terse-decoupled-slim-v3-bo-natural-draft":
+            # DRAFT: autoregressive scaffold -- verbatim_excerpt anchors
+            # source phrasing before memory/terse (both still resolved).
+            from probe_terse_decoupled_slim_v3_draft import (
+                DraftSegmenter as TerseDecoupledSegmenterBONatDraft,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatDraft(language_model=lm)
+        case "terse-decoupled-slim-v3-bo-natural-draftsidecar":
+            # DRAFT+SIDECAR: verbatim_excerpt anchor + verbatim
+            # memory/terse + sidecar resolutions for bm25/embed.
+            from probe_terse_decoupled_slim_v3_draftsidecar import (
+                DraftSidecarSegmenter as TerseDecoupledSegmenterBONatDraftSidecar,
+            )
+
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
+                    client=openai_client,
+                    model=args.segmenter_model,
+                    reasoning_effort=args.segmenter_reasoning,
+                )
+            )
+            return TerseDecoupledSegmenterBONatDraftSidecar(language_model=lm)
         case "terse-decoupled-slim-v3-bo-verbose-event":
             from probe_terse_decoupled_slim_v3 import (
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterBOVE,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1348,8 +1805,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterCLDRAll,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1366,8 +1823,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterCLDREvent,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1389,8 +1846,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterRawSpan,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1406,8 +1863,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterSlimV4,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1419,8 +1876,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterSlimV5,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1432,8 +1889,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterSlimV6,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1445,8 +1902,8 @@ def _build_segmenter(args, openai_client):
                 TerseDecoupledSegmenter as TerseDecoupledSegmenterV3,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.segmenter_model,
                     reasoning_effort=args.segmenter_reasoning,
@@ -1461,8 +1918,8 @@ def _build_deriver(args, openai_client):
     """Build the deriver selected by --deriver."""
     match args.deriver:
         case "llm":
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.deriver_model,
                     reasoning_effort=args.deriver_reasoning,
@@ -1472,8 +1929,8 @@ def _build_deriver(args, openai_client):
         case "atomic-v1":
             from probe_deriver_atomic_v1 import AtomicDeriver as _AtomicDeriverV1
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.deriver_model,
                     reasoning_effort=args.deriver_reasoning,
@@ -1483,8 +1940,8 @@ def _build_deriver(args, openai_client):
         case "generic-v1":
             from probe_deriver_generic_v1 import GenericDeriver as _GenericDeriverV1
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.deriver_model,
                     reasoning_effort=args.deriver_reasoning,
@@ -1493,8 +1950,8 @@ def _build_deriver(args, openai_client):
             return _GenericDeriverV1(language_model=lm)
         case "qshape-v1":
             from probe_deriver_qshape_v1 import GenericDeriver as _QShapeDeriverV1
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.deriver_model,
                     reasoning_effort=args.deriver_reasoning,
@@ -1503,8 +1960,8 @@ def _build_deriver(args, openai_client):
             return _QShapeDeriverV1(language_model=lm)
         case "multiaxis-v1":
             from probe_deriver_multiaxis_v1 import GenericDeriver as _MultiAxisDeriverV1
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.deriver_model,
                     reasoning_effort=args.deriver_reasoning,
@@ -1513,8 +1970,8 @@ def _build_deriver(args, openai_client):
             return _MultiAxisDeriverV1(language_model=lm)
         case "topiccue-v1":
             from probe_deriver_topiccue_v1 import GenericDeriver as _TopicCueDeriverV1
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.deriver_model,
                     reasoning_effort=args.deriver_reasoning,
@@ -1523,8 +1980,8 @@ def _build_deriver(args, openai_client):
             return _TopicCueDeriverV1(language_model=lm)
         case "stable-v1":
             from probe_deriver_stable_v1 import GenericDeriver as _StableDeriverV1
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.deriver_model,
                     reasoning_effort=args.deriver_reasoning,
@@ -1536,8 +1993,8 @@ def _build_deriver(args, openai_client):
             return _RewriteOnlyV1()
         case "tagsuffix-v1":
             from probe_deriver_tagsuffix_v1 import GenericDeriver as _TagSuffixV1
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.deriver_model,
                     reasoning_effort=args.deriver_reasoning,
@@ -1546,8 +2003,8 @@ def _build_deriver(args, openai_client):
             return _TagSuffixV1(language_model=lm)
         case "subjectline-v1":
             from probe_deriver_subjectline_v1 import GenericDeriver as _SubjectLineV1
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.deriver_model,
                     reasoning_effort=args.deriver_reasoning,
@@ -1556,8 +2013,8 @@ def _build_deriver(args, openai_client):
             return _SubjectLineV1(language_model=lm)
         case "routed-v1":
             from probe_deriver_routed_v1 import GenericDeriver as _RoutedV1
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.deriver_model,
                     reasoning_effort=args.deriver_reasoning,
@@ -1566,13 +2023,17 @@ def _build_deriver(args, openai_client):
             return _RoutedV1(language_model=lm)
         case "whole":
             return WholeTextDeriver()
+        case "multi":
+            from probe_multi_component_deriver import MultiComponentDeriver
+
+            return MultiComponentDeriver()
         case "sentence":
             return SentenceTextDeriver()
         case "rawseg-llm-v1":
             from probe_raw_seg_llm_deriver_v1 import LLMRewriteDeriver
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.deriver_model,
                     reasoning_effort=args.deriver_reasoning,
@@ -1582,8 +2043,8 @@ def _build_deriver(args, openai_client):
         case "rawseg-llm-v2-v65":
             from probe_raw_seg_llm_deriver_v2_v65 import V65DeriverProbe
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.deriver_model,
                     reasoning_effort=args.deriver_reasoning,
@@ -1593,8 +2054,8 @@ def _build_deriver(args, openai_client):
         case "rawseg-llm-v3-dual":
             from probe_raw_seg_llm_deriver_v3_dual import DualTextLLMRewriteDeriver
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.deriver_model,
                     reasoning_effort=args.deriver_reasoning,
@@ -1604,8 +2065,8 @@ def _build_deriver(args, openai_client):
         case "rawseg-llm-v4-nodate":
             from probe_raw_seg_llm_deriver_v4_nodate import NoDateLLMRewriteDeriver
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.deriver_model,
                     reasoning_effort=args.deriver_reasoning,
@@ -1617,8 +2078,8 @@ def _build_deriver(args, openai_client):
                 ParallelLLMRewriteDeriver,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.deriver_model,
                     reasoning_effort=args.deriver_reasoning,
@@ -1630,8 +2091,8 @@ def _build_deriver(args, openai_client):
                 RichPromptDualTextDeriver,
             )
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.deriver_model,
                     reasoning_effort=args.deriver_reasoning,
@@ -1641,8 +2102,8 @@ def _build_deriver(args, openai_client):
         case "chunk-deriver-v1":
             from probe_chunk_deriver_v1 import ChunkContextDeriver
 
-            lm = OpenAIResponsesLanguageModel(
-                OpenAIResponsesLanguageModelParams(
+            lm = OpenAIChatCompletionsLanguageModel(
+                OpenAIChatCompletionsLanguageModelParams(
                     client=openai_client,
                     model=args.deriver_model,
                     reasoning_effort=args.deriver_reasoning,
@@ -1778,6 +2239,34 @@ async def main() -> None:
             "terse-decoupled-slim-v3-bo-verbatim",
             "terse-decoupled-slim-v3-bo-verbatim-ve",
             "terse-decoupled-slim-v3-bo-natural",
+            "terse-decoupled-slim-v3-bo-natural-fp",
+            "terse-decoupled-slim-v3-bo-natural-temporal",
+            "terse-decoupled-slim-v3-bo-natural-review",
+            "terse-decoupled-slim-v3-bo-natural-review3",
+            "terse-decoupled-slim-v3-bo-natural-review4",
+            "terse-decoupled-slim-v3-bo-natural-sidecar",
+            "terse-decoupled-slim-v3-bo-natural-sidecar-xpurp2",
+            "terse-decoupled-slim-v3-bo-natural-sidecar-xpurp2-rawblock",
+            "terse-decoupled-slim-v3-bo-natural-sidecar-xpurp2-eventseg",
+            "terse-decoupled-slim-v3-bo-natural-sidecar-verbatim",
+            "deictic-resolved-verbatim",
+            "deictic-resolved-verbatim-v8k",
+            "deictic-resolved-verbatim-v8l",
+            "textwhole-dateprefix",
+            "terse-decoupled-slim-v3-bo-natural-sidecar-sc",
+            "terse-decoupled-slim-v3-bo-natural-sidecar-bm25only",
+            "terse-decoupled-slim-v3-bo-natural-sidecar-resemb",
+            "terse-decoupled-slim-v3-bo-natural-sidecar-preserve",
+            "terse-decoupled-slim-v3-bo-natural-sidecar-quote",
+            "terse-decoupled-slim-v3-bo-natural-sidecar-fp",
+            "terse-decoupled-slim-v3-bo-natural-sidecar-multi",
+            "terse-decoupled-slim-v3-sentence-multi",
+            "terse-decoupled-slim-v3-sentence",
+            "terse-decoupled-slim-v3-bo-natural-specifier",
+            "terse-decoupled-slim-v3-bo-natural-standalone",
+            "terse-decoupled-slim-v3-bo-natural-journal",
+            "terse-decoupled-slim-v3-bo-natural-draft",
+            "terse-decoupled-slim-v3-bo-natural-draftsidecar",
             "terse-decoupled-slim-v3-bo-verbose-event",
             "terse-decoupled-slim-v3-bo-cldr-all",
             "terse-decoupled-slim-v3-bo-cldr-event",
@@ -1822,7 +2311,7 @@ async def main() -> None:
     )
     parser.add_argument(
         "--deriver",
-        choices=["sentence", "whole", "llm", "atomic-v1", "generic-v1", "qshape-v1", "multiaxis-v1", "topiccue-v1", "stable-v1", "rewriteonly-v1", "tagsuffix-v1", "subjectline-v1", "routed-v1", "rawseg-llm-v1", "rawseg-llm-v2-v65", "rawseg-llm-v3-dual", "rawseg-llm-v4-nodate", "rawseg-llm-v5-parallel", "rawseg-llm-v6-richprompt", "chunk-deriver-v1"],
+        choices=["sentence", "whole", "multi", "llm", "atomic-v1", "generic-v1", "qshape-v1", "multiaxis-v1", "topiccue-v1", "stable-v1", "rewriteonly-v1", "tagsuffix-v1", "subjectline-v1", "routed-v1", "rawseg-llm-v1", "rawseg-llm-v2-v65", "rawseg-llm-v3-dual", "rawseg-llm-v4-nodate", "rawseg-llm-v5-parallel", "rawseg-llm-v6-richprompt", "chunk-deriver-v1"],
         default="sentence",
         help="Deriver type: 'sentence' (one derivative per sentence), "
         "'whole' (one derivative per whole segment), "
@@ -1861,8 +2350,11 @@ async def main() -> None:
     parser.add_argument(
         "--neighbor-direction",
         choices=["both", "before", "after", "none"],
-        default="both",
-        help="Direction of neighbor inclusion. 'none' = empty context (default: both).",
+        default="before",
+        help="Direction of neighbor inclusion. 'none' = empty context "
+        "(default: before). The 'nb<N>b' filename convention assumes "
+        "this default; setting 'both' silently breaks temporal causality "
+        "by leaking future turns into the segmenter prompt.",
     )
     parser.add_argument(
         "--neighbor-before-window",
@@ -1899,6 +2391,27 @@ async def main() -> None:
         help="Embedding model. OpenAI (text-embedding-3-small/-large) or "
         "local sentence-transformers (embeddinggemma, minilm).",
     )
+    parser.add_argument(
+        "--base-url",
+        default=None,
+        help="OpenAI-compatible API base URL. If set, the client points "
+        "here (e.g. a vLLM/SGLang server hosting qwen) and --api-key is "
+        "used instead of OPENAI_API_KEY.",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="API key for --base-url; defaults to OPENAI_API_KEY when "
+        "--base-url is unset.",
+    )
+    parser.add_argument(
+        "--host-header",
+        default=None,
+        help="Optional Host header override. Useful when --base-url is "
+        "an IP-direct URL but the server uses virtual-host routing "
+        "(e.g. --base-url http://10.4.254.200/v1 --host-header "
+        "api.vmnet4-200.eng.memverge.com).",
+    )
 
     args = parser.parse_args()
 
@@ -1928,7 +2441,18 @@ async def main() -> None:
     )
     await vector_store.startup()
 
-    openai_client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    if args.base_url:
+        openai_client = openai.AsyncOpenAI(
+            base_url=args.base_url,
+            api_key=args.api_key or "none",
+            default_headers=(
+                {"Host": args.host_header} if args.host_header else None
+            ),
+        )
+    else:
+        openai_client = openai.AsyncOpenAI(
+            api_key=args.api_key or os.getenv("OPENAI_API_KEY"),
+        )
     embedder = build_embedder(args.embedding_model, openai_client)
 
     segmenter = _build_segmenter(args, openai_client)
@@ -1938,8 +2462,8 @@ async def main() -> None:
             CueWorthinessFilteringDeriver,
         )
 
-        cue_lm = OpenAIResponsesLanguageModel(
-            OpenAIResponsesLanguageModelParams(
+        cue_lm = OpenAIChatCompletionsLanguageModel(
+            OpenAIChatCompletionsLanguageModelParams(
                 client=openai_client,
                 model=args.cue_filter_model,
                 reasoning_effort=args.cue_filter_reasoning,

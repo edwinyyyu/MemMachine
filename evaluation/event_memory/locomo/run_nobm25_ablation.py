@@ -12,6 +12,7 @@ Baseline (fusion on, from the confirm batch):
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import subprocess
 import sys
@@ -34,27 +35,27 @@ def search_eval(job: tuple[int, int]) -> tuple[str, int]:
     rep, k = job
     t = f"tslimv3-54n-l-nb8-rep{rep}"
     tag = f"{t}-v28-e0-rnullbmnone-l{k}-tsshort-seg"
-    search = f"search-{tag}.json"
+    search = A(f"search-{tag}.json")
     s = run([
         "uv", "run", "python", "locomo_search.py",
         "--data-path", DATA, "--target-path", search,
-        "--segment-db", f"locomo-{t}.sqlite",
-        "--vector-db", f"locomo-{t}.vec.sqlite",
+        "--segment-db", A(f"locomo-{t}.sqlite"),
+        "--vector-db", A(f"locomo-{t}.vec.sqlite"),
         "--vector-search-limit", "28", "--expand-context", "0",
         "--max-num-segments", str(k), "--no-reranker",
         "--bm25-fusion", "none",
         "--timestamp-format", "short",
-    ], f"log-search-{tag}.out")
+    ], A(f"log-search-{tag}.out"))
     if s[1] != 0:
         return s
     for judge, suffix in [("gpt-5-mini", "mini"), ("gpt-5", "gpt5")]:
         run([
             "uv", "run", "python", "locomo_evaluate.py",
             "--data-path", search,
-            "--target-path", f"eval-{tag}-{suffix}-mb-c14.json",
+            "--target-path", A(f"eval-{tag}-{suffix}-mb-c14.json"),
             "--judge-model", judge, "--judge-variant", "mem0-bench",
             "--skip-category-5",
-        ], f"log-eval-{tag}-{suffix}.out")
+        ], A(f"log-eval-{tag}-{suffix}.out"))
     return tag, 0
 
 

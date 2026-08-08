@@ -165,11 +165,7 @@ class RewriteSegmenter(Segmenter):
         )
         if response is None:
             return []
-        return [
-            item
-            for item in response.items
-            if item.memory and item.memory.strip()
-        ]
+        return [item for item in response.items if item.memory and item.memory.strip()]
 
     @staticmethod
     def _build_embed_text(

@@ -144,7 +144,14 @@ convention = "google"
 ]
 
 [tool.ty.environment]
-extra-paths = ["packages/common/src", "packages/server/src", "packages/client/src"]
+extra-paths = [
+    "packages/common/src",
+    "packages/server/src",
+    "packages/client/src",
+    "evaluation/event_memory/longmemeval",
+    "evaluation/event_memory/beam",
+    "evaluation/event_memory/locomo",
+]
 
 [tool.ty.src]
 exclude = ["packages/**/build/**"]

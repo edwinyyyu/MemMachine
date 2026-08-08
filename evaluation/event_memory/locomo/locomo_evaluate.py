@@ -115,12 +115,39 @@ async def main() -> None:
         action="store_true",
         help="Skip category 5 (matches the original Mem0/LoCoMo evaluator)",
     )
+    parser.add_argument(
+        "--base-url",
+        default=None,
+        help="OpenAI-compatible API base URL (e.g. vLLM/SGLang serving qwen).",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="API key for --base-url; defaults to OPENAI_API_KEY when unset.",
+    )
+    parser.add_argument(
+        "--host-header",
+        default=None,
+        help="Optional Host header override for IP-direct base URLs (see "
+        "locomo_ingest.py --host-header).",
+    )
     args = parser.parse_args()
 
     with open(args.data_path) as f:
         data = json.load(f)
 
-    client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    if args.base_url:
+        client = AsyncOpenAI(
+            base_url=args.base_url,
+            api_key=args.api_key or "none",
+            default_headers=(
+                {"Host": args.host_header} if args.host_header else None
+            ),
+        )
+    else:
+        client = AsyncOpenAI(
+            api_key=args.api_key or os.getenv("OPENAI_API_KEY"),
+        )
     semaphore = asyncio.Semaphore(args.concurrency)
 
     results: dict[str, list[dict]] = defaultdict(list)

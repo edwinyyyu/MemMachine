@@ -9,6 +9,7 @@ only. n=6 per K.
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import subprocess
 import sys
@@ -35,7 +36,7 @@ def search_and_eval(job: tuple[int, int]) -> tuple[str, int]:
     db = f"locomo-tslimv4-54n-l-nb8-rep{rep}"
     tag = f"v28-e0-rnullbmfa50-l{k}-tsshort-seg"
     t = f"tslimv4-54n-l-nb8-rep{rep}-{tag}"
-    search = f"search-{t}.json"
+    search = A(f"search-{t}.json")
     s = run([
         "uv", "run", "python", "locomo_search.py",
         "--data-path", DATA,
@@ -49,17 +50,17 @@ def search_and_eval(job: tuple[int, int]) -> tuple[str, int]:
         "--bm25-fusion", "additive",
         "--bm25-fusion-weight", "0.5",
         "--timestamp-format", "short",
-    ], f"log-search-{t}.out")
+    ], A(f"log-search-{t}.out"))
     if s[1] != 0:
         return s
     return run([
         "uv", "run", "python", "locomo_evaluate.py",
         "--data-path", search,
-        "--target-path", f"eval-{t}-mini-mb-c14.json",
+        "--target-path", A(f"eval-{t}-mini-mb-c14.json"),
         "--judge-model", "gpt-5-mini",
         "--judge-variant", "mem0-bench",
         "--skip-category-5",
-    ], f"log-eval-{t}.out")
+    ], A(f"log-eval-{t}.out"))
 
 
 def main() -> None:

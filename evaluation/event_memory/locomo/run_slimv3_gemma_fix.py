@@ -11,6 +11,7 @@ ST embedding is LOCAL -> width 2.
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import subprocess
 import sys
@@ -46,16 +47,16 @@ def ingest(job: tuple[str, int]) -> tuple[str, int]:
         log, rc = run([
             "uv", "run", "python", "locomo_ingest.py",
             "--data-path", DATA,
-            "--segment-db", f"locomo-{t}.sqlite",
-            "--vector-db", f"locomo-{t}.vec.sqlite",
+            "--segment-db", A(f"locomo-{t}.sqlite"),
+            "--vector-db", A(f"locomo-{t}.vec.sqlite"),
             *seg_args,
             "--embedding-model", EMB,
-        ], f"log-ingest-{t}.out")
+        ], A(f"log-ingest-{t}.out"))
         if rc == 0:
             return log, rc
         subprocess.run(
             f"rm -f locomo-{t}.sqlite* locomo-{t}.vec.sqlite*", shell=True)
-    return f"log-ingest-{t}.out", rc
+    return A(f"log-ingest-{t}.out"), rc
 
 
 def search_eval(job: tuple) -> tuple[str, int]:
@@ -63,27 +64,27 @@ def search_eval(job: tuple) -> tuple[str, int]:
     t = (f"tslimv3-54n-l-nb8-gemma-rep{rep}" if arm == "slimv3"
          else "text-whole-gemma")
     tag = f"{t}-v28-e0-rnullbmfa50-l{k}-tsshort-seg"
-    search = f"search-{tag}.json"
+    search = A(f"search-{tag}.json")
     s = run([
         "uv", "run", "python", "locomo_search.py",
         "--data-path", DATA, "--target-path", search,
-        "--segment-db", f"locomo-{t}.sqlite",
-        "--vector-db", f"locomo-{t}.vec.sqlite",
+        "--segment-db", A(f"locomo-{t}.sqlite"),
+        "--vector-db", A(f"locomo-{t}.vec.sqlite"),
         "--vector-search-limit", "28", "--expand-context", "0",
         "--max-num-segments", str(k), "--no-reranker",
         "--bm25-fusion", "additive", "--bm25-fusion-weight", "0.5",
         "--timestamp-format", "short",
         "--embedding-model", EMB,
-    ], f"log-search-{tag}.out")
+    ], A(f"log-search-{tag}.out"))
     if s[1] != 0:
         return s
     return run([
         "uv", "run", "python", "locomo_evaluate.py",
         "--data-path", search,
-        "--target-path", f"eval-{tag}-mini-mb-c14.json",
+        "--target-path", A(f"eval-{tag}-mini-mb-c14.json"),
         "--judge-model", "gpt-5-mini", "--judge-variant", "mem0-bench",
         "--skip-category-5",
-    ], f"log-eval-{tag}.out")
+    ], A(f"log-eval-{tag}.out"))
 
 
 def main() -> None:

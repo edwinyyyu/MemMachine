@@ -40,6 +40,7 @@ from .data_types import (
     DecoupledRetrievalContext,
     Derivative,
     Event,
+    FirstPersonDecoupledRetrievalContext,
     FormatOptions,
     NullContext,
     ProducerContext,
@@ -924,6 +925,10 @@ class EventMemory:
             match segment.context:
                 case DecoupledRetrievalContext(text_to_score_bm25=bm25_text):
                     return bm25_text
+                case FirstPersonDecoupledRetrievalContext(
+                    text_to_score_bm25=bm25_text
+                ):
+                    return bm25_text
         return EventMemory._extract_text(segment.block)
 
     @staticmethod
@@ -1056,6 +1061,11 @@ class EventMemory:
             case SurroundingEventsContext(producer=producer):
                 return f"{timestamp_prefix}{producer}: "
             case RawSegmentEventContext(producer=producer):
+                return f"{timestamp_prefix}{producer}: "
+            case FirstPersonDecoupledRetrievalContext(producer=producer):
+                # block.text is first-person ("I adopted Ned") and needs a
+                # producer prefix to be attributable. Same render as
+                # ProducerContext.
                 return f"{timestamp_prefix}{producer}: "
             case NullContext() | RewriteContext() | DecoupledRetrievalContext():
                 # RewriteContext / DecoupledRetrievalContext display like

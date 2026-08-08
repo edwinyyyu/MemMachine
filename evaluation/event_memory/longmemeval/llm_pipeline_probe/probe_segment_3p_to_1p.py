@@ -245,7 +245,9 @@ async def main() -> None:
     p.add_argument("--model", default="gpt-5-nano")
     p.add_argument("--reasoning", default="low")
     p.add_argument("--concurrency", type=int, default=30)
-    p.add_argument("--limit", type=int, default=0, help="Translate only the first N (0=all)")
+    p.add_argument(
+        "--limit", type=int, default=0, help="Translate only the first N (0=all)"
+    )
     args = p.parse_args()
 
     with open(args.input) as f:
@@ -253,12 +255,16 @@ async def main() -> None:
     if args.limit:
         records = records[: args.limit]
     print(f"== Translating {len(records)} segments from {args.input}")
-    print(f"== model={args.model} reasoning={args.reasoning} concurrency={args.concurrency}")
+    print(
+        f"== model={args.model} reasoning={args.reasoning} concurrency={args.concurrency}"
+    )
 
     client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     lm = OpenAIResponsesLanguageModel(
         OpenAIResponsesLanguageModelParams(
-            client=client, model=args.model, reasoning_effort=args.reasoning,
+            client=client,
+            model=args.model,
+            reasoning_effort=args.reasoning,
         )
     )
 

@@ -105,6 +105,39 @@ ANSWER_PROMPT_SIMPLE = """
 You are a helpful assistant with access to extensive conversation history.
 When answering questions, carefully review the conversation history to identify and use any relevant user preferences, interests, or specific details they have mentioned.
 
+Each memory line is prefixed with the date that line was written. Relative time references inside a line ("yesterday", "last week", "last Friday", "today", "next month", etc.) are relative to that prefix date, not to the present — compute the absolute calendar date by applying the offset to the prefix.
+
+<history>
+{memories}
+</history>
+
+Question: {question}
+"""
+
+# Pre-dateinstr SIMPLE -- the historical prompt used by every eval
+# before 2026-05-27. Kept as a separate option so BM25-fusion ablations
+# can match the pre-dateinstr answerer behavior in older runs.
+ANSWER_PROMPT_SIMPLE_ORIG = """
+You are a helpful assistant with access to extensive conversation history.
+When answering questions, carefully review the conversation history to identify and use any relevant user preferences, interests, or specific details they have mentioned.
+
+<history>
+{memories}
+</history>
+
+Question: {question}
+"""
+
+# Variant of SIMPLE that gates the date-resolution instruction on the
+# question type. Aims to recover the c3 (open-domain) regression
+# observed with the unconditional v1 by NOT prompting the answerer to
+# compute dates when the question isn't temporal.
+ANSWER_PROMPT_SIMPLE_COND = """
+You are a helpful assistant with access to extensive conversation history.
+When answering questions, carefully review the conversation history to identify and use any relevant user preferences, interests, or specific details they have mentioned.
+
+Each memory line is prefixed with the date that line was written. When the question asks WHEN something happened (or otherwise depends on a specific date), treat any relative time phrases inside a line ("yesterday", "last week", "last Friday", "today", "next month", etc.) as relative to that prefix date — compute the absolute calendar date by applying the offset to the prefix. For questions that do not involve time, focus on the content of the line; the prefix date is just provenance.
+
 <history>
 {memories}
 </history>
@@ -253,7 +286,7 @@ async def main():
     )
     parser.add_argument(
         "--answer-prompt",
-        choices=["simple", "detailed", "mem0v2"],
+        choices=["simple", "detailed", "mem0v2", "simple-cond", "simple-orig"],
         default="simple",
         help="Answer prompt variant: 'simple' (default, original — helpful "
         "assistant), 'detailed' (mem0-style with 7 numbered instructions), "
@@ -287,6 +320,22 @@ async def main():
         "-- cuts per-segment header overhead so more segments fit a fixed "
         "answer-token budget. Affects rendering only, not retrieval.",
     )
+    parser.add_argument(
+        "--base-url",
+        default=None,
+        help="OpenAI-compatible API base URL (e.g. vLLM/SGLang serving qwen).",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="API key for --base-url; defaults to OPENAI_API_KEY when unset.",
+    )
+    parser.add_argument(
+        "--host-header",
+        default=None,
+        help="Optional Host header override for IP-direct base URLs (see "
+        "locomo_ingest.py --host-header).",
+    )
     args = parser.parse_args()
 
     global _FORMAT_OPTIONS
@@ -319,7 +368,18 @@ async def main():
     )
     await vector_store.startup()
 
-    openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    if args.base_url:
+        openai_client = AsyncOpenAI(
+            base_url=args.base_url,
+            api_key=args.api_key or "none",
+            default_headers=(
+                {"Host": args.host_header} if args.host_header else None
+            ),
+        )
+    else:
+        openai_client = AsyncOpenAI(
+            api_key=args.api_key or os.getenv("OPENAI_API_KEY"),
+        )
     embedder = build_embedder(args.embedding_model, openai_client)
 
     reranker: Reranker | None
@@ -348,6 +408,8 @@ async def main():
         "simple": ANSWER_PROMPT_SIMPLE,
         "detailed": ANSWER_PROMPT_DETAILED,
         "mem0v2": ANSWER_PROMPT_MEM0V2,
+        "simple-cond": ANSWER_PROMPT_SIMPLE_COND,
+        "simple-orig": ANSWER_PROMPT_SIMPLE_ORIG,
     }
     selected_answer_prompt = answer_prompt_by_name[args.answer_prompt]
 
@@ -358,15 +420,39 @@ async def main():
         format_kwargs = {"memories": memories, "question": question}
         if args.answer_prompt == "mem0v2":
             format_kwargs["reference_date"] = "January 1, 2024"
-        response = await openai_client.chat.completions.create(
-            model=args.model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": selected_answer_prompt.format(**format_kwargs),
-                },
-            ],
-        )
+        # Self-hosted open-weight LLMs behave differently from gpt-5-mini
+        # on unconstrained outputs:
+        #   - qwen3 emits a forced "Thinking Process:\n\n1. Analyze..."
+        #     preamble; suppressed via chat_template_kwargs.enable_thinking.
+        #   - gemma-4-31b-it doesn't have a forced preamble, but it
+        #     voluntarily breaks complex questions into bulleted markdown
+        #     reasoning. A "reply with only the answer" system prompt
+        #     collapses that to a clean answer (probed on 2026-05-26).
+        # Both mitigations only kick in when --base-url is set so OpenAI
+        # calls stay byte-identical to prior runs. The mem0v2 answer
+        # prompt explicitly requires step-by-step reasoning ending in
+        # "ANSWER:", so the no-reasoning system prompt is skipped there.
+        messages = []
+        if args.base_url and args.answer_prompt != "mem0v2":
+            messages.append({
+                "role": "system",
+                "content": (
+                    "Reply with ONLY the final answer to the user's "
+                    "question. No reasoning, no analysis, no preamble, "
+                    "no markdown formatting. Just the answer itself, as "
+                    "a brief phrase or single word."
+                ),
+            })
+        messages.append({
+            "role": "user",
+            "content": selected_answer_prompt.format(**format_kwargs),
+        })
+        create_kwargs: dict = {"model": args.model, "messages": messages}
+        if args.base_url:
+            create_kwargs["extra_body"] = {
+                "chat_template_kwargs": {"enable_thinking": False}
+            }
+        response = await openai_client.chat.completions.create(**create_kwargs)
         latency = time.monotonic() - start
         message = response.choices[0].message.content or ""
         usage = response.usage

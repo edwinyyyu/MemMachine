@@ -95,9 +95,13 @@ def violations(seg_text: str, response: _RoutedResponse) -> list[str]:
 
 
 async def main() -> None:
-    cache_path = sys.argv[1] if len(sys.argv) > 1 else (
-        "/Users/eyu/edwinyyyu/mmcc/segment_store/evaluation/event_memory/"
-        "locomo/segments-cache-v22-nb8b-g4.json"
+    cache_path = (
+        sys.argv[1]
+        if len(sys.argv) > 1
+        else (
+            "/Users/eyu/edwinyyyu/mmcc/segment_store/evaluation/event_memory/"
+            "locomo/segments-cache-v22-nb8b-g4.json"
+        )
     )
     n = int(sys.argv[2]) if len(sys.argv) > 2 else 40
     model = sys.argv[3] if len(sys.argv) > 3 else "gpt-5-nano"
@@ -110,11 +114,19 @@ async def main() -> None:
     client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     lm = OpenAIResponsesLanguageModel(
         OpenAIResponsesLanguageModelParams(
-            client=client, model=model, reasoning_effort=reasoning,
+            client=client,
+            model=model,
+            reasoning_effort=reasoning,
         )
     )
 
-    counts = {"tag_suffix": 0, "multi_axis": 0, "list_extraction": 0, "none": 0, "empty": 0}
+    counts = {
+        "tag_suffix": 0,
+        "multi_axis": 0,
+        "list_extraction": 0,
+        "none": 0,
+        "empty": 0,
+    }
     all_issues: list[str] = []
     sample_outputs: list[tuple[str, list[dict], list[str]]] = []
 
@@ -156,6 +168,7 @@ async def main() -> None:
         print("  none")
     else:
         from collections import Counter
+
         for issue, count in Counter(all_issues).most_common():
             print(f"  {count:>3}x  {issue}")
     print()

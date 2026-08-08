@@ -7,6 +7,7 @@ search files with gpt-5; n=6 each for a solid mean.
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import subprocess
 import sys
@@ -30,15 +31,15 @@ def jobs() -> list[tuple[int, int]]:
 def judge(job: tuple[int, int]) -> tuple[str, int]:
     k, rep = job
     t = f"tslimv4-54n-l-nb8-rep{rep}-v28-e0-rnullbmfa50-l{k}-tsshort-seg"
-    search = f"search-{t}.json"
+    search = A(f"search-{t}.json")
     return run([
         "uv", "run", "python", "locomo_evaluate.py",
         "--data-path", search,
-        "--target-path", f"eval-{t}-gpt5-mb-c14.json",
+        "--target-path", A(f"eval-{t}-gpt5-mb-c14.json"),
         "--judge-model", "gpt-5",
         "--judge-variant", "mem0-bench",
         "--skip-category-5",
-    ], f"log-eval-{t}-gpt5.out")
+    ], A(f"log-eval-{t}-gpt5.out"))
 
 
 def main() -> None:

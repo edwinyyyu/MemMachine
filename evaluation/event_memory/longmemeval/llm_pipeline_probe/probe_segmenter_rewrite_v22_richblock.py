@@ -189,11 +189,7 @@ class RewriteSegmenter(Segmenter):
         )
         if response is None:
             return []
-        return [
-            item
-            for item in response.items
-            if item.memory and item.memory.strip()
-        ]
+        return [item for item in response.items if item.memory and item.memory.strip()]
 
     @override
     async def segment(self, event: Event) -> list[Segment]:

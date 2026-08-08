@@ -194,9 +194,7 @@ class RawChunkSegmenter(Segmenter):
     @override
     async def segment(self, event: Event) -> list[Segment]:
         match event.context:
-            case SurroundingEventsContext(
-                producer=producer, before=before
-            ):
+            case SurroundingEventsContext(producer=producer, before=before):
                 speaker = producer
                 before_events: list[SurroundingEvent] = list(before)
             case ProducerContext(producer=producer):

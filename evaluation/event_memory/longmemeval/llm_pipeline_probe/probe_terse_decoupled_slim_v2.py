@@ -104,8 +104,18 @@ message has no topic worth remembering.
 
 
 _MONTHS = [
-    "January", "February", "March", "April", "May", "June", "July",
-    "August", "September", "October", "November", "December",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ]
 # ISO date / ISO month occurrences inside a memory statement.
 _ISO_RE = re.compile(r"\b(\d{4})-(\d{2})(?:-(\d{2}))?\b")
@@ -194,8 +204,17 @@ class TerseDecoupledSegmenter(Segmenter):
             chunk_size=chunk_size,
             chunk_overlap=0,
             separators=[
-                "\n\n\n", "\n\n", "\n", ". ", "? ", "! ", "; ", ": ",
-                ", ", " ", "",
+                "\n\n\n",
+                "\n\n",
+                "\n",
+                ". ",
+                "? ",
+                "! ",
+                "; ",
+                ": ",
+                ", ",
+                " ",
+                "",
             ],
             keep_separator="end",
         )
@@ -216,11 +235,7 @@ class TerseDecoupledSegmenter(Segmenter):
         )
         if response is None:
             return []
-        return [
-            item
-            for item in response.items
-            if item.memory and item.memory.strip()
-        ]
+        return [item for item in response.items if item.memory and item.memory.strip()]
 
     def _build_embed_text(
         self, memory: str, queries: list[str], original_chunk: str, speaker: str

@@ -123,8 +123,7 @@ _OUTRO_TAIL = (
 )
 
 _JSON_KEYS = {
-    True: '"source": "...", "memory": "...", "terse": "...", '
-    '"queries": ["...", "..."]',
+    True: '"source": "...", "memory": "...", "terse": "...", "queries": ["...", "..."]',
     False: '"memory": "...", "terse": "...", "queries": ["...", "..."], '
     '"source": "..."',
 }
@@ -141,14 +140,24 @@ def _build_template(span_first: bool) -> str:
     else:
         fields = [_DESC_MEMORY, _DESC_TERSE, _DESC_QUERIES, _DESC_SOURCE]
     field_block = "\n\n".join(fields)
-    json_example = '{{"items": [{{' + _JSON_KEYS[span_first] + '}}, ...]}}'
+    json_example = '{{"items": [{{' + _JSON_KEYS[span_first] + "}}, ...]}}"
     outro = _OUTRO_HEAD + json_example + _OUTRO_TAIL
     return _INTRO + "\n\n" + field_block + "\n\n" + outro
 
 
 _MONTHS = [
-    "January", "February", "March", "April", "May", "June", "July",
-    "August", "September", "October", "November", "December",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ]
 _ISO_RE = re.compile(r"\b(\d{4})-(\d{2})(?:-(\d{2}))?\b")
 
@@ -235,17 +244,24 @@ class TerseDecoupledSegmenter(Segmenter):
         self._span_first = span_first
         self._block_uses_span = block_uses_span
         self._prompt_template = _build_template(span_first)
-        self._response_model = (
-            _ResponseSpanFirst if span_first else _ResponseSpanLast
-        )
+        self._response_model = _ResponseSpanFirst if span_first else _ResponseSpanLast
         self._chunk_size = chunk_size
         self._max_attempts = max_attempts
         self._splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=0,
             separators=[
-                "\n\n\n", "\n\n", "\n", ". ", "? ", "! ", "; ", ": ",
-                ", ", " ", "",
+                "\n\n\n",
+                "\n\n",
+                "\n",
+                ". ",
+                "? ",
+                "! ",
+                "; ",
+                ": ",
+                ", ",
+                " ",
+                "",
             ],
             keep_separator="end",
         )
@@ -266,9 +282,7 @@ class TerseDecoupledSegmenter(Segmenter):
         )
         if response is None:
             return []
-        return [
-            item for item in response.items if item.memory and item.memory.strip()
-        ]
+        return [item for item in response.items if item.memory and item.memory.strip()]
 
     def _resolve_span(self, raw_source: str, chunk: str) -> str:
         """Use the LLM span if it is verbatim from the chunk; else fall back."""
@@ -313,13 +327,9 @@ class TerseDecoupledSegmenter(Segmenter):
                         for item in items:
                             memory = item.memory.strip()
                             terse = item.terse.strip() or memory
-                            span = self._resolve_span(
-                                item.source, chunk_stripped
-                            )
+                            span = self._resolve_span(item.source, chunk_stripped)
                             q = " ".join(
-                                qq.strip()
-                                for qq in item.queries
-                                if qq and qq.strip()
+                                qq.strip() for qq in item.queries if qq and qq.strip()
                             )
                             embed_parts = [memory]
                             if q:
@@ -331,9 +341,7 @@ class TerseDecoupledSegmenter(Segmenter):
                             if aliases:
                                 embed_text = f"{embed_text}\nDates: {aliases}"
                                 bm25_text = f"{bm25_text}\nDates: {aliases}"
-                            block_text = (
-                                span if self._block_uses_span else terse
-                            )
+                            block_text = span if self._block_uses_span else terse
                             segments.append(
                                 Segment(
                                     uuid=uuid4(),

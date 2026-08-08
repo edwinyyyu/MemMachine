@@ -10,6 +10,7 @@ embed phase contends on CPU/MPS, unlike the API case).
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import subprocess
 import sys
@@ -41,45 +42,45 @@ def ingest(job: tuple[str, str, int]) -> tuple[str, int]:
         log, rc = run([
             "uv", "run", "python", "locomo_ingest.py",
             "--data-path", DATA,
-            "--segment-db", f"locomo-{t}.sqlite",
-            "--vector-db", f"locomo-{t}.vec.sqlite",
+            "--segment-db", A(f"locomo-{t}.sqlite"),
+            "--vector-db", A(f"locomo-{t}.vec.sqlite"),
             "--segmenter", "terse-decoupled-slim-v4",
             "--segmenter-model", "gpt-5.4-nano",
             "--segmenter-reasoning", "low",
             "--neighbor-window", "8", "--neighbor-direction", "both",
             "--embedding-model", emb,
-        ], f"log-ingest-{t}.out")
+        ], A(f"log-ingest-{t}.out"))
         if rc == 0:
             return log, rc
         subprocess.run(
             f"rm -f locomo-{t}.sqlite* locomo-{t}.vec.sqlite*", shell=True)
-    return f"log-ingest-{t}.out", rc
+    return A(f"log-ingest-{t}.out"), rc
 
 
 def search_eval(job: tuple[str, str, int]) -> tuple[str, int]:
     short, emb, rep = job
     t = f"tslimv4-54n-l-nb8-{short}-rep{rep}"
-    search = f"search-{t}-{TAG}.json"
+    search = A(f"search-{t}-{TAG}.json")
     s = run([
         "uv", "run", "python", "locomo_search.py",
         "--data-path", DATA, "--target-path", search,
-        "--segment-db", f"locomo-{t}.sqlite",
-        "--vector-db", f"locomo-{t}.vec.sqlite",
+        "--segment-db", A(f"locomo-{t}.sqlite"),
+        "--vector-db", A(f"locomo-{t}.vec.sqlite"),
         "--vector-search-limit", "28", "--expand-context", "0",
         "--max-num-segments", "12", "--no-reranker",
         "--bm25-fusion", "additive", "--bm25-fusion-weight", "0.5",
         "--timestamp-format", "short",
         "--embedding-model", emb,
-    ], f"log-search-{t}.out")
+    ], A(f"log-search-{t}.out"))
     if s[1] != 0:
         return s
     return run([
         "uv", "run", "python", "locomo_evaluate.py",
         "--data-path", search,
-        "--target-path", f"eval-{t}-{TAG}-mini-mb-c14.json",
+        "--target-path", A(f"eval-{t}-{TAG}-mini-mb-c14.json"),
         "--judge-model", "gpt-5-mini", "--judge-variant", "mem0-bench",
         "--skip-category-5",
-    ], f"log-eval-{t}.out")
+    ], A(f"log-eval-{t}.out"))
 
 
 def main() -> None:

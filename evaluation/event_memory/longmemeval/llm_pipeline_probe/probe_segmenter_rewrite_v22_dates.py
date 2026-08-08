@@ -425,9 +425,7 @@ class RewriteSegmenter(Segmenter):
                                     offset=offset,
                                     timestamp=event.timestamp,
                                     block=TextBlock(text=memory),
-                                    context=RewriteContext(
-                                        text_to_embed=embed_text
-                                    ),
+                                    context=RewriteContext(text_to_embed=embed_text),
                                     properties=event.properties,
                                 )
                             )

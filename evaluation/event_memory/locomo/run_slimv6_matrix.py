@@ -14,6 +14,7 @@ matrix at nb8, n=3, plus the 54n-l ship-gate:
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import os
 import subprocess
@@ -50,8 +51,8 @@ def ingest(job: tuple[str, int]) -> tuple[str, int]:
     model, effort = CELLS[cell]
     t = f"tslimv6-{cell}-nb8-rep{rep}"
     # Skip DBs that already completed (resume after the OOM restart).
-    if (os.path.exists(f"locomo-{t}.sqlite")
-            and os.path.exists(f"locomo-{t}.vec.sqlite")):
+    if (os.path.exists(A(f"locomo-{t}.sqlite"))
+            and os.path.exists(A(f"locomo-{t}.vec.sqlite"))):
         return f"log-ingest-{t}.out (skipped: exists)", 0
     subprocess.run(
         f"rm -f locomo-{t}.sqlite* locomo-{t}.vec.sqlite*", shell=True)
@@ -59,18 +60,18 @@ def ingest(job: tuple[str, int]) -> tuple[str, int]:
         log, rc = run([
             "uv", "run", "python", "locomo_ingest.py",
             "--data-path", DATA,
-            "--segment-db", f"locomo-{t}.sqlite",
-            "--vector-db", f"locomo-{t}.vec.sqlite",
+            "--segment-db", A(f"locomo-{t}.sqlite"),
+            "--vector-db", A(f"locomo-{t}.vec.sqlite"),
             "--segmenter", "terse-decoupled-slim-v6",
             "--segmenter-model", model,
             "--segmenter-reasoning", effort,
             "--neighbor-window", "8", "--neighbor-direction", "both",
-        ], f"log-ingest-{t}.out")
+        ], A(f"log-ingest-{t}.out"))
         if rc == 0:
             return log, rc
         subprocess.run(
             f"rm -f locomo-{t}.sqlite* locomo-{t}.vec.sqlite*", shell=True)
-    return f"log-ingest-{t}.out", rc
+    return A(f"log-ingest-{t}.out"), rc
 
 
 def evaluate(tag, search, judge, suffix):
@@ -78,22 +79,22 @@ def evaluate(tag, search, judge, suffix):
     return run([
         "uv", "run", "python", "locomo_evaluate.py",
         "--data-path", search,
-        "--target-path", f"eval-{tag}-{suffix}.json",
+        "--target-path", A(f"eval-{tag}-{suffix}.json"),
         "--judge-model", jm, "--judge-variant", "mem0-bench",
         "--skip-category-5",
-    ], f"log-eval-{tag}-{suffix}.out")
+    ], A(f"log-eval-{tag}-{suffix}.out"))
 
 
 def search_eval(job: tuple) -> tuple[str, int]:
     cell, rep, k, vsl, mode = job
     t = f"tslimv6-{cell}-nb8-rep{rep}"
     tag = f"{t}-v{vsl}-e0-rnullbmfa50-l{k}-tsshort-{mode}"
-    search = f"search-{tag}.json"
+    search = A(f"search-{tag}.json")
     cmd = [
         "uv", "run", "python", "locomo_search.py",
         "--data-path", DATA, "--target-path", search,
-        "--segment-db", f"locomo-{t}.sqlite",
-        "--vector-db", f"locomo-{t}.vec.sqlite",
+        "--segment-db", A(f"locomo-{t}.sqlite"),
+        "--vector-db", A(f"locomo-{t}.vec.sqlite"),
         "--vector-search-limit", str(vsl), "--expand-context", "0",
         "--max-num-segments", str(k), "--no-reranker",
         "--bm25-fusion", "additive", "--bm25-fusion-weight", "0.5",
@@ -101,7 +102,7 @@ def search_eval(job: tuple) -> tuple[str, int]:
     ]
     if mode == "rawev":
         cmd.append("--answer-with-raw-events")
-    rc = run(cmd, f"log-search-{tag}.out")[1]
+    rc = run(cmd, A(f"log-search-{tag}.out"))[1]
     if rc != 0:
         return tag, rc
     evaluate(tag, search, "mini", "mini-mb-c14")

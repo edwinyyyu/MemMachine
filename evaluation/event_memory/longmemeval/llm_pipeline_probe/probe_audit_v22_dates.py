@@ -39,9 +39,7 @@ def sample_locomo_messages(n: int, seed: int = 0) -> list[dict]:
     Each record: {speaker, date (ISO YYYY-MM-DD), text}
     """
     src = json.load(
-        open(
-            "/Users/eyu/edwinyyyu/mmcc/segment_store/evaluation/data/locomo10.json"
-        )
+        open("/Users/eyu/edwinyyyu/mmcc/segment_store/evaluation/data/locomo10.json")
     )
     rng = random.Random(seed)
     msgs: list[dict] = []
@@ -88,7 +86,9 @@ async def main() -> None:
     client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     lm = OpenAIResponsesLanguageModel(
         OpenAIResponsesLanguageModelParams(
-            client=client, model=model, reasoning_effort=reasoning,
+            client=client,
+            model=model,
+            reasoning_effort=reasoning,
         )
     )
 
@@ -109,12 +109,15 @@ async def main() -> None:
 
     async def run_one(msg):
         prompt = PROMPT_REWRITE_V22_DATES.format(
-            speaker=msg["speaker"], date=msg["date"],
-            passage=msg["text"], neighbors_block="",
+            speaker=msg["speaker"],
+            date=msg["date"],
+            passage=msg["text"],
+            neighbors_block="",
         )
         resp = await lm.generate_parsed_response(
             output_format=_RewriteResponse,
-            user_prompt=prompt, max_attempts=3,
+            user_prompt=prompt,
+            max_attempts=3,
         )
         return msg, resp
 

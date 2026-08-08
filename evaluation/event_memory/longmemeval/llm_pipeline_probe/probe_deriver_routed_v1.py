@@ -522,9 +522,7 @@ class GenericDeriver(Deriver):
                 case "tag_suffix":
                     tag_values = _clean_tag_values(shape_entry.values)
                 case "multi_axis":
-                    multi_axis_values = _clean_axis_values(
-                        shape_entry.values, cap=2
-                    )
+                    multi_axis_values = _clean_axis_values(shape_entry.values, cap=2)
                 case "list_extraction":
                     list_extraction_values = _clean_axis_values(
                         shape_entry.values, cap=1
@@ -549,14 +547,14 @@ class GenericDeriver(Deriver):
 
         whole_text = _format_with_context(segment.context, text)
 
-        tag_values, multi_axis_values, list_extraction_values = (
-            await self._generate_routed(text)
-        )
+        (
+            tag_values,
+            multi_axis_values,
+            list_extraction_values,
+        ) = await self._generate_routed(text)
 
         # Whole-text derivative, with optional tag suffix appended.
-        suffix = (
-            f" [tags: {', '.join(tag_values)}]" if tag_values else ""
-        )
+        suffix = f" [tags: {', '.join(tag_values)}]" if tag_values else ""
         whole_embed_text = whole_text + suffix
 
         derivatives: list[Derivative] = [

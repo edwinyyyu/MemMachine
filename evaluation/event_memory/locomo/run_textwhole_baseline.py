@@ -8,6 +8,7 @@ judge + mem0-bench. Search at K=5/6/7 to bracket the ~340-token budget.
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import subprocess
 import sys
@@ -27,7 +28,7 @@ def run(cmd: list[str], log: str) -> tuple[str, int]:
 
 def search_eval(k: int) -> tuple[str, int]:
     tag = f"text-whole-v28-e0-rnullbmfa50-l{k}-tsshort"
-    search = f"search-{tag}.json"
+    search = A(f"search-{tag}.json")
     s = run([
         "uv", "run", "python", "locomo_search.py",
         "--data-path", DATA, "--target-path", search,
@@ -36,16 +37,16 @@ def search_eval(k: int) -> tuple[str, int]:
         "--max-num-segments", str(k), "--no-reranker",
         "--bm25-fusion", "additive", "--bm25-fusion-weight", "0.5",
         "--timestamp-format", "short",
-    ], f"log-search-{tag}.out")
+    ], A(f"log-search-{tag}.out"))
     if s[1] != 0:
         return s
     return run([
         "uv", "run", "python", "locomo_evaluate.py",
         "--data-path", search,
-        "--target-path", f"eval-{tag}-mini-mb-c14.json",
+        "--target-path", A(f"eval-{tag}-mini-mb-c14.json"),
         "--judge-model", "gpt-5-mini", "--judge-variant", "mem0-bench",
         "--skip-category-5",
-    ], f"log-eval-{tag}.out")
+    ], A(f"log-eval-{tag}.out"))
 
 
 def main() -> None:
@@ -57,7 +58,7 @@ def main() -> None:
         "--data-path", DATA,
         "--segment-db", f"{DB}.sqlite", "--vector-db", f"{DB}.vec.sqlite",
         "--segmenter", "text", "--deriver", "whole",
-    ], f"log-ingest-{DB}.out")
+    ], A(f"log-ingest-{DB}.out"))
     print(f"  {log}  rc={rc}", flush=True)
     if rc != 0:
         return

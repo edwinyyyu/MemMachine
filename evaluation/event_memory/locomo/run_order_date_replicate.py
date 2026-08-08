@@ -14,6 +14,7 @@ not proof.
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import subprocess
 import sys
@@ -48,25 +49,25 @@ def run(cmd: list[str], log: str) -> tuple[str, int]:
 def search_and_eval(job: tuple[str, int]) -> tuple[str, int]:
     stem, rep = job
     t = f"deco-{stem}-rep{rep}"
-    search = f"search-{t}-{SEARCH_TAG}.json"
+    search = A(f"search-{t}-{SEARCH_TAG}.json")
     s = run([
         "uv", "run", "python", "locomo_search.py",
         "--data-path", DATA,
         "--target-path", search,
-        "--segment-db", f"locomo-deco-{stem}.sqlite",
-        "--vector-db", f"locomo-deco-{stem}.vec.sqlite",
+        "--segment-db", A(f"locomo-deco-{stem}.sqlite"),
+        "--vector-db", A(f"locomo-deco-{stem}.vec.sqlite"),
         *SEARCH_ARGS,
-    ], f"log-search-{t}.out")
+    ], A(f"log-search-{t}.out"))
     if s[1] != 0:
         return s
     return run([
         "uv", "run", "python", "locomo_evaluate.py",
         "--data-path", search,
-        "--target-path", f"eval-{t}-{SEARCH_TAG}-mini-mb-c14.json",
+        "--target-path", A(f"eval-{t}-{SEARCH_TAG}-mini-mb-c14.json"),
         "--judge-model", "gpt-5-mini",
         "--judge-variant", "mem0-bench",
         "--skip-category-5",
-    ], f"log-eval-{t}.out")
+    ], A(f"log-eval-{t}.out"))
 
 
 def main() -> None:

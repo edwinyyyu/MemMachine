@@ -14,6 +14,7 @@ A/B re-search existing DBs (no ingest). C needs fresh ingests.
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import subprocess
 import sys
@@ -46,7 +47,7 @@ def k40_job(spec: tuple[str, int]) -> tuple[str, int]:
     mode, rep = spec
     db = f"locomo-tslimv4-54n-l-nb8-rep{rep}"
     tag = f"tslimv4-54n-l-nb8-rep{rep}-v160-e0-rnullbmfa50-l40-{mode}"
-    search = f"search-{tag}.json"
+    search = A(f"search-{tag}.json")
     cmd = [
         "uv", "run", "python", "locomo_search.py",
         "--data-path", DATA, "--target-path", search,
@@ -58,14 +59,14 @@ def k40_job(spec: tuple[str, int]) -> tuple[str, int]:
     ]
     if mode == "rawev":
         cmd.append("--answer-with-raw-events")
-    s = run(cmd, f"log-search-{tag}.out")
+    s = run(cmd, A(f"log-search-{tag}.out"))
     if s[1] != 0:
         return s
     return run([
         "uv", "run", "python", "locomo_evaluate.py",
         "--data-path", search,
-        "--target-path", f"eval-{tag}-mini-mb-c14.json", *EVAL,
-    ], f"log-eval-{tag}.out")
+        "--target-path", A(f"eval-{tag}-mini-mb-c14.json"), *EVAL,
+    ], A(f"log-eval-{tag}.out"))
 
 
 def c_ingest(job: tuple[str, str, str, int]) -> tuple[str, int]:
@@ -77,41 +78,41 @@ def c_ingest(job: tuple[str, str, str, int]) -> tuple[str, int]:
         log, rc = run([
             "uv", "run", "python", "locomo_ingest.py",
             "--data-path", DATA,
-            "--segment-db", f"locomo-{t}.sqlite",
-            "--vector-db", f"locomo-{t}.vec.sqlite",
+            "--segment-db", A(f"locomo-{t}.sqlite"),
+            "--vector-db", A(f"locomo-{t}.vec.sqlite"),
             "--segmenter", "terse-decoupled-slim-v4",
             "--segmenter-model", model, "--segmenter-reasoning", effort,
             "--neighbor-window", "8", "--neighbor-direction", "both",
-        ], f"log-ingest-{t}.out")
+        ], A(f"log-ingest-{t}.out"))
         if rc == 0:
             return log, rc
         subprocess.run(
             f"rm -f locomo-{t}.sqlite* locomo-{t}.vec.sqlite*", shell=True)
-    return f"log-ingest-{t}.out", rc
+    return A(f"log-ingest-{t}.out"), rc
 
 
 def c_search_eval(job: tuple[str, str, str, int]) -> tuple[str, int]:
     cell, _m, _e, rep = job
     t = f"tslimv4-{cell}-nb8-rep{rep}"
     tag = f"{t}-v28-e0-rnullbmfa50-l10-tsshort-seg"
-    search = f"search-{tag}.json"
+    search = A(f"search-{tag}.json")
     s = run([
         "uv", "run", "python", "locomo_search.py",
         "--data-path", DATA, "--target-path", search,
-        "--segment-db", f"locomo-{t}.sqlite",
-        "--vector-db", f"locomo-{t}.vec.sqlite",
+        "--segment-db", A(f"locomo-{t}.sqlite"),
+        "--vector-db", A(f"locomo-{t}.vec.sqlite"),
         "--vector-search-limit", "28", "--expand-context", "0",
         "--max-num-segments", "10", "--no-reranker",
         "--bm25-fusion", "additive", "--bm25-fusion-weight", "0.5",
         "--timestamp-format", "short",
-    ], f"log-search-{tag}.out")
+    ], A(f"log-search-{tag}.out"))
     if s[1] != 0:
         return s
     return run([
         "uv", "run", "python", "locomo_evaluate.py",
         "--data-path", search,
-        "--target-path", f"eval-{tag}-mini-mb-c14.json", *EVAL,
-    ], f"log-eval-{tag}.out")
+        "--target-path", A(f"eval-{tag}-mini-mb-c14.json"), *EVAL,
+    ], A(f"log-eval-{tag}.out"))
 
 
 def main() -> None:

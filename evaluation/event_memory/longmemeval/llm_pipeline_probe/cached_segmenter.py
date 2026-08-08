@@ -69,11 +69,23 @@ class CachedSegmenter(Segmenter):
         self._by_key: dict[tuple[str, str], list[dict]] = {}
         for r in records:
             try:
-                props = json.loads(r["properties"]) if isinstance(r["properties"], str) else r["properties"]
+                props = (
+                    json.loads(r["properties"])
+                    if isinstance(r["properties"], str)
+                    else r["properties"]
+                )
             except Exception:
                 continue
-            sid = props.get("locomo_session_id", {}).get("v") if isinstance(props.get("locomo_session_id"), dict) else props.get("locomo_session_id")
-            dia = props.get("dia_id", {}).get("v") if isinstance(props.get("dia_id"), dict) else props.get("dia_id")
+            sid = (
+                props.get("locomo_session_id", {}).get("v")
+                if isinstance(props.get("locomo_session_id"), dict)
+                else props.get("locomo_session_id")
+            )
+            dia = (
+                props.get("dia_id", {}).get("v")
+                if isinstance(props.get("dia_id"), dict)
+                else props.get("dia_id")
+            )
             if sid is None or dia is None:
                 continue
             self._by_key.setdefault((sid, dia), []).append(r)

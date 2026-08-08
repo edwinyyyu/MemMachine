@@ -139,6 +139,26 @@ class DecoupledRetrievalContext(BaseModel):
     text_to_score_bm25: str
 
 
+class FirstPersonDecoupledRetrievalContext(BaseModel):
+    """Decoupled retrieval context where block.text is first-person.
+
+    Same retrieval fields as ``DecoupledRetrievalContext`` (text_to_embed
+    and text_to_score_bm25 carry the lexical/semantic surface), but the
+    rendered block.text is the speaker's own first-person voice
+    ("I adopted...") and therefore needs a producer prefix at display
+    time to be attributable. Display formatting matches ``ProducerContext``
+    (``{producer}: <block.text>``) — unlike DecoupledRetrievalContext
+    whose 3p block.text already names its subject.
+    """
+
+    context_type: Literal["first_person_decoupled_retrieval"] = (
+        "first_person_decoupled_retrieval"
+    )
+    producer: str
+    text_to_embed: str
+    text_to_score_bm25: str
+
+
 ContextUnion = (
     ProducerContext
     | NullContext
@@ -146,6 +166,7 @@ ContextUnion = (
     | SurroundingEventsContext
     | RawSegmentEventContext
     | DecoupledRetrievalContext
+    | FirstPersonDecoupledRetrievalContext
 )
 
 Context = Annotated[

@@ -18,6 +18,7 @@ reported and the record flagged.
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import json
 import sqlite3
@@ -28,7 +29,7 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     decode_context,
 )
 
-SRC_DB = "locomo-terse-decoupled-v2-m54nl-nb8b-fb.sqlite"
+SRC_DB = A("locomo-terse-decoupled-v2-m54nl-nb8b-fb.sqlite")
 OUT = "cache-terse-v2-raw.json"
 
 

@@ -6,6 +6,7 @@ Builds DBs via cache-reassembly, runs search + eval per variant.
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import subprocess
 import sys
@@ -40,28 +41,28 @@ def ingest(variant: str) -> tuple[str, int]:
     cmd = [
         "uv", "run", "python", "locomo_ingest.py",
         "--data-path", DATA,
-        "--segment-db", f"locomo-deco-{variant}.sqlite",
-        "--vector-db", f"locomo-deco-{variant}.vec.sqlite",
+        "--segment-db", A(f"locomo-deco-{variant}.sqlite"),
+        "--vector-db", A(f"locomo-deco-{variant}.vec.sqlite"),
         "--segmenter", "decoupling-ablation",
         "--reassembly-variant", variant,
         "--segments-cache", CACHE,
     ]
-    return run(cmd, f"log-ingest-{variant}.out")
+    return run(cmd, A(f"log-ingest-{variant}.out"))
 
 
 def search_and_eval(variant: str) -> tuple[str, int]:
-    search = f"search-deco-{variant}-{SEARCH_TAG}.json"
+    search = A(f"search-deco-{variant}-{SEARCH_TAG}.json")
     s = run([
         "uv", "run", "python", "locomo_search.py",
         "--data-path", DATA,
         "--target-path", search,
-        "--segment-db", f"locomo-deco-{variant}.sqlite",
-        "--vector-db", f"locomo-deco-{variant}.vec.sqlite",
+        "--segment-db", A(f"locomo-deco-{variant}.sqlite"),
+        "--vector-db", A(f"locomo-deco-{variant}.vec.sqlite"),
         *SEARCH_ARGS,
-    ], f"log-search-deco-{variant}.out")
+    ], A(f"log-search-deco-{variant}.out"))
     if s[1] != 0:
         return s
-    target = f"eval-deco-{variant}-{SEARCH_TAG}-mini-mb-c14.json"
+    target = A(f"eval-deco-{variant}-{SEARCH_TAG}-mini-mb-c14.json")
     return run([
         "uv", "run", "python", "locomo_evaluate.py",
         "--data-path", search,
@@ -69,7 +70,7 @@ def search_and_eval(variant: str) -> tuple[str, int]:
         "--judge-model", "gpt-5-mini",
         "--judge-variant", "mem0-bench",
         "--skip-category-5",
-    ], f"log-eval-deco-{variant}.out")
+    ], A(f"log-eval-deco-{variant}.out"))
 
 
 def main() -> None:

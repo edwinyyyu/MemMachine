@@ -12,6 +12,7 @@ additive bm25 w=0.5, timestamp short -- matches the `cur` baseline
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import subprocess
 import sys
@@ -32,10 +33,10 @@ SEARCH_ARGS = [
 
 # Phase 1: searches already on disk -> just evaluate.
 PHASE1_SEARCHES = [
-    f"search-deco-{v}-{SEARCH_TAG}.json"
+    A(f"search-deco-{v}-{SEARCH_TAG}.json")
     for v in ["emb_mcq", "emb_qmc", "emb_qcm", "emb_cmq", "emb_cqm",
               "emb_nodate", "nodate_all"]
-] + ["search-tslimv3-54n-l-nb0-v28-e0-rnullbmfa50-l10-tsshort-seg.json"]
+] + [A("search-tslimv3-54n-l-nb0-v28-e0-rnullbmfa50-l10-tsshort-seg.json")]
 
 # Phase 2: additive-lattice variants -- DBs already built, need search.
 LATTICE = ["e_m", "e_q", "e_c", "e_mq", "e_mc", "e_qc"]
@@ -49,7 +50,7 @@ def run(cmd: list[str], log: str) -> tuple[str, int]:
 
 def eval_search(search_json: str) -> tuple[str, int]:
     stem = search_json[len("search-"):-len(".json")]
-    target = f"eval-{stem}-mini-mb-c14.json"
+    target = A(f"eval-{stem}-mini-mb-c14.json")
     cmd = [
         "uv", "run", "python", "locomo_evaluate.py",
         "--data-path", search_json,
@@ -58,20 +59,20 @@ def eval_search(search_json: str) -> tuple[str, int]:
         "--judge-variant", "mem0-bench",
         "--skip-category-5",
     ]
-    return run(cmd, f"log-{target}.out")
+    return run(cmd, A(f"log-{target}.out"))
 
 
 def do_search(variant: str) -> tuple[str, int]:
-    target = f"search-deco-{variant}-{SEARCH_TAG}.json"
+    target = A(f"search-deco-{variant}-{SEARCH_TAG}.json")
     cmd = [
         "uv", "run", "python", "locomo_search.py",
         "--data-path", DATA,
         "--target-path", target,
-        "--segment-db", f"locomo-deco-{variant}.sqlite",
-        "--vector-db", f"locomo-deco-{variant}.vec.sqlite",
+        "--segment-db", A(f"locomo-deco-{variant}.sqlite"),
+        "--vector-db", A(f"locomo-deco-{variant}.vec.sqlite"),
         *SEARCH_ARGS,
     ]
-    return run(cmd, f"log-{target}.out")
+    return run(cmd, A(f"log-{target}.out"))
 
 
 def batched(fn, items, width):
@@ -93,7 +94,7 @@ def main() -> None:
 
     print(f"=== Phase 3: evaluate {len(LATTICE)} lattice searches ===", flush=True)
     lattice_searches = [
-        f"search-deco-{v}-{SEARCH_TAG}.json" for v in LATTICE
+        A(f"search-deco-{v}-{SEARCH_TAG}.json") for v in LATTICE
     ]
     batched(eval_search, lattice_searches, 4)
 

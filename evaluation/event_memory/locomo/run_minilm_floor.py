@@ -6,6 +6,7 @@ minilm, eval mini. Local model -> width 1.
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import subprocess
 import sys
@@ -21,27 +22,27 @@ def run(cmd: list[str], log: str) -> int:
 def main() -> None:
     for k in (6, 7):
         tag = f"text-whole-minilm-v28-e0-rnullbmfa50-l{k}-tsshort-seg"
-        search = f"search-{tag}.json"
+        search = A(f"search-{tag}.json")
         rc = run([
             "uv", "run", "python", "locomo_search.py",
             "--data-path", DATA, "--target-path", search,
-            "--segment-db", "locomo-text-whole-minilm.sqlite",
-            "--vector-db", "locomo-text-whole-minilm.vec.sqlite",
+            "--segment-db", A("locomo-text-whole-minilm.sqlite"),
+            "--vector-db", A("locomo-text-whole-minilm.vec.sqlite"),
             "--vector-search-limit", "28", "--expand-context", "0",
             "--max-num-segments", str(k), "--no-reranker",
             "--bm25-fusion", "additive", "--bm25-fusion-weight", "0.5",
             "--timestamp-format", "short", "--embedding-model", "minilm",
-        ], f"log-search-{tag}.out")
+        ], A(f"log-search-{tag}.out"))
         print(f"  search K={k} rc={rc}", flush=True)
         if rc != 0:
             continue
         rc = run([
             "uv", "run", "python", "locomo_evaluate.py",
             "--data-path", search,
-            "--target-path", f"eval-{tag}-mini-mb-c14.json",
+            "--target-path", A(f"eval-{tag}-mini-mb-c14.json"),
             "--judge-model", "gpt-5-mini", "--judge-variant", "mem0-bench",
             "--skip-category-5",
-        ], f"log-eval-{tag}.out")
+        ], A(f"log-eval-{tag}.out"))
         print(f"  eval K={k} rc={rc}", flush=True)
     print("=== MINILM FLOOR DONE ===", flush=True)
 

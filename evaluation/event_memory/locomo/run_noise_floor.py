@@ -11,6 +11,7 @@ ablation delta below it is noise.
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import subprocess
 import sys
@@ -38,26 +39,26 @@ def run(cmd: list[str], log: str) -> tuple[str, int]:
 
 
 def search_and_eval(rep: int) -> tuple[str, int]:
-    search = f"search-deco-cur-rep{rep}-{SEARCH_TAG}.json"
+    search = A(f"search-deco-cur-rep{rep}-{SEARCH_TAG}.json")
     s = run([
         "uv", "run", "python", "locomo_search.py",
         "--data-path", DATA,
         "--target-path", search,
-        "--segment-db", "locomo-deco-cur.sqlite",
-        "--vector-db", "locomo-deco-cur.vec.sqlite",
+        "--segment-db", A("locomo-deco-cur.sqlite"),
+        "--vector-db", A("locomo-deco-cur.vec.sqlite"),
         *SEARCH_ARGS,
-    ], f"log-search-deco-cur-rep{rep}.out")
+    ], A(f"log-search-deco-cur-rep{rep}.out"))
     if s[1] != 0:
         return s
     return run([
         "uv", "run", "python", "locomo_evaluate.py",
         "--data-path", search,
         "--target-path",
-        f"eval-deco-cur-rep{rep}-{SEARCH_TAG}-mini-mb-c14.json",
+        A(f"eval-deco-cur-rep{rep}-{SEARCH_TAG}-mini-mb-c14.json"),
         "--judge-model", "gpt-5-mini",
         "--judge-variant", "mem0-bench",
         "--skip-category-5",
-    ], f"log-eval-deco-cur-rep{rep}.out")
+    ], A(f"log-eval-deco-cur-rep{rep}.out"))
 
 
 def main() -> None:

@@ -12,6 +12,7 @@ This script:
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import os
 import subprocess
@@ -31,31 +32,31 @@ def run(cmd, log):
 def search(rep):
     t = f"tslimv3boverbve-54n-l-nb8-rep{rep}"
     tag = f"{t}-v28-e0-rnullbmfa50-l10-tsshort-seg"
-    out = f"search-{tag}.json"
+    out = A(f"search-{tag}.json")
     # large json => already complete; skip
     if os.path.exists(out) and os.path.getsize(out) > 2_000_000:
         return f"search-{tag} (skipped, complete)", 0
     return run([
         "uv", "run", "python", "locomo_search.py",
         "--data-path", DATA, "--target-path", out,
-        "--segment-db", f"locomo-{t}.sqlite",
-        "--vector-db", f"locomo-{t}.vec.sqlite",
+        "--segment-db", A(f"locomo-{t}.sqlite"),
+        "--vector-db", A(f"locomo-{t}.vec.sqlite"),
         "--vector-search-limit", "28", "--expand-context", "0",
         "--max-num-segments", "10", "--no-reranker",
         "--bm25-fusion", "additive", "--bm25-fusion-weight", "0.5",
         "--timestamp-format", "short",
-    ], f"log-search-{tag}.out")
+    ], A(f"log-search-{tag}.out"))
 
 
 def eval_one(args):
     rep, judge = args
     t = f"tslimv3boverbve-54n-l-nb8-rep{rep}"
     tag = f"{t}-v28-e0-rnullbmfa50-l10-tsshort-seg"
-    search_json = f"search-{tag}.json"
+    search_json = A(f"search-{tag}.json")
     suffix = "mini" if judge == "gpt-5-mini" else "gpt5"
     # mc = mem0-classic; distinct from prior mb (mem0-bench)
-    out = f"eval-{tag}-{suffix}-mc-c14.json"
-    log = f"log-eval-{tag}-{suffix}-mc.out"
+    out = A(f"eval-{tag}-{suffix}-mc-c14.json")
+    log = A(f"log-eval-{tag}-{suffix}-mc.out")
     return run([
         "uv", "run", "python", "locomo_evaluate.py",
         "--data-path", search_json,

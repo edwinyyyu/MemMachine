@@ -182,9 +182,7 @@ class CachedReassemblySegmenter(Segmenter):
             return f"Topics: {topic}" if topic else None
         raise ValueError(f"unknown component {key!r}")
 
-    def _assemble(
-        self, recipe: list[str], rec: dict, sep: str = "\n"
-    ) -> str:
+    def _assemble(self, recipe: list[str], rec: dict, sep: str = "\n") -> str:
         parts = [self._component(k, rec) for k in recipe]
         return sep.join(p for p in parts if p)
 
@@ -200,9 +198,7 @@ class CachedReassemblySegmenter(Segmenter):
         out: list[Segment] = []
         for rec in self._by_key.get(key, []):
             block_text = self._assemble(self._block_recipe, rec)
-            embed_text = self._assemble(
-                self._embed_recipe, rec, self._embed_sep
-            )
+            embed_text = self._assemble(self._embed_recipe, rec, self._embed_sep)
             bm25_text = self._assemble(self._bm25_recipe, rec)
             out.append(
                 Segment(

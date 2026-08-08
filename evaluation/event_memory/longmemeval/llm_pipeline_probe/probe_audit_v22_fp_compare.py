@@ -26,22 +26,26 @@ from memmachine_server.common.language_model.openai_responses_language_model imp
 
 def sample_turns(n: int, seed: int = 0) -> list[dict]:
     src = json.load(
-        open(
-            "/Users/eyu/edwinyyyu/mmcc/segment_store/evaluation/data/locomo10.json"
-        )
+        open("/Users/eyu/edwinyyyu/mmcc/segment_store/evaluation/data/locomo10.json")
     )
     turns: list[dict] = []
     for conv in src:
         cd = conv.get("conversation", {})
         for sess_key, val in cd.items():
-            if not (sess_key.startswith("session_") and not sess_key.endswith("_date_time") and isinstance(val, list)):
+            if not (
+                sess_key.startswith("session_")
+                and not sess_key.endswith("_date_time")
+                and isinstance(val, list)
+            ):
                 continue
             ts_raw = cd.get(f"{sess_key}_date_time", "")
             m = re.search(r"(\d{1,2})\s+([A-Za-z]+),\s*(\d{4})", str(ts_raw))
             if not m:
                 continue
             try:
-                date_iso = datetime.strptime(f"{m.group(1)} {m.group(2)} {m.group(3)}", "%d %B %Y").strftime("%Y-%m-%d")
+                date_iso = datetime.strptime(
+                    f"{m.group(1)} {m.group(2)} {m.group(3)}", "%d %B %Y"
+                ).strftime("%Y-%m-%d")
             except Exception:
                 continue
             for turn in val:
@@ -84,7 +88,9 @@ SOFT_RELATIVE = re.compile(
 )
 
 
-async def run_variant(turns: list[dict], module_name: str, prompt_attr: str, response_attr: str, lm) -> dict:
+async def run_variant(
+    turns: list[dict], module_name: str, prompt_attr: str, response_attr: str, lm
+) -> dict:
     mod = importlib.import_module(module_name)
     prompt_template = getattr(mod, prompt_attr)
     response_cls = getattr(mod, response_attr)
@@ -92,14 +98,18 @@ async def run_variant(turns: list[dict], module_name: str, prompt_attr: str, res
     async def one(t):
         try:
             prompt = prompt_template.format(
-                speaker=t["speaker"], date=t["date"],
-                passage=t["text"], neighbors_block="",
+                speaker=t["speaker"],
+                date=t["date"],
+                passage=t["text"],
+                neighbors_block="",
             )
         except KeyError:
             # Some variants might use slightly different fields; just skip
             return t, None
         resp = await lm.generate_parsed_response(
-            output_format=response_cls, user_prompt=prompt, max_attempts=3,
+            output_format=response_cls,
+            user_prompt=prompt,
+            max_attempts=3,
         )
         return t, resp
 
@@ -123,7 +133,9 @@ async def run_variant(turns: list[dict], module_name: str, prompt_attr: str, res
         mems = getattr(resp, "memories", None) or []
         metrics["segs_per_turn"].append(len(mems))
         spk = re.escape(t["speaker"])
-        speaker_3p_pat = re.compile(rf"\b{spk}\b\s+(is|was|has|had|does|did|went|said|told|asked|wants|likes|loves|recommends|suggests|plans|knows|feels|thinks)\b")
+        speaker_3p_pat = re.compile(
+            rf"\b{spk}\b\s+(is|was|has|had|does|did|went|said|told|asked|wants|likes|loves|recommends|suggests|plans|knows|feels|thinks)\b"
+        )
         for m in mems:
             metrics["total_segments"] += 1
             if t["date"] in m:
@@ -146,10 +158,30 @@ async def main() -> None:
     reasoning = sys.argv[3] if len(sys.argv) > 3 else "low"
 
     variants = [
-        ("v22-fp v1", "probe_segmenter_rewrite_v22_fp", "PROMPT_REWRITE_V22_FP", "_RewriteResponse"),
-        ("v22-fp rulesfirst", "probe_segmenter_rewrite_v22_fp_rulesfirst", "PROMPT_REWRITE_V22_FP_RULESFIRST", "_RewriteResponse"),
-        ("v22-fp cot", "probe_segmenter_rewrite_v22_fp_cot", "PROMPT_REWRITE_V22_FP_COT", "_RewriteResponse"),
-        ("v22-fp min", "probe_segmenter_rewrite_v22_fp_min", "PROMPT_REWRITE_V22_FP_MIN", "_RewriteResponse"),
+        (
+            "v22-fp v1",
+            "probe_segmenter_rewrite_v22_fp",
+            "PROMPT_REWRITE_V22_FP",
+            "_RewriteResponse",
+        ),
+        (
+            "v22-fp rulesfirst",
+            "probe_segmenter_rewrite_v22_fp_rulesfirst",
+            "PROMPT_REWRITE_V22_FP_RULESFIRST",
+            "_RewriteResponse",
+        ),
+        (
+            "v22-fp cot",
+            "probe_segmenter_rewrite_v22_fp_cot",
+            "PROMPT_REWRITE_V22_FP_COT",
+            "_RewriteResponse",
+        ),
+        (
+            "v22-fp min",
+            "probe_segmenter_rewrite_v22_fp_min",
+            "PROMPT_REWRITE_V22_FP_MIN",
+            "_RewriteResponse",
+        ),
     ]
 
     turns = sample_turns(n)
@@ -158,7 +190,9 @@ async def main() -> None:
     client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     lm = OpenAIResponsesLanguageModel(
         OpenAIResponsesLanguageModelParams(
-            client=client, model=model, reasoning_effort=reasoning,
+            client=client,
+            model=model,
+            reasoning_effort=reasoning,
         )
     )
 
@@ -171,15 +205,19 @@ async def main() -> None:
             print(f"ERROR running {label}: {e}")
             all_metrics[label] = None
 
-    print(f'{"variant":<22} {"segs":>5} {"parses_fail":>11} {"msg_date":>9} {"bare_rel":>9} {"soft_rel":>9} {"spk_3p":>7} {"fmt":>5} {"segs/turn":>9}')
+    print(
+        f"{'variant':<22} {'segs':>5} {'parses_fail':>11} {'msg_date':>9} {'bare_rel':>9} {'soft_rel':>9} {'spk_3p':>7} {'fmt':>5} {'segs/turn':>9}"
+    )
     for label, _, _, _ in variants:
         m = all_metrics.get(label)
         if m is None:
-            print(f'{label:<22} ERROR')
+            print(f"{label:<22} ERROR")
             continue
         avg = sum(m["segs_per_turn"]) / max(len(m["segs_per_turn"]), 1)
         fmt_total = sum(m["forbidden"].values())
-        print(f'{label:<22} {m["total_segments"]:>5} {m["parse_failures"]:>11} {m["msg_date_leak"]:>9} {m["bare_relative"]:>9} {m["soft_relative"]:>9} {m["speaker_3p_slip"]:>7} {fmt_total:>5} {avg:>9.2f}')
+        print(
+            f"{label:<22} {m['total_segments']:>5} {m['parse_failures']:>11} {m['msg_date_leak']:>9} {m['bare_relative']:>9} {m['soft_relative']:>9} {m['speaker_3p_slip']:>7} {fmt_total:>5} {avg:>9.2f}"
+        )
 
 
 if __name__ == "__main__":

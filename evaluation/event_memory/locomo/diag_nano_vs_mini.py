@@ -10,6 +10,7 @@ examples of the terse field.
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import json
 import sqlite3
@@ -20,8 +21,8 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     decode_context,
 )
 
-NANO_DB = "locomo-tslimv3-5n-m.sqlite"
-MINI_DB = "locomo-tslimv3-5m-m.sqlite"
+NANO_DB = A("locomo-tslimv3-5n-m.sqlite")
+MINI_DB = A("locomo-tslimv3-5m-m.sqlite")
 
 
 def load(db: str) -> dict[tuple, list[dict]]:

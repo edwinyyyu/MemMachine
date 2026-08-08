@@ -32,6 +32,7 @@ _ST_QUERY_PROMPT_OVERRIDE = {
 EMBEDDING_CHOICES = [
     "text-embedding-3-small",
     "text-embedding-3-large",
+    "embeddinggemma-300m",  # SERVER (canonical spelling) via OpenAIEmbedder
     *ST_MODELS,
 ]
 
@@ -53,6 +54,75 @@ def build_embedder(model_name: str, openai_client):
                 max_input_length=8192,
             )
         )
+
+    if model_name == "embeddinggemma-300m":
+        # Server-hosted google/embeddinggemma-300m via OpenAI-compatible
+        # /v1/embeddings. The server does NOT auto-apply the model's
+        # task: prompts (probed 2026-05-26: cos(raw, prompted) ≈ 0.84,
+        # not 1.0). To match local SentenceTransformer behavior we wrap
+        # OpenAIEmbedder in a prompt-prepender that uses the EXACT
+        # prompts from the local model's `prompts` dict -- "query"
+        # and "document" entries. The document prompt uses a
+        # title-prefix format ("title: none | text: ") rather than the
+        # parallel-structure I'd guessed first; that mismatch produced
+        # cos(local-DOC, server-DOC)=0.89 on the same input and
+        # regressed cat1 by ~5pp on bo-natural. With the right prompts
+        # cos becomes 0.99995 (verified 2026-05-27).
+        from memmachine_server.common.embedder.embedder import Embedder
+        from memmachine_server.common.embedder.openai_embedder import (
+            OpenAIEmbedder,
+            OpenAIEmbedderParams,
+        )
+
+        inner = OpenAIEmbedder(
+            OpenAIEmbedderParams(
+                client=openai_client,
+                model="embeddinggemma-300m",
+                dimensions=768,
+                max_input_length=8192,
+            )
+        )
+
+        DOC_PROMPT = "title: none | text: "
+        QUERY_PROMPT = "task: search result | query: "
+
+        class _EmbeddinggemmaServerEmbedder(Embedder):
+            def __init__(self, inner_embedder):
+                # Let the inner OpenAIEmbedder handle batching.
+                super().__init__(batch_size=None)
+                self._inner = inner_embedder
+
+            async def _ingest_embed(self, inputs, max_attempts=1):
+                # Override max_attempts upward -- callers (EventMemory)
+                # pass max_attempts=1 by default, which makes a single
+                # APITimeoutError kill the whole ingest. The vmnet4-200
+                # embedding backend has been intermittently flaky under
+                # concurrent load; retry up to 5x with exponential
+                # backoff (inner client handles the backoff).
+                return await self._inner.ingest_embed(
+                    [DOC_PROMPT + s for s in inputs],
+                    max(max_attempts, 5),
+                )
+
+            async def _search_embed(self, queries, max_attempts=1):
+                return await self._inner.search_embed(
+                    [QUERY_PROMPT + q for q in queries],
+                    max(max_attempts, 5),
+                )
+
+            @property
+            def model_id(self):
+                return self._inner.model_id
+
+            @property
+            def dimensions(self):
+                return self._inner.dimensions
+
+            @property
+            def similarity_metric(self):
+                return self._inner.similarity_metric
+
+        return _EmbeddinggemmaServerEmbedder(inner)
 
     if model_name in ST_MODELS:
         from sentence_transformers import SentenceTransformer

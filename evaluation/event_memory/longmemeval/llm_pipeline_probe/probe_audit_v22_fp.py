@@ -32,24 +32,29 @@ from probe_segmenter_rewrite_v22_fp import (
 def sample_turns(n: int, seed: int = 0) -> list[dict]:
     import re as _re
     from datetime import datetime as _dt
+
     src = json.load(
-        open(
-            "/Users/eyu/edwinyyyu/mmcc/segment_store/evaluation/data/locomo10.json"
-        )
+        open("/Users/eyu/edwinyyyu/mmcc/segment_store/evaluation/data/locomo10.json")
     )
     turns: list[dict] = []
     for conv in src:
         conv_dict = conv.get("conversation", {})
         # session_N is a list of turns; session_N_date_time is e.g. "1:56 pm on 8 May, 2023"
         for sess_key, val in conv_dict.items():
-            if not (sess_key.startswith("session_") and not sess_key.endswith("_date_time") and isinstance(val, list)):
+            if not (
+                sess_key.startswith("session_")
+                and not sess_key.endswith("_date_time")
+                and isinstance(val, list)
+            ):
                 continue
             ts_raw = conv_dict.get(f"{sess_key}_date_time", "")
             m = _re.search(r"(\d{1,2})\s+([A-Za-z]+),\s*(\d{4})", str(ts_raw))
             if not m:
                 continue
             try:
-                date_iso = _dt.strptime(f"{m.group(1)} {m.group(2)} {m.group(3)}", "%d %B %Y").strftime("%Y-%m-%d")
+                date_iso = _dt.strptime(
+                    f"{m.group(1)} {m.group(2)} {m.group(3)}", "%d %B %Y"
+                ).strftime("%Y-%m-%d")
             except Exception:
                 continue
             for turn in val:
@@ -84,7 +89,9 @@ async def main() -> None:
     client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     lm = OpenAIResponsesLanguageModel(
         OpenAIResponsesLanguageModelParams(
-            client=client, model=model, reasoning_effort=reasoning,
+            client=client,
+            model=model,
+            reasoning_effort=reasoning,
         )
     )
 
@@ -104,12 +111,15 @@ async def main() -> None:
 
     async def run_one(t):
         prompt = PROMPT_REWRITE_V22_FP.format(
-            speaker=t["speaker"], date=t["date"],
-            passage=t["text"], neighbors_block="",
+            speaker=t["speaker"],
+            date=t["date"],
+            passage=t["text"],
+            neighbors_block="",
         )
         resp = await lm.generate_parsed_response(
             output_format=_RewriteResponse,
-            user_prompt=prompt, max_attempts=3,
+            user_prompt=prompt,
+            max_attempts=3,
         )
         return t, resp
 
@@ -144,7 +154,10 @@ async def main() -> None:
             # Detect 3p slip: speaker name appearing as the subject when 1p was expected
             # Heuristic: if the speaker's name appears followed by a 3p verb (is/has/does/went/said/...)
             spk = t["speaker"]
-            if re.search(rf"\b{re.escape(spk)}\b\s+(is|was|has|had|does|did|went|said|told|asked|wanted|likes|loves|recommends|suggests|plans|knows|feels|thinks)\b", mem):
+            if re.search(
+                rf"\b{re.escape(spk)}\b\s+(is|was|has|had|does|did|went|said|told|asked|wanted|likes|loves|recommends|suggests|plans|knows|feels|thinks)\b",
+                mem,
+            ):
                 counts["speaker_3p_slip"] += 1
                 issues.append("SPEAKER_3P_SLIP")
             tag = f"   !! {issues}" if issues else ""

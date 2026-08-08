@@ -223,7 +223,9 @@ class RewriteSegmenter(Segmenter):
         return [m.strip() for m in response.memories if m and m.strip()]
 
     @staticmethod
-    def _build_embed_text(rewrite: str, original_chunk: str, speaker: str, date: str) -> str:
+    def _build_embed_text(
+        rewrite: str, original_chunk: str, speaker: str, date: str
+    ) -> str:
         """Says-framed embed (decoupled from display).
 
         Differs from v22 baseline's _build_embed_text by prefixing the rewrite

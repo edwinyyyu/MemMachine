@@ -6,6 +6,7 @@ Baseline search files exist from prior production run; just reuse them.
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import os
 import subprocess
@@ -24,10 +25,10 @@ def run(cmd, log):
 def eval_one(args):
     rep, judge = args
     tag = f"tslimv3-54n-l-nb8-rep{rep}-v28-e0-rnullbmfa50-l10-tsshort-seg"
-    search_json = f"search-{tag}.json"
+    search_json = A(f"search-{tag}.json")
     suffix = "mini" if judge == "gpt-5-mini" else "gpt5"
-    out = f"eval-{tag}-{suffix}-mc-c14.json"
-    log = f"log-eval-{tag}-{suffix}-mc.out"
+    out = A(f"eval-{tag}-{suffix}-mc-c14.json")
+    log = A(f"log-eval-{tag}-{suffix}-mc.out")
     if not os.path.exists(search_json):
         return f"{log} (no search file)", 1
     return run([

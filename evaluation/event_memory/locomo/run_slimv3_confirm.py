@@ -8,6 +8,7 @@ slim_v3-54n-l-nb8 DBs already exist (run_slimv3_nb8). Re-search only:
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import subprocess
 import sys
@@ -31,7 +32,7 @@ def run(cmd, log):
 def search(rep, k, vsl, mode):
     db = DB.format(r=rep)
     tag = f"tslimv3-54n-l-nb8-rep{rep}-v{vsl}-e0-rnullbmfa50-l{k}-{mode}"
-    out = f"search-{tag}.json"
+    out = A(f"search-{tag}.json")
     cmd = [
         "uv", "run", "python", "locomo_search.py",
         "--data-path", DATA, "--target-path", out,
@@ -43,7 +44,7 @@ def search(rep, k, vsl, mode):
     ]
     if mode == "rawev":
         cmd.append("--answer-with-raw-events")
-    rc = run(cmd, f"log-search-{tag}.out")[1]
+    rc = run(cmd, A(f"log-search-{tag}.out"))[1]
     return tag, out, rc
 
 
@@ -51,8 +52,8 @@ def evaluate(tag, search_json, eval_flags, suffix):
     return run([
         "uv", "run", "python", "locomo_evaluate.py",
         "--data-path", search_json,
-        "--target-path", f"eval-{tag}-{suffix}.json", *eval_flags,
-    ], f"log-eval-{tag}-{suffix}.out")
+        "--target-path", A(f"eval-{tag}-{suffix}.json"), *eval_flags,
+    ], A(f"log-eval-{tag}-{suffix}.out"))
 
 
 def job(spec):

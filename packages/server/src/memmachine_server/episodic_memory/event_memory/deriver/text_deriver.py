@@ -9,6 +9,7 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     Context,
     DecoupledRetrievalContext,
     Derivative,
+    FirstPersonDecoupledRetrievalContext,
     NullContext,
     ProducerContext,
     RawSegmentEventContext,
@@ -41,6 +42,8 @@ def _format_with_context(context: Context, text: str) -> str:
         case RewriteContext(text_to_embed=text_to_embed):
             return text_to_embed
         case DecoupledRetrievalContext(text_to_embed=text_to_embed):
+            return text_to_embed
+        case FirstPersonDecoupledRetrievalContext(text_to_embed=text_to_embed):
             return text_to_embed
         case _:
             raise NotImplementedError(

@@ -15,6 +15,7 @@ emb_nodate (M,Q,C) 91.30; cur 7-run mean 90.85.
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import subprocess
 import sys
@@ -50,34 +51,34 @@ def ingest(variant: str) -> tuple[str, int]:
     return run([
         "uv", "run", "python", "locomo_ingest.py",
         "--data-path", DATA,
-        "--segment-db", f"locomo-deco-{variant}.sqlite",
-        "--vector-db", f"locomo-deco-{variant}.vec.sqlite",
+        "--segment-db", A(f"locomo-deco-{variant}.sqlite"),
+        "--vector-db", A(f"locomo-deco-{variant}.vec.sqlite"),
         "--segmenter", "decoupling-ablation",
         "--reassembly-variant", variant,
         "--segments-cache", CACHE,
-    ], f"log-ingest-{variant}.out")
+    ], A(f"log-ingest-{variant}.out"))
 
 
 def search_and_eval(variant: str) -> tuple[str, int]:
-    search = f"search-deco-{variant}-{SEARCH_TAG}.json"
+    search = A(f"search-deco-{variant}-{SEARCH_TAG}.json")
     s = run([
         "uv", "run", "python", "locomo_search.py",
         "--data-path", DATA,
         "--target-path", search,
-        "--segment-db", f"locomo-deco-{variant}.sqlite",
-        "--vector-db", f"locomo-deco-{variant}.vec.sqlite",
+        "--segment-db", A(f"locomo-deco-{variant}.sqlite"),
+        "--vector-db", A(f"locomo-deco-{variant}.vec.sqlite"),
         *SEARCH_ARGS,
-    ], f"log-search-deco-{variant}.out")
+    ], A(f"log-search-deco-{variant}.out"))
     if s[1] != 0:
         return s
     return run([
         "uv", "run", "python", "locomo_evaluate.py",
         "--data-path", search,
-        "--target-path", f"eval-deco-{variant}-{SEARCH_TAG}-mini-mb-c14.json",
+        "--target-path", A(f"eval-deco-{variant}-{SEARCH_TAG}-mini-mb-c14.json"),
         "--judge-model", "gpt-5-mini",
         "--judge-variant", "mem0-bench",
         "--skip-category-5",
-    ], f"log-eval-deco-{variant}.out")
+    ], A(f"log-eval-deco-{variant}.out"))
 
 
 def main() -> None:

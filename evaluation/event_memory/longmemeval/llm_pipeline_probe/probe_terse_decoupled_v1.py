@@ -204,11 +204,7 @@ class TerseDecoupledSegmenter(Segmenter):
         )
         if response is None:
             return []
-        return [
-            item
-            for item in response.items
-            if item.memory and item.memory.strip()
-        ]
+        return [item for item in response.items if item.memory and item.memory.strip()]
 
     @staticmethod
     def _build_embed_text(
@@ -255,13 +251,11 @@ class TerseDecoupledSegmenter(Segmenter):
                         for item in items:
                             memory = item.memory.strip()
                             terse = item.terse.strip() or memory
-                            embed_text = (
-                                TerseDecoupledSegmenter._build_embed_text(
-                                    memory,
-                                    item.queries,
-                                    chunk_stripped,
-                                    speaker,
-                                )
+                            embed_text = TerseDecoupledSegmenter._build_embed_text(
+                                memory,
+                                item.queries,
+                                chunk_stripped,
+                                speaker,
                             )
                             segments.append(
                                 Segment(

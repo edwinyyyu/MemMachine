@@ -142,8 +142,18 @@ assert _DATE_BLOCK_RESOLVE_NATURAL in PROMPT_SLIM_V3_NATURAL_DATES, (
 
 
 _MONTHS = [
-    "January", "February", "March", "April", "May", "June", "July",
-    "August", "September", "October", "November", "December",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ]
 # ISO date / ISO month occurrences inside a memory statement.
 _ISO_RE = re.compile(r"\b(\d{4})-(\d{2})(?:-(\d{2}))?\b")
@@ -225,9 +235,7 @@ def _date_aliases_cldr_event(event_date: datetime, memory_text: str) -> str:
     Drops the ISO-from-memory extraction: any other date the LLM wove
     into `memory` already tokenizes inline, no extra alias for it.
     """
-    return _long_form(
-        event_date.year, event_date.month, event_date.day
-    )
+    return _long_form(event_date.year, event_date.month, event_date.day)
 
 
 def _date_aliases_verbose_event(event_date: datetime, memory_text: str) -> str:
@@ -336,8 +344,17 @@ class TerseDecoupledSegmenter(Segmenter):
             chunk_size=chunk_size,
             chunk_overlap=0,
             separators=[
-                "\n\n\n", "\n\n", "\n", ". ", "? ", "! ", "; ", ": ",
-                ", ", " ", "",
+                "\n\n\n",
+                "\n\n",
+                "\n",
+                ". ",
+                "? ",
+                "! ",
+                "; ",
+                ": ",
+                ", ",
+                " ",
+                "",
             ],
             keep_separator="end",
         )
@@ -358,11 +375,7 @@ class TerseDecoupledSegmenter(Segmenter):
         )
         if response is None:
             return []
-        return [
-            item
-            for item in response.items
-            if item.memory and item.memory.strip()
-        ]
+        return [item for item in response.items if item.memory and item.memory.strip()]
 
     def _build_embed_text(
         self, memory: str, queries: list[str], original_chunk: str, speaker: str
@@ -418,20 +431,18 @@ class TerseDecoupledSegmenter(Segmenter):
                                 speaker,
                             )
                             bm25_text = memory
-                            if (self._date_aliases_in_embed
-                                    or self._date_aliases_in_bm25):
+                            if (
+                                self._date_aliases_in_embed
+                                or self._date_aliases_in_bm25
+                            ):
                                 aliases = _ALIAS_FNS[self._date_alias_mode](
                                     event.timestamp, memory
                                 )
                                 if aliases:
                                     if self._date_aliases_in_embed:
-                                        embed_text = (
-                                            f"{embed_text}\nDates: {aliases}"
-                                        )
+                                        embed_text = f"{embed_text}\nDates: {aliases}"
                                     if self._date_aliases_in_bm25:
-                                        bm25_text = (
-                                            f"{bm25_text}\nDates: {aliases}"
-                                        )
+                                        bm25_text = f"{bm25_text}\nDates: {aliases}"
                             segments.append(
                                 Segment(
                                     uuid=uuid4(),

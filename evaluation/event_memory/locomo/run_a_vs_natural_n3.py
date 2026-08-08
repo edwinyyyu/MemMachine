@@ -10,6 +10,7 @@ This script adds rep2 + rep3 for each, then re-evals. Total 4 ingest+search
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import os
 import subprocess
@@ -36,8 +37,8 @@ def ingest_and_eval(args):
         return f"rep{rep} {tag_base} (already complete)", 0
 
     tag = f"{tag_base}-54n-l-nb8-rep{rep}"
-    db = f"locomo-{tag}.sqlite"
-    vdb = f"locomo-{tag}.vec.sqlite"
+    db = A(f"locomo-{tag}.sqlite")
+    vdb = A(f"locomo-{tag}.vec.sqlite")
     if not os.path.exists(db):
         subprocess.run(f"rm -f {db}* {vdb}*", shell=True)
         log, rc = run([
@@ -48,12 +49,12 @@ def ingest_and_eval(args):
             "--segmenter-model", "gpt-5.4-nano",
             "--segmenter-reasoning", "low",
             "--neighbor-window", "8", "--neighbor-direction", "both",
-        ], f"log-ingest-{tag}.out")
+        ], A(f"log-ingest-{tag}.out"))
         if rc != 0:
             return f"log-ingest-{tag}.out FAILED", rc
 
     stag = f"{tag}-v28-e0-rnullbmfa50-l10-tsshort-seg"
-    search = f"search-{stag}.json"
+    search = A(f"search-{stag}.json")
     if not os.path.exists(search):
         log, rc = run([
             "uv", "run", "python", "locomo_search.py",
@@ -63,17 +64,17 @@ def ingest_and_eval(args):
             "--max-num-segments", "10", "--no-reranker",
             "--bm25-fusion", "additive", "--bm25-fusion-weight", "0.5",
             "--timestamp-format", "short",
-        ], f"log-search-{stag}.out")
+        ], A(f"log-search-{stag}.out"))
         if rc != 0:
             return f"log-search-{stag}.out FAILED", rc
 
-    eval_out = f"eval-{stag}-mini-mb-c14.json"
+    eval_out = A(f"eval-{stag}-mini-mb-c14.json")
     log, rc = run([
         "uv", "run", "python", "locomo_evaluate.py",
         "--data-path", search, "--target-path", eval_out,
         "--judge-model", "gpt-5-mini", "--judge-variant", "mem0-bench",
         "--skip-category-5",
-    ], f"log-eval-{stag}-mini-mb.out")
+    ], A(f"log-eval-{stag}-mini-mb.out"))
     return f"eval-{stag} done", rc
 
 

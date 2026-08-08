@@ -9,6 +9,7 @@ numbers we iterate on.
 """
 
 from __future__ import annotations
+from artifacts import A  # canonical artifact names
 
 import subprocess
 import sys
@@ -30,12 +31,12 @@ def judge(job: tuple[int, int]) -> tuple[str, int]:
     t = f"tslimv4-54n-l-nb8-rep{rep}-v28-e0-rnullbmfa50-l{k}-tsshort-seg"
     return run([
         "uv", "run", "python", "locomo_evaluate.py",
-        "--data-path", f"search-{t}.json",
-        "--target-path", f"eval-{t}-4omini-mc-c14.json",
+        "--data-path", A(f"search-{t}.json"),
+        "--target-path", A(f"eval-{t}-4omini-mc-c14.json"),
         "--judge-model", "gpt-4o-mini",
         "--judge-variant", "mem0-classic",
         "--skip-category-5",
-    ], f"log-eval-{t}-4omini-mc.out")
+    ], A(f"log-eval-{t}-4omini-mc.out"))
 
 
 def main() -> None:

@@ -69,6 +69,14 @@ class OpenAIChatCompletionsLanguageModelParams(BaseModel):
         None,
         description="An instance of MetricsFactory for collecting usage metrics",
     )
+    reasoning_effort: str | None = Field(
+        None,
+        description=(
+            "Accepted for cross-API compatibility with OpenAIResponses params; "
+            "no-op on the chat completions endpoint (qwen via OpenAI-compatible "
+            "endpoints accept it silently)."
+        ),
+    )
 
 
 class OpenAIChatCompletionsLanguageModel(LanguageModel):
