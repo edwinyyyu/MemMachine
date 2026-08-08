@@ -383,7 +383,7 @@ async def main():
         by_category.setdefault(r["category"], []).append(r)
 
     with open(args.target_path, "w") as f:
-        json.dump(by_category, f, indent=4)
+        json.dump(by_category, f, separators=(",", ":"))
 
     await segment_store.shutdown()
     await vector_store.shutdown()

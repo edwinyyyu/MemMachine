@@ -35,6 +35,9 @@ BENCH_NAMES = [
     "recency_vs_rerank",
     "state_vs_event",
     "state_vs_event_v2",
+    "comparative_recency",
+    "metadata_only",
+    "deictic_in_content",
 ]
 
 

@@ -1,0 +1,1 @@
+"""Hard memory-augmented benchmark."""

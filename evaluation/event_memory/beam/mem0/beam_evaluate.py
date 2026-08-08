@@ -45,6 +45,7 @@ so the two scripts are drop-in interchangeable on the same search output.
 import argparse
 import asyncio
 import json
+import os
 import re
 import sys
 from collections import defaultdict
@@ -61,6 +62,20 @@ from llm_provider import (
     ChatClient,
     make_chat_client,
 )
+
+
+# --- lean output -------------------------------------------------------
+# The judge stage writes ONLY what it produced. Everything else already
+# lives in the search output; carrying it forward duplicated ~99.9% of the
+# file (399 MB vs 0.6 MB of actual judgements). Join on JOIN_KEYS + `source`.
+JOIN_KEYS = ("conversation_id", "question_index", "category")
+
+
+def lean_result(result: dict, item: dict) -> dict:
+    """Keys the judge ADDED, plus the keys needed to join back to the input."""
+    out = {k: v for k, v in result.items() if k not in item}
+    out.update({k: item.get(k) for k in JOIN_KEYS})
+    return out
 
 # Verbatim from
 # https://github.com/mem0ai/memory-benchmarks/blob/main/benchmarks/beam/prompts.py
@@ -396,7 +411,7 @@ async def process_sample(client: ChatClient, model: str, item: dict) -> dict:
     rubric = list(item.get("rubric", []))
     category = str(item.get("category", ""))
 
-    result: dict = dict(item)
+    result: dict = dict(item)  # working copy; trimmed by lean_result on return
     result["judge_model_responses"] = []
 
     rubric_scores: list[float] = []
@@ -478,8 +493,10 @@ async def main():
     scored_flat = await asyncio.gather(*tasks)
 
     by_category: dict[str, list[dict]] = defaultdict(list)
-    for (category, _, _), scored in zip(flat, scored_flat, strict=True):
-        by_category[category].append(scored)
+    for (category, _, item), scored in zip(flat, scored_flat, strict=True):
+        # keep only what the judge produced (+ join keys); the rest is in the
+        # search output already -- see lean_result()
+        by_category[category].append(lean_result(scored, item))
 
     summary: dict[str, dict] = {}
     all_scores: list[float] = []
@@ -501,10 +518,12 @@ async def main():
     output = {
         "summary": summary,
         "variant": "mem0",
-        "results": dict(by_category),
+        "source": os.path.basename(args.data_path)
+        if hasattr(args, "data_path") else os.path.basename(args.search_path),
+        "scores": dict(by_category),
     }
     with open(args.target_path, "w") as f:
-        json.dump(output, f, indent=2)
+        json.dump(output, f, separators=(",", ":"))
 
     print("\n=== BEAM Evaluation Summary (mem0 variant) ===")
     for cat, m in sorted(summary.items()):

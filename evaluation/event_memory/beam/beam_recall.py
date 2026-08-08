@@ -242,7 +242,7 @@ def main() -> None:
             "per_question": dict(per_category),
         }
         with open(args.target_path, "w") as f:
-            json.dump(output, f, indent=2)
+            json.dump(output, f, separators=(",", ":"))
 
     # Console report.
     depth_labels = [f"r@{d}" if d is not None else "r@all" for d in _RANK_DEPTHS]

@@ -25,11 +25,11 @@ from .scoring import (
     pair_overlap,
     temporal_pass,
 )
-from .planner import AnaphoricTarget, Plan, QueryPlanner
+from .extractor import TemporalExtractor
+from .planner import Plan, QueryPlanner
 from .retriever import Doc, Result, TemporalRetriever
 
 __all__ = [
-    "AnaphoricTarget",
     "Doc",
     "Interval",
     "IntervalSet",
@@ -38,6 +38,7 @@ __all__ = [
     "Plan",
     "QueryPlanner",
     "Result",
+    "TemporalExtractor",
     "TemporalRetriever",
     "Endpoint",
     "best_per_target",

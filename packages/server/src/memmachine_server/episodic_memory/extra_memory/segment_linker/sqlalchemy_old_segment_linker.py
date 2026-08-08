@@ -8,6 +8,11 @@ from enum import StrEnum
 from typing import ClassVar, override
 from uuid import UUID
 
+from memmachine_server.episodic_memory.extra_memory.data_types import (
+    Block,
+    Context,
+    Segment,
+)
 from memmachine_server.episodic_memory.extra_memory.segment_linker.segment_linker import (
     DerivativeNotActiveError,
     SegmentLinker,
@@ -54,11 +59,6 @@ from memmachine_server.common.filter.filter_parser import (
     IsNull,
     Not,
     Or,
-)
-from memmachine_server.episodic_memory.extra_memory.data_types import (
-    Block,
-    Context,
-    Segment,
 )
 
 logger = logging.getLogger(__name__)

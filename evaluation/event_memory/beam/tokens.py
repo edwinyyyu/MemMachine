@@ -6,7 +6,9 @@ def average_input_tokens(data):
     total_tokens = 0
     total_items = 0
 
-    for category, items in data.get("results", {}).items():
+    # scored files are lean now; input_tokens lives in the search output,
+    # whose categories are top-level. Accept both shapes.
+    for category, items in (data.get("results") or data.get("scores") or data).items():
         for item in items:
             total_tokens += item.get("input_tokens", 0)
             total_items += 1

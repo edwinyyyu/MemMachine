@@ -4,7 +4,6 @@ from collections.abc import Iterable, Mapping
 from typing import override
 from uuid import UUID
 
-from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.episodic_memory.extra_memory.data_types import (
     Segment,
 )
@@ -12,6 +11,8 @@ from memmachine_server.episodic_memory.extra_memory.segment_store.segment_store 
     SegmentStore,
     SegmentStorePartition,
 )
+
+from memmachine_server.common.filter.filter_parser import FilterExpr
 
 
 class NoopSegmentStorePartition(SegmentStorePartition):
