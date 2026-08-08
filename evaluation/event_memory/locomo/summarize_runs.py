@@ -25,7 +25,8 @@ def acc(eval_path: str) -> tuple[float, float, dict, int]:
 
     ALWAYS weight by question count -- never average the per-category rates.
     cat4 is ~55% of the bench and cat3 ~6%, so an arithmetic mean of category
-    scores silently reweights the benchmark and is not comparable to Mem0.
+    scores silently reweights the benchmark, so the figure is not
+comparable across systems.
     """
     d = json.load(open(eval_path))
     cat_acc = {}
