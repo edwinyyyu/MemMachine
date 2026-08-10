@@ -313,19 +313,22 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             self._tracker("get_segment_contexts"),
             self._create_session() as session,
         ):
-            seed_segments_query = select(SegmentRow).where(
-                SegmentRow.uuid.in_(seed_segment_uuids),
-                SegmentRow.partition_key == self._partition_key,
-            )
-            if property_filter is not None:
-                seed_segments_query = seed_segments_query.where(
-                    compile_sql_filter(
-                        property_filter,
-                        SQLAlchemySegmentStorePartition._resolve_segment_field,
+            # The seed is an ADDRESS, not a candidate: look it up unfiltered so it
+            # can anchor its window wherever it is, then filter it like every other
+            # segment on the way out. Filtering the lookup instead discarded the
+            # whole window, so a filter that merely excluded the seed's own kind
+            # returned nothing at all rather than the neighbours that do match.
+            seed_segment_rows = (
+                (
+                    await session.execute(
+                        select(SegmentRow).where(
+                            SegmentRow.uuid.in_(seed_segment_uuids),
+                            SegmentRow.partition_key == self._partition_key,
+                        )
                     )
                 )
-            seed_segment_rows = (
-                (await session.execute(seed_segments_query)).scalars().all()
+                .scalars()
+                .all()
             )
 
             seed_segment_rows_by_uuid: dict[UUID, SegmentRow] = {
@@ -333,6 +336,9 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             }
             if not seed_segment_rows_by_uuid:
                 return {}
+            seeds_passing_filter = await self._seeds_passing_filter(
+                session, seed_segment_rows_by_uuid.keys(), property_filter
+            )
 
             # Short-circuit: no context needed.
             if max_backward_segments <= 0 and max_forward_segments <= 0:
@@ -343,6 +349,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                         )
                     ]
                     for seed_segment_uuid, seed_segment_row in seed_segment_rows_by_uuid.items()
+                    if seed_segment_uuid in seeds_passing_filter
                 }
 
             # Get backward/forward context rows.
@@ -369,12 +376,41 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 backward_rows, forward_rows = context_rows_by_seed.get(
                     seed_uuid, ([], [])
                 )
-                segments_by_seed[seed_uuid] = [
-                    self._segment_from_segment_row(row)
-                    for row in [*reversed(backward_rows), seed_row, *forward_rows]
-                ]
+                middle = [seed_row] if seed_uuid in seeds_passing_filter else []
+                context = [*reversed(backward_rows), *middle, *forward_rows]
+                if context:
+                    segments_by_seed[seed_uuid] = [
+                        self._segment_from_segment_row(row) for row in context
+                    ]
 
             return segments_by_seed
+
+    async def _seeds_passing_filter(
+        self,
+        session: AsyncSession,
+        seed_uuids: Iterable[UUID],
+        property_filter: FilterExpr | None,
+    ) -> set[UUID]:
+        """Which seeds the filter would keep, if they were ordinary context rows.
+
+        One indexed lookup over the seeds alone, and only when there is a filter.
+        The seeds are fetched unfiltered so they can anchor their windows; this
+        decides separately whether each is also something the caller asked to see.
+        """
+        seed_uuids = set(seed_uuids)
+        if property_filter is None:
+            return seed_uuids
+        rows = await session.execute(
+            select(SegmentRow.uuid).where(
+                SegmentRow.uuid.in_(seed_uuids),
+                SegmentRow.partition_key == self._partition_key,
+                compile_sql_filter(
+                    property_filter,
+                    SQLAlchemySegmentStorePartition._resolve_segment_field,
+                ),
+            )
+        )
+        return {row[0] for row in rows}
 
     async def _get_context_rows_lateral(
         self,

@@ -755,10 +755,17 @@ class EventMemory:
                 unified.update(context)
             else:
                 # Prioritize segments near the seed segment.
+                # The seed anchors its own context but need not be IN it — a
+                # property filter can exclude the very segment the window was
+                # built around — so fall back to the start of the context, which
+                # degrades this to chronological order rather than raising.
                 seed_index = next(
-                    index
-                    for index, segment in enumerate(context)
-                    if segment.uuid == scored_context.seed_segment_uuid
+                    (
+                        index
+                        for index, segment in enumerate(context)
+                        if segment.uuid == scored_context.seed_segment_uuid
+                    ),
+                    0,
                 )
 
                 for segment in sorted(

@@ -11,7 +11,7 @@ import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from memmachine_server.common.filter.filter_parser import Comparison
+from memmachine_server.common.filter.filter_parser import Comparison, parse_filter
 from memmachine_server.common.payload_codec.payload_codec_config import (
     PlaintextPayloadCodecConfig,
 )
@@ -325,6 +325,44 @@ async def test_contexts_clamp_at_boundaries(
     assert len(ctx) == 3
     uuids = [s.uuid for s in ctx]
     assert uuids == [segs[0].uuid, segs[1].uuid, segs[2].uuid]
+
+
+@pytest.mark.asyncio
+async def test_contexts_filter_excludes_the_seed_but_keeps_its_window(
+    partition: SQLAlchemySegmentStorePartition,
+) -> None:
+    """A seed anchors its window whether or not it passes; it is returned only if it does."""
+    ep = uuid4()
+    s0 = _seg(event_uuid=ep, offset=0, ts_offset_seconds=0, properties={"tag": "a"})
+    s1 = _seg(event_uuid=ep, offset=1, ts_offset_seconds=1, properties={"tag": "b"})
+    s2 = _seg(event_uuid=ep, offset=2, ts_offset_seconds=2, properties={"tag": "a"})
+    await partition.add_segments(_links(s0, s1, s2))
+
+    result = await partition.get_segment_contexts(
+        [s1.uuid],
+        max_backward_segments=5,
+        max_forward_segments=5,
+        property_filter=parse_filter("m.tag = 'a'"),
+    )
+    # Previously the filtered-out seed discarded the whole window.
+    assert [s.uuid for s in result[s1.uuid]] == [s0.uuid, s2.uuid]
+
+
+@pytest.mark.asyncio
+async def test_contexts_absent_when_the_whole_window_is_filtered_away(
+    partition: SQLAlchemySegmentStorePartition,
+) -> None:
+    """A seed with nothing left to show is absent from the map, not an empty list."""
+    seed = _seg(properties={"tag": "b"})
+    await partition.add_segments(_links(seed))
+
+    result = await partition.get_segment_contexts(
+        [seed.uuid],
+        max_backward_segments=5,
+        max_forward_segments=5,
+        property_filter=parse_filter("m.tag = 'a'"),
+    )
+    assert seed.uuid not in result
 
 
 @pytest.mark.asyncio
