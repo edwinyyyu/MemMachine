@@ -3,16 +3,21 @@
   "theme": "palm",
   "name": "MemMachine Documentation",
   "colors": {
-    "primary": "#005eb9",
-    "light": "#429cf1",
-    "dark": "#a8bacb"
+    "primary": "#9B63E6",
+    "light": "#CE63C8",
+    "dark": "#120919"
+  },
+  "background": {
+    "decoration": "windows",
+    "color": {
+      "dark": "#0D0713"
+    }
   },
   "integrations": {
     "gtm": {
       "tagId": "GTM-WDX7ZBC7"
     }
   },
-  
   "favicon": "favicon.ico",
   "navigation": {
     "tabs": [
