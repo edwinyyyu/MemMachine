@@ -1141,6 +1141,49 @@ class TestGapMarker:
 
         assert "[...]" not in rendered
 
+    def test_gap_between_chunks_of_one_block_is_marked(self):
+        # The commoner hole by far: a long block is split into chunks that share an
+        # index and differ by offset, so dropping a middle chunk leaves two halves
+        # that would otherwise be concatenated into one seamless sentence.
+        event = uuid4()
+        first = _make_segment(event_uuid=event, index=0, offset=0, text="A")
+        third = _make_segment(event_uuid=event, index=0, offset=2, text="C")
+
+        rendered = EventMemory.string_from_segment_context([first, third])
+
+        assert '"A" [...] "C"' in rendered
+        assert "\n" not in rendered  # still one event, so still one header
+
+    def test_contiguous_chunks_are_joined_without_a_marker(self):
+        event = uuid4()
+        first = _make_segment(event_uuid=event, index=0, offset=0, text="A")
+        second = _make_segment(event_uuid=event, index=0, offset=1, text="B")
+
+        rendered = EventMemory.string_from_segment_context([first, second])
+
+        assert '"AB"' in rendered
+        assert "[...]" not in rendered
+
+    def test_next_block_entered_part_way_is_marked(self):
+        # Block 1 exists but its first chunks are absent, so the piece shown is not
+        # the continuation of block 0 that it would otherwise appear to be.
+        event = uuid4()
+        first = _make_segment(event_uuid=event, index=0, offset=0, text="A")
+        later = _make_segment(event_uuid=event, index=1, offset=2, text="C")
+
+        rendered = EventMemory.string_from_segment_context([first, later])
+
+        assert '"A" [...] "C"' in rendered
+
+    def test_next_block_from_its_start_is_not_marked(self):
+        event = uuid4()
+        first = _make_segment(event_uuid=event, index=0, offset=3, text="A")
+        second = _make_segment(event_uuid=event, index=1, offset=0, text="B")
+
+        rendered = EventMemory.string_from_segment_context([first, second])
+
+        assert "[...]" not in rendered
+
     def test_gap_across_different_events_is_not_marked(self):
         first = _make_segment(event_uuid=uuid4(), index=0, text="A")
         second = _make_segment(event_uuid=uuid4(), index=5, text="C")

@@ -759,6 +759,22 @@ class EventMemory:
         return await self._reranker.score(query, context_strings)
 
     @staticmethod
+    def _immediately_follows(previous: Segment, segment: Segment) -> bool:
+        """Whether ``segment`` is the very next piece of the same event as ``previous``.
+
+        Two pieces are adjacent either within a block (the next chunk of it) or
+        across blocks (the first chunk of the next one). Anything else means
+        something between them is not being shown. A block's chunk count is not
+        known here, so the end of one block is recognised by the next block
+        starting at its own beginning rather than by counting up to it.
+        """
+        if segment.index == previous.index:
+            return segment.offset == previous.offset + 1
+        if segment.index == previous.index + 1:
+            return segment.offset == 0
+        return False
+
+    @staticmethod
     def string_from_segment_context(
         segment_context: Iterable[Segment],
         *,
@@ -783,18 +799,26 @@ class EventMemory:
         first = True
 
         for segment in segment_context:
-            is_continuation = (
+            same_event = (
                 last_segment is not None
                 and segment.event_uuid == last_segment.event_uuid
-                and segment.index == last_segment.index
             )
-            # Same event, but a block between these two is absent. Without a mark the
+            # Same event, but a piece between these two is absent. Without a mark the
             # remaining pieces read as one continuous statement, which is worse than
             # showing less: it invents a claim nobody made.
-            is_gapped = (
-                last_segment is not None
-                and segment.event_uuid == last_segment.event_uuid
-                and segment.index > last_segment.index + 1
+            #
+            # A segment is addressed by (index, offset) — which block of the event,
+            # and which chunk of that block — so both halves have to be checked.
+            # Comparing only the block index missed the commoner hole by far: chunks
+            # of ONE block share an index, and dropping a middle chunk concatenated
+            # the survivors into a seamless sentence nobody wrote.
+            is_gapped = same_event and not EventMemory._immediately_follows(
+                cast(Segment, last_segment), segment
+            )
+            is_continuation = (
+                same_event
+                and segment.index == cast(Segment, last_segment).index
+                and not is_gapped
             )
 
             if not is_continuation:

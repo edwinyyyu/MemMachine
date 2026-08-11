@@ -11,7 +11,7 @@ import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from memmachine_server.common.filter.filter_parser import Comparison
+from memmachine_server.common.filter.filter_parser import Comparison, parse_filter
 from memmachine_server.common.payload_codec.payload_codec_config import (
     PlaintextPayloadCodecConfig,
 )
@@ -365,6 +365,120 @@ async def test_contexts_clamp_at_boundaries(
     assert len(ctx) == 3
     uuids = [s.uuid for s in ctx]
     assert uuids == [segs[0].uuid, segs[1].uuid, segs[2].uuid]
+
+
+# ===================================================================
+# get_neighbor_segments / get_neighbor_events — the seed is an address
+# ===================================================================
+
+
+def _event(chunks: int, at: int) -> list[Segment]:
+    """One event of ``chunks`` segments, timestamped at second ``at``."""
+    event_uuid = uuid4()
+    return [
+        _seg(event_uuid=event_uuid, offset=i, ts_offset_seconds=at, text=f"{at}.{i}")
+        for i in range(chunks)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_neighbor_segments_never_include_the_seed(
+    partition: SQLAlchemySegmentStorePartition,
+) -> None:
+    ep = uuid4()
+    segs = [_seg(event_uuid=ep, offset=i, ts_offset_seconds=i) for i in range(5)]
+    await partition.add_segments(_links(*segs))
+
+    result = await partition.get_neighbor_segments(
+        [segs[2].uuid], max_backward_segments=2, max_forward_segments=2
+    )
+    # Other chunks of the seed's own event are ordinary neighbours; only the seed
+    # segment itself is withheld.
+    assert [s.uuid for s in result[segs[2].uuid]] == [
+        segs[0].uuid,
+        segs[1].uuid,
+        segs[3].uuid,
+        segs[4].uuid,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_neighbor_segments_keep_the_window_when_the_seed_fails_the_filter(
+    partition: SQLAlchemySegmentStorePartition,
+) -> None:
+    """The seed is located whether or not it passes; the filter is about neighbours."""
+    ep = uuid4()
+    s0 = _seg(event_uuid=ep, offset=0, ts_offset_seconds=0, properties={"tag": "a"})
+    s1 = _seg(event_uuid=ep, offset=1, ts_offset_seconds=1, properties={"tag": "b"})
+    s2 = _seg(event_uuid=ep, offset=2, ts_offset_seconds=2, properties={"tag": "a"})
+    await partition.add_segments(_links(s0, s1, s2))
+
+    result = await partition.get_neighbor_segments(
+        [s1.uuid],
+        max_backward_segments=5,
+        max_forward_segments=5,
+        property_filter=parse_filter("m.tag = 'a'"),
+    )
+    assert [s.uuid for s in result[s1.uuid]] == [s0.uuid, s2.uuid]
+
+
+@pytest.mark.asyncio
+async def test_neighbor_segments_absent_when_there_are_none(
+    partition: SQLAlchemySegmentStorePartition,
+) -> None:
+    seed = _seg()
+    await partition.add_segments(_links(seed))
+
+    result = await partition.get_neighbor_segments(
+        [seed.uuid], max_backward_segments=5, max_forward_segments=5
+    )
+    assert seed.uuid not in result
+
+
+@pytest.mark.asyncio
+async def test_neighbor_events_exclude_the_seeds_whole_event(
+    partition: SQLAlchemySegmentStorePartition,
+) -> None:
+    """One event either side, however many segments those events happen to be."""
+    events = [_event(1, 0), _event(9, 1), _event(4, 2), _event(1, 3)]
+    await partition.add_segments(_links(*[s for e in events for s in e]))
+
+    seed = events[2][0]
+    result = await partition.get_neighbor_events(
+        [seed.uuid], max_backward_events=1, max_forward_events=1
+    )
+    ctx = result[seed.uuid]
+    # The nine-segment neighbour comes back whole; a segment-bounded window of the
+    # same nominal size would have stopped somewhere inside it. None of the seed's
+    # own four segments appear.
+    assert len(ctx) == 10
+    assert {s.event_uuid for s in ctx} == {
+        events[1][0].event_uuid,
+        events[3][0].event_uuid,
+    }
+
+
+@pytest.mark.asyncio
+async def test_neighbor_events_clamp_at_boundaries(
+    partition: SQLAlchemySegmentStorePartition,
+) -> None:
+    events = [_event(2, 0), _event(2, 1)]
+    await partition.add_segments(_links(*[s for e in events for s in e]))
+
+    result = await partition.get_neighbor_events(
+        [events[0][0].uuid], max_backward_events=10, max_forward_events=10
+    )
+    assert [s.uuid for s in result[events[0][0].uuid]] == [s.uuid for s in events[1]]
+
+
+@pytest.mark.asyncio
+async def test_neighbor_events_zero_asks_for_nothing(
+    partition: SQLAlchemySegmentStorePartition,
+) -> None:
+    events = [_event(1, 0), _event(2, 1), _event(1, 2)]
+    await partition.add_segments(_links(*[s for e in events for s in e]))
+
+    assert await partition.get_neighbor_events([events[1][0].uuid]) == {}
 
 
 @pytest.mark.asyncio
