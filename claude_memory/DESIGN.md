@@ -123,19 +123,30 @@ would otherwise need a full re-index to remove.
 
 Metadata: every event carries `source`, `producer` (speaker), `session_id`, and
 tool calls also carry `tool_name` / `path`. `producer`/`source`/`session_id` are
-indexed so the model can scope a search (`producer = "Caroline"`).
+indexed, which is what lets a search be scoped by `kinds` or `within` without a
+scan; `session_id` and `timestamp` are indexed together so a conversation's spine
+can be read in one pass.
 
 ---
 
 ## 4. The tool surface (and what was deliberately cut)
 
 ```
-memory_search(cue, limit=8, filters=None)                  -> str
-memory_expand(seed, before=5, after=5, kinds=None,
-              blocklist=False)                             -> str
-memory_demote(memory_id, cue)                              -> str
-memory_annotate(memory_id, note)                           -> str
+memory_search(cue, limit=8, within=None, kinds=None,
+              since=None, before=None)                     -> str
+memory_expand(id, before=5, after=5, unit="segments",
+              kinds=None, blocklist=False)                 -> str
+memory_outline(id, before=20, after=20)                    -> str
+memory_demote(id, cue)                                     -> str
+memory_annotate(id, note)                                  -> str
 ```
+
+- **One address space.** Every `id` is a `mem:` handle naming a segment, given as
+  the shortest unambiguous prefix. A handle also names its conversation, so the
+  same value scopes an outline or a `within=` search; there is no session id in
+  the surface. Narrowing is named parameters rather than a filter language, so
+  the schema states what may be narrowed and the model cannot write an expression
+  that parses but matches nothing.
 
 - **`memory_expand`'s `kinds`** — which sources a window may spend its budget on,
   read as an allowlist or (with `blocklist`) a blocklist. It is pushed into the
@@ -143,6 +154,14 @@ memory_annotate(memory_id, note)                           -> str
   the walk is LIMIT-bounded, so filtering afterwards returns fewer segments than
   were asked for, with the budget already spent on what was dropped. Naming kinds
   replaces the default outright; the default blocks only `injected`.
+
+- **`memory_outline`** — a conversation's spine: one line per user turn, with how
+  many events followed it before the next. It answers *where*, which neither of
+  the other read tools does — search finds a moment and expand reads around one,
+  and getting structure out of them means a huge window spent on text nobody
+  wanted. The event count is the signal: a turn followed by sixty is where the
+  work happened, a run of turns followed by two each is a session that kept
+  changing direction.
 
 - **`memory_demote`** — score-free negative feedback: "this memory was wrong for
   this cue." Each call decays the memory's similarity to the cue geometrically
@@ -162,10 +181,14 @@ memory_annotate(memory_id, note)                           -> str
   there. Multi-hop = call `memory_search` again. (Caroline "moved from her home
   country" → search "Caroline home country" → "Sweden".)
 
-- **No `unit` argument on `expand`.** The unit is intrinsic to the
-  representation: memory is shown to the model in discrete labeled segments, so
-  `before=3` is already self-evident. The model chooses *how much* (asymmetric
-  before/after); it never has to name *what* a unit is.
+- **`memory_expand`'s `unit`** — what `before`/`after` count. Segments by default,
+  which is a flat budget and the only way to read *inside* one long event. The
+  alternative is whole events, for when the walk keeps starving: a single tool
+  result can run to a thousand segments, so a segment-counted window can spend
+  itself entirely inside one blob and reach no other turn. Counting events buys
+  turns instead, at the cost of an unbounded amount of text per step — which is
+  why it is not the default and why oversized events are sampled rather than
+  shown whole.
 
 - **No `memory_check_sufficiency` tool.** See §6 — it was overpromising.
 
@@ -229,8 +252,11 @@ Every injection in this system is an append:
   current conversation position. Pure append.
 - **Ambient recall** enters as `additionalContext` attached to the *new* user
   turn — after all previously cached context. Pure append.
-- **Expansion returns only the delta** (the new neighbours, not the seed again),
-  so nothing already in context is re-sent.
+- **Expansion sends the window once.** The neighbours are what the call is for;
+  the seed comes back with them, marked `← expanded from here`, because a window
+  whose centre is missing cannot be read as a timeline and the model would have to
+  reconstruct where it anchored. That is one segment of overlap against a window
+  of many, and it is still an append — nothing earlier in context is rewritten.
 - **There is no mutable "memory panel."** A maintained/edited memory region would
   rewrite a prefix every turn and blow the cache — explicitly avoided.
 - **No mid-session discard.** Dropping items mid-stream = prefix rewrite = cache
