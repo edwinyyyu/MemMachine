@@ -13,10 +13,10 @@ Four nested things. Most confusion with these tools comes from mistaking one for
 
 | | |
 |---|---|
-| **conversation** | one session, start to finish |
+| **conversation** | one continuous exchange between a user and the assistant, however long it runs. Compaction does not end one — a conversation can span days and several compactions. Expansion and outline never cross from one into another |
 | **turn** | one contribution to it — a user message, or one assistant reply together with the tool work inside it |
 | **event** | one piece of a turn: the message text, a tool call, a tool result, or text the host injected. A user turn is usually one event; an assistant turn is often many |
-| **segment** | a chunk of one event's text — at most 500 characters, cut at a sentence end |
+| **segment** | a chunk of one event's text, at most 500 characters. The cut prefers a paragraph break, then a sentence end, then a clause mark, then a space — but falls back to an arbitrary character when none of those fits |
 
 Every event has a **kind**, and the `kinds` argument selects on it:
 `user_message`, `assistant_message`, `reasoning`, `tool_call`, `tool_result`, `injected`.
@@ -59,9 +59,17 @@ reaches all of it. "Not in search" therefore means "not embedded", never "not re
 a search cannot find how something was done, expand around a message near it.
 
 A search result is one **segment**, not the whole message. Most messages are a single segment,
-but a long one runs to dozens, so a result can be a small slice of what was said there. Because
-the cuts fall at sentence ends and carry no ellipsis, a partial result still reads as a
-complete thought — which is exactly why it is easy to mistake for the whole of it.
+but a long one runs to dozens, so a result can be a small slice of what was said there.
+
+How the cut looks tells you which kind of slice you are holding, and neither kind is marked
+with an ellipsis:
+
+- **Prose usually breaks at a sentence or paragraph**, so a partial result reads as a finished
+  thought. This is the dangerous case — nothing about it looks partial. Assume there is more
+  until an expansion shows otherwise.
+- **Machine-generated text often breaks mid-token** — base64, minified JSON, long code lines,
+  URLs — because no sentence or clause boundary fits inside 500 characters. That at least
+  announces itself.
 
 ## Reading a window
 
