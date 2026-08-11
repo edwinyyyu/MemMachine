@@ -1,12 +1,26 @@
 ---
 name: episodic-recall
-description: Procedures for retrieving from the claude-memory episodic store via the memory_search and memory_expand MCP tools. Use when recalling past sessions or decisions, when the user references earlier work or asks "do you remember", before re-deriving something likely discussed before, before restating any fact or number that came out of memory, or when a memory_search returned poor results.
+description: Procedures for retrieving from the claude-memory episodic store via the memory_search, memory_expand and memory_outline MCP tools. Use when recalling past sessions or decisions, when the user references earlier work or asks "do you remember", before re-deriving something likely discussed before, before restating any fact or number that came out of memory, or when a memory_search returned poor results.
 ---
 
 # Episodic recall (claude-memory)
 
-The store holds every turn of every past session, reached through `memory_search`,
-`memory_expand`, `memory_annotate` and `memory_demote`.
+The store holds every turn of every past session, reached through five tools:
+
+| tool | answers |
+|---|---|
+| `memory_search(cue, …)` | *which* memory — associative recall over messages |
+| `memory_expand(id, …)` | *what surrounded it* — the timeline around one memory |
+| `memory_outline(id, …)` | *what shape a conversation had* — its user turns, in order |
+| `memory_annotate(id, note)` | records what was later learned about a memory |
+| `memory_demote(id, cue)` | stops a memory answering a cue it misleads on |
+
+**One kind of address.** Every id is a `mem:` handle naming a segment — abbreviated to a
+prefix long enough to be unambiguous, with whole uuids still accepted and an ambiguous prefix
+answering with candidates rather than guessing. A handle also names its own *conversation*, so
+`memory_outline(<any handle from it>)` outlines that conversation; the session roster prints
+each conversation's FIRST handle, which is stable as it grows. There is no separate session id
+to pass anywhere.
 
 ## What a hit is
 
@@ -15,8 +29,10 @@ The store holds every turn of every past session, reached through `memory_search
   small fraction of what was said there.
 - Chunk boundaries fall at sentence ends and carry no truncation marker, so a partial hit reads
   as a complete thought.
-- `memory_expand(seed, before, after)` counts **segments, not messages**, and returns only the
-  seed's own session. It cannot reach another conversation.
+- `memory_expand(id, before, after, unit)` returns only that memory's own session; it cannot
+  reach another conversation. `unit="segments"` (default) counts chunks — a flat budget, and
+  the way to read *inside* one long event. `unit="events"` counts whole turns, for when the
+  length of what is in the way should not decide how far the window reaches.
 - Ingestion is near-real-time. Same-day turns, including the current session's, are already
   searchable — anything stated aloud is written to memory.
 - **Search and expand see different things.** Only messages are embedded, so a search can never
@@ -26,9 +42,9 @@ The store holds every turn of every past session, reached through `memory_search
 
 ## Choosing what a window spends itself on
 
-`memory_expand(seed, before, after, kinds, blocklist)` — `kinds` is an allowlist by default, a
-blocklist with `blocklist=True`. It is applied while the window is gathered, so the budget buys
-only what was asked for.
+`kinds` selects what to show **around** the seed — an allowlist by default, a blocklist with
+`blocklist=True`. It never hides the memory you named: that one is always shown, marked
+`← expanded from here` so you can see which turn you anchored on.
 
 | goal | call |
 |---|---|
@@ -43,10 +59,23 @@ reminders, slash-command echoes and the session's own compaction summary. That t
 timeline because it is genuinely what the session saw, but it arrives in runs, so a default
 window landing in one would be entirely boilerplate. Naming kinds replaces the default outright.
 
-**A thin window is a reason to name kinds, not to raise `before`/`after`.** A window that comes
-back short of what was asked for has usually been eaten by one long event — a single tool result
-can run to dozens of segments. Widening spends more budget on the same blob; excluding its kind
-buys turns.
+**A thin window is a reason to name kinds or switch unit, not to raise `before`/`after`.** A
+window short of what was asked for has usually been eaten by one long event — a single tool
+result can run to a thousand segments. Widening spends more budget on the same blob; excluding
+its kind, or counting in events, buys turns.
+
+**Events too long to show whole** — over ~4,000 characters, a pasted document rather than a
+written message — appear as their first and last segments with a marker between them:
+
+```
+tool: "{\"type\": \"image\", \"source\": {\"type\": \"base64\", \"data\":"
+      [564,992 more characters — memory_expand from mem:440e3a mem:e6d5c4]
+      "\"image/png\"}}"
+```
+
+Nothing is silently truncated: the count is measured, and the handles are seeds. To read
+inward, expand from one of them with `unit="segments"`. Often the two ends are enough to see
+that reading further is pointless, as above.
 
 ## Before relying on a hit
 
@@ -109,20 +138,24 @@ Reserve a question for when proceeding on the wrong reading would be costly.
 - **There is no relevance floor.** Top-k always returns something, confidently formatted, even
   for cues about events that never happened. If results are off-register for the cue, conclude
   the memory does not exist rather than reformulating indefinitely.
-- **Filters** take single-quoted strings and combine with AND/OR:
-  - `m.producer = 'user'` / `'assistant'` — a ranking aid, not a guarantee. When a user pastes
-    assistant output back as input, the text exists under both roles and can match either
-    filter; doubly-escaped content marks a quotation inside another event.
-  - `m.session_id = '<uuid>'` scopes a search to one conversation. The id must be **whole** —
-    the grammar has equality but no prefix match, so a shortened id matches nothing and returns
-    an empty result that reads like "no such memory" rather than a malformed filter.
-  - `timestamp >= date('2026-06-09')` composes with the others.
+- **Narrowing is named parameters**, each unrestricted when omitted, and they combine:
+  - `kinds=["user_message"]` / `["assistant_message"]` — a ranking aid, not a guarantee. When a
+    user pastes assistant output back as input the text exists under both roles; doubly-escaped
+    content marks a quotation inside another event.
+  - `session=` is gone: to work inside one conversation, outline it from a handle and expand
+    the turns you want.
+  - `since=` / `before=` bound the time range, half-open: `since <= when < before`, so one day
+    is `since="2026-08-08", before="2026-08-09"`. ISO 8601; no zone means your local one.
 
 ## Multi-hop
 
-1. Search with an event-description cue, plus filters where producer or date are known.
+1. Search with an event-description cue, narrowed by `kinds`, `session` or `since`/`before`
+   where the producer, conversation or date are known.
 2. Expand the best hit. If its content will be restated, expand to the sandwich, forward first.
 3. Hop with the continuation handles each expand returns.
+   `memory_outline(id)` is the cheaper move when the question is *where* in a conversation
+   rather than *what*: one line per user turn, with how many events followed each — a turn
+   followed by sixty is where the work happened. `before`/`after` count turns, as in expand.
 4. If the target will not surface directly, search its *surrounding context* — what was being
    discussed, roughly when — and expand from a neighbour.
 5. For a claim that will be acted on, add one search on its status.

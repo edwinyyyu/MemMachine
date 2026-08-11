@@ -13,11 +13,14 @@ import datetime
 import json
 import os
 import re
-from dataclasses import asdict, dataclass
+from collections.abc import Iterable
+from contextlib import suppress
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 # ======================================================================== config
 
@@ -158,6 +161,26 @@ class MemoryConfig:
         self.state_dir.mkdir(parents=True, exist_ok=True)
 
 
+def _display_timezone() -> datetime.tzinfo:
+    """The machine's local timezone for rendering stored UTC timestamps.
+
+    Claude Code writes transcript timestamps in UTC and the segment store keeps
+    them UTC; without converting at display time everything reads in UTC (e.g. a
+    PDT user sees times 7h late). Prefer the OS IANA zone (DST-correct for each
+    timestamp's own date); ``CLAUDE_MEMORY_TIMEZONE`` overrides; fall back to the
+    current fixed local offset.
+    """
+    name = os.environ.get("CLAUDE_MEMORY_TIMEZONE")
+    if name:
+        with suppress(KeyError, ValueError):
+            return ZoneInfo(name)
+    with suppress(OSError, ValueError, KeyError):
+        link = str(Path("/etc/localtime").readlink())
+        if "zoneinfo/" in link:
+            return ZoneInfo(link.split("zoneinfo/", 1)[1])
+    return datetime.datetime.now().astimezone().tzinfo or datetime.UTC
+
+
 # ======================================================================= sources
 
 
@@ -228,22 +251,136 @@ def user_text_source(text: str) -> Source:
 
 
 # ======================================================================= mem ids
+#
+# A handle is a PREFIX of a segment uuid, not the whole thing. Whole uuids are 32
+# hex digits and tokenize badly — measured with tiktoken over 3,000 real ids, a
+# `mem:<uuid>` costs 20.3 tokens against 5.3 for an abbreviated one, and the
+# handles the ambient hook injects on every prompt (plus the session ids in the
+# roster) came to roughly 57k tokens a day. Nothing else about them changes: they
+# are still opaque, still stable, and a whole uuid is still accepted everywhere.
+#
+# The length is per id, not global: each is rendered just long enough to be unique
+# among what is stored right now (`MemoryCore.short_ids`), so a corpus that grows
+# lengthens only the ids that actually start to collide. Resolution is a prefix
+# range query, and an ambiguous handle answers with candidates rather than
+# guessing.
 
 _MEM_PREFIX = "mem:"
+_HEX_DIGITS = frozenset("0123456789abcdef")
+
+#: The shortest handle ever rendered. A minimal unique prefix is exactly long
+#: enough for the store as it is at the moment of rendering, so it can go
+#: ambiguous later as segments arrive — and a handle can outlive the turn that
+#: produced it, in an annotation or in the user's own notes. Each extra digit
+#: divides the chance that a future arrival collides with it by 16. At ~600k
+#: segments the median id is already unique at five digits, so a floor of six is
+#: one digit of headroom and costs about one token.
+ID_FLOOR_CHARS = 6
+
+#: How many candidates an ambiguous handle reports before saying "and more".
+ID_CANDIDATE_LIMIT = 5
+
+#: Written after the event holding the segment an expansion was anchored on. With
+#: context on both sides there is otherwise nothing in a window saying which of
+#: its turns you expanded from — the seed's own text is in there, but so is
+#: everything else, and the reader has no way to tell them apart.
+ANCHOR_MARKER = "  ← expanded from here"
+
+#: How much of a session id is shown, in the roster and wherever one is echoed
+#: back. Eight hex digits is 4.3e9 of space against a few thousand conversations,
+#: and ``memory_search``/``memory_outline`` resolve a prefix against the sessions
+#: actually in memory — answering with candidates rather than a guess if it is
+#: ever ambiguous.
+SESSION_ID_CHARS = 8
 
 
-def memory_id_for_segment_uuid(segment_uuid: UUID) -> str:
-    """The stable handle the model sees for a segment."""
-    return f"{_MEM_PREFIX}{segment_uuid.hex}"
+def memory_id_for_segment_uuid(segment_uuid: UUID, *, chars: int | None = None) -> str:
+    """The handle the model sees for a segment; whole uuid unless ``chars`` says less.
+
+    This does no lookup, so it cannot tell whether a prefix is unique — callers
+    that abbreviate get their length from ``MemoryCore.short_ids``, which does.
+    """
+    hex_digits = segment_uuid.hex
+    if chars is not None:
+        hex_digits = hex_digits[: max(chars, 1)]
+    return f"{_MEM_PREFIX}{hex_digits}"
+
+
+def parse_memory_ref(memory_id: str) -> str | None:
+    """Normalize a handle to a bare lowercase hex prefix, or None if it is not one.
+
+    Deliberately permissive about the wrapping, because all of these come back to
+    us: with or without ``mem:``, with or without a uuid's hyphens, any length from
+    one digit to a whole uuid. Only the digits themselves have to be hex.
+    """
+    candidate = memory_id.strip().removeprefix(_MEM_PREFIX).replace("-", "").lower()
+    if not candidate or len(candidate) > 32 or set(candidate) - _HEX_DIGITS:
+        return None
+    return candidate
 
 
 def parse_memory_id(memory_id: str) -> UUID | None:
-    """Resolve a ``mem:<hex>`` handle (or a bare uuid) back to a UUID, or None."""
+    """Resolve a WHOLE handle back to a UUID, or None.
+
+    A prefix cannot be resolved without consulting the store; that is
+    ``MemoryCore.resolve_memory_id``. This stays exact-only for the callers that
+    have a full uuid in hand and want no I/O.
+    """
     candidate = memory_id.strip().removeprefix(_MEM_PREFIX)
     try:
         return UUID(hex=candidate)
     except ValueError:
         return None
+
+
+def common_prefix_length(left: str, right: str) -> int:
+    """How many leading characters two strings share."""
+    shared = 0
+    for a, b in zip(left, right, strict=False):
+        if a != b:
+            break
+        shared += 1
+    return shared
+
+
+def abbreviation_length(hex_digits: str, neighbours: Iterable[str]) -> int:
+    """Digits of ``hex_digits`` needed to distinguish it from its nearest neighbours.
+
+    Only the immediate predecessor and successor in sorted order matter: whatever
+    prefix separates an id from those two separates it from everything else, since
+    anything sharing a longer prefix would have sorted between them.
+    """
+    longest = max(
+        (common_prefix_length(hex_digits, other) for other in neighbours), default=0
+    )
+    return max(min(longest + 1, len(hex_digits)), ID_FLOOR_CHARS)
+
+
+def ambiguous_id_note(memory_id: str, candidates: list[str]) -> str:
+    """What to say when a handle names more than one memory.
+
+    Answering with the candidates rather than the first match: picking one would be
+    a guess, and a wrong guess here is invisible — it returns a real memory that
+    simply is not the one that was asked for.
+    """
+    shown = candidates[:ID_CANDIDATE_LIMIT]
+    lines = [
+        f"{memory_id} matches {_count_phrase(candidates, shown, 'memories')}. "
+        "Retry with one of these in full:"
+    ]
+    lines += [f"  {_MEM_PREFIX}{hex_digits}" for hex_digits in shown]
+    return "\n".join(lines)
+
+
+def _count_phrase(candidates: list[str], shown: list[str], noun: str) -> str:
+    """How many matched, honest about the cases where we stopped counting.
+
+    Resolution fetches one more candidate than it will show, so it knows whether
+    the list is the whole of it — but not how much bigger the whole is.
+    """
+    if len(candidates) <= len(shown):
+        return f"{len(candidates)} {noun}"
+    return f"more than {len(shown)} {noun}"
 
 
 # ============================================================== result dataclasses
@@ -257,6 +394,11 @@ class Hit:
     score: float
     text: str
     is_new: bool
+    # The whole segment uuid, carried alongside the abbreviated handle. It costs
+    # nothing here (this crosses a socket, not a context window) and it keeps
+    # daemon-side bookkeeping — the per-session novelty set — off the display
+    # form, which is a prefix and no longer resolvable without the store.
+    segment_uuid: str = ""
 
 
 @dataclass
@@ -279,6 +421,38 @@ class ExpandResult:
     latest_id: str | None = None
     note: str | None = None
     found: bool = True
+    # Which conversation this window is from, how much of it is here, and whether
+    # it reaches either end. The last two are what stop the navigation hints
+    # offering to walk further off a conversation that has already run out.
+    session_id: str = ""
+    events: int = 0
+    at_start: bool = False
+    at_end: bool = False
+
+
+@dataclass
+class Beat:
+    """One user turn in a session outline, with how much followed it."""
+
+    memory_id: str
+    when: str
+    text: str
+    events_after: int
+
+
+@dataclass
+class OutlineResult:
+    """A conversation's spine: its user turns, in order, with handles to expand."""
+
+    session_id: str
+    project: str = ""
+    total_events: int = 0
+    span: str = ""
+    beats: list[Beat] = field(default_factory=list)
+    earlier_id: str | None = None
+    later_id: str | None = None
+    note: str | None = None
+    found: bool = True
 
 
 @dataclass
@@ -286,7 +460,7 @@ class DemoteResult:
     """Outcome of a manual demotion; ``message`` is the model-facing summary."""
 
     ok: bool
-    verdict: str  # demoted|saturated|not_found|not_searchable|invalid
+    verdict: str  # demoted|saturated|not_found|not_searchable|unresolved
     message: str
     memory_id: str = ""
     cue: str = ""
@@ -353,6 +527,50 @@ def render_search_result(result: SearchResult, *, cue: str) -> str:
     return "\n".join(format_memory_line(h.memory_id, h.text) for h in result.hits)
 
 
+def render_outline_result(result: OutlineResult) -> str:
+    """Format a session outline: a header, one line per user turn, and how to page back.
+
+    Deliberately one line per turn with no assistant text. What an outline is for is
+    choosing WHERE to look, and a conversation's shape is carried by what was asked;
+    the answers are what ``memory_expand`` is for once a place has been picked. The
+    event count after each turn is the density signal — it says where the work
+    happened, which a list of subjects alone does not.
+
+    A column header names the count, because a bare "31" beside a sentence reads as
+    anything: a score, a line number, a number of matches. It costs one line for
+    the whole outline rather than a word on every row. The count sits left of the
+    text it measures past, which is the wrong way round to read as a sentence — so
+    the header names COLUMNS ("events until the next turn") rather than describing
+    a relationship, and the eye reads down the column instead of along the row.
+    """
+    if not result.found:
+        return result.note or "No such conversation."
+    # The id is echoed at roster length, not whole. It is here to confirm WHICH
+    # conversation a prefix resolved to, and this is enough to recognise it —
+    # printing all 36 characters would spend more on the header than on a turn.
+    short_session = result.session_id[:SESSION_ID_CHARS]
+    header = f"Session {short_session}"
+    if result.project:
+        header += f" · {result.project}"
+    header += f" · {result.total_events:,} events"
+    if result.span:
+        header += f" · {result.span}"
+    lines = [header]
+    if not result.beats:
+        lines.append("  (no user turns in this range)")
+    lines.append("  handle · when · events until the next turn · what was asked")
+    lines += [
+        f"  [{beat.memory_id}] {beat.when} · {beat.events_after:>4} · {beat.text}"
+        for beat in result.beats
+    ]
+    # A handle names its own conversation, so paging needs nothing else.
+    if result.earlier_id:
+        lines.append(f"Earlier turns: memory_outline {result.earlier_id} after=0")
+    if result.later_id:
+        lines.append(f"Later turns: memory_outline {result.later_id} before=0")
+    return "\n".join(lines)
+
+
 def render_expand_result(result: ExpandResult) -> str:
     """Format the merged event-timeline window around the seed, plus edge nav.
 
@@ -365,14 +583,19 @@ def render_expand_result(result: ExpandResult) -> str:
     if not result.window_text.strip():
         return "(no surrounding context — this seed is at a timeline edge.)"
 
-    parts: list[str] = [result.window_text.rstrip()]
+    parts: list[str] = []
+    if result.session_id:
+        parts.append(_expand_header(result))
+    parts.append(result.window_text.rstrip())
     hints: list[str] = []
-    if result.earliest_id:
+    # Offered only where there is something to reach. Inviting a walk off the end
+    # of a conversation costs a call to learn what the header already knew.
+    if result.earliest_id and not result.at_start:
         hints.append(
             "To see earlier context, expand the first item above: "
             f"memory_expand {result.earliest_id} before=<count> after=0"
         )
-    if result.latest_id:
+    if result.latest_id and not result.at_end:
         hints.append(
             "To see later context, expand the last item above: "
             f"memory_expand {result.latest_id} before=0 after=<count>"
@@ -380,6 +603,19 @@ def render_expand_result(result: ExpandResult) -> str:
     if hints:
         parts.append("\n".join(hints))
     return "\n\n".join(parts)
+
+
+def _expand_header(result: ExpandResult) -> str:
+    """Which conversation this window is from.
+
+    Only that. The event count was recoverable by reading the output, and the
+    start/end-of-conversation flags told the reader something they could not act
+    on — the navigation hints are already withheld at an edge, so there is no call
+    left to save. The session id is the one thing here that is NOT in the body: a
+    window otherwise names no conversation, leaving nothing to hand to
+    memory_outline or to a session-scoped search.
+    """
+    return f"[session {result.session_id[:SESSION_ID_CHARS]}]"
 
 
 # ============================================================= filter builders
@@ -399,6 +635,92 @@ def _filter_str(value: str) -> str:
 def session_scope_filter(session_id: str) -> str:
     """Filter keeping only this session (scopes expansion to one conversation)."""
     return f"m.session_id = {_filter_str(session_id)}"
+
+
+def _iso_literal(value: str) -> str | None:
+    """An ISO 8601 datetime as a filter ``date()`` literal, or None if unreadable.
+
+    Plain ISO 8601, meaning exactly what it says: a bound is the instant it names,
+    and a bare date is that day's midnight, because that is what a date denotes.
+    An earlier version quietly promoted a bare upper bound to 23:59:59 so that a
+    single date would read as a whole day. That made the same string mean two
+    different instants depending on which end it was passed to. The half-open
+    range in ``scope_filter`` gets the whole day without the trick.
+
+    Zones are handled at both ends, and both halves are load-bearing:
+
+    * A datetime with NO offset names a wall clock, not an instant. It is read in
+      the caller's own zone — the one every timestamp is displayed in — because
+      reading it as UTC would place a Pacific evening on the following day.
+    * The literal is then emitted in UTC, whatever zone it arrived in. The two
+      stores compare it differently: the vector store normalizes to UTC before
+      comparing, but the segment store's timestamps are a naive-UTC text column and
+      the filter compiles to a STRING comparison — so a bound carrying '-07:00' is
+      matched on its wall clock, seven hours off, and silently returns a shifted
+      window. Emitting UTC makes the wall clock and the instant the same thing, so
+      both stores agree no matter which path a filter takes.
+    """
+    try:
+        stamp = datetime.datetime.fromisoformat(value.strip())
+    except (AttributeError, ValueError):
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=_display_timezone())
+    return stamp.astimezone(datetime.UTC).isoformat()
+
+
+def scope_filter(
+    *,
+    session: str | None = None,
+    kinds: list[str] | None = None,
+    since: str | None = None,
+    before: str | None = None,
+) -> tuple[str | None, str]:
+    """Assemble a search scope from named parameters. Returns (filter, problem).
+
+    The filter grammar used to be exposed to the model as a string to write. Named
+    parameters replace it: they cannot be mistyped into something that parses but
+    means nothing, they document what is actually filterable, and the two that
+    people reach for — one conversation, one date range — no longer require
+    knowing that ``m.`` prefixes a user property while ``timestamp`` is bare.
+
+    ``session`` is a whole session id; callers name a conversation by a memory
+    handle and the engine resolves it to one, because a handle is the only kind of
+    address these tools take.
+    """
+    clauses: list[str] = []
+    if session:
+        clauses.append(session_scope_filter(session))
+    if kinds:
+        wanted = sorted({str(kind) for kind in kinds} & SEARCHABLE_SOURCES)
+        if not wanted:
+            searchable = ", ".join(sorted(SEARCHABLE_SOURCES))
+            return None, (
+                f"Search only reaches messages, so kinds must name some of: "
+                f"{searchable}. Use memory_expand to reach anything else."
+            )
+        if len(wanted) < len(SEARCHABLE_SOURCES):
+            clauses.append(f"m.source IN ({', '.join(_filter_str(k) for k in wanted)})")
+    # Half-open [since, before): closed on the left, open on the right. Adjacent
+    # ranges then tile without overlapping or leaving a gap, and a whole day is
+    # since="2026-08-08", before="2026-08-09" — no reaching for 23:59:59, and no
+    # rule about what a bare date means on one end but not the other.
+    for value, operator, label in (
+        (since, ">=", "since"),
+        (before, "<", "before"),
+    ):
+        if not value:
+            continue
+        literal = _iso_literal(value)
+        if literal is None:
+            return None, (
+                f"Could not read {label}={value!r} as an ISO 8601 datetime. Use "
+                "'2026-08-08T09:30:00' (read in your local zone), "
+                "'2026-08-08T16:30:00Z' or '2026-08-08T09:30:00-07:00' to name a "
+                "zone, or '2026-08-08' for that day's midnight."
+            )
+        clauses.append(f"timestamp {operator} date({_filter_str(literal)})")
+    return (" AND ".join(clauses) if clauses else None), ""
 
 
 #: What expansion blocks when the caller names no kinds. Injected text stays on the
@@ -510,6 +832,18 @@ def search_result_from_dict(data: dict[str, Any]) -> SearchResult:
         new_count=data["new_count"],
         saturated=data["saturated"],
         note=data.get("note"),
+    )
+
+
+def outline_result_to_dict(result: OutlineResult) -> dict[str, Any]:
+    """Serialize an OutlineResult for transport over the daemon socket."""
+    return asdict(result)
+
+
+def outline_result_from_dict(data: dict[str, Any]) -> OutlineResult:
+    """Rebuild an OutlineResult received over the daemon socket."""
+    return OutlineResult(
+        **{**data, "beats": [Beat(**beat) for beat in data.get("beats", [])]}
     )
 
 

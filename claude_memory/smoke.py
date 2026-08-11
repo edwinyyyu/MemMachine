@@ -68,6 +68,10 @@ async def _core_suite(checker: _Checker) -> None:
     )
     from claude_memory.transcript import events_from_transcript
     from claude_memory.wire import (
+        ANCHOR_MARKER as _ANCHOR,
+    )
+    from claude_memory.wire import (
+        ID_FLOOR_CHARS,
         MemoryConfig,
         Source,
         in_context_exclusion_filter,
@@ -124,7 +128,67 @@ async def _core_suite(checker: _Checker) -> None:
         )
         checker.check(len(booking.hits) > 0, "found the booking message")
         seed = booking.hits[0].memory_id
+        seed_uuid = booking.hits[0].segment_uuid
         checker.check(seed.startswith("mem:"), f"stable handle ({seed})")
+        # Handles are prefixes: short enough to be worth the change, long enough
+        # that nothing else in the store answers to them, and the whole uuid still
+        # works so ids captured before this — in annotations, in the user's notes —
+        # keep resolving.
+        checker.check(
+            len(seed) < len("mem:") + 32 and len(seed) >= len("mem:") + ID_FLOOR_CHARS,
+            f"handle is an abbreviated prefix ({len(seed) - len('mem:')} digits)",
+        )
+        resolved, _ = await core.resolve_memory_id(seed)
+        whole, _ = await core.resolve_memory_id(f"mem:{seed_uuid}")
+        checker.check(
+            resolved is not None and resolved.hex == seed_uuid == (whole and whole.hex),
+            "short handle and whole uuid resolve to the same segment",
+        )
+        bad_uuid, bad_note = await core.resolve_memory_id("mem:zzzz")
+        checker.check(
+            bad_uuid is None and "not a valid memory id" in bad_note,
+            "a non-hex handle is rejected as malformed",
+        )
+        # Half-open [since, before): one day is that day and the next, and the two
+        # bounds never mean different things for the same string.
+        day = await core.search(
+            "planning a trip to Sweden",
+            limit=8,
+            since="2026-03-01",
+            before="2026-03-02",
+            seen=set(),
+        )
+        empty = await core.search(
+            "planning a trip to Sweden",
+            limit=8,
+            since="2026-03-01",
+            before="2026-03-01",
+            seen=set(),
+        )
+        bad_date = await core.search(
+            "planning a trip to Sweden", limit=8, since="last tuesday", seen=set()
+        )
+        checker.check(
+            len(day.hits) > 0
+            and not empty.hits
+            and "ISO 8601" in (bad_date.note or ""),
+            "since/before is a half-open range and says so when it cannot parse",
+        )
+        # Scoping is by handle too: any memory names its own conversation. There is
+        # no session id to pass anywhere, so there is no second kind of address to
+        # get wrong.
+        scoped = await core.search(
+            "planning a trip to Sweden", limit=8, within=seed, seen=set()
+        )
+        unknown = await core.search(
+            "planning a trip to Sweden", limit=8, within="mem:zzzz", seen=set()
+        )
+        checker.check(
+            len(scoped.hits) > 0
+            and not unknown.hits
+            and "not a valid memory id" in (unknown.note or ""),
+            "search scopes to the conversation a handle names",
+        )
 
         expanded = await core.expand(seed, before=4, after=1)
         rendered = render_expand_result(expanded)
@@ -133,7 +197,6 @@ async def _core_suite(checker: _Checker) -> None:
             "WebSearch" in rendered or "SAS direct" in rendered,
             "expansion reaches the non-embedded tool call/result",
         )
-
         booking_score = booking.hits[0].score
         noted = await core.annotate(seed, "the SAS booking was later cancelled")
         checker.check(
@@ -329,8 +392,12 @@ async def _core_suite(checker: _Checker) -> None:
                 Source.ASSISTANT_MESSAGE,
                 Source.TOOL_CALL,
                 Source.TOOL_RESULT,
+                # The compaction summary is kept on the timeline and typed
+                # INJECTED, which keeps it off the search surface without losing
+                # the one record of where the session lost its context.
+                Source.INJECTED,
             ],
-            f"compaction summary skipped; sources in order ({sources})",
+            f"compaction summary typed injected; sources in order ({sources})",
         )
         empty, total2 = events_from_transcript(
             transcript, session_id="t", start_line=total
@@ -368,8 +435,158 @@ async def _core_suite(checker: _Checker) -> None:
         events_b, _ = events_from_transcript(transcript, session_id="t2", start_line=0)
         second = await core.ingest(events_b)
         checker.check(
-            first == 4 and second == 0,
+            first == 5 and second == 0,
             f"re-ingest is idempotent (first {first} new, second {second} new)",
+        )
+
+        # Ambiguity, made certain rather than likely. Seventeen segments cannot fit
+        # in the sixteen buckets a single hex digit has, so at least one digit names
+        # more than one memory no matter how the uuids fall — and guessing which was
+        # meant would be an invisible error, a real memory that simply is not the one
+        # that was asked for.
+        filler = [
+            _event(100 + n, Source.USER_MESSAGE, "user", f"filler turn number {n}")
+            for n in range(20)
+        ]
+        await core.ingest(filler)
+        collisions = [
+            note
+            for digit in "0123456789abcdef"
+            for found, note in [await core.resolve_memory_id(f"mem:{digit}")]
+            if found is None and "matches" in note
+        ]
+        checker.check(
+            bool(collisions)
+            and all("Retry with one of these in full" in note for note in collisions),
+            f"an ambiguous prefix reports candidates instead of guessing "
+            f"({len(collisions)} of 16 digits ambiguous)",
+        )
+
+        # A long command output must not be able to spend a whole window on its own
+        # opening. Asking for four events around the prompt has to reach the reply
+        # on the far side of a 33-chunk result, and what is shown of that result is
+        # its two ends with the hole between them marked.
+        bulk = "\n".join(f"output line {n} " + "x" * 120 for n in range(120))
+        await core.ingest(
+            [
+                _event(200, Source.USER_MESSAGE, "user", "run the long build please"),
+                _event(201, Source.TOOL_CALL, "assistant", "Bash(cmd='make all')"),
+                _event(202, Source.TOOL_RESULT, "tool", bulk),
+                _event(203, Source.ASSISTANT_MESSAGE, "assistant", "Build passed."),
+            ]
+        )
+        build = await core.search("run the long build please", limit=1, seen=set())
+        around = render_expand_result(
+            await core.expand(build.hits[0].memory_id, before=0, after=3, unit="events")
+        )
+        checker.check(
+            "output line 0" in around and "output line 119" in around,
+            "a bulky result is shown by its two ends",
+        )
+        checker.check(
+            "more characters — memory_expand from" in around,
+            "the hole between those ends is marked where it happens",
+        )
+        checker.check(
+            "Build passed." in around,
+            "the turn after the bulky result still fits in the window",
+        )
+        checker.check(
+            "[...]" not in around and around.count("more characters") == 1,
+            "ONE mark, not a bare [...] plus a separate line saying what it meant",
+        )
+        checker.check(
+            "output line 0" in around and "output line 119" in around,
+            "the two ends are shown as content, not just as handles",
+        )
+        # The advice has to work AS PRINTED: the marker names a handle and nothing
+        # else, so run it with the tool's own defaults. Making that event the seed
+        # is what raises its cap from three chunks to forty.
+        advice = around.split("— memory_expand from ", 1)[1].split("]")[0].split()
+        more = render_expand_result(await core.expand(advice[0], before=0, after=30))
+        checker.check(
+            len(advice) >= 2 and all(a.startswith("mem:") for a in advice),
+            f"the marker hands back every surviving segment as a seed ({advice})",
+        )
+        checker.check(
+            "output line 60" in more and "output line 60" not in around,
+            f"expanding one of them reaches the middle the sample skipped "
+            f"({len(around):,} -> {len(more):,} chars)",
+        )
+
+        # Stepping by segments is the default and is a flat budget; stepping by
+        # events buys whole turns however long they ran.
+        by_segments = await core.expand(build.hits[0].memory_id, before=0, after=3)
+        by_events = await core.expand(
+            build.hits[0].memory_id, before=0, after=3, unit="events"
+        )
+        checker.check(
+            by_segments.events < by_events.events,
+            f"segments is the default unit; events reaches further "
+            f"({by_segments.events} vs {by_events.events} events)",
+        )
+        checker.check(
+            render_expand_result(by_events).startswith("[session smoke]"),
+            "the window names its conversation, and nothing else in the header",
+        )
+        await core.ingest(
+            [
+                _event(300, Source.USER_MESSAGE, "user", "and now deploy it"),
+                _event(
+                    301,
+                    Source.INJECTED,
+                    "user",
+                    "<system-reminder>noise</system-reminder>",
+                ),
+                _event(
+                    302,
+                    Source.INJECTED,
+                    "user",
+                    "<system-reminder>more</system-reminder>",
+                ),
+                _event(303, Source.ASSISTANT_MESSAGE, "assistant", "Deploying now."),
+            ]
+        )
+        # A seed is an address: the store locates it whether or not it passes the
+        # filter and never returns it among the neighbours, and expand renders it
+        # itself. So `kinds` selects the SURROUNDINGS, and the turn you named is
+        # shown either way — uniformly, not depending on what it happens to be.
+        deploy = await core.search("and now deploy it", limit=1, seen=set())
+        only_injected = render_expand_result(
+            await core.expand(
+                deploy.hits[0].memory_id, before=0, after=2, kinds=["injected"]
+            )
+        )
+        checker.check(
+            "system-reminder" in only_injected and "and now deploy it" in only_injected,
+            "kinds selects the surroundings; the seed you named is shown anyway",
+        )
+        checker.check(
+            only_injected.count(_ANCHOR) == 1,
+            "exactly one anchor marker says which segment was expanded from",
+        )
+        nothing = await core.expand(
+            deploy.hits[0].memory_id, before=0, after=0, kinds=["reasoning"]
+        )
+        checker.check(
+            nothing.found and "and now deploy it" in render_expand_result(nothing),
+            "asking for no surroundings still returns the memory you named",
+        )
+        default_kinds = render_expand_result(
+            await core.expand(deploy.hits[0].memory_id, before=0, after=1)
+        )
+        everything = render_expand_result(
+            await core.expand(
+                deploy.hits[0].memory_id,
+                before=0,
+                after=1,
+                kinds=[],
+                blocklist=True,
+            )
+        )
+        checker.check(
+            "system-reminder" not in default_kinds and "system-reminder" in everything,
+            "injected text is blocked by default and reachable on request",
         )
     finally:
         await core.aclose()
@@ -458,7 +675,7 @@ def _daemon_suite(checker: _Checker) -> None:
         exp = call(
             {
                 "op": "expand",
-                "seed": seed,
+                "id": seed,
                 "before": 3,
                 "after": 3,
                 "session_id": "sess-1111-2222",

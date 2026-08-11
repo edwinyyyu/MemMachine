@@ -69,7 +69,6 @@ from claude_memory.wire import (
     format_memory_line,
     in_context_exclusion_filter,
     observe,
-    parse_memory_id,
 )
 
 logger = logging.getLogger("claude_memory.daemon")
@@ -217,33 +216,15 @@ class MemoryService:
         partition = request.get("partition") or self._config.partition
         session_id = request.get("session_id") or ""
 
-        if op == "search":
+        if op == "handles":
             core = await self._core(partition)
-            query_vector = None
-            if request.get("use_context"):
-                query_vector = await self._context_cue(
-                    core, partition, session_id, request["cue"]
-                )
-            result = await core.search(
-                request["cue"],
-                limit=request.get("limit", 8),
-                filter_spec=request.get("filters"),
-                seen=self._seen_set(partition, session_id),
-                query_vector=query_vector,
-            )
-            return {"ok": True, "result": asdict(result)}
+            return {
+                "ok": True,
+                "handles": await core.first_handles(request.get("sessions") or []),
+            }
 
-        if op == "expand":
-            core = await self._core(partition)
-            result = await core.expand(
-                request["seed"],
-                before=request.get("before", 5),
-                after=request.get("after", 5),
-                seen=self._seen_set(partition, session_id),
-                kinds=request.get("kinds"),
-                blocklist=bool(request.get("blocklist", False)),
-            )
-            return {"ok": True, "result": asdict(result)}
+        if op in ("search", "expand", "outline"):
+            return await self._recall(op, request, partition, session_id)
 
         if op == "demote":
             core = await self._core(partition)
@@ -262,6 +243,48 @@ class MemoryService:
             return await self._ingest(request, partition, session_id)
 
         return {"ok": False, "error": f"unknown op {op!r}"}
+
+    async def _recall(
+        self, op: str, request: dict[str, Any], partition: str, session_id: str
+    ) -> dict[str, Any]:
+        """The three read paths: find a moment, read around one, see the shape."""
+        core = await self._core(partition)
+        if op == "search":
+            query_vector = None
+            if request.get("use_context"):
+                query_vector = await self._context_cue(
+                    core, partition, session_id, request["cue"]
+                )
+            result: Any = await core.search(
+                request["cue"],
+                limit=request.get("limit", 8),
+                within=request.get("within"),
+                kinds=request.get("kinds"),
+                since=request.get("since"),
+                before=request.get("before"),
+                # Internal only — the hooks' one clause the named parameters
+                # cannot express. Nothing model-facing sets this.
+                filter_spec=request.get("filters"),
+                seen=self._seen_set(partition, session_id),
+                query_vector=query_vector,
+            )
+        elif op == "expand":
+            result = await core.expand(
+                request["id"],
+                before=request.get("before", 5),
+                after=request.get("after", 5),
+                unit=request.get("unit") or "segments",
+                seen=self._seen_set(partition, session_id),
+                kinds=request.get("kinds"),
+                blocklist=bool(request.get("blocklist", False)),
+            )
+        else:
+            result = await core.outline(
+                request.get("id") or "",
+                before=request.get("before", 20),
+                after=request.get("after", 20),
+            )
+        return {"ok": True, "result": asdict(result)}
 
     async def _ingest(
         self, request: dict[str, Any], partition: str, session_id: str
@@ -336,9 +359,8 @@ class MemoryService:
             if not hit.is_new or hit.score < self._config.reflect_threshold:
                 continue
             surfaced.append(hit)
-            uuid = parse_memory_id(hit.memory_id)
-            if uuid is not None:
-                seen.add(uuid.hex)  # now in context; do not resurface it
+            if hit.segment_uuid:
+                seen.add(hit.segment_uuid)  # now in context; do not resurface it
             if len(surfaced) >= limit:
                 break
         memories = "\n".join(

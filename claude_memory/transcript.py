@@ -145,16 +145,18 @@ def _string_message_event(
     content: str,
     parsed: datetime.datetime | None,
     builder: _Builder,
+    host_injected: bool = False,
 ) -> list[Event]:
     if not content.strip():
         return []
     if role == "user":
         # A user turn carries both what the user typed and what was injected into
-        # the session around them; only the text tells them apart. See
-        # wire.user_text_source.
+        # the session around them. ``host_injected`` is the transcript SAYING which
+        # (see _events_from_record); the text sniff is the fallback for what it
+        # does not mark. See wire.user_text_source.
         return [
             builder.build(
-                source=user_text_source(content),
+                source=Source.INJECTED if host_injected else user_text_source(content),
                 producer="user",
                 text=content,
                 parsed_timestamp=parsed,
@@ -176,6 +178,7 @@ def _user_turn_events(
     content: list[Any],
     parsed: datetime.datetime | None,
     builder: _Builder,
+    host_injected: bool = False,
 ) -> list[Event]:
     """A user turn is either a real user message or a batch of tool results."""
     tool_results = [
@@ -186,7 +189,9 @@ def _user_turn_events(
     ]
     if not tool_results:
         text = _text_from_content_blocks(content)
-        return _string_message_event("user", text, parsed, builder)
+        return _string_message_event(
+            "user", text, parsed, builder, host_injected=host_injected
+        )
 
     events: list[Event] = []
     for block_dict in tool_results:
@@ -293,6 +298,18 @@ def _with_stable_uuids(events: list[Event], record_uuid: object) -> list[Event]:
 
 
 def _events_from_record(record: dict[str, Any], builder: _Builder) -> list[Event]:
+    """Timeline events for one transcript record.
+
+    ``isMeta`` is the host's own statement that a record is something it put into
+    the session rather than something the user typed: skill bodies, slash-command
+    bodies, the prompts behind /commands. Measured over the local transcripts, it
+    marks 497 events holding 5.5M characters that the text sniff missed entirely —
+    including every one of the largest — because a skill body opens with prose and
+    looks like writing. It is checked FIRST for that reason: what the transcript
+    states beats what the text looks like. The sniff stays for what carries no
+    flag (system reminders, hook context), which the same sample shows it still
+    catches ~33 of per 1,700 records.
+    """
     if record.get("type") not in ("user", "assistant"):
         return []
     # After /compact (or auto-compact), which stays in the SAME session, Claude Code
@@ -316,14 +333,20 @@ def _events_from_record(record: dict[str, Any], builder: _Builder) -> list[Event
         )
         if not text.strip():
             return []
-        return [
-            builder.build(
-                source=Source.INJECTED,
-                producer="user",
-                text=text,
-                parsed_timestamp=_parse_timestamp(record),
-            )
-        ]
+        # Keyed off the record like every other branch: this one used to return
+        # early, so the summary kept its fallback uuid4 and re-ingesting the same
+        # transcript wrote it again each time.
+        return _with_stable_uuids(
+            [
+                builder.build(
+                    source=Source.INJECTED,
+                    producer="user",
+                    text=text,
+                    parsed_timestamp=_parse_timestamp(record),
+                )
+            ],
+            record.get("uuid"),
+        )
     message = _as_dict(record.get("message"))
     if message is None:
         return []
@@ -333,11 +356,15 @@ def _events_from_record(record: dict[str, Any], builder: _Builder) -> list[Event
     parsed = _parse_timestamp(record)
 
     if isinstance(content, str):
-        events = _string_message_event(role, content, parsed, builder)
+        events = _string_message_event(
+            role, content, parsed, builder, host_injected=bool(record.get("isMeta"))
+        )
     elif not isinstance(content, list):
         events = []
     elif role == "user":
-        events = _user_turn_events(content, parsed, builder)
+        events = _user_turn_events(
+            content, parsed, builder, host_injected=bool(record.get("isMeta"))
+        )
     else:
         events = _assistant_turn_events(content, parsed, builder)
     return _with_stable_uuids(events, record.get("uuid"))

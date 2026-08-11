@@ -73,6 +73,10 @@ WINDOW_DAYS = 14  # conversations older than this never appear
 MAP_N = 12  # lines in a session-start map
 DELTA_N = 6  # lines in one delta
 MIN_USER_TURNS = 2  # below this it is a headless/one-shot run, not a conversation
+# Of the session id shown. Duplicated from claude_memory.wire.SESSION_ID_CHARS
+# rather than imported: this file runs as a standalone hook script, and an import
+# of the package would make every roster line depend on it resolving.
+SID_CHARS = 8
 EXCERPT_CHARS = 400  # stored; render decides how much to show
 DESCRIBE_TURNS = 3  # turns from each end fed to the describer
 SUMMARY_CHARS = 4000  # of a compaction summary's intent section, fed whole
@@ -143,18 +147,55 @@ NOISE = re.compile(
 _INDEX_NOTE = (
     "This is an index, not content. If the current task touches any conversation "
     "listed, search memory before answering — memory_search(cue), or "
-    "memory_search(cue, filters=\"m.session_id='<id>'\") to read one, copying the "
-    "id exactly as printed: that filter is equality-only, so a shortened id "
-    "matches nothing rather than matching loosely. "
-    "Then use what you find only where it changes the answer — the recommendation, "
-    "the assumptions, or how the question should be read. Do not mention a past "
-    "conversation merely to show continuity."
+    "memory_outline(<mem:id>) to see one's shape and memory_expand(<mem:id>) to "
+    "read around a point in it. Each mem:id below is that conversation's opening "
+    "turn. Then use what you find only where it changes the answer — the "
+    "recommendation, the assumptions, or how the question should be read. Do not "
+    "mention a past conversation merely to show continuity."
 )
 LEAD_MAP = "Other recent conversations, most recent first. " + _INDEX_NOTE
 LEAD_DELTA = (
     "Conversations that took a new request since your last turn — most likely the one "
     "just switched away from. " + _INDEX_NOTE
 )
+
+
+def first_handles(session_ids):
+    """Each conversation's opening-turn handle, from the memory daemon.
+
+    Best effort, and deliberately so. The roster reads transcripts and has never
+    needed the store; this is the one thing it cannot compute, because segment
+    uuids are assigned at ingest rather than derived from the transcript. If the
+    daemon is cold or slow the roster prints lines without handles rather than
+    falling back to session ids — one kind of address everywhere, or none.
+    """
+    if not session_ids:
+        return {}
+    sock_path = Path.home() / ".claude" / "claude_memory" / "daemon.sock"
+    try:
+        import socket
+
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(2.0)
+        sock.connect(str(sock_path))
+        request = {
+            "op": "handles",
+            "partition": "shared",
+            "sessions": list(session_ids),
+        }
+        sock.sendall((json.dumps(request) + "\n").encode())
+        sock.shutdown(socket.SHUT_WR)
+        chunks = []
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        sock.close()
+        reply = json.loads(b"".join(chunks))
+        return reply.get("handles") or {} if reply.get("ok") else {}
+    except Exception:
+        return {}
 
 
 # ---------------------------------------------------------------- transcript parsing
@@ -393,7 +434,7 @@ def identity_of(s):
     return s["excerpt_first"]
 
 
-def line(sid, s, line_mode):
+def line(sid, s, line_mode, handle=None):
     when = when_label(s["excerpt_last_ts"] or s["last_ts"])
     proj = s["proj"].replace(HOME_TAG + "-", "").replace(HOME_TAG, "")
     # Identity half: what this conversation IS. The describer's line if that session
@@ -415,12 +456,14 @@ def line(sid, s, line_mode):
         body = clip(first, 110)  # single-turn conversation: do not repeat it
     else:
         body = f"{clip(first, 80)} → now: {clip(now, 110, keep_tail=True)}"
-    # The id is printed WHOLE, not as a readable prefix. It exists to be pasted into
-    # m.session_id = '<id>', and that filter grammar has only equality — no LIKE, no
-    # prefix operator — so a truncated id does not narrow the search, it silently
-    # matches nothing at all. A short id is the more dangerous failure: it looks like
-    # a working filter and returns an empty result that reads as "no such memory".
-    return f"[{when}] {proj[:28]} · {sid} — {body}"
+    # The conversation's address is its FIRST segment's handle, which the memory
+    # daemon knows and this file does not: the roster reads transcripts and never
+    # touches the store, so it has session ids and no segment ids. Asking for the
+    # handles is one batched call; when the daemon is cold the line simply carries
+    # no handle rather than falling back to a second kind of id, so every address
+    # the model ever sees is a mem: handle.
+    address = handle or ""
+    return f"[{when}] {proj[:28]}{' · ' + address if address else ''} — {body}"
 
 
 def emit(text):
@@ -569,7 +612,12 @@ def cmd_session_start(line_mode):
     if not rows:
         return
     os.environ["ROSTER_EVENT"] = "SessionStart"
-    emit(LEAD_MAP + "\n\n" + "\n".join(line(sid_, s, line_mode) for _, sid_, s in rows))
+    handles = first_handles([sid_ for _, sid_, _ in rows])
+    emit(
+        LEAD_MAP
+        + "\n\n"
+        + "\n".join(line(sid_, s, line_mode, handles.get(sid_)) for _, sid_, s in rows)
+    )
 
 
 def cmd_delta(line_mode):
@@ -597,16 +645,22 @@ def cmd_delta(line_mode):
     if not fresh:
         return  # silent by construction: nothing new, nothing said
     fresh = fresh[:DELTA_N]
-    emit(LEAD_DELTA + "\n\n" + "\n".join(line(o, s, line_mode) for _, o, s in fresh))
+    handles = first_handles([o for _, o, _ in fresh])
+    emit(
+        LEAD_DELTA
+        + "\n\n"
+        + "\n".join(line(o, s, line_mode, handles.get(o)) for _, o, s in fresh)
+    )
 
 
 def cmd_show(sid, line_mode, as_of=None):
     idx = update_index(load_index())
     save_index(idx)
     rows = eligible(idx, sid, as_of=as_of)[:MAP_N]
+    handles = first_handles([other for _, other, _ in rows])
     print(LEAD_MAP + "\n")
     for _, other, s in rows:
-        print("  " + line(other, s, line_mode))
+        print("  " + line(other, s, line_mode, handles.get(other)))
 
 
 def cmd_replay(self_sid, as_of, line_mode):
@@ -667,9 +721,10 @@ def cmd_replay(self_sid, as_of, line_mode):
                         ts,
                     )
     rows = eligible({"sessions": sessions}, self_sid)[:MAP_N]
+    handles = first_handles([other for _, other, _ in rows])
     print(f"# roster for session {self_sid[:8]} as of {as_of}\n")
     for _, other, s in rows:
-        print("  " + line(other, s, line_mode))
+        print("  " + line(other, s, line_mode, handles.get(other)))
 
 
 def cmd_describe():

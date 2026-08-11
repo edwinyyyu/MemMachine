@@ -24,7 +24,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -44,7 +44,9 @@ from claude_memory.wire import (
     format_memory_line,
     in_context_exclusion_filter,
     observe,
+    outline_result_from_dict,
     render_expand_result,
+    render_outline_result,
     render_search_result,
     score_shape,
     search_result_from_dict,
@@ -279,10 +281,21 @@ _ALWAYS_LOAD = {"anthropic/alwaysLoad": True}
 
 def _register_memory_tools(mcp: "FastMCP", wait: float) -> None:
     """Attach the memory tools to a FastMCP server (shared by stdio and HTTP)."""
+    _register_read_tools(mcp, wait)
+    _register_curation_tools(mcp, wait)
+
+
+def _register_read_tools(mcp: "FastMCP", wait: float) -> None:
+    """The deliberate-recall tools, loaded on use rather than kept in context."""
 
     @mcp.tool()
     async def memory_search(
-        cue: str, limit: int = 8, filters: str | None = None
+        cue: str,
+        limit: int = 8,
+        within: str | None = None,
+        kinds: list[Literal["user_message", "assistant_message"]] | None = None,
+        since: str | None = None,
+        before: str | None = None,
     ) -> str:
         """Recall memories associatively related to a cue.
 
@@ -308,18 +321,46 @@ def _register_memory_tools(mcp: "FastMCP", wait: float) -> None:
         Args:
             cue: A context-bearing cue — an event description, a verbatim line with
                 speaker, or a question; not a bare keyword.
+        Every narrowing argument is unrestricted when omitted, and they combine.
+        Returns one memory per line: `[mem:id] <text>`.
+
+        Args:
+            cue: A context-bearing cue — an event description, a verbatim line with
+                speaker, or a question; not a bare keyword.
             limit: Maximum memories to return (default 8).
-            filters: Optional metadata filter to narrow the results.
-                String values use SINGLE quotes. User properties take an `m.`
-                (or `metadata.`) prefix; system fields are bare. Examples:
-                  m.session_id = '<uuid>'      m.project = '<slug>'
-                  m.producer = 'assistant'     m.source IN ('user_message')
-                  timestamp >= date('2026-01-01')   (system field; date() literal)
-                Ops: = != > < >= <= , IN (...), NOT IN (...), IS NULL. Combine
-                with AND / OR / NOT. One memory per line: `[mem:id] <text>`.
+            within: Confine the search to one conversation, named by any
+                `mem:<id>` from it — a search hit, an outline row, or the opening
+                handle the session roster prints.
+            kinds: Which side of the conversation to search — a list drawn from
+                `user_message` and `assistant_message`, e.g.
+                `kinds=["user_message"]` for things you were asked rather than
+                things you said. Those two are the whole search surface: tool
+                calls, tool results, reasoning and injected text are not embedded
+                and are reached with memory_expand instead.
+            since: Start of the time range, INCLUSIVE. ISO 8601 datetime.
+            before: End of the time range, EXCLUSIVE — the range is
+                `since <= when < before`, so one day is
+                `since="2026-08-08", before="2026-08-09"` and consecutive ranges
+                meet without overlapping.
+
+                Both take the same formats, and a value with no zone is read in
+                YOUR local zone, the same one every timestamp is displayed in:
+                  2026-08-08                  midnight local, i.e. the day starts
+                  2026-08-08T09:30:00         09:30 local
+                  2026-08-08T16:30:00Z        16:30 UTC
+                  2026-08-08T09:30:00-07:00   09:30 at that offset
         """
         response = _call_daemon(
-            {"op": "search", "cue": cue, "limit": limit, "filters": filters}, wait
+            {
+                "op": "search",
+                "cue": cue,
+                "limit": limit,
+                "within": within,
+                "kinds": kinds,
+                "since": since,
+                "before": before,
+            },
+            wait,
         )
         if isinstance(response, str):
             return response
@@ -329,51 +370,66 @@ def _register_memory_tools(mcp: "FastMCP", wait: float) -> None:
 
     @mcp.tool()
     async def memory_expand(
-        seed: str,
+        id: str,  # noqa: A002 - the tool's parameter name is part of its contract
         before: int = 5,
         after: int = 5,
-        kinds: list[str] | None = None,
+        unit: Literal["segments", "events"] = "segments",
+        kinds: list[
+            Literal[
+                "user_message",
+                "assistant_message",
+                "reasoning",
+                "tool_call",
+                "tool_result",
+                "injected",
+            ]
+        ]
+        | None = None,
         blocklist: bool = False,
     ) -> str:
         """Recall the surrounding timeline around a memory you already have.
 
-        Pass a `mem:<id>` from memory_search. This walks the conversation around it
-        — same session, in order — and reaches what a search won't surface on its
-        own: tool calls and their results, file contents, the turns on either side.
-        Use it to replay how something was done, not just that it was mentioned.
-        `before`/`after` say how much context to pull on each side (asymmetric is
-        fine); if it isn't enough, expand again from the first or last `mem:<id>`
-        shown to reach further.
+        Pass a `mem:<id>` from memory_search, memory_outline, or an earlier expand.
+        This walks the conversation around it — same session, in order — and reaches
+        what a search cannot: tool calls and their results, file contents, the turns
+        on either side. Use it to replay how something was done, not just that it
+        was mentioned.
 
-        `kinds` chooses what the window spends itself on: `user_message`,
-        `assistant_message`, `reasoning`, `tool_call`, `tool_result`, `injected`. It
-        is an allowlist by default, a blocklist with `blocklist=True`, and it is
-        applied while the window is gathered, so the budget buys only what you asked
-        for. Reach for it when a plain expand comes back thin:
-        `kinds=["tool_result"], blocklist=True` to read the argument in a session full
-        of long command output, `kinds=["tool_call","tool_result"]` to replay just the
-        procedure.
+        The memory you name is ALWAYS shown, marked `← expanded from here` so you
+        can see which turn you anchored on. `kinds` selects what to show AROUND it;
+        it never hides the thing you asked for.
 
-        With no `kinds`, `injected` is blocked — hook context, skill bodies, system
-        reminders, slash-command echoes, and the session's own compaction summary,
-        which arrive in runs and can fill a window on their own. Naming kinds replaces
-        that default outright, so `kinds=["injected"]` shows exactly what the session
-        was handed, and `kinds=[], blocklist=True` blocks nothing at all.
+        An event too long to show whole (over ~4,000 characters — a pasted document
+        rather than a written message) appears as its first and last segments with a
+        marker between them saying how much is missing and handing back those
+        segments as seeds. Expand from one of those with `unit="segments"` to read
+        inward; nothing is silently truncated.
 
         Args:
-            seed: A `mem:<id>` from a prior search or expand.
+            id: A `mem:<id>` from a prior search, outline, or expand.
             before: How much context to pull before the seed (default 5).
             after: How much context to pull after the seed (default 5).
-            kinds: Which kinds to keep (or, with `blocklist`, to drop). Omit for
-                the default, which blocks only `injected`.
+            unit: What `before`/`after` count. `segments` (default) counts
+                ~500-character chunks — a flat budget, and the way to read inside
+                one long event. `events` counts whole turns / tool calls / results,
+                for when you want "five turns either side" and the length of what is
+                in the way should not decide how far the window reaches.
+            kinds: Which kinds of SURROUNDING event to keep — or, with `blocklist`,
+                which to drop — from `user_message`, `assistant_message`,
+                `reasoning`, `tool_call`, `tool_result`, `injected`. Omit for the
+                default, which blocks only `injected`.
             blocklist: Read `kinds` as a blocklist instead of an allowlist.
+                `kinds=["tool_result"], blocklist=True` reads the argument in a
+                session full of long output; `kinds=[], blocklist=True` blocks
+                nothing at all, injected text included.
         """
         response = _call_daemon(
             {
                 "op": "expand",
-                "seed": seed,
+                "id": id,
                 "before": before,
                 "after": after,
+                "unit": unit,
                 "kinds": kinds,
                 "blocklist": blocklist,
             },
@@ -382,6 +438,47 @@ def _register_memory_tools(mcp: "FastMCP", wait: float) -> None:
         if isinstance(response, str):
             return response
         return render_expand_result(expand_result_from_dict(response["result"]))
+
+    @mcp.tool()
+    async def memory_outline(
+        id: str,  # noqa: A002 - the tool's parameter name is part of its contract
+        before: int = 20,
+        after: int = 20,
+    ) -> str:
+        """See the shape of a conversation: its user turns, in order.
+
+        Use this when the question is *where* something happened rather than *what*
+        was said — "where did we leave #377", "what did this session actually do",
+        "we changed our minds about this somewhere". memory_search finds a moment
+        and memory_expand reads around one; neither shows a conversation's
+        structure, and asking for a huge expansion window to get it is the wrong
+        tool. Pick a turn from the outline, then expand its `mem:<id>`.
+
+        One line per user turn: its `mem:<id>`, when it was, HOW MANY EVENTS
+        FOLLOWED it before the next turn, and its opening words. That count is
+        where the work is — a turn followed by sixty events is where the session
+        did something; a run of turns followed by two each is a conversation that
+        kept changing direction. Times are local, to the minute, with the year.
+
+        Args:
+            id: Any `mem:<id>` from the conversation you want to see. A handle
+                names its own conversation, so one from a search hit outlines the
+                conversation that hit came from. The session roster prints each
+                conversation's FIRST handle, which is stable as it grows — use
+                that to outline a conversation from the start.
+            before: How many turns to show before the one you named (default 20).
+            after: How many turns to show after it (default 20).
+        """
+        response = _call_daemon(
+            {"op": "outline", "id": id, "before": before, "after": after}, wait
+        )
+        if isinstance(response, str):
+            return response
+        return render_outline_result(outline_result_from_dict(response["result"]))
+
+
+def _register_curation_tools(mcp: "FastMCP", wait: float) -> None:
+    """The write tools, pre-loaded so a wrong memory can be fixed where it surfaces."""
 
     @mcp.tool(meta=_ALWAYS_LOAD)
     async def memory_demote(memory_id: str, cue: str) -> str:
