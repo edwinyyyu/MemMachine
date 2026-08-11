@@ -12,16 +12,16 @@ The store holds every turn of every past session, reached through five tools:
 | `memory_search(cue, …)` | *which* memory — associative recall over messages |
 | `memory_expand(id, …)` | *what surrounded it* — the timeline around one memory |
 | `memory_outline(id, …)` | *what shape a conversation had* — its user turns, in order |
-| `memory_annotate(memory_id, note)` | records what was later learned about a memory |
-| `memory_demote(memory_id, cue)` | stops a memory answering a cue it misleads on |
+| `memory_annotate(id, note)` | records what was later learned about a memory |
+| `memory_demote(id, cue)` | stops a memory answering a cue it misleads on |
 
 **One kind of address.** Every id is a `mem:` handle naming a segment — abbreviated to a
 prefix long enough to be unambiguous, with whole uuids still accepted and an ambiguous prefix
 answering with candidates rather than guessing. A handle also names its own *conversation*, so
 `memory_outline(<any handle from it>)` outlines that conversation and `memory_search(within=…)`
 confines a search to it; the session roster prints each conversation's FIRST handle, which is
-stable as it grows. There is no separate session id to pass anywhere. The read tools spell the
-parameter `id`, the two curation tools spell it `memory_id`; the value is the same handle.
+stable as it grows. Every tool takes the same `id`, and there is no separate session id to pass
+anywhere.
 
 ## What a hit is
 

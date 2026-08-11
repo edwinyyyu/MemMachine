@@ -481,7 +481,10 @@ def _register_curation_tools(mcp: "FastMCP", wait: float) -> None:
     """The write tools, pre-loaded so a wrong memory can be fixed where it surfaces."""
 
     @mcp.tool(meta=_ALWAYS_LOAD)
-    async def memory_demote(memory_id: str, cue: str) -> str:
+    async def memory_demote(
+        id: str,  # noqa: A002 - the tool's parameter name is part of its contract
+        cue: str,
+    ) -> str:
         """Make a memory rank lower for a cue (and similar cues) in future recall.
 
         Use this after a memory_search when a returned memory was wrong or unhelpful
@@ -498,18 +501,19 @@ def _register_curation_tools(mcp: "FastMCP", wait: float) -> None:
         an answer that isn't there.
 
         Args:
-            memory_id: the `mem:<id>` to deprioritize.
+            id: the `mem:<id>` to deprioritize.
             cue: the cue you searched (similar cues are affected too).
         """
-        response = _call_daemon(
-            {"op": "demote", "memory_id": memory_id, "cue": cue}, wait
-        )
+        response = _call_daemon({"op": "demote", "id": id, "cue": cue}, wait)
         if isinstance(response, str):
             return response
         return demote_result_from_dict(response["result"]).message
 
     @mcp.tool(meta=_ALWAYS_LOAD)
-    async def memory_annotate(memory_id: str, note: str) -> str:
+    async def memory_annotate(
+        id: str,  # noqa: A002 - the tool's parameter name is part of its contract
+        note: str,
+    ) -> str:
         """Attach a one-line note to a memory, visible on every future retrieval.
 
         Use it to record what you later learned about a memory, right where it
@@ -525,12 +529,10 @@ def _register_curation_tools(mcp: "FastMCP", wait: float) -> None:
         for that; it changes what is known when it does.
 
         Args:
-            memory_id: the `mem:<id>` to annotate.
+            id: the `mem:<id>` to annotate.
             note: a single line, appended to the memory as [note: ...].
         """
-        response = _call_daemon(
-            {"op": "annotate", "memory_id": memory_id, "note": note}, wait
-        )
+        response = _call_daemon({"op": "annotate", "id": id, "note": note}, wait)
         if isinstance(response, str):
             return response
         return str(response.get("message", ""))
