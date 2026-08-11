@@ -10,6 +10,7 @@ daemon-side code is unchanged.
 """
 
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -912,6 +913,20 @@ def observe(config: "MemoryConfig", event: str, **fields: object) -> None:
     except Exception:
         # Observability must never be the reason a turn fails.
         return
+
+
+def cue_fingerprint(cue: str) -> str:
+    """A short stable digest of a cue, for spotting repeats without storing text.
+
+    Whether a search was USEFUL is not directly observable, but reformulation is a
+    usable proxy in the negative direction: a second search in one conversation
+    means the first did not settle the question. That needs cue identity and
+    nothing else, so the log carries a digest rather than the cue itself — the
+    conversation text is already in the store, and duplicating it here would make
+    a debugging log into a second copy of the corpus.
+    """
+    normalized = " ".join(cue.split()).casefold()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
 
 
 def score_shape(scores: list[float]) -> dict[str, float]:

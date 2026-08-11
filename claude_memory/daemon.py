@@ -277,6 +277,7 @@ class MemoryService:
                 filter_spec=request.get("filters"),
                 seen=self._seen_set(partition, session_id),
                 query_vector=query_vector,
+                session=self._resolve_session(partition, session_id),
             )
         elif op == "expand":
             # "seed" was this field's name before the addressing unification. A client
@@ -296,6 +297,7 @@ class MemoryService:
                 seen=self._seen_set(partition, session_id),
                 kinds=request.get("kinds"),
                 blocklist=bool(request.get("blocklist", False)),
+                session=self._resolve_session(partition, session_id),
             )
         else:
             address = request.get("id") or request.get("seed")
@@ -308,6 +310,7 @@ class MemoryService:
                 address,
                 before=request.get("before", 20),
                 after=request.get("after", 20),
+                session=self._resolve_session(partition, session_id),
             )
         return {"ok": True, "result": asdict(result)}
 

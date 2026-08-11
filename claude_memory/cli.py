@@ -39,6 +39,7 @@ from claude_memory.transcript import last_compaction_time
 from claude_memory.wire import (
     Hit,
     MemoryConfig,
+    cue_fingerprint,
     demote_result_from_dict,
     expand_result_from_dict,
     format_memory_line,
@@ -130,6 +131,8 @@ def cmd_ambient() -> None:
         observe(
             MemoryConfig.load(),
             "ambient",
+            session=data.get("session_id") or "",
+            cue=cue_fingerprint(prompt),
             cue_chars=len(prompt),
             cue_words=len(prompt.split()),
             hits=len(result.hits),

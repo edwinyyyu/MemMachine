@@ -5,8 +5,13 @@ The log exists to answer questions that cannot be answered by reasoning, so this
 prints distributions rather than averages — a mean hides exactly the thing a
 threshold would be set from.
 
-Four questions it is built to settle:
+Five questions it is built to settle:
 
+  0. Is each tool used at all, and does a search lead anywhere? Reach (distinct
+     conversations) rather than call count, because one enthusiastic session
+     otherwise speaks for the population; and expansions seeded by a memory the
+     system surfaced, which is the closest available signal that a search
+     returned something worth reading more of.
   1. How often does ambient recall fire at all? A gate is only worth building if
      the silent fraction is small enough to be worth changing.
   2. Does it fire on turns with nothing to retrieve for? Cue length is the
@@ -209,6 +214,86 @@ def report_ingest(rows: list[dict[str, Any]]) -> None:
     print(f"  distinct sessions: {len(sessions)}")
 
 
+def report_usefulness(by_event: dict[str, list[dict[str, Any]]]) -> None:
+    """Whether each tool is earning its place, and whether searches lead anywhere.
+
+    Two things are reported and they are not the same. REACH — how many distinct
+    conversations a tool was used in — is the honest measure of whether a tool is
+    used at all; raw call counts let one enthusiastic session speak for the
+    population. FOLLOW-THROUGH is the closest thing to a usefulness signal
+    available without asking the model: an expansion seeded by a memory this
+    system surfaced means a search returned something worth reading more of.
+
+    Records written before a field existed simply lack it, so every rate here is
+    reported over the rows that carry the field, with that denominator shown. A
+    percentage over a mixed population would be the more useful-looking number and
+    the wrong one.
+    """
+    print("\n=== tool usage ===")
+    # "attributed" is the denominator for the reach column, not decoration: records
+    # written before a field existed carry no session, and reporting reach against
+    # the full call count would read as "603 calls in 1 conversation".
+    print(f"  {'tool':10s} {'calls':>7s} {'attributed':>11s} {'conversations':>14s}")
+    for tool in ("search", "expand", "outline", "annotate", "demote", "ambient"):
+        rows = by_event.get(tool, [])
+        attributed = [r for r in rows if r.get("session")]
+        reach = len({r.get("session") for r in attributed})
+        note = "   never called" if not rows else ""
+        print(f"  {tool:10s} {len(rows):7,d} {len(attributed):11,d} {reach:14,d}{note}")
+
+    expands = [r for r in by_event.get("expand", []) if "from_surfaced" in r]
+    if expands:
+        followed = sum(1 for r in expands if r.get("from_surfaced"))
+        print(
+            f"\n  expansions seeded by a memory this system surfaced: "
+            f"{followed}/{len(expands)} ({100 * followed / len(expands):.0f}%)"
+        )
+        print("    the rest were seeded from a roster handle or the user")
+
+    # A cue searched twice in one conversation means the first search did not
+    # settle it. This is the one negative signal the log can see directly.
+    seen: set[tuple[str, str]] = set()
+    repeats = considered = 0
+    for row in by_event.get("search", []):
+        key = (str(row.get("session", "")), str(row.get("cue", "")))
+        if not key[0] or not key[1]:
+            continue
+        considered += 1
+        if key in seen:
+            repeats += 1
+        seen.add(key)
+    if considered:
+        print(
+            f"  searches repeating a cue already used in that conversation: "
+            f"{repeats}/{considered} ({100 * repeats / considered:.0f}%)"
+        )
+
+    outlines = by_event.get("outline", [])
+    if outlines:
+        own = sum(1 for r in outlines if r.get("own_conversation"))
+        print(
+            f"  outlines of the CURRENT conversation: {own}/{len(outlines)}"
+            " (the rest looked at another)"
+        )
+
+    annotates = by_event.get("annotate", [])
+    stacked = sum(1 for r in annotates if int(r.get("existing_notes", 0) or 0) > 0)
+    if annotates:
+        print(
+            f"  annotations added to a memory that already had one: "
+            f"{stacked}/{len(annotates)}"
+        )
+
+    demotes = [r for r in by_event.get("demote", []) if r.get("cue")]
+    if demotes:
+        by_cue = Counter(str(r.get("cue")) for r in demotes)
+        worst = by_cue.most_common(1)[0]
+        print(
+            f"  demotes: {len(demotes)} over {len(by_cue)} distinct cues"
+            f" (most-demoted cue: {worst[1]}x)"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Print the report for the configured home."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -241,6 +326,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{path}\n{len(rows)} records   {span}")
     print("  " + "  ".join(f"{k}={len(v)}" for k, v in sorted(by_event.items())))
 
+    report_usefulness(by_event)
     report_ambient(by_event.get("ambient", []))
     report_search(by_event.get("search", []))
     report_expand(by_event.get("expand", []))

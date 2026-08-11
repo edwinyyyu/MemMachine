@@ -104,6 +104,7 @@ from claude_memory.wire import (
     _display_timezone,
     abbreviation_length,
     ambiguous_id_note,
+    cue_fingerprint,
     format_memory_line,
     is_searchable,
     kind_scope_filter,
@@ -1017,6 +1018,7 @@ class MemoryCore:
         seen: set[str] | None = None,
         commit_seen: bool = True,
         query_vector: list[float] | None = None,
+        session: str = "",
     ) -> SearchResult:
         """Associative recall over the message search surface.
 
@@ -1111,10 +1113,23 @@ class MemoryCore:
         observe(
             self.stores.config,
             "search",
+            session=session,
+            cue=cue_fingerprint(cue),
             cue_chars=len(cue),
             cue_words=len(cue.split()),
             limit=limit,
+            scoped=sorted(
+                name
+                for name, value in (
+                    ("within", within),
+                    ("kinds", kinds),
+                    ("since", since),
+                    ("before", before),
+                )
+                if value
+            ),
             filters=filter_spec or "",
+            hits=len(hits),
             new_count=new_count,
             saturated=saturated,
             chars=sum(len(hit.text) for hit in hits),
@@ -1132,6 +1147,7 @@ class MemoryCore:
         seen: set[str] | None = None,
         kinds: list[str] | None = None,
         blocklist: bool = False,
+        session: str = "",
     ) -> ExpandResult:
         """Return the seed's session timeline window, same-event segments merged.
 
@@ -1158,9 +1174,9 @@ class MemoryCore:
         seed_segments = await self._get_segment_context(seed_uuid)
         scope: list[str] = []
         if seed_segments:
-            session = seed_segments[0].properties.get("session_id")
-            if isinstance(session, str) and session:
-                scope.append(session_scope_filter(session))
+            seed_session = seed_segments[0].properties.get("session_id")
+            if isinstance(seed_session, str) and seed_session:
+                scope.append(session_scope_filter(seed_session))
         kind_filter = kind_scope_filter(kinds, blocklist=blocklist)
         if kind_filter:
             scope.append(kind_filter)
@@ -1182,6 +1198,13 @@ class MemoryCore:
         window_text, shown, capped = await self._render_window(
             window, seed_uuid, unit == "events"
         )
+        # Whether the seed is one this system put in front of the model, or one it
+        # got some other way (a handle in the roster, a handle the user typed). This
+        # is the follow-through signal: a search that leads to an expansion returned
+        # something worth reading more of, and a search that never does did not.
+        # Read BEFORE the loop below adds this window's neighbours to the set.
+        seed_was_surfaced = seed_uuid.hex in seen_set
+
         # Everything but the seed itself is newly surfaced — but only what was
         # actually rendered. A piece elided out of a bulky event was never put in
         # front of anyone, so recording it as seen would retire it unread.
@@ -1195,6 +1218,9 @@ class MemoryCore:
         observe(
             self.stores.config,
             "expand",
+            session=session,
+            unit=unit,
+            from_surfaced=seed_was_surfaced,
             asked=max(before, 0) + max(after, 0) + 1,
             got=len({segment.event_uuid for segment in window}),
             segments=len(window),
@@ -1250,7 +1276,12 @@ class MemoryCore:
         return {session: rendered[uuid] for session, uuid in firsts.items()}
 
     async def outline(
-        self, memory_id: str, *, before: int = 20, after: int = 20
+        self,
+        memory_id: str,
+        *,
+        before: int = 20,
+        after: int = 20,
+        session: str = "",
     ) -> OutlineResult:
         """A conversation's spine: its user turns, around the one you name.
 
@@ -1267,11 +1298,11 @@ class MemoryCore:
         if seed_uuid is None:
             return OutlineResult(session_id="", found=False, note=problem)
         seed = await self._get_segment_context(seed_uuid)
-        session = str(seed[0].properties.get("session_id", "")) if seed else ""
-        rows = await self._session_events(session) if session else []
+        conversation = str(seed[0].properties.get("session_id", "")) if seed else ""
+        rows = await self._session_events(conversation) if conversation else []
         if not rows:
             return OutlineResult(
-                session_id=session,
+                session_id=conversation,
                 found=False,
                 note=f"Nothing captured for the conversation holding {memory_id}.",
             )
@@ -1292,7 +1323,7 @@ class MemoryCore:
         ]
         if not beats:
             return OutlineResult(
-                session_id=session,
+                session_id=conversation,
                 project=str(rows[0][3] or ""),
                 total_events=len(rows),
                 span=f"{_short_time(rows[0][1])} to {_short_time(rows[-1][1])}",
@@ -1315,8 +1346,18 @@ class MemoryCore:
             + ([beats[high + 1][0]] if high + 1 < len(beats) else [])
         )
         openings = await self._opening_words([beat[0] for beat in chosen])
+        observe(
+            self.stores.config,
+            "outline",
+            session=session,
+            own_conversation=session == conversation,
+            total_events=len(rows),
+            turns=len(beats),
+            shown=len(chosen),
+            asked=max(before, 0) + max(after, 0) + 1,
+        )
         return OutlineResult(
-            session_id=session,
+            session_id=conversation,
             project=str(rows[0][3] or ""),
             total_events=len(rows),
             span=f"{_short_time(rows[0][1])} to {_short_time(rows[-1][1])}",
@@ -1611,6 +1652,20 @@ class MemoryCore:
             [segment], format_options=DISPLAY_FORMAT
         )
         handle = (await self.short_ids([seg_uuid]))[seg_uuid]
+        # Curation is rare by nature, so the question these records answer is the
+        # blunt one — does the model ever reach for it, and is a memory being
+        # annotated repeatedly (which would mean the earlier notes did not take).
+        observe(
+            self.stores.config,
+            "annotate",
+            note_chars=len(note),
+            existing_notes=sum(
+                isinstance(part, AnnotationContext)
+                for part in (
+                    base.contexts if isinstance(base, CompositeContext) else [base]
+                )
+            ),
+        )
         return f"Noted. This memory now reads:\n{format_memory_line(handle, rendered)}"
 
     async def _demote_resolve(
@@ -1738,6 +1793,17 @@ class MemoryCore:
         before = max(before_values, default=0.0)
         after = max(after_values, default=before)
         pool = await self._demote_pool_preview(cue)
+        # The cue fingerprint is the point: repeated demotes against ONE cue mean
+        # the model is trying to bury a result rather than sharpen its cue, which
+        # the tool's own description warns against and which nothing else detects.
+        observe(
+            self.stores.config,
+            "demote",
+            cue=cue_fingerprint(cue),
+            cue_chars=len(cue),
+            before=round(before, 4),
+            after=round(after, 4),
+        )
         return DemoteResult(
             True,
             "demoted",
