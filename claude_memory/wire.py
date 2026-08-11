@@ -15,7 +15,7 @@ import os
 import re
 from collections.abc import Iterable
 from contextlib import suppress
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -809,6 +809,20 @@ def in_context_exclusion_filter(
 
 # ================================================== wire (de)serialization codecs
 
+# These decode a NEWER daemon's replies inside an OLDER client, and that is the only
+# direction the skew ever runs. An MCP client is a subprocess that lives as long as its
+# session — days — holding whatever code it started with, while the daemon is restarted
+# freely. So a client routinely meets results carrying fields its dataclasses have never
+# heard of, and a strict ``Cls(**data)`` turns each one into a TypeError that breaks
+# every read tool in that session until it is restarted. Dropping unknown keys makes
+# ADDING a field a compatible change, which is what adding a field ought to be.
+
+
+def _declared(cls: type, data: dict[str, Any]) -> dict[str, Any]:
+    """``data`` less any key ``cls`` does not declare as a field."""
+    allowed = {f.name for f in fields(cls)}
+    return {key: value for key, value in data.items() if key in allowed}
+
 
 def demote_result_to_dict(result: DemoteResult) -> dict[str, Any]:
     """Serialize a DemoteResult for the daemon wire protocol."""
@@ -817,7 +831,7 @@ def demote_result_to_dict(result: DemoteResult) -> dict[str, Any]:
 
 def demote_result_from_dict(data: dict[str, Any]) -> DemoteResult:
     """Rebuild a DemoteResult from its wire dict."""
-    return DemoteResult(**data)
+    return DemoteResult(**_declared(DemoteResult, data))
 
 
 def search_result_to_dict(result: SearchResult) -> dict[str, Any]:
@@ -828,7 +842,7 @@ def search_result_to_dict(result: SearchResult) -> dict[str, Any]:
 def search_result_from_dict(data: dict[str, Any]) -> SearchResult:
     """Rebuild a SearchResult received over the daemon socket."""
     return SearchResult(
-        hits=[Hit(**hit) for hit in data["hits"]],
+        hits=[Hit(**_declared(Hit, hit)) for hit in data["hits"]],
         new_count=data["new_count"],
         saturated=data["saturated"],
         note=data.get("note"),
@@ -843,7 +857,15 @@ def outline_result_to_dict(result: OutlineResult) -> dict[str, Any]:
 def outline_result_from_dict(data: dict[str, Any]) -> OutlineResult:
     """Rebuild an OutlineResult received over the daemon socket."""
     return OutlineResult(
-        **{**data, "beats": [Beat(**beat) for beat in data.get("beats", [])]}
+        **_declared(
+            OutlineResult,
+            {
+                **data,
+                "beats": [
+                    Beat(**_declared(Beat, beat)) for beat in data.get("beats", [])
+                ],
+            },
+        )
     )
 
 
@@ -854,7 +876,7 @@ def expand_result_to_dict(result: ExpandResult) -> dict[str, Any]:
 
 def expand_result_from_dict(data: dict[str, Any]) -> ExpandResult:
     """Rebuild an ExpandResult received over the daemon socket."""
-    return ExpandResult(**data)
+    return ExpandResult(**_declared(ExpandResult, data))
 
 
 # ================================================================ observability

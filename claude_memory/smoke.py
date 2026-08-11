@@ -74,9 +74,11 @@ async def _core_suite(checker: _Checker) -> None:
         ID_FLOOR_CHARS,
         MemoryConfig,
         Source,
+        expand_result_from_dict,
         in_context_exclusion_filter,
         render_expand_result,
         render_search_result,
+        search_result_from_dict,
         session_scope_filter,
     )
 
@@ -148,6 +150,34 @@ async def _core_suite(checker: _Checker) -> None:
         checker.check(
             bad_uuid is None and "not a valid memory id" in bad_note,
             "a non-hex handle is rejected as malformed",
+        )
+        # An MCP client is a subprocess that outlives many daemon restarts, so it
+        # decodes replies from daemons newer than itself. Adding a reply field must
+        # not break it — this once took down every read tool in a running session.
+        checker.check(
+            expand_result_from_dict(
+                {"seed_id": seed, "window_text": "w", "invented_later": 1}
+            ).seed_id
+            == seed
+            and search_result_from_dict(
+                {
+                    "hits": [
+                        {
+                            "memory_id": seed,
+                            "score": 0.5,
+                            "text": "t",
+                            "is_new": True,
+                            "invented_later": 1,
+                        }
+                    ],
+                    "new_count": 1,
+                    "saturated": False,
+                }
+            )
+            .hits[0]
+            .memory_id
+            == seed,
+            "a reply field the client has never heard of is ignored, not fatal",
         )
         # Half-open [since, before): one day is that day and the next, and the two
         # bounds never mean different things for the same string.

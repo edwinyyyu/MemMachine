@@ -15,11 +15,19 @@ Protocol (one JSON object per line over the socket):
     {"op":"shutdown"}                                          -> {"ok":true}
     {"op":"search","partition","session_id","cue","limit","filters","use_context"}
                                                   -> {"ok":true,"result":{...}}
-    {"op":"expand","partition","session_id","seed","before","after"}
+    {"op":"expand","partition","session_id","id","before","after","unit"}
+                                                  -> {"ok":true,"result":{...}}
+    {"op":"outline","partition","id","before","after"}
                                                   -> {"ok":true,"result":{...}}
     {"op":"demote","partition","memory_id","cue"}
     {"op":"annotate","partition","memory_id","note"}
                                                   -> {"ok":true,"result":{...}}
+
+Compatibility runs one way only: an MCP client is a subprocess that lives as long as
+its session, so a restarted daemon regularly serves clients running week-old code.
+Adding a reply field is therefore safe (clients drop what they do not declare) while
+RENAMING a request field is not — ``expand``/``outline`` still read the pre-unification
+``seed`` alongside today's ``id`` for exactly that reason.
     {"op":"reflect","partition","session_id","transcript_path"}
                                                   -> {"ok":true,"memories":"..."}
     {"op":"ingest","partition","session_id","transcript_path"}
@@ -226,14 +234,15 @@ class MemoryService:
         if op in ("search", "expand", "outline"):
             return await self._recall(op, request, partition, session_id)
 
-        if op == "demote":
+        if op in ("demote", "annotate"):
+            memory_id = request.get("memory_id") or request.get("id")
+            if not memory_id:
+                return {"ok": False, "error": f"{op} requires a memory_id"}
             core = await self._core(partition)
-            result = await core.demote(request["memory_id"], request.get("cue", ""))
-            return {"ok": True, "result": asdict(result)}
-
-        if op == "annotate":
-            core = await self._core(partition)
-            message = await core.annotate(request["memory_id"], request.get("note", ""))
+            if op == "demote":
+                result = await core.demote(memory_id, request.get("cue", ""))
+                return {"ok": True, "result": asdict(result)}
+            message = await core.annotate(memory_id, request.get("note", ""))
             return {"ok": True, "message": message}
 
         if op == "reflect":
@@ -250,13 +259,14 @@ class MemoryService:
         """The three read paths: find a moment, read around one, see the shape."""
         core = await self._core(partition)
         if op == "search":
+            cue = request.get("cue")
+            if not cue:
+                return {"ok": False, "error": "search requires a cue"}
             query_vector = None
             if request.get("use_context"):
-                query_vector = await self._context_cue(
-                    core, partition, session_id, request["cue"]
-                )
+                query_vector = await self._context_cue(core, partition, session_id, cue)
             result: Any = await core.search(
-                request["cue"],
+                cue,
                 limit=request.get("limit", 8),
                 within=request.get("within"),
                 kinds=request.get("kinds"),
@@ -269,8 +279,17 @@ class MemoryService:
                 query_vector=query_vector,
             )
         elif op == "expand":
+            # "seed" was this field's name before the addressing unification. A client
+            # older than that change is still sending it and cannot be updated without
+            # restarting its session, so the old name stays readable here.
+            address = request.get("id") or request.get("seed")
+            if not address:
+                return {
+                    "ok": False,
+                    "error": "expand requires an id (a mem: handle or a segment uuid)",
+                }
             result = await core.expand(
-                request["id"],
+                address,
                 before=request.get("before", 5),
                 after=request.get("after", 5),
                 unit=request.get("unit") or "segments",
@@ -279,8 +298,14 @@ class MemoryService:
                 blocklist=bool(request.get("blocklist", False)),
             )
         else:
+            address = request.get("id") or request.get("seed")
+            if not address:
+                return {
+                    "ok": False,
+                    "error": "outline requires an id (a mem: handle or a segment uuid)",
+                }
             result = await core.outline(
-                request.get("id") or "",
+                address,
                 before=request.get("before", 20),
                 after=request.get("after", 20),
             )
