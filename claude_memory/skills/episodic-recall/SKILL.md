@@ -12,15 +12,16 @@ The store holds every turn of every past session, reached through five tools:
 | `memory_search(cue, …)` | *which* memory — associative recall over messages |
 | `memory_expand(id, …)` | *what surrounded it* — the timeline around one memory |
 | `memory_outline(id, …)` | *what shape a conversation had* — its user turns, in order |
-| `memory_annotate(id, note)` | records what was later learned about a memory |
-| `memory_demote(id, cue)` | stops a memory answering a cue it misleads on |
+| `memory_annotate(memory_id, note)` | records what was later learned about a memory |
+| `memory_demote(memory_id, cue)` | stops a memory answering a cue it misleads on |
 
 **One kind of address.** Every id is a `mem:` handle naming a segment — abbreviated to a
 prefix long enough to be unambiguous, with whole uuids still accepted and an ambiguous prefix
 answering with candidates rather than guessing. A handle also names its own *conversation*, so
-`memory_outline(<any handle from it>)` outlines that conversation; the session roster prints
-each conversation's FIRST handle, which is stable as it grows. There is no separate session id
-to pass anywhere.
+`memory_outline(<any handle from it>)` outlines that conversation and `memory_search(within=…)`
+confines a search to it; the session roster prints each conversation's FIRST handle, which is
+stable as it grows. There is no separate session id to pass anywhere. The read tools spell the
+parameter `id`, the two curation tools spell it `memory_id`; the value is the same handle.
 
 ## What a hit is
 
@@ -142,14 +143,17 @@ Reserve a question for when proceeding on the wrong reading would be costly.
   - `kinds=["user_message"]` / `["assistant_message"]` — a ranking aid, not a guarantee. When a
     user pastes assistant output back as input the text exists under both roles; doubly-escaped
     content marks a quotation inside another event.
-  - `session=` is gone: to work inside one conversation, outline it from a handle and expand
-    the turns you want.
+  - `within=<mem:id>` confines the search to the conversation that handle belongs to — any
+    handle from it will do. Use it to search inside one conversation instead of outlining it
+    and reading turn by turn; use `memory_outline` when the question is *where* rather than
+    *what*.
   - `since=` / `before=` bound the time range, half-open: `since <= when < before`, so one day
     is `since="2026-08-08", before="2026-08-09"`. ISO 8601; no zone means your local one.
+  - `limit=` caps how many memories come back (default 8).
 
 ## Multi-hop
 
-1. Search with an event-description cue, narrowed by `kinds`, `session` or `since`/`before`
+1. Search with an event-description cue, narrowed by `kinds`, `within` or `since`/`before`
    where the producer, conversation or date are known.
 2. Expand the best hit. If its content will be restated, expand to the sandwich, forward first.
 3. Hop with the continuation handles each expand returns.
