@@ -108,6 +108,31 @@ The handles in the marker are usable seeds: to read the middle, expand from one 
 `unit="segments"`. Often the two ends are enough to show that reading further is pointless, as
 above.
 
+## Seeing a conversation's shape
+
+`memory_outline` answers *where*, which neither other read tool does. Search finds a moment;
+expand reads around one. Getting structure from either means a huge window spent on text you
+did not want.
+
+```
+Session 0406dfb7 · -Users-eyu-edwinyyyu-claude · 214 events · 2026-08-09 09:12 to 2026-08-11 16:50
+  handle · when · events until the next turn · what was asked
+  [mem:8a6c30] 2026-08-09 09:12 ·    3 · can you look at why the index rebuild is slow?
+  [mem:7f5651] 2026-08-09 09:31 ·   96 · go ahead and fix it
+  [mem:b59c56] 2026-08-10 11:02 ·    2 · did that land?
+```
+
+**The event count is the signal.** A turn followed by ninety-six is where the work happened; a
+run of turns followed by two each is a conversation that kept changing direction. Use it to
+pick which turn to expand, rather than expanding at random and widening.
+
+`before`/`after` count *turns* here, not segments or events, and cost nothing extra — the whole
+conversation is one query regardless of how long it ran.
+
+Reach for it when the question is "where did we leave X", "what did that session actually do",
+or "we changed our minds somewhere". Reach for search instead when you want a specific claim,
+and for expand when you already know which moment to read.
+
 ## Before relying on a result
 
 Expand until the window is **sandwiched**: a timestamp/speaker header on *both* sides of the
@@ -189,9 +214,8 @@ Each is unrestricted when omitted, and they combine.
 2. Expand the best result. If its content will be restated, expand to the sandwich, forward
    first.
 3. Continue from the edge handles each expansion returns.
-4. When the question is *where* in a conversation rather than *what*, `memory_outline` is
-   cheaper than a wide window: one line per user turn, with how many events followed each — a
-   turn followed by sixty is where the work happened.
+4. When the question turns into *where* rather than *what*, outline the conversation and pick
+   a turn to expand.
 5. If the target will not surface directly, search its *surroundings* — what was being
    discussed, roughly when — and expand from a neighbour.
 6. For a claim that will be acted on, add one search on its status.
