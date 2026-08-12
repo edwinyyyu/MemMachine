@@ -122,42 +122,30 @@ class VectorSearchEngine(ABC):
     @abstractmethod
     async def save(self, path: str) -> None:
         """
-        Persist the index under `path`, durably.
+        Publish the index at `path`, replacing whatever index is there.
 
-        Returning must mean that a later `load` produces this index even if the
-        machine loses power on the next instruction. Not "written", not "handed
-        to the OS", not "renamed on a filesystem that has yet to flush the
-        directory". The caller trims its pending-operation log — the only other
-        copy of these vectors — as soon as this returns, so anything weaker
-        loses data.
+        Returning must mean a later `load` reads this index or the one it
+        replaced, never a half-written mixture of the two. It does *not* mean
+        the publication survives a power failure: implementations may publish
+        with an atomic rename, which a power failure can roll back after this
+        returns.
 
-        Durability is entirely the implementation's, including which artifact is
-        live: nothing about the layout may leak out, and the caller keeps no
-        pointer, manifest, or generation of its own. `path` is therefore a base
-        name rather than a promise about the files on disk — an engine may keep
-        one file, two slots, or a set of segments under it.
-
-        `index_persistence.publish_index` provides this for a backend that can
-        only write an index to a path; an engine whose backend publishes durably
-        on its own may delegate to that instead.
+        Callers must therefore treat a published index as possibly stale, but
+        never as corrupt. `SQLiteVectorStore` trims its pending-operation log
+        once this returns, so a rolled-back publication leaves records whose
+        vectors are missing from the index until they are re-upserted.
 
         Args:
             path (str):
-                Base path for the index files.
+                File path to write the index to.
         """
 
     @abstractmethod
     async def load(self, path: str) -> None:
         """
-        Load the index most recently published under `path`.
-
-        Raising is correct when nothing is published or the published index does
-        not parse. Implementations must **not** substitute an older copy they
-        may still hold: the caller trimmed its log against the published one, so
-        an older copy is stale by exactly the operations that can no longer be
-        replayed, and serving it would be data loss dressed as success.
+        Load the index from disk.
 
         Args:
             path (str):
-                Base path for the index files.
+                File path to read the index from.
         """
