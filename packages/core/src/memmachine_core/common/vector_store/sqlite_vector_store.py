@@ -1005,10 +1005,20 @@ class SQLiteVectorStore(VectorStore):
             Column("uuid", Uuid, nullable=False, unique=True),
             Column("properties", JSON, nullable=False, default=dict),
             extend_existing=True,
-            # AUTOINCREMENT so row_ids are never reused. Writes commit their
-            # SQL transaction before awaiting the search engine apply, so a
-            # reused row_id lets a suspended delete() erase the vector of a
-            # concurrently upserted record.
+            # AUTOINCREMENT is a correctness dependency, not tidiness. A plain
+            # INTEGER PRIMARY KEY is the rowid, which SQLite assigns as
+            # max(rowid) + 1, so deleting the highest row frees that id for the
+            # very next insert -- and a new record inherits the id an old one
+            # was being served under.
+            #
+            # Serializing a collection's writes does not subsume this. query()
+            # scores keys in the search engine and resolves them to rows in a
+            # second step, holding nothing in between, because readers are not
+            # made to wait on writers. A reused id lets a record that was never
+            # scored come back wearing the score of the record that was, and
+            # nothing about that result looks wrong from the outside: the
+            # record exists, the score is in range, and no row or vector is
+            # left dangling to find the mix-up by.
             sqlite_autoincrement=True,
         )
 
