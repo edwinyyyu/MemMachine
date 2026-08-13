@@ -1,7 +1,6 @@
 """Tests for SQLiteVectorStore."""
 
 import asyncio
-import contextlib
 import math
 from datetime import UTC, datetime, timedelta, timezone
 from uuid import UUID, uuid4
@@ -74,12 +73,17 @@ async def _wait_for(condition) -> None:
     once writes are serialized the second write cannot start at all, so the
     wait simply expires. The assertions are what tell the two cases apart.
     """
-    # ASYNC110 wants an Event, but what is being waited on is what another task
-    # has committed to the database, which no in-process event tracks.
-    with contextlib.suppress(TimeoutError):
-        async with asyncio.timeout(_RACE_WINDOW_SECONDS):
-            while not await condition():  # noqa: ASYNC110
-                await asyncio.sleep(0.01)
+    # Polling, because what is being waited on is what another task has
+    # committed to the database, which no in-process event tracks. The deadline
+    # sits between polls rather than in a timeout around them: cancelling a
+    # query mid-flight returns its connection to the pool without resetting it,
+    # and the read transaction left open there blocks the next commit.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _RACE_WINDOW_SECONDS
+    while loop.time() < deadline:
+        if await condition():
+            return
+        await asyncio.sleep(0.01)
 
 
 async def _record_exists(collection, record_uuid) -> bool:
