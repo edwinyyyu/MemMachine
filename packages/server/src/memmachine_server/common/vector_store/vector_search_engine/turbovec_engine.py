@@ -126,10 +126,16 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
             int_key = int(key)
             if allowed_keys is not None and int_key not in allowed_keys:
                 continue
-            matches.append(SearchMatch(key=int_key, score=float(score)))
+            matches.append(SearchMatch(key=int_key, score=self._to_score(score)))
             if len(matches) >= limit:
                 break
         return matches
+
+    def _to_score(self, score: float) -> float:
+        value = float(score)
+        if self._similarity_metric is SimilarityMetric.COSINE:
+            return min(1.0, max(-1.0, value))
+        return value
 
     def _prepare_vectors(self, vectors: Sequence[Sequence[float]]) -> np.ndarray:
         array = np.array(vectors, dtype=np.float32)

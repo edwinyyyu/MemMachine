@@ -1,10 +1,10 @@
 """Tests for TurboVecVectorSearchEngine.
 
 turbovec stores TurboQuant-compressed vectors, so scores are approximate: a
-self-match lands near (and may slightly exceed) the exact value, and orthogonal
-pairs land near zero rather than exactly zero. Tests therefore assert ranking
-and membership (robust under quantization) and only loosely assert score
-magnitudes.
+self-match lands near the exact value, and orthogonal pairs land near zero
+rather than exactly zero. Tests therefore assert ranking and membership (robust
+under quantization) and only loosely assert score magnitudes. The one exact
+bound is the cosine range, which the engine clamps.
 """
 
 import math
@@ -435,6 +435,27 @@ class TestPersistence:
 
 
 # -- SearchResult types --
+
+
+class TestScoreRange:
+    @pytest.mark.asyncio
+    async def test_cosine_scores_stay_within_range(self):
+        engine = _make_engine()
+        vectors = {key: _spread(key) for key in range(1, 51)}
+        await engine.add(vectors)
+
+        for vector in vectors.values():
+            result = await _search_one(engine, vector, limit=5)
+            for match in result.matches:
+                assert -1.0 <= match.score <= 1.0
+
+    @pytest.mark.asyncio
+    async def test_dot_scores_are_not_clamped(self):
+        engine = _make_engine(SimilarityMetric.DOT)
+        await engine.add({1: [4.0] + [0.0] * (NDIM - 1)})
+
+        result = await _search_one(engine, [4.0] + [0.0] * (NDIM - 1), limit=1)
+        assert result.matches[0].score > 1.0
 
 
 class TestSearchResultTypes:
