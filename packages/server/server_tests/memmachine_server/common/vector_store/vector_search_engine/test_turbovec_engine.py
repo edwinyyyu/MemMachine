@@ -81,11 +81,10 @@ class TestConstruction:
         with pytest.raises(ValueError, match="bit_width"):
             _make_engine(bit_width=5)
 
-    def test_dimensions_must_be_multiple_of_8(self):
-        with pytest.raises(ValueError, match="multiple of 8"):
-            TurboVecVectorSearchEngine(
-                num_dimensions=7, similarity_metric=SimilarityMetric.COSINE
-            )
+    def test_unaligned_dimensions_are_accepted(self):
+        TurboVecVectorSearchEngine(
+            num_dimensions=7, similarity_metric=SimilarityMetric.COSINE
+        )
 
 
 # -- Add --
@@ -435,6 +434,52 @@ class TestPersistence:
 
 
 # -- SearchResult types --
+
+
+class TestUnalignedDimensions:
+    @pytest.mark.asyncio
+    async def test_search_at_an_unaligned_width(self):
+        engine = TurboVecVectorSearchEngine(
+            num_dimensions=5, similarity_metric=SimilarityMetric.COSINE
+        )
+        await engine.add(
+            {
+                1: [1.0, 0.0, 0.0, 0.0, 0.0],
+                2: [0.0, 1.0, 0.0, 0.0, 0.0],
+            }
+        )
+
+        results = await engine.search([[1.0, 0.0, 0.0, 0.0, 0.0]], limit=2)
+        matches = results[0].matches
+        assert [match.key for match in matches] == [1, 2]
+        assert matches[0].score == pytest.approx(1.0, abs=QUANT_ABS)
+        assert matches[1].score == pytest.approx(0.0, abs=QUANT_ABS)
+
+    @pytest.mark.asyncio
+    async def test_save_and_load_at_an_unaligned_width(self, tmp_path: Path):
+        def make_engine():
+            return TurboVecVectorSearchEngine(
+                num_dimensions=5, similarity_metric=SimilarityMetric.COSINE
+            )
+
+        engine = make_engine()
+        await engine.add({1: [1.0, 0.0, 0.0, 0.0, 0.0]})
+        path = str(tmp_path / "test.idx")
+        await engine.save(path)
+
+        loaded = make_engine()
+        await loaded.load(path)
+
+        results = await loaded.search([[1.0, 0.0, 0.0, 0.0, 0.0]], limit=1)
+        assert [match.key for match in results[0].matches] == [1]
+
+    @pytest.mark.asyncio
+    async def test_wrong_width_vector_is_rejected(self):
+        engine = TurboVecVectorSearchEngine(
+            num_dimensions=5, similarity_metric=SimilarityMetric.COSINE
+        )
+        with pytest.raises(ValueError, match="must have 5 dimensions"):
+            await engine.add({1: [1.0, 0.0, 0.0]})
 
 
 class TestScoreRange:

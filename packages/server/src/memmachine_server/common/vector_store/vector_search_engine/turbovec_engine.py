@@ -1,6 +1,7 @@
 """turbovec (TurboQuant) implementation of VectorSearchEngine."""
 
 import asyncio
+import math
 from collections.abc import Container, Iterable, Mapping, Sequence
 from typing import ClassVar, override
 
@@ -14,7 +15,15 @@ from .vector_search_engine import SearchMatch, SearchResult, VectorSearchEngine
 
 
 class TurboVecVectorSearchEngine(VectorSearchEngine):
-    """Vector search engine backed by turbovec."""
+    """
+    Vector search engine backed by turbovec.
+
+    turbovec indexes a dimensionality that is a multiple of 8, so a vector of
+    any other width is zero-padded up to one. Padding is exact for both metrics
+    this engine serves -- a zero coordinate adds nothing to an inner product
+    and nothing to an L2 norm -- so the padded index answers as the unpadded
+    one would, and any embedding width the other engines accept works here too.
+    """
 
     _SUPPORTED_METRICS: ClassVar[frozenset[SimilarityMetric]] = frozenset(
         {SimilarityMetric.COSINE, SimilarityMetric.DOT}
@@ -47,7 +56,9 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
             )
 
         self._similarity_metric = similarity_metric
-        self._index = IdMapIndex(dim=num_dimensions, bit_width=bit_width)
+        self._num_dimensions = num_dimensions
+        self._padded_dimensions = math.ceil(num_dimensions / 8) * 8
+        self._index = IdMapIndex(dim=self._padded_dimensions, bit_width=bit_width)
         self._lock = AsyncRWLock()
 
     @override
@@ -138,7 +149,13 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
         return value
 
     def _prepare_vectors(self, vectors: Sequence[Sequence[float]]) -> np.ndarray:
-        array = np.array(vectors, dtype=np.float32)
+        array = np.zeros((len(vectors), self._padded_dimensions), dtype=np.float32)
+        try:
+            array[:, : self._num_dimensions] = vectors
+        except ValueError as error:
+            raise ValueError(
+                f"vectors must have {self._num_dimensions} dimensions"
+            ) from error
         if self._similarity_metric is SimilarityMetric.COSINE:
             norms = np.linalg.norm(array, axis=1, keepdims=True)
             norms[norms == 0.0] = 1.0
