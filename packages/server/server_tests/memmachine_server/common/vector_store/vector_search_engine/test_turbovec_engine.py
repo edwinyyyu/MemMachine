@@ -36,6 +36,18 @@ def _one_hot(index: int, value: float = 1.0) -> list[float]:
     return vector
 
 
+def _entry_names(directory: Path) -> list[str]:
+    """Names of everything in `directory`. Sync: the tests calling it are not."""
+    return [entry.name for entry in directory.iterdir()]
+
+
+def _spread(seed: int) -> list[float]:
+    """A deterministic unit vector, distinct per `seed`."""
+    return _normalize(
+        [math.cos(seed * (axis + 1) * 0.7 + axis) for axis in range(NDIM)]
+    )
+
+
 async def _search_one(engine, vector, limit=10, **kwargs):
     """Helper: search a single vector, return the one SearchResult."""
     results = await engine.search([vector], limit=limit, **kwargs)
@@ -384,26 +396,27 @@ class TestPersistence:
         path = tmp_path / "test.idx"
         await engine.save(str(path))
 
-        assert path.exists()
-        assert not (tmp_path / "test.idx.tmp").exists()
+        assert _entry_names(tmp_path) == ["test.idx"]
 
     @pytest.mark.asyncio
-    async def test_load_clears_stale_temp_file(self, tmp_path: Path):
+    async def test_checkpoint_carries_adds_and_mass_removals(self, tmp_path: Path):
         engine = _make_engine()
-        await engine.add({1: _normalize(_one_hot(0)), 2: _normalize(_one_hot(1))})
+        await engine.add({key: _spread(key) for key in range(1, 2001)})
 
-        path = tmp_path / "test.idx"
-        await engine.save(str(path))
+        path = str(tmp_path / "test.idx")
+        await engine.save(path)
 
-        stale_temp = tmp_path / "test.idx.tmp"
-        stale_temp.write_text("STALE")
+        doomed = [key for key in range(1, 2001) if key % 4 != 0]
+        await engine.remove(doomed)
+        await engine.add({key: _spread(key) for key in range(10_001, 10_033)})
+        await engine.save(path)
 
         engine2 = _make_engine()
-        await engine2.load(str(path))
+        await engine2.load(path)
 
-        assert not stale_temp.exists()
-        result = await _search_one(engine2, _normalize(_one_hot(0)), limit=2)
-        assert {m.key for m in result.matches} == {1, 2}
+        expected = set(range(4, 2001, 4)) | set(range(10_001, 10_033))
+        result = await _search_one(engine2, _spread(1), limit=len(expected) + 10)
+        assert {match.key for match in result.matches} == expected
 
     @pytest.mark.asyncio
     async def test_load_replaces_existing_index(self, tmp_path: Path):

@@ -2294,7 +2294,7 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'gpu'", specifier = ">=5.1.0" },
     { name = "sqlalchemy", specifier = ">=2.0.43" },
     { name = "sqlite-vec", specifier = ">=0.1.9" },
-    { name = "turbovec", marker = "extra == 'turbovec'", specifier = ">=0.7.0" },
+    { name = "turbovec", marker = "extra == 'turbovec'", specifier = ">=1.0.0" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2024.1" },
     { name = "usearch", specifier = ">=2.25.1" },
     { name = "uvicorn", specifier = ">=0.35.0" },
