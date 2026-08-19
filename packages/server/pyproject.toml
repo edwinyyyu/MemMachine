@@ -75,7 +75,7 @@ litellm = [
     "litellm>=1.63.0,<1.86",
 ]
 turbovec = [
-    "turbovec>=0.7.0",
+    "turbovec>=1.0.0",
 ]
 
 [project.scripts]
