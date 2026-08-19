@@ -72,7 +72,6 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
         keys = np.array(list(vectors.keys()), dtype=np.uint64)
         array = self._prepare_vectors(list(vectors.values()))
         self._index.add_with_ids(array, keys)
-        self._index.prepare()
 
     @override
     async def search(
