@@ -331,6 +331,44 @@ verifier** (§6: checks support, not completeness) and the **revisit scheduler**
 (pending the Stop-hook probe). Stateless ids keep the daemon-less standalone
 `MemoryCore` path (used by `smoke.py`'s core suite) correct too.
 
+### Ambient recall is off by default (measured 2026-08)
+
+`cmd_ambient` (the `UserPromptSubmit` hook) retrieves on the user's raw prompt
+and injects the hits before the model answers. It ships **disabled**
+(`ambient_enabled`, default false). The reasoning, from the channel's own
+observability log and a replay over real transcripts:
+
+- **The gate does not discriminate.** Across 560 logged injections the top
+  cosine ran from 0.549 at the 10th percentile to 0.685 at the 90th, and a
+  one-word reply retrieved at a median 0.626 against 0.656 for prompts of fifty
+  words or more. No threshold on that score separates turns that need memory
+  from turns that do not, which is why the channel fired on 92% of prompts.
+- **Roughly a quarter of injections change the answer.** Lexical overlap
+  between an injected memory and the reply that followed it ran 23.7%. A blind
+  test, in which a judge had to pick the real injection out of a decoy drawn
+  from the same conversation minutes away, implied about 25% independently.
+- **About 1.3% of injections produced a claim the user then had to correct.**
+  Measured by tracing memory text into the reply and then into the user's next
+  message, with every quoted span verified as a verbatim substring of its
+  source. The blind decoy arm scored 7.9% where the real arm scored 50.4%, so
+  the trace is signal rather than the judge confabulating.
+- **No benefit figure exists to weigh against that, and this data cannot
+  produce one.** A memory that helps draws no reaction and so leaves no label,
+  while one that misleads produces a visible correction. The measurement is
+  one-sided by construction, which means "leave it on" was winning by absence
+  of evidence rather than by evidence.
+
+What remains is the deliberate path — `memory_search`, `memory_expand`,
+`memory_outline` — where the cue states what is being looked for, so a retrieved
+fragment can be tested against a purpose that existed before it arrived. An
+ambient injection has no such target, so a fragment that does not apply produces
+no mismatch signal at all.
+
+To re-enable for an experiment, with no reinstall: set `ambient_enabled: true` in
+`<home>/config.json`, or `CLAUDE_MEMORY_AMBIENT=1`. The hook stays registered
+either way. Transcript capture, the MCP tools, and `roster.py` (cross-session
+activity) are unaffected — none of them were part of this channel.
+
 ---
 
 ## 10. File map

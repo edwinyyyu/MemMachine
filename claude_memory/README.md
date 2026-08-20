@@ -154,9 +154,34 @@ no system services, no global env changes.)
 | `CLAUDE_MEMORY_PARTITION` | derived from cwd | Pin to share one memory across checkouts |
 | `CLAUDE_MEMORY_VECTOR_BACKEND` | `turbovec` | `turbovec` (compressed ANN, fast at scale, ~10× smaller vectors, approximate) or `sqlitevec` (exact float32). |
 | `CLAUDE_MEMORY_TURBOVEC_BITS` | `4` | turbovec quantization bits/dim (2/3/4). `2` halves the index at some recall cost. |
+| `CLAUDE_MEMORY_AMBIENT` | `0` (off) | Ambient recall on `UserPromptSubmit` — retrieve on the raw prompt and inject before the model answers. **Off by default**; `1` re-enables it. See "Ambient recall" below and DESIGN.md §9. |
 | `CLAUDE_MEMORY_EVICTION_THRESHOLD` | `0.9` (on) | Cosine similarity at/above which derivatives form one cluster. Default `0.9` (calibrated for embeddinggemma) enables eviction; set to empty (`CLAUDE_MEMORY_EVICTION_THRESHOLD=`) to disable. `0.90` ≈ OpenAI text-embedding-3-small `0.85`; `0.95` is much stricter (≈ `0.93`). |
 | `CLAUDE_MEMORY_EVICTION_TARGET` | `5` | Max cluster size kept; over this, temporally middle members are evicted (oldest/newest kept). |
 | `CLAUDE_MEMORY_EVICTION_SEARCH_LIMIT` | `20` | Max stored neighbours fetched per new derivative when evaluating eviction. |
+
+## Ambient recall — off by default
+
+The `UserPromptSubmit` hook can retrieve on your raw prompt and inject the hits
+before the model answers. It ships **disabled** (`ambient_enabled`, default
+false). Measured on real traffic: the similarity gate could not tell a one-word
+reply from a substantive question, so the channel fired on 92% of prompts; about
+24% of injections detectably changed the answer; and about 1.3% produced a claim
+the user then had to correct. No benefit figure exists to weigh against that, and
+the data cannot produce one — a memory that helps draws no reaction, while one
+that misleads produces a visible correction. Full numbers and reasoning in
+DESIGN.md §9.
+
+To turn it on for an experiment (no reinstall; the hook stays registered):
+
+```bash
+CLAUDE_MEMORY_AMBIENT=1
+```
+
+or `"ambient_enabled": true` in `<home>/config.json`.
+
+The deliberate tools (`memory_search`, `memory_expand`, `memory_outline`),
+transcript capture, and `roster.py` are unaffected — none of them were part of
+this channel.
 
 ## Eviction (semantic compaction) — on by default (0.9)
 
