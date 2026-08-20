@@ -85,6 +85,14 @@ class MemoryConfig:
     reflect_enabled: bool
     reflect_threshold: float
     reflect_limit: int
+    # Ambient recall (UserPromptSubmit hook): memories retrieved on the user's
+    # raw prompt and injected before the model answers. OFF by default. Measured
+    # on real traffic 2026-08: fired on ~92% of turns behind a similarity gate
+    # that could not separate a one-word reply from a substantive question;
+    # ~24% of injections detectably influenced the reply; ~1.3% produced a claim
+    # the user then had to correct. Kept for experiments — enable per install
+    # with `ambient_enabled: true` in <home>/config.json or CLAUDE_MEMORY_AMBIENT=1.
+    ambient_enabled: bool
     # Manual demotion: per-call geometric decay of a memory's cosine to the cue.
     # Each demote multiplies the current cosine by this factor, so repeated demotes
     # for the same cue decay it geometrically. No relevance floor / pool target /
@@ -108,6 +116,12 @@ class MemoryConfig:
             eviction_threshold = float(raw) if raw is not None else None
         else:
             eviction_threshold = _DEFAULT_EVICTION_THRESHOLD
+
+        env_ambient = os.environ.get("CLAUDE_MEMORY_AMBIENT")
+        if env_ambient is not None:
+            ambient_enabled = env_ambient.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            ambient_enabled = bool(home_config.get("ambient_enabled", False))
 
         env_reflect = os.environ.get("CLAUDE_MEMORY_REFLECT")
         if env_reflect is not None:
@@ -136,6 +150,7 @@ class MemoryConfig:
                 os.environ.get("CLAUDE_MEMORY_EVICTION_SEARCH_LIMIT")
                 or home_config.get("eviction_search_limit", 20)
             ),
+            ambient_enabled=ambient_enabled,
             reflect_enabled=reflect_enabled,
             reflect_threshold=float(
                 os.environ.get("CLAUDE_MEMORY_REFLECT_THRESHOLD")

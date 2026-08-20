@@ -92,7 +92,13 @@ def _render_ambient(hits: list[Hit]) -> str:
 
 
 def cmd_ambient() -> None:
-    """UserPromptSubmit: inject ambient recall if the daemon is already warm."""
+    """UserPromptSubmit: inject ambient recall if the daemon is already warm.
+
+    Disabled by default (`ambient_enabled`); the hook stays registered so the
+    channel can be switched back on for an experiment without reinstalling.
+    """
+    if not MemoryConfig.load().ambient_enabled:
+        return
     try:
         data = _stdin_json()
         prompt = data.get("prompt") or ""
