@@ -236,7 +236,7 @@ class SessionDataManagerSQL(SessionDataManager):
         description: str,
         metadata: dict[str, JsonValue],
     ) -> None:
-        """Create a new session entry in the database."""
+        """Create a session, or accept an equivalent active session."""
         if hasattr(param, "model_dump"):
             param_data = param.model_dump(mode="json")
         elif hasattr(param, "dict"):
@@ -251,8 +251,15 @@ class SessionDataManagerSQL(SessionDataManager):
                     self.SessionConfig.session_key == session_key,
                 ),
             )
-            session = sessions.first()
+            session = sessions.scalars().first()
             if session is not None:
+                if (
+                    session.status != SessionDataManager.SessionStatus.Deleted
+                    and session.configuration == configuration
+                    and session.param_data == param_data
+                    and session.user_metadata == metadata
+                ):
+                    return
                 raise SessionAlreadyExistsError(session_key)
             # create a new entry
             new_session = self.SessionConfig(

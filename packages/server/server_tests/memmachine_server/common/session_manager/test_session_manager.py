@@ -127,11 +127,82 @@ async def test_create_new_session(
 
 
 @pytest.mark.asyncio
-async def test_create_existing_session_raises_error(
+async def test_create_existing_session_with_matching_configuration_succeeds(
     session_manager: SessionDataManager,
     episodic_memory_conf: EpisodicMemoryConf,
 ):
-    """Test that creating a session that already exists raises a ValueError."""
+    """An active session can be created again with the same stored configuration."""
+    session_key = "session1"
+    configuration: dict[str, JsonValue] = {"key": "value"}
+    metadata: dict[str, JsonValue] = {"user": "tester"}
+    await session_manager.create_new_session(
+        session_key,
+        configuration,
+        episodic_memory_conf,
+        "Original description",
+        metadata,
+    )
+
+    await session_manager.create_new_session(
+        session_key,
+        configuration,
+        episodic_memory_conf,
+        "Different description",
+        metadata,
+    )
+
+    session_info = await session_manager.get_session_info(session_key)
+    assert session_info is not None
+    assert session_info.description == "Original description"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", ["configuration", "param", "metadata"])
+async def test_create_existing_session_with_mismatched_configuration_raises_error(
+    session_manager: SessionDataManager,
+    episodic_memory_conf: EpisodicMemoryConf,
+    mismatch: str,
+):
+    """An existing session rejects changes to persisted creation configuration."""
+    session_key = "session1"
+    configuration: dict[str, JsonValue] = {"key": "value"}
+    metadata: dict[str, JsonValue] = {"user": "tester"}
+    await session_manager.create_new_session(
+        session_key,
+        configuration,
+        episodic_memory_conf,
+        "Description",
+        metadata,
+    )
+
+    requested_configuration = (
+        {"key": "different"} if mismatch == "configuration" else configuration
+    )
+    requested_param = (
+        episodic_memory_conf.model_copy(update={"enabled": False})
+        if mismatch == "param"
+        else episodic_memory_conf
+    )
+    requested_metadata = {"user": "different"} if mismatch == "metadata" else metadata
+
+    with pytest.raises(
+        SessionAlreadyExistsError, match=f"Session '{session_key}' already exists"
+    ):
+        await session_manager.create_new_session(
+            session_key,
+            requested_configuration,
+            requested_param,
+            "Description",
+            requested_metadata,
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_existing_session_being_deleted_raises_error(
+    session_manager: SessionDataManager,
+    episodic_memory_conf: EpisodicMemoryConf,
+):
+    """A session being deleted cannot be treated as an idempotent creation."""
     session_key = "session1"
     await session_manager.create_new_session(
         session_key,
@@ -139,6 +210,9 @@ async def test_create_existing_session_raises_error(
         episodic_memory_conf,
         "",
         {},
+    )
+    await session_manager.update_session_status(
+        session_key, SessionDataManager.SessionStatus.Deleted
     )
 
     with pytest.raises(
