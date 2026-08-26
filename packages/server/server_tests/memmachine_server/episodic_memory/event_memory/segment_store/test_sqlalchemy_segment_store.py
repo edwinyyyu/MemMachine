@@ -116,11 +116,20 @@ def store(request) -> SQLAlchemySegmentStore:
     return request.getfixturevalue(request.param)
 
 
+async def _create_and_open_partition(store, partition_key, config):
+    """Create a partition and open a handle to it."""
+    await store.create_partition(partition_key, config)
+    partition = await store.open_partition(partition_key)
+    assert partition is not None
+    return partition
+
+
 @pytest_asyncio.fixture
 async def partition(
     store: SQLAlchemySegmentStore,
 ) -> SQLAlchemySegmentStorePartition:
-    return await store.open_or_create_partition(
+    return await _create_and_open_partition(
+        store,
         PARTITION_KEY,
         _plaintext_partition_config(),
     )
@@ -481,13 +490,15 @@ async def test_contexts_session_isolation(store: SQLAlchemySegmentStore) -> None
     s_seed = _seg(event_uuid=ep, offset=1, ts_offset_seconds=1)
     s_after = _seg(event_uuid=ep, offset=2, ts_offset_seconds=2)
 
-    other_partition = await store.open_or_create_partition(
+    other_partition = await _create_and_open_partition(
+        store,
         "other_session",
         _plaintext_partition_config(),
     )
     await other_partition.add_segments(_links(s_other))
 
-    partition = await store.open_or_create_partition(
+    partition = await _create_and_open_partition(
+        store,
         PARTITION_KEY,
         _plaintext_partition_config(),
     )
@@ -672,12 +683,11 @@ async def test_delete_segments_partial(
 
 
 async def _get_partition(engine: AsyncEngine) -> SQLAlchemySegmentStorePartition:
-    """Create a partition handle that shares the engine."""
+    """Open a second handle to the existing partition over a shared engine."""
     store = SQLAlchemySegmentStore(SQLAlchemySegmentStoreParams(engine=engine))
-    return await store.open_or_create_partition(
-        PARTITION_KEY,
-        _plaintext_partition_config(),
-    )
+    partition = await store.open_partition(PARTITION_KEY)
+    assert partition is not None
+    return partition
 
 
 @pytest.mark.asyncio
@@ -686,6 +696,7 @@ async def test_concurrent_add_disjoint(
 ) -> None:
     """Concurrent additions with disjoint segments should not interfere."""
     engine = store._engine
+    await store.create_partition(PARTITION_KEY, _plaintext_partition_config())
 
     async def add_batch(batch_id: int) -> None:
         part = await _get_partition(engine)
@@ -712,7 +723,8 @@ async def test_concurrent_reads_during_writes(
 ) -> None:
     """Reads should not fail or block indefinitely while writes are happening."""
     engine = store._engine
-    partition = await store.open_or_create_partition(
+    partition = await _create_and_open_partition(
+        store,
         PARTITION_KEY,
         _plaintext_partition_config(),
     )
@@ -752,7 +764,8 @@ async def test_concurrent_context_reads_during_deletes(
 ) -> None:
     """get_segment_contexts should not crash if segments are deleted concurrently."""
     engine = store._engine
-    partition = await store.open_or_create_partition(
+    partition = await _create_and_open_partition(
+        store,
         PARTITION_KEY,
         _plaintext_partition_config(),
     )
@@ -797,10 +810,11 @@ async def test_concurrent_context_reads_during_deletes(
 
 
 @pytest.mark.asyncio
-async def test_open_or_create_partition_defaults_to_plaintext_config(
+async def test_create_partition_defaults_to_plaintext_config(
     store: SQLAlchemySegmentStore,
 ) -> None:
-    partition = await store.open_or_create_partition(
+    partition = await _create_and_open_partition(
+        store,
         "plaintext_default",
         _plaintext_partition_config(),
     )
@@ -835,32 +849,9 @@ async def test_open_partition_existing(store: SQLAlchemySegmentStore) -> None:
 
 
 @pytest.mark.asyncio
-async def test_open_or_create_partition_creates(store: SQLAlchemySegmentStore) -> None:
-    partition = await store.open_or_create_partition(
-        "fresh",
-        _plaintext_partition_config(),
-    )
-    assert partition is not None
-    # Verify it was actually created.
-    opened = await store.open_partition("fresh")
-    assert opened is not None
-
-
-@pytest.mark.asyncio
-async def test_open_or_create_partition_idempotent(
-    store: SQLAlchemySegmentStore,
-) -> None:
-    await store.create_partition("idem", _plaintext_partition_config())
-    partition = await store.open_or_create_partition(
-        "idem",
-        _plaintext_partition_config(),
-    )
-    assert partition is not None
-
-
-@pytest.mark.asyncio
 async def test_delete_partition_removes_data(store: SQLAlchemySegmentStore) -> None:
-    partition = await store.open_or_create_partition(
+    partition = await _create_and_open_partition(
+        store,
         "to_delete",
         _plaintext_partition_config(),
     )
@@ -877,7 +868,8 @@ async def test_delete_partition_removes_data(store: SQLAlchemySegmentStore) -> N
 async def test_delete_partition_cascades_segments(
     store: SQLAlchemySegmentStore,
 ) -> None:
-    partition = await store.open_or_create_partition(
+    partition = await _create_and_open_partition(
+        store,
         "cascade_test",
         _plaintext_partition_config(),
     )
@@ -888,7 +880,8 @@ async def test_delete_partition_cascades_segments(
     await store.delete_partition("cascade_test")
 
     # Re-create the partition and verify data is gone.
-    new_partition = await store.open_or_create_partition(
+    new_partition = await _create_and_open_partition(
+        store,
         "cascade_test",
         _plaintext_partition_config(),
     )
@@ -932,7 +925,8 @@ async def test_pg_context_preserved_via_lateral_join(
     pg_store: SQLAlchemySegmentStore,
 ) -> None:
     """Context is preserved when retrieved via the LATERAL join path (multiple seeds)."""
-    partition = await pg_store.open_or_create_partition(
+    partition = await _create_and_open_partition(
+        pg_store,
         PARTITION_KEY,
         _plaintext_partition_config(),
     )
@@ -971,7 +965,8 @@ async def test_pg_mixed_context_types(
     pg_store: SQLAlchemySegmentStore,
 ) -> None:
     """Different context types (producer, None) round-trip correctly on PG."""
-    partition = await pg_store.open_or_create_partition(
+    partition = await _create_and_open_partition(
+        pg_store,
         PARTITION_KEY,
         _plaintext_partition_config(),
     )

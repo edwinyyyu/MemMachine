@@ -55,7 +55,6 @@ from .data_types import (
     Record,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
-    VectorStoreCollectionConfigMismatchError,
 )
 from .utils import validate_filter, validate_identifier
 from .vector_search_engine import VectorSearchEngine
@@ -825,66 +824,6 @@ class SQLiteVectorStore(VectorStore):
                     config_json=config.model_dump(mode="json"),
                 )
             )
-
-    @override
-    async def open_or_create_collection(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
-    ) -> VectorStoreCollection:
-        self._require_started()
-        if not validate_identifier(namespace) or not validate_identifier(name):
-            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
-
-        index_path = self._index_path(namespace, name)
-
-        async with self._create_session() as session, session.begin():
-            existing_config = await self._get_stored_config(session, namespace, name)
-            if existing_config is not None:
-                if existing_config != config:
-                    raise VectorStoreCollectionConfigMismatchError(
-                        namespace, name, existing_config, config
-                    )
-                records_table, search_engine = await self._ensure_collection_resources(
-                    session, namespace, name, existing_config
-                )
-                return SQLiteVectorStoreCollection(
-                    create_session=self._create_session,
-                    sync_sqlalchemy_engine=self._sync_sqlalchemy_engine,
-                    records_table=records_table,
-                    search_engine=search_engine,
-                    namespace=namespace,
-                    name=name,
-                    config=existing_config,
-                    index_path=str(index_path) if index_path is not None else None,
-                    save_threshold=self._save_threshold,
-                )
-
-            self._clear_search_engine_state(namespace, name)
-            records_table, search_engine = await self._ensure_collection_resources(
-                session, namespace, name, config
-            )
-            session.add(
-                _CollectionRow(
-                    namespace=namespace,
-                    name=name,
-                    config_json=config.model_dump(mode="json"),
-                )
-            )
-
-        return SQLiteVectorStoreCollection(
-            create_session=self._create_session,
-            sync_sqlalchemy_engine=self._sync_sqlalchemy_engine,
-            records_table=records_table,
-            search_engine=search_engine,
-            namespace=namespace,
-            name=name,
-            config=config,
-            index_path=str(index_path) if index_path is not None else None,
-            save_threshold=self._save_threshold,
-        )
 
     @override
     async def open_collection(

@@ -1,5 +1,6 @@
 """Helpers for building long-term memory from configuration."""
 
+import contextlib
 import hashlib
 import logging
 import re
@@ -22,7 +23,10 @@ from memmachine_server.common.data_types import (
     PropertyValue,
 )
 from memmachine_server.common.resource_manager import CommonResourceManager
-from memmachine_server.common.vector_store import VectorStoreCollectionConfig
+from memmachine_server.common.vector_store import (
+    VectorStoreCollectionAlreadyExistsError,
+    VectorStoreCollectionConfig,
+)
 from memmachine_server.episodic_memory.event_memory.deriver import Deriver
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
@@ -30,6 +34,7 @@ from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import 
 )
 from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 from memmachine_server.episodic_memory.event_memory.segment_store import (
+    SegmentStorePartitionAlreadyExistsError,
     SegmentStorePartitionConfig,
 )
 from memmachine_server.episodic_memory.event_memory.segmenter import Segmenter
@@ -122,11 +127,13 @@ async def _event_params(
                 **user_schema,
             },
         )
-        await vector_store.create_collection(
-            namespace=_EVENT_BACKEND_NAMESPACE,
-            name=partition_key,
-            config=collection_config,
-        )
+        # Tolerate concurrent creation: the collection then exists.
+        with contextlib.suppress(VectorStoreCollectionAlreadyExistsError):
+            await vector_store.create_collection(
+                namespace=_EVENT_BACKEND_NAMESPACE,
+                name=partition_key,
+                config=collection_config,
+            )
         collection = await vector_store.open_collection(
             namespace=_EVENT_BACKEND_NAMESPACE,
             name=partition_key,
@@ -137,10 +144,20 @@ async def _event_params(
                 f"partition {partition_key!r}"
             )
 
-    partition = await segment_store.open_or_create_partition(
-        partition_key,
-        SegmentStorePartitionConfig(),
-    )
+    partition = await segment_store.open_partition(partition_key)
+    if partition is None:
+        # Tolerate concurrent creation: the partition then exists.
+        with contextlib.suppress(SegmentStorePartitionAlreadyExistsError):
+            await segment_store.create_partition(
+                partition_key,
+                SegmentStorePartitionConfig(),
+            )
+        partition = await segment_store.open_partition(partition_key)
+        if partition is None:
+            raise RuntimeError(
+                f"Failed to open segment store partition after creation for "
+                f"partition {partition_key!r}"
+            )
 
     segmenter = _build_segmenter(config.segmenter)
     deriver = _build_deriver(config.deriver)

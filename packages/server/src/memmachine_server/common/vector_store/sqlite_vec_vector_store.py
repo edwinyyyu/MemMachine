@@ -47,7 +47,6 @@ from .data_types import (
     Record,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
-    VectorStoreCollectionConfigMismatchError,
 )
 from .utils import validate_filter, validate_identifier
 from .vector_store import VectorStore, VectorStoreCollection
@@ -519,54 +518,6 @@ class SQLiteVecVectorStore(VectorStore):
                     config_json=config.model_dump(mode="json"),
                 )
             )
-
-    @override
-    async def open_or_create_collection(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
-    ) -> VectorStoreCollection:
-        if not validate_identifier(namespace) or not validate_identifier(name):
-            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
-        self._validate_metric(config.similarity_metric)
-
-        async with self._create_session() as session, session.begin():
-            existing_config = await self._get_stored_config(session, namespace, name)
-            if existing_config is not None:
-                if existing_config != config:
-                    raise VectorStoreCollectionConfigMismatchError(
-                        namespace, name, existing_config, config
-                    )
-
-                records_table, vector_table_name = await self._ensure_collection_tables(
-                    session, namespace, name, existing_config
-                )
-                return SQLiteVecVectorStoreCollection(
-                    create_session=self._create_session,
-                    config=existing_config,
-                    records_table=records_table,
-                    vector_table_name=vector_table_name,
-                )
-
-            records_table, vector_table_name = await self._ensure_collection_tables(
-                session, namespace, name, config
-            )
-            session.add(
-                _CollectionRow(
-                    namespace=namespace,
-                    name=name,
-                    config_json=config.model_dump(mode="json"),
-                )
-            )
-
-        return SQLiteVecVectorStoreCollection(
-            create_session=self._create_session,
-            config=config,
-            records_table=records_table,
-            vector_table_name=vector_table_name,
-        )
 
     @override
     async def open_collection(

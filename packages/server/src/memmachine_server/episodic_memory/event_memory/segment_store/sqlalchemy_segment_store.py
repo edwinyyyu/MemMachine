@@ -90,7 +90,6 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
 from memmachine_server.episodic_memory.event_memory.segment_store.data_types import (
     SegmentStorePartitionAlreadyExistsError,
     SegmentStorePartitionConfig,
-    SegmentStorePartitionConfigMismatchError,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.segment_store import (
     SegmentStore,
@@ -850,73 +849,6 @@ class SQLAlchemySegmentStore(SegmentStore):
             return await self._partition_from_partition_row(partition_row)
 
     @override
-    async def open_or_create_partition(
-        self,
-        partition_key: str,
-        config: SegmentStorePartitionConfig,
-    ) -> SQLAlchemySegmentStorePartition:
-        SQLAlchemySegmentStore._validate_partition_key(partition_key)
-        async with self._tracker("open_or_create_partition"):
-            return await self._open_or_create_partition(partition_key, config)
-
-    async def _open_or_create_partition(
-        self,
-        partition_key: str,
-        config: SegmentStorePartitionConfig,
-    ) -> SQLAlchemySegmentStorePartition:
-        try:
-            async with self._create_session() as session, session.begin():
-                if self._is_postgresql:
-                    await session.execute(
-                        SQLAlchemySegmentStore._PG_LOCK_PARTITIONS_TABLE
-                    )
-
-                partition_row = await SQLAlchemySegmentStore._get_partition_row(
-                    session, partition_key
-                )
-                if partition_row is None:
-                    payload_codec = await self._load_payload_codec(config)
-                    await session.execute(
-                        insert(PartitionRow).values(
-                            partition_key=partition_key,
-                            payload_codec_config=encode_payload_codec_config(
-                                config.payload_codec_config
-                            ),
-                        )
-                    )
-                    if self._is_postgresql:
-                        connection = await session.connection()
-                        await SQLAlchemySegmentStore._create_pg_child_tables(
-                            connection, partition_key
-                        )
-
-                    return SQLAlchemySegmentStorePartition(
-                        partition_key=partition_key,
-                        engine=self._engine,
-                        config=config,
-                        payload_codec=payload_codec,
-                        tracker=self._tracker,
-                    )
-
-                SQLAlchemySegmentStore._raise_if_partition_config_mismatch(
-                    partition_row, config
-                )
-                return await self._partition_from_partition_row(partition_row)
-
-        except IntegrityError:
-            pass  # Concurrent creation: partition now exists.
-
-        async with self._create_session() as session:
-            partition_row = await SQLAlchemySegmentStore._get_partition_row(
-                session, partition_key
-            )
-        if partition_row is None:
-            raise RuntimeError(f"Partition {partition_key!r} could not be opened")
-
-        self._raise_if_partition_config_mismatch(partition_row, config)
-        return await self._partition_from_partition_row(partition_row)
-
-    @override
     async def close_partition(
         self, segment_store_partition: SegmentStorePartition
     ) -> None:
@@ -1022,24 +954,6 @@ class SQLAlchemySegmentStore(SegmentStore):
                 select(PartitionRow).where(PartitionRow.partition_key == partition_key)
             )
         ).scalar_one_or_none()
-
-    @staticmethod
-    def _raise_if_partition_config_mismatch(
-        partition_row: PartitionRow,
-        config: SegmentStorePartitionConfig,
-    ) -> None:
-        """Raise if an existing partition row does not match the requested config."""
-        existing_config = SegmentStorePartitionConfig(
-            payload_codec_config=decode_payload_codec_config(
-                partition_row.payload_codec_config
-            )
-        )
-        if existing_config != config:
-            raise SegmentStorePartitionConfigMismatchError(
-                partition_row.partition_key,
-                existing_config,
-                config,
-            )
 
     @staticmethod
     async def _create_pg_child_tables(

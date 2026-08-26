@@ -55,7 +55,6 @@ from .data_types import (
     Record,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
-    VectorStoreCollectionConfigMismatchError,
 )
 from .utils import validate_filter, validate_identifier
 from .vector_store import VectorStore, VectorStoreCollection
@@ -776,50 +775,6 @@ class QdrantVectorStore(VectorStore):
                 )
             except CollectionAlreadyRegisteredError as e:
                 raise VectorStoreCollectionAlreadyExistsError(namespace, name) from e
-
-    @override
-    async def open_or_create_collection(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
-    ) -> QdrantVectorStoreCollection:
-        """Open the collection if it exists, or create and return it."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        async with (
-            self._client_name_locks[(namespace, name)],
-            self._tracker("open_or_create_collection"),
-        ):
-            existing_entry = await self._registry.get(namespace=namespace, name=name)
-            if existing_entry is not None:
-                if existing_entry.config != config:
-                    raise VectorStoreCollectionConfigMismatchError(
-                        namespace, name, existing_entry.config, config
-                    )
-                return self._build_collection_handle(existing_entry)
-
-            entry = QdrantVectorStore._build_collection_entry(namespace, name, config)
-            await self._create_native_collection(namespace, config)
-            if self._is_distributed:
-                await self._ensure_shard_key(
-                    entry.native_collection_name, entry.partition_key
-                )
-            stored_entry, registered = await self._registry.get_or_register(
-                namespace=namespace, name=name, entry=entry
-            )
-            if not registered and stored_entry.config != config:
-                raise VectorStoreCollectionConfigMismatchError(
-                    namespace, name, stored_entry.config, config
-                )
-            return self._build_collection_handle(stored_entry)
 
     @override
     async def open_collection(

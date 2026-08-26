@@ -21,7 +21,6 @@ from memmachine_server.common.vector_store.data_types import (
     Record,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
-    VectorStoreCollectionConfigMismatchError,
 )
 from memmachine_server.common.vector_store.sqlite_vec_vector_store import (
     SQLiteVecVectorStore,
@@ -37,6 +36,14 @@ pytestmark = pytest.mark.skipif(
 NAMESPACE = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
+
+
+async def _create_and_open(store, *, namespace, name, config):
+    """Create a collection and open a handle to it."""
+    await store.create_collection(namespace=namespace, name=name, config=config)
+    coll = await store.open_collection(namespace=namespace, name=name)
+    assert coll is not None
+    return coll
 
 
 def _normalize(vector: list[float]) -> list[float]:
@@ -134,42 +141,6 @@ class TestCollectionLifecycle:
     @pytest.mark.asyncio
     async def test_delete_nonexistent_is_idempotent(self, store):
         await store.delete_collection(namespace=NAMESPACE, name="nonexistent")
-
-    @pytest.mark.asyncio
-    async def test_open_or_create_creates_when_missing(self, store):
-        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        coll = await store.open_or_create_collection(
-            namespace=NAMESPACE, name="new", config=config
-        )
-        assert isinstance(coll, SQLiteVecVectorStoreCollection)
-        await store.delete_collection(namespace=NAMESPACE, name="new")
-
-    @pytest.mark.asyncio
-    async def test_open_or_create_opens_when_exists(self, store):
-        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        await store.create_collection(
-            namespace=NAMESPACE, name="existing", config=config
-        )
-        coll = await store.open_or_create_collection(
-            namespace=NAMESPACE, name="existing", config=config
-        )
-        assert isinstance(coll, SQLiteVecVectorStoreCollection)
-        await store.delete_collection(namespace=NAMESPACE, name="existing")
-
-    @pytest.mark.asyncio
-    async def test_open_or_create_raises_on_config_mismatch(self, store):
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="mismatch",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        with pytest.raises(VectorStoreCollectionConfigMismatchError):
-            await store.open_or_create_collection(
-                namespace=NAMESPACE,
-                name="mismatch",
-                config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM + 1),
-            )
-        await store.delete_collection(namespace=NAMESPACE, name="mismatch")
 
     @pytest.mark.asyncio
     async def test_open_nonexistent_returns_none(self, store):
@@ -830,11 +801,11 @@ class TestPartitionIsolation:
     async def test_delete_collection_does_not_affect_sibling(self, store):
         """Deleting one collection doesn't break a sibling sharing tables."""
         config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        coll_a = await store.open_or_create_collection(
-            namespace=NAMESPACE, name="sibling_a", config=config
+        coll_a = await _create_and_open(
+            store, namespace=NAMESPACE, name="sibling_a", config=config
         )
-        coll_b = await store.open_or_create_collection(
-            namespace=NAMESPACE, name="sibling_b", config=config
+        coll_b = await _create_and_open(
+            store, namespace=NAMESPACE, name="sibling_b", config=config
         )
 
         v1 = _normalize([1.0, 0.0, 0.0])
@@ -862,8 +833,8 @@ class TestEuclideanMetric:
             vector_dimensions=2,
             similarity_metric=SimilarityMetric.EUCLIDEAN,
         )
-        coll = await store.open_or_create_collection(
-            namespace=NAMESPACE, name="euclidean", config=config
+        coll = await _create_and_open(
+            store, namespace=NAMESPACE, name="euclidean", config=config
         )
         r1 = _make_record(vector=[0.0, 0.0])
         r2 = _make_record(vector=[3.0, 4.0])
@@ -882,8 +853,8 @@ class TestNoProperties:
     @pytest.mark.asyncio
     async def test_collection_without_properties(self, store):
         config = VectorStoreCollectionConfig(vector_dimensions=2)
-        coll = await store.open_or_create_collection(
-            namespace=NAMESPACE, name="no_props", config=config
+        coll = await _create_and_open(
+            store, namespace=NAMESPACE, name="no_props", config=config
         )
         r1 = _make_record(vector=[1.0, 0.0])
         await coll.upsert(records=[r1])
@@ -938,8 +909,8 @@ class TestScoreSemantics:
             vector_dimensions=2,
             similarity_metric=SimilarityMetric.EUCLIDEAN,
         )
-        coll = await store.open_or_create_collection(
-            namespace=NAMESPACE, name="euclidean_score", config=config
+        coll = await _create_and_open(
+            store, namespace=NAMESPACE, name="euclidean_score", config=config
         )
         r1 = _make_record(vector=[0.0, 0.0])
         r2 = _make_record(vector=[3.0, 4.0])
