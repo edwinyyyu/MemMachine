@@ -1,7 +1,7 @@
 """Abstract base class for a vector search engine."""
 
 from abc import ABC, abstractmethod
-from collections.abc import Container, Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 
@@ -65,22 +65,23 @@ class VectorSearchEngine(ABC):
         vectors: Iterable[Sequence[float]],
         *,
         limit: int,
-        allowed_keys: Container[int] | None = None,
+        allowlist: Collection[int] | None = None,
     ) -> list[SearchResult]:
         """
         Search for vectors similar to the query vectors.
 
-        Results may be approximate depending on the engine implementation.
+        Results may be approximate depending on the engine implementation,
+        with or without an allowlist.
 
         Args:
             vectors (Iterable[Sequence[float]]):
                 Query vectors.
             limit (int):
                 Maximum number of results per query.
-            allowed_keys (Container[int] | None):
-                If provided, only return results whose keys
-                are in this container. The container's ``__contains__``
-                is called synchronously per candidate during search
+            allowlist (Collection[int] | None):
+                If provided, restrict results to these keys.
+                Keys that do not exist are ignored;
+                an empty allowlist returns no results
                 (default: None).
 
         Returns:
@@ -90,18 +91,32 @@ class VectorSearchEngine(ABC):
         """
 
     @abstractmethod
-    async def get_vectors(self, keys: Iterable[int]) -> dict[int, list[float]]:
+    async def get_cosine_similarities(
+        self,
+        query_vector: Sequence[float],
+        keys: Iterable[int],
+    ) -> dict[int, float]:
         """
-        Retrieve vectors by key.
+        Get cosine similarities between a query vector and vectors by key.
+
+        Every key the engine can score is returned; keys it cannot score
+        are omitted. Engines with keyed vector access answer this more
+        cheaply than a search.
+
+        Similarities may be computed from quantized stored vectors,
+        so they may not be faithful to similarities computed
+        with a fresh embedding.
 
         Args:
+            query_vector (Sequence[float]):
+                The vector to compare against.
             keys (Iterable[int]):
-                Keys of vectors to retrieve.
+                Keys of vectors to compare.
 
         Returns:
-            dict[int, list[float]]:
-                Mapping of key to vector for keys that exist.
-                Missing keys are omitted.
+            dict[int, float]:
+                Mapping of key to cosine similarity in [-1, 1]
+                for keys that exist. Missing keys are omitted.
         """
 
     @abstractmethod

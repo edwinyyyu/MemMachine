@@ -152,6 +152,22 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         return result
 
     @override
+    async def get_segment_uuids_by_derivative_uuids(
+        self,
+        derivative_uuids: Iterable[UUID],
+    ) -> dict[UUID, UUID]:
+        derivative_to_segment = {
+            derivative_uuid: segment_uuid
+            for segment_uuid, segment_derivatives in self.segment_to_derivatives.items()
+            for derivative_uuid in segment_derivatives
+        }
+        return {
+            derivative_uuid: derivative_to_segment[derivative_uuid]
+            for derivative_uuid in derivative_uuids
+            if derivative_uuid in derivative_to_segment
+        }
+
+    @override
     async def delete_segments(
         self,
         segment_uuids: Iterable[UUID],

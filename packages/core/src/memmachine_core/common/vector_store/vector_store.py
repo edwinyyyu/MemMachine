@@ -26,7 +26,9 @@ class VectorStoreCollection(ABC):
     Identified by a (namespace, name) pair.
     All data operations are scoped to this logical collection.
 
-    Implementations must support storing, filtering on, and returning
+    Record properties are stored and filtered on, never returned:
+    queries return record UUIDs and cosine similarities.
+    Implementations must support storing and filtering on
     record properties not declared in the configured indexed properties schema.
 
     The schema exists to support indexing on fixed-type record properties.
@@ -68,8 +70,6 @@ class VectorStoreCollection(ABC):
         limit: int,
         min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         """
         Query for records matching the criteria by query vectors.
@@ -87,12 +87,6 @@ class VectorStoreCollection(ABC):
                 Filter expression tree.
                 If None or empty, no property filtering is applied
                 (default: None).
-            return_vector (bool):
-                Whether to include the vector in the returned records
-                (default: False).
-            return_properties (bool):
-                Whether to include the properties in the returned records
-                (default: True).
 
         Returns:
             list[QueryResult]:
@@ -102,30 +96,29 @@ class VectorStoreCollection(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get(
+    async def get_cosine_similarity(
         self,
         *,
+        query_vector: Sequence[float],
         record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
+    ) -> dict[UUID, float]:
         """
-        Get records from the collection by their UUIDs.
+        Get cosine similarities between a query vector and records' vectors.
+
+        Similarities may be computed from quantized stored vectors,
+        so they may not be faithful to similarities computed
+        with a fresh embedding.
 
         Args:
+            query_vector (Sequence[float]):
+                The vector to compare against.
             record_uuids (Iterable[UUID]):
-                Iterable of UUIDs of the records to retrieve.
-            return_vector (bool):
-                Whether to include the vector in the returned records
-                (default: False).
-            return_properties (bool):
-                Whether to include the properties in the returned records
-                (default: True).
+                UUIDs of the records to compare.
 
         Returns:
-            list[Record]:
-                Iterable of records with the specified UUIDs,
-                ordered as in the input iterable.
+            dict[UUID, float]:
+                Mapping of record UUID to cosine similarity in [-1, 1].
+                UUIDs without a stored record are omitted.
         """
         raise NotImplementedError
 

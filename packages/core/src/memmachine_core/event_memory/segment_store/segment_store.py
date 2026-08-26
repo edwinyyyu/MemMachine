@@ -105,6 +105,27 @@ class SegmentStorePartition(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_segment_uuids_by_derivative_uuids(
+        self,
+        derivative_uuids: Iterable[UUID],
+    ) -> dict[UUID, UUID]:
+        """
+        Get owning segment UUIDs for the derivatives given by their UUIDs.
+
+        Args:
+            derivative_uuids (Iterable[UUID]):
+                The UUIDs of the derivatives for which to retrieve
+                the UUIDs of their owning segments.
+
+        Returns:
+            dict[UUID, UUID]:
+                A mapping from each derivative UUID
+                to the UUID of its owning segment.
+                Unknown derivative UUIDs are omitted.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def delete_segments(
         self,
         segment_uuids: Iterable[UUID],

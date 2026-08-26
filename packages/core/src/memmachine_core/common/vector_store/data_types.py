@@ -105,38 +105,36 @@ class VectorStoreCollectionConfigMismatchError(Exception):
 
 class Record(BaseModel):
     """
-    A record in the vector store.
+    A record to store in the vector store.
+
+    Records are input to `upsert` only:
+    queries return record UUIDs and cosine similarities, not records.
 
     Attributes:
         uuid (UUID):
             Unique identifier for the record.
-        vector (list[float] | None):
+        vector (list[float]):
             Vector for similarity search.
-            `None` is not allowed on input.
-            `None` on output means the vector was not requested (`return_vector=False`)
-            (default: None).
-        properties (dict[str, PropertyValue] | None):
+        properties (dict[str, PropertyValue]):
             Property key-value pairs.
-            Use `{}` to represent missing properties; `None` on input is treated as `{}`.
-            `None` on output means the properties were not requested (`return_properties=False`)
-            (default: None).
+            Stored for property filtering; never returned
+            (default: `{}`).
     """
 
     uuid: UUID
-    vector: list[float] | None = None
-    properties: dict[str, PropertyValue] | None = None
+    vector: list[float]
+    properties: dict[str, PropertyValue] = Field(default_factory=dict)
 
-    @field_validator("properties")
+    @field_validator("properties", mode="after")
     @classmethod
     def _validate_property_keys(
-        cls, v: dict[str, PropertyValue] | None
-    ) -> dict[str, PropertyValue] | None:
-        if v:
-            for key in v:
-                if not validate_identifier(key):
-                    raise ValueError(
-                        f"Property key {key!r} must match [a-z0-9_]+ and be at most 32 bytes"
-                    )
+        cls, v: dict[str, PropertyValue]
+    ) -> dict[str, PropertyValue]:
+        for key in v:
+            if not validate_identifier(key):
+                raise ValueError(
+                    f"Property key {key!r} must match [a-z0-9_]+ and be at most 32 bytes"
+                )
         return v
 
     def __hash__(self) -> int:
@@ -152,12 +150,12 @@ class QueryMatch(BaseModel):
         cosine_similarity (float):
             Cosine similarity between the query vector and the matched
             record's vector, in [-1, 1]. Higher is a better match.
-        record (Record):
-            The matched record.
+        record_uuid (UUID):
+            UUID of the matched record.
     """
 
     cosine_similarity: float
-    record: Record
+    record_uuid: UUID
 
 
 class QueryResult(BaseModel):

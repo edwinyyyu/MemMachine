@@ -2,7 +2,7 @@
 
 import asyncio
 import math
-from collections.abc import Container, Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import ClassVar, override
 
 import numpy as np
@@ -29,8 +29,6 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
 
     _VALID_BIT_WIDTHS: ClassVar[frozenset[int]] = frozenset({2, 3, 4})
     _DEFAULT_BIT_WIDTH: ClassVar[int] = 4
-
-    _OVERFETCH_BASE: ClassVar[int] = 4
 
     def __init__(
         self,
@@ -68,74 +66,52 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
         vectors: Iterable[Sequence[float]],
         *,
         limit: int,
-        allowed_keys: Container[int] | None = None,
+        allowlist: Collection[int] | None = None,
     ) -> list[SearchResult]:
         vectors = list(vectors)
-        if not vectors or limit <= 0:
+        if not vectors or limit <= 0 or (allowlist is not None and not allowlist):
             return [SearchResult(matches=[]) for _ in vectors]
         async with self._lock.read_lock():
-            return await asyncio.to_thread(
-                self._sync_search, vectors, limit, allowed_keys
-            )
+            return await asyncio.to_thread(self._sync_search, vectors, limit, allowlist)
 
     def _sync_search(
         self,
         vectors: Sequence[Sequence[float]],
         limit: int,
-        allowed_keys: Container[int] | None,
+        allowlist: Collection[int] | None,
     ) -> list[SearchResult]:
         query = self._prepare_vectors(vectors)
 
-        if allowed_keys is None:
-            inner_products, ids = self._index.search(query, limit)
-            return [
-                SearchResult(
-                    matches=self._to_matches(inner_products[i], ids[i], limit, None)
-                )
-                for i in range(query.shape[0])
+        if allowlist is not None:
+            # The native search raises KeyError on absent allowlist ids;
+            # drop them to ignore.
+            present_keys = [
+                key
+                for key in {int(key) for key in allowlist}
+                if self._index.contains(key)
             ]
+            if not present_keys:
+                return [SearchResult(matches=[]) for _ in vectors]
+            inner_products, ids = self._index.search(
+                query, limit, allowlist=np.array(present_keys, dtype=np.uint64)
+            )
+        else:
+            inner_products, ids = self._index.search(query, limit)
 
         return [
-            self._search_one_filtered(query[i : i + 1], limit, allowed_keys)
+            SearchResult(
+                matches=[
+                    SearchMatch(
+                        key=int(key),
+                        cosine_similarity=self._to_cosine_similarity(inner_product),
+                    )
+                    for inner_product, key in zip(
+                        inner_products[i], ids[i], strict=True
+                    )
+                ]
+            )
             for i in range(query.shape[0])
         ]
-
-    def _search_one_filtered(
-        self,
-        query: np.ndarray,
-        limit: int,
-        allowed_keys: Container[int],
-    ) -> SearchResult:
-        fetch_limit = limit * self._OVERFETCH_BASE
-        while True:
-            inner_products, ids = self._index.search(query, fetch_limit)
-            matches = self._to_matches(inner_products[0], ids[0], limit, allowed_keys)
-            exhausted = ids.shape[1] < fetch_limit
-            if len(matches) >= limit or exhausted:
-                return SearchResult(matches=matches)
-            fetch_limit *= self._OVERFETCH_BASE
-
-    def _to_matches(
-        self,
-        inner_products: Iterable[float],
-        keys: Iterable[int],
-        limit: int,
-        allowed_keys: Container[int] | None,
-    ) -> list[SearchMatch]:
-        matches: list[SearchMatch] = []
-        for inner_product, key in zip(inner_products, keys, strict=True):
-            int_key = int(key)
-            if allowed_keys is not None and int_key not in allowed_keys:
-                continue
-            matches.append(
-                SearchMatch(
-                    key=int_key,
-                    cosine_similarity=self._to_cosine_similarity(inner_product),
-                )
-            )
-            if len(matches) >= limit:
-                break
-        return matches
 
     @staticmethod
     def _to_cosine_similarity(inner_product: float) -> float:
@@ -154,11 +130,22 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
         return array / norms
 
     @override
-    async def get_vectors(self, keys: Iterable[int]) -> dict[int, list[float]]:
-        raise NotImplementedError(
-            "turbovec stores only TurboQuant-compressed vectors; "
-            "the original vectors cannot be retrieved"
-        )
+    async def get_cosine_similarities(
+        self,
+        query_vector: Sequence[float],
+        keys: Iterable[int],
+    ) -> dict[int, float]:
+        # turbovec has no keyed vector access, so this leans on the native
+        # allowlist search, which returns min(k, allowed) matches -- with
+        # k = len(keys), every present key comes back.
+        key_set = {int(key) for key in keys}
+        if not key_set:
+            return {}
+        async with self._lock.read_lock():
+            [result] = await asyncio.to_thread(
+                self._sync_search, [query_vector], len(key_set), key_set
+            )
+        return {match.key: match.cosine_similarity for match in result.matches}
 
     @override
     async def remove(self, keys: Iterable[int]) -> None:

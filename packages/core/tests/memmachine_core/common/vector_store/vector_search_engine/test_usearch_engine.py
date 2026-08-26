@@ -98,6 +98,92 @@ class TestRemove:
         assert result.matches[0].key == 1
 
 
+# -- Search: allowlist --
+
+
+class TestSearchAllowlist:
+    @pytest.mark.asyncio
+    async def test_allowlist_restricts_results(self):
+        engine = USearchVectorSearchEngine(num_dimensions=NDIM)
+        await engine.add(
+            {
+                1: _normalize([1, 0, 0]),
+                2: _normalize([0, 1, 0]),
+                3: _normalize([0, 0, 1]),
+            }
+        )
+        result = await _search_one(
+            engine, _normalize([1, 0, 0]), limit=3, allowlist=[2, 3]
+        )
+        assert {m.key for m in result.matches} == {2, 3}
+
+    @pytest.mark.asyncio
+    async def test_allowlist_excludes_best_match(self):
+        engine = USearchVectorSearchEngine(num_dimensions=NDIM)
+        await engine.add(
+            {
+                1: _normalize([1, 0, 0]),
+                2: _normalize([0, 1, 0]),
+                3: _normalize([0, 0, 1]),
+            }
+        )
+        result = await _search_one(
+            engine, _normalize([1, 0, 0]), limit=1, allowlist=[2, 3]
+        )
+        assert len(result.matches) == 1
+        assert result.matches[0].key in {2, 3}
+
+    @pytest.mark.asyncio
+    async def test_empty_allowlist_returns_nothing(self):
+        engine = USearchVectorSearchEngine(num_dimensions=NDIM)
+        await engine.add({1: _normalize([1, 0, 0])})
+        result = await _search_one(engine, _normalize([1, 0, 0]), limit=1, allowlist=[])
+        assert result.matches == []
+
+    @pytest.mark.asyncio
+    async def test_missing_allowlist_keys_ignored(self):
+        engine = USearchVectorSearchEngine(num_dimensions=NDIM)
+        await engine.add({1: _normalize([1, 0, 0])})
+        result = await _search_one(
+            engine, _normalize([1, 0, 0]), limit=2, allowlist=[1, 99]
+        )
+        assert [m.key for m in result.matches] == [1]
+
+
+# -- get_cosine_similarities --
+
+
+class TestGetCosineSimilarities:
+    @pytest.mark.asyncio
+    async def test_similarities_by_key(self):
+        engine = USearchVectorSearchEngine(num_dimensions=NDIM)
+        await engine.add({1: _normalize([1, 0, 0]), 2: _normalize([0, 1, 0])})
+
+        similarities = await engine.get_cosine_similarities(
+            _normalize([1, 0, 0]), [1, 2]
+        )
+        assert set(similarities) == {1, 2}
+        assert similarities[1] == pytest.approx(1.0, abs=1e-4)
+        assert similarities[2] == pytest.approx(0.0, abs=1e-4)
+
+    @pytest.mark.asyncio
+    async def test_missing_keys_omitted(self):
+        engine = USearchVectorSearchEngine(num_dimensions=NDIM)
+        await engine.add({1: _normalize([1, 0, 0])})
+
+        similarities = await engine.get_cosine_similarities(
+            _normalize([1, 0, 0]), [1, 99]
+        )
+        assert set(similarities) == {1}
+
+    @pytest.mark.asyncio
+    async def test_empty_keys(self):
+        engine = USearchVectorSearchEngine(num_dimensions=NDIM)
+        await engine.add({1: _normalize([1, 0, 0])})
+
+        assert await engine.get_cosine_similarities(_normalize([1, 0, 0]), []) == {}
+
+
 # -- Search: Cosine --
 
 

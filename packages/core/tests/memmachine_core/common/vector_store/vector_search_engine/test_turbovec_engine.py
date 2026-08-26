@@ -258,12 +258,12 @@ class TestSearchCosine:
 # -- Search: Dot product --
 
 
-# -- Search: allowed_keys filtering --
+# -- Search: allowlist --
 
 
-class TestSearchFiltered:
+class TestSearchAllowlist:
     @pytest.mark.asyncio
-    async def test_allowed_keys_restricts_results(self):
+    async def test_allowlist_restricts_results(self):
         engine = _make_engine()
         await engine.add(
             {
@@ -274,12 +274,12 @@ class TestSearchFiltered:
             }
         )
         result = await _search_one(
-            engine, _normalize(_one_hot(0)), limit=4, allowed_keys={2, 3}
+            engine, _normalize(_one_hot(0)), limit=4, allowlist=[2, 3]
         )
         assert {m.key for m in result.matches} == {2, 3}
 
     @pytest.mark.asyncio
-    async def test_allowed_keys_excludes_best_match(self):
+    async def test_allowlist_excludes_best_match(self):
         engine = _make_engine()
         await engine.add(
             {
@@ -289,45 +289,86 @@ class TestSearchFiltered:
             }
         )
         result = await _search_one(
-            engine, _normalize(_one_hot(0)), limit=1, allowed_keys={2, 3}
+            engine, _normalize(_one_hot(0)), limit=1, allowlist=[2, 3]
         )
         assert len(result.matches) == 1
         assert result.matches[0].key in {2, 3}
 
     @pytest.mark.asyncio
-    async def test_allowed_keys_empty_returns_nothing(self):
+    async def test_empty_allowlist_returns_nothing(self):
         engine = _make_engine()
-        await engine.add({1: _normalize(_one_hot(0)), 2: _normalize(_one_hot(1))})
+        await engine.add({1: _normalize(_one_hot(0))})
         result = await _search_one(
-            engine, _normalize(_one_hot(0)), limit=2, allowed_keys=set()
+            engine, _normalize(_one_hot(0)), limit=1, allowlist=[]
         )
         assert result.matches == []
 
     @pytest.mark.asyncio
-    async def test_allowed_keys_found_beyond_overfetch_window(self):
+    async def test_missing_allowlist_keys_ignored(self):
         engine = _make_engine()
-        vectors = {
-            index: _normalize(_one_hot(index % NDIM, value=1.0 + index))
-            for index in range(2 * NDIM)
-        }
+        await engine.add({1: _normalize(_one_hot(0))})
+        result = await _search_one(
+            engine, _normalize(_one_hot(0)), limit=2, allowlist=[1, 12345]
+        )
+        assert [m.key for m in result.matches] == [1]
+
+    @pytest.mark.asyncio
+    async def test_low_ranked_allowed_key_found(self):
+        engine = _make_engine()
+        vectors = {index: _spread(index) for index in range(2 * NDIM)}
         await engine.add(vectors)
+
         target = 2 * NDIM - 1
         result = await _search_one(
-            engine, _normalize(_one_hot(0)), limit=1, allowed_keys={target}
+            engine, _normalize(_one_hot(0)), limit=1, allowlist=[target]
         )
         assert [m.key for m in result.matches] == [target]
 
 
-# -- get_vectors --
+# -- get_cosine_similarities --
 
 
-class TestGetVectors:
+class TestGetCosineSimilarities:
     @pytest.mark.asyncio
-    async def test_get_vectors_raises(self):
+    async def test_similarities_by_key(self):
+        engine = _make_engine()
+        await engine.add({1: _normalize(_one_hot(0)), 2: _normalize(_one_hot(1))})
+
+        similarities = await engine.get_cosine_similarities(
+            _normalize(_one_hot(0)), [1, 2]
+        )
+        assert set(similarities) == {1, 2}
+        assert similarities[1] == pytest.approx(1.0, abs=QUANT_ABS)
+        assert similarities[2] == pytest.approx(0.0, abs=QUANT_ABS)
+
+    @pytest.mark.asyncio
+    async def test_missing_keys_omitted(self):
         engine = _make_engine()
         await engine.add({1: _normalize(_one_hot(0))})
-        with pytest.raises(NotImplementedError, match="cannot be retrieved"):
-            await engine.get_vectors([1])
+
+        similarities = await engine.get_cosine_similarities(
+            _normalize(_one_hot(0)), [1, 99]
+        )
+        assert set(similarities) == {1}
+
+    @pytest.mark.asyncio
+    async def test_empty_keys(self):
+        engine = _make_engine()
+        await engine.add({1: _normalize(_one_hot(0))})
+
+        assert await engine.get_cosine_similarities(_normalize(_one_hot(0)), []) == {}
+
+    @pytest.mark.asyncio
+    async def test_low_ranked_keys_included(self):
+        engine = _make_engine()
+        vectors = {index: _spread(index) for index in range(2 * NDIM)}
+        await engine.add(vectors)
+
+        target = 2 * NDIM - 1
+        similarities = await engine.get_cosine_similarities(
+            _normalize(_one_hot(0)), [target]
+        )
+        assert set(similarities) == {target}
 
 
 # -- Persistence --

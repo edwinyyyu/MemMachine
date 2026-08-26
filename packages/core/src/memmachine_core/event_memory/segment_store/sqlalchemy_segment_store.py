@@ -648,6 +648,29 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             result[segment_uuid].append(derivative_uuid)
         return dict(result)
 
+    @override
+    async def get_segment_uuids_by_derivative_uuids(
+        self,
+        derivative_uuids: Iterable[UUID],
+    ) -> dict[UUID, UUID]:
+        derivative_uuids = set(derivative_uuids)
+        if not derivative_uuids:
+            return {}
+
+        async with (
+            self._tracker("get_segment_uuids_by_derivative_uuids"),
+            self._create_session() as session,
+        ):
+            query = select(
+                DerivativeLinkRow.uuid, DerivativeLinkRow.segment_uuid
+            ).where(
+                DerivativeLinkRow.partition_key == self._partition_key,
+                DerivativeLinkRow.uuid.in_(derivative_uuids),
+            )
+            rows = (await session.execute(query)).all()
+
+        return {row.uuid: row.segment_uuid for row in rows}
+
     # Deletion
 
     @override

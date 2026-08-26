@@ -112,8 +112,8 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
         for record in records:
             self.records[record.uuid] = Record(
                 uuid=record.uuid,
-                vector=list(record.vector) if record.vector is not None else None,
-                properties=dict(record.properties) if record.properties else {},
+                vector=list(record.vector),
+                properties=dict(record.properties),
             )
 
     async def query(
@@ -123,18 +123,14 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
         min_cosine_similarity: float | None = None,
         limit: int | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         results: list[QueryResult] = []
         for query_vector in query_vectors:
             qv = list(query_vector)
             matches: list[QueryMatch] = []
             for record in self.records.values():
-                if record.vector is None:
-                    continue
                 if property_filter is not None and not evaluate_filter(
-                    property_filter, record.properties or {}
+                    property_filter, record.properties
                 ):
                     continue
                 cosine_similarity = _cosine_similarity(qv, record.vector)
@@ -146,9 +142,7 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
                 matches.append(
                     QueryMatch(
                         cosine_similarity=cosine_similarity,
-                        record=self._project_record(
-                            record, return_vector, return_properties
-                        ),
+                        record_uuid=record.uuid,
                     )
                 )
             matches.sort(key=lambda m: m.cosine_similarity, reverse=True)
@@ -157,40 +151,21 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
             results.append(QueryResult(matches=matches))
         return results
 
-    async def get(
+    async def get_cosine_similarity(
         self,
         *,
+        query_vector: Sequence[float],
         record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
-        out: list[Record] = []
+    ) -> dict[UUID, float]:
+        qv = list(query_vector)
+        similarities: dict[UUID, float] = {}
         for uid in record_uuids:
             record = self.records.get(uid)
             if record is None:
                 continue
-            out.append(self._project_record(record, return_vector, return_properties))
-        return out
+            similarities[uid] = _cosine_similarity(qv, record.vector)
+        return similarities
 
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
         for uid in record_uuids:
             self.records.pop(uid, None)
-
-    @staticmethod
-    def _project_record(
-        record: Record, return_vector: bool, return_properties: bool
-    ) -> Record:
-        """Return a copy of the record with only the requested fields."""
-        return Record(
-            uuid=record.uuid,
-            vector=(
-                list(record.vector)
-                if return_vector and record.vector is not None
-                else None
-            ),
-            properties=(
-                dict(record.properties)
-                if return_properties and record.properties
-                else None
-            ),
-        )

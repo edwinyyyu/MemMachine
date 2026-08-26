@@ -41,7 +41,7 @@ from memmachine_core.common.filter.filter_parser import (
     Or as FilterOr,
 )
 from memmachine_core.common.metrics_factory import MetricsFactory, OperationTracker
-from memmachine_core.common.utils import ensure_tz_aware
+from memmachine_core.common.utils import compute_cosine_similarity, ensure_tz_aware
 
 from .data_types import (
     QueryMatch,
@@ -269,27 +269,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                     payload[key] = value
         return payload
 
-    def _parse_payload(
-        self,
-        payload: dict[str, Any] | None,
-    ) -> dict[str, PropertyValue] | None:
-        """Parse record properties from Qdrant payload."""
-        if payload is None:
-            return None
-
-        indexed_properties_schema = self._config.indexed_properties_schema
-        result: dict[str, PropertyValue] = {}
-        for key, value in payload.items():
-            if key == _PAYLOAD_PARTITION_KEY or value is None:
-                continue
-            if indexed_properties_schema.get(key) is datetime and isinstance(
-                value, str
-            ):
-                result[key] = datetime.fromisoformat(value)
-            else:
-                result[key] = cast(PropertyValue, value)
-        return result
-
     @override
     async def upsert(
         self,
@@ -298,20 +277,14 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     ) -> None:
         """Upsert records into the collection."""
         async with self._tracker("upsert"):
-            points: list[models.PointStruct] = []
-            for record in records:
-                if record.vector is None:
-                    raise ValueError(
-                        f"Record {record.uuid} has vector=None, which is not allowed on input."
-                    )
-                properties = record.properties if record.properties is not None else {}
-                points.append(
-                    models.PointStruct(
-                        id=record.uuid,
-                        vector=record.vector,
-                        payload=self._build_payload(properties),
-                    )
+            points = [
+                models.PointStruct(
+                    id=record.uuid,
+                    vector=record.vector,
+                    payload=self._build_payload(record.properties),
                 )
+                for record in records
+            ]
             if points:
                 await self._upsert_with_backoff(points)
 
@@ -339,8 +312,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         limit: int,
         min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         """Query for records matching the criteria by query vectors."""
         async with self._tracker("query"):
@@ -368,8 +339,8 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                     filter=qdrant_filter,
                     score_threshold=min_cosine_similarity,
                     limit=limit,
-                    with_vector=return_vector,
-                    with_payload=return_properties,
+                    with_vector=False,
+                    with_payload=False,
                 )
                 for query_vector in query_vectors
             ]
@@ -379,88 +350,59 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                 requests=requests,
             )
 
-            query_results: list[QueryResult] = []
-            for batch in batch_results:
-                matches: list[QueryMatch] = []
-                for point in batch.points:
-                    vector: list[float] | None = None
-                    if return_vector and point.vector is not None:
-                        vector = cast(list[float], point.vector)
-
-                    properties: dict[str, PropertyValue] | None = None
-                    if return_properties and point.payload is not None:
-                        properties = self._parse_payload(point.payload)
-
-                    matches.append(
+            return [
+                QueryResult(
+                    matches=[
                         QueryMatch(
                             cosine_similarity=point.score,
-                            record=Record(
-                                uuid=UUID(str(point.id)),
-                                vector=vector,
-                                properties=properties,
-                            ),
-                        ),
-                    )
-                query_results.append(QueryResult(matches=matches))
-
-            return query_results
+                            record_uuid=UUID(str(point.id)),
+                        )
+                        for point in batch.points
+                    ]
+                )
+                for batch in batch_results
+            ]
 
     @override
-    async def get(
+    async def get_cosine_similarity(
         self,
         *,
+        query_vector: Sequence[float],
         record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
-        """Get records from the collection by their UUIDs."""
-        async with self._tracker("get"):
+    ) -> dict[UUID, float]:
+        """Get cosine similarities by fetching stored vectors and computing locally."""
+        async with self._tracker("get_cosine_similarity"):
             uuid_list = list(record_uuids)
             if not uuid_list:
-                return []
+                return {}
 
-            # Always get payload so we can check partition_key.
+            # Retrieval by id is exact; an id-filtered ANN query is not
+            # guaranteed to return every matching point.
+            # Payload is fetched to check partition_key.
             points = await self._client.retrieve(
                 collection_name=self._collection_name,
                 ids=list(uuid_list),
-                with_vectors=return_vector,
+                with_vectors=True,
                 with_payload=True,
                 shard_key_selector=self._shard_key,
             )
 
-            points_by_uuid: dict[UUID, models.Record] = {
-                UUID(str(point.id)): point
-                for point in points
-                if point.payload
-                and cast(dict[str, Any], point.payload).get(_PAYLOAD_PARTITION_KEY)
-                == self._partition_key
-            }
-
-            records: list[Record] = []
-            for point_uuid in uuid_list:
-                point = points_by_uuid.get(point_uuid)
-                if point is None:
+            matched_uuids: list[UUID] = []
+            vectors: list[list[float]] = []
+            for point in points:
+                payload = point.payload
+                if (
+                    payload is None
+                    or payload.get(_PAYLOAD_PARTITION_KEY) != self._partition_key
+                ):
                     continue
+                if point.vector is None:
+                    continue
+                matched_uuids.append(UUID(str(point.id)))
+                vectors.append(cast(list[float], point.vector))
 
-                vector: list[float] | None = None
-                if return_vector and point.vector is not None:
-                    vector = cast(list[float], point.vector)
-
-                properties: dict[str, PropertyValue] | None = None
-                if return_properties and point.payload is not None:
-                    properties = self._parse_payload(
-                        cast(dict[str, Any] | None, point.payload),
-                    )
-
-                records.append(
-                    Record(
-                        uuid=point_uuid,
-                        vector=vector,
-                        properties=properties,
-                    ),
-                )
-
-            return records
+            similarities = compute_cosine_similarity(list(query_vector), vectors)
+            return dict(zip(matched_uuids, similarities, strict=True))
 
     @override
     async def delete(

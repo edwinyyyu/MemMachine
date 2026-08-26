@@ -6,7 +6,6 @@ Partition keys are avoided in favor of per-collection tables,
 since sqlite-vec ANN indexes may not support them.
 """
 
-import struct
 from collections.abc import Iterable, Mapping, Sequence
 from typing import ClassVar, override
 from uuid import UUID
@@ -33,13 +32,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, MappedColumn, mapped_column
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 
-from memmachine_core.common.data_types import PropertyValue
 from memmachine_core.common.filter.filter_parser import FilterExpr
 from memmachine_core.common.filter.sql_filter_util import compile_sql_filter
-from memmachine_core.common.properties_json import (
-    decode_properties,
-    encode_properties,
-)
+from memmachine_core.common.properties_json import encode_properties
 
 from .data_types import (
     QueryMatch,
@@ -94,11 +89,6 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         return sqlite_vec.serialize_float32(list(vector))
 
     @staticmethod
-    def _deserialize_vector(data: bytes) -> list[float]:
-        count = len(data) // 4
-        return list(struct.unpack(f"={count}f", data))
-
-    @staticmethod
     def _distance_to_cosine_similarity(distance: float) -> float:
         return 1.0 - distance
 
@@ -107,12 +97,6 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         records = list(records)
         if not records:
             return
-
-        for record in records:
-            if record.vector is None:
-                raise ValueError(
-                    f"Record {record.uuid} has vector=None, which is not allowed on input."
-                )
 
         async with self._create_session() as session, session.begin():
             upsert_records = (
@@ -141,15 +125,13 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
             ).all()
             uuid_to_rowid: dict[UUID, int] = {row.uuid: row.rowid for row in rows}
 
-            vector_params = []
-            for record in records:
-                assert record.vector is not None  # Validated above.
-                vector_params.append(
-                    {
-                        "rowid": uuid_to_rowid[record.uuid],
-                        "vector": self._serialize_vector(record.vector),
-                    }
-                )
+            vector_params = [
+                {
+                    "rowid": uuid_to_rowid[record.uuid],
+                    "vector": self._serialize_vector(record.vector),
+                }
+                for record in records
+            ]
             await session.execute(
                 text(f"DELETE FROM [{self._vector_table_name}] WHERE rowid = :rowid"),
                 vector_params,
@@ -173,8 +155,6 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         limit: int,
         min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         query_vectors = list(query_vectors)
         if not query_vectors:
@@ -212,8 +192,6 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
                     rowid_to_distance=rowid_to_distance,
                     min_cosine_similarity=min_cosine_similarity,
                     property_filter=property_filter,
-                    return_vector=return_vector,
-                    return_properties=return_properties,
                 )
                 results.append(QueryResult(matches=matches))
 
@@ -225,16 +203,12 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         rowid_to_distance: Mapping[int, float],
         min_cosine_similarity: float | None,
         property_filter: FilterExpr | None,
-        return_vector: bool,
-        return_properties: bool,
     ) -> list[QueryMatch]:
         matched_rowids = list(rowid_to_distance.keys())
 
-        selected_columns = [self._records_table.c.uuid, self._records_table.c.rowid]
-        if return_properties:
-            selected_columns.append(self._records_table.c.properties)
-
-        fetch_records = select(*selected_columns).where(
+        fetch_records = select(
+            self._records_table.c.uuid, self._records_table.c.rowid
+        ).where(
             self._records_table.c.rowid.in_(matched_rowids),
         )
         if property_filter is not None:
@@ -250,12 +224,6 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
 
         matched_rows = (await session.execute(fetch_records)).all()
 
-        rowid_to_vector: dict[int, list[float]] = {}
-        if return_vector:
-            rowid_to_vector = await self._fetch_vectors(
-                session, [row.rowid for row in matched_rows]
-            )
-
         matches: list[QueryMatch] = []
         for row in matched_rows:
             distance = rowid_to_distance.get(row.rowid)
@@ -269,93 +237,58 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
             ):
                 continue
 
-            properties: dict[str, PropertyValue] | None = None
-            if return_properties:
-                properties = decode_properties(row.properties)
-
-            vector: list[float] | None = None
-            if return_vector:
-                vector = rowid_to_vector.get(row.rowid)
-
             matches.append(
                 QueryMatch(
                     cosine_similarity=cosine_similarity,
-                    record=Record(uuid=row.uuid, vector=vector, properties=properties),
+                    record_uuid=row.uuid,
                 )
             )
 
         matches.sort(key=lambda match: match.cosine_similarity, reverse=True)
         return matches
 
-    async def _fetch_vectors(
-        self, session: AsyncSession, rowids: Iterable[int]
-    ) -> dict[int, list[float]]:
-        rowids = list(rowids)
-        if not rowids:
-            return {}
-
-        placeholders = ", ".join(f":r{i}" for i in range(len(rowids)))
-        vector_rows = (
-            await session.execute(
-                text(
-                    f"SELECT rowid, vector FROM [{self._vector_table_name}] "
-                    f"WHERE rowid IN ({placeholders})"
-                ),
-                {f"r{i}": rowid for i, rowid in enumerate(rowids)},
-            )
-        ).all()
-        return {row.rowid: self._deserialize_vector(row.vector) for row in vector_rows}
-
     @override
-    async def get(
+    async def get_cosine_similarity(
         self,
         *,
+        query_vector: Sequence[float],
         record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
+    ) -> dict[UUID, float]:
         record_uuids = list(record_uuids)
         if not record_uuids:
-            return []
+            return {}
 
-        selected_columns = [self._records_table.c.uuid, self._records_table.c.rowid]
-        if return_properties:
-            selected_columns.append(self._records_table.c.properties)
-
+        query_blob = self._serialize_vector(query_vector)
+        similarities: dict[UUID, float] = {}
         async with self._create_session() as session:
             fetched_rows = (
                 await session.execute(
-                    select(*selected_columns).where(
+                    select(
+                        self._records_table.c.uuid, self._records_table.c.rowid
+                    ).where(
                         self._records_table.c.uuid.in_(record_uuids),
                     )
                 )
             ).all()
 
-            rowid_to_vector: dict[int, list[float]] = {}
-            if return_vector:
-                rowid_to_vector = await self._fetch_vectors(
-                    session, [row.rowid for row in fetched_rows]
-                )
+            # One point query per rowid: vec0 plans `rowid = ?` as a point
+            # lookup but `rowid IN (...)` as a full scan.
+            for row in fetched_rows:
+                distance = (
+                    await session.execute(
+                        text(
+                            f"SELECT vec_distance_cosine(vector, :query) "
+                            f"FROM [{self._vector_table_name}] "
+                            f"WHERE rowid = :rowid"
+                        ),
+                        {"query": query_blob, "rowid": row.rowid},
+                    )
+                ).scalar()
+                if distance is None:
+                    continue
+                similarities[row.uuid] = self._distance_to_cosine_similarity(distance)
 
-        record_map: dict[UUID, Record] = {}
-        for row in fetched_rows:
-            record_uuid = row.uuid
-
-            properties: dict[str, PropertyValue] | None = None
-            if return_properties:
-                properties = decode_properties(row.properties)
-
-            vector: list[float] | None = rowid_to_vector.get(row.rowid)
-
-            record_map[record_uuid] = Record(
-                uuid=record_uuid, vector=vector, properties=properties
-            )
-
-        return [
-            record_map[record_uuid]
-            for record_uuid in record_uuids
-            if record_uuid in record_map
-        ]
+        return similarities
 
     @override
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:

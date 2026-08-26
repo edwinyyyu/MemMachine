@@ -37,10 +37,6 @@ from memmachine_core.common.filter.filter_parser import (
     Or as FilterOr,
 )
 from memmachine_core.common.metrics_factory import MetricsFactory, OperationTracker
-from memmachine_core.common.properties_json import (
-    decode_properties,
-    encode_properties,
-)
 from memmachine_core.common.utils import compute_cosine_similarity, ensure_tz_aware
 
 from .data_types import (
@@ -58,7 +54,6 @@ _ID_FIELD = "id"
 _RECORD_UUID_FIELD = "record_uuid"
 _PARTITION_KEY_FIELD = "partition_key"
 _VECTOR_FIELD = "vector"
-_PROPERTIES_FIELD = "properties"
 _PROPERTY_FILTER_PREFIX = "_p_"
 
 _MAX_UUID_LENGTH = 36
@@ -164,61 +159,18 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
 
     def _build_entity(self, record: Record) -> dict[str, Any]:
         """Build a Milvus entity from a vector store record."""
-        if record.vector is None:
-            raise ValueError(
-                f"Record {record.uuid} has vector=None, which is not allowed on input."
-            )
-
-        properties = record.properties if record.properties is not None else {}
         entity: dict[str, Any] = {
             _ID_FIELD: self._primary_id(self._partition_key, record.uuid),
             _RECORD_UUID_FIELD: str(record.uuid),
             _PARTITION_KEY_FIELD: self._partition_key,
             _VECTOR_FIELD: record.vector,
-            _PROPERTIES_FIELD: encode_properties(properties),
         }
         # Explicit nulls clear stale dynamic fields during native Milvus upserts.
         for key in self._config.indexed_properties_schema:
             entity[_property_field(key)] = None
-        for key, value in properties.items():
+        for key, value in record.properties.items():
             entity[_property_field(key)] = _normalize_property_filter_value(value)
         return entity
-
-    @staticmethod
-    def _parse_record(
-        entity: Mapping[str, Any],
-        *,
-        return_vector: bool,
-        return_properties: bool,
-    ) -> Record:
-        """Parse a Milvus entity into a vector store record."""
-        vector: list[float] | None = None
-        if return_vector:
-            raw_vector = entity.get(_VECTOR_FIELD)
-            if raw_vector is not None:
-                vector = list(cast(Sequence[float], raw_vector))
-
-        properties: dict[str, PropertyValue] | None = None
-        if return_properties:
-            properties = decode_properties(
-                cast(Mapping | None, entity.get(_PROPERTIES_FIELD))
-            )
-
-        return Record(
-            uuid=UUID(str(entity[_RECORD_UUID_FIELD])),
-            vector=vector,
-            properties=properties,
-        )
-
-    def _output_fields(
-        self, *, return_vector: bool, return_properties: bool
-    ) -> list[str]:
-        fields = [_RECORD_UUID_FIELD]
-        if return_vector:
-            fields.append(_VECTOR_FIELD)
-        if return_properties:
-            fields.append(_PROPERTIES_FIELD)
-        return fields
 
     @staticmethod
     def _cosine_similarity_from_entity_vector(
@@ -266,8 +218,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         limit: int,
         min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         """Query for records matching the criteria by query vectors."""
         async with self._tracker("query"):
@@ -293,10 +243,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 # Milvus Lite returns COSINE as distance, while Zilliz Cloud
                 # returns it as similarity. Fetch vectors and compute cosine
                 # similarities locally so MemMachine semantics stay consistent.
-                output_fields=self._output_fields(
-                    return_vector=True,
-                    return_properties=return_properties,
-                ),
+                output_fields=[_RECORD_UUID_FIELD, _VECTOR_FIELD],
                 anns_field=_VECTOR_FIELD,
             )
 
@@ -320,11 +267,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                     matches.append(
                         QueryMatch(
                             cosine_similarity=cosine_similarity,
-                            record=self._parse_record(
-                                entity,
-                                return_vector=return_vector,
-                                return_properties=return_properties,
-                            ),
+                            record_uuid=UUID(str(entity[_RECORD_UUID_FIELD])),
                         )
                     )
 
@@ -334,18 +277,17 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             return results
 
     @override
-    async def get(
+    async def get_cosine_similarity(
         self,
         *,
+        query_vector: Sequence[float],
         record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
-        """Get records from the collection by their UUIDs."""
-        async with self._tracker("get"):
+    ) -> dict[UUID, float]:
+        """Get cosine similarities by fetching stored vectors and computing locally."""
+        async with self._tracker("get_cosine_similarity"):
             uuid_list = list(record_uuids)
             if not uuid_list:
-                return []
+                return {}
 
             primary_ids = [
                 self._primary_id(self._partition_key, uuid) for uuid in uuid_list
@@ -354,28 +296,18 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 self._client.get,
                 collection_name=self._collection_name,
                 ids=primary_ids,
-                output_fields=self._output_fields(
-                    return_vector=return_vector,
-                    return_properties=return_properties,
-                ),
+                output_fields=[_RECORD_UUID_FIELD, _VECTOR_FIELD],
             )
 
-            records_by_uuid = {
-                record.uuid: record
-                for record in (
-                    self._parse_record(
-                        cast(Mapping[str, Any], raw_record),
-                        return_vector=return_vector,
-                        return_properties=return_properties,
-                    )
-                    for raw_record in raw_records
+            query_vector = list(query_vector)
+            return {
+                UUID(str(entity[_RECORD_UUID_FIELD])): (
+                    self._cosine_similarity_from_entity_vector(query_vector, entity)
+                )
+                for entity in (
+                    cast(Mapping[str, Any], raw_record) for raw_record in raw_records
                 )
             }
-            return [
-                records_by_uuid[record_uuid]
-                for record_uuid in uuid_list
-                if record_uuid in records_by_uuid
-            ]
 
     @override
     async def delete(
@@ -643,10 +575,6 @@ class MilvusVectorStore(VectorStore):
                 field_name=_VECTOR_FIELD,
                 datatype=DataType.FLOAT_VECTOR,
                 dim=config.vector_dimensions,
-            )
-            schema.add_field(
-                field_name=_PROPERTIES_FIELD,
-                datatype=DataType.JSON,
             )
 
             index_params = self._client.prepare_index_params()

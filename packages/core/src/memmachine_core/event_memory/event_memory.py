@@ -407,24 +407,24 @@ class EventMemory:
             query_vectors=[query_embedding],
             limit=vector_search_limit,
             property_filter=collection_filter,
-            return_vector=False,
-            return_properties=True,
         )
         t_vector_query = time.monotonic()
+
+        # Map matched derivatives to their owning segments.
+        segment_uuids_by_derivative_uuid = (
+            await self._segment_store_partition.get_segment_uuids_by_derivative_uuids(
+                match.record_uuid for match in query_result.matches
+            )
+        )
 
         # Extract seed segment UUIDs and their best embedding cosine similarities.
         # Deduplicate by first occurrence (multiple derivatives can map to the same segment).
         # First occurrence is the best since matches are ordered best-to-worst.
         seed_embedding_cosine_similarities: dict[UUID, float] = {}
         for match in query_result.matches:
-            segment_uuid = UUID(
-                str(
-                    cast(
-                        dict[str, PropertyValue],
-                        match.record.properties,
-                    )[EventMemory._SEGMENT_UUID_FIELD_NAME]
-                )
-            )
+            segment_uuid = segment_uuids_by_derivative_uuid.get(match.record_uuid)
+            if segment_uuid is None:
+                continue
             if segment_uuid not in seed_embedding_cosine_similarities:
                 seed_embedding_cosine_similarities[segment_uuid] = (
                     match.cosine_similarity

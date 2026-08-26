@@ -1,15 +1,17 @@
 """USearch HNSW implementation of VectorSearchEngine."""
 
 import asyncio
-from collections.abc import Container, Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import ClassVar, override
 
 import numpy as np
+import numpy.typing as npt
 from usearch.index import Index, MetricKind
 
 from memmachine_core.common.rw_locks import AsyncRWLock
 
 from .index_persistence import atomic_index_write, clear_stale_index_temp
+from .scoring import cosine_similarities, top_k_matches
 from .vector_search_engine import SearchMatch, SearchResult, VectorSearchEngine
 
 
@@ -21,8 +23,6 @@ class USearchVectorSearchEngine(VectorSearchEngine):
     _DEFAULT_M: ClassVar[int] = 16
     _DEFAULT_EF_CONSTRUCTION: ClassVar[int] = 128
     _DEFAULT_EF_SEARCH: ClassVar[int] = 128
-
-    _OVERFETCH_BASE: ClassVar[int] = 4
 
     def __init__(
         self,
@@ -67,92 +67,108 @@ class USearchVectorSearchEngine(VectorSearchEngine):
         vectors: Iterable[Sequence[float]],
         *,
         limit: int,
-        allowed_keys: Container[int] | None = None,
+        allowlist: Collection[int] | None = None,
     ) -> list[SearchResult]:
         vectors = list(vectors)
-        if self._index.size == 0 or not vectors:
+        if (
+            self._index.size == 0
+            or not vectors
+            or (allowlist is not None and not allowlist)
+        ):
             return [SearchResult(matches=[]) for _ in vectors]
 
         async with self._lock.read_lock():
-            return await asyncio.to_thread(
-                self._sync_search, vectors, limit, allowed_keys
-            )
+            return await asyncio.to_thread(self._sync_search, vectors, limit, allowlist)
 
     def _sync_search(
         self,
         vectors: Sequence[Sequence[float]],
         limit: int,
-        allowed_keys: Container[int] | None,
+        allowlist: Collection[int] | None,
     ) -> list[SearchResult]:
+        if allowlist is not None:
+            return self._sync_search_allowlist(vectors, limit, allowlist)
+
         query = np.array(vectors, dtype=np.float32)
-        num_queries = query.shape[0]
+        fetch_limit = min(limit, self._index.size)
 
-        overfetch_factor = (
-            1 if allowed_keys is None else USearchVectorSearchEngine._OVERFETCH_BASE
-        )
+        results = self._index.search(query, fetch_limit)
+        all_keys = np.atleast_2d(results.keys)
+        all_distances = np.atleast_2d(results.distances)
 
-        final_results: list[SearchResult | None] = [None] * num_queries
-        pending_indices = list(range(num_queries))
+        search_results: list[SearchResult] = []
+        for keys, distances in zip(all_keys, all_distances, strict=True):
+            matches = [
+                SearchMatch(
+                    key=int(key),
+                    cosine_similarity=self._distance_to_cosine_similarity(float(dist)),
+                )
+                for key, dist in zip(keys, distances, strict=True)
+                if int(key) >= 0
+            ]
+            search_results.append(SearchResult(matches=matches))
+        return search_results
 
-        while pending_indices:
-            pending_query = query[pending_indices]
-            fetch_limit = min(limit * overfetch_factor, self._index.size)
+    def _sync_search_allowlist(
+        self,
+        vectors: Sequence[Sequence[float]],
+        limit: int,
+        allowlist: Collection[int],
+    ) -> list[SearchResult]:
+        """Exact: gather the allowed vectors and score them directly."""
+        present_keys, matrix = self._sync_gather_vectors(allowlist)
+        if not present_keys:
+            return [SearchResult(matches=[]) for _ in vectors]
 
-            results = self._index.search(pending_query, fetch_limit)
-            all_keys = np.atleast_2d(results.keys)
-            all_distances = np.atleast_2d(results.distances)
-
-            still_pending: list[int] = []
-            for batch_idx, original_idx in enumerate(pending_indices):
-                matches: list[SearchMatch] = []
-                for key, dist in zip(
-                    all_keys[batch_idx], all_distances[batch_idx], strict=True
-                ):
-                    int_key = int(key)
-                    if int_key < 0:
-                        continue
-
-                    if allowed_keys is not None and int_key not in allowed_keys:
-                        continue
-
-                    matches.append(
-                        SearchMatch(
-                            key=int_key,
-                            cosine_similarity=self._distance_to_cosine_similarity(
-                                float(dist)
-                            ),
-                        )
-                    )
-                    if len(matches) >= limit:
-                        break
-
-                if len(matches) >= limit or fetch_limit >= self._index.size:
-                    final_results[original_idx] = SearchResult(matches=matches)
-                else:
-                    still_pending.append(original_idx)
-
-            pending_indices = still_pending
-            overfetch_factor *= USearchVectorSearchEngine._OVERFETCH_BASE
-
-        return [r if r is not None else SearchResult(matches=[]) for r in final_results]
+        return [
+            SearchResult(
+                matches=top_k_matches(query_vector, present_keys, matrix, limit)
+            )
+            for query_vector in vectors
+        ]
 
     @override
-    async def get_vectors(self, keys: Iterable[int]) -> dict[int, list[float]]:
-        keys = list(keys)
-        if not keys:
-            return {}
-
-        keys_array = np.array(keys, dtype=np.int64)
+    async def get_cosine_similarities(
+        self,
+        query_vector: Sequence[float],
+        keys: Iterable[int],
+    ) -> dict[int, float]:
         async with self._lock.read_lock():
-            vectors = await asyncio.to_thread(self._index.get, keys_array)
+            present_keys, matrix = await asyncio.to_thread(
+                self._sync_gather_vectors, keys
+            )
+        if not present_keys:
+            return {}
+        similarities = cosine_similarities(query_vector, matrix)
+        return {
+            key: float(similarity)
+            for key, similarity in zip(present_keys, similarities, strict=True)
+        }
 
-        result: dict[int, list[float]] = {}
-        for i, key in enumerate(keys):
-            vector = vectors[i] if vectors is not None else None
-            if vector is not None:
-                result[key] = list(vector)
+    def _sync_gather_vectors(
+        self, keys: Iterable[int]
+    ) -> tuple[list[int], npt.NDArray[np.float32]]:
+        """Gather stored vectors by key as a float32 matrix; missing keys drop."""
+        keys = list(dict.fromkeys(int(key) for key in keys))
+        empty = np.empty((0, self._index.ndim), dtype=np.float32)
+        if not keys:
+            return [], empty
 
-        return result
+        gathered = self._index.get(np.array(keys, dtype=np.int64))
+        if gathered is None:
+            return [], empty
+        if isinstance(gathered, np.ndarray):
+            return keys, np.asarray(gathered, dtype=np.float32).reshape(len(keys), -1)
+
+        present_keys: list[int] = []
+        rows: list[np.ndarray] = []
+        for key, row in zip(keys, gathered, strict=True):
+            if row is not None:
+                present_keys.append(key)
+                rows.append(np.asarray(row, dtype=np.float32))
+        if not present_keys:
+            return [], empty
+        return present_keys, np.vstack(rows)
 
     @override
     async def remove(self, keys: Iterable[int]) -> None:
