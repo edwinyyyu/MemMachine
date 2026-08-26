@@ -9,7 +9,6 @@ import json_repair
 import openai
 from openai.types.responses import (
     Response,
-    ResponseFunctionToolCall,
     ResponseInputParam,
     ToolParam,
 )
@@ -317,7 +316,7 @@ class OpenAIResponsesLanguageModel(LanguageModel):
                 for output in response.output:
                     if output.type != "function_call":
                         continue
-                    function_call = cast(ResponseFunctionToolCall, output)
+                    function_call = output
                     function_calls_arguments.append(
                         {
                             "call_id": function_call.call_id,

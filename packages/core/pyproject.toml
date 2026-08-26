@@ -86,7 +86,7 @@ package = true
 [tool.ty.environment]
 python-version = "3.12"
 # "." keeps `core_tests.*` qualified test-helper imports resolvable.
-extra-paths = ["../common/src", "."]
+extra-paths = ["."]
 
 [tool.ty.src]
 exclude = ["build/**"]

@@ -1,12 +1,11 @@
 """Tests for segment store data types."""
 
-from memmachine_core.episodic_memory.event_memory.segment_store import (
-    SegmentStorePartitionAlreadyExistsError,
-    SegmentStorePartitionConfig,
-)
-
 from memmachine_core.common.payload_codec.payload_codec_config import (
     PlaintextPayloadCodecConfig,
+)
+from memmachine_core.event_memory.segment_store import (
+    SegmentStorePartitionAlreadyExistsError,
+    SegmentStorePartitionConfig,
 )
 
 

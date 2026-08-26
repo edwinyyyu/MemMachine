@@ -9,10 +9,10 @@ from collections.abc import Iterable, Mapping
 from uuid import UUID
 
 from memmachine_core.common.filter.filter_parser import FilterExpr
-from memmachine_core.episodic_memory.event_memory.data_types import (
+from memmachine_core.event_memory.data_types import (
     Segment,
 )
-from memmachine_core.episodic_memory.event_memory.segment_store.data_types import (
+from memmachine_core.event_memory.segment_store.data_types import (
     SegmentStorePartitionConfig,
 )
 

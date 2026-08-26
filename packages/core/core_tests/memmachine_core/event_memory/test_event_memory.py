@@ -6,26 +6,6 @@ from datetime import UTC
 from uuid import uuid4
 
 import pytest
-from memmachine_core.episodic_memory.event_memory.data_types import (
-    Event,
-    FormatOptions,
-    NullContext,
-    ProducerContext,
-    QueryResult,
-    ScoredSegmentContext,
-    Segment,
-    TextBlock,
-)
-from memmachine_core.episodic_memory.event_memory.deriver.text_deriver import (
-    WholeTextDeriver,
-)
-from memmachine_core.episodic_memory.event_memory.event_memory import (
-    EventMemory,
-    EventMemoryParams,
-)
-from memmachine_core.episodic_memory.event_memory.segmenter.text_segmenter import (
-    TextSegmenter,
-)
 
 from core_tests.memmachine_core.common.reranker.fake_embedder import (
     FakeEmbedder,
@@ -42,6 +22,26 @@ from memmachine_core.common.filter.filter_parser import (
 from memmachine_core.common.vector_store.data_types import (
     Record,
     VectorStoreCollectionConfig,
+)
+from memmachine_core.event_memory.data_types import (
+    Event,
+    FormatOptions,
+    NullContext,
+    ProducerContext,
+    QueryResult,
+    ScoredSegmentContext,
+    Segment,
+    TextBlock,
+)
+from memmachine_core.event_memory.deriver.text_deriver import (
+    WholeTextDeriver,
+)
+from memmachine_core.event_memory.event_memory import (
+    EventMemory,
+    EventMemoryParams,
+)
+from memmachine_core.event_memory.segmenter.text_segmenter import (
+    TextSegmenter,
 )
 
 from .conftest import (

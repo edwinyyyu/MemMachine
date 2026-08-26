@@ -7,23 +7,12 @@ from unittest.mock import create_autospec
 
 import pytest
 import pytest_asyncio
-from memmachine_core.common.episode_store import (
-    CountCachingEpisodeStorage,
-    EpisodeStorage,
-)
-from memmachine_core.common.episode_store.episode_sqlalchemy_store import (
-    BaseEpisodeStore,
-    SqlAlchemyEpisodeStore,
-)
 from sqlalchemy.engine import URL
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import create_async_engine
 from testcontainers.postgres import PostgresContainer
 from testcontainers.qdrant import QdrantContainer
 
 from core_tests.memmachine_core.common.reranker.fake_embedder import FakeEmbedder
-from core_tests.memmachine_core.semantic_memory.storage.in_memory_semantic_storage import (
-    InMemorySemanticStorage,
-)
 from memmachine_core.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -321,14 +310,6 @@ def sqlalchemy_engine(request):
     return request.getfixturevalue(request.param)
 
 
-@pytest_asyncio.fixture
-async def in_memory_semantic_storage():
-    store = InMemorySemanticStorage()
-    await store.startup()
-    yield store
-    await store.cleanup()
-
-
 @pytest.fixture(scope="session")
 def qdrant_container():
     if not is_docker_available():
@@ -367,51 +348,3 @@ async def distributed_qdrant_client(distributed_qdrant_container):
     client = distributed_qdrant_container.get_async_client()
     yield client
     await client.close()
-
-
-@pytest.fixture(
-    params=[
-        pytest.param("pgvector_semantic_storage", marks=pytest.mark.integration),
-        pytest.param("neo4j_semantic_storage", marks=pytest.mark.integration),
-        "in_memory_semantic_storage",
-    ],
-)
-def semantic_storage(request):
-    return request.getfixturevalue(request.param)
-
-
-@pytest_asyncio.fixture
-async def sql_db_episode_storage(sqlalchemy_engine: AsyncEngine):
-    engine = sqlalchemy_engine
-    async with engine.begin() as conn:
-        await conn.run_sync(BaseEpisodeStore.metadata.create_all)
-
-    storage = SqlAlchemyEpisodeStore(engine)
-    try:
-        await storage.delete_episode_messages()
-        yield storage
-    finally:
-        await storage.delete_episode_messages()
-        await engine.dispose()
-
-
-@pytest.fixture
-def count_cache_episode_storage(sql_db_episode_storage: EpisodeStorage):
-    return CountCachingEpisodeStorage(sql_db_episode_storage)
-
-
-@pytest.fixture(
-    params=["sql_db_episode_storage", "count_cache_episode_storage"],
-)
-def episode_storage(
-    request,
-    sql_db_episode_storage: EpisodeStorage,
-    count_cache_episode_storage: EpisodeStorage,
-):
-    match request.param:
-        case "sql_db_episode_storage":
-            return sql_db_episode_storage
-        case "count_cache_episode_storage":
-            return count_cache_episode_storage
-
-    pytest.fail("Unknown episode storage type")

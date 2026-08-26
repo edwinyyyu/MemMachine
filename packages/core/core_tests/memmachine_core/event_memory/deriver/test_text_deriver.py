@@ -5,7 +5,9 @@ from typing import cast
 from uuid import uuid4
 
 import pytest
-from memmachine_core.episodic_memory.event_memory.data_types import (
+from pydantic import BaseModel
+
+from memmachine_core.event_memory.data_types import (
     Block,
     FormatOptions,
     NullContext,
@@ -13,11 +15,10 @@ from memmachine_core.episodic_memory.event_memory.data_types import (
     Segment,
     TextBlock,
 )
-from memmachine_core.episodic_memory.event_memory.deriver.text_deriver import (
+from memmachine_core.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
     WholeTextDeriver,
 )
-from pydantic import BaseModel
 
 pytestmark = pytest.mark.asyncio
 

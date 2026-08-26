@@ -6,7 +6,7 @@ from typing import override
 from uuid import uuid4
 
 from memmachine_core.common.utils import extract_sentences
-from memmachine_core.episodic_memory.event_memory.data_types import (
+from memmachine_core.event_memory.data_types import (
     Context,
     Derivative,
     FormatOptions,
@@ -15,8 +15,8 @@ from memmachine_core.episodic_memory.event_memory.data_types import (
     Segment,
     TextBlock,
 )
-from memmachine_core.episodic_memory.event_memory.deriver.deriver import Deriver
-from memmachine_core.episodic_memory.event_memory.formatting import (
+from memmachine_core.event_memory.deriver.deriver import Deriver
+from memmachine_core.event_memory.formatting import (
     format_timestamp,
 )
 

@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 
-from memmachine_core.episodic_memory.event_memory.data_types import (
+from memmachine_core.event_memory.data_types import (
     Event,
     FormatOptions,
     Segment,

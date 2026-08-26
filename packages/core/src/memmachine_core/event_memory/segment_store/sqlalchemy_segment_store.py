@@ -79,7 +79,7 @@ from memmachine_core.common.properties_json import (
     encode_properties,
 )
 from memmachine_core.common.utils import ensure_tz_aware, utc_offset_seconds
-from memmachine_core.episodic_memory.event_memory.data_types import (
+from memmachine_core.event_memory.data_types import (
     NullContext,
     Segment,
     decode_block,
@@ -87,12 +87,12 @@ from memmachine_core.episodic_memory.event_memory.data_types import (
     encode_block,
     encode_context,
 )
-from memmachine_core.episodic_memory.event_memory.segment_store.data_types import (
+from memmachine_core.event_memory.segment_store.data_types import (
     SegmentStorePartitionAlreadyExistsError,
     SegmentStorePartitionConfig,
     SegmentStorePartitionConfigMismatchError,
 )
-from memmachine_core.episodic_memory.event_memory.segment_store.segment_store import (
+from memmachine_core.event_memory.segment_store.segment_store import (
     SegmentStore,
     SegmentStorePartition,
 )

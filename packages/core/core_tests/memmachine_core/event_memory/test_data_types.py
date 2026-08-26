@@ -4,7 +4,9 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-from memmachine_core.episodic_memory.event_memory.data_types import (
+from pydantic import ValidationError
+
+from memmachine_core.event_memory.data_types import (
     Derivative,
     Event,
     ProducerContext,
@@ -15,7 +17,6 @@ from memmachine_core.episodic_memory.event_memory.data_types import (
     encode_block,
     encode_context,
 )
-from pydantic import ValidationError
 
 SAMPLE_PROPERTIES = {
     "dt": datetime(2026, 1, 15, tzinfo=UTC),
