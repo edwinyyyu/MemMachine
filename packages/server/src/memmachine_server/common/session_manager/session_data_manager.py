@@ -36,7 +36,7 @@ class SessionDataManager(ABC):
         description: str,
         metadata: dict[str, JsonValue],
     ) -> None:
-        """Create a new session entry in the database."""
+        """Create a session, or accept an equivalent active session."""
         raise NotImplementedError
 
     @abstractmethod
