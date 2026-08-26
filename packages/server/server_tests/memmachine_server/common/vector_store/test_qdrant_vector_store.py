@@ -23,7 +23,6 @@ from memmachine_server.common.vector_store.data_types import (
     Record,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
-    VectorStoreCollectionConfigMismatchError,
 )
 from memmachine_server.common.vector_store.qdrant_vector_store import (
     QdrantVectorStore,
@@ -143,42 +142,6 @@ class TestCollectionLifecycle:
     @pytest.mark.asyncio
     async def test_delete_nonexistent_is_idempotent(self, store):
         await store.delete_collection(namespace=NAMESPACE, name="nonexistent")
-
-    @pytest.mark.asyncio
-    async def test_open_or_create_creates_when_missing(self, store):
-        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        coll = await store.open_or_create_collection(
-            namespace=NAMESPACE, name="new", config=config
-        )
-        assert isinstance(coll, QdrantVectorStoreCollection)
-        await store.delete_collection(namespace=NAMESPACE, name="new")
-
-    @pytest.mark.asyncio
-    async def test_open_or_create_opens_when_exists(self, store):
-        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        await store.create_collection(
-            namespace=NAMESPACE, name="existing", config=config
-        )
-        coll = await store.open_or_create_collection(
-            namespace=NAMESPACE, name="existing", config=config
-        )
-        assert isinstance(coll, QdrantVectorStoreCollection)
-        await store.delete_collection(namespace=NAMESPACE, name="existing")
-
-    @pytest.mark.asyncio
-    async def test_open_or_create_raises_on_config_mismatch(self, store):
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="mismatch",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        with pytest.raises(VectorStoreCollectionConfigMismatchError):
-            await store.open_or_create_collection(
-                namespace=NAMESPACE,
-                name="mismatch",
-                config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM + 1),
-            )
-        await store.delete_collection(namespace=NAMESPACE, name="mismatch")
 
     @pytest.mark.asyncio
     async def test_same_config_shares_native_collection(self, store):

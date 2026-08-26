@@ -1,6 +1,7 @@
 """Manager for semantic memory resources and services."""
 
 import asyncio
+import contextlib
 from typing import cast
 
 from pydantic import InstanceOf
@@ -15,7 +16,10 @@ from memmachine_server.common.episode_store import EpisodeStorage
 from memmachine_server.common.errors import ResourceNotReadyError
 from memmachine_server.common.language_model import LanguageModel
 from memmachine_server.common.resource_manager import CommonResourceManager
-from memmachine_server.common.vector_store import VectorStoreCollectionConfig
+from memmachine_server.common.vector_store import (
+    VectorStoreCollectionAlreadyExistsError,
+    VectorStoreCollectionConfig,
+)
 from memmachine_server.semantic_memory.config_store.caching_semantic_config_storage import (
     CachingSemanticConfigStorage,
 )
@@ -147,27 +151,44 @@ class SemanticResourceManager:
         if vector_dimensions is None:
             vector_dimensions = (await self._get_default_embedder()).dimensions
 
-        collection = await vector_store.open_or_create_collection(
+        collection_config = VectorStoreCollectionConfig(
+            vector_dimensions=vector_dimensions,
+            similarity_metric=self._conf.vector_similarity_metric,
+            indexed_properties_schema={
+                "feature_id": str,
+                "set_id": str,
+                "set": str,
+                "semantic_category_id": str,
+                "category_name": str,
+                "category": str,
+                "tag_id": str,
+                "tag": str,
+                "feature": str,
+                "feature_name": str,
+                "value": str,
+            },
+        )
+        collection = await vector_store.open_collection(
             namespace=_VECTOR_STORE_NAMESPACE,
             name=_VECTOR_STORE_COLLECTION_NAME,
-            config=VectorStoreCollectionConfig(
-                vector_dimensions=vector_dimensions,
-                similarity_metric=self._conf.vector_similarity_metric,
-                indexed_properties_schema={
-                    "feature_id": str,
-                    "set_id": str,
-                    "set": str,
-                    "semantic_category_id": str,
-                    "category_name": str,
-                    "category": str,
-                    "tag_id": str,
-                    "tag": str,
-                    "feature": str,
-                    "feature_name": str,
-                    "value": str,
-                },
-            ),
         )
+        if collection is None:
+            # Tolerate concurrent creation: the collection then exists.
+            with contextlib.suppress(VectorStoreCollectionAlreadyExistsError):
+                await vector_store.create_collection(
+                    namespace=_VECTOR_STORE_NAMESPACE,
+                    name=_VECTOR_STORE_COLLECTION_NAME,
+                    config=collection_config,
+                )
+            collection = await vector_store.open_collection(
+                namespace=_VECTOR_STORE_NAMESPACE,
+                name=_VECTOR_STORE_COLLECTION_NAME,
+            )
+            if collection is None:
+                raise ResourceNotReadyError(
+                    "Vector store collection could not be opened after creation.",
+                    "semantic_memory",
+                )
         storage = VectorStoreSemanticStorage(sql_engine, collection)
         await storage.startup()
         return storage

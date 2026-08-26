@@ -3,7 +3,6 @@
 from .data_types import (
     SegmentStorePartitionAlreadyExistsError,
     SegmentStorePartitionConfig,
-    SegmentStorePartitionConfigMismatchError,
 )
 from .segment_store import (
     SegmentStore,
@@ -15,5 +14,4 @@ __all__ = [
     "SegmentStorePartition",
     "SegmentStorePartitionAlreadyExistsError",
     "SegmentStorePartitionConfig",
-    "SegmentStorePartitionConfigMismatchError",
 ]

@@ -49,7 +49,6 @@ from .data_types import (
     Record,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
-    VectorStoreCollectionConfigMismatchError,
 )
 from .utils import validate_filter, validate_identifier
 from .vector_store import VectorStore, VectorStoreCollection
@@ -760,42 +759,6 @@ class MilvusVectorStore(VectorStore):
                 raise VectorStoreCollectionAlreadyExistsError(namespace, name)
             await self._create_native_collection(namespace, config)
             await self._register_collection(namespace, name, config)
-
-    @override
-    async def open_or_create_collection(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
-    ) -> MilvusVectorStoreCollection:
-        """Open the collection if it exists, or create and return it."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        self._validate_metric(config.similarity_metric)
-        async with (
-            self._client_name_locks[(namespace, name)],
-            self._tracker("open_or_create_collection"),
-        ):
-            entry = await self._get_registry_entry(namespace, name)
-            if entry is not None:
-                existing_config = MilvusVectorStore._parse_entry(entry)
-                if existing_config != config:
-                    raise VectorStoreCollectionConfigMismatchError(
-                        namespace, name, existing_config, config
-                    )
-                return self._build_collection_handle(namespace, name, existing_config)
-
-            await self._ensure_namespace_registry_collection(namespace)
-            await self._create_native_collection(namespace, config)
-            await self._register_collection(namespace, name, config)
-            return self._build_collection_handle(namespace, name, config)
 
     @override
     async def open_collection(
