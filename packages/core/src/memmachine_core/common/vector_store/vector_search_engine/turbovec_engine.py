@@ -8,7 +8,6 @@ from typing import ClassVar, override
 import numpy as np
 from turbovec import IdMapIndex
 
-from memmachine_core.common.data_types import SimilarityMetric
 from memmachine_core.common.rw_locks import AsyncRWLock
 
 from .vector_search_engine import SearchMatch, SearchResult, VectorSearchEngine
@@ -19,15 +18,14 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
     Vector search engine backed by turbovec.
 
     turbovec indexes a dimensionality that is a multiple of 8, so a vector of
-    any other width is zero-padded up to one. Padding is exact for both metrics
-    this engine serves -- a zero coordinate adds nothing to an inner product
-    and nothing to an L2 norm -- so the padded index answers as the unpadded
-    one would, and any embedding width the other engines accept works here too.
-    """
+    any other width is zero-padded up to one. Padding is exact -- a zero
+    coordinate adds nothing to an inner product and nothing to an L2 norm --
+    so the padded index answers as the unpadded one would, and any embedding
+    width the other engines accept works here too.
 
-    _SUPPORTED_METRICS: ClassVar[frozenset[SimilarityMetric]] = frozenset(
-        {SimilarityMetric.COSINE, SimilarityMetric.DOT}
-    )
+    Vectors are L2-normalized on the way in, so the inner-product index
+    returns cosine similarities.
+    """
 
     _VALID_BIT_WIDTHS: ClassVar[frozenset[int]] = frozenset({2, 3, 4})
     _DEFAULT_BIT_WIDTH: ClassVar[int] = 4
@@ -38,24 +36,15 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
         self,
         *,
         num_dimensions: int,
-        similarity_metric: SimilarityMetric,
         bit_width: int = _DEFAULT_BIT_WIDTH,
     ) -> None:
         """Initialize."""
-        if similarity_metric not in self._SUPPORTED_METRICS:
-            supported = ", ".join(metric.value for metric in self._SUPPORTED_METRICS)
-            raise NotImplementedError(
-                f"turbovec does not support {similarity_metric.value!r} "
-                f"(inner-product index only). Supported: {supported}"
-            )
-
         if bit_width not in self._VALID_BIT_WIDTHS:
             raise ValueError(
                 f"turbovec bit_width must be one of "
                 f"{sorted(self._VALID_BIT_WIDTHS)}, got {bit_width}"
             )
 
-        self._similarity_metric = similarity_metric
         self._num_dimensions = num_dimensions
         self._padded_dimensions = math.ceil(num_dimensions / 8) * 8
         self._index = IdMapIndex(dim=self._padded_dimensions, bit_width=bit_width)
@@ -98,9 +87,11 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
         query = self._prepare_vectors(vectors)
 
         if allowed_keys is None:
-            scores, ids = self._index.search(query, limit)
+            inner_products, ids = self._index.search(query, limit)
             return [
-                SearchResult(matches=self._to_matches(scores[i], ids[i], limit, None))
+                SearchResult(
+                    matches=self._to_matches(inner_products[i], ids[i], limit, None)
+                )
                 for i in range(query.shape[0])
             ]
 
@@ -117,8 +108,8 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
     ) -> SearchResult:
         fetch_limit = limit * self._OVERFETCH_BASE
         while True:
-            scores, ids = self._index.search(query, fetch_limit)
-            matches = self._to_matches(scores[0], ids[0], limit, allowed_keys)
+            inner_products, ids = self._index.search(query, fetch_limit)
+            matches = self._to_matches(inner_products[0], ids[0], limit, allowed_keys)
             exhausted = ids.shape[1] < fetch_limit
             if len(matches) >= limit or exhausted:
                 return SearchResult(matches=matches)
@@ -126,26 +117,29 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
 
     def _to_matches(
         self,
-        scores: Iterable[float],
+        inner_products: Iterable[float],
         keys: Iterable[int],
         limit: int,
         allowed_keys: Container[int] | None,
     ) -> list[SearchMatch]:
         matches: list[SearchMatch] = []
-        for score, key in zip(scores, keys, strict=True):
+        for inner_product, key in zip(inner_products, keys, strict=True):
             int_key = int(key)
             if allowed_keys is not None and int_key not in allowed_keys:
                 continue
-            matches.append(SearchMatch(key=int_key, score=self._to_score(score)))
+            matches.append(
+                SearchMatch(
+                    key=int_key,
+                    cosine_similarity=self._to_cosine_similarity(inner_product),
+                )
+            )
             if len(matches) >= limit:
                 break
         return matches
 
-    def _to_score(self, score: float) -> float:
-        value = float(score)
-        if self._similarity_metric is SimilarityMetric.COSINE:
-            return min(1.0, max(-1.0, value))
-        return value
+    @staticmethod
+    def _to_cosine_similarity(inner_product: float) -> float:
+        return min(1.0, max(-1.0, float(inner_product)))
 
     def _prepare_vectors(self, vectors: Sequence[Sequence[float]]) -> np.ndarray:
         array = np.zeros((len(vectors), self._padded_dimensions), dtype=np.float32)
@@ -155,11 +149,9 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
             raise ValueError(
                 f"vectors must have {self._num_dimensions} dimensions"
             ) from error
-        if self._similarity_metric is SimilarityMetric.COSINE:
-            norms = np.linalg.norm(array, axis=1, keepdims=True)
-            norms[norms == 0.0] = 1.0
-            array = array / norms
-        return array
+        norms = np.linalg.norm(array, axis=1, keepdims=True)
+        norms[norms == 0.0] = 1.0
+        return array / norms
 
     @override
     async def get_vectors(self, keys: Iterable[int]) -> dict[int, list[float]]:

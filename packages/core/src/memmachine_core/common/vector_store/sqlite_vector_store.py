@@ -59,7 +59,7 @@ from sqlalchemy.orm import DeclarativeBase, MappedColumn, Session, mapped_column
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 
-from memmachine_core.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_core.common.data_types import PropertyValue
 from memmachine_core.common.filter.filter_parser import FilterExpr
 from memmachine_core.common.filter.sql_filter_util import compile_sql_filter
 from memmachine_core.common.properties_json import (
@@ -421,7 +421,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         *,
         query_vectors: Iterable[Sequence[float]],
         limit: int,
-        score_threshold: float | None = None,
+        min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
         return_vector: bool = False,
         return_properties: bool = True,
@@ -448,8 +448,10 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                 results.append(QueryResult(matches=[]))
                 continue
             matches = await self._build_matches(
-                row_id_to_score={m.key: m.score for m in search_result.matches},
-                score_threshold=score_threshold,
+                row_id_to_cosine_similarity={
+                    m.key: m.cosine_similarity for m in search_result.matches
+                },
+                min_cosine_similarity=min_cosine_similarity,
                 return_vector=return_vector,
                 return_properties=return_properties,
             )
@@ -477,12 +479,12 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
 
     async def _build_matches(
         self,
-        row_id_to_score: Mapping[int, float],
-        score_threshold: float | None,
+        row_id_to_cosine_similarity: Mapping[int, float],
+        min_cosine_similarity: float | None,
         return_vector: bool,
         return_properties: bool,
     ) -> list[QueryMatch]:
-        matched_row_ids = list(row_id_to_score.keys())
+        matched_row_ids = list(row_id_to_cosine_similarity.keys())
 
         selected_columns = [self._records_table.c.uuid, self._records_table.c.row_id]
         if return_properties:
@@ -499,15 +501,15 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         if return_vector:
             vector_map = await self._search_engine.get_vectors(matched_row_ids)
 
-        higher_is_better = self._config.similarity_metric.higher_is_better
         matches: list[QueryMatch] = []
         for row in matched_rows:
-            score = row_id_to_score.get(row.row_id)
-            if score is None:
+            cosine_similarity = row_id_to_cosine_similarity.get(row.row_id)
+            if cosine_similarity is None:
                 continue
 
-            if score_threshold is not None and (
-                score < score_threshold if higher_is_better else score > score_threshold
+            if (
+                min_cosine_similarity is not None
+                and cosine_similarity < min_cosine_similarity
             ):
                 continue
 
@@ -519,15 +521,12 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
 
             matches.append(
                 QueryMatch(
-                    score=score,
+                    cosine_similarity=cosine_similarity,
                     record=Record(uuid=row.uuid, vector=vector, properties=properties),
                 )
             )
 
-        matches.sort(
-            key=lambda match: match.score,
-            reverse=self._config.similarity_metric.higher_is_better,
-        )
+        matches.sort(key=lambda match: match.cosine_similarity, reverse=True)
         return matches
 
     @override
@@ -645,8 +644,8 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
             await self._maybe_save_index()
 
 
-VectorSearchEngineFactory = Callable[[int, SimilarityMetric], VectorSearchEngine]
-"""Callable that creates a VectorSearchEngine given (num_dimensions, similarity_metric)."""
+VectorSearchEngineFactory = Callable[[int], VectorSearchEngine]
+"""Callable that creates a VectorSearchEngine given num_dimensions."""
 
 
 class SQLiteVectorStoreParams(BaseModel):
@@ -655,9 +654,9 @@ class SQLiteVectorStoreParams(BaseModel):
     Attributes:
         sqlalchemy_engine (AsyncEngine):
             Async SQLAlchemy engine (sqlite+aiosqlite).
-        engine_factory (Callable[[int, SimilarityMetric], VectorSearchEngine]):
+        engine_factory (Callable[[int], VectorSearchEngine]):
             Factory for creating :class:`VectorSearchEngine` instances.
-            Receives `(ndim, metric)` and returns a search engine.
+            Receives `ndim` and returns a search engine.
         index_directory (str | None):
             Directory for persisting index files.
             If None, indexes are in-memory only
@@ -1040,10 +1039,10 @@ class SQLiteVectorStore(VectorStore):
             # scores keys in the search engine and resolves them to rows in a
             # second step, holding nothing in between, because readers are not
             # made to wait on writers. A reused id lets a record that was never
-            # scored come back wearing the score of the record that was, and
-            # nothing about that result looks wrong from the outside: the
-            # record exists, the score is in range, and no row or vector is
-            # left dangling to find the mix-up by.
+            # scored come back wearing the cosine similarity of the record that
+            # was, and nothing about that result looks wrong from the outside:
+            # the record exists, the cosine similarity is in range, and no row
+            # or vector is left dangling to find the mix-up by.
             sqlite_autoincrement=True,
         )
 
@@ -1102,9 +1101,7 @@ class SQLiteVectorStore(VectorStore):
         if cache_key in self._search_engines:
             return self._search_engines[cache_key]
 
-        search_engine = self._vector_search_engine_factory(
-            config.vector_dimensions, config.similarity_metric
-        )
+        search_engine = self._vector_search_engine_factory(config.vector_dimensions)
 
         index_path = self._index_path(namespace, name)
         if index_path is not None:

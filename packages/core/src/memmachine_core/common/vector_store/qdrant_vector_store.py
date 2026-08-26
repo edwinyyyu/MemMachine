@@ -18,7 +18,6 @@ from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedR
 from memmachine_core.common.data_types import (
     OrderedValue,
     PropertyValue,
-    SimilarityMetric,
 )
 from memmachine_core.common.filter.filter_parser import (
     And as FilterAnd,
@@ -338,7 +337,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         *,
         query_vectors: Iterable[Sequence[float]],
         limit: int,
-        score_threshold: float | None = None,
+        min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
         return_vector: bool = False,
         return_properties: bool = True,
@@ -367,7 +366,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                     shard_key=self._shard_key,
                     query=query_vector,
                     filter=qdrant_filter,
-                    score_threshold=score_threshold,
+                    score_threshold=min_cosine_similarity,
                     limit=limit,
                     with_vector=return_vector,
                     with_payload=return_properties,
@@ -394,7 +393,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
 
                     matches.append(
                         QueryMatch(
-                            score=point.score,
+                            cosine_similarity=point.score,
                             record=Record(
                                 uuid=UUID(str(point.id)),
                                 vector=vector,
@@ -595,14 +594,7 @@ class QdrantVectorStoreParams(BaseModel):
 class QdrantVectorStore(VectorStore):
     """Asynchronous Qdrant-based implementation of VectorStore."""
 
-    _SIMILARITY_METRIC_TO_QDRANT_DISTANCE: ClassVar[
-        dict[SimilarityMetric, models.Distance]
-    ] = {
-        SimilarityMetric.COSINE: models.Distance.COSINE,
-        SimilarityMetric.DOT: models.Distance.DOT,
-        SimilarityMetric.EUCLIDEAN: models.Distance.EUCLID,
-        SimilarityMetric.MANHATTAN: models.Distance.MANHATTAN,
-    }
+    _QDRANT_DISTANCE: ClassVar[models.Distance] = models.Distance.COSINE
 
     _PROPERTY_TYPE_TO_INDEX_TYPE: ClassVar[
         dict[type[PropertyValue], models.PayloadSchemaType]
@@ -620,7 +612,6 @@ class QdrantVectorStore(VectorStore):
     _REGISTRY_SUFFIX: ClassVar[str] = "__registry"
     _REGISTRY_NAME: ClassVar[str] = "name"
     _REGISTRY_VECTOR_DIMENSIONS: ClassVar[str] = "vector_dimensions"
-    _REGISTRY_SIMILARITY_METRIC: ClassVar[str] = "similarity_metric"
     _REGISTRY_INDEXED_PROPERTIES_SCHEMA: ClassVar[str] = "indexed_properties_schema"
 
     # Fixed UUID namespace for deterministic registry point IDs.
@@ -765,7 +756,6 @@ class QdrantVectorStore(VectorStore):
         """Parse a VectorStoreCollectionConfig from a registry entry."""
         return VectorStoreCollectionConfig(
             vector_dimensions=entry[QdrantVectorStore._REGISTRY_VECTOR_DIMENSIONS],
-            similarity_metric=entry[QdrantVectorStore._REGISTRY_SIMILARITY_METRIC],
             indexed_properties_schema=entry[
                 QdrantVectorStore._REGISTRY_INDEXED_PROPERTIES_SCHEMA
             ],
@@ -813,9 +803,7 @@ class QdrantVectorStore(VectorStore):
         native_collection_name = QdrantVectorStore._build_native_collection_name(
             namespace, config
         )
-        distance = QdrantVectorStore._SIMILARITY_METRIC_TO_QDRANT_DISTANCE[
-            config.similarity_metric
-        ]
+        distance = QdrantVectorStore._QDRANT_DISTANCE
         try:
             await self._client.create_collection(
                 collection_name=native_collection_name,
@@ -878,7 +866,6 @@ class QdrantVectorStore(VectorStore):
                     payload={
                         QdrantVectorStore._REGISTRY_NAME: name,
                         QdrantVectorStore._REGISTRY_VECTOR_DIMENSIONS: config.vector_dimensions,
-                        QdrantVectorStore._REGISTRY_SIMILARITY_METRIC: config.similarity_metric.value,
                         QdrantVectorStore._REGISTRY_INDEXED_PROPERTIES_SCHEMA: config.model_dump(
                             mode="json"
                         )["indexed_properties_schema"],

@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from memmachine_core.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_core.common.data_types import PropertyValue
 from memmachine_core.common.filter.filter_parser import (
     And,
     Comparison,
@@ -26,8 +26,8 @@ from memmachine_core.event_memory.data_types import (
     NullContext,
     ProducerContext,
     QueryResult,
-    ScoredSegmentContext,
     Segment,
+    SegmentContextMatch,
     TextBlock,
 )
 from memmachine_core.event_memory.deriver.text_deriver import (
@@ -214,7 +214,6 @@ class TestEncodeEvents:
         # Collection without context fields.
         config = VectorStoreCollectionConfig(
             vector_dimensions=2,
-            similarity_metric=SimilarityMetric.COSINE,
             indexed_properties_schema={
                 "_segment_uuid": str,
                 "_timestamp": datetime.datetime,
@@ -244,7 +243,6 @@ class TestEncodeEvents:
         # Collection without _timestamp — base field required at init.
         config = VectorStoreCollectionConfig(
             vector_dimensions=2,
-            similarity_metric=SimilarityMetric.COSINE,
             indexed_properties_schema={
                 "_segment_uuid": str,
             },
@@ -303,18 +301,18 @@ class TestQuery:
 
         result = await event_memory.query("test query")
         assert isinstance(result, QueryResult)
-        assert len(result.scored_segment_contexts) > 0
+        assert len(result.matches) > 0
 
-        # Each scored context has segments.
-        for scored in result.scored_segment_contexts:
-            assert len(scored.segments) > 0
+        # Each match has segments.
+        for match in result.matches:
+            assert len(match.segments) > 0
 
     async def test_vector_search_limit(self, event_memory: EventMemory):
         events = [_make_event(f"event {i}", timestamp=_ts(i)) for i in range(10)]
         await event_memory.encode_events(events)
 
         result = await event_memory.query("test", vector_search_limit=2)
-        assert len(result.scored_segment_contexts) <= 2
+        assert len(result.matches) <= 2
 
     async def test_expand_context(
         self,
@@ -328,36 +326,20 @@ class TestQuery:
 
         # With expand_context=3, backward=1, forward=2.
         # Context windows should include neighbors.
-        for scored in result.scored_segment_contexts:
-            assert len(scored.segments) >= 1
+        for match in result.matches:
+            assert len(match.segments) >= 1
 
     async def test_empty_memory(self, event_memory: EventMemory):
         result = await event_memory.query("anything")
-        assert result.scored_segment_contexts == []
+        assert result.matches == []
 
-    async def test_without_reranker_uses_embedding_scores(
-        self, event_memory: EventMemory
-    ):
+    async def test_uses_embedding_cosine_similarity(self, event_memory: EventMemory):
         await event_memory.encode_events([_make_event("hello")])
         result = await event_memory.query("hello")
 
         # FakeEmbedder: all vectors same direction → cosine ≈ 1.0.
-        for scored in result.scored_segment_contexts:
-            assert scored.score == pytest.approx(1.0, abs=0.01)
-
-    async def test_with_reranker(self, event_memory_with_reranker: EventMemory):
-        e1 = _make_event("short", timestamp=_ts(0))
-        e2 = _make_event("a much longer text", timestamp=_ts(1))
-        await event_memory_with_reranker.encode_events([e1, e2])
-
-        result = await event_memory_with_reranker.query("anything")
-
-        # FakeReranker scores by string length (higher is better).
-        # The result with the longer formatted context should come first.
-        scores = [sc.score for sc in result.scored_segment_contexts]
-        assert scores == sorted(scores, reverse=True)
-        assert len(scores) == 2
-        assert scores[0] > scores[1]
+        for match in result.matches:
+            assert match.cosine_similarity == pytest.approx(1.0, abs=0.01)
 
 
 # ===================================================================
@@ -439,12 +421,12 @@ class TestBuildQueryResultContext:
         s3 = _make_segment(timestamp=_ts(2))
 
         qr = QueryResult(
-            scored_segment_contexts=[
-                ScoredSegmentContext(
-                    score=1.0, seed_segment_uuid=s1.uuid, segments=[s1]
+            matches=[
+                SegmentContextMatch(
+                    cosine_similarity=1.0, seed_segment_uuid=s1.uuid, segments=[s1]
                 ),
-                ScoredSegmentContext(
-                    score=0.5, seed_segment_uuid=s2.uuid, segments=[s2, s3]
+                SegmentContextMatch(
+                    cosine_similarity=0.5, seed_segment_uuid=s2.uuid, segments=[s2, s3]
                 ),
             ]
         )
@@ -468,9 +450,9 @@ class TestBuildQueryResultContext:
         seed = segments[2]
 
         qr = QueryResult(
-            scored_segment_contexts=[
-                ScoredSegmentContext(
-                    score=1.0,
+            matches=[
+                SegmentContextMatch(
+                    cosine_similarity=1.0,
                     seed_segment_uuid=seed.uuid,
                     segments=segments,
                 ),
@@ -488,14 +470,14 @@ class TestBuildQueryResultContext:
         s2 = _make_segment(timestamp=_ts(2))
 
         qr = QueryResult(
-            scored_segment_contexts=[
-                ScoredSegmentContext(
-                    score=1.0,
+            matches=[
+                SegmentContextMatch(
+                    cosine_similarity=1.0,
                     seed_segment_uuid=shared.uuid,
                     segments=[shared, s1],
                 ),
-                ScoredSegmentContext(
-                    score=0.5,
+                SegmentContextMatch(
+                    cosine_similarity=0.5,
                     seed_segment_uuid=shared.uuid,
                     segments=[shared, s2],
                 ),
@@ -507,7 +489,7 @@ class TestBuildQueryResultContext:
         assert len(result) == 3  # shared, s1, s2
 
     def test_empty_result(self):
-        qr = QueryResult(scored_segment_contexts=[])
+        qr = QueryResult(matches=[])
         result = EventMemory.build_query_result_context(qr, max_num_segments=10)
         assert result == []
 
@@ -517,14 +499,14 @@ class TestBuildQueryResultContext:
         ctx2_segs = [_make_segment(timestamp=_ts(10 + i)) for i in range(4)]
 
         qr = QueryResult(
-            scored_segment_contexts=[
-                ScoredSegmentContext(
-                    score=1.0,
+            matches=[
+                SegmentContextMatch(
+                    cosine_similarity=1.0,
                     seed_segment_uuid=ctx1_segs[1].uuid,
                     segments=ctx1_segs,
                 ),
-                ScoredSegmentContext(
-                    score=0.5,
+                SegmentContextMatch(
+                    cosine_similarity=0.5,
                     seed_segment_uuid=ctx2_segs[1].uuid,
                     segments=ctx2_segs,
                 ),
@@ -602,12 +584,10 @@ class TestRoundTrips:
         await event_memory.encode_events([e1, e2])
 
         result = await event_memory.query("test query")
-        assert len(result.scored_segment_contexts) == 2
+        assert len(result.matches) == 2
 
         # Verify the actual content is present in the returned segments.
-        all_segments = [
-            seg for scored in result.scored_segment_contexts for seg in scored.segments
-        ]
+        all_segments = [seg for match in result.matches for seg in match.segments]
         all_texts = {
             seg.block.text for seg in all_segments if isinstance(seg.block, TextBlock)
         }
@@ -622,7 +602,7 @@ class TestRoundTrips:
         await event_memory.encode_events([event])
 
         result = await event_memory.query("test")
-        segment = result.scored_segment_contexts[0].segments[0]
+        segment = result.matches[0].segments[0]
         assert isinstance(segment.context, ProducerContext)
         assert segment.context.producer == "Alice"
 
@@ -639,8 +619,8 @@ class TestRoundTrips:
         result = await event_memory.query("test query")
         all_texts = {
             seg.block.text
-            for scored in result.scored_segment_contexts
-            for seg in scored.segments
+            for match in result.matches
+            for seg in match.segments
             if isinstance(seg.block, TextBlock)
         }
         assert "keep this one" in all_texts
@@ -655,7 +635,7 @@ class TestRoundTrips:
         await event_memory.forget_events([e1.uuid, e2.uuid])
 
         result = await event_memory.query("test")
-        assert result.scored_segment_contexts == []
+        assert result.matches == []
 
     async def test_multiple_encode_calls_are_additive(self, event_memory: EventMemory):
         """Successive encode_events calls should accumulate data."""
@@ -668,8 +648,8 @@ class TestRoundTrips:
         result = await event_memory.query("test query")
         all_texts = {
             seg.block.text
-            for scored in result.scored_segment_contexts
-            for seg in scored.segments
+            for match in result.matches
+            for seg in match.segments
             if isinstance(seg.block, TextBlock)
         }
         assert "batch one" in all_texts
@@ -686,8 +666,8 @@ class TestRoundTrips:
 
         # With expand_context=6: backward=2, forward=4.
         # Even with only 1 seed, context window should include neighbors.
-        assert len(result.scored_segment_contexts) == 1
-        context_segments = result.scored_segment_contexts[0].segments
+        assert len(result.matches) == 1
+        context_segments = result.matches[0].segments
         assert len(context_segments) > 1
 
         # Context segments should be from distinct events.
@@ -730,8 +710,8 @@ class TestQueryWithFilter:
         )
         all_texts = {
             seg.block.text
-            for scored in result.scored_segment_contexts
-            for seg in scored.segments
+            for match in result.matches
+            for seg in match.segments
             if isinstance(seg.block, TextBlock)
         }
         assert "red thing" in all_texts
@@ -749,8 +729,8 @@ class TestQueryWithFilter:
         )
         all_texts = {
             seg.block.text
-            for scored in result.scored_segment_contexts
-            for seg in scored.segments
+            for match in result.matches
+            for seg in match.segments
             if isinstance(seg.block, TextBlock)
         }
         assert "blue thing" in all_texts
@@ -769,8 +749,8 @@ class TestQueryWithFilter:
         )
         all_texts = {
             seg.block.text
-            for scored in result.scored_segment_contexts
-            for seg in scored.segments
+            for match in result.matches
+            for seg in match.segments
             if isinstance(seg.block, TextBlock)
         }
         assert "red thing" in all_texts
@@ -789,8 +769,8 @@ class TestQueryWithFilter:
         )
         all_texts = {
             seg.block.text
-            for scored in result.scored_segment_contexts
-            for seg in scored.segments
+            for match in result.matches
+            for seg in match.segments
             if isinstance(seg.block, TextBlock)
         }
         assert "no color" in all_texts
@@ -811,8 +791,8 @@ class TestQueryWithFilter:
         )
         all_texts = {
             seg.block.text
-            for scored in result.scored_segment_contexts
-            for seg in scored.segments
+            for match in result.matches
+            for seg in match.segments
             if isinstance(seg.block, TextBlock)
         }
         assert "red small" in all_texts
@@ -834,8 +814,8 @@ class TestQueryWithFilter:
         )
         all_texts = {
             seg.block.text
-            for scored in result.scored_segment_contexts
-            for seg in scored.segments
+            for match in result.matches
+            for seg in match.segments
             if isinstance(seg.block, TextBlock)
         }
         assert "red thing" in all_texts
@@ -854,8 +834,8 @@ class TestQueryWithFilter:
         )
         all_texts = {
             seg.block.text
-            for scored in result.scored_segment_contexts
-            for seg in scored.segments
+            for match in result.matches
+            for seg in match.segments
             if isinstance(seg.block, TextBlock)
         }
         assert "blue thing" in all_texts
@@ -872,7 +852,7 @@ class TestQueryWithFilter:
             "thing",
             property_filter=Comparison(field="m.color", op="=", value="purple"),
         )
-        assert result.scored_segment_contexts == []
+        assert result.matches == []
 
     async def test_context_filter_returns_no_results(self, event_memory: EventMemory):
         """Context fields are no longer filterable."""
@@ -887,7 +867,7 @@ class TestQueryWithFilter:
                 value="Alice",
             ),
         )
-        assert result.scored_segment_contexts == []
+        assert result.matches == []
 
 
 # ===================================================================
@@ -901,7 +881,7 @@ class TestQueryDeduplication:
         self,
         event_memory_with_sentences: EventMemory,
     ):
-        """Multiple derivatives from the same segment should produce one scored context."""
+        """Multiple derivatives from the same segment should produce one match."""
         event = _make_event(
             "First sentence. Second sentence. Third sentence.",
             timestamp=_ts(0),
@@ -911,15 +891,15 @@ class TestQueryDeduplication:
         result = await event_memory_with_sentences.query("sentence")
 
         # All derivatives map to the same segment, so deduplication
-        # should collapse them into a single scored context.
-        assert len(result.scored_segment_contexts) == 1
-        assert len(result.scored_segment_contexts[0].segments) == 1
+        # should collapse them into a single match.
+        assert len(result.matches) == 1
+        assert len(result.matches[0].segments) == 1
 
     async def test_derivatives_from_different_segments_not_collapsed(
         self,
         event_memory_with_sentences: EventMemory,
     ):
-        """Derivatives from different segments should remain separate scored contexts."""
+        """Derivatives from different segments should remain separate matches."""
         e1 = _make_event(
             "Alpha sentence. Beta sentence.",
             timestamp=_ts(0),
@@ -932,14 +912,14 @@ class TestQueryDeduplication:
 
         result = await event_memory_with_sentences.query("sentence")
 
-        # Two events → two segments → two scored contexts.
-        assert len(result.scored_segment_contexts) == 2
+        # Two events → two segments → two matches.
+        assert len(result.matches) == 2
 
-    async def test_dedup_uses_best_derivative_score(
+    async def test_dedup_uses_best_derivative_cosine_similarity(
         self,
         event_memory_with_sentences: EventMemory,
     ):
-        """When multiple derivatives map to one segment, the best score wins."""
+        """When multiple derivatives map to one segment, the best cosine similarity wins."""
         event = _make_event(
             "Short. A much longer second sentence here.",
             timestamp=_ts(0),
@@ -949,9 +929,9 @@ class TestQueryDeduplication:
         result = await event_memory_with_sentences.query("test")
 
         # Cosine sim ≈ 1.0 for all (FakeEmbedder), but the key point
-        # is that we get exactly one context with a valid score.
-        assert len(result.scored_segment_contexts) == 1
-        assert result.scored_segment_contexts[0].score == pytest.approx(1.0, abs=0.01)
+        # is that we get exactly one match with a valid cosine similarity.
+        assert len(result.matches) == 1
+        assert result.matches[0].cosine_similarity == pytest.approx(1.0, abs=0.01)
 
 
 # ===================================================================
@@ -977,7 +957,6 @@ class TestIngestFormatOptions:
     def _build(embedder: FakeEmbedder) -> EventMemory:
         config = VectorStoreCollectionConfig(
             vector_dimensions=embedder.dimensions,
-            similarity_metric=embedder.similarity_metric,
             indexed_properties_schema=(
                 EventMemory.expected_vector_store_collection_schema()
             ),
@@ -1019,7 +998,6 @@ class TestIngestFormatOptions:
         partition = InMemorySegmentStorePartition()
         config = VectorStoreCollectionConfig(
             vector_dimensions=embedder.dimensions,
-            similarity_metric=embedder.similarity_metric,
             indexed_properties_schema=(
                 EventMemory.expected_vector_store_collection_schema()
             ),

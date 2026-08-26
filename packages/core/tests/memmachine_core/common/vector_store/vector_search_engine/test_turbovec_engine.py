@@ -1,9 +1,10 @@
 """Tests for TurboVecVectorSearchEngine.
 
-turbovec stores TurboQuant-compressed vectors, so scores are approximate: a
+turbovec stores TurboQuant-compressed vectors, so cosine similarities are
+approximate: a
 self-match lands near the exact value, and orthogonal pairs land near zero
 rather than exactly zero. Tests therefore assert ranking and membership (robust
-under quantization) and only loosely assert score magnitudes. The one exact
+under quantization) and only loosely assert magnitudes. The one exact
 bound is the cosine range, which the engine clamps.
 """
 
@@ -14,7 +15,6 @@ import pytest
 
 pytest.importorskip("turbovec")
 
-from memmachine_core.common.data_types import SimilarityMetric
 from memmachine_core.common.vector_store.vector_search_engine.turbovec_engine import (
     TurboVecVectorSearchEngine,
 )
@@ -54,25 +54,14 @@ async def _search_one(engine, vector, limit=10, **kwargs):
     return results[0]
 
 
-def _make_engine(metric=SimilarityMetric.COSINE, **kwargs):
-    return TurboVecVectorSearchEngine(
-        num_dimensions=NDIM, similarity_metric=metric, **kwargs
-    )
+def _make_engine(**kwargs):
+    return TurboVecVectorSearchEngine(num_dimensions=NDIM, **kwargs)
 
 
 # -- Construction --
 
 
 class TestConstruction:
-    def test_supported_metrics(self):
-        for metric in (SimilarityMetric.COSINE, SimilarityMetric.DOT):
-            _make_engine(metric)
-
-    def test_unsupported_metric_raises(self):
-        for metric in (SimilarityMetric.EUCLIDEAN, SimilarityMetric.MANHATTAN):
-            with pytest.raises(NotImplementedError, match="does not support"):
-                _make_engine(metric)
-
     def test_valid_bit_widths(self):
         for bit_width in (2, 3, 4):
             _make_engine(bit_width=bit_width)
@@ -82,9 +71,7 @@ class TestConstruction:
             _make_engine(bit_width=5)
 
     def test_unaligned_dimensions_are_accepted(self):
-        TurboVecVectorSearchEngine(
-            num_dimensions=7, similarity_metric=SimilarityMetric.COSINE
-        )
+        TurboVecVectorSearchEngine(num_dimensions=7)
 
 
 # -- Add --
@@ -126,7 +113,7 @@ class TestAdd:
         await engine.add({1: _normalize(_one_hot(1))})
         result = await _search_one(engine, _normalize(_one_hot(1)), limit=1)
         assert result.matches[0].key == 1
-        assert result.matches[0].score == pytest.approx(1.0, abs=QUANT_ABS)
+        assert result.matches[0].cosine_similarity == pytest.approx(1.0, abs=QUANT_ABS)
 
     @pytest.mark.asyncio
     async def test_repeated_reupsert_of_same_key(self):
@@ -200,20 +187,20 @@ class TestSearchCosine:
         result = await _search_one(engine, _normalize(_one_hot(0)), limit=3)
         assert len(result.matches) == 3
         assert result.matches[0].key == 1
-        assert result.matches[0].score == pytest.approx(1.0, abs=QUANT_ABS)
+        assert result.matches[0].cosine_similarity == pytest.approx(1.0, abs=QUANT_ABS)
         assert result.matches[1].key == 3
         assert result.matches[2].key == 2
 
     @pytest.mark.asyncio
-    async def test_orthogonal_scores_near_zero(self):
+    async def test_orthogonal_cosine_similarities_near_zero(self):
         engine = _make_engine()
         await engine.add({1: _normalize(_one_hot(0)), 2: _normalize(_one_hot(1))})
         result = await _search_one(engine, _normalize(_one_hot(0)), limit=2)
-        assert result.matches[0].score == pytest.approx(1.0, abs=QUANT_ABS)
-        assert result.matches[1].score == pytest.approx(0.0, abs=0.1)
+        assert result.matches[0].cosine_similarity == pytest.approx(1.0, abs=QUANT_ABS)
+        assert result.matches[1].cosine_similarity == pytest.approx(0.0, abs=0.1)
 
     @pytest.mark.asyncio
-    async def test_scores_ordered_best_first(self):
+    async def test_cosine_similarities_ordered_best_first(self):
         engine = _make_engine()
         await engine.add(
             {
@@ -224,7 +211,10 @@ class TestSearchCosine:
         )
         result = await _search_one(engine, _normalize(_one_hot(0)), limit=3)
         for i in range(len(result.matches) - 1):
-            assert result.matches[i].score >= result.matches[i + 1].score
+            assert (
+                result.matches[i].cosine_similarity
+                >= result.matches[i + 1].cosine_similarity
+            )
 
     @pytest.mark.asyncio
     async def test_k_larger_than_index(self):
@@ -266,33 +256,6 @@ class TestSearchCosine:
 
 
 # -- Search: Dot product --
-
-
-class TestSearchDot:
-    @pytest.mark.asyncio
-    async def test_self_match_highest(self):
-        engine = _make_engine(SimilarityMetric.DOT)
-        v1 = _normalize(_one_hot(0))
-        v2 = _normalize(_one_hot(1))
-        await engine.add({1: v1, 2: v2})
-        result = await _search_one(engine, v1, limit=2)
-        assert result.matches[0].key == 1
-        assert result.matches[0].score == pytest.approx(1.0, abs=QUANT_ABS)
-        assert result.matches[1].score == pytest.approx(0.0, abs=0.1)
-
-    @pytest.mark.asyncio
-    async def test_scores_ordered_best_first(self):
-        engine = _make_engine(SimilarityMetric.DOT)
-        await engine.add(
-            {
-                1: _normalize(_one_hot(0)),
-                2: _normalize([1, 1, 0, 0, 0, 0, 0, 0]),
-                3: _normalize(_one_hot(1)),
-            }
-        )
-        result = await _search_one(engine, _normalize(_one_hot(0)), limit=3)
-        for i in range(len(result.matches) - 1):
-            assert result.matches[i].score >= result.matches[i + 1].score
 
 
 # -- Search: allowed_keys filtering --
@@ -385,7 +348,7 @@ class TestPersistence:
         result = await _search_one(engine2, _normalize(_one_hot(0)), limit=2)
         assert {m.key for m in result.matches} == {1, 2}
         assert result.matches[0].key == 1
-        assert result.matches[0].score == pytest.approx(1.0, abs=QUANT_ABS)
+        assert result.matches[0].cosine_similarity == pytest.approx(1.0, abs=QUANT_ABS)
 
     @pytest.mark.asyncio
     async def test_save_leaves_no_temp_file(self, tmp_path: Path):
@@ -439,9 +402,7 @@ class TestPersistence:
 class TestUnalignedDimensions:
     @pytest.mark.asyncio
     async def test_search_at_an_unaligned_width(self):
-        engine = TurboVecVectorSearchEngine(
-            num_dimensions=5, similarity_metric=SimilarityMetric.COSINE
-        )
+        engine = TurboVecVectorSearchEngine(num_dimensions=5)
         await engine.add(
             {
                 1: [1.0, 0.0, 0.0, 0.0, 0.0],
@@ -452,15 +413,13 @@ class TestUnalignedDimensions:
         results = await engine.search([[1.0, 0.0, 0.0, 0.0, 0.0]], limit=2)
         matches = results[0].matches
         assert [match.key for match in matches] == [1, 2]
-        assert matches[0].score == pytest.approx(1.0, abs=QUANT_ABS)
-        assert matches[1].score == pytest.approx(0.0, abs=QUANT_ABS)
+        assert matches[0].cosine_similarity == pytest.approx(1.0, abs=QUANT_ABS)
+        assert matches[1].cosine_similarity == pytest.approx(0.0, abs=QUANT_ABS)
 
     @pytest.mark.asyncio
     async def test_save_and_load_at_an_unaligned_width(self, tmp_path: Path):
         def make_engine():
-            return TurboVecVectorSearchEngine(
-                num_dimensions=5, similarity_metric=SimilarityMetric.COSINE
-            )
+            return TurboVecVectorSearchEngine(num_dimensions=5)
 
         engine = make_engine()
         await engine.add({1: [1.0, 0.0, 0.0, 0.0, 0.0]})
@@ -475,16 +434,14 @@ class TestUnalignedDimensions:
 
     @pytest.mark.asyncio
     async def test_wrong_width_vector_is_rejected(self):
-        engine = TurboVecVectorSearchEngine(
-            num_dimensions=5, similarity_metric=SimilarityMetric.COSINE
-        )
+        engine = TurboVecVectorSearchEngine(num_dimensions=5)
         with pytest.raises(ValueError, match="must have 5 dimensions"):
             await engine.add({1: [1.0, 0.0, 0.0]})
 
 
-class TestScoreRange:
+class TestCosineSimilarityRange:
     @pytest.mark.asyncio
-    async def test_cosine_scores_stay_within_range(self):
+    async def test_cosine_similarities_stay_within_range(self):
         engine = _make_engine()
         vectors = {key: _spread(key) for key in range(1, 51)}
         await engine.add(vectors)
@@ -492,15 +449,7 @@ class TestScoreRange:
         for vector in vectors.values():
             result = await _search_one(engine, vector, limit=5)
             for match in result.matches:
-                assert -1.0 <= match.score <= 1.0
-
-    @pytest.mark.asyncio
-    async def test_dot_scores_are_not_clamped(self):
-        engine = _make_engine(SimilarityMetric.DOT)
-        await engine.add({1: [4.0] + [0.0] * (NDIM - 1)})
-
-        result = await _search_one(engine, [4.0] + [0.0] * (NDIM - 1), limit=1)
-        assert result.matches[0].score > 1.0
+                assert -1.0 <= match.cosine_similarity <= 1.0
 
 
 class TestSearchResultTypes:
@@ -512,8 +461,8 @@ class TestSearchResultTypes:
         assert isinstance(result.matches[0].key, int)
 
     @pytest.mark.asyncio
-    async def test_scores_are_floats(self):
+    async def test_cosine_similarities_are_floats(self):
         engine = _make_engine()
         await engine.add({42: _normalize(_one_hot(0))})
         result = await _search_one(engine, _normalize(_one_hot(0)), limit=1)
-        assert isinstance(result.matches[0].score, float)
+        assert isinstance(result.matches[0].cosine_similarity, float)

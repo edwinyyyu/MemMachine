@@ -9,7 +9,6 @@ from memmachine_core.common.data_types import (
     PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE,
     PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
     PropertyValue,
-    SimilarityMetric,
 )
 
 from .utils import validate_identifier
@@ -22,14 +21,11 @@ class VectorStoreCollectionConfig(BaseModel):
     Attributes:
         vector_dimensions (int):
             Dimensionality of vectors stored in the collection.
-        similarity_metric (SimilarityMetric):
-            Metric used to compare vectors.
         indexed_properties_schema (dict[str, type[PropertyValue]]):
             Schema suggesting which properties should be indexed for filtering.
     """
 
     vector_dimensions: int
-    similarity_metric: SimilarityMetric = SimilarityMetric.COSINE
     indexed_properties_schema: dict[str, type[PropertyValue]] = Field(
         default_factory=dict
     )
@@ -153,20 +149,14 @@ class QueryMatch(BaseModel):
     A single vector store query match.
 
     Attributes:
-        score (float):
-            The meaning depends on the collection's `SimilarityMetric`:
-            - *cosine*: cosine similarity in [-1, 1].
-            - *dot*: raw dot product [0, inf).
-            - *euclidean*: Euclidean distance [0, inf).
-            - *manhattan*: Manhattan distance [0, inf).
-
-            Use `SimilarityMetric.higher_is_better` to determine which
-            direction indicates a better match.
+        cosine_similarity (float):
+            Cosine similarity between the query vector and the matched
+            record's vector, in [-1, 1]. Higher is a better match.
         record (Record):
             The matched record.
     """
 
-    score: float
+    cosine_similarity: float
     record: Record
 
 

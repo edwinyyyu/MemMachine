@@ -206,15 +206,15 @@ class FormatOptions(BaseModel):
 # QueryResult: the result of a memory query.
 
 
-class ScoredSegmentContext(BaseModel):
-    """A segment context anchored on a seed segment, with a score."""
+class SegmentContextMatch(BaseModel):
+    """A segment context anchored on a seed segment, with its cosine similarity."""
 
-    score: float
+    cosine_similarity: float
     seed_segment_uuid: UUID
     segments: list[Segment]
 
 
 class QueryResult(BaseModel):
-    """Memory query result, ordered by reranker score."""
+    """Memory query result, ordered by cosine similarity, best first."""
 
-    scored_segment_contexts: list[ScoredSegmentContext]
+    matches: list[SegmentContextMatch]

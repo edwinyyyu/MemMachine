@@ -2,7 +2,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from memmachine_core.common.data_types import SimilarityMetric
 from memmachine_core.common.embedder import Embedder
 from memmachine_core.common.reranker.embedder_reranker import (
     EmbedderReranker,
@@ -11,16 +10,9 @@ from memmachine_core.common.reranker.embedder_reranker import (
 from tests.memmachine_core.common.reranker.fake_embedder import FakeEmbedder
 
 
-@pytest.fixture(
-    params=[
-        SimilarityMetric.COSINE,
-        SimilarityMetric.DOT,
-        SimilarityMetric.EUCLIDEAN,
-        SimilarityMetric.MANHATTAN,
-    ],
-)
-def embedder(request):
-    return FakeEmbedder(similarity_metric=request.param)
+@pytest.fixture
+def embedder():
+    return FakeEmbedder()
 
 
 @pytest.fixture
@@ -56,25 +48,14 @@ async def test_shape(reranker, query, candidates):
 
 
 @pytest.mark.asyncio
-async def test_score():
+async def test_score_is_cosine_similarity():
     embedder = MagicMock(spec=Embedder)
     reranker = EmbedderReranker(EmbedderRerankerParams(embedder=embedder))
 
+    # [1.5, 1.5] is parallel to the query, [1.0, 2.0] is not.
     embedder.ingest_embed.return_value = [[1.0, 2.0], [1.5, 1.5]]
     embedder.search_embed.return_value = [[1.0, 1.0]]
 
-    embedder.similarity_metric = SimilarityMetric.COSINE
     scores = await reranker.score("query", ["candidate1", "candidate2"])
     assert scores[0] < scores[1]
-
-    embedder.similarity_metric = SimilarityMetric.DOT
-    scores = await reranker.score("query", ["candidate1", "candidate2"])
-    assert scores[0] == scores[1]
-
-    embedder.similarity_metric = SimilarityMetric.EUCLIDEAN
-    scores = await reranker.score("query", ["candidate1", "candidate2"])
-    assert scores[0] < scores[1]
-
-    embedder.similarity_metric = SimilarityMetric.MANHATTAN
-    scores = await reranker.score("query", ["candidate1", "candidate2"])
-    assert scores[0] == scores[1]
+    assert scores[1] == pytest.approx(1.0)

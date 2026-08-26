@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field, InstanceOf
 
 from memmachine_core.common.data_types import (
     ExternalServiceAPIError,
-    SimilarityMetric,
 )
 from memmachine_core.common.metrics_factory import MetricsFactory, OperationTracker
 from memmachine_core.common.utils import (
@@ -332,9 +331,3 @@ class OpenAIEmbedder(Embedder):
     def dimensions(self) -> int:
         """Return the embedding dimensionality."""
         return self._dimensions
-
-    @property
-    def similarity_metric(self) -> SimilarityMetric:
-        """Return the similarity metric used by this embedder."""
-        # https://platform.openai.com/docs/guides/embeddings
-        return SimilarityMetric.COSINE

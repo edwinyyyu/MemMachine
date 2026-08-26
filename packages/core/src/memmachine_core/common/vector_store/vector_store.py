@@ -66,7 +66,7 @@ class VectorStoreCollection(ABC):
         *,
         query_vectors: Iterable[Sequence[float]],
         limit: int,
-        score_threshold: float | None = None,
+        min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
         return_vector: bool = False,
         return_properties: bool = True,
@@ -79,8 +79,9 @@ class VectorStoreCollection(ABC):
                 The vectors to compare against.
             limit (int):
                 Maximum number of matching records to return per query vector.
-            score_threshold (float | None):
-                Score threshold to consider a match
+            min_cosine_similarity (float | None):
+                If provided, only return matches whose cosine similarity
+                is greater than or equal to this value
                 (default: None).
             property_filter (FilterExpr | None):
                 Filter expression tree.
@@ -153,7 +154,7 @@ class VectorStore(ABC):
     The consumer is responsible for sharding names across processes.
 
     Different namespaces are fully independent (separate native collections).
-    Multiple logical collections with the same (namespace, vector dimensions, similarity metric, indexed properties schema)
+    Multiple logical collections with the same (namespace, vector dimensions, indexed properties schema)
     may share a native collection to reduce overhead.
 
     Naming constraints:
@@ -184,8 +185,7 @@ class VectorStore(ABC):
         Create a logical collection in the vector store and return a handle to it.
 
         A (namespace, name) pair uniquely identifies a collection.
-        The configuration (dimensions, similarity metric, schema)
-        is fixed at creation time.
+        The configuration (dimensions, schema) is fixed at creation time.
 
         Args:
             namespace (str):

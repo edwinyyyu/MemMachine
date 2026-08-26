@@ -13,7 +13,6 @@ from memmachine_core.common.filter.filter_parser import (
     map_filter_fields,
     normalize_filter_field,
 )
-from memmachine_core.common.reranker import Reranker
 from memmachine_core.common.vector_store.data_types import (
     VectorStoreCollectionConfig,
 )
@@ -172,13 +171,6 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
             self.segment_to_derivatives.pop(segment_uuid, None)
 
 
-class FakeReranker(Reranker):
-    """Reranker that scores by candidate string length."""
-
-    async def score(self, query: str, candidates: list[str]) -> list[float]:
-        return [float(len(c)) for c in candidates]
-
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -198,7 +190,6 @@ def fake_segment_store_partition():
 def fake_vector_store_collection(fake_embedder):
     config = VectorStoreCollectionConfig(
         vector_dimensions=fake_embedder.dimensions,
-        similarity_metric=fake_embedder.similarity_metric,
         indexed_properties_schema={
             **EventMemory.expected_vector_store_collection_schema(),
             "color": str,
@@ -220,24 +211,6 @@ def event_memory(
             segmenter=TextSegmenter(),
             deriver=WholeTextDeriver(),
             embedder=fake_embedder,
-        )
-    )
-
-
-@pytest.fixture
-def event_memory_with_reranker(
-    fake_vector_store_collection,
-    fake_segment_store_partition,
-    fake_embedder,
-):
-    return EventMemory(
-        EventMemoryParams(
-            segment_store_partition=fake_segment_store_partition,
-            vector_store_collection=fake_vector_store_collection,
-            segmenter=TextSegmenter(),
-            deriver=WholeTextDeriver(),
-            embedder=fake_embedder,
-            reranker=FakeReranker(),
         )
     )
 

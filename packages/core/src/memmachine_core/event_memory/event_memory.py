@@ -23,7 +23,6 @@ from memmachine_core.common.metrics_factory import (
     MetricsFactory,
     OperationTracker,
 )
-from memmachine_core.common.reranker import Reranker
 from memmachine_core.common.vector_store import (
     Record,
     VectorStoreCollection,
@@ -37,8 +36,8 @@ from .data_types import (
     NullContext,
     ProducerContext,
     QueryResult,
-    ScoredSegmentContext,
     Segment,
+    SegmentContextMatch,
     TextBlock,
 )
 from .deriver import Deriver
@@ -64,10 +63,6 @@ class EventMemoryParams(BaseModel):
             Deriver that derives derivatives from segments.
         embedder (Embedder):
             Embedder instance for creating embeddings.
-        reranker (Reranker | None):
-            Reranker instance for scoring search results.
-            If None, embedding similarity scores are used instead
-            (default: None).
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -92,11 +87,6 @@ class EventMemoryParams(BaseModel):
     embedder: InstanceOf[Embedder] = Field(
         ...,
         description="Embedder instance for creating embeddings",
-    )
-    reranker: InstanceOf[Reranker] | None = Field(
-        None,
-        description="Reranker instance for scoring search results. "
-        "If None, embedding similarity scores are used instead",
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
@@ -142,7 +132,6 @@ class EventMemory:
         self._segmenter = params.segmenter
         self._deriver = params.deriver
         self._embedder = params.embedder
-        self._reranker = params.reranker
 
         self._tracker = OperationTracker(
             params.metrics_factory,
@@ -357,7 +346,6 @@ class EventMemory:
         vector_search_limit: int = 20,
         expand_context: int = 0,
         property_filter: FilterExpr | None = None,
-        format_options: FormatOptions | None = None,
     ) -> QueryResult:
         """
         Query event memory for segments relevant to the query.
@@ -377,9 +365,6 @@ class EventMemory:
                 Property fields and values
                 to use for filtering segments
                 (default: None).
-            format_options (FormatOptions | None):
-                Options for formatting.
-                (default: None).
 
         Returns:
             QueryResult:
@@ -392,7 +377,6 @@ class EventMemory:
                 vector_search_limit=vector_search_limit,
                 expand_context=expand_context,
                 property_filter=property_filter,
-                format_options=format_options,
             )
 
     async def _query(
@@ -402,7 +386,6 @@ class EventMemory:
         vector_search_limit: int,
         expand_context: int,
         property_filter: FilterExpr | None,
-        format_options: FormatOptions | None,
     ) -> QueryResult:
         t_start = time.monotonic()
         query_embedding = (
@@ -429,10 +412,10 @@ class EventMemory:
         )
         t_vector_query = time.monotonic()
 
-        # Extract seed segment UUIDs and their best embedding scores.
+        # Extract seed segment UUIDs and their best embedding cosine similarities.
         # Deduplicate by first occurrence (multiple derivatives can map to the same segment).
-        # First occurrence has the best score since matches are ordered best-to-worst.
-        seed_embedding_scores: dict[UUID, float] = {}
+        # First occurrence is the best since matches are ordered best-to-worst.
+        seed_embedding_cosine_similarities: dict[UUID, float] = {}
         for match in query_result.matches:
             segment_uuid = UUID(
                 str(
@@ -442,10 +425,12 @@ class EventMemory:
                     )[EventMemory._SEGMENT_UUID_FIELD_NAME]
                 )
             )
-            if segment_uuid not in seed_embedding_scores:
-                seed_embedding_scores[segment_uuid] = match.score
+            if segment_uuid not in seed_embedding_cosine_similarities:
+                seed_embedding_cosine_similarities[segment_uuid] = (
+                    match.cosine_similarity
+                )
 
-        seed_segment_uuids = list(seed_embedding_scores)
+        seed_segment_uuids = list(seed_embedding_cosine_similarities)
 
         max_backward_segments = expand_context // 3
         max_forward_segments = expand_context - max_backward_segments
@@ -460,7 +445,7 @@ class EventMemory:
         )
         t_segment_query = time.monotonic()
 
-        # Filter to seeds with results, preserving similarity order.
+        # Filter to seeds with results, preserving cosine similarity order.
         kept_seed_segment_uuids = [
             seed_segment_uuid
             for seed_segment_uuid in seed_segment_uuids
@@ -471,42 +456,28 @@ class EventMemory:
             for seed_segment_uuid in kept_seed_segment_uuids
         ]
 
-        # Use embedding scores if reranker is not available.
-        if self._reranker is None:
-            scores = [
-                seed_embedding_scores[seed_uuid]
-                for seed_uuid in kept_seed_segment_uuids
-            ]
-        else:
-            reranker_format_options = format_options or FormatOptions(
-                time_style="short"
-            )
-            scores = await self._score_segment_contexts(
-                query, segment_contexts, reranker_format_options
-            )
+        cosine_similarities = [
+            seed_embedding_cosine_similarities[seed_uuid]
+            for seed_uuid in kept_seed_segment_uuids
+        ]
         t_scoring = time.monotonic()
 
-        # Reranker scores are always higher-is-better.
-        # Embedding scores depend on the similarity metric.
-        higher_is_better = (
-            self._reranker is not None
-            or self._vector_store_collection.config.similarity_metric.higher_is_better
-        )
-
-        # Return scored contexts ordered by score.
-        scored_segment_contexts = [
-            ScoredSegmentContext(
-                score=score, seed_segment_uuid=seed_uuid, segments=context
+        # Return matches ordered by cosine similarity, best first.
+        matches = [
+            SegmentContextMatch(
+                cosine_similarity=cosine_similarity,
+                seed_segment_uuid=seed_uuid,
+                segments=context,
             )
-            for score, seed_uuid, context in sorted(
+            for cosine_similarity, seed_uuid, context in sorted(
                 zip(
-                    scores,
+                    cosine_similarities,
                     kept_seed_segment_uuids,
                     segment_contexts,
                     strict=True,
                 ),
                 key=lambda triple: triple[0],
-                reverse=higher_is_better,
+                reverse=True,
             )
         ]
 
@@ -530,23 +501,7 @@ class EventMemory:
             for phase, duration in phase_durations.items():
                 self._query_phase_seconds.observe(duration, labels={"phase": phase})
 
-        return QueryResult(scored_segment_contexts=scored_segment_contexts)
-
-    async def _score_segment_contexts(
-        self,
-        query: str,
-        segment_contexts: Iterable[Iterable[Segment]],
-        format_options: FormatOptions,
-    ) -> list[float]:
-        """Score segment contexts using the reranker. Requires reranker."""
-        assert self._reranker is not None
-        context_strings = [
-            EventMemory.string_from_segment_context(
-                segment_context, format_options=format_options
-            )
-            for segment_context in segment_contexts
-        ]
-        return await self._reranker.score(query, context_strings)
+        return QueryResult(matches=matches)
 
     @staticmethod
     def string_from_segment_context(
@@ -730,13 +685,13 @@ class EventMemory:
         """
         Build a single segment context from the query result within the limit.
 
-        Iterates contexts in score order, accumulating segments until the limit is reached.
+        Iterates contexts in cosine similarity order, accumulating segments until the limit is reached.
         When a context would exceed the limit, segments nearest the seed are prioritized.
         Deduplicates across segment contexts in the query result.
 
         Args:
             query_result (QueryResult):
-                The query result with scored anchored segment contexts.
+                The query result with anchored segment context matches.
             max_num_segments (int):
                 The maximum number of segments to return.
 
@@ -746,8 +701,8 @@ class EventMemory:
         """
         unified: set[Segment] = set()
 
-        for scored_context in query_result.scored_segment_contexts:
-            context = scored_context.segments
+        for match in query_result.matches:
+            context = match.segments
 
             if len(unified) >= max_num_segments:
                 break
@@ -758,7 +713,7 @@ class EventMemory:
                 seed_index = next(
                     index
                     for index, segment in enumerate(context)
-                    if segment.uuid == scored_context.seed_segment_uuid
+                    if segment.uuid == match.seed_segment_uuid
                 )
 
                 for segment in sorted(
@@ -788,8 +743,7 @@ class EventMemory:
     ) -> str:
         """Format a query result as a string with breaks between disconnected contexts."""
         contexts: list[list[Segment]] = [
-            list(scored_context.segments)
-            for scored_context in query_result.scored_segment_contexts
+            list(match.segments) for match in query_result.matches
         ]
 
         if max_num_segments is not None:
