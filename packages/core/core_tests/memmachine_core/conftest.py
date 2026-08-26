@@ -15,22 +15,8 @@ from memmachine_core.common.episode_store.episode_sqlalchemy_store import (
     BaseEpisodeStore,
     SqlAlchemyEpisodeStore,
 )
-from memmachine_core.semantic_memory.config_store.config_store_sqlalchemy import (
-    BaseSemanticConfigStore,
-    SemanticConfigStorageSqlAlchemy,
-)
-from memmachine_core.semantic_memory.storage.neo4j_semantic_storage import (
-    Neo4jSemanticStorage,
-)
-from memmachine_core.semantic_memory.storage.sqlalchemy_pgvector_semantic import (
-    SqlAlchemyPgVectorSemanticStorage,
-)
-from neo4j import AsyncGraphDatabase
-from neo4j.exceptions import ServiceUnavailable
 from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
-from testcontainers.core.waiting_utils import wait_container_is_ready
-from testcontainers.neo4j import Neo4jContainer
 from testcontainers.postgres import PostgresContainer
 from testcontainers.qdrant import QdrantContainer
 
@@ -336,65 +322,11 @@ def sqlalchemy_engine(request):
 
 
 @pytest_asyncio.fixture
-async def pgvector_semantic_storage(sqlalchemy_pg_engine):
-    storage = SqlAlchemyPgVectorSemanticStorage(sqlalchemy_pg_engine)
-    await storage.startup()
-    yield storage
-    await storage.delete_all()
-    await storage.cleanup()
-
-
-@pytest_asyncio.fixture
 async def in_memory_semantic_storage():
     store = InMemorySemanticStorage()
     await store.startup()
     yield store
     await store.cleanup()
-
-
-@pytest.fixture(scope="session")
-def neo4j_container():
-    if not is_docker_available():
-        pytest.skip("Docker is not available")
-
-    class _Neo4jContainer(Neo4jContainer):
-        @wait_container_is_ready(ServiceUnavailable)
-        def _connect(self) -> None:
-            with self.get_driver() as driver:
-                driver.verify_connectivity()
-
-    username = "neo4j"
-    password = "password"
-    with _Neo4jContainer(
-        image="neo4j:5.23",
-        username=username,
-        password=password,
-    ) as container:
-        yield {
-            "uri": container.get_connection_url(),
-            "username": username,
-            "password": password,
-        }
-
-
-@pytest_asyncio.fixture(scope="session")
-async def neo4j_driver(neo4j_container):
-    driver = AsyncGraphDatabase.driver(
-        neo4j_container["uri"],
-        auth=(neo4j_container["username"], neo4j_container["password"]),
-    )
-    yield driver
-    await driver.close()
-
-
-@pytest_asyncio.fixture
-async def neo4j_semantic_storage(neo4j_driver):
-    storage = Neo4jSemanticStorage(neo4j_driver)
-    await storage.startup()
-    await storage.delete_all()
-    yield storage
-    await storage.delete_all()
-    await storage.cleanup()
 
 
 @pytest.fixture(scope="session")
@@ -446,21 +378,6 @@ async def distributed_qdrant_client(distributed_qdrant_container):
 )
 def semantic_storage(request):
     return request.getfixturevalue(request.param)
-
-
-@pytest_asyncio.fixture
-async def semantic_config_storage(sqlalchemy_engine: AsyncEngine):
-    engine = sqlalchemy_engine
-    async with engine.begin() as conn:
-        await conn.run_sync(BaseSemanticConfigStore.metadata.create_all)
-
-    storage = SemanticConfigStorageSqlAlchemy(engine)
-    await storage.startup()
-
-    yield storage
-
-    async with engine.begin() as conn:
-        await conn.run_sync(BaseSemanticConfigStore.metadata.drop_all)
 
 
 @pytest_asyncio.fixture

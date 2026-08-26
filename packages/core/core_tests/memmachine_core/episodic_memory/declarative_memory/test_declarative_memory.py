@@ -3,6 +3,10 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from memmachine_core.common.vector_graph_store.neo4j_vector_graph_store import (
+    Neo4jVectorGraphStore,
+    Neo4jVectorGraphStoreParams,
+)
 from memmachine_core.episodic_memory.declarative_memory import (
     ContentType,
     DeclarativeMemory,
@@ -33,10 +37,6 @@ from memmachine_core.common.filter.filter_parser import (
 )
 from memmachine_core.common.filter.filter_parser import (
     Or as FilterOr,
-)
-from memmachine_core.common.vector_graph_store.neo4j_vector_graph_store import (
-    Neo4jVectorGraphStore,
-    Neo4jVectorGraphStoreParams,
 )
 
 pytestmark = pytest.mark.integration
