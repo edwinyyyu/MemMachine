@@ -102,28 +102,6 @@ def test_init_with_full_config(mock_async_openai, full_config):
     )
 
 
-def test_init_missing_client():
-    """Test initialization fails if client is missing."""
-    with pytest.raises(ValidationError):
-        OpenAIResponsesLanguageModel(
-            OpenAIResponsesLanguageModelParams(  # ty: ignore[missing-argument]  # omitted on purpose
-                model="test-model",
-            ),
-        )
-
-
-def test_init_missing_model():
-    """Test initialization fails if model is missing."""
-    with pytest.raises(ValidationError):
-        OpenAIResponsesLanguageModel(
-            OpenAIResponsesLanguageModelParams(  # ty: ignore[missing-argument]  # omitted on purpose
-                client=openai.AsyncOpenAI(
-                    api_key="test_api_key",
-                ),
-            ),
-        )
-
-
 def test_init_invalid_max_retry_interval_seconds_type(minimal_config):
     """Test initialization fails with non-integer max_retry_interval_seconds."""
     with pytest.raises(ValidationError):

@@ -30,11 +30,8 @@ dev = [
 
 [tool.ruff]
 exclude = [
-    "tools",
     "build",
     ".tmp",
-    "evaluation/retrieval_skill",
-    "src/memmachine-ts",
 ]
 
 [tool.ruff.lint]
@@ -82,9 +79,12 @@ select = [
     "YTT",
 ]
 ignore = [
-    "E501", "UP015", "TRY002", "PLC0415",
-    "D102", "D212", "D203", "RET504",
-    "TRY003",
+    "E501",    # line length is the formatter's job; what remains is unsplittable
+    "PLC0415", # function-level imports defer heavy or optional dependencies
+    "D102",    # method docstrings are optional; modules and classes are documented
+    "D212",    # multi-line docstring summaries open on the second line
+    "RET504",  # naming the return value before returning it is house style
+    "TRY003",  # plain exceptions with inline messages
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -94,47 +94,6 @@ convention = "google"
 [tool.ruff.lint.per-file-ignores]
 # INP: tests/ trees are deliberately namespace packages (see pytest config).
 "packages/*/tests/**/*.py" = ["ANN", "D", "SLF", "ARG", "INP"]
-"tools/**/*.py" = ["SIM", "DTZ", "C9", "ANN", "T201", "PT", "INP", "PTH", "D"]
-"examples/**" = [
-    "ANN",
-    "ARG",
-    "ASYNC210",
-    "C901",
-    "D",
-    "FA",
-    "PERF203",
-    "PTH",
-    "T201",
-    "TRY300",
-    "TRY401",
-]
-"integrations/**" = [
-    "ANN",
-    "T201",
-    "D",
-    "ARG",
-    "FA",
-    "PERF203",
-]
-"evaluation/**/*.py" = [
-    "D",
-    "ARG",
-    "T201",
-    "ANN",
-    "FA",
-    "PTH123",
-    "PTH120",
-    "PTH110",
-    "PTH100",
-    "ASYNC230",
-    "RUF001",
-    "N806",
-    "B023",
-    "B007",
-    "TRY300",
-    "PERF203",
-    "PERF401",
-]
 
 [tool.ty.environment]
 extra-paths = [
