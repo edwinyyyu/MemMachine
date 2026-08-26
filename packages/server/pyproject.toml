@@ -52,6 +52,9 @@ milvus = [
 litellm = [
     "memmachine-core[litellm]",
 ]
+turbovec = [
+    "memmachine-core[turbovec]",
+]
 
 [project.scripts]
 memmachine-server = "memmachine_server.server.app:main"
