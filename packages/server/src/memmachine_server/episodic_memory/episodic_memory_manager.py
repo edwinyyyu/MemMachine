@@ -185,7 +185,7 @@ class EpisodicMemoryManager:
         config: dict[str, JsonValue] | None = None,
     ) -> AsyncIterator[EpisodicMemory]:
         """
-        Create a new episodic memory instance and store its configuration.
+        Create an episodic memory instance or reuse an equivalent active one.
 
         Args:
             session_key: The unique identifier for the session.
@@ -195,7 +195,8 @@ class EpisodicMemoryManager:
             config: Additional configuration values for the session metadata.
 
         Raises:
-            ValueError: If a session with the given session_key already exists.
+            SessionAlreadyExistsError: If the session exists with different
+                configuration, parameters, or metadata, or is being deleted.
 
         """
         instance: EpisodicMemory | None = None
@@ -212,10 +213,12 @@ class EpisodicMemoryManager:
                     description,
                     metadata,
                 )
-                instance = await self._create_episodic_memory(
-                    session_key,
-                    episodic_memory_config,
-                )
+                instance = await self._instance_cache.get(session_key)
+                if instance is None:
+                    instance = await self._create_episodic_memory(
+                        session_key,
+                        episodic_memory_config,
+                    )
         try:
             yield instance
         finally:
