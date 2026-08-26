@@ -75,7 +75,7 @@ class MemoryConfig:
     eviction_threshold: float | None
     eviction_target_size: int
     eviction_search_limit: int
-    # Vector store backend (turbovec | turbovecdisk | sqlitevec). Lives in the
+    # Vector store backend (turbovec | sqlitevec). Lives in the
     # home config because the on-disk index formats differ per backend: a
     # daemon serving this home must use the backend that wrote its files.
     vector_backend: str

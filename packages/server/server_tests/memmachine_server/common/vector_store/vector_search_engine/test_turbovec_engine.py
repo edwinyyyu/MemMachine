@@ -38,6 +38,18 @@ def _one_hot(index: int, value: float = 1.0) -> list[float]:
     return vector
 
 
+def _entry_names(directory: Path) -> list[str]:
+    """Names of everything in `directory`. Sync: the tests calling it are not."""
+    return [entry.name for entry in directory.iterdir()]
+
+
+def _spread(seed: int) -> list[float]:
+    """A deterministic unit vector, distinct per `seed`."""
+    return _normalize(
+        [math.cos(seed * (axis + 1) * 0.7 + axis) for axis in range(NDIM)]
+    )
+
+
 async def _search_one(engine, vector, limit=10, **kwargs):
     """Helper: search a single vector, return the one SearchResult."""
     results = await engine.search([vector], limit=limit, **kwargs)
@@ -383,6 +395,41 @@ class TestPersistence:
         assert {m.key for m in result.matches} == {1, 2}
         assert result.matches[0].key == 1
         assert result.matches[0].score == pytest.approx(1.0, abs=QUANT_ABS)
+
+    @pytest.mark.asyncio
+    async def test_save_leaves_no_temp_file(self, tmp_path: Path):
+        # turbovec publishes a whole-file write through a temp sibling of its
+        # own naming; the index must be all that is left behind.
+        engine = _make_engine()
+        await engine.add({1: _normalize(_one_hot(0))})
+
+        await engine.save(str(tmp_path / "test.idx"))
+
+        assert _entry_names(tmp_path) == ["test.idx"]
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_carries_adds_and_mass_removals(self, tmp_path: Path):
+        # A checkpoint after the first commits what changed rather than
+        # restating the index, so what it carries is worth pinning -- over a
+        # bulk removal, which is churn enough to take the whole-rewrite path
+        # rather than the incremental one.
+        engine = _make_engine()
+        await engine.add({key: _spread(key) for key in range(1, 2001)})
+
+        path = str(tmp_path / "test.idx")
+        await engine.save(path)
+
+        doomed = [key for key in range(1, 2001) if key % 4 != 0]
+        await engine.remove(doomed)
+        await engine.add({key: _spread(key) for key in range(10_001, 10_033)})
+        await engine.save(path)
+
+        engine2 = _make_engine()
+        await engine2.load(path)
+
+        expected = set(range(4, 2001, 4)) | set(range(10_001, 10_033))
+        result = await _search_one(engine2, _spread(1), limit=len(expected) + 10)
+        assert {match.key for match in result.matches} == expected
 
     @pytest.mark.asyncio
     async def test_load_replaces_existing_index(self, tmp_path: Path):

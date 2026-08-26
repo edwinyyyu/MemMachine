@@ -65,7 +65,7 @@ From a clean clone, in `agentic_expansion/`:
 
 ```bash
 uv sync                                       # 1. base deps (sqlite-vec locked; NOT sentence-transformers/turbovec)
-uv pip install sentence-transformers turbovec # 2. embedder + default ANN backend (ad-hoc; see note)
+uv pip install sentence-transformers 'turbovec>=1.0.0' # 2. embedder + default ANN backend (ad-hoc; see note)
 uv run python -m claude_memory.smoke          # 3. optional sanity check (no network, no model)
 uv run python -m claude_memory.cli install    # 4. wire hooks + MCP + skill (--dry-run to preview)
 # 5. restart Claude Code
@@ -80,10 +80,13 @@ Step 4 is one idempotent installer that does everything; step 5 makes it live.
   it ad-hoc (step 2) and reinstall after any later `uv sync`. The model **weights**
   download from HuggingFace into the HF cache on the first real turn (one-time,
   network — set `HF_TOKEN` if rate-limited). **No cloud/OpenAI model, no API key.**
-- **Vector backend** — the default **turbovec** (TurboQuant-compressed ANN) is a
-  local wheel **not** in the lockfile, so `uv sync` neither installs it nor keeps
-  it: run `uv pip install turbovec` (step 2) and re-run after any later `uv sync`.
-  To avoid it entirely, set `CLAUDE_MEMORY_VECTOR_BACKEND=sqlitevec` (exact
+- **Vector backend** — the default **turbovec** (TurboQuant-compressed ANN) is
+  **not** in the lockfile, so `uv sync` neither installs it nor keeps it: run
+  `uv pip install 'turbovec>=1.0.0'` (step 2) and re-run after any later
+  `uv sync`. **1.0.0 is a floor, not a preference:** it reads and writes the v7
+  container only, and refuses the v3 files written by 0.7.0 rather than
+  misreading them — see *Index format* below.
+  To avoid turbovec entirely, set `CLAUDE_MEMORY_VECTOR_BACKEND=sqlitevec` (exact
   float32, no extra dep — `sqlite-vec` is already locked) and skip step 2.
 - The SessionStart hook warms the daemon so the first prompt's recall is instant
   (~0.1s warm calls).
@@ -228,8 +231,35 @@ TurboQuant-compressed ANN index in `$CLAUDE_MEMORY_HOME/vector_index/*.idx`.
 - **Persistence:** the index is in RAM while the daemon runs, saved to `.idx` on
   shutdown and every ~1000 ops, and rebuilt on restart via load + pending-op
   replay (so a hard kill loses nothing — unsaved ops are replayed from SQLite).
+  A save is `IdMapIndex.sync`, which appends what changed since the last
+  checkpoint instead of restating the whole index, and commits it durably — so a
+  checkpoint costs what changed rather than what the index holds, and a crash at
+  any byte of it leaves the previous commit intact.
 - **Revert / tune:** `CLAUDE_MEMORY_VECTOR_BACKEND=sqlitevec` for exact float32
   (no turbovec dep, vectors in sqlite-vec); `CLAUDE_MEMORY_TURBOVEC_BITS=2|3|4`.
+
+### Index format
+
+turbovec 1.0.0 reads and writes the **v7** container only. Earlier releases wrote
+v3 (0.7.0/0.8.0), then v5 and v6; `turbovec.convert` brings a v5 or v6 file
+forward, but v3 predates the v5 rotation change, which altered every encoded
+byte, so 1.0.0 refuses a v3 file outright rather than mis-decoding it. Nothing
+stores the float32 vectors — the records table has no vector column and turbovec
+keeps only the compressed codes — so a v3 index has to be **rebuilt from the
+segment text**, not converted:
+
+```bash
+python3 -m claude_memory.migrate_index_v7            # plan only, no model load
+python3 -m claude_memory.migrate_index_v7 --build    # embed; daemon may keep running
+python3 -m claude_memory.cli daemon stop
+python3 -m claude_memory.migrate_index_v7 --build    # catch up what it added
+python3 -m claude_memory.migrate_index_v7 --install  # swap it in
+```
+
+The rebuild preserves row ids, so `vector.db`, `segment.db`, `state/` and
+`demotions.json` keep pointing at what they pointed at before, and it reapplies
+the demotion deltas. `--install` refuses unless the built index covers the live
+record set exactly.
 
 Switching backends re-reads the env at daemon start, so `daemon restart` after
 changing it. The two backends use the same `vector.db` records but different

@@ -10,7 +10,6 @@ from turbovec import IdMapIndex
 from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.rw_locks import AsyncRWLock
 
-from .index_persistence import atomic_index_write, clear_stale_index_temp
 from .vector_search_engine import SearchMatch, SearchResult, VectorSearchEngine
 
 
@@ -89,7 +88,7 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
         query = self._prepare_vectors(vectors)
 
         if allowed_keys is None:
-            scores, ids = self._index_search(query, limit)
+            scores, ids = self._index.search(query, limit)
             return [
                 SearchResult(matches=self._to_matches(scores[i], ids[i], limit, None))
                 for i in range(query.shape[0])
@@ -100,12 +99,6 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
             for i in range(query.shape[0])
         ]
 
-    def _index_search(
-        self, queries: np.ndarray, limit: int
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Run the underlying index search; subclasses add their knobs."""
-        return self._index.search(queries, limit)
-
     def _search_one_filtered(
         self,
         query: np.ndarray,
@@ -114,7 +107,7 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
     ) -> SearchResult:
         fetch_limit = limit * self._OVERFETCH_BASE
         while True:
-            scores, ids = self._index_search(query, fetch_limit)
+            scores, ids = self._index.search(query, fetch_limit)
             matches = self._to_matches(scores[0], ids[0], limit, allowed_keys)
             exhausted = ids.shape[1] < fetch_limit
             if len(matches) >= limit or exhausted:
@@ -168,8 +161,15 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
             await asyncio.to_thread(self._sync_save, path)
 
     def _sync_save(self, path: str) -> None:
-        with atomic_index_write(path) as temp_path:
-            self._index.write(temp_path)
+        # turbovec publishes the index itself, so this does not go through the
+        # shared `atomic_index_write` helper. `sync` appends what changed since
+        # the last checkpoint instead of restating the whole index, and commits
+        # it durably: a crash at any byte leaves the previous commit intact,
+        # and the publication survives a power failure -- which the helper's
+        # rename, by its own account, cannot promise. A path's first sync (and
+        # heavy churn later on) rewrites the file whole, which publishes the
+        # same way and is merely slower.
+        self._index.sync(path)
 
     @override
     async def load(self, path: str) -> None:
@@ -177,5 +177,6 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
             self._index = await asyncio.to_thread(self._sync_load, path)
 
     def _sync_load(self, path: str) -> IdMapIndex:
-        clear_stale_index_temp(path)
+        # `load` reads either container turbovec writes -- whole-file or
+        # synced -- and a loaded index keeps checkpointing incrementally.
         return IdMapIndex.load(path)

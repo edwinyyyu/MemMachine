@@ -287,6 +287,21 @@ Every injection in this system is an append:
   vectors are a compressed in-memory index (~384 B/vec at 4-bit, ~10× smaller than
   float32) persisted to `$CLAUDE_MEMORY_HOME/vector_index/*.idx` on shutdown and
   every ~1000 ops, reloaded on restart (pending-op replay covers a hard kill).
+  A save is turbovec's own `IdMapIndex.sync` (turbovec ≥ 1.0.0, container **v7**),
+  which appends what changed since the last checkpoint rather than restating the
+  whole index and commits it durably — one fsync, and a crash at any byte of it
+  leaves the previous commit intact. That closes the gap this store used to carry:
+  publication was atomic but not durable, so a **power** failure could revert the
+  last publication after the pending log — the only other copy of those vectors —
+  had been trimmed behind it, leaving memories that still expand from `segment.db`
+  but stop being *searchable*, undetected. Re-running ingest never fixed that:
+  event uuids are derived from the transcript record, so `ingest` skips anything
+  already in `segment.db` rather than re-embedding it, and recovery meant
+  rebuilding a fresh home from the transcripts, which reaches only as far back as
+  `cleanupPeriodDays` retention. The v3 index written by turbovec 0.7.0 is not
+  convertible to v7 (v3 predates the v5 rotation change), so the one-time move is
+  a rebuild from the segment text — `claude_memory.migrate_index_v7`, which
+  preserves row ids and reapplies the demotion deltas.
   Chosen for **search speed at scale** (≈flat vs sqlite-vec's linear float32 scan),
   not disk — total disk drops only ~15-20% since `segment.db` and the property
   records dominate. Approximate (quantized cosine; near-exact recall on real

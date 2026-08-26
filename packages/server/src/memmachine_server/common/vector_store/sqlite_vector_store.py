@@ -4,10 +4,26 @@ Vector store backed by SQLite + pluggable vector search engine.
 Each logical collection gets its own records table and vector search engine.
 A pending operations table tracks search engine operations for crash recovery:
 on startup, unfinalized operations are replayed.
+
+What survives a crash
+---------------------
+
+`upsert` and `delete` commit to SQLite before they return, so a process crash
+loses nothing: the pending log carries every operation the search engine has
+not been checkpointed with, and startup replays it.
+
+A power failure is only as strong as the engine's publication. turbovec commits
+its checkpoint durably and survives one; the engines that publish by atomic
+rename (see `vector_search_engine.index_persistence`) do not, and a power
+failure can revert their last publication while the records table -- and the
+trim that ran behind that publication -- stay committed. The result is records
+whose vectors are missing from the index: `get` still returns them, `query`
+cannot find them, and re-upserting them is the repair. Callers on such an engine
+that need every record searchable after a power failure must be able to
+re-ingest; nothing here detects the gap for them.
 """
 
 import logging
-import shutil
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
@@ -134,15 +150,8 @@ class _PendingOperationRow(BaseSQLiteVectorStore):
 
 
 def _remove_index_artifact(path: Path) -> None:
-    """Remove an on-disk index.
-
-    Handles both file-shaped indexes (e.g. ``.tvdm``) and directory-shaped
-    ones (e.g. a FreshIndex).
-    """
-    if path.is_dir():
-        shutil.rmtree(path, ignore_errors=True)
-    elif path.exists():
-        path.unlink()
+    """Remove an on-disk index. Every engine here publishes a single file."""
+    path.unlink(missing_ok=True)
 
 
 async def _save_collection_index(
@@ -153,7 +162,16 @@ async def _save_collection_index(
     search_engine: VectorSearchEngine,
     path: str,
 ) -> None:
-    """Save a collection's index to disk."""
+    """Publish a collection's index to disk and trim the operations it holds.
+
+    The order is the whole protocol. The pending log is the only other copy of
+    these vectors -- the records table has no vector column -- so an applied row
+    may be deleted only once the index that holds it has been published.
+    `save` returning is that statement, and no more than the engine's own
+    publication promises: an engine that publishes by rename can have that
+    publication reverted by a power failure after this trim has committed. See
+    the module docstring for what that leaves behind.
+    """
     # Write index to path.
     await search_engine.save(path)
 

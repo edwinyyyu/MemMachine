@@ -323,40 +323,26 @@ def _build_vector_store(
     ``config.vector_backend`` (env ``CLAUDE_MEMORY_VECTOR_BACKEND`` >
     ``<home>/config.json`` ``vector_backend`` > default) selects ``turbovec``
     (TurboQuant-compressed in-RAM index: fast approximate search, ~8x smaller
-    vectors at 4-bit),
-    ``turbovecdisk`` (same quantized search, but the index is a memory-mapped
-    file searched in place — near-zero charged RAM, identical warm latency), or
-    ``sqlitevec`` (exact, float32 vectors in sqlite-vec). Both turbovec variants
-    keep only compressed codes, so vector read-back is unavailable — fine here,
-    since EventMemory only ever queries with return_vector=False. The compressed
-    index lives in a separate ``vector_index/`` directory and is persisted on
-    shutdown / every save batch. The two turbovec index file formats differ
-    (.tvim in RAM vs .tvdm mmap); switching between them requires converting
-    the files in vector_index/ via ``turbovec.DiskIndex.convert_id_map_file``.
+    vectors at 4-bit) or ``sqlitevec`` (exact, float32 vectors in sqlite-vec).
+    turbovec keeps only compressed codes, so vector read-back is unavailable --
+    fine here, since EventMemory only ever queries with return_vector=False. The
+    compressed index lives in a separate ``vector_index/`` directory and is
+    persisted on shutdown / every save batch (an incremental ``sync``, so a
+    checkpoint costs what changed rather than what the index holds). It is a v7
+    container, which turbovec >= 1.0.0 is the only release to read or write; a
+    v3 index from turbovec 0.7.0 is not convertible and has to be rebuilt (see
+    ``claude_memory.migrate_index_v7``).
     """
     backend = config.vector_backend
     if backend == "sqlitevec":
         return SQLiteVecVectorStore(SQLiteVecVectorStoreParams(engine=vector_engine))
-    if backend in ("turbovec", "turbovecdisk"):
+    if backend == "turbovec":
         bit_width = int(os.environ.get("CLAUDE_MEMORY_TURBOVEC_BITS", "4"))
-        if backend == "turbovecdisk":
-            # Lazy: DiskIndex needs the locally-built turbovec wheel; the
-            # PyPI release (what `uv sync` installs) only covers the in-RAM
-            # engine, so importing here keeps the default backend working.
-            from memmachine_server.common.vector_store.vector_search_engine.turbovec_disk_engine import (
-                TurboVecDiskVectorSearchEngine,
-            )
-
-            engine_class: type[TurboVecVectorSearchEngine] = (
-                TurboVecDiskVectorSearchEngine
-            )
-        else:
-            engine_class = TurboVecVectorSearchEngine
         return SQLiteVectorStore(
             SQLiteVectorStoreParams(
                 sqlalchemy_engine=vector_engine,
                 vector_search_engine_factory=(
-                    lambda ndim, metric: engine_class(
+                    lambda ndim, metric: TurboVecVectorSearchEngine(
                         num_dimensions=ndim,
                         similarity_metric=metric,
                         bit_width=bit_width,
@@ -366,8 +352,7 @@ def _build_vector_store(
             )
         )
     raise ValueError(
-        f"unknown CLAUDE_MEMORY_VECTOR_BACKEND={backend!r} "
-        f"(turbovec|turbovecdisk|sqlitevec)"
+        f"unknown CLAUDE_MEMORY_VECTOR_BACKEND={backend!r} (turbovec|sqlitevec)"
     )
 
 
