@@ -9,7 +9,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from memmachine_server.common.data_types import SimilarityMetric
+from memmachine_server.common.data_types import ConcurrencyScope, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
@@ -982,3 +982,7 @@ class TestFilterEdgeCases:
         assert r1.uuid in uuids
         assert r3.uuid in uuids
         assert r2.uuid not in uuids
+
+
+def test_concurrency_scope_is_process(store):
+    assert store.concurrency_scope == ConcurrencyScope.PROCESS

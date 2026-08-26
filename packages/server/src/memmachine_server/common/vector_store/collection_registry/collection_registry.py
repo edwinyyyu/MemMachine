@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 
 from pydantic import BaseModel, Field
 
+from memmachine_server.common.data_types import ConcurrencyScope
 from memmachine_server.common.vector_store.data_types import (
     VectorStoreCollectionConfig,
 )
@@ -86,6 +87,18 @@ class CollectionRegistry(ABC):
 
     Namespaces and names follow the VectorStore naming constraints.
     """
+
+    @property
+    @abstractmethod
+    def concurrency_scope(self) -> ConcurrencyScope:
+        """
+        Widest boundary for concurrent use of this registry.
+
+        Instances of the registry's vector store deployed within the
+        declared scope observe the same registered collections,
+        and registration stays atomic between them.
+        """
+        raise NotImplementedError
 
     @abstractmethod
     async def startup(self) -> None:

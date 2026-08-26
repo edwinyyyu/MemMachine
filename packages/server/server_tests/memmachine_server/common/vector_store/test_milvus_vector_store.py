@@ -14,7 +14,11 @@ pymilvus = pytest.importorskip("pymilvus")
 DataType = pymilvus.DataType
 MilvusClient = pymilvus.MilvusClient
 
-from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_server.common.data_types import (
+    ConcurrencyScope,
+    PropertyValue,
+    SimilarityMetric,
+)
 from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
@@ -539,3 +543,7 @@ class TestPartitionIsolation:
 
         await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
+
+
+def test_concurrency_scope_is_process(store):
+    assert store.concurrency_scope == ConcurrencyScope.PROCESS

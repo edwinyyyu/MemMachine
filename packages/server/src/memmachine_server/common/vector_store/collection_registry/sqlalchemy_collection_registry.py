@@ -29,6 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.pool import StaticPool
 
+from memmachine_server.common.data_types import ConcurrencyScope
 from memmachine_server.common.vector_store.utils import validate_identifier
 
 from .collection_registry import (
@@ -147,6 +148,14 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
             Column("key", String(_MAX_KEY_LENGTH), primary_key=True),
             Column("entry", _JSON_AUTO, nullable=False),
         )
+
+    @property
+    @override
+    def concurrency_scope(self) -> ConcurrencyScope:
+        """CLUSTER on PostgreSQL; MACHINE on file-backed SQLite."""
+        if self._engine.dialect.name == "postgresql":
+            return ConcurrencyScope.CLUSTER
+        return ConcurrencyScope.MACHINE
 
     @staticmethod
     def _key(namespace: str, name: str) -> str:

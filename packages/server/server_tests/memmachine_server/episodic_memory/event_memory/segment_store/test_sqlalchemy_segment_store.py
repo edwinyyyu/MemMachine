@@ -11,6 +11,7 @@ import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from memmachine_server.common.data_types import ConcurrencyScope
 from memmachine_server.common.filter.filter_parser import Comparison
 from memmachine_server.common.payload_codec.payload_codec_config import (
     PlaintextPayloadCodecConfig,
@@ -991,3 +992,11 @@ async def test_pg_mixed_context_types(
 
     result = await partition.get_segment_contexts([s_none.uuid])
     assert result[s_none.uuid][0].context == NullContext()
+
+
+@pytest.mark.asyncio
+async def test_concurrency_scope_matches_dialect(store: SQLAlchemySegmentStore) -> None:
+    if store._engine.dialect.name == "postgresql":
+        assert store.concurrency_scope == ConcurrencyScope.CLUSTER
+    else:
+        assert store.concurrency_scope == ConcurrencyScope.MACHINE

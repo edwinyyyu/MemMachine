@@ -8,6 +8,7 @@ from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool, StaticPool
 
+from memmachine_server.common.data_types import ConcurrencyScope
 from memmachine_server.common.vector_store import VectorStoreCollectionConfig
 from memmachine_server.common.vector_store.collection_registry import (
     CollectionAlreadyRegisteredError,
@@ -287,3 +288,11 @@ def test_version_1_rows_stay_readable():
     assert entry.config.vector_dimensions == 3
     assert entry.native_collection_name == "test_namespace__digest"
     assert entry.partition_key == "test_name#generation"
+
+
+@pytest.mark.asyncio
+async def test_concurrency_scope_matches_dialect(sqlalchemy_engine, registry):
+    if sqlalchemy_engine.dialect.name == "postgresql":
+        assert registry.concurrency_scope == ConcurrencyScope.CLUSTER
+    else:
+        assert registry.concurrency_scope == ConcurrencyScope.MACHINE

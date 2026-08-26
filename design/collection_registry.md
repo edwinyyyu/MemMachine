@@ -315,6 +315,13 @@ privileged. `shutdown` is a no-op in the SQLAlchemy implementation
 because the engine is shared and externally owned: the registry does not
 close what it did not open.
 
+**`concurrency_scope` is declared by the registry** rather than derived
+by each store, because the registry is what actually bounds atomicity: a
+store reports `min(its own ceiling, its registry's scope)`, so a
+cluster-capable backend sitting behind a file-backed SQLite registry
+correctly declares itself machine-scoped. One answer per backing store,
+not one per consumer. See `concurrency_scopes.md`.
+
 ## Storage (SQLAlchemy implementation)
 
 - Table per registry (`collection_registry_<name>`: `key` VARCHAR(255) PK,

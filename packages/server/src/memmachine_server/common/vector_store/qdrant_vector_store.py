@@ -16,6 +16,7 @@ from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
 from memmachine_server.common.data_types import (
+    ConcurrencyScope,
     OrderedValue,
     PropertyValue,
     SimilarityMetric,
@@ -641,6 +642,12 @@ class QdrantVectorStore(VectorStore):
         self._client_name_locks = QdrantVectorStore._name_locks.setdefault(
             self._client, defaultdict(asyncio.Lock)
         )
+
+    @property
+    @override
+    def concurrency_scope(self) -> ConcurrencyScope:
+        """Qdrant is shareable across machines; the registry's scope governs."""
+        return min(ConcurrencyScope.CLUSTER, self._registry.concurrency_scope)
 
     @override
     async def startup(self) -> None:

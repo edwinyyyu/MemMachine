@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
 from uuid import UUID
 
+from memmachine_server.common.data_types import ConcurrencyScope
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
 )
@@ -31,6 +32,24 @@ class VectorStoreCollection(ABC):
 
     The schema exists to support indexing on fixed-type record properties.
     Record properties not declared in the schema may have mixed-type values.
+
+    Visibility: a returned write is durably accepted,
+    but is not guaranteed to be visible to a subsequent query,
+    from this instance or any other.
+    Consumers must not build on read-your-writes.
+
+    Authority: stored properties and property filters operate on
+    the collection's own copy of a record,
+    with no freshness guarantee relative to any external source of truth.
+    Consumers whose records are governed by an external authority
+    must re-validate results against it.
+
+    Lifetime: a handle is valid only while its collection exists.
+    Once the collection is deleted the handle is invalid,
+    and a write through it
+    must never become visible in a collection
+    subsequently created with the same namespace and name.
+    This holds at every concurrency scope.
     """
 
     @property
@@ -149,8 +168,10 @@ class VectorStore(ABC):
     Abstract base class for a vector store.
 
     A given logical collection identified by a (namespace, name) pair
-    must be managed by at most one process at a time.
-    The consumer is responsible for sharding names across processes.
+    may be managed concurrently by multiple VectorStore instances
+    only within this store's declared concurrency_scope.
+    Beyond that scope, at most one instance may manage a collection,
+    and the consumer is responsible for sharding names accordingly.
 
     Different namespaces are fully independent (separate native collections).
     Multiple logical collections with the same (namespace, vector dimensions, similarity metric, indexed properties schema)
@@ -161,6 +182,18 @@ class VectorStore(ABC):
           (lowercase alphanumeric and underscores only).
         - Each identifier must be at most 32 bytes.
     """
+
+    @property
+    @abstractmethod
+    def concurrency_scope(self) -> ConcurrencyScope:
+        """
+        Widest boundary for concurrently managing the same collection.
+
+        Instances of this store deployed within the declared scope
+        (and configured against the same backing services)
+        may concurrently manage the same logical collections.
+        """
+        raise NotImplementedError
 
     @abstractmethod
     async def startup(self) -> None:
