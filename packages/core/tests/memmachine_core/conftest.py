@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from testcontainers.postgres import PostgresContainer
 from testcontainers.qdrant import QdrantContainer
 
-from core_tests.memmachine_core.common.reranker.fake_embedder import FakeEmbedder
 from memmachine_core.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -30,6 +29,7 @@ from memmachine_core.common.language_model.openai_responses_language_model impor
     OpenAIResponsesLanguageModel,
     OpenAIResponsesLanguageModelParams,
 )
+from tests.memmachine_core.common.reranker.fake_embedder import FakeEmbedder
 
 
 def is_docker_available() -> bool:

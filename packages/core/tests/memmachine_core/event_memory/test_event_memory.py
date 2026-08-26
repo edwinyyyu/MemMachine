@@ -7,9 +7,6 @@ from uuid import uuid4
 
 import pytest
 
-from core_tests.memmachine_core.common.reranker.fake_embedder import (
-    FakeEmbedder,
-)
 from memmachine_core.common.data_types import PropertyValue, SimilarityMetric
 from memmachine_core.common.filter.filter_parser import (
     And,
@@ -42,6 +39,9 @@ from memmachine_core.event_memory.event_memory import (
 )
 from memmachine_core.event_memory.segmenter.text_segmenter import (
     TextSegmenter,
+)
+from tests.memmachine_core.common.reranker.fake_embedder import (
+    FakeEmbedder,
 )
 
 from .conftest import (

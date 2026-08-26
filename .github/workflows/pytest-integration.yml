@@ -22,11 +22,11 @@ jobs:
         # Each integration test is a separate job to allow for parallel execution
         test-paths: [
           # Core common provider/storage tests
-          "packages/core/core_tests/memmachine_core/common/",
+          "packages/core/tests/memmachine_core/common/",
           # Core episodic memory tests
-          "packages/core/core_tests/memmachine_core/episodic_memory/",
+          "packages/core/tests/memmachine_core/episodic_memory/",
           # Core semantic memory tests
-          "packages/core/core_tests/memmachine_core/semantic_memory/",
+          "packages/core/tests/memmachine_core/semantic_memory/",
         ]
         os: [ ubuntu-latest, ubuntu-24.04-arm ]
         # Test on the oldest and newest supported Python versions

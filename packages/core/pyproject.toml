@@ -85,7 +85,7 @@ package = true
 
 [tool.ty.environment]
 python-version = "3.12"
-# "." keeps `core_tests.*` qualified test-helper imports resolvable.
+# "." keeps this package's `tests.*` namespace-package imports resolvable.
 extra-paths = ["."]
 
 [tool.ty.src]

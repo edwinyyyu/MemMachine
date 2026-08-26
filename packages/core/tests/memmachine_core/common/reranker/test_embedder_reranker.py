@@ -2,13 +2,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from core_tests.memmachine_core.common.reranker.fake_embedder import FakeEmbedder
 from memmachine_core.common.data_types import SimilarityMetric
 from memmachine_core.common.embedder import Embedder
 from memmachine_core.common.reranker.embedder_reranker import (
     EmbedderReranker,
     EmbedderRerankerParams,
 )
+from tests.memmachine_core.common.reranker.fake_embedder import FakeEmbedder
 
 
 @pytest.fixture(

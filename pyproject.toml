@@ -97,7 +97,8 @@ convention = "google"
 
 # Do not add any new paths under packages/
 [tool.ruff.lint.per-file-ignores]
-"packages/core/core_tests/**/*.py" = ["ANN", "D", "SLF", "ARG"]
+# INP: tests/ trees are deliberately namespace packages (see pytest config).
+"packages/*/tests/**/*.py" = ["ANN", "D", "SLF", "ARG", "INP"]
 "tools/**/*.py" = ["SIM", "DTZ", "C9", "ANN", "T201", "PT", "INP", "PTH", "D"]
 "examples/**" = [
     "ANN",
@@ -151,10 +152,18 @@ exclude = ["packages/**/build/**"]
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
-addopts = ["-m", "not integration"]
-# Keep both test packages importable regardless of which subset pytest runs,
-# so shared test infrastructure resolves by qualified path.
+# importlib import mode loads test modules by path instead of by mutating
+# sys.path, so test directories need no __init__.py and basenames need not be
+# globally unique (e.g. two test_data_types.py under different subpackages).
+addopts = ["-m", "not integration", "--import-mode=importlib"]
+# Every package's tests/ is a PEP 420 namespace package with NO __init__.py, so
+# the tests/ trees of separate workspace members merge instead of shadowing:
+# packages/core/tests/memmachine_core -> tests.memmachine_core
+# packages/server/tests/memmachine_server -> tests.memmachine_server
+# Each member's tests/ must therefore mirror its own distribution package name.
+# Adding a member means adding its directory here.
 pythonpath = ["packages/core"]
+consider_namespace_packages = true
 
 markers = [
     "integration: mark the test as an integration test",

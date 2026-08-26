@@ -7,13 +7,6 @@ from uuid import UUID
 
 import pytest
 
-from core_tests.memmachine_core.common.reranker.fake_embedder import (
-    FakeEmbedder,
-)
-from core_tests.memmachine_core.common.vector_store.in_memory_vector_store_collection import (
-    InMemoryVectorStoreCollection,
-    evaluate_filter,
-)
 from memmachine_core.common.filter.filter_parser import (
     FilterExpr,
     demangle_user_metadata_key,
@@ -39,6 +32,13 @@ from memmachine_core.event_memory.segment_store import (
 )
 from memmachine_core.event_memory.segmenter.text_segmenter import (
     TextSegmenter,
+)
+from tests.memmachine_core.common.reranker.fake_embedder import (
+    FakeEmbedder,
+)
+from tests.memmachine_core.common.vector_store.in_memory_vector_store_collection import (
+    InMemoryVectorStoreCollection,
+    evaluate_filter,
 )
 
 # ---------------------------------------------------------------------------
