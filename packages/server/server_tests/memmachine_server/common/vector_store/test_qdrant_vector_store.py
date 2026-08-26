@@ -1,5 +1,6 @@
 """Tests for QdrantVectorStore."""
 
+import asyncio
 import math
 from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import MagicMock
@@ -19,6 +20,10 @@ from memmachine_server.common.filter.filter_parser import (
     Or,
 )
 from memmachine_server.common.metrics_factory import MetricsFactory
+from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
+    SQLAlchemyCollectionRegistry,
+    SQLAlchemyCollectionRegistryParams,
+)
 from memmachine_server.common.vector_store.data_types import (
     Record,
     VectorStoreCollectionAlreadyExistsError,
@@ -53,8 +58,21 @@ def any_qdrant_client(request):
 
 
 @pytest_asyncio.fixture
-async def store(any_qdrant_client):
-    params = QdrantVectorStoreParams(client=any_qdrant_client)
+async def collection_registry(sqlalchemy_sqlite_engine):
+    registry = SQLAlchemyCollectionRegistry(
+        SQLAlchemyCollectionRegistryParams(
+            engine=sqlalchemy_sqlite_engine, name="qdrant_test"
+        )
+    )
+    await registry.startup()
+    return registry
+
+
+@pytest_asyncio.fixture
+async def store(any_qdrant_client, collection_registry):
+    params = QdrantVectorStoreParams(
+        client=any_qdrant_client, registry=collection_registry
+    )
     s = QdrantVectorStore(params)
     await s.startup()
     yield s
@@ -1117,13 +1135,14 @@ class TestPartitionIsolation:
 @pytest.mark.integration
 class TestMetrics:
     @pytest.mark.asyncio
-    async def test_metrics_collection(self, qdrant_client):
+    async def test_metrics_collection(self, qdrant_client, collection_registry):
         mock_factory = MagicMock(spec=MetricsFactory)
         mock_histogram = MagicMock(spec=MetricsFactory.Histogram)
         mock_factory.get_histogram.return_value = mock_histogram
 
         params = QdrantVectorStoreParams(
             client=qdrant_client,
+            registry=collection_registry,
             metrics_factory=mock_factory,
         )
         store = QdrantVectorStore(params)
@@ -1156,13 +1175,169 @@ class TestMetrics:
         await store.delete_collection(namespace=NAMESPACE, name="metrics_test")
 
 
+# ── Collection registry integration ──
+
+
+class TestRegistryIntegration:
+    """The config registry, not Qdrant, is the collection metadata authority."""
+
+    CONFIG = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+    OTHER_CONFIG = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM + 1)
+
+    def _second_store(self, client, registry) -> QdrantVectorStore:
+        return QdrantVectorStore(
+            QdrantVectorStoreParams(client=client, registry=registry)
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_registry_collections_in_qdrant(self, any_qdrant_client, store):
+        await store.create_collection(
+            namespace=NAMESPACE, name=NAME, config=self.CONFIG
+        )
+
+        collections = await any_qdrant_client.get_collections()
+        assert all(
+            not collection.name.endswith("__registry")
+            for collection in collections.collections
+        )
+
+        await store.delete_collection(namespace=NAMESPACE, name=NAME)
+
+    @pytest.mark.asyncio
+    async def test_stores_sharing_a_registry_share_collections(
+        self, any_qdrant_client, collection_registry, store
+    ):
+        other_store = self._second_store(any_qdrant_client, collection_registry)
+
+        await store.create_collection(
+            namespace=NAMESPACE, name=NAME, config=self.CONFIG
+        )
+
+        with pytest.raises(VectorStoreCollectionAlreadyExistsError):
+            await other_store.create_collection(
+                namespace=NAMESPACE, name=NAME, config=self.CONFIG
+            )
+
+        coll = await other_store.open_collection(namespace=NAMESPACE, name=NAME)
+        assert coll is not None
+        assert coll.config == self.CONFIG
+
+        await other_store.delete_collection(namespace=NAMESPACE, name=NAME)
+        assert await store.open_collection(namespace=NAMESPACE, name=NAME) is None
+
+    @pytest.mark.asyncio
+    async def test_concurrent_open_or_create_mismatched_configs(
+        self, any_qdrant_client, collection_registry, store
+    ):
+        other_store = self._second_store(any_qdrant_client, collection_registry)
+
+        results = await asyncio.gather(
+            store.open_or_create_collection(
+                namespace=NAMESPACE, name=NAME, config=self.CONFIG
+            ),
+            other_store.open_or_create_collection(
+                namespace=NAMESPACE, name=NAME, config=self.OTHER_CONFIG
+            ),
+            return_exceptions=True,
+        )
+
+        errors = [result for result in results if isinstance(result, Exception)]
+        assert len(errors) == 1
+        assert isinstance(errors[0], VectorStoreCollectionConfigMismatchError)
+
+        winners = [result for result in results if not isinstance(result, Exception)]
+        assert len(winners) == 1
+        stored = await store.open_collection(namespace=NAMESPACE, name=NAME)
+        assert stored is not None
+        assert stored.config == winners[0].config
+
+        await store.delete_collection(namespace=NAMESPACE, name=NAME)
+
+    @pytest.mark.asyncio
+    async def test_registry_keys_are_unambiguous(self, store):
+        # ("a__b", "c") and ("a", "b__c") must be distinct collections,
+        # so the registry key separator cannot be an identifier character.
+        await store.create_collection(namespace="a__b", name="c", config=self.CONFIG)
+        await store.create_collection(
+            namespace="a", name="b__c", config=self.OTHER_CONFIG
+        )
+
+        coll_a = await store.open_collection(namespace="a__b", name="c")
+        coll_b = await store.open_collection(namespace="a", name="b__c")
+        assert coll_a is not None
+        assert coll_b is not None
+        assert coll_a.config == self.CONFIG
+        assert coll_b.config == self.OTHER_CONFIG
+
+        await store.delete_collection(namespace="a__b", name="c")
+        assert await store.open_collection(namespace="a", name="b__c") is not None
+        await store.delete_collection(namespace="a", name="b__c")
+
+    @pytest.mark.asyncio
+    async def test_recreation_mints_a_fresh_generation(
+        self, collection_registry, store
+    ):
+        await store.create_collection(
+            namespace=NAMESPACE, name=NAME, config=self.CONFIG
+        )
+        first_entry = await collection_registry.get(namespace=NAMESPACE, name=NAME)
+        assert first_entry is not None
+
+        await store.delete_collection(namespace=NAMESPACE, name=NAME)
+        await store.create_collection(
+            namespace=NAMESPACE, name=NAME, config=self.CONFIG
+        )
+        second_entry = await collection_registry.get(namespace=NAMESPACE, name=NAME)
+        assert second_entry is not None
+
+        assert second_entry.native_collection_name == first_entry.native_collection_name
+        assert second_entry.partition_key != first_entry.partition_key
+
+        await store.delete_collection(namespace=NAMESPACE, name=NAME)
+
+    @pytest.mark.asyncio
+    async def test_held_handle_after_delete_cannot_resurrect_records(self, store):
+        await store.create_collection(
+            namespace=NAMESPACE, name=NAME, config=self.CONFIG
+        )
+        held = await store.open_collection(namespace=NAMESPACE, name=NAME)
+        assert held is not None
+
+        live_record = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+        await held.upsert(records=[live_record])
+
+        await store.delete_collection(namespace=NAMESPACE, name=NAME)
+
+        # A handle held across the deletion writes into the dead generation.
+        stale_record = _make_record(vector=_normalize([0.0, 1.0, 0.0]))
+        await held.upsert(records=[stale_record])
+
+        await store.create_collection(
+            namespace=NAMESPACE, name=NAME, config=self.CONFIG
+        )
+        reopened = await store.open_collection(namespace=NAMESPACE, name=NAME)
+        assert reopened is not None
+
+        assert (
+            await reopened.get(record_uuids=[live_record.uuid, stale_record.uuid]) == []
+        )
+        query_results = list(
+            await reopened.query(query_vectors=[_normalize([0.0, 1.0, 0.0])], limit=10)
+        )
+        assert query_results[0].matches == []
+
+        await store.delete_collection(namespace=NAMESPACE, name=NAME)
+
+
 # ── Distributed sharding ──
 
 
 @pytest_asyncio.fixture
-async def distributed_store(distributed_qdrant_client):
+async def distributed_store(distributed_qdrant_client, collection_registry):
     params = QdrantVectorStoreParams(
-        client=distributed_qdrant_client, is_distributed=True
+        client=distributed_qdrant_client,
+        is_distributed=True,
+        registry=collection_registry,
     )
     s = QdrantVectorStore(params)
     await s.startup()

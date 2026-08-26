@@ -1,6 +1,6 @@
 import pytest
 import yaml
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from memmachine_server.common.configuration.database_conf import (
     DatabasesConf,
@@ -121,7 +121,7 @@ def db_conf_dict() -> dict:
                     "prefer_grpc": True,
                     "api_key": "test-key",
                     "is_distributed": True,
-                    "registry_replication_factor": 3,
+                    "registry_database": "local_sqlite",
                 },
             },
             "my_milvus": {
@@ -205,7 +205,7 @@ def test_parse_valid_storage_dict(db_conf_dict):
     assert qdrant_conf.prefer_grpc is True
     assert qdrant_conf.api_key == SecretStr("test-key")
     assert qdrant_conf.is_distributed is True
-    assert qdrant_conf.registry_replication_factor == 3
+    assert qdrant_conf.registry_database == "local_sqlite"
 
     # Milvus check
     milvus_conf = storage_conf.milvus_confs["my_milvus"]
@@ -358,26 +358,38 @@ def test_neo4j_uri_with_special_host():
 
 
 def test_qdrant_conf_defaults():
-    conf = QdrantConf()
+    conf = QdrantConf(registry_database="registry_db")
     assert conf.host == "localhost"
     assert conf.port == 6333
     assert conf.grpc_port == 6334
     assert conf.prefer_grpc is False
     assert conf.https is False
     assert conf.is_distributed is False
-    assert conf.registry_replication_factor == 1
+    assert conf.registry_database == "registry_db"
     assert conf.api_key.get_secret_value() == ""
+
+
+def test_qdrant_conf_requires_registry_database():
+    with pytest.raises(ValidationError):
+        QdrantConf.model_validate({})
 
 
 def test_qdrant_conf_api_key_from_env(monkeypatch):
     monkeypatch.setenv("QDRANT_API_KEY", "env-qdrant-key")
-    conf = QdrantConf(api_key=SecretStr("$QDRANT_API_KEY"))
+    conf = QdrantConf(
+        api_key=SecretStr("$QDRANT_API_KEY"), registry_database="registry_db"
+    )
     assert conf.api_key == SecretStr("env-qdrant-key")
 
 
 def test_qdrant_build_config():
     config = SupportedDB.QDRANT.build_config(
-        {"host": "qdrant.local", "port": 9333, "is_distributed": True}
+        {
+            "host": "qdrant.local",
+            "port": 9333,
+            "is_distributed": True,
+            "registry_database": "registry_db",
+        }
     )
     assert isinstance(config, QdrantConf)
     assert config.host == "qdrant.local"

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import SecretStr
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from memmachine_server.common.configuration.database_conf import (
     DatabasesConf,
@@ -23,6 +23,10 @@ from memmachine_server.common.errors import (
 )
 from memmachine_server.common.resource_manager.database_manager import DatabaseManager
 from memmachine_server.common.vector_graph_store import VectorGraphStore
+from memmachine_server.common.vector_store import VectorStoreCollectionConfig
+from memmachine_server.common.vector_store.collection_registry import (
+    CollectionRegistryEntry,
+)
 
 requires_pymilvus = pytest.mark.skipif(
     importlib.util.find_spec("pymilvus") is None,
@@ -296,7 +300,9 @@ def _qdrant_only_conf() -> MagicMock:
     conf.relational_db_confs = {}
     conf.nebula_graph_confs = {}
     conf.qdrant_confs = {
-        "qdrant1": QdrantConf(host="localhost", port=6333),
+        "qdrant1": QdrantConf(
+            host="localhost", port=6333, registry_database="registry_db"
+        ),
     }
     conf.sqlite_vector_store_confs = {}
     conf.sqlite_vec_vector_store_confs = {}
@@ -314,6 +320,7 @@ async def test_qdrant_client_kwargs_forwarded():
         prefer_grpc=True,
         https=True,
         api_key=SecretStr("secret-key"),
+        registry_database="registry_db",
     )
 
     mock_client = AsyncMock()
@@ -331,6 +338,11 @@ async def test_qdrant_client_kwargs_forwarded():
             "qdrant_client.AsyncQdrantClient",
             return_value=mock_client,
         ) as mock_cls,
+        patch.object(
+            DatabaseManager,
+            "_build_qdrant_collection_registry",
+            new=AsyncMock(),
+        ),
     ):
         mock_store_cls.return_value.startup = AsyncMock()
         builder = DatabaseManager(conf)
@@ -365,6 +377,11 @@ async def test_qdrant_api_key_omitted_when_empty():
             "qdrant_client.AsyncQdrantClient",
             return_value=mock_client,
         ) as mock_cls,
+        patch.object(
+            DatabaseManager,
+            "_build_qdrant_collection_registry",
+            new=AsyncMock(),
+        ),
     ):
         mock_store_cls.return_value.startup = AsyncMock()
         builder = DatabaseManager(conf)
@@ -379,11 +396,12 @@ async def test_qdrant_creates_vector_store():
     conf = _qdrant_only_conf()
     conf.qdrant_confs["qdrant1"] = QdrantConf(
         is_distributed=True,
-        registry_replication_factor=3,
+        registry_database="registry_db",
     )
 
     mock_client = AsyncMock()
     mock_client.close = AsyncMock()
+    mock_registry = MagicMock()
 
     with (
         patch(
@@ -396,6 +414,11 @@ async def test_qdrant_creates_vector_store():
             "qdrant_client.AsyncQdrantClient",
             return_value=mock_client,
         ),
+        patch.object(
+            DatabaseManager,
+            "_build_qdrant_collection_registry",
+            new=AsyncMock(return_value=mock_registry),
+        ),
     ):
         mock_store_cls.return_value.startup = AsyncMock()
         builder = DatabaseManager(conf)
@@ -404,11 +427,88 @@ async def test_qdrant_creates_vector_store():
     mock_params_cls.assert_called_once_with(
         client=mock_client,
         is_distributed=True,
-        registry_replication_factor=3,
+        registry=mock_registry,
     )
     mock_store_cls.assert_called_once_with(mock_params_cls.return_value)
     mock_store_cls.return_value.startup.assert_awaited_once()
     assert "qdrant1" in builder.vector_stores
+
+
+@pytest.mark.asyncio
+async def test_qdrant_registry_database_not_configured():
+    """A registry_database naming no relational database fails with a clear error."""
+    conf = _qdrant_only_conf()
+    conf.relational_db_confs = {}
+
+    mock_client = AsyncMock()
+    mock_client.close = AsyncMock()
+
+    with patch(
+        "qdrant_client.AsyncQdrantClient",
+        return_value=mock_client,
+    ):
+        builder = DatabaseManager(conf)
+        with pytest.raises(QdrantConfigurationError, match="registry_database"):
+            await builder.async_get_qdrant_client("qdrant1")
+
+    mock_client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_qdrant_conf_name_unusable_as_registry_name(tmp_path):
+    """A qdrant conf entry name that cannot name a registry table fails clearly."""
+    conf = _qdrant_only_conf()
+    conf.qdrant_confs = {
+        "qdrant-1": QdrantConf(registry_database="registry_db"),
+    }
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/registry.db")
+    mock_client = AsyncMock()
+    mock_client.close = AsyncMock()
+
+    with (
+        patch(
+            "qdrant_client.AsyncQdrantClient",
+            return_value=mock_client,
+        ),
+        patch.object(
+            DatabaseManager,
+            "async_get_sql_engine",
+            new=AsyncMock(return_value=engine),
+        ),
+    ):
+        builder = DatabaseManager(conf)
+        with pytest.raises(QdrantConfigurationError, match="Rename"):
+            await builder.async_get_qdrant_client("qdrant-1")
+
+    mock_client.close.assert_awaited_once()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_qdrant_builds_registry_on_named_database(tmp_path):
+    """The collection registry is built and started on the named engine."""
+    conf = _qdrant_only_conf()
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/registry.db")
+
+    with patch.object(
+        DatabaseManager,
+        "async_get_sql_engine",
+        new=AsyncMock(return_value=engine),
+    ):
+        builder = DatabaseManager(conf)
+        registry = await builder._build_qdrant_collection_registry(
+            "qdrant1", conf.qdrant_confs["qdrant1"]
+        )
+
+    entry = CollectionRegistryEntry(
+        config=VectorStoreCollectionConfig(vector_dimensions=3),
+        native_collection_name="ns__digest",
+        partition_key="name#generation",
+    )
+    await registry.register(namespace="ns", name="name", entry=entry)
+    assert await registry.get(namespace="ns", name="name") == entry
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -430,6 +530,11 @@ async def test_get_vector_store_qdrant():
         patch(
             "qdrant_client.AsyncQdrantClient",
             return_value=mock_client,
+        ),
+        patch.object(
+            DatabaseManager,
+            "_build_qdrant_collection_registry",
+            new=AsyncMock(),
         ),
     ):
         mock_store_cls.return_value.startup = AsyncMock()
@@ -480,6 +585,11 @@ async def test_qdrant_close():
         patch(
             "qdrant_client.AsyncQdrantClient",
             return_value=mock_client,
+        ),
+        patch.object(
+            DatabaseManager,
+            "_build_qdrant_collection_registry",
+            new=AsyncMock(),
         ),
     ):
         mock_store_cls.return_value.startup = AsyncMock()

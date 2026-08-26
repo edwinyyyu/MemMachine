@@ -101,6 +101,7 @@ resources:
         grpc_port: 6334
         prefer_grpc: false
         https: false
+        registry_database: sqlite_test  # relational database (databases entry) storing collection metadata; must be the same for every process sharing this Qdrant
         # api_key: <YOUR_QDRANT_API_KEY>   # required for Qdrant Cloud
     # VectorStore for vector-backed semantic memory.
     # Wire it via `semantic_memory.vector_collection`.
@@ -112,6 +113,7 @@ resources:
         grpc_port: 6334
         prefer_grpc: false
         https: false
+        registry_database: sqlite_test  # relational database (databases entry) storing collection metadata; must be the same for every process sharing this Qdrant
         # api_key: <YOUR_QDRANT_API_KEY>   # required for Qdrant Cloud
     #
     # Alternative: Milvus. The local .db URI uses Milvus Lite; replace it with

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from memmachine_server.common.configuration.database_conf import (
     DatabasesConf,
     Neo4jConf,
+    QdrantConf,
     SQLiteVectorStoreConf,
     SQLiteVectorStoreEngine,
 )
@@ -30,6 +31,13 @@ from memmachine_server.common.vector_graph_store.neo4j_vector_graph_store import
     Neo4jVectorGraphStoreParams,
 )
 from memmachine_server.common.vector_store import VectorStore
+from memmachine_server.common.vector_store.collection_registry import (
+    CollectionRegistry,
+)
+from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
+    SQLAlchemyCollectionRegistry,
+    SQLAlchemyCollectionRegistryParams,
+)
 from memmachine_server.common.vector_store.vector_search_engine import (
     VectorSearchEngine,
 )
@@ -537,6 +545,35 @@ class DatabaseManager:
 
     # --- Qdrant ---
 
+    async def _build_qdrant_collection_registry(
+        self, name: str, conf: QdrantConf
+    ) -> CollectionRegistry:
+        """Build and start the collection registry for a Qdrant instance."""
+        try:
+            engine = await self.async_get_sql_engine(conf.registry_database)
+        except ValueError as e:
+            raise QdrantConfigurationError(
+                f"Qdrant config '{name}': registry_database "
+                f"'{conf.registry_database}' is not a configured relational database.",
+            ) from e
+
+        # One registry per Qdrant instance, so instances sharing a registry
+        # database get separate tables.
+        registry_name = f"qdrant_{name}"
+        try:
+            registry = SQLAlchemyCollectionRegistry(
+                SQLAlchemyCollectionRegistryParams(engine=engine, name=registry_name)
+            )
+        except ValueError as e:
+            raise QdrantConfigurationError(
+                f"Qdrant config name '{name}' cannot name a collection registry "
+                f"({registry_name!r} is not a valid registry name). "
+                "Rename the qdrant databases entry to match [a-z0-9_]+ "
+                "and be at most 25 bytes.",
+            ) from e
+        await registry.startup()
+        return registry
+
     @staticmethod
     async def _close_qdrant_client(name: str, client: "AsyncQdrantClient") -> None:
         try:
@@ -584,12 +621,13 @@ class DatabaseManager:
                 QdrantVectorStoreParams,
             )
 
-            params = QdrantVectorStoreParams(
-                client=client,
-                is_distributed=conf.is_distributed,
-                registry_replication_factor=conf.registry_replication_factor,
-            )
             try:
+                registry = await self._build_qdrant_collection_registry(name, conf)
+                params = QdrantVectorStoreParams(
+                    client=client,
+                    is_distributed=conf.is_distributed,
+                    registry=registry,
+                )
                 store = QdrantVectorStore(params)
                 await store.startup()
             except Exception:

@@ -3,10 +3,10 @@
 import asyncio
 import hashlib
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 from typing import Any, ClassVar, cast, override
-from uuid import UUID, uuid5
+from uuid import UUID, uuid4
 from weakref import WeakKeyDictionary
 
 import grpc
@@ -44,6 +44,11 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 from memmachine_server.common.utils import ensure_tz_aware
 
+from .collection_registry import (
+    CollectionAlreadyRegisteredError,
+    CollectionRegistry,
+    CollectionRegistryEntry,
+)
 from .data_types import (
     QueryMatch,
     QueryResult,
@@ -504,10 +509,10 @@ class QdrantVectorStoreParams(BaseModel):
             so each logical collection maps to a dedicated shard key.
             This enables logical collection deletion via shard drop
             instead of filter-based deletion.
-        registry_replication_factor (int):
-            Replication factor for registry collections. Write consistency factor is
-            set to match so all replicas confirm writes before returning, guaranteeing
-            read-your-writes from any available replica.
+        registry (CollectionRegistry):
+            Registry cataloging this store's logical collections.
+            Must be dedicated to this Qdrant vector store
+            and shared by every process using it.
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -528,12 +533,12 @@ class QdrantVectorStoreParams(BaseModel):
             "instead of filter-based deletion"
         ),
     )
-    registry_replication_factor: int = Field(
-        1,
+    registry: InstanceOf[CollectionRegistry] = Field(
+        ...,
         description=(
-            "Replication factor for registry collections. Write consistency factor is "
-            "set to match so all replicas confirm writes before returning, guaranteeing "
-            "read-your-writes from any available replica"
+            "Registry cataloging this store's logical collections. "
+            "Must be dedicated to this Qdrant vector store "
+            "and shared by every process using it"
         ),
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
@@ -564,19 +569,9 @@ class QdrantVectorStore(VectorStore):
         datetime: models.PayloadSchemaType.DATETIME,
     }
 
-    # Registry collection keys (stored on registry points, one per logical collection)
-    _REGISTRY_SUFFIX: ClassVar[str] = "__registry"
-    _REGISTRY_NAME: ClassVar[str] = "name"
-    _REGISTRY_VECTOR_DIMENSIONS: ClassVar[str] = "vector_dimensions"
-    _REGISTRY_SIMILARITY_METRIC: ClassVar[str] = "similarity_metric"
-    _REGISTRY_INDEXED_PROPERTIES_SCHEMA: ClassVar[str] = "indexed_properties_schema"
-
-    # Fixed UUID namespace for deterministic registry point IDs.
-    _REGISTRY_UUID_NAMESPACE: ClassVar[UUID] = UUID(
-        "a3c1f6d2-4b8e-4f2a-9c7d-1e5f8a0b3d6c"
-    )
-
     # Keyed by client so locks are garbage-collected when the client is.
+    # Serializes lifecycle operations on a logical collection within this
+    # process only; cross-process exclusion comes from the config registry.
     _name_locks: ClassVar[
         WeakKeyDictionary[
             AsyncQdrantClient,
@@ -586,35 +581,40 @@ class QdrantVectorStore(VectorStore):
 
     @staticmethod
     def _is_already_exists_error(error: Exception) -> bool:
-        """Check if an exception indicates a resource already exists."""
-        if isinstance(error, UnexpectedResponse):
-            return error.status_code == 409
-        if isinstance(error, grpc.aio.AioRpcError):
-            return error.code() == grpc.StatusCode.ALREADY_EXISTS
-        if isinstance(error, ValueError):
-            return "already exists" in str(error).lower()
-        return False
+        """
+        Check if an exception indicates a resource already exists.
+
+        Typed status codes are the authority; the message check is a last
+        resort for responses without a distinctive code (the local
+        :memory: client raises bare ValueError, and some server errors
+        carry only a message).
+        """
+        if isinstance(error, UnexpectedResponse) and error.status_code == 409:
+            return True
+        if (
+            isinstance(error, grpc.aio.AioRpcError)
+            and error.code() == grpc.StatusCode.ALREADY_EXISTS
+        ):
+            return True
+        return "already exists" in str(error).lower()
 
     @staticmethod
     def _is_not_found_error(error: Exception) -> bool:
-        """Check if an exception indicates a resource was not found."""
-        if isinstance(error, UnexpectedResponse):
-            return error.status_code == 404
-        if isinstance(error, grpc.aio.AioRpcError):
-            return error.code() == grpc.StatusCode.NOT_FOUND
-        if isinstance(error, ValueError):
-            return "not found" in str(error).lower()
-        return False
+        """
+        Check if an exception indicates a resource was not found.
 
-    @staticmethod
-    def _registry_collection_name(namespace: str) -> str:
-        """Return the registry collection name for a namespace."""
-        return f"{namespace}{QdrantVectorStore._REGISTRY_SUFFIX}"
-
-    @staticmethod
-    def _registry_point_uuid(name: str) -> UUID:
-        """Return a deterministic UUID for a logical collection name."""
-        return uuid5(QdrantVectorStore._REGISTRY_UUID_NAMESPACE, name)
+        Typed status codes are the authority; the message check is a last
+        resort for responses without a distinctive code.
+        """
+        if isinstance(error, UnexpectedResponse) and error.status_code == 404:
+            return True
+        if (
+            isinstance(error, grpc.aio.AioRpcError)
+            and error.code() == grpc.StatusCode.NOT_FOUND
+        ):
+            return True
+        message = str(error).lower()
+        return "not found" in message or "does not exist" in message
 
     @staticmethod
     def _build_native_collection_name(
@@ -630,7 +630,7 @@ class QdrantVectorStore(VectorStore):
         self._client: AsyncQdrantClient = params.client
         self._is_distributed = params.is_distributed
 
-        self._registry_replication_factor = params.registry_replication_factor
+        self._registry: CollectionRegistry = params.registry
 
         self._hnsw_m = 16
 
@@ -651,85 +651,33 @@ class QdrantVectorStore(VectorStore):
     async def shutdown(self) -> None:
         """No-op; client lifecycle is managed externally."""
 
-    async def _ensure_namespace_registry_collection(self, namespace: str) -> None:
-        """Idempotently create the registry collection for a namespace."""
-        registry_collection_name = QdrantVectorStore._registry_collection_name(
-            namespace
-        )
-        try:
-            await self._client.create_collection(
-                collection_name=registry_collection_name,
-                vectors_config=models.VectorParams(
-                    size=1,
-                    distance=models.Distance.COSINE,
-                ),
-                hnsw_config=models.HnswConfigDiff(
-                    m=0,
-                ),
-                replication_factor=self._registry_replication_factor,
-                write_consistency_factor=self._registry_replication_factor,
-            )
-        except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
-            if not QdrantVectorStore._is_already_exists_error(e):
-                raise
-
-    async def _get_registry_entry(
-        self, namespace: str, name: str
-    ) -> dict[str, Any] | None:
-        """
-        Retrieve the registry entry for a logical collection name.
-
-        Verifies the stored name matches
-        to guard against SHA-1 collisions in the uuid5 point ID.
-        """
-        registry_collection_name = QdrantVectorStore._registry_collection_name(
-            namespace
-        )
-        point_uuid = QdrantVectorStore._registry_point_uuid(name)
-        try:
-            points = await self._client.retrieve(
-                collection_name=registry_collection_name,
-                ids=[point_uuid],
-                with_payload=True,
-            )
-        except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
-            if QdrantVectorStore._is_not_found_error(e):
-                return None
-            raise
-
-        if not points:
-            return None
-
-        payload = cast(dict[str, Any], points[0].payload)
-        if payload.get(QdrantVectorStore._REGISTRY_NAME) != name:
-            return None
-
-        return payload
-
     @staticmethod
-    def _parse_entry(entry: Mapping[str, Any]) -> VectorStoreCollectionConfig:
-        """Parse a VectorStoreCollectionConfig from a registry entry."""
-        return VectorStoreCollectionConfig(
-            vector_dimensions=entry[QdrantVectorStore._REGISTRY_VECTOR_DIMENSIONS],
-            similarity_metric=entry[QdrantVectorStore._REGISTRY_SIMILARITY_METRIC],
-            indexed_properties_schema=entry[
-                QdrantVectorStore._REGISTRY_INDEXED_PROPERTIES_SCHEMA
-            ],
+    def _build_collection_entry(
+        namespace: str, name: str, config: VectorStoreCollectionConfig
+    ) -> CollectionRegistryEntry:
+        """Build a registry entry with a fresh generation for a new collection."""
+        return CollectionRegistryEntry(
+            config=config,
+            native_collection_name=QdrantVectorStore._build_native_collection_name(
+                namespace, config
+            ),
+            # "#" is outside the identifier charset ([a-z0-9_]+),
+            # so generationed partition keys can never collide
+            # with each other or with plain names.
+            partition_key=f"{name}#{uuid4().hex}",
         )
 
     def _build_collection_handle(
-        self, namespace: str, name: str, config: VectorStoreCollectionConfig
+        self, entry: CollectionRegistryEntry
     ) -> QdrantVectorStoreCollection:
-        """Build a QdrantVectorStoreCollection handle."""
+        """Build a QdrantVectorStoreCollection handle from a registry entry."""
         return QdrantVectorStoreCollection(
             client=self._client,
-            collection_name=QdrantVectorStore._build_native_collection_name(
-                namespace, config
-            ),
-            partition_key=name,
-            config=config,
+            collection_name=entry.native_collection_name,
+            partition_key=entry.partition_key,
+            config=entry.config,
             tracker=self._tracker,
-            shard_key=name if self._is_distributed else None,
+            shard_key=entry.partition_key if self._is_distributed else None,
         )
 
     async def _create_native_collection(
@@ -787,33 +735,8 @@ class QdrantVectorStore(VectorStore):
                 native_collection_name, shard_key=shard_key
             )
         except (UnexpectedResponse, grpc.aio.AioRpcError) as e:
-            if "already exists" not in str(e).lower():
+            if not QdrantVectorStore._is_already_exists_error(e):
                 raise
-
-    async def _register_collection(
-        self, namespace: str, name: str, config: VectorStoreCollectionConfig
-    ) -> None:
-        """Write the logical collection entry to the registry."""
-        registry_name = QdrantVectorStore._registry_collection_name(namespace)
-        point_uuid = QdrantVectorStore._registry_point_uuid(name)
-        await self._client.upsert(
-            collection_name=registry_name,
-            points=[
-                models.PointStruct(
-                    id=point_uuid,
-                    vector=[0.0],
-                    payload={
-                        QdrantVectorStore._REGISTRY_NAME: name,
-                        QdrantVectorStore._REGISTRY_VECTOR_DIMENSIONS: config.vector_dimensions,
-                        QdrantVectorStore._REGISTRY_SIMILARITY_METRIC: config.similarity_metric.value,
-                        QdrantVectorStore._REGISTRY_INDEXED_PROPERTIES_SCHEMA: config.model_dump(
-                            mode="json"
-                        )["indexed_properties_schema"],
-                    },
-                ),
-            ],
-            wait=True,
-        )
 
     @override
     async def create_collection(
@@ -836,16 +759,23 @@ class QdrantVectorStore(VectorStore):
             self._client_name_locks[(namespace, name)],
             self._tracker("create_collection"),
         ):
-            await self._ensure_namespace_registry_collection(namespace)
-            if await self._get_registry_entry(namespace, name) is not None:
-                raise VectorStoreCollectionAlreadyExistsError(namespace, name)
+            entry = QdrantVectorStore._build_collection_entry(namespace, name, config)
             await self._create_native_collection(namespace, config)
             if self._is_distributed:
-                native_collection_name = (
-                    QdrantVectorStore._build_native_collection_name(namespace, config)
+                await self._ensure_shard_key(
+                    entry.native_collection_name, entry.partition_key
                 )
-                await self._ensure_shard_key(native_collection_name, name)
-            await self._register_collection(namespace, name, config)
+            # The registry entry is the atomic commit point.
+            # A crash or a lost creation race before it leaves only an empty
+            # native collection (shared by config and adopted by the next
+            # creation with the same config) and, in distributed mode, an
+            # unused shard key.
+            try:
+                await self._registry.register(
+                    namespace=namespace, name=name, entry=entry
+                )
+            except CollectionAlreadyRegisteredError as e:
+                raise VectorStoreCollectionAlreadyExistsError(namespace, name) from e
 
     @override
     async def open_or_create_collection(
@@ -868,24 +798,28 @@ class QdrantVectorStore(VectorStore):
             self._client_name_locks[(namespace, name)],
             self._tracker("open_or_create_collection"),
         ):
-            entry = await self._get_registry_entry(namespace, name)
-            if entry is not None:
-                existing_config = QdrantVectorStore._parse_entry(entry)
-                if existing_config != config:
+            existing_entry = await self._registry.get(namespace=namespace, name=name)
+            if existing_entry is not None:
+                if existing_entry.config != config:
                     raise VectorStoreCollectionConfigMismatchError(
-                        namespace, name, existing_config, config
+                        namespace, name, existing_entry.config, config
                     )
-                return self._build_collection_handle(namespace, name, existing_config)
+                return self._build_collection_handle(existing_entry)
 
-            await self._ensure_namespace_registry_collection(namespace)
+            entry = QdrantVectorStore._build_collection_entry(namespace, name, config)
             await self._create_native_collection(namespace, config)
             if self._is_distributed:
-                native_collection_name = (
-                    QdrantVectorStore._build_native_collection_name(namespace, config)
+                await self._ensure_shard_key(
+                    entry.native_collection_name, entry.partition_key
                 )
-                await self._ensure_shard_key(native_collection_name, name)
-            await self._register_collection(namespace, name, config)
-            return self._build_collection_handle(namespace, name, config)
+            stored_entry, registered = await self._registry.get_or_register(
+                namespace=namespace, name=name, entry=entry
+            )
+            if not registered and stored_entry.config != config:
+                raise VectorStoreCollectionConfigMismatchError(
+                    namespace, name, stored_entry.config, config
+                )
+            return self._build_collection_handle(stored_entry)
 
     @override
     async def open_collection(
@@ -900,12 +834,10 @@ class QdrantVectorStore(VectorStore):
             raise ValueError(
                 f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
             )
-        entry = await self._get_registry_entry(namespace, name)
+        entry = await self._registry.get(namespace=namespace, name=name)
         if entry is None:
             return None
-        return self._build_collection_handle(
-            namespace, name, QdrantVectorStore._parse_entry(entry)
-        )
+        return self._build_collection_handle(entry)
 
     @override
     async def close_collection(self, *, collection: VectorStoreCollection) -> None:
@@ -913,7 +845,12 @@ class QdrantVectorStore(VectorStore):
 
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
-        """Delete a logical collection from the Qdrant vector store."""
+        """
+        Delete a logical collection from the Qdrant vector store.
+
+        A crash between data deletion and deregistration leaves the
+        collection registered but empty; retrying the deletion completes it.
+        """
         if not validate_identifier(namespace):
             raise ValueError(
                 f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
@@ -926,38 +863,31 @@ class QdrantVectorStore(VectorStore):
             self._client_name_locks[(namespace, name)],
             self._tracker("delete_collection"),
         ):
-            entry = await self._get_registry_entry(namespace, name)
+            entry = await self._registry.get(namespace=namespace, name=name)
             if entry is None:
                 return
 
-            config = QdrantVectorStore._parse_entry(entry)
-            native_collection_name = QdrantVectorStore._build_native_collection_name(
-                namespace, config
-            )
-
-            # Delete partition data, then registry entry.
+            # Delete partition data, then the registry entry:
+            # a crash in between leaves a registered-but-empty collection,
+            # and retrying the delete is idempotent.
+            # Records written through handles held across this deletion land
+            # under the dead generation's partition key: invisible to every
+            # reader, and never resurrected by a re-creation, which mints a
+            # fresh generation.
             if self._is_distributed:
                 try:
                     await self._client.delete_shard_key(
-                        native_collection_name, shard_key=name
+                        entry.native_collection_name, shard_key=entry.partition_key
                     )
                 except (UnexpectedResponse, grpc.aio.AioRpcError) as e:
-                    if "does not exist" not in str(e).lower():
+                    if not QdrantVectorStore._is_not_found_error(e):
                         raise
             else:
                 await self._client.delete(
-                    collection_name=native_collection_name,
+                    collection_name=entry.native_collection_name,
                     points_selector=models.FilterSelector(
-                        filter=_partition_filter(name),
+                        filter=_partition_filter(entry.partition_key),
                     ),
                 )
 
-            registry_name = QdrantVectorStore._registry_collection_name(namespace)
-            point_uuid = QdrantVectorStore._registry_point_uuid(name)
-            await self._client.delete(
-                collection_name=registry_name,
-                points_selector=models.PointIdsList(
-                    points=[point_uuid],
-                ),
-                wait=True,
-            )
+            await self._registry.deregister(namespace=namespace, name=name)

@@ -258,11 +258,13 @@ class QdrantConf(YamlSerializableMixin, ApiKeyMixin):
             "If True, native collections use custom sharding."
         ),
     )
-    registry_replication_factor: int = Field(
-        default=1,
+    registry_database: str = Field(
+        ...,
         description=(
-            "Replication factor for registry collections. Write consistency factor "
-            "is set to match so all replicas confirm writes."
+            "Name of a configured relational database (a `databases` entry with "
+            "provider `postgres` or `sqlite`) that stores the collection registry. "
+            "All processes sharing this Qdrant instance must use the same "
+            "registry database."
         ),
     )
 
