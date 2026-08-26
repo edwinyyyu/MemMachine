@@ -1,5 +1,3 @@
-from typing import Any
-
 from memmachine_core.common.embedder import Embedder
 
 
@@ -9,14 +7,14 @@ class FakeEmbedder(Embedder):
 
     async def _ingest_embed(
         self,
-        inputs: list[Any],
+        inputs: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
         return [[float(len(_input)), -float(len(_input))] for _input in inputs]
 
     async def _search_embed(
         self,
-        queries: list[Any],
+        queries: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
         return [[float(len(query)), -float(len(query))] for query in queries]

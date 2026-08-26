@@ -2,7 +2,6 @@
 
 import asyncio
 from abc import ABC, abstractmethod
-from typing import Any
 
 
 class Embedder(ABC):
@@ -14,7 +13,7 @@ class Embedder(ABC):
 
     async def ingest_embed(
         self,
-        inputs: list[Any],
+        inputs: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
         """Generate embeddings for ingestion, handling batching if configured."""
@@ -36,7 +35,7 @@ class Embedder(ABC):
 
     async def search_embed(
         self,
-        queries: list[Any],
+        queries: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
         """Generate embeddings for search queries, handling batching if configured."""
@@ -59,7 +58,7 @@ class Embedder(ABC):
     @abstractmethod
     async def _ingest_embed(
         self,
-        inputs: list[Any],
+        inputs: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
         """Actual implementation of embedding ingestion."""
@@ -67,7 +66,7 @@ class Embedder(ABC):
     @abstractmethod
     async def _search_embed(
         self,
-        queries: list[Any],
+        queries: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
         """Actual implementation of search embedding."""

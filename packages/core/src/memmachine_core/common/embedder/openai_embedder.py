@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-from typing import Any
 from uuid import UUID, uuid4
 
 import numpy as np
@@ -109,7 +108,7 @@ class OpenAIEmbedder(Embedder):
 
     async def _ingest_embed(
         self,
-        inputs: list[Any],
+        inputs: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
         """Embed the provided inputs with retries."""
@@ -118,7 +117,7 @@ class OpenAIEmbedder(Embedder):
 
     async def _search_embed(
         self,
-        queries: list[Any],
+        queries: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
         """Embed search queries with retries."""
@@ -127,7 +126,7 @@ class OpenAIEmbedder(Embedder):
 
     async def _embed(
         self,
-        inputs: list[Any],
+        inputs: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
         """Shared retrying embed logic."""

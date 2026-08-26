@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import time
-from typing import Any
 from uuid import uuid4
 
 import numpy as np
@@ -67,7 +66,7 @@ class SentenceTransformerEmbedder(Embedder):
 
     async def _ingest_embed(
         self,
-        inputs: list[Any],
+        inputs: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
         """Embed input documents using the sentence transformer."""
@@ -75,7 +74,7 @@ class SentenceTransformerEmbedder(Embedder):
 
     async def _search_embed(
         self,
-        queries: list[Any],
+        queries: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
         """Embed search queries using the sentence transformer."""
@@ -83,7 +82,7 @@ class SentenceTransformerEmbedder(Embedder):
 
     async def _embed(
         self,
-        inputs: list[Any],
+        inputs: list[str],
         max_attempts: int = 1,
         prompt_name: str | None = None,
     ) -> list[list[float]]:

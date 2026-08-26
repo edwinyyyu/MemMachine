@@ -1,7 +1,5 @@
 """Unit tests for the Embedder base class."""
 
-from typing import Any
-
 import pytest
 
 from memmachine_core.common.embedder.embedder import Embedder
@@ -13,12 +11,12 @@ class MockEmbedder(Embedder):
     def __init__(self, batch_size: int | None = None) -> None:
         """Initialize the mock embedder."""
         super().__init__(batch_size=batch_size)
-        self.ingest_calls: list[list[Any]] = []
-        self.search_calls: list[list[Any]] = []
+        self.ingest_calls: list[list[str]] = []
+        self.search_calls: list[list[str]] = []
 
     async def _ingest_embed(
         self,
-        inputs: list[Any],
+        inputs: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
         self.ingest_calls.append(inputs)
@@ -27,7 +25,7 @@ class MockEmbedder(Embedder):
 
     async def _search_embed(
         self,
-        queries: list[Any],
+        queries: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
         self.search_calls.append(queries)

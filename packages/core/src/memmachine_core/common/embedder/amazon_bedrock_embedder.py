@@ -79,7 +79,7 @@ class AmazonBedrockEmbedder(Embedder):
 
     async def _ingest_embed(
         self,
-        inputs: list[Any],
+        inputs: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
         """Embed input documents."""
@@ -91,14 +91,14 @@ class AmazonBedrockEmbedder(Embedder):
 
     async def _ingest_embed_func(
         self,
-        inputs: list[Any],
+        inputs: list[str],
     ) -> list[list[float]]:
         """Call Bedrock for document embeddings."""
         return await self._client.aembed_documents(inputs)
 
     async def _search_embed(
         self,
-        queries: list[Any],
+        queries: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
         """Embed search queries."""
@@ -110,15 +110,15 @@ class AmazonBedrockEmbedder(Embedder):
 
     async def _search_embed_func(
         self,
-        queries: list[Any],
+        queries: list[str],
     ) -> list[list[float]]:
         embed_queries_tasks = [self._client.aembed_query(query) for query in queries]
         return await asyncio.gather(*embed_queries_tasks)
 
     async def _embed(
         self,
-        inputs: list[Any],
-        async_embed_func: Callable[[list[Any]], Coroutine[Any, Any, list[list[float]]]],
+        inputs: list[str],
+        async_embed_func: Callable[[list[str]], Coroutine[Any, Any, list[list[float]]]],
         max_attempts: int = 1,
     ) -> list[list[float]]:
         """Shared retry logic for embedding requests."""
