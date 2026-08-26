@@ -16,7 +16,9 @@ constraint-dependencies = [
 
 [dependency-groups]
 dev = [
+    "boto3>=1.40.40",
     "complexipy>=5.4.1",
+    "httpx>=0.28.0",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.2.0",
     "ruff==0.15.14",
