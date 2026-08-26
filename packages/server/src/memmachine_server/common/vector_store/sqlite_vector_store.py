@@ -41,7 +41,11 @@ from sqlalchemy.orm import DeclarativeBase, MappedColumn, Session, mapped_column
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 
-from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_server.common.data_types import (
+    ConcurrencyScope,
+    PropertyValue,
+    SimilarityMetric,
+)
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
 from memmachine_server.common.properties_json import (
@@ -704,6 +708,12 @@ class SQLiteVectorStore(VectorStore):
             raise RuntimeError(
                 "VectorStore has not been started. Call startup() first."
             )
+
+    @property
+    @override
+    def concurrency_scope(self) -> ConcurrencyScope:
+        """Search engine state lives in process memory."""
+        return ConcurrencyScope.PROCESS
 
     @override
     async def startup(self) -> None:

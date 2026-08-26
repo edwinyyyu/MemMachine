@@ -9,7 +9,7 @@ import pytest_asyncio
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from memmachine_server.common.data_types import SimilarityMetric
+from memmachine_server.common.data_types import ConcurrencyScope, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
@@ -1452,3 +1452,7 @@ class TestIndexFileDurability:
 
         await store2.shutdown()
         await engine2.dispose()
+
+
+def test_concurrency_scope_is_process(store):
+    assert store.concurrency_scope == ConcurrencyScope.PROCESS

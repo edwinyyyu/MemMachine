@@ -52,6 +52,7 @@ from sqlalchemy.orm import (
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 
+from memmachine_server.common.data_types import ConcurrencyScope
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
     demangle_user_metadata_key,
@@ -785,6 +786,14 @@ class SQLAlchemySegmentStore(SegmentStore):
                 cursor.close()
 
     # Lifecycle
+
+    @property
+    @override
+    def concurrency_scope(self) -> ConcurrencyScope:
+        """CLUSTER on PostgreSQL; MACHINE on file-backed SQLite."""
+        if self._is_postgresql:
+            return ConcurrencyScope.CLUSTER
+        return ConcurrencyScope.MACHINE
 
     @override
     async def startup(self) -> None:

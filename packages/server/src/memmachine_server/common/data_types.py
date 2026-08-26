@@ -1,7 +1,7 @@
 """Common data types for MemMachine."""
 
 from datetime import datetime
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import Final
 
 PropertyValue = bool | int | float | str | datetime
@@ -24,6 +24,25 @@ FilterValue = bool | int | float | str | datetime | list[int] | list[str]
 
 OrderedValue = int | float | datetime
 """Type for values that can be ordered/sorted."""
+
+
+class ConcurrencyScope(IntEnum):
+    """
+    Widest safe deployment boundary for concurrent resource management.
+
+    The scope within which concurrent instances of a component may safely
+    manage the same resources. Ordered by breadth, so the effective scope
+    of a composed system is the minimum of its parts' scopes.
+    """
+
+    PROCESS = 1
+    """Concurrent management is safe only within a single process."""
+
+    MACHINE = 2
+    """Concurrent management is safe across processes on one machine."""
+
+    CLUSTER = 3
+    """Concurrent management is safe across machines."""
 
 
 class SimilarityMetric(Enum):

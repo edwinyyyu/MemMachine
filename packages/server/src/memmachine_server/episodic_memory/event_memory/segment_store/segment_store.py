@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
 from uuid import UUID
 
+from memmachine_server.common.data_types import ConcurrencyScope
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Segment,
@@ -125,10 +126,28 @@ class SegmentStore(ABC):
 
     Manages partition-scoped handles.
 
+    A given partition may be managed concurrently
+    by multiple SegmentStore instances
+    only within this store's declared concurrency_scope.
+    Beyond that scope, at most one instance may manage a partition,
+    and the consumer is responsible for sharding keys accordingly.
+
     Partition keys must match `[a-z0-9_]+`
     (lowercase alphanumeric and underscores only)
     and be at most 32 bytes.
     """
+
+    @property
+    @abstractmethod
+    def concurrency_scope(self) -> ConcurrencyScope:
+        """
+        Widest boundary for concurrently managing the same partition.
+
+        Instances of this store deployed within the declared scope
+        (and configured against the same backing services)
+        may concurrently manage the same partitions.
+        """
+        raise NotImplementedError
 
     @abstractmethod
     async def startup(self) -> None:

@@ -9,7 +9,11 @@ import pytest
 import pytest_asyncio
 from qdrant_client import AsyncQdrantClient
 
-from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_server.common.data_types import (
+    ConcurrencyScope,
+    PropertyValue,
+    SimilarityMetric,
+)
 from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
@@ -1117,6 +1121,15 @@ class TestMetrics:
         assert call_labels[1]["labels"]["status"] == "ok"
 
         await store.delete_collection(namespace=NAMESPACE, name="metrics_test")
+
+
+# ── Concurrency scope ──
+
+
+@pytest.mark.asyncio
+async def test_concurrency_scope_is_process(store):
+    """Collection bookkeeping is guarded only by in-process locks."""
+    assert store.concurrency_scope == ConcurrencyScope.PROCESS
 
 
 # ── Distributed sharding ──

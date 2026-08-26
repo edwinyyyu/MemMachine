@@ -14,7 +14,11 @@ from pydantic import BaseModel, Field, InstanceOf
 from pymilvus import DataType, MilvusClient
 from pymilvus.exceptions import MilvusException
 
-from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_server.common.data_types import (
+    ConcurrencyScope,
+    PropertyValue,
+    SimilarityMetric,
+)
 from memmachine_server.common.filter.filter_parser import (
     And as FilterAnd,
 )
@@ -512,6 +516,12 @@ class MilvusVectorStore(VectorStore):
         self._client_name_locks = MilvusVectorStore._name_locks.setdefault(
             self._client, defaultdict(asyncio.Lock)
         )
+
+    @property
+    @override
+    def concurrency_scope(self) -> ConcurrencyScope:
+        """Collection bookkeeping is guarded only by in-process locks."""
+        return ConcurrencyScope.PROCESS
 
     @override
     async def startup(self) -> None:

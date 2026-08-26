@@ -33,7 +33,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, MappedColumn, mapped_column
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 
-from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_server.common.data_types import (
+    ConcurrencyScope,
+    PropertyValue,
+    SimilarityMetric,
+)
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
 from memmachine_server.common.properties_json import (
@@ -483,6 +487,12 @@ class SQLiteVecVectorStore(VectorStore):
                 await aio_connection.enable_load_extension(False)
 
             dbapi_connection.run_async(_load_extension)
+
+    @property
+    @override
+    def concurrency_scope(self) -> ConcurrencyScope:
+        """Collection bookkeeping is check-then-write within one process."""
+        return ConcurrencyScope.PROCESS
 
     @override
     async def startup(self) -> None:
