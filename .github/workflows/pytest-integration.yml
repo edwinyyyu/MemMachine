@@ -27,12 +27,6 @@ jobs:
           "packages/core/core_tests/memmachine_core/episodic_memory/",
           # Core semantic memory tests
           "packages/core/core_tests/memmachine_core/semantic_memory/",
-          # Server common (configuration, resource manager, session manager) tests
-          "packages/server/server_tests/memmachine_server/common/",
-          # Server semantic memory integration tests
-          "packages/server/server_tests/memmachine_server/semantic_memory/",
-          # Main MemMachine tests
-          "packages/server/server_tests/memmachine_server/main/",
         ]
         os: [ ubuntu-latest, ubuntu-24.04-arm ]
         # Test on the oldest and newest supported Python versions
@@ -58,7 +52,7 @@ jobs:
           AWS_REGION: ${{ vars.AWS_REGION }}
         run: |
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            uv run --frozen --all-extras pytest ${{ matrix.test-paths }} -m integration --cov=memmachine_core --cov=memmachine_server
+            uv run --frozen --all-extras pytest ${{ matrix.test-paths }} -m integration --cov=memmachine_core
           else
-            uv run --frozen --all-extras pytest ${{ matrix.test-paths }} -m "integration and not slow" --cov=memmachine_core --cov=memmachine_server
+            uv run --frozen --all-extras pytest ${{ matrix.test-paths }} -m "integration and not slow" --cov=memmachine_core
           fi

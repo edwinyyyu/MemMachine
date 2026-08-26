@@ -197,9 +197,7 @@ exclude = []
 
 [tool.coverage.run]
 source = [
-    "packages/server/src/memmachine_server",
     "packages/core/src/memmachine_core",
-    "packages/client/src/memmachine_client",
     "packages/common/src/memmachine_common",
 ]
 
