@@ -440,11 +440,10 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
     ) -> QueryResult:
         """Post-filter: search unrestricted, keep survivors, widen as needed.
 
-        Widens the fetch until `limit` results survive the filter or the
-        index is exhausted. If the fetch reaches
-        `limit * max_overfetch_factor` first -- a filter correlated against
-        the ranking -- it falls back to an exhaustive allowlist search
-        rather than returning short.
+        Widens the fetch until `limit` results survive the filter, the index
+        is exhausted, or the fetch reaches `limit * max_overfetch_factor` --
+        at the cap the query returns what survived, which may be fewer than
+        `limit` results.
         """
         max_fetch = limit * self._max_overfetch_factor
         fetch_limit = min(limit * _BROAD_OVERFETCH_BASE, max_fetch)
@@ -473,7 +472,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                     )
 
             exhausted = len(search_result.matches) < fetch_limit
-            if len(surviving_row_ids) >= limit or exhausted:
+            if len(surviving_row_ids) >= limit or exhausted or fetch_limit >= max_fetch:
                 surviving = {
                     row_id: similarity
                     for row_id, similarity in row_id_to_cosine_similarity.items()
@@ -486,44 +485,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                 )
                 return QueryResult(matches=matches)
 
-            if fetch_limit >= max_fetch:
-                return await self._query_filtered_exhaustive(
-                    query_vector, filter_expression, limit, min_cosine_similarity
-                )
-
             fetch_limit = min(fetch_limit * _BROAD_OVERFETCH_BASE, max_fetch)
-
-    async def _query_filtered_exhaustive(
-        self,
-        query_vector: Sequence[float],
-        filter_expression: ColumnElement[bool],
-        limit: int,
-        min_cosine_similarity: float | None,
-    ) -> QueryResult:
-        """Materialize the full allowlist and search it."""
-        async with self._create_session() as session:
-            allowed_row_ids = (
-                (
-                    await session.execute(
-                        select(self._records_table.c.row_id).where(filter_expression)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-        if not allowed_row_ids:
-            return QueryResult(matches=[])
-
-        [search_result] = await self._search_engine.search(
-            [query_vector], limit=limit, allowlist=list(allowed_row_ids)
-        )
-        matches = await self._build_matches(
-            row_id_to_cosine_similarity={
-                match.key: match.cosine_similarity for match in search_result.matches
-            },
-            min_cosine_similarity=min_cosine_similarity,
-        )
-        return QueryResult(matches=matches)
 
     async def _build_matches(
         self,
@@ -690,8 +652,8 @@ class SQLiteVectorStoreParams(BaseModel):
             (default: 10000).
         max_overfetch_factor (int):
             Cap on post-filter widening: a broad-filtered query fetches at
-            most `limit * max_overfetch_factor` candidates before falling
-            back to an exhaustive allowlist search
+            most `limit * max_overfetch_factor` candidates before returning
+            what survived, so it may return fewer than `limit` results
             (default: 64, a power of the widening factor so the last
             round is not clipped).
     """
@@ -734,8 +696,8 @@ class SQLiteVectorStoreParams(BaseModel):
         ge=1,
         description=(
             "Cap on post-filter widening: a broad-filtered query fetches at "
-            "most `limit * max_overfetch_factor` candidates before falling "
-            "back to an exhaustive allowlist search"
+            "most `limit * max_overfetch_factor` candidates before returning "
+            "what survived, so it may return fewer than `limit` results"
         ),
     )
 

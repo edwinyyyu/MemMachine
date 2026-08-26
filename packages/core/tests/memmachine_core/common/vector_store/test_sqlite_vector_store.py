@@ -698,7 +698,7 @@ class TestFilterRouting:
         assert {m.record_uuid for m in matches} == {r.uuid for r in records[30:35]}
 
     @pytest.mark.asyncio
-    async def test_broad_path_falls_back_to_exhaustive_at_cap(self, tmp_path):
+    async def test_broad_path_caps_widening(self, tmp_path):
         vector_store, engine = await self._broad_store(tmp_path, max_overfetch_factor=2)
         try:
             coll = await vector_store.open_or_create_collection(
@@ -719,16 +719,13 @@ class TestFilterRouting:
             await coll.upsert(records=records)
 
             # Survivors rank below the capped fetch (limit * 2 = 10), so the
-            # query falls back to an exhaustive allowlist search instead of
-            # returning short.
+            # query returns fewer than `limit` rather than widening further.
             results = await coll.query(
                 query_vectors=[vectors[0]],
                 limit=5,
                 property_filter=Comparison(field="age", op=">=", value=30),
             )
-            matches = results[0].matches
-            assert len(matches) == 5
-            assert {m.record_uuid for m in matches} == {r.uuid for r in records[30:35]}
+            assert results[0].matches == []
         finally:
             await vector_store.shutdown()
             await engine.dispose()
