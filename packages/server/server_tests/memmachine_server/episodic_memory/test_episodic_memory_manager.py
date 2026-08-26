@@ -168,17 +168,45 @@ async def test_create_episodic_memory_success(
 
 
 @pytest.mark.asyncio
-async def test_create_episodic_memory_already_exists(
+async def test_create_episodic_memory_with_matching_configuration_reuses_instance(
     manager: EpisodicMemoryManager,
     mock_episodic_memory_conf,
 ):
-    """Test that creating a session that already exists raises an error."""
+    """Creating an equivalent active session reuses its cached instance."""
     session_key = "existing_session"
     async with manager.create_episodic_memory(
         session_key,
         mock_episodic_memory_conf,
         "",
         {},
+    ) as existing_instance:
+        async with manager.create_episodic_memory(
+            session_key,
+            mock_episodic_memory_conf,
+            "Different description",
+            {},
+        ) as recreated_instance:
+            assert recreated_instance is existing_instance
+            assert await manager._instance_cache.get_ref_count(session_key) == 2
+
+        assert await manager._instance_cache.get_ref_count(session_key) == 1
+
+    assert await manager._instance_cache.get_ref_count(session_key) == 0
+
+
+@pytest.mark.asyncio
+async def test_create_episodic_memory_with_mismatched_configuration_raises_error(
+    manager: EpisodicMemoryManager,
+    mock_episodic_memory_conf,
+):
+    """Creating an existing session with different configuration fails."""
+    session_key = "existing_session"
+    async with manager.create_episodic_memory(
+        session_key,
+        mock_episodic_memory_conf,
+        "",
+        {},
+        config={"key": "original"},
     ):
         with pytest.raises(
             SessionAlreadyExistsError, match=f"Session '{session_key}' already exists"
@@ -188,8 +216,13 @@ async def test_create_episodic_memory_already_exists(
                 mock_episodic_memory_conf,
                 "",
                 {},
+                config={"key": "different"},
             ):
-                pass  # This part should not be reached
+                pass
+
+        assert await manager._instance_cache.get_ref_count(session_key) == 1
+
+    assert await manager._instance_cache.get_ref_count(session_key) == 0
 
 
 @pytest.mark.asyncio
