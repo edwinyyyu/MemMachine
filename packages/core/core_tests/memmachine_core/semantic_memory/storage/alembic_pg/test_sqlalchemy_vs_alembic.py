@@ -6,16 +6,16 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy
+from memmachine_core.semantic_memory.storage.sqlalchemy_pgvector_semantic import (
+    BaseSemanticStorage,
+    apply_alembic_migrations,
+)
 from sqlalchemy import text
 from sqlalchemy.engine import Inspector
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from core_tests.memmachine_core.semantic_memory.storage.alembic_pg.helpers import (
     apply_sql_file,
-)
-from memmachine_core.semantic_memory.storage.sqlalchemy_pgvector_semantic import (
-    BaseSemanticStorage,
-    apply_alembic_migrations,
 )
 
 pytestmark = pytest.mark.integration

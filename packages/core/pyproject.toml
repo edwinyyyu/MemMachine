@@ -6,7 +6,6 @@ build-backend = "setuptools.build_meta"
 name = "memmachine-core"
 dynamic = ["version"]
 dependencies = [
-    "memmachine-common",
     "alembic>=1.17.1",
     "asyncpg>=0.31.0",
     "aiosqlite>=0.20.0",

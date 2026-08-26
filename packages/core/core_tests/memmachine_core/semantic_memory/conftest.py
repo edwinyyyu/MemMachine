@@ -1,13 +1,6 @@
 import pytest
 import pytest_asyncio
-
-from core_tests.memmachine_core.semantic_memory.semantic_test_utils import (
-    LengthEmbedder,
-    SpyEmbedder,
-)
-from memmachine_core.common.embedder import Embedder
 from memmachine_core.common.episode_store import EpisodeStorage
-from memmachine_core.common.language_model import LanguageModel
 from memmachine_core.semantic_memory.config_store.config_store import (
     SemanticConfigStorage,
 )
@@ -17,6 +10,13 @@ from memmachine_core.semantic_memory.semantic_model import (
     SemanticCategory,
 )
 from memmachine_core.semantic_memory.storage.storage_base import SemanticStorage
+
+from core_tests.memmachine_core.semantic_memory.semantic_test_utils import (
+    LengthEmbedder,
+    SpyEmbedder,
+)
+from memmachine_core.common.embedder import Embedder
+from memmachine_core.common.language_model import LanguageModel
 
 
 @pytest.fixture

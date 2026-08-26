@@ -14,10 +14,6 @@ import socket
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
-from sqlalchemy.ext.asyncio import AsyncEngine
-
 from memmachine_core.common.episode_store.episode_model import (
     EpisodeEntry,
     EpisodeType,
@@ -27,6 +23,10 @@ from memmachine_core.common.episode_store.episode_sqlalchemy_store import (
     BaseEpisodeStore,
     SqlAlchemyEpisodeStore,
 )
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
+from sqlalchemy.ext.asyncio import AsyncEngine
+
 from memmachine_core.common.errors import ConfigurationError
 
 # ---------------------------------------------------------------------------

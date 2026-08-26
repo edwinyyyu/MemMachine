@@ -8,6 +8,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
+from memmachine_core.common.episode_store import Episode
+from memmachine_core.episodic_memory.long_term_memory import (
+    DeclarativeBackendParams,
+    LongTermMemory,
+)
 from neo4j import AsyncGraphDatabase
 from testcontainers.neo4j import Neo4jContainer
 
@@ -15,14 +20,9 @@ from core_tests.memmachine_core.conftest import (
     is_docker_available,
     requires_sentence_transformers,
 )
-from memmachine_core.common.episode_store import Episode
 from memmachine_core.common.vector_graph_store.neo4j_vector_graph_store import (
     Neo4jVectorGraphStore,
     Neo4jVectorGraphStoreParams,
-)
-from memmachine_core.episodic_memory.long_term_memory import (
-    DeclarativeBackendParams,
-    LongTermMemory,
 )
 
 pytestmark = pytest.mark.integration

@@ -1,7 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
-
 from memmachine_core.semantic_memory.cluster_manager import (
     ClusterInfo,
     ClusterManager,

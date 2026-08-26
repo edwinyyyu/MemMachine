@@ -6,19 +6,19 @@ from datetime import UTC, datetime
 import numpy as np
 import pytest
 import pytest_asyncio
-
 from memmachine_core.common.episode_store import (
     EpisodeEntry,
     EpisodeIdT,
     EpisodeStorage,
 )
-from memmachine_core.common.errors import InvalidArgumentError
-from memmachine_core.common.filter.filter_parser import FilterExpr, parse_filter
 from memmachine_core.semantic_memory.semantic_model import FeatureIdT, SemanticFeature
 from memmachine_core.semantic_memory.storage.neo4j_semantic_storage import (
     Neo4jSemanticStorage,
 )
 from memmachine_core.semantic_memory.storage.storage_base import SemanticStorage
+
+from memmachine_core.common.errors import InvalidArgumentError
+from memmachine_core.common.filter.filter_parser import FilterExpr, parse_filter
 
 
 def _expr(spec: str | None) -> FilterExpr | None:

@@ -5,8 +5,6 @@ from typing import cast
 from uuid import uuid4
 
 import pytest
-from pydantic import BaseModel
-
 from memmachine_core.episodic_memory.event_memory.data_types import (
     Block,
     Event,
@@ -17,6 +15,7 @@ from memmachine_core.episodic_memory.event_memory.data_types import (
 from memmachine_core.episodic_memory.event_memory.segmenter.text_segmenter import (
     TextSegmenter,
 )
+from pydantic import BaseModel
 
 pytestmark = pytest.mark.asyncio
 

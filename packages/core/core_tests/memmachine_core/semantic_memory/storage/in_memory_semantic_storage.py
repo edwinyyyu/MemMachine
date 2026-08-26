@@ -8,9 +8,17 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 import numpy as np
+from memmachine_core.common.episode_store import EpisodeIdT
+from memmachine_core.semantic_memory.semantic_model import (
+    FeatureIdT,
+    SemanticFeature,
+    SetIdT,
+)
+from memmachine_core.semantic_memory.storage.storage_base import (
+    SemanticStorage,
+)
 from pydantic import InstanceOf
 
-from memmachine_core.common.episode_store import EpisodeIdT
 from memmachine_core.common.errors import InvalidArgumentError
 from memmachine_core.common.filter.filter_parser import (
     USER_METADATA_STORAGE_PREFIX,
@@ -34,14 +42,6 @@ from memmachine_core.common.filter.filter_parser import (
 )
 from memmachine_core.common.filter.filter_parser import (
     Or as FilterOr,
-)
-from memmachine_core.semantic_memory.semantic_model import (
-    FeatureIdT,
-    SemanticFeature,
-    SetIdT,
-)
-from memmachine_core.semantic_memory.storage.storage_base import (
-    SemanticStorage,
 )
 
 

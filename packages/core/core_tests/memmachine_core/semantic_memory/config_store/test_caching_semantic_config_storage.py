@@ -1,5 +1,4 @@
 import pytest
-
 from memmachine_core.semantic_memory.config_store.caching_semantic_config_storage import (
     CachingSemanticConfigStorage,
 )

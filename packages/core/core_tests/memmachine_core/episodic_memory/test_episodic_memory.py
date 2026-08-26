@@ -5,9 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, call, create_autospec
 from uuid import uuid4
 
 import pytest
-
 from memmachine_core.common.episode_store import Episode, EpisodeResponse
-from memmachine_core.common.metrics_factory import MetricsFactory
 from memmachine_core.episodic_memory.episodic_memory import (
     EpisodicMemory,
     EpisodicMemoryParams,
@@ -18,6 +16,8 @@ from memmachine_core.episodic_memory.long_term_memory.long_term_memory import (
 from memmachine_core.episodic_memory.short_term_memory.short_term_memory import (
     ShortTermMemory,
 )
+
+from memmachine_core.common.metrics_factory import MetricsFactory
 
 
 def create_test_episode(**kwargs):

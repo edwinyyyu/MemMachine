@@ -1,6 +1,5 @@
 import numpy as np
 import pytest_asyncio
-
 from memmachine_core.semantic_memory.storage.storage_base import SemanticStorage
 
 

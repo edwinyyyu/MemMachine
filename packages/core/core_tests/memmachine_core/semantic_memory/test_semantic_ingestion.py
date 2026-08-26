@@ -6,18 +6,11 @@ from unittest.mock import AsyncMock
 import numpy as np
 import pytest
 import pytest_asyncio
-
-from core_tests.memmachine_core.semantic_memory.mock_semantic_memory_objects import (
-    MockEmbedder,
-    MockResourceRetriever,
-)
-from memmachine_core.common.data_types import ExternalServiceAPIError
 from memmachine_core.common.episode_store import (
     EpisodeEntry,
     EpisodeIdT,
     EpisodeStorage,
 )
-from memmachine_core.common.filter.filter_parser import parse_filter
 from memmachine_core.semantic_memory.semantic_ingestion import IngestionService
 from memmachine_core.semantic_memory.semantic_llm import (
     LLMReducedFeature,
@@ -33,6 +26,13 @@ from memmachine_core.semantic_memory.semantic_model import (
     SemanticPrompt,
 )
 from memmachine_core.semantic_memory.storage.storage_base import SemanticStorage
+
+from core_tests.memmachine_core.semantic_memory.mock_semantic_memory_objects import (
+    MockEmbedder,
+    MockResourceRetriever,
+)
+from memmachine_core.common.data_types import ExternalServiceAPIError
+from memmachine_core.common.filter.filter_parser import parse_filter
 
 
 async def _collect(async_iter):

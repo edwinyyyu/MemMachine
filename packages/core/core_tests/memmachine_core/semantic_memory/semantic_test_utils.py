@@ -1,8 +1,9 @@
 import random
 
+from memmachine_core.common.episode_store import EpisodeEntry, EpisodeStorage
+
 from memmachine_core.common.data_types import SimilarityMetric
 from memmachine_core.common.embedder import Embedder
-from memmachine_core.common.episode_store import EpisodeEntry, EpisodeStorage
 
 
 class SpyEmbedder(Embedder):

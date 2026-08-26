@@ -3,7 +3,6 @@
 from datetime import UTC
 
 import pytest
-
 from memmachine_core.common.episode_store import Episode
 from memmachine_core.semantic_memory.semantic_model import (
     SemanticFeature,

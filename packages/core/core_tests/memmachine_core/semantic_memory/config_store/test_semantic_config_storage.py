@@ -2,10 +2,6 @@ from typing import cast
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
-
 from memmachine_core.semantic_memory.config_store.caching_semantic_config_storage import (
     CachingSemanticConfigStorage,
 )
@@ -19,6 +15,9 @@ from memmachine_core.semantic_memory.config_store.config_store_sqlalchemy import
     Tag,
 )
 from memmachine_core.semantic_memory.semantic_model import StructuredSemanticPrompt
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 
 @pytest.fixture(

@@ -4,6 +4,14 @@ import asyncio
 
 import numpy as np
 import pytest
+from memmachine_core.common.episode_store import EpisodeStorage
+from memmachine_core.semantic_memory.config_store.config_store import (
+    SemanticConfigStorage,
+)
+from memmachine_core.semantic_memory.semantic_memory import SemanticService
+from memmachine_core.semantic_memory.semantic_model import (
+    SemanticCommandType,
+)
 
 from core_tests.memmachine_core.semantic_memory.semantic_test_utils import (
     SpyEmbedder,
@@ -12,15 +20,7 @@ from core_tests.memmachine_core.semantic_memory.semantic_test_utils import (
 from core_tests.memmachine_core.semantic_memory.storage.in_memory_semantic_storage import (
     SemanticStorage,
 )
-from memmachine_core.common.episode_store import EpisodeStorage
 from memmachine_core.common.filter.filter_parser import parse_filter
-from memmachine_core.semantic_memory.config_store.config_store import (
-    SemanticConfigStorage,
-)
-from memmachine_core.semantic_memory.semantic_memory import SemanticService
-from memmachine_core.semantic_memory.semantic_model import (
-    SemanticCommandType,
-)
 
 
 async def _collect_feature_set(storage: SemanticStorage, **kwargs):

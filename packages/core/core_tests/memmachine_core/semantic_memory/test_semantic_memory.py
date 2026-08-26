@@ -1,16 +1,16 @@
 """Unit tests for the SemanticService using an in-memory storage backend."""
 
 import pytest
+from memmachine_core.common.episode_store import EpisodeStorage
+from memmachine_core.semantic_memory.semantic_memory import SemanticService
+from memmachine_core.semantic_memory.storage.storage_base import SemanticStorage
 
 from core_tests.memmachine_core.semantic_memory.semantic_test_utils import (
     SpyEmbedder,
     add_history,
 )
-from memmachine_core.common.episode_store import EpisodeStorage
 from memmachine_core.common.errors import InvalidSetIdConfigurationError
 from memmachine_core.common.filter.filter_parser import parse_filter
-from memmachine_core.semantic_memory.semantic_memory import SemanticService
-from memmachine_core.semantic_memory.storage.storage_base import SemanticStorage
 
 pytestmark = pytest.mark.asyncio
 

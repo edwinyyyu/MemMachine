@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from memmachine_core.semantic_memory.storage.storage_base import SemanticStorage
+from memmachine_core.semantic_memory.storage.vector_store_semantic_storage import (
+    VectorStoreSemanticStorage,
+    feature_vector_uuid,
+)
 
 from core_tests.memmachine_core.common.vector_store.in_memory_vector_store_collection import (
     InMemoryVectorStoreCollection,
@@ -9,11 +14,6 @@ from core_tests.memmachine_core.common.vector_store.in_memory_vector_store_colle
 from memmachine_core.common.data_types import SimilarityMetric
 from memmachine_core.common.filter.filter_parser import parse_filter
 from memmachine_core.common.vector_store import VectorStoreCollectionConfig
-from memmachine_core.semantic_memory.storage.storage_base import SemanticStorage
-from memmachine_core.semantic_memory.storage.vector_store_semantic_storage import (
-    VectorStoreSemanticStorage,
-    feature_vector_uuid,
-)
 
 
 @pytest.fixture

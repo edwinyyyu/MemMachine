@@ -17,27 +17,11 @@ from typing import override
 from unittest.mock import create_autospec
 
 import pytest
-
-from core_tests.memmachine_core.common.reranker.fake_embedder import FakeEmbedder
-from core_tests.memmachine_core.common.vector_store.in_memory_vector_store_collection import (
-    InMemoryVectorStoreCollection,
-)
-from core_tests.memmachine_core.episodic_memory.event_memory.conftest import (
-    InMemorySegmentStorePartition,
-)
-from memmachine_core.common.data_types import SimilarityMetric
 from memmachine_core.common.episode_store import (
     Episode,
     EpisodeEntry,
     EpisodeIdT,
     EpisodeStorage,
-)
-from memmachine_core.common.filter.filter_parser import (
-    Comparison as FilterComparison,
-)
-from memmachine_core.common.vector_store import VectorStore
-from memmachine_core.common.vector_store.data_types import (
-    VectorStoreCollectionConfig,
 )
 from memmachine_core.episodic_memory.event_memory.deriver.text_deriver import (
     WholeTextDeriver,
@@ -53,6 +37,22 @@ from memmachine_core.episodic_memory.long_term_memory import (
     EVENT_BACKEND_SYSTEM_FIELDS,
     EventBackendParams,
     LongTermMemory,
+)
+
+from core_tests.memmachine_core.common.reranker.fake_embedder import FakeEmbedder
+from core_tests.memmachine_core.common.vector_store.in_memory_vector_store_collection import (
+    InMemoryVectorStoreCollection,
+)
+from core_tests.memmachine_core.episodic_memory.event_memory.conftest import (
+    InMemorySegmentStorePartition,
+)
+from memmachine_core.common.data_types import SimilarityMetric
+from memmachine_core.common.filter.filter_parser import (
+    Comparison as FilterComparison,
+)
+from memmachine_core.common.vector_store import VectorStore
+from memmachine_core.common.vector_store.data_types import (
+    VectorStoreCollectionConfig,
 )
 
 pytestmark = pytest.mark.asyncio

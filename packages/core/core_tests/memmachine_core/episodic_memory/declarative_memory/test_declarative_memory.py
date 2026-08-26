@@ -3,6 +3,12 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from memmachine_core.episodic_memory.declarative_memory import (
+    ContentType,
+    DeclarativeMemory,
+    DeclarativeMemoryParams,
+    Episode,
+)
 from neo4j import AsyncGraphDatabase
 from testcontainers.neo4j import Neo4jContainer
 
@@ -31,12 +37,6 @@ from memmachine_core.common.filter.filter_parser import (
 from memmachine_core.common.vector_graph_store.neo4j_vector_graph_store import (
     Neo4jVectorGraphStore,
     Neo4jVectorGraphStoreParams,
-)
-from memmachine_core.episodic_memory.declarative_memory import (
-    ContentType,
-    DeclarativeMemory,
-    DeclarativeMemoryParams,
-    Episode,
 )
 
 pytestmark = pytest.mark.integration

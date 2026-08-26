@@ -4,12 +4,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import numpy as np
-from pydantic import InstanceOf
-
-from memmachine_core.common.data_types import SimilarityMetric
-from memmachine_core.common.embedder import Embedder
 from memmachine_core.common.episode_store import EpisodeIdT
-from memmachine_core.common.filter.filter_parser import FilterExpr
 from memmachine_core.semantic_memory.semantic_model import (
     FeatureIdT,
     Resources,
@@ -17,6 +12,11 @@ from memmachine_core.semantic_memory.semantic_model import (
     SetIdT,
 )
 from memmachine_core.semantic_memory.storage.storage_base import SemanticStorage
+from pydantic import InstanceOf
+
+from memmachine_core.common.data_types import SimilarityMetric
+from memmachine_core.common.embedder import Embedder
+from memmachine_core.common.filter.filter_parser import FilterExpr
 
 
 class MockSemanticStorage(SemanticStorage):

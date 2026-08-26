@@ -6,16 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
-
-from core_tests.memmachine_core.semantic_memory.semantic_test_utils import (
-    SpyEmbedder,
-)
-from core_tests.memmachine_core.semantic_memory.storage.in_memory_semantic_storage import (
-    SemanticStorage,
-)
 from memmachine_core.common.episode_store import Episode, EpisodeEntry, EpisodeStorage
-from memmachine_core.common.errors import InvalidSetIdConfigurationError
-from memmachine_core.common.filter.filter_parser import parse_filter
 from memmachine_core.semantic_memory.config_store.config_store import (
     SemanticConfigStorage,
 )
@@ -23,6 +14,15 @@ from memmachine_core.semantic_memory.semantic_memory import SemanticService
 from memmachine_core.semantic_memory.semantic_session_manager import (
     SemanticSessionManager,
 )
+
+from core_tests.memmachine_core.semantic_memory.semantic_test_utils import (
+    SpyEmbedder,
+)
+from core_tests.memmachine_core.semantic_memory.storage.in_memory_semantic_storage import (
+    SemanticStorage,
+)
+from memmachine_core.common.errors import InvalidSetIdConfigurationError
+from memmachine_core.common.filter.filter_parser import parse_filter
 
 pytestmark = pytest.mark.asyncio
 

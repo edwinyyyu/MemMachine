@@ -8,15 +8,15 @@ from typing import Any, TypeVar, cast
 import pytest
 import pytest_asyncio
 from memmachine_common.api import EpisodeType
-
 from memmachine_core.common.episode_store import ContentType, Episode
-from memmachine_core.common.filter.filter_parser import parse_filter
-from memmachine_core.common.language_model import LanguageModel
 from memmachine_core.episodic_memory.short_term_memory.short_term_memory import (
     ShortTermMemory,
     ShortTermMemoryConsolidator,
     ShortTermMemoryParams,
 )
+
+from memmachine_core.common.filter.filter_parser import parse_filter
+from memmachine_core.common.language_model import LanguageModel
 
 
 def create_test_episode(**kwargs):

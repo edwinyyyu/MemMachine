@@ -4,9 +4,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
-
 from memmachine_core.common.episode_store import Episode
-from memmachine_core.common.reranker import Reranker
 from memmachine_core.semantic_memory.cluster_manager import (
     ClusterInfo,
     ClusterSplitParams,
@@ -22,6 +20,8 @@ from memmachine_core.semantic_memory.cluster_splitter import (
     segment_cluster_id,
     validate_split_indices,
 )
+
+from memmachine_core.common.reranker import Reranker
 
 # ---------------------------------------------------------------------------
 # Helpers

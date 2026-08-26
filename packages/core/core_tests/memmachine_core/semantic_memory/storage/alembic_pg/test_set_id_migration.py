@@ -6,8 +6,6 @@ import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
-from sqlalchemy.ext.asyncio import AsyncEngine
-
 from memmachine_core.semantic_memory.semantic_session_manager import (
     SemanticSessionManager,
 )
@@ -17,6 +15,7 @@ from memmachine_core.semantic_memory.storage import (
 from memmachine_core.semantic_memory.storage.sqlalchemy_pgvector_semantic import (
     BaseSemanticStorage,
 )
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 pytestmark = pytest.mark.integration
 

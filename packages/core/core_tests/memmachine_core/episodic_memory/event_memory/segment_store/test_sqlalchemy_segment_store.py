@@ -8,13 +8,6 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncEngine
-
-from memmachine_core.common.filter.filter_parser import Comparison
-from memmachine_core.common.payload_codec.payload_codec_config import (
-    PlaintextPayloadCodecConfig,
-)
 from memmachine_core.episodic_memory.event_memory.data_types import (
     NullContext,
     ProducerContext,
@@ -31,6 +24,13 @@ from memmachine_core.episodic_memory.event_memory.segment_store.sqlalchemy_segme
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
     SQLAlchemySegmentStorePartition,
+)
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+from memmachine_core.common.filter.filter_parser import Comparison
+from memmachine_core.common.payload_codec.payload_codec_config import (
+    PlaintextPayloadCodecConfig,
 )
 
 PARTITION_KEY = "test_partition"

@@ -1,8 +1,6 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-from memmachine_core.common.language_model import LanguageModel
 from memmachine_core.semantic_memory.semantic_llm import (
     _features_to_consolidation_format,
     _features_to_llm_format,
@@ -14,6 +12,8 @@ from memmachine_core.semantic_memory.semantic_model import (
     SemanticCommandType,
     SemanticFeature,
 )
+
+from memmachine_core.common.language_model import LanguageModel
 
 
 @pytest.fixture
