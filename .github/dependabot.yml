@@ -11,9 +11,7 @@ updates:
     # [project.dependencies] block in addition to bumping uv.lock.
     directories:
       - "/"
-      - "/packages/client"
-      - "/packages/common"
-      - "/packages/server"
+      - "/packages/core"
     schedule:
       interval: "weekly"
     groups:
