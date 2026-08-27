@@ -1,4 +1,4 @@
-"""Reranker interface exports."""
+"""Reranker interfaces."""
 
 from .reranker import Reranker
 

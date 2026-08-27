@@ -15,10 +15,11 @@ from memmachine_core.event_memory.data_types import (
     Segment,
     TextBlock,
 )
-from memmachine_core.event_memory.deriver.deriver import Deriver
 from memmachine_core.event_memory.formatting import (
     format_timestamp,
 )
+
+from .deriver import Deriver
 
 
 def _format_with_context(context: Context, text: str) -> str:

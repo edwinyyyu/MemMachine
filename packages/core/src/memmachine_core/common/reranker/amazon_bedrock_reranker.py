@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, InstanceOf
 
-from memmachine_core.common.data_types import ExternalServiceAPIError
+from memmachine_core.common import ExternalServiceAPIError
 from memmachine_core.common.metrics_factory import MetricsFactory, OperationTracker
 
 from .reranker import Reranker

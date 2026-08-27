@@ -2,7 +2,7 @@ import datetime
 
 import pytest
 
-from memmachine_core.common.filter.filter_parser import (
+from memmachine_core.common.filter import (
     And,
     Comparison,
     FilterParseError,

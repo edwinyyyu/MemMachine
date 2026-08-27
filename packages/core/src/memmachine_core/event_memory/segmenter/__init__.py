@@ -1,4 +1,4 @@
-"""Segmenters for segmenting events into segments."""
+"""Segmenter interface for segmenting events into segments."""
 
 from .segmenter import Segmenter
 

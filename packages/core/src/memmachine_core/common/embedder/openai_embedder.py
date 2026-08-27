@@ -8,7 +8,7 @@ import numpy as np
 import openai
 from pydantic import BaseModel, Field, InstanceOf
 
-from memmachine_core.common.data_types import (
+from memmachine_core.common import (
     ExternalServiceAPIError,
 )
 from memmachine_core.common.metrics_factory import MetricsFactory, OperationTracker

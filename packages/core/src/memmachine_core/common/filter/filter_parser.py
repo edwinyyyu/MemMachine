@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, NamedTuple, Protocol, cast, runtime_checkable
 
-from memmachine_core.common.data_types import PropertyValue
+from memmachine_core.common import PropertyValue
 
 
 class FilterParseError(ValueError):

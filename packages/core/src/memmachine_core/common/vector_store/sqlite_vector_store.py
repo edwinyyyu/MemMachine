@@ -58,8 +58,7 @@ from sqlalchemy.orm import DeclarativeBase, MappedColumn, mapped_column
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 
-from memmachine_core.common.filter.filter_parser import FilterExpr
-from memmachine_core.common.filter.sql_filter_util import compile_sql_filter
+from memmachine_core.common.filter import FilterExpr, compile_sql_filter
 from memmachine_core.common.properties_json import encode_properties
 
 from .data_types import (

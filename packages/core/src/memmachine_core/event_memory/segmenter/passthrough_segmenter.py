@@ -8,7 +8,8 @@ from memmachine_core.event_memory.data_types import (
     FormatOptions,
     Segment,
 )
-from memmachine_core.event_memory.segmenter.segmenter import (
+
+from .segmenter import (
     Segmenter,
 )
 

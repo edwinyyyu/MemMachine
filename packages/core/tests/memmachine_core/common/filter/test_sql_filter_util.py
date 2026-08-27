@@ -18,16 +18,16 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import DeclarativeBase, Session
 
-from memmachine_core.common.filter.filter_parser import (
+from memmachine_core.common.filter import (
     And,
     Comparison,
     In,
     IsNull,
     Not,
     Or,
+    compile_sql_filter,
     parse_filter,
 )
-from memmachine_core.common.filter.sql_filter_util import compile_sql_filter
 from memmachine_core.common.properties_json import encode_properties
 
 # ============================================================================

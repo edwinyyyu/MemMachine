@@ -18,7 +18,7 @@ from pydantic import (
     field_validator,
 )
 
-from memmachine_core.common.data_types import PropertyValue
+from memmachine_core.common import PropertyValue
 from memmachine_core.common.properties_json import (
     decode_properties,
     encode_properties,

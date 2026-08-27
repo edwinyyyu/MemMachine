@@ -10,8 +10,8 @@ import pytest_asyncio
 from pydantic import ValidationError
 from qdrant_client import AsyncQdrantClient, models
 
-from memmachine_core.common.data_types import PropertyValue
-from memmachine_core.common.filter.filter_parser import (
+from memmachine_core.common import PropertyValue
+from memmachine_core.common.filter import (
     And,
     Comparison,
     In,
@@ -20,7 +20,7 @@ from memmachine_core.common.filter.filter_parser import (
     Or,
 )
 from memmachine_core.common.metrics_factory import MetricsFactory
-from memmachine_core.common.vector_store.data_types import (
+from memmachine_core.common.vector_store import (
     Record,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,

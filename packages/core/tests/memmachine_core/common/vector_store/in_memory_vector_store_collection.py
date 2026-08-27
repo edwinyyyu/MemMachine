@@ -5,8 +5,8 @@ import operator
 from collections.abc import Iterable, Sequence
 from uuid import UUID
 
-from memmachine_core.common.data_types import PropertyValue
-from memmachine_core.common.filter.filter_parser import (
+from memmachine_core.common import PropertyValue
+from memmachine_core.common.filter import (
     And,
     Comparison,
     FilterExpr,
@@ -15,11 +15,11 @@ from memmachine_core.common.filter.filter_parser import (
     Not,
     Or,
 )
-from memmachine_core.common.vector_store import VectorStoreCollection
-from memmachine_core.common.vector_store.data_types import (
+from memmachine_core.common.vector_store import (
     QueryMatch,
     QueryResult,
     Record,
+    VectorStoreCollection,
     VectorStoreCollectionConfig,
 )
 

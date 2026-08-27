@@ -11,9 +11,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, InstanceOf
 
-from memmachine_core.common.data_types import PropertyValue
+from memmachine_core.common import PropertyValue
 from memmachine_core.common.embedder import Embedder
-from memmachine_core.common.filter.filter_parser import (
+from memmachine_core.common.filter import (
     FilterExpr,
     demangle_user_metadata_key,
     map_filter_fields,

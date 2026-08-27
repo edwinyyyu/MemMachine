@@ -5,7 +5,7 @@ from collections.abc import Mapping
 
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, field_validator
 
-from memmachine_core.common.payload_codec.payload_codec_config import (
+from memmachine_core.common.payload_codec import (
     PayloadCodecConfig,
     PlaintextPayloadCodecConfig,
     decode_payload_codec_config,

@@ -1,11 +1,9 @@
 """Tests for payload codec configuration."""
 
 from memmachine_core.common.payload_codec import (
+    PlaintextPayloadCodecConfig,
     decode_payload_codec_config,
     encode_payload_codec_config,
-)
-from memmachine_core.common.payload_codec.payload_codec_config import (
-    PlaintextPayloadCodecConfig,
 )
 
 

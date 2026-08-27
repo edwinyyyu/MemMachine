@@ -1,6 +1,7 @@
-"""Public exports for vector store."""
+"""Vector store interfaces and data types."""
 
 from .data_types import (
+    QueryMatch,
     QueryResult,
     Record,
     VectorStoreCollectionAlreadyExistsError,
@@ -10,6 +11,7 @@ from .data_types import (
 from .vector_store import VectorStore, VectorStoreCollection
 
 __all__ = [
+    "QueryMatch",
     "QueryResult",
     "Record",
     "VectorStore",

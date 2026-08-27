@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_serializer, field_validator
 
-from memmachine_core.common.data_types import (
+from memmachine_core.common import (
     PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE,
     PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
     PropertyValue,

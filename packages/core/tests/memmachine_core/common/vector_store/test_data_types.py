@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from memmachine_core.common.vector_store.data_types import Record
+from memmachine_core.common.vector_store import Record
 
 
 class TestRecord:

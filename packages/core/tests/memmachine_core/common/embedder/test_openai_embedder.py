@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import openai
 import pytest
 
-from memmachine_core.common.data_types import ExternalServiceAPIError
+from memmachine_core.common import ExternalServiceAPIError
 from memmachine_core.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,

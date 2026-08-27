@@ -1,4 +1,4 @@
-"""Segment store data models and interfaces."""
+"""Segment store interfaces and data types."""
 
 from .data_types import (
     SegmentStorePartitionAlreadyExistsError,

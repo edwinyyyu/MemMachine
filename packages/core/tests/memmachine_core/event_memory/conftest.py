@@ -7,23 +7,23 @@ from uuid import UUID
 
 import pytest
 
-from memmachine_core.common.filter.filter_parser import (
+from memmachine_core.common.filter import (
     FilterExpr,
     demangle_user_metadata_key,
     map_filter_fields,
     normalize_filter_field,
 )
-from memmachine_core.common.vector_store.data_types import (
+from memmachine_core.common.vector_store import (
     VectorStoreCollectionConfig,
 )
-from memmachine_core.event_memory.data_types import Segment
+from memmachine_core.event_memory import (
+    EventMemory,
+    EventMemoryParams,
+    Segment,
+)
 from memmachine_core.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
     WholeTextDeriver,
-)
-from memmachine_core.event_memory.event_memory import (
-    EventMemory,
-    EventMemoryParams,
 )
 from memmachine_core.event_memory.segment_store import (
     SegmentStorePartition,

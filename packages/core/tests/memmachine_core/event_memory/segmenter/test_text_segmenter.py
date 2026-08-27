@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-from memmachine_core.event_memory.data_types import (
+from memmachine_core.event_memory import (
     Block,
     Event,
     NullContext,

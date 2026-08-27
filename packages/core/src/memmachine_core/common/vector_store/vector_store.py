@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
 from uuid import UUID
 
-from memmachine_core.common.filter.filter_parser import (
+from memmachine_core.common.filter import (
     FilterExpr,
 )
 

@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from memmachine_core.event_memory.data_types import (
+from memmachine_core.event_memory import (
     Event,
     NullContext,
     ProducerContext,

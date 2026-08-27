@@ -9,14 +9,14 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from memmachine_core.common.filter.filter_parser import (
+from memmachine_core.common.filter import (
     And,
     Comparison,
     In,
     Not,
     Or,
 )
-from memmachine_core.common.vector_store.data_types import (
+from memmachine_core.common.vector_store import (
     Record,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,

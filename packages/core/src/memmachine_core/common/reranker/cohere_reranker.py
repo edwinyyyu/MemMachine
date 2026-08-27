@@ -7,7 +7,7 @@ from typing import Any
 import cohere
 from pydantic import BaseModel, Field
 
-from memmachine_core.common.data_types import ExternalServiceAPIError
+from memmachine_core.common import ExternalServiceAPIError
 
 from .reranker import Reranker
 

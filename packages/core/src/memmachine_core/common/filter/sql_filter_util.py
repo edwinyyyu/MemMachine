@@ -13,11 +13,17 @@ from typing import Literal
 
 from sqlalchemy import ColumnElement, and_, false, or_
 
-from memmachine_core.common.data_types import (
+from memmachine_core.common import (
     PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
     PropertyValue,
 )
-from memmachine_core.common.filter.filter_parser import (
+from memmachine_core.common.properties_json import (
+    PROPERTY_TYPE_KEY,
+    PROPERTY_VALUE_KEY,
+)
+from memmachine_core.common.utils import ensure_tz_aware
+
+from .filter_parser import (
     And,
     Comparison,
     FilterExpr,
@@ -26,11 +32,6 @@ from memmachine_core.common.filter.filter_parser import (
     Not,
     Or,
 )
-from memmachine_core.common.properties_json import (
-    PROPERTY_TYPE_KEY,
-    PROPERTY_VALUE_KEY,
-)
-from memmachine_core.common.utils import ensure_tz_aware
 
 FieldEncoding = Literal["column", "json", "properties_json"]
 

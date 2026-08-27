@@ -1,6 +1,6 @@
 """Tests for segment store data types."""
 
-from memmachine_core.common.payload_codec.payload_codec_config import (
+from memmachine_core.common.payload_codec import (
     PlaintextPayloadCodecConfig,
 )
 from memmachine_core.event_memory.segment_store import (

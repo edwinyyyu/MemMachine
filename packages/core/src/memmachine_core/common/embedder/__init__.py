@@ -1,4 +1,4 @@
-"""Embedder interfaces and implementations."""
+"""Embedder interfaces."""
 
 from .embedder import Embedder
 

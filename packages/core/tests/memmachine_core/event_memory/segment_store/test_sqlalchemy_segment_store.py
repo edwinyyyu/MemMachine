@@ -11,11 +11,11 @@ import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from memmachine_core.common.filter.filter_parser import Comparison
-from memmachine_core.common.payload_codec.payload_codec_config import (
+from memmachine_core.common.filter import Comparison
+from memmachine_core.common.payload_codec import (
     PlaintextPayloadCodecConfig,
 )
-from memmachine_core.event_memory.data_types import (
+from memmachine_core.event_memory import (
     NullContext,
     ProducerContext,
     Segment,

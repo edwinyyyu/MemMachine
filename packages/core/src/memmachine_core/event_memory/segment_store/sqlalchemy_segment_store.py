@@ -52,21 +52,19 @@ from sqlalchemy.orm import (
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 
-from memmachine_core.common.filter.filter_parser import (
+from memmachine_core.common.filter import (
+    FieldEncoding,
     FilterExpr,
+    compile_sql_filter,
     demangle_user_metadata_key,
     normalize_filter_field,
-)
-from memmachine_core.common.filter.sql_filter_util import (
-    FieldEncoding,
-    compile_sql_filter,
 )
 from memmachine_core.common.metrics_factory import (
     MetricsFactory,
     OperationTracker,
 )
-from memmachine_core.common.payload_codec import PayloadCodec
-from memmachine_core.common.payload_codec.payload_codec_config import (
+from memmachine_core.common.payload_codec import (
+    PayloadCodec,
     PlaintextPayloadCodecConfig,
     decode_payload_codec_config,
     encode_payload_codec_config,
@@ -87,12 +85,13 @@ from memmachine_core.event_memory.data_types import (
     encode_block,
     encode_context,
 )
-from memmachine_core.event_memory.segment_store.data_types import (
+
+from .data_types import (
     SegmentStorePartitionAlreadyExistsError,
     SegmentStorePartitionConfig,
     SegmentStorePartitionConfigMismatchError,
 )
-from memmachine_core.event_memory.segment_store.segment_store import (
+from .segment_store import (
     SegmentStore,
     SegmentStorePartition,
 )

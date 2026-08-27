@@ -13,12 +13,13 @@ Datetimes additionally include a timezone offset::
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta, timezone
 
-from memmachine_core.common.data_types import (
+from memmachine_core.common.utils import ensure_tz_aware, utc_offset_seconds
+
+from .data_types import (
     PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE,
     PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
     PropertyValue,
 )
-from memmachine_core.common.utils import ensure_tz_aware, utc_offset_seconds
 
 PROPERTY_TYPE_KEY = "t"
 PROPERTY_VALUE_KEY = "v"

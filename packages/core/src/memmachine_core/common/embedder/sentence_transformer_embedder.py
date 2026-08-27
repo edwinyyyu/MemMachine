@@ -9,7 +9,7 @@ import numpy as np
 from pydantic import BaseModel, Field, InstanceOf
 from sentence_transformers import SentenceTransformer
 
-from memmachine_core.common.data_types import (
+from memmachine_core.common import (
     ExternalServiceAPIError,
 )
 from memmachine_core.common.utils import chunk_text, unflatten_like

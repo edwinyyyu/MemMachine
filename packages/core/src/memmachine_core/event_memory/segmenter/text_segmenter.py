@@ -11,7 +11,8 @@ from memmachine_core.event_memory.data_types import (
     Segment,
     TextBlock,
 )
-from memmachine_core.event_memory.segmenter.segmenter import (
+
+from .segmenter import (
     Segmenter,
 )
 

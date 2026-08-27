@@ -10,14 +10,14 @@ import pytest_asyncio
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from memmachine_core.common.filter.filter_parser import (
+from memmachine_core.common.filter import (
     And,
     Comparison,
     In,
     Not,
     Or,
 )
-from memmachine_core.common.vector_store.data_types import (
+from memmachine_core.common.vector_store import (
     Record,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
@@ -31,11 +31,11 @@ from memmachine_core.common.vector_store.sqlite_vector_store import (
     _CollectionRow,
     _PendingOperationRow,
 )
+from memmachine_core.common.vector_store.vector_search_engine import (
+    VectorSearchEngine,
+)
 from memmachine_core.common.vector_store.vector_search_engine.usearch_engine import (
     USearchVectorSearchEngine,
-)
-from memmachine_core.common.vector_store.vector_search_engine.vector_search_engine import (
-    VectorSearchEngine,
 )
 
 NAMESPACE = "test_namespace"

@@ -2,7 +2,7 @@
 
 import pytest
 
-from memmachine_core.common.embedder.embedder import Embedder
+from memmachine_core.common.embedder import Embedder
 
 
 class MockEmbedder(Embedder):
