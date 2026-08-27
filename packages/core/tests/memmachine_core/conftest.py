@@ -3,7 +3,6 @@ import os
 import shutil
 import subprocess
 from importlib.util import find_spec
-from unittest.mock import create_autospec
 
 import pytest
 import pytest_asyncio
@@ -15,19 +14,6 @@ from testcontainers.qdrant import QdrantContainer
 from memmachine_core.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
-)
-from memmachine_core.common.language_model import LanguageModel
-from memmachine_core.common.language_model.amazon_bedrock_language_model import (
-    AmazonBedrockLanguageModel,
-    AmazonBedrockLanguageModelParams,
-)
-from memmachine_core.common.language_model.openai_chat_completions_language_model import (
-    OpenAIChatCompletionsLanguageModel,
-    OpenAIChatCompletionsLanguageModelParams,
-)
-from memmachine_core.common.language_model.openai_responses_language_model import (
-    OpenAIResponsesLanguageModel,
-    OpenAIResponsesLanguageModelParams,
 )
 from tests.memmachine_core.common.reranker.fake_embedder import FakeEmbedder
 
@@ -60,11 +46,6 @@ requires_docker = pytest.mark.skipif(
 
 
 @pytest.fixture
-def mock_llm_model():
-    return create_autospec(LanguageModel, instance=True)
-
-
-@pytest.fixture
 def mock_llm_embedder():
     return FakeEmbedder()
 
@@ -77,7 +58,6 @@ def openai_integration_config():
 
     return {
         "api_key": open_api_key,
-        "llm_model": "gpt-4o-mini",
         "embedding_model": "text-embedding-3-small",
     }
 
@@ -97,52 +77,6 @@ def openai_embedder(openai_client, openai_integration_config):
             model=openai_integration_config["embedding_model"],
             dimensions=1536,
             max_input_length=2000,
-        ),
-    )
-
-
-@pytest.fixture(scope="session")
-def openai_llm_model(openai_client, openai_integration_config):
-    return OpenAIResponsesLanguageModel(
-        OpenAIResponsesLanguageModelParams(
-            client=openai_client,
-            model=openai_integration_config["llm_model"],
-        ),
-    )
-
-
-@pytest.fixture(scope="session")
-def openai_chat_completions_llm_config():
-    ollama_host = os.environ.get("OLLAMA_HOST")
-    if not ollama_host:
-        pytest.skip("OLLAMA_HOST environment variable not set")
-
-    return {
-        "api_url": ollama_host,
-        "api_key": "-",
-        "model": "qwen3:8b",
-    }
-
-
-@pytest.fixture(scope="session")
-def openai_compat_client(openai_chat_completions_llm_config):
-    import openai
-
-    openai_compat_client = openai.AsyncOpenAI(
-        api_key=openai_chat_completions_llm_config["api_key"],
-        base_url=openai_chat_completions_llm_config["api_url"],
-    )
-    return openai_compat_client
-
-
-@pytest.fixture(scope="session")
-def openai_chat_completions_llm_model(
-    openai_compat_client, openai_chat_completions_llm_config
-):
-    return OpenAIChatCompletionsLanguageModel(
-        OpenAIChatCompletionsLanguageModelParams(
-            client=openai_compat_client,
-            model=openai_chat_completions_llm_config["model"],
         ),
     )
 
@@ -183,11 +117,6 @@ def cohere_client(cohere_integration_config):
 
 
 @pytest.fixture(scope="session")
-def bedrock_integration_language_model_config(bedrock_integration_config):
-    return bedrock_integration_config | {"model": "qwen.qwen3-32b-v1:0"}
-
-
-@pytest.fixture(scope="session")
 def boto3_bedrock_runtime_client(bedrock_integration_config):
     import boto3
 
@@ -215,38 +144,6 @@ def boto3_bedrock_agent_runtime_client(bedrock_integration_config):
         aws_session_token=config["aws_session_token"],
         region_name=config["aws_region"],
     )
-
-
-@pytest.fixture(scope="session")
-def bedrock_llm_model(
-    boto3_bedrock_runtime_client, bedrock_integration_language_model_config
-):
-    config = bedrock_integration_language_model_config
-    return AmazonBedrockLanguageModel(
-        AmazonBedrockLanguageModelParams(
-            client=boto3_bedrock_runtime_client,
-            model_id=config["model"],
-        )
-    )
-
-
-@pytest.fixture(
-    params=[
-        pytest.param("bedrock", marks=[pytest.mark.integration, pytest.mark.slow]),
-        pytest.param("openai", marks=pytest.mark.integration),
-        pytest.param("openai_chat_completions", marks=pytest.mark.integration),
-    ],
-)
-def real_llm_model(request):
-    match request.param:
-        case "bedrock":
-            return request.getfixturevalue("bedrock_llm_model")
-        case "openai":
-            return request.getfixturevalue("openai_llm_model")
-        case "openai_chat_completions":
-            return request.getfixturevalue("openai_chat_completions_llm_model")
-        case _:
-            raise ValueError(f"Unknown LLM model type: {request.param}")
 
 
 @pytest.fixture(scope="session")
