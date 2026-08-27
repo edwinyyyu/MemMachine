@@ -1,11 +1,14 @@
 name: Generate SBOM
 
-# Trigger the workflow on push and pull requests to any branch.
 on:
   release:
+    types: [published]
   push:
     branches: [ main ]
   pull_request:
+
+permissions:
+  contents: read
 
 # Cancel any preceding run on the pull request after a new commit is pushed.
 concurrency:
@@ -14,18 +17,12 @@ concurrency:
   # Don't cancel if running on a push to the main branch.
   cancel-in-progress: ${{ (github.event.pull_request.head.ref || github.ref) != 'refs/heads/main' }}
 
-
 jobs:
   generate-sbom:
     runs-on: ubuntu-latest
-    permissions:
-      actions: read      # to find workflow artifacts when attaching release assets
-      contents: write    # for sbom-action artifact uploads
-      packages: write
-      
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7.0.1
 
       # Create a '/sbom' directory to store the SBOM file in the project root.
       - name: Create SBOM directory
@@ -34,7 +31,7 @@ jobs:
       - name: Generate SBOM with Syft
         # This action uses syft to generate the SBOM.
         # It's an easy way to get started without manually installing syft.
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@v0.24.0
         with:
           # This is the path to the directory containing your Python source code.
           # The action will scan this directory for dependencies.
@@ -48,7 +45,7 @@ jobs:
 
       - name: Upload SBOM as a workflow artifact
         # This step uploads the generated SBOM file so it can be downloaded later.
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: MemMachine-SBOM
           path: ./sbom/MemMachine-SBOM.spdx.json
