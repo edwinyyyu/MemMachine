@@ -1,4 +1,5 @@
-"""Tests for TurboVecVectorSearchEngine.
+"""
+Tests for TurboVecVectorSearchEngine.
 
 turbovec stores TurboQuant-compressed vectors, so cosine similarities are
 approximate: a

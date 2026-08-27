@@ -115,7 +115,8 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
 
     @staticmethod
     def _normalize_segment_field(field: str) -> str:
-        """Translate canonical filter field names to raw segment property keys.
+        """
+        Translate canonical filter field names to raw segment property keys.
 
         Mirrors SQLAlchemySegmentStorePartition._resolve_segment_field:
         - `m.<key>` / `metadata.<key>` → user metadata, bare key.

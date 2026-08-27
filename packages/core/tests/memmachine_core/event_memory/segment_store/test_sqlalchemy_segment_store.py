@@ -205,7 +205,8 @@ async def test_timestamp_roundtrips_with_timezone(
     partition: SQLAlchemySegmentStorePartition,
     tz: timezone,
 ) -> None:
-    """A timezone-aware timestamp roundtrips with its instant and offset intact.
+    """
+    A timezone-aware timestamp roundtrips with its instant and offset intact.
 
     SQLite's DateTime(timezone=True) discards tzinfo and stores the wall-clock
     fields verbatim, so a non-UTC timestamp that is not normalized to UTC before
@@ -439,7 +440,8 @@ async def test_contexts_property_filter(
 async def test_contexts_filter_by_context_producer(
     partition: SQLAlchemySegmentStorePartition,
 ) -> None:
-    """`context.producer` is not a stored property; the filter just matches nothing.
+    """
+    `context.producer` is not a stored property; the filter just matches nothing.
 
     Bare names that aren't `timestamp` are looked up as `_<name>` in the JSON
     properties (matching EventMemory's `_to_vector_record_property` convention

@@ -65,7 +65,8 @@ _RACE_WINDOW_SECONDS = 2.0
 
 
 async def _wait_for(condition) -> None:
-    """Poll `condition` until it holds, and give up quietly if it never does.
+    """
+    Poll `condition` until it holds, and give up quietly if it never does.
 
     Both outcomes are expected in the concurrency tests below. The interleaving
     each one sets up is what unfixed code does while another write is parked;
@@ -599,7 +600,8 @@ class TestFilters:
 
 
 class TestFilterRouting:
-    """Property filters route by selectivity.
+    """
+    Property filters route by selectivity.
 
     A LIMIT probe resolves the filter to an allowlist when it matches few
     records (pre-filter, scored directly); otherwise the search runs
@@ -1156,7 +1158,8 @@ class TestConcurrentAsync:
 
 
 class _GatedSearchEngine(VectorSearchEngine):
-    """Delegates to a real engine; the next search() waits after scoring.
+    """
+    Delegates to a real engine; the next search() waits after scoring.
 
     query() scores keys in the engine and then resolves the winners to record
     rows in a separate step, holding nothing in between -- readers do not
@@ -1194,7 +1197,8 @@ class _GatedSearchEngine(VectorSearchEngine):
 
 
 class TestRowIdReuse:
-    """Regression tests for row_id reuse (issue #1468).
+    """
+    Regression tests for row_id reuse (issue #1468).
 
     Without AUTOINCREMENT, SQLite assigns max(rowid) + 1, so deleting the
     record holding the maximum row_id frees that id for the very next insert,
@@ -1233,7 +1237,8 @@ class TestRowIdReuse:
 
     @pytest.mark.asyncio
     async def test_a_query_cannot_return_a_record_it_never_scored(self, tmp_path):
-        """A key the engine scored must never resolve to a later record.
+        """
+        A key the engine scored must never resolve to a later record.
 
         query() scores keys and then looks the winners up by row_id. Writes
         run freely in between, so a reused row_id would let a record that was
@@ -1548,7 +1553,8 @@ class TestCrashRecovery:
 
 
 class _GatedRemoveEngine(VectorSearchEngine):
-    """Delegates to a real engine; the next remove() waits on `gate` first.
+    """
+    Delegates to a real engine; the next remove() waits on `gate` first.
 
     delete() already suspends at its engine remove() (an await point after
     the SQL commit); the gate only widens that window so the interleaving
@@ -1584,7 +1590,8 @@ class _GatedRemoveEngine(VectorSearchEngine):
 
 
 class _GatedSaveEngine(VectorSearchEngine):
-    """Delegates to a real engine; the first save waits after writing the index.
+    """
+    Delegates to a real engine; the first save waits after writing the index.
 
     A save writes the index and then trims the pending operations the index now
     holds. Parking between the two widens the window in which another write can
@@ -1655,7 +1662,8 @@ async def _wrapped_engine_store(db_path, tmp_path, wrap, *, save_threshold=1000)
 
 
 async def _a_delete_has_been_applied(engine) -> bool:
-    """Whether a concurrent delete has reached the search engine.
+    """
+    Whether a concurrent delete has reached the search engine.
 
     Its pending row is marked applied last, so this is true only once the
     delete has committed and its engine removal has finished -- the whole of
@@ -1691,7 +1699,8 @@ async def _both_writes_applied(engine) -> bool:
 
 
 class TestConcurrentWriteOrdering:
-    """The engine must see a collection's writes in the order SQLite committed.
+    """
+    The engine must see a collection's writes in the order SQLite committed.
 
     Every write commits its SQL transaction before applying to the search
     engine, so two writers that overlap can reach the engine in the opposite
@@ -1702,7 +1711,8 @@ class TestConcurrentWriteOrdering:
 
     @pytest.mark.asyncio
     async def test_an_upsert_survives_a_delete_of_another_record(self, tmp_path):
-        """A delete must not carry an unrelated concurrent upsert with it.
+        """
+        A delete must not carry an unrelated concurrent upsert with it.
 
         Interleaving: delete(A) commits and parks at its engine removal;
         upsert(B) lands in that window; delete(A) resumes and removes the
@@ -1750,7 +1760,8 @@ class TestConcurrentWriteOrdering:
 
     @pytest.mark.asyncio
     async def test_an_upsert_cannot_overtake_a_delete_of_the_same_uuid(self, tmp_path):
-        """A vector re-added after its record is deleted belongs to nothing.
+        """
+        A vector re-added after its record is deleted belongs to nothing.
 
         Interleaving: upsert(U) commits and parks at its engine apply;
         delete(U) commits and applies inside that window; upsert(U) resumes and
@@ -1808,7 +1819,8 @@ class TestConcurrentWriteOrdering:
 
     @pytest.mark.asyncio
     async def test_a_save_cannot_trim_a_write_it_did_not_publish(self, tmp_path):
-        """A write applied behind a save must not be trimmed by that save.
+        """
+        A write applied behind a save must not be trimmed by that save.
 
         The pending log holds the only other copy of a vector, so its row may
         be deleted once the index that holds it is published. A write that
@@ -2039,7 +2051,8 @@ class TestIndexFileDurability:
 
     @pytest.mark.asyncio
     async def test_a_reverted_publication_costs_search_not_records(self, tmp_path):
-        """A publication lost to power failure leaves records unsearchable.
+        """
+        A publication lost to power failure leaves records unsearchable.
 
         The swap is atomic, not durable, so a power failure can revert the last
         publication after the trim behind it has committed. Restoring the

@@ -155,7 +155,8 @@ async def _save_collection_index(
     search_engine: VectorSearchEngine,
     path: str,
 ) -> None:
-    """Publish a collection's index to disk and trim the operations it holds.
+    """
+    Publish a collection's index to disk and trim the operations it holds.
 
     The order is the whole protocol. The pending log is the only other copy of
     these vectors -- the records table has no vector column -- so an applied row
@@ -188,7 +189,8 @@ async def _save_collection_index(
 
 
 class SQLiteVectorStoreCollection(VectorStoreCollection):
-    """A logical collection backed by SQLite + a pluggable vector search engine.
+    """
+    A logical collection backed by SQLite + a pluggable vector search engine.
 
     Concurrency: reads run freely, but a collection's writes are serialized by
     `write_lock`. A write commits to SQLite and only then applies to the search
@@ -237,7 +239,8 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         return self._config
 
     async def _maybe_save_index(self) -> None:
-        """Save the index to disk if applied pending operations exceed the threshold.
+        """
+        Save the index to disk if applied pending operations exceed the threshold.
 
         Call with the write lock held. Saving trims every operation the engine
         has applied, and the pending log holds the only other copy of those
@@ -413,7 +416,8 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
     async def _resolve_selective_filter(
         self, filter_expression: ColumnElement[bool]
     ) -> list[int] | None:
-        """Resolve the filter to row_ids if selective, or None if broad.
+        """
+        Resolve the filter to row_ids if selective, or None if broad.
 
         A LIMIT probe decides: enumerating up to the threshold costs no more
         than counting would.
@@ -437,7 +441,8 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         limit: int,
         min_cosine_similarity: float | None,
     ) -> QueryResult:
-        """Post-filter: search unrestricted, keep survivors, widen as needed.
+        """
+        Post-filter: search unrestricted, keep survivors, widen as needed.
 
         Widens the fetch until `limit` results survive the filter, the index
         is exhausted, or the fetch reaches `limit * max_overfetch_factor` --
@@ -626,7 +631,8 @@ VectorSearchEngineFactory = Callable[[int], VectorSearchEngine]
 
 
 class SQLiteVectorStoreParams(BaseModel):
-    """Parameters for constructing a SQLiteVectorStore.
+    """
+    Parameters for constructing a SQLiteVectorStore.
 
     Attributes:
         sqlalchemy_engine (AsyncEngine):
@@ -1056,7 +1062,8 @@ class SQLiteVectorStore(VectorStore):
         )
 
     def _write_lock_for(self, namespace: str, name: str) -> asyncio.Lock:
-        """Get or create the lock serializing a collection's writes.
+        """
+        Get or create the lock serializing a collection's writes.
 
         Held across a write's whole sequence -- SQL commit, engine apply, mark
         applied, and any save it triggers -- so the engine sees a collection's

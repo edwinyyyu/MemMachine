@@ -378,7 +378,8 @@ def _rand_unit(rng, dim: int) -> list[float]:
 
 
 def _no_corruption(engine: HnswlibVectorSearchEngine) -> None:
-    """Verify label_lookup_ is internally consistent.
+    """
+    Verify label_lookup_ is internally consistent.
 
     Corruption indicators:
       - knn_query returns a label that get_items can't fetch (zombie).
@@ -467,7 +468,8 @@ class TestReplaceDeletedSlotReclamation:
 
     @pytest.mark.asyncio
     async def test_batch_remove_then_readd_same_labels_no_corruption(self):
-        """Case C scenario: batch remove + batch re-add of same labels.
+        """
+        Case C scenario: batch remove + batch re-add of same labels.
 
         Naive (T,T) corrupts label_lookup_ here. The smart-partition
         wrapper must keep all labels intact via the in-place upsert path.
@@ -493,7 +495,8 @@ class TestReplaceDeletedSlotReclamation:
 
     @pytest.mark.asyncio
     async def test_accumulated_tombstones_then_single_readd(self):
-        """Case D scenario: many tombstones present, then re-add one label.
+        """
+        Case D scenario: many tombstones present, then re-add one label.
 
         Naive (T,T) creates an orphan that arms a future corruption.
         The smart-partition wrapper takes the in-place path for the re-add.
@@ -607,7 +610,8 @@ class TestReplaceDeletedSlotReclamation:
 
     @pytest.mark.asyncio
     async def test_save_load_preserves_replace_state(self, tmp_path: Path):
-        """Save/load round trip preserves correct (T,T) behavior.
+        """
+        Save/load round trip preserves correct (T,T) behavior.
 
         Loading an index reconstructs label_lookup_ from per-slot stored
         labels and (when allow_replace_deleted=True) deleted_elements from
@@ -653,7 +657,8 @@ class TestReplaceDeletedSlotReclamation:
 
     @pytest.mark.asyncio
     async def test_row_id_reuse_pattern(self):
-        """SQLite autoincrement may reassign a row_id to a new uuid.
+        """
+        SQLite autoincrement may reassign a row_id to a new uuid.
 
         Engine sees: delete(X), then later add(X) with a different vector.
         With (T,T) and the smart-partition wrapper, X is still in
@@ -680,7 +685,8 @@ class TestReplaceDeletedSlotReclamation:
 
 
 class TestAllowReplaceDeletedFalse:
-    """When allow_replace_deleted=False, hnswlib routes id reuse through the
+    """
+    When allow_replace_deleted=False, hnswlib routes id reuse through the
     inner addPoint path (hnswalg.h:1158-1175): existing labels (live OR
     tombstoned) get an in-place updatePoint; the corruption-prone smart-swap
     path at lines 980-990 is never taken because replace_deleted=False on
@@ -712,7 +718,8 @@ class TestAllowReplaceDeletedFalse:
 
     @pytest.mark.asyncio
     async def test_remove_then_readd_same_label_reuses_slot(self):
-        """add → remove → add of same label reuses the slot via in-place upsert.
+        """
+        add → remove → add of same label reuses the slot via in-place upsert.
 
         Note: this is DIFFERENT from brand-new label slot reclamation, which
         requires allow_replace_deleted=True. Here the slot is "reused" only
@@ -741,7 +748,8 @@ class TestAllowReplaceDeletedFalse:
 
     @pytest.mark.asyncio
     async def test_batch_add_with_existing_and_new_keys(self):
-        """A single add() batch mixing existing (in-place) and brand-new keys
+        """
+        A single add() batch mixing existing (in-place) and brand-new keys
         must place each correctly without corruption."""
         rng = np.random.default_rng(103)
         engine = HnswlibVectorSearchEngine(

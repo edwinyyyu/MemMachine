@@ -128,7 +128,8 @@ async def test_embed_fail_after_max_retries_on_internal_server_error(mock_sleep)
 
 @pytest.mark.asyncio
 async def test_embed_oversized_input_with_no_max_input_length():
-    """Regression for #1298: text > 75,000 chars must not raise ValueError.
+    """
+    Regression for #1298: text > 75,000 chars must not raise ValueError.
 
     When max_input_length is None, _embed() must fall back to
     max_total_input_length_per_request (75,000) as the chunking bound so that

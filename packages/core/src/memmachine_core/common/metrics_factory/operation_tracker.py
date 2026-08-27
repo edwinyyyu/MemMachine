@@ -8,7 +8,8 @@ from .metrics_factory import MetricsFactory
 
 
 class OperationTracker:
-    """Tracks operation latency via async context manager.
+    """
+    Tracks operation latency via async context manager.
 
     Emits a single histogram ``{prefix}_latency_seconds`` with ``operation``
     and ``status`` ("ok" / "error") labels.
@@ -35,6 +36,7 @@ class OperationTracker:
             )
 
     def __call__(self, operation: str) -> AbstractAsyncContextManager[None]:
+        """Track one named operation as an async context manager."""
         return self._track(operation)
 
     @asynccontextmanager

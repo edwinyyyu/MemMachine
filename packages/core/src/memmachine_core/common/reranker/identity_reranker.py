@@ -9,5 +9,4 @@ class IdentityReranker(Reranker):
     async def score(self, query: str, candidates: list[str]) -> list[float]:
         """Assign descending scores to preserve original order."""
         _ = query
-        scores = list(map(float, reversed(range(len(candidates)))))
-        return scores
+        return list(map(float, reversed(range(len(candidates)))))

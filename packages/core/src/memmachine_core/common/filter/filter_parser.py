@@ -305,7 +305,8 @@ USER_METADATA_STORAGE_PREFIX = "metadata."
 
 
 def normalize_filter_field(field: str) -> tuple[str, bool]:
-    """Normalize a query field name to internal storage name.
+    """
+    Normalize a query field name to internal storage name.
 
     Returns (internal_name, is_user_metadata).
     - User metadata (m.foo, metadata.foo): returns ("metadata.foo", True)

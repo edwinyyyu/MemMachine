@@ -75,12 +75,13 @@ select = [
     "W",
     "YTT",
 ]
+# D213 (summaries open on the second line) is enforced over its
+# mutually exclusive google-convention counterpart D212.
+extend-select = ["D213"]
 ignore = [
     "E501",    # line length is the formatter's job; what remains is unsplittable
     "PLC0415", # function-level imports defer heavy or optional dependencies
-    "D102",    # method docstrings are optional; modules and classes are documented
-    "D212",    # multi-line docstring summaries open on the second line
-    "RET504",  # naming the return value before returning it is house style
+    "D212",    # mutually exclusive with the enforced D213
     "TRY003",  # plain exceptions with inline messages
 ]
 

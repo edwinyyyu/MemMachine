@@ -1,4 +1,5 @@
-"""Integration tests for compile_sql_filter with an in-memory SQLite database.
+"""
+Integration tests for compile_sql_filter with an in-memory SQLite database.
 
 These tests verify that JSON metadata filtering handles numeric types correctly
 (integer ordering, float ordering, boolean equality) rather than falling back

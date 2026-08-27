@@ -42,6 +42,4 @@ class RRFHybridReranker(Reranker):
             for rank, candidate in enumerate(ranking, start=1):
                 score_map[candidate] += 1 / (self._k + rank)
 
-        scores = [score_map[candidate] for candidate in candidates]
-
-        return scores
+        return [score_map[candidate] for candidate in candidates]

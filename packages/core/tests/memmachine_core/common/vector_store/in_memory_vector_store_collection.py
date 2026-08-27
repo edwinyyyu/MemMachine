@@ -94,7 +94,8 @@ def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
 
 
 class InMemoryVectorStoreCollection(VectorStoreCollection):
-    """In-memory VectorStoreCollection for testing.
+    """
+    In-memory VectorStoreCollection for testing.
 
     Scores matches by cosine similarity, with full FilterExpr evaluation
     on record properties.

@@ -56,9 +56,7 @@ class BM25Reranker(Reranker):
             epsilon=self._epsilon,
         )
 
-        scores = [float(score) for score in bm25.get_scores(tokenized_query)]
-
-        return scores
+        return [float(score) for score in bm25.get_scores(tokenized_query)]
 
     def _tokenize_multiple(self, corpus: list[str]) -> list[list[str]]:
         return [self._tokenize(document) for document in corpus]

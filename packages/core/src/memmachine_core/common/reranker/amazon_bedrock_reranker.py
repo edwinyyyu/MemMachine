@@ -83,8 +83,8 @@ class AmazonBedrockReranker(Reranker):
         )
 
     async def score(self, query: str, candidates: list[str]) -> list[float]:
+        """Score candidates for a query using the Bedrock reranker."""
         async with self._tracker("score"):
-            """Score candidates for a query using the Bedrock reranker."""
             rerank_kwargs = {
                 "queries": [
                     {

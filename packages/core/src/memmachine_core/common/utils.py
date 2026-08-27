@@ -175,7 +175,7 @@ def extract_sentences(text: str) -> set[str]:
         for partition in sent_tokenize(line.strip())
     }
 
-    sentences = {
+    return {
         sentence
         for partition in partitions
         for sentence in re.findall(
@@ -184,8 +184,6 @@ def extract_sentences(text: str) -> set[str]:
         )
         if any(c.isalnum() for c in sentence)
     }
-
-    return sentences
 
 
 def unflatten_like[T](

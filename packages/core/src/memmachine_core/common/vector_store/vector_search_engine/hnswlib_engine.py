@@ -17,7 +17,8 @@ from .vector_search_engine import SearchMatch, SearchResult, VectorSearchEngine
 
 
 class HnswlibVectorSearchEngine(VectorSearchEngine):
-    """Vector search engine backed by hnswlib HNSW.
+    """
+    Vector search engine backed by hnswlib HNSW.
 
     Allowlist searches gather stored vectors through hnswlib's `get_items`,
     which is slow per key relative to the other engines, so deployments
