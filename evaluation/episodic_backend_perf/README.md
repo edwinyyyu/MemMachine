@@ -19,7 +19,10 @@ segment with the passthrough segmenter).
 
 Numbers produced by this harness (2026-08) and their interpretation live
 in the proposal documents outside this repo; treat absolute numbers as
-machine-specific and compare within a run.
+machine-specific and compare within a run. MEASUREMENT_ENV.md records
+the exact environment those numbers came from (commit, service
+settings, library versions, machine, and the attribution invocations
+not covered by run_all.sh).
 
 ## Prerequisites
 
