@@ -1,12 +1,12 @@
-name: Check uv.lock file
+name: Check uv.lock
 
 # Ensures uv.lock is in sync with pyproject.toml and related files.
-# If the lockfile is in sync, the workflow passes.
+# If uv.lock is in sync, the workflow passes.
 # If not, the workflow fails and the contributor should run `uv lock`
 # (or otherwise regenerate uv.lock) and commit the updated file before merging.
 #
 # Dependabot bumps a pyproject.toml without regenerating uv.lock, so for its
-# pull requests the lockfile is regenerated and pushed back to the branch
+# pull requests uv.lock is regenerated and pushed back to the branch
 # instead of failing the check.
 
 on:
@@ -22,7 +22,7 @@ permissions:
 
 # Cancel any preceding run on the pull request after a new commit is pushed.
 concurrency:
-  group: check-uvlockfile-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  group: check-uv-lock-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
@@ -39,7 +39,7 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Check lockfile
+      - name: Check uv.lock
         run: uv lock --check
 
   # Separate job so that only this one holds write access to the repository.
@@ -58,13 +58,13 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Regenerate lockfile
+      - name: Regenerate uv.lock
         run: uv lock
 
-      - name: Commit regenerated lockfile
+      - name: Commit regenerated uv.lock
         run: |
           if git diff --quiet -- uv.lock; then
-            echo "No lockfile changes to commit"
+            echo "No uv.lock changes to commit"
             exit 0
           fi
 

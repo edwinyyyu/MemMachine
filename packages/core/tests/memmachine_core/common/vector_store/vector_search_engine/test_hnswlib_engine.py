@@ -9,7 +9,7 @@ import pytest
 
 # hnswlib ships sdist only and hardcodes -march=native, so a wheel built on one
 # GitHub-hosted runner CPU can SIGILL on another (uv caches built wheels keyed
-# by OS + lockfile, not CPU microarch). Skip on CI before importing hnswlib so
+# by OS and uv.lock, not CPU microarch). Skip on CI before importing hnswlib so
 # the SIGILL doesn't fire during pytest collection.
 if os.getenv("CI") == "true":
     pytest.skip(
