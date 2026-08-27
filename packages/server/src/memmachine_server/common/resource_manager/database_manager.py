@@ -545,34 +545,41 @@ class DatabaseManager:
 
     # --- Qdrant ---
 
+    async def _build_collection_registry(
+        self, registry_name: str, registry_database: str
+    ) -> CollectionRegistry:
+        """
+        Build and start a collection registry on a named relational database.
+
+        Raises ValueError for an unknown database name or an unusable
+        registry name; callers wrap it in their backend's configuration
+        error with backend-specific guidance.
+        """
+        engine = await self.async_get_sql_engine(registry_database)
+        registry = SQLAlchemyCollectionRegistry(
+            SQLAlchemyCollectionRegistryParams(engine=engine, name=registry_name)
+        )
+        await registry.startup()
+        return registry
+
     async def _build_qdrant_collection_registry(
         self, name: str, conf: QdrantConf
     ) -> CollectionRegistry:
         """Build and start the collection registry for a Qdrant instance."""
-        try:
-            engine = await self.async_get_sql_engine(conf.registry_database)
-        except ValueError as e:
-            raise QdrantConfigurationError(
-                f"Qdrant config '{name}': registry_database "
-                f"'{conf.registry_database}' is not a configured relational database.",
-            ) from e
-
         # One registry per Qdrant instance, so instances sharing a registry
         # database get separate tables.
-        registry_name = f"qdrant_{name}"
         try:
-            registry = SQLAlchemyCollectionRegistry(
-                SQLAlchemyCollectionRegistryParams(engine=engine, name=registry_name)
+            return await self._build_collection_registry(
+                f"qdrant_{name}", conf.registry_database
             )
         except ValueError as e:
             raise QdrantConfigurationError(
-                f"Qdrant config name '{name}' cannot name a collection registry "
-                f"({registry_name!r} is not a valid registry name). "
-                "Rename the qdrant databases entry to match [a-z0-9_]+ "
-                "and be at most 25 bytes.",
+                f"Qdrant config '{name}': cannot build its collection registry "
+                f"on registry_database '{conf.registry_database}'. "
+                "The registry_database must name a configured relational "
+                "database, and the qdrant entry name must match [a-z0-9_]+ "
+                f"and be at most 25 bytes. Cause: {e}",
             ) from e
-        await registry.startup()
-        return registry
 
     @staticmethod
     async def _close_qdrant_client(name: str, client: "AsyncQdrantClient") -> None:
@@ -701,11 +708,27 @@ class DatabaseManager:
                 MilvusVectorStoreParams,
             )
 
-            params = MilvusVectorStoreParams(
-                client=client,
-                consistency_level=conf.consistency_level,
-            )
             try:
+                # One registry per Milvus instance, so instances sharing a
+                # registry database get separate tables.
+                try:
+                    registry = await self._build_collection_registry(
+                        f"milvus_{name}", conf.registry_database
+                    )
+                except ValueError as e:
+                    raise MilvusConfigurationError(
+                        f"Milvus config '{name}': cannot build its collection "
+                        f"registry on registry_database "
+                        f"'{conf.registry_database}'. "
+                        "The registry_database must name a configured relational "
+                        "database, and the milvus entry name must match "
+                        f"[a-z0-9_]+ and be at most 25 bytes. Cause: {e}",
+                    ) from e
+                params = MilvusVectorStoreParams(
+                    client=client,
+                    registry=registry,
+                    consistency_level=conf.consistency_level,
+                )
                 store = MilvusVectorStore(params)
                 await store.startup()
             except Exception:

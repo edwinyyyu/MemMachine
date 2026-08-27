@@ -1,8 +1,9 @@
-# Qdrant on the collection registry
+# Vector store backends on the collection registry
 
-Contributor-facing design notes for QdrantVectorStore's collection metadata,
-which lives in the SQL-backed collection registry (see
-`collection_registry.md`) rather than in Qdrant itself.
+Contributor-facing design notes for QdrantVectorStore's and
+MilvusVectorStore's collection metadata, which lives in the SQL-backed
+collection registry (see `collection_registry.md`) rather than in the vector
+databases themselves.
 
 ## Why the registry moved out of Qdrant
 
@@ -83,3 +84,31 @@ native collection and data is reachable again; the caveat is paths that
 re-create with a currently-derived schema (the episodic event backend) orphan
 old partitions if that schema drifted since original creation. Stale
 `__registry` collections can be deleted manually.
+
+## Milvus
+
+Milvus previously kept the same bookkeeping in per-namespace
+`memmachine_<ns>__registry` Milvus collections (dummy-vector rows keyed by
+collection name), with the same non-atomic read-check-write lifecycle and the
+same races. It now follows the Qdrant design exactly: entries registered in
+the collection registry, native-first/register-last creation with the
+registry insert as the commit point, generationed partition keys making
+deletion safe against held handles, data-first/deregister-last deletion.
+
+Milvus-specific notes:
+
+- Native naming for new collections is unchanged:
+  `memmachine_{namespace}__{sha256(config)}`, shared by config and separated
+  by the partition key field.
+- There is no shard-key machinery; the generationed partition key is used
+  only as the partition key field value. The native schema's partition key
+  VARCHAR length is sized for generationed keys (name + "#" + 32 hex
+  characters), and native primary ids embed them
+  (`{partition_key}:{record_uuid}`), which also keeps ids unique across
+  generations.
+- The store's concurrency scope widens from PROCESS to
+  `min(CLUSTER, registry scope)`. Milvus's default `Session` consistency
+  means process B may read stale data relative to process A's writes; that
+  sits within the `VectorStoreCollection` visibility contract (no
+  read-your-writes is promised), but deployments wanting stronger data-plane
+  visibility should configure `consistency_level` accordingly.

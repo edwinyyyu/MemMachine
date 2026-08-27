@@ -297,6 +297,15 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
             "Supported values: Strong, Session, Bounded, Eventually."
         ),
     )
+    registry_database: str = Field(
+        ...,
+        description=(
+            "Name of a configured relational database (a `databases` entry with "
+            "provider `postgres` or `sqlite`) that stores the collection registry. "
+            "All processes sharing this Milvus instance must use the same "
+            "registry database."
+        ),
+    )
 
     @field_validator("uri", mode="before")
     @classmethod

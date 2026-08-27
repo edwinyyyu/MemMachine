@@ -392,7 +392,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
       | `config.uri`  | The URI for the given database.                                      | Depends on provider |
       | `config.token` | Milvus auth token for Zilliz Cloud or auth-enabled Milvus server.   | `""` |
       | `config.consistency_level` | Milvus collection consistency level: `Strong`, `Session`, `Bounded`, or `Eventually`. | `Session` |
-      | `config.registry_database` | Qdrant: name of a configured relational database (a `postgres` or `sqlite` entry) that stores the collection registry. All processes sharing the Qdrant instance must use the same registry database. | *Required for `qdrant`* |
+      | `config.registry_database` | Qdrant/Milvus: name of a configured relational database (a `postgres` or `sqlite` entry) that stores the collection registry. All processes sharing the vector store instance must use the same registry database. | *Required for `qdrant` and `milvus`* |
       | `config.path`  | The path for the given database.                                    | Depends on provider |
       | `config.username` | Username for internal graph store authentication.                | Depends on provider |
       | `my_storage_id` | The specific configuration for the system's internal graph store.  | *Required*  |

@@ -122,6 +122,7 @@ resources:
     #   provider: milvus
     #   config:
     #     uri: event_milvus.db
+    #     registry_database: sqlite_test
     #     # token: $MILVUS_TOKEN
     #     # db_name: default
     #     consistency_level: Session       # Strong, Session, Bounded, Eventually
@@ -129,6 +130,7 @@ resources:
     #   provider: milvus
     #   config:
     #     uri: semantic_milvus.db
+    #     registry_database: sqlite_test
     #     # token: $MILVUS_TOKEN
     #     # db_name: default
     #     consistency_level: Session

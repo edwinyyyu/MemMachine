@@ -27,6 +27,10 @@ from memmachine_server.common.filter.filter_parser import (
     Not,
     Or,
 )
+from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
+    SQLAlchemyCollectionRegistry,
+    SQLAlchemyCollectionRegistryParams,
+)
 from memmachine_server.common.vector_store.data_types import (
     Record,
     VectorStoreCollectionAlreadyExistsError,
@@ -62,10 +66,25 @@ def _make_record(
 
 
 @pytest_asyncio.fixture
-async def store(tmp_path):
+async def collection_registry(sqlalchemy_sqlite_engine):
+    registry = SQLAlchemyCollectionRegistry(
+        SQLAlchemyCollectionRegistryParams(
+            engine=sqlalchemy_sqlite_engine, name="milvus_test"
+        )
+    )
+    await registry.startup()
+    return registry
+
+
+@pytest_asyncio.fixture
+async def store(tmp_path, collection_registry):
     client = MilvusClient(uri=str(tmp_path / "test_milvus.db"))
     vector_store = MilvusVectorStore(
-        MilvusVectorStoreParams(client=client, consistency_level="Session")
+        MilvusVectorStoreParams(
+            client=client,
+            registry=collection_registry,
+            consistency_level="Session",
+        )
     )
     await vector_store.startup()
     yield vector_store
@@ -107,31 +126,6 @@ class TestCollectionLifecycle:
         coll = await store.open_collection(namespace=NAMESPACE, name="lifecycle")
         assert isinstance(coll, MilvusVectorStoreCollection)
         await store.delete_collection(namespace=NAMESPACE, name="lifecycle")
-
-    @pytest.mark.asyncio
-    async def test_registry_lookup_requests_primary_key(self, store, monkeypatch):
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="registry_fields",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-
-        captured_output_fields = None
-        original_get = MilvusClient.get
-
-        def tracked_get(self, *args, **kwargs):
-            nonlocal captured_output_fields
-            captured_output_fields = kwargs.get("output_fields")
-            return original_get(self, *args, **kwargs)
-
-        monkeypatch.setattr(MilvusClient, "get", tracked_get)
-        coll = await store.open_collection(namespace=NAMESPACE, name="registry_fields")
-
-        assert coll is not None
-        assert captured_output_fields is not None
-        assert "id" in captured_output_fields
-        assert "config" in captured_output_fields
-        await store.delete_collection(namespace=NAMESPACE, name="registry_fields")
 
     @pytest.mark.asyncio
     async def test_duplicate_name_raises(self, store, collection):
@@ -545,5 +539,6 @@ class TestPartitionIsolation:
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
 
 
-def test_concurrency_scope_is_process(store):
-    assert store.concurrency_scope == ConcurrencyScope.PROCESS
+def test_concurrency_scope_governed_by_registry(store):
+    # The test registry runs on file-backed SQLite.
+    assert store.concurrency_scope == ConcurrencyScope.MACHINE

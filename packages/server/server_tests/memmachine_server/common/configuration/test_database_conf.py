@@ -130,6 +130,7 @@ def db_conf_dict() -> dict:
                     "uri": "https://example.zillizcloud.com",
                     "token": "test-token",
                     "db_name": "memory",
+                    "registry_database": "local_sqlite",
                     "consistency_level": "Strong",
                 },
             },
@@ -213,6 +214,7 @@ def test_parse_valid_storage_dict(db_conf_dict):
     assert milvus_conf.uri == "https://example.zillizcloud.com"
     assert milvus_conf.token == SecretStr("test-token")
     assert milvus_conf.db_name == "memory"
+    assert milvus_conf.registry_database == "local_sqlite"
     assert milvus_conf.consistency_level == "Strong"
 
     # SQLiteVectorStore (hnswlib engine)
@@ -281,11 +283,17 @@ def test_serialize_deserialize_database_conf(db_conf_dict):
 
 
 def test_milvus_conf_defaults():
-    conf = MilvusConf()
+    conf = MilvusConf(registry_database="registry_db")
     assert conf.uri == "./milvus.db"
     assert conf.token == SecretStr("")
     assert conf.db_name == ""
     assert conf.consistency_level == "Session"
+    assert conf.registry_database == "registry_db"
+
+
+def test_milvus_conf_requires_registry_database():
+    with pytest.raises(ValidationError):
+        MilvusConf.model_validate({})
 
 
 def test_milvus_conf_reads_env(monkeypatch):
@@ -296,6 +304,7 @@ def test_milvus_conf_reads_env(monkeypatch):
         uri="$MILVUS_URI",
         token=SecretStr("${MILVUS_TOKEN}"),
         db_name="$MILVUS_DB_NAME",
+        registry_database="registry_db",
     )
     assert conf.uri == "https://example.zillizcloud.com"
     assert conf.token == SecretStr("env-token")
@@ -304,9 +313,9 @@ def test_milvus_conf_reads_env(monkeypatch):
 
 def test_milvus_conf_rejects_invalid_values():
     with pytest.raises(ValueError, match="non-empty 'uri'"):
-        MilvusConf(uri="")
+        MilvusConf(uri="", registry_database="registry_db")
     with pytest.raises(ValueError, match="consistency_level"):
-        MilvusConf(consistency_level="Linearizable")
+        MilvusConf(consistency_level="Linearizable", registry_database="registry_db")
 
 
 def test_neo4j_pool_lifecycle_fields():
