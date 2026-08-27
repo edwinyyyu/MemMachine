@@ -1,6 +1,7 @@
 """Cross-encoder based reranker implementation."""
 
 import asyncio
+from typing import override
 
 from pydantic import BaseModel, Field, InstanceOf
 from sentence_transformers import CrossEncoder
@@ -34,8 +35,8 @@ class CrossEncoderReranker(Reranker):
         self._cross_encoder = params.cross_encoder
         self._max_input_length = params.max_input_length
 
+    @override
     async def score(self, query: str, candidates: list[str]) -> list[float]:
-        """Score candidates for a query using the cross-encoder."""
         query = query[: self._max_input_length] if self._max_input_length else query
 
         chunked_candidates = [

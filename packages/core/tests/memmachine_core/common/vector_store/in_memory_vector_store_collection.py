@@ -3,6 +3,7 @@
 import math
 import operator
 from collections.abc import Iterable, Sequence
+from typing import override
 from uuid import UUID
 
 from memmachine_core.common import PropertyValue
@@ -106,9 +107,11 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
         self.records: dict[UUID, Record] = {}
 
     @property
+    @override
     def config(self) -> VectorStoreCollectionConfig:
         return self.collection_config
 
+    @override
     async def upsert(self, *, records: Iterable[Record]) -> None:
         for record in records:
             self.records[record.uuid] = Record(
@@ -117,6 +120,7 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
                 properties=dict(record.properties),
             )
 
+    @override
     async def query(
         self,
         *,
@@ -152,6 +156,7 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
             results.append(QueryResult(matches=matches))
         return results
 
+    @override
     async def get_cosine_similarity(
         self,
         *,
@@ -167,6 +172,7 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
             similarities[uid] = _cosine_similarity(qv, record.vector)
         return similarities
 
+    @override
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
         for uid in record_uuids:
             self.records.pop(uid, None)

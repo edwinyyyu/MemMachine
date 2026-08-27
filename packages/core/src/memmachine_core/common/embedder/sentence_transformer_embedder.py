@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from typing import override
 from uuid import uuid4
 
 import numpy as np
@@ -64,20 +65,20 @@ class SentenceTransformerEmbedder(Embedder):
 
         self._max_input_length = params.max_input_length
 
+    @override
     async def _ingest_embed(
         self,
         inputs: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
-        """Embed input documents using the sentence transformer."""
         return await self._embed(inputs, max_attempts)
 
+    @override
     async def _search_embed(
         self,
         queries: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
-        """Embed search queries using the sentence transformer."""
         return await self._embed(queries, max_attempts, prompt_name="query")
 
     async def _embed(
@@ -165,11 +166,11 @@ class SentenceTransformerEmbedder(Embedder):
         ]
 
     @property
+    @override
     def model_id(self) -> str:
-        """Return the underlying model identifier."""
         return self._model_name
 
     @property
+    @override
     def dimensions(self) -> int:
-        """Return the embedding dimensionality."""
         return self._dimensions

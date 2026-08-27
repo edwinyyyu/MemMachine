@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable, Coroutine
-from typing import Any
+from typing import Any, override
 from uuid import uuid4
 
 import numpy as np
@@ -77,12 +77,12 @@ class AmazonBedrockEmbedder(Embedder):
         """Return the underlying BedrockEmbeddings client."""
         return self._client
 
+    @override
     async def _ingest_embed(
         self,
         inputs: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
-        """Embed input documents."""
         return await self._embed(
             inputs,
             self._ingest_embed_func,
@@ -96,12 +96,12 @@ class AmazonBedrockEmbedder(Embedder):
         """Call Bedrock for document embeddings."""
         return await self._client.aembed_documents(inputs)
 
+    @override
     async def _search_embed(
         self,
         queries: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
-        """Embed search queries."""
         return await self._embed(
             queries,
             self._search_embed_func,
@@ -219,11 +219,11 @@ class AmazonBedrockEmbedder(Embedder):
         ]
 
     @property
+    @override
     def model_id(self) -> str:
-        """Return the identifier for the embedding model."""
         return self._model_id
 
     @property
+    @override
     def dimensions(self) -> int:
-        """Return the embedding dimensionality."""
         return self._dimensions

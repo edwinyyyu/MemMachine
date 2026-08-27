@@ -214,8 +214,8 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         self._create_session = async_sessionmaker(engine, expire_on_commit=False)
         self._is_sqlite = engine.dialect.name == "sqlite"
 
-    @override
     @property
+    @override
     def config(self) -> SegmentStorePartitionConfig:
         return self._config
 

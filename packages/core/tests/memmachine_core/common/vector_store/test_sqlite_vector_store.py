@@ -3,6 +3,7 @@
 import asyncio
 import math
 from datetime import UTC, datetime, timedelta, timezone
+from typing import override
 from uuid import UUID, uuid4
 
 import pytest
@@ -1172,12 +1173,15 @@ class _GatedSearchEngine(VectorSearchEngine):
         self.gate: asyncio.Event | None = None
         self.gate_reached = asyncio.Event()
 
+    @override
     async def add(self, vectors):
         await self.inner.add(vectors)
 
+    @override
     async def remove(self, keys):
         await self.inner.remove(keys)
 
+    @override
     async def search(self, vectors, *, limit, allowlist=None):
         results = await self.inner.search(vectors, limit=limit, allowlist=allowlist)
         if self.gate is not None:
@@ -1186,12 +1190,15 @@ class _GatedSearchEngine(VectorSearchEngine):
             await gate.wait()
         return results
 
+    @override
     async def get_cosine_similarities(self, query_vector, keys):
         return await self.inner.get_cosine_similarities(query_vector, keys)
 
+    @override
     async def save(self, path):
         await self.inner.save(path)
 
+    @override
     async def load(self, path):
         await self.inner.load(path)
 
@@ -1566,9 +1573,11 @@ class _GatedRemoveEngine(VectorSearchEngine):
         self.gate: asyncio.Event | None = None
         self.gate_reached = asyncio.Event()
 
+    @override
     async def add(self, vectors):
         await self.inner.add(vectors)
 
+    @override
     async def remove(self, keys):
         if self.gate is not None:
             gate, self.gate = self.gate, None
@@ -1576,15 +1585,19 @@ class _GatedRemoveEngine(VectorSearchEngine):
             await gate.wait()
         await self.inner.remove(keys)
 
+    @override
     async def search(self, vectors, *, limit, allowlist=None):
         return await self.inner.search(vectors, limit=limit, allowlist=allowlist)
 
+    @override
     async def get_cosine_similarities(self, query_vector, keys):
         return await self.inner.get_cosine_similarities(query_vector, keys)
 
+    @override
     async def save(self, path):
         await self.inner.save(path)
 
+    @override
     async def load(self, path):
         await self.inner.load(path)
 
@@ -1609,18 +1622,23 @@ class _GatedSaveEngine(VectorSearchEngine):
         self.saves_blocked = False
         self.blocked_save_reached = asyncio.Event()
 
+    @override
     async def add(self, vectors):
         await self.inner.add(vectors)
 
+    @override
     async def remove(self, keys):
         await self.inner.remove(keys)
 
+    @override
     async def search(self, vectors, *, limit, allowlist=None):
         return await self.inner.search(vectors, limit=limit, allowlist=allowlist)
 
+    @override
     async def get_cosine_similarities(self, query_vector, keys):
         return await self.inner.get_cosine_similarities(query_vector, keys)
 
+    @override
     async def save(self, path):
         if self.gate is None:
             if self.saves_blocked:
@@ -1635,6 +1653,7 @@ class _GatedSaveEngine(VectorSearchEngine):
         self.gate_reached.set()
         await gate.wait()
 
+    @override
     async def load(self, path):
         await self.inner.load(path)
 

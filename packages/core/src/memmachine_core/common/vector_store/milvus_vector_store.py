@@ -154,7 +154,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
     @property
     @override
     def config(self) -> VectorStoreCollectionConfig:
-        """The configuration for this collection."""
         return self._config
 
     def _build_entity(self, record: Record) -> dict[str, Any]:
@@ -194,7 +193,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         *,
         records: Iterable[Record],
     ) -> None:
-        """Upsert records into the collection."""
         async with self._tracker("upsert"):
             records = list(records)
             if not records:
@@ -219,7 +217,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
     ) -> list[QueryResult]:
-        """Query for records matching the criteria by query vectors."""
         async with self._tracker("query"):
             query_vectors = [list(query_vector) for query_vector in query_vectors]
             if not query_vectors:
@@ -283,7 +280,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         query_vector: Sequence[float],
         record_uuids: Iterable[UUID],
     ) -> dict[UUID, float]:
-        """Get cosine similarities by fetching stored vectors and computing locally."""
         async with self._tracker("get_cosine_similarity"):
             uuid_list = list(record_uuids)
             if not uuid_list:
@@ -315,7 +311,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         *,
         record_uuids: Iterable[UUID],
     ) -> None:
-        """Delete records from the collection by their UUIDs."""
         async with self._tracker("delete"):
             uuid_list = list(record_uuids)
             if not uuid_list:
@@ -411,11 +406,13 @@ class MilvusVectorStore(VectorStore):
 
     @override
     async def startup(self) -> None:
-        """No-op; client lifecycle is managed externally."""
+        # No-op; client lifecycle is managed externally.
+        pass
 
     @override
     async def shutdown(self) -> None:
-        """No-op; client lifecycle is managed externally."""
+        # No-op; client lifecycle is managed externally.
+        pass
 
     async def _ensure_namespace_registry_collection(self, namespace: str) -> None:
         """Idempotently create the registry collection for a namespace."""
@@ -627,7 +624,6 @@ class MilvusVectorStore(VectorStore):
         name: str,
         config: VectorStoreCollectionConfig,
     ) -> None:
-        """Create a logical collection in the Milvus vector store."""
         if not validate_identifier(namespace):
             raise ValueError(
                 f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
@@ -654,7 +650,6 @@ class MilvusVectorStore(VectorStore):
         name: str,
         config: VectorStoreCollectionConfig,
     ) -> MilvusVectorStoreCollection:
-        """Open the collection if it exists, or create and return it."""
         if not validate_identifier(namespace):
             raise ValueError(
                 f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
@@ -685,7 +680,6 @@ class MilvusVectorStore(VectorStore):
     async def open_collection(
         self, *, namespace: str, name: str
     ) -> MilvusVectorStoreCollection | None:
-        """Get a collection handle from the vector store."""
         if not validate_identifier(namespace):
             raise ValueError(
                 f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
@@ -703,11 +697,11 @@ class MilvusVectorStore(VectorStore):
 
     @override
     async def close_collection(self, *, collection: VectorStoreCollection) -> None:
-        """No-op; Milvus collection handles require no explicit close."""
+        # No-op; Milvus collection handles require no explicit close.
+        pass
 
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
-        """Delete a logical collection from the Milvus vector store."""
         if not validate_identifier(namespace):
             raise ValueError(
                 f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"

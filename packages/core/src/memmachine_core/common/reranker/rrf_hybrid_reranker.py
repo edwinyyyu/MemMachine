@@ -2,6 +2,7 @@
 
 import asyncio
 from collections import defaultdict
+from typing import override
 
 from pydantic import BaseModel, Field, InstanceOf
 
@@ -29,8 +30,8 @@ class RRFHybridReranker(Reranker):
         self._rerankers = params.rerankers
         self._k = params.k
 
+    @override
     async def score(self, query: str, candidates: list[str]) -> list[float]:
-        """Score candidates by aggregating ranks from multiple rerankers."""
         rerank_tasks = [
             reranker.rerank(query, candidates) for reranker in self._rerankers
         ]

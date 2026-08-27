@@ -1,5 +1,7 @@
 """Embedder-based reranker implementation."""
 
+from typing import override
+
 from pydantic import BaseModel, Field, InstanceOf
 
 from memmachine_core.common.embedder import Embedder
@@ -26,8 +28,8 @@ class EmbedderReranker(Reranker):
 
         self._embedder = params.embedder
 
+    @override
     async def score(self, query: str, candidates: list[str]) -> list[float]:
-        """Score candidates for a query by cosine similarity of their embeddings."""
         if len(candidates) == 0:
             return []
 

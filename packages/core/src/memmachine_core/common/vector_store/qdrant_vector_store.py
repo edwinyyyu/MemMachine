@@ -248,7 +248,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     @property
     @override
     def config(self) -> VectorStoreCollectionConfig:
-        """The configuration for this collection."""
         return self._config
 
     def _build_payload(
@@ -275,7 +274,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         *,
         records: Iterable[Record],
     ) -> None:
-        """Upsert records into the collection."""
         async with self._tracker("upsert"):
             points = [
                 models.PointStruct(
@@ -313,7 +311,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
     ) -> list[QueryResult]:
-        """Query for records matching the criteria by query vectors."""
         async with self._tracker("query"):
             query_vectors = [list(query_vector) for query_vector in query_vectors]
             if not query_vectors:
@@ -370,7 +367,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         query_vector: Sequence[float],
         record_uuids: Iterable[UUID],
     ) -> dict[UUID, float]:
-        """Get cosine similarities by fetching stored vectors and computing locally."""
         async with self._tracker("get_cosine_similarity"):
             uuid_list = list(record_uuids)
             if not uuid_list:
@@ -410,7 +406,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         *,
         record_uuids: Iterable[UUID],
     ) -> None:
-        """Delete records from the collection by their UUIDs."""
         async with self._tracker("delete"):
             uuid_list = list(record_uuids)
             if not uuid_list:
@@ -632,11 +627,13 @@ class QdrantVectorStore(VectorStore):
 
     @override
     async def startup(self) -> None:
-        """No-op; client lifecycle is managed externally."""
+        # No-op; client lifecycle is managed externally.
+        pass
 
     @override
     async def shutdown(self) -> None:
-        """No-op; client lifecycle is managed externally."""
+        # No-op; client lifecycle is managed externally.
+        pass
 
     async def _ensure_namespace_registry_collection(self, namespace: str) -> None:
         """Idempotently create the registry collection for a namespace."""
@@ -825,7 +822,6 @@ class QdrantVectorStore(VectorStore):
         name: str,
         config: VectorStoreCollectionConfig,
     ) -> None:
-        """Create a logical collection in the Qdrant vector store."""
         if not validate_identifier(namespace):
             raise ValueError(
                 f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
@@ -857,7 +853,6 @@ class QdrantVectorStore(VectorStore):
         name: str,
         config: VectorStoreCollectionConfig,
     ) -> QdrantVectorStoreCollection:
-        """Open the collection if it exists, or create and return it."""
         if not validate_identifier(namespace):
             raise ValueError(
                 f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
@@ -893,7 +888,6 @@ class QdrantVectorStore(VectorStore):
     async def open_collection(
         self, *, namespace: str, name: str
     ) -> QdrantVectorStoreCollection | None:
-        """Get a collection handle from the vector store."""
         if not validate_identifier(namespace):
             raise ValueError(
                 f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
@@ -911,11 +905,11 @@ class QdrantVectorStore(VectorStore):
 
     @override
     async def close_collection(self, *, collection: VectorStoreCollection) -> None:
-        """No-op; Qdrant collection handles require no explicit close."""
+        # No-op; Qdrant collection handles require no explicit close.
+        pass
 
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
-        """Delete a logical collection from the Qdrant vector store."""
         if not validate_identifier(namespace):
             raise ValueError(
                 f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"

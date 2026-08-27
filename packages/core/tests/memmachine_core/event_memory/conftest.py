@@ -58,8 +58,8 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         self.event_to_segments: dict[UUID, list[UUID]] = defaultdict(list)
         self.segment_to_derivatives: dict[UUID, list[UUID]] = {}
 
-    @override
     @property
+    @override
     def config(self) -> SegmentStorePartitionConfig:
         return self._config
 

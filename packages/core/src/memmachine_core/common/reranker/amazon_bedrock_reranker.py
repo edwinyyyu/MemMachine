@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, override
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, InstanceOf
@@ -82,8 +82,8 @@ class AmazonBedrockReranker(Reranker):
             params.metrics_factory, prefix="reranker_amazon_bedrock"
         )
 
+    @override
     async def score(self, query: str, candidates: list[str]) -> list[float]:
-        """Score candidates for a query using the Bedrock reranker."""
         async with self._tracker("score"):
             rerank_kwargs = {
                 "queries": [

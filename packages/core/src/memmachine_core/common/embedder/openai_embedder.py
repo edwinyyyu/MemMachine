@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from typing import override
 from uuid import UUID, uuid4
 
 import numpy as np
@@ -106,21 +107,21 @@ class OpenAIEmbedder(Embedder):
                 "Number of tokens used by requests to OpenAI embedder",
             )
 
+    @override
     async def _ingest_embed(
         self,
         inputs: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
-        """Embed the provided inputs with retries."""
         async with self._tracker("ingest_embed"):
             return await self._embed(inputs, max_attempts)
 
+    @override
     async def _search_embed(
         self,
         queries: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
-        """Embed search queries with retries."""
         async with self._tracker("search_embed"):
             return await self._embed(queries, max_attempts)
 
@@ -322,11 +323,11 @@ class OpenAIEmbedder(Embedder):
         return [datum.embedding for datum in response.data]
 
     @property
+    @override
     def model_id(self) -> str:
-        """Return the embedding model identifier."""
         return self._model
 
     @property
+    @override
     def dimensions(self) -> int:
-        """Return the embedding dimensionality."""
         return self._dimensions

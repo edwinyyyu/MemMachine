@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Callable
+from typing import override
 
 from pydantic import BaseModel, Field
 from rank_bm25 import BM25Okapi
@@ -33,8 +34,8 @@ class BM25Reranker(Reranker):
         self._epsilon = params.epsilon
         self._tokenize = params.tokenize
 
+    @override
     async def score(self, query: str, candidates: list[str]) -> list[float]:
-        """Score candidates for a query using BM25."""
         tokenized_query_future = asyncio.to_thread(self._tokenize, query)
         tokenized_candidates_future = asyncio.to_thread(
             self._tokenize_multiple,

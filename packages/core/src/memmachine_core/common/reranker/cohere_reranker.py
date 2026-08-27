@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, override
 
 import cohere
 from pydantic import BaseModel, Field
@@ -37,8 +37,8 @@ class CohereReranker(Reranker):
         self._client = params.client
         self._model = params.model
 
+    @override
     async def score(self, query: str, candidates: list[str]) -> list[float]:
-        """Score candidates using Cohere's rerank API."""
         if len(candidates) == 0:
             return []
 

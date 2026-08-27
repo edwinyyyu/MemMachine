@@ -1,7 +1,7 @@
 """Prometheus-based metrics factory and metrics implementations."""
 
 from collections.abc import Iterable
-from typing import ClassVar
+from typing import ClassVar, override
 
 from prometheus_client import Counter as PrometheusCounter
 from prometheus_client import Gauge as PrometheusGauge
@@ -21,12 +21,12 @@ class PrometheusMetricsFactory(MetricsFactory):
             """Wrap a Prometheus counter."""
             self._counter = counter
 
+        @override
         def increment(
             self,
             value: float = 1,
             labels: dict[str, str] | None = None,
         ) -> None:
-            """Increment the counter with optional label values."""
             if labels:
                 self._counter.labels(**labels).inc(value)
             else:
@@ -39,12 +39,12 @@ class PrometheusMetricsFactory(MetricsFactory):
             """Wrap a Prometheus gauge."""
             self._gauge = gauge
 
+        @override
         def set(
             self,
             value: float,
             labels: dict[str, str] | None = None,
         ) -> None:
-            """Set the gauge value with optional labels."""
             if labels:
                 self._gauge.labels(**labels).set(value)
             else:
@@ -57,12 +57,12 @@ class PrometheusMetricsFactory(MetricsFactory):
             """Wrap a Prometheus histogram."""
             self._histogram = histogram
 
+        @override
         def observe(
             self,
             value: float,
             labels: dict[str, str] | None = None,
         ) -> None:
-            """Record a histogram observation with optional labels."""
             if labels:
                 self._histogram.labels(**labels).observe(value)
             else:
@@ -75,12 +75,12 @@ class PrometheusMetricsFactory(MetricsFactory):
             """Wrap a Prometheus summary."""
             self._summary = summary
 
+        @override
         def observe(
             self,
             value: float,
             labels: dict[str, str] | None = None,
         ) -> None:
-            """Record a summary observation with optional labels."""
             if labels:
                 self._summary.labels(**labels).observe(value)
             else:
@@ -89,13 +89,13 @@ class PrometheusMetricsFactory(MetricsFactory):
     # Dictionary to store created metrics by name.
     _metrics: ClassVar[dict[str, Counter | Gauge | Histogram | Summary]] = {}
 
+    @override
     def get_counter(
         self,
         name: str,
         description: str,
         label_names: Iterable[str] = (),
     ) -> Counter:
-        """Return a Prometheus-backed counter, creating it if absent."""
         if name not in self._metrics:
             self._metrics[name] = PrometheusMetricsFactory.Counter(
                 PrometheusCounter(name, description, labelnames=label_names),
@@ -106,13 +106,13 @@ class PrometheusMetricsFactory(MetricsFactory):
 
         return counter
 
+    @override
     def get_gauge(
         self,
         name: str,
         description: str,
         label_names: Iterable[str] = (),
     ) -> Gauge:
-        """Return a Prometheus-backed gauge, creating it if absent."""
         if name not in self._metrics:
             self._metrics[name] = PrometheusMetricsFactory.Gauge(
                 PrometheusGauge(name, description, labelnames=label_names),
@@ -123,13 +123,13 @@ class PrometheusMetricsFactory(MetricsFactory):
 
         return gauge
 
+    @override
     def get_histogram(
         self,
         name: str,
         description: str,
         label_names: Iterable[str] = (),
     ) -> Histogram:
-        """Return a Prometheus-backed histogram, creating it if absent."""
         if name not in self._metrics:
             self._metrics[name] = PrometheusMetricsFactory.Histogram(
                 PrometheusHistogram(name, description, labelnames=label_names),
@@ -140,13 +140,13 @@ class PrometheusMetricsFactory(MetricsFactory):
 
         return histogram
 
+    @override
     def get_summary(
         self,
         name: str,
         description: str,
         label_names: Iterable[str] = (),
     ) -> Summary:
-        """Return a Prometheus-backed summary, creating it if absent."""
         if name not in self._metrics:
             self._metrics[name] = PrometheusMetricsFactory.Summary(
                 PrometheusSummary(name, description, labelnames=label_names),
