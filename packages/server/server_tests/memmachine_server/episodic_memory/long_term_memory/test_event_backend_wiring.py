@@ -11,6 +11,7 @@ Verifies that add_episodes / search_scored / delete_episodes /
 drop_session_partition all dispatch correctly through the event backend.
 """
 
+import itertools
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import override
@@ -587,3 +588,157 @@ async def test_score_threshold_none_keeps_all_results_under_euclidean():
 
     scored = await ltm.search_scored("abc", num_episodes_limit=10)
     assert [ep.uid for _, ep in scored] == ["only"]
+
+
+def _timeline_episode(uid: str, content: str, minute: int) -> Episode:
+    return Episode(
+        uid=uid,
+        content=content,
+        session_key="sess1",
+        created_at=datetime(2026, 1, 15, 12, minute, tzinfo=UTC),
+        producer_id="alice",
+        producer_role="user",
+        sequence_num=0,
+    )
+
+
+@pytest.fixture
+def timeline_episodes() -> list[Episode]:
+    return [
+        _timeline_episode(f"tl-{index}", f"timeline message number {index}", index)
+        for index in range(7)
+    ]
+
+
+@pytest.fixture
+def timeline_storage(timeline_episodes) -> FakeEpisodeStorage:
+    return FakeEpisodeStorage({e.uid: e for e in timeline_episodes})
+
+
+@pytest.fixture
+def timeline_long_term_memory(
+    fake_embedder,
+    vector_store,
+    vector_store_collection,
+    segment_store,
+    segment_store_partition,
+    timeline_storage,
+) -> LongTermMemory:
+    return LongTermMemory(
+        EventBackendParams(
+            session_id="sess1",
+            vector_store=vector_store,
+            vector_store_collection=vector_store_collection,
+            vector_store_collection_namespace="long_term_memory",
+            segment_store=segment_store,
+            segment_store_partition=segment_store_partition,
+            partition_key="sess1",
+            episode_storage=timeline_storage,
+            embedder=fake_embedder,
+            segmenter=PassthroughSegmenter(),
+            deriver=WholeTextDeriver(),
+        ),
+    )
+
+
+async def test_expand_context_returns_timeline_neighbors(
+    timeline_long_term_memory,
+    timeline_episodes,
+):
+    """expand_context folds the matches' timeline-neighbor episodes into the
+    result, like the declarative backend does."""
+    await timeline_long_term_memory.add_episodes(timeline_episodes)
+
+    plain = await timeline_long_term_memory.search_scored(
+        "timeline message number 3",
+        num_episodes_limit=2,
+    )
+    expanded = await timeline_long_term_memory.search_scored(
+        "timeline message number 3",
+        num_episodes_limit=7,
+        expand_context=4,
+    )
+
+    plain_uids = {ep.uid for _, ep in plain}
+    expanded_uids = [ep.uid for _, ep in expanded]
+    # Expansion adds neighbor episodes beyond the plain matches.
+    assert len(expanded_uids) > len(plain_uids)
+    assert plain_uids <= set(expanded_uids)
+    # Every match's window is contiguous on the timeline: for each returned
+    # episode, at least one timeline neighbor is also returned (windows are
+    # 1 backward / 3 forward for expand_context=4).
+    indices = sorted(int(uid.split("-")[1]) for uid in expanded_uids)
+    assert any(b - a == 1 for a, b in itertools.pairwise(indices))
+    # Unified context is returned chronologically.
+    created = [ep.created_at for _, ep in expanded]
+    assert created == sorted(created)
+
+
+async def test_expand_context_fills_until_limit(
+    timeline_long_term_memory,
+    timeline_episodes,
+):
+    """The unified context never exceeds num_episodes_limit."""
+    await timeline_long_term_memory.add_episodes(timeline_episodes)
+
+    expanded = await timeline_long_term_memory.search_scored(
+        "timeline message number 3",
+        num_episodes_limit=3,
+        expand_context=6,
+    )
+    assert len(expanded) <= 3
+    assert len(expanded) == 3  # windows provide plenty to fill the quota
+
+
+def test_unify_takes_whole_contexts_while_they_fit():
+    unified = LongTermMemory._unify_scored_uid_contexts(
+        [
+            (0.9, "b", ["a", "b", "c"]),
+            (0.5, "e", ["d", "e"]),
+        ],
+        max_num_episodes=10,
+    )
+    assert unified == {"a": 0.9, "b": 0.9, "c": 0.9, "d": 0.5, "e": 0.5}
+
+
+def test_unify_overflow_prefers_nucleus_then_forward():
+    unified = LongTermMemory._unify_scored_uid_contexts(
+        [(0.9, "c", ["a", "b", "c", "d", "e"])],
+        max_num_episodes=3,
+    )
+    # Nucleus first, then forward neighbor, then next-forward beats backward
+    # at equal distance (forward recall preferred).
+    assert set(unified) == {"c", "d", "e"}
+
+
+def test_unify_first_window_keeps_the_score():
+    unified = LongTermMemory._unify_scored_uid_contexts(
+        [
+            (0.9, "b", ["a", "b"]),
+            (0.4, "a", ["a", "z"]),
+        ],
+        max_num_episodes=10,
+    )
+    assert unified["a"] == 0.9  # first (best) window wins
+    assert unified["z"] == 0.4
+
+
+def test_episode_uid_context_dedup_and_nucleus():
+    class _Seg:
+        def __init__(self, uuid, uid):
+            self.uuid = uuid
+            self.properties = {"_episode_uid": uid}
+
+    class _Ctx:
+        def __init__(self):
+            self.seed_segment_uuid = "s2"
+            self.segments = [
+                _Seg("s1", "e1"),
+                _Seg("s2", "e2"),
+                _Seg("s3", "e2"),
+                _Seg("s4", "e3"),
+            ]
+
+    nucleus, context = LongTermMemory._episode_uid_context(_Ctx())
+    assert nucleus == "e2"
+    assert context == ["e1", "e2", "e3"]
