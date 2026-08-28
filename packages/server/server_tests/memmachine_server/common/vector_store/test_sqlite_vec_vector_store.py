@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from memmachine_server.common.data_types import SimilarityMetric
@@ -1011,3 +1012,51 @@ class TestFilterEdgeCases:
         assert r1.uuid in uuids
         assert r3.uuid in uuids
         assert r2.uuid not in uuids
+
+
+# ── Collection incarnations ──
+
+INCARNATION_CONFIG = VectorStoreCollectionConfig(
+    vector_dimensions=VECTOR_DIM,
+    similarity_metric=SimilarityMetric.COSINE,
+)
+
+
+def test_table_names_carry_the_incarnation():
+    """Distinct incarnations must name distinct tables."""
+    assert (
+        SQLiteVecVectorStore._collection_prefix("ns", "nm", "abc")
+        == "vector_store_sqlite_vec_2_ns_2_nm_abc"
+    )
+    assert SQLiteVecVectorStore._collection_prefix(
+        "ns", "nm", "abc"
+    ) != SQLiteVecVectorStore._collection_prefix("ns", "nm", "def")
+
+
+class TestCollectionIncarnations:
+    """A handle must never reach a collection recreated under its name."""
+
+    @pytest.mark.asyncio
+    async def test_stale_handle_cannot_write_to_recreated_collection(self, store):
+        await store.create_collection(
+            namespace=NAMESPACE, name=NAME, config=INCARNATION_CONFIG
+        )
+        stale = await store.open_collection(namespace=NAMESPACE, name=NAME)
+        assert stale is not None
+        await stale.upsert(records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))])
+
+        await store.delete_collection(namespace=NAMESPACE, name=NAME)
+        await store.create_collection(
+            namespace=NAMESPACE, name=NAME, config=INCARNATION_CONFIG
+        )
+
+        resurrected = _make_record(vector=_normalize([0.0, 1.0, 0.0]))
+        with pytest.raises(OperationalError):
+            await stale.upsert(records=[resurrected])
+
+        fresh = await store.open_collection(namespace=NAMESPACE, name=NAME)
+        assert fresh is not None
+        results = await fresh.query(
+            query_vectors=[_normalize([0.0, 1.0, 0.0])], limit=10
+        )
+        assert not results[0].matches

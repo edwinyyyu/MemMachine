@@ -11,7 +11,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import override
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import numpy as np
 from pydantic import BaseModel, Field, InstanceOf, JsonValue, field_validator
@@ -96,6 +96,11 @@ class _CollectionRow(BaseSQLiteVectorStore):
     index_saved: MappedColumn[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    # Distinguishes incarnations of one (namespace, name).
+    # Native resource names embed it, so a handle held across a deletion
+    # addresses the resources of the incarnation it was opened on
+    # rather than those of the collection that replaces it.
+    incarnation: MappedColumn[str] = mapped_column(String(32), nullable=False)
 
 
 class _PendingOperationRow(BaseSQLiteVectorStore):
@@ -130,6 +135,7 @@ class _PendingOperationRow(BaseSQLiteVectorStore):
     )  # "upsert" or "delete"
     vector: MappedColumn[bytes | None] = mapped_column(LargeBinary, nullable=True)
     applied: MappedColumn[bool] = mapped_column(Boolean, nullable=False, default=False)
+    incarnation: MappedColumn[str] = mapped_column(String(32), nullable=False)
 
 
 async def _save_collection_index(
@@ -137,6 +143,7 @@ async def _save_collection_index(
     create_session: async_sessionmaker[AsyncSession],
     namespace: str,
     name: str,
+    incarnation: str,
     search_engine: VectorSearchEngine,
     path: str,
 ) -> None:
@@ -150,6 +157,7 @@ async def _save_collection_index(
             delete(_PendingOperationRow).where(
                 _PendingOperationRow.namespace == namespace,
                 _PendingOperationRow.name == name,
+                _PendingOperationRow.incarnation == incarnation,
                 _PendingOperationRow.applied.is_(True),
             )
         )
@@ -158,6 +166,7 @@ async def _save_collection_index(
             .where(
                 _CollectionRow.namespace == namespace,
                 _CollectionRow.name == name,
+                _CollectionRow.incarnation == incarnation,
                 _CollectionRow.index_saved.is_(False),
             )
             .values(index_saved=True)
@@ -223,6 +232,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         search_engine: VectorSearchEngine,
         namespace: str,
         name: str,
+        incarnation: str,
         config: VectorStoreCollectionConfig,
         index_path: str | None,
         save_threshold: int,
@@ -235,6 +245,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
 
         self._namespace = namespace
         self._name = name
+        self._incarnation = incarnation
 
         self._config = config
 
@@ -257,6 +268,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                     select(func.count()).where(
                         _PendingOperationRow.namespace == self._namespace,
                         _PendingOperationRow.name == self._name,
+                        _PendingOperationRow.incarnation == self._incarnation,
                         _PendingOperationRow.applied.is_(True),
                     )
                 )
@@ -267,6 +279,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                 create_session=self._create_session,
                 namespace=self._namespace,
                 name=self._name,
+                incarnation=self._incarnation,
                 search_engine=self._search_engine,
                 path=self._index_path,
             )
@@ -318,6 +331,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                     "operation_type": "upsert",
                     "vector": np.array(record.vector, dtype=np.float32).tobytes(),
                     "applied": False,
+                    "incarnation": self._incarnation,
                 }
                 for record in records
             ]
@@ -330,6 +344,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                             "operation_type": upsert_pending_operation.excluded.operation_type,
                             "vector": upsert_pending_operation.excluded.vector,
                             "applied": upsert_pending_operation.excluded.applied,
+                            "incarnation": upsert_pending_operation.excluded.incarnation,
                         },
                     ),
                     pending_operation_values,
@@ -359,6 +374,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                     .where(
                         _PendingOperationRow.namespace == self._namespace,
                         _PendingOperationRow.name == self._name,
+                        _PendingOperationRow.incarnation == self._incarnation,
                         _PendingOperationRow.record_row_id.in_(
                             list(engine_vectors.keys())
                         ),
@@ -563,6 +579,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                     set_={
                         "operation_type": upsert_pending_operation.excluded.operation_type,
                         "applied": upsert_pending_operation.excluded.applied,
+                        "incarnation": upsert_pending_operation.excluded.incarnation,
                     },
                 ),
                 [
@@ -572,6 +589,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                         "record_row_id": record_row_id,
                         "operation_type": "delete",
                         "applied": False,
+                        "incarnation": self._incarnation,
                     }
                     for record_row_id in record_row_ids
                 ],
@@ -590,6 +608,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                 .where(
                     _PendingOperationRow.namespace == self._namespace,
                     _PendingOperationRow.name == self._name,
+                    _PendingOperationRow.incarnation == self._incarnation,
                     _PendingOperationRow.record_row_id.in_(record_row_ids),
                     _PendingOperationRow.applied.is_(False),
                 )
@@ -681,7 +700,7 @@ class SQLiteVectorStore(VectorStore):
         self._create_session = async_sessionmaker(
             self._sqlalchemy_engine, expire_on_commit=False
         )
-        self._search_engines: dict[tuple[str, str], VectorSearchEngine] = {}
+        self._search_engines: dict[tuple[str, str, str], VectorSearchEngine] = {}
         self._sa_metadata = MetaData()
 
         self._sync_sqlalchemy_engine = create_engine(
@@ -731,27 +750,42 @@ class SQLiteVectorStore(VectorStore):
         if not pending_operations:
             return
 
-        operations_by_collection: dict[tuple[str, str], list[_PendingOperationRow]] = (
-            defaultdict(list)
-        )
+        operations_by_collection: dict[
+            tuple[str, str, str], list[_PendingOperationRow]
+        ] = defaultdict(list)
         for operation in pending_operations:
-            operations_by_collection[(operation.namespace, operation.name)].append(
-                operation
+            operations_by_collection[
+                (operation.namespace, operation.name, operation.incarnation)
+            ].append(operation)
+
+        for (
+            namespace,
+            name,
+            incarnation,
+        ), operations in operations_by_collection.items():
+            await self._replay_collection_operations(
+                namespace, name, incarnation, operations
             )
 
-        for (namespace, name), operations in operations_by_collection.items():
-            await self._replay_collection_operations(namespace, name, operations)
-
     async def _replay_collection_operations(
-        self, namespace: str, name: str, operations: Iterable[_PendingOperationRow]
+        self,
+        namespace: str,
+        name: str,
+        incarnation: str,
+        operations: Iterable[_PendingOperationRow],
     ) -> None:
         async with self._create_session() as session:
-            config = await self._get_stored_config(session, namespace, name)
-        if config is None:
+            stored = await self._get_stored_collection(session, namespace, name)
+        if stored is None:
+            return
+        config, current_incarnation = stored
+        if incarnation != current_incarnation:
+            # Left by a handle to a deleted incarnation;
+            # replaying them would resurrect its records here.
             return
 
         search_engine = await self._get_or_create_vector_search_engine(
-            namespace, name, config
+            namespace, name, incarnation, config
         )
 
         upserted_vectors: dict[int, list[float]] = {}
@@ -777,6 +811,7 @@ class SQLiteVectorStore(VectorStore):
                 .where(
                     _PendingOperationRow.namespace == namespace,
                     _PendingOperationRow.name == name,
+                    _PendingOperationRow.incarnation == incarnation,
                     _PendingOperationRow.record_row_id.in_(all_row_ids),
                 )
                 .values(applied=True)
@@ -786,13 +821,18 @@ class SQLiteVectorStore(VectorStore):
     async def shutdown(self) -> None:
         self._require_started()
         if self._index_directory is not None:
-            for (namespace, name), search_engine in self._search_engines.items():
-                path = self._index_path(namespace, name)
+            for (
+                namespace,
+                name,
+                incarnation,
+            ), search_engine in self._search_engines.items():
+                path = self._index_path(namespace, name, incarnation)
                 assert path is not None
                 await _save_collection_index(
                     create_session=self._create_session,
                     namespace=namespace,
                     name=name,
+                    incarnation=incarnation,
                     search_engine=search_engine,
                     path=str(path),
                 )
@@ -811,17 +851,19 @@ class SQLiteVectorStore(VectorStore):
         if not validate_identifier(namespace) or not validate_identifier(name):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
 
+        incarnation = uuid4().hex
         async with self._create_session() as session, session.begin():
-            existing_config = await self._get_stored_config(session, namespace, name)
-            if existing_config is not None:
+            if await self._get_stored_collection(session, namespace, name) is not None:
                 raise VectorStoreCollectionAlreadyExistsError(namespace, name)
 
-            self._clear_search_engine_state(namespace, name)
-            await self._ensure_collection_resources(session, namespace, name, config)
+            await self._ensure_collection_resources(
+                session, namespace, name, incarnation, config
+            )
             session.add(
                 _CollectionRow(
                     namespace=namespace,
                     name=name,
+                    incarnation=incarnation,
                     config_json=config.model_dump(mode="json"),
                 )
             )
@@ -838,18 +880,18 @@ class SQLiteVectorStore(VectorStore):
         if not validate_identifier(namespace) or not validate_identifier(name):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
 
-        index_path = self._index_path(namespace, name)
-
         async with self._create_session() as session, session.begin():
-            existing_config = await self._get_stored_config(session, namespace, name)
-            if existing_config is not None:
+            stored = await self._get_stored_collection(session, namespace, name)
+            if stored is not None:
+                existing_config, incarnation = stored
                 if existing_config != config:
                     raise VectorStoreCollectionConfigMismatchError(
                         namespace, name, existing_config, config
                     )
                 records_table, search_engine = await self._ensure_collection_resources(
-                    session, namespace, name, existing_config
+                    session, namespace, name, incarnation, existing_config
                 )
+                index_path = self._index_path(namespace, name, incarnation)
                 return SQLiteVectorStoreCollection(
                     create_session=self._create_session,
                     sync_sqlalchemy_engine=self._sync_sqlalchemy_engine,
@@ -857,23 +899,26 @@ class SQLiteVectorStore(VectorStore):
                     search_engine=search_engine,
                     namespace=namespace,
                     name=name,
+                    incarnation=incarnation,
                     config=existing_config,
                     index_path=str(index_path) if index_path is not None else None,
                     save_threshold=self._save_threshold,
                 )
 
-            self._clear_search_engine_state(namespace, name)
+            incarnation = uuid4().hex
             records_table, search_engine = await self._ensure_collection_resources(
-                session, namespace, name, config
+                session, namespace, name, incarnation, config
             )
             session.add(
                 _CollectionRow(
                     namespace=namespace,
                     name=name,
+                    incarnation=incarnation,
                     config_json=config.model_dump(mode="json"),
                 )
             )
 
+        index_path = self._index_path(namespace, name, incarnation)
         return SQLiteVectorStoreCollection(
             create_session=self._create_session,
             sync_sqlalchemy_engine=self._sync_sqlalchemy_engine,
@@ -881,6 +926,7 @@ class SQLiteVectorStore(VectorStore):
             search_engine=search_engine,
             namespace=namespace,
             name=name,
+            incarnation=incarnation,
             config=config,
             index_path=str(index_path) if index_path is not None else None,
             save_threshold=self._save_threshold,
@@ -898,16 +944,17 @@ class SQLiteVectorStore(VectorStore):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
 
         async with self._create_session() as session:
-            existing = await self._get_stored_config(session, namespace, name)
-        if existing is None:
+            stored = await self._get_stored_collection(session, namespace, name)
+        if stored is None:
             return None
+        existing, incarnation = stored
 
-        records_table = self._records_table(namespace, name)
+        records_table = self._records_table(namespace, name, incarnation)
         search_engine = await self._get_or_create_vector_search_engine(
-            namespace, name, existing
+            namespace, name, incarnation, existing
         )
 
-        index_path = self._index_path(namespace, name)
+        index_path = self._index_path(namespace, name, incarnation)
         return SQLiteVectorStoreCollection(
             create_session=self._create_session,
             sync_sqlalchemy_engine=self._sync_sqlalchemy_engine,
@@ -915,6 +962,7 @@ class SQLiteVectorStore(VectorStore):
             search_engine=search_engine,
             namespace=namespace,
             name=name,
+            incarnation=incarnation,
             config=existing,
             index_path=str(index_path) if index_path is not None else None,
             save_threshold=self._save_threshold,
@@ -931,11 +979,12 @@ class SQLiteVectorStore(VectorStore):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
 
         async with self._create_session() as session:
-            existing = await self._get_stored_config(session, namespace, name)
-        if existing is None:
+            stored = await self._get_stored_collection(session, namespace, name)
+        if stored is None:
             return
+        _, incarnation = stored
 
-        records_table = self._records_table(namespace, name)
+        records_table = self._records_table(namespace, name, incarnation)
         async with self._create_session() as session, session.begin():
             connection = await session.connection()
             await connection.run_sync(
@@ -951,24 +1000,33 @@ class SQLiteVectorStore(VectorStore):
 
         self._sa_metadata.remove(records_table)
 
-        # If unlink fails, the orphan is harmless.
-        # _clear_search_engine_state will clean it up if a new collection with the same name is created.
-        index_path = self._index_path(namespace, name)
-        if index_path is not None and index_path.exists():
-            index_path.unlink()
-        self._search_engines.pop((namespace, name), None)
+        # If unlink fails, the orphan is harmless:
+        # the next collection of this name gets a fresh incarnation
+        # and therefore a different index path.
+        self._clear_search_engine_state(namespace, name, incarnation)
 
     # Helpers.
 
     @staticmethod
-    def _collection_prefix(namespace: str, name: str) -> str:
-        """Unique prefix for a logical collection's native resources."""
-        return f"vector_store_sqlite_{len(namespace)}_{namespace}_{len(name)}_{name}"
+    def _collection_prefix(namespace: str, name: str, incarnation: str) -> str:
+        """
+        Unique prefix for one incarnation of a logical collection.
 
-    def _records_table(self, namespace: str, name: str) -> Table:
+        The incarnation is appended so that deleting and recreating a
+        collection yields differently named resources, leaving a handle
+        opened on the previous incarnation addressing dropped tables.
+        Collections predating incarnations carry an empty one and keep
+        their original names.
+        """
+        return (
+            f"vector_store_sqlite_{len(namespace)}_{namespace}"
+            f"_{len(name)}_{name}_{incarnation}"
+        )
+
+    def _records_table(self, namespace: str, name: str, incarnation: str) -> Table:
         """Get or create a SQLAlchemy Table for a per-collection records table."""
         return Table(
-            f"{self._collection_prefix(namespace, name)}_rc",
+            f"{self._collection_prefix(namespace, name, incarnation)}_rc",
             self._sa_metadata,
             Column("row_id", Integer, primary_key=True, autoincrement=True),
             Column("uuid", Uuid, nullable=False, unique=True),
@@ -976,44 +1034,51 @@ class SQLiteVectorStore(VectorStore):
             extend_existing=True,
         )
 
-    def _index_path(self, namespace: str, name: str) -> Path | None:
+    def _index_path(self, namespace: str, name: str, incarnation: str) -> Path | None:
         """Return the on-disk index path for a collection, or None if in-memory."""
         if self._index_directory is None:
             return None
-        return self._index_directory / f"{self._collection_prefix(namespace, name)}.idx"
+        prefix = self._collection_prefix(namespace, name, incarnation)
+        return self._index_directory / f"{prefix}.idx"
 
-    def _clear_search_engine_state(self, namespace: str, name: str) -> None:
+    def _clear_search_engine_state(
+        self, namespace: str, name: str, incarnation: str
+    ) -> None:
         """Remove any in-memory engine and on-disk index for a collection."""
-        self._search_engines.pop((namespace, name), None)
-        index_path = self._index_path(namespace, name)
+        self._search_engines.pop((namespace, name, incarnation), None)
+        index_path = self._index_path(namespace, name, incarnation)
         if index_path is not None and index_path.exists():
             index_path.unlink()
 
-    async def _get_stored_config(
+    async def _get_stored_collection(
         self,
         session: AsyncSession,
         namespace: str,
         name: str,
-    ) -> VectorStoreCollectionConfig | None:
+    ) -> tuple[VectorStoreCollectionConfig, str] | None:
+        """Get a collection's stored config and incarnation."""
         row = (
             await session.execute(
-                select(_CollectionRow.config_json).where(
+                select(_CollectionRow.config_json, _CollectionRow.incarnation).where(
                     _CollectionRow.namespace == namespace,
                     _CollectionRow.name == name,
                 )
             )
-        ).scalar_one_or_none()
+        ).one_or_none()
         if row is None:
             return None
-        return VectorStoreCollectionConfig.model_validate(row)
+        return VectorStoreCollectionConfig.model_validate(
+            row.config_json
+        ), row.incarnation
 
     async def _get_or_create_vector_search_engine(
         self,
         namespace: str,
         name: str,
+        incarnation: str,
         config: VectorStoreCollectionConfig,
     ) -> VectorSearchEngine:
-        cache_key = (namespace, name)
+        cache_key = (namespace, name, incarnation)
         if cache_key in self._search_engines:
             return self._search_engines[cache_key]
 
@@ -1021,7 +1086,7 @@ class SQLiteVectorStore(VectorStore):
             config.vector_dimensions, config.similarity_metric
         )
 
-        index_path = self._index_path(namespace, name)
+        index_path = self._index_path(namespace, name, incarnation)
         if index_path is not None:
             async with self._create_session() as session:
                 saved = (
@@ -1029,6 +1094,7 @@ class SQLiteVectorStore(VectorStore):
                         select(_CollectionRow.index_saved).where(
                             _CollectionRow.namespace == namespace,
                             _CollectionRow.name == name,
+                            _CollectionRow.incarnation == incarnation,
                         )
                     )
                 ).scalar_one_or_none()
@@ -1049,11 +1115,12 @@ class SQLiteVectorStore(VectorStore):
         session: AsyncSession,
         namespace: str,
         name: str,
+        incarnation: str,
         config: VectorStoreCollectionConfig,
     ) -> tuple[Table, VectorSearchEngine]:
-        records_table = self._records_table(namespace, name)
+        records_table = self._records_table(namespace, name, incarnation)
         search_engine = await self._get_or_create_vector_search_engine(
-            namespace, name, config
+            namespace, name, incarnation, config
         )
 
         connection = await session.connection()

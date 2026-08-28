@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from memmachine_server.common.data_types import SimilarityMetric
@@ -1480,6 +1481,91 @@ class TestIndexFileDurability:
             query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=10
         )
         assert len(results[0].matches) == 2
+
+        await store2.shutdown()
+        await engine2.dispose()
+
+
+# ── Collection incarnations ──
+
+
+def test_resource_names_carry_the_incarnation():
+    """Distinct incarnations must name distinct resources."""
+    assert (
+        SQLiteVectorStore._collection_prefix("ns", "nm", "abc")
+        == "vector_store_sqlite_2_ns_2_nm_abc"
+    )
+    assert SQLiteVectorStore._collection_prefix(
+        "ns", "nm", "abc"
+    ) != SQLiteVectorStore._collection_prefix("ns", "nm", "def")
+
+
+class TestCollectionIncarnations:
+    """A handle must never reach a collection recreated under its name."""
+
+    @pytest.mark.asyncio
+    async def test_stale_handle_cannot_write_to_recreated_collection(self, store):
+        await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+        stale = await store.open_collection(namespace=NAMESPACE, name=NAME)
+        assert stale is not None
+        await stale.upsert(records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))])
+
+        await store.delete_collection(namespace=NAMESPACE, name=NAME)
+        await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+
+        resurrected = _make_record(vector=_normalize([0.0, 1.0, 0.0]))
+        with pytest.raises(OperationalError):
+            await stale.upsert(records=[resurrected])
+
+        fresh = await store.open_collection(namespace=NAMESPACE, name=NAME)
+        assert fresh is not None
+        results = await fresh.query(
+            query_vectors=[_normalize([0.0, 1.0, 0.0])], limit=10
+        )
+        assert not results[0].matches
+
+    @pytest.mark.asyncio
+    async def test_stale_handle_does_not_clobber_recreated_index(self, tmp_path):
+        db_path = tmp_path / "test.db"
+        store, engine = await _fresh_store(db_path, tmp_path, save_threshold=1)
+        await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+        stale = await store.open_collection(namespace=NAMESPACE, name=NAME)
+        assert stale is not None
+        await stale.upsert(records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))])
+
+        await store.delete_collection(namespace=NAMESPACE, name=NAME)
+        await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+        fresh = await store.open_collection(namespace=NAMESPACE, name=NAME)
+        assert fresh is not None
+        kept = _make_record(vector=_normalize([0.0, 0.0, 1.0]))
+        await fresh.upsert(records=[kept])
+
+        index_directory = tmp_path / "indexes"
+        before = {
+            path.name: path.read_bytes() for path in index_directory.glob("*.idx")
+        }
+
+        resurrected = _make_record(vector=_normalize([0.0, 1.0, 0.0]))
+        with pytest.raises(OperationalError):
+            await stale.upsert(records=[resurrected])
+
+        after = {path.name: path.read_bytes() for path in index_directory.glob("*.idx")}
+        assert after == before
+
+        # Dispose without shutdown: a clean shutdown would rewrite the index
+        # from the live engine and hide a clobbered file.
+        await engine.dispose()
+
+        store2, engine2 = await _fresh_store(db_path, tmp_path, save_threshold=1)
+        collection = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        assert collection is not None
+        results = await collection.query(
+            query_vectors=[_normalize([0.0, 0.0, 1.0]), _normalize([0.0, 1.0, 0.0])],
+            limit=10,
+        )
+        uuids = {match.record.uuid for result in results for match in result.matches}
+        assert kept.uuid in uuids
+        assert resurrected.uuid not in uuids
 
         await store2.shutdown()
         await engine2.dispose()

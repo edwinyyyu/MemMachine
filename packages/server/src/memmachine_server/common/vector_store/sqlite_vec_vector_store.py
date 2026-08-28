@@ -9,7 +9,7 @@ since sqlite-vec ANN indexes may not support them.
 import struct
 from collections.abc import Iterable, Mapping, Sequence
 from typing import ClassVar, override
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import aiosqlite
 import sqlite_vec
@@ -65,6 +65,11 @@ class _CollectionRow(BaseSQLiteVecVectorStore):
     config_json: MappedColumn[dict[str, JsonValue]] = mapped_column(
         JSON, nullable=False
     )
+    # Distinguishes incarnations of one (namespace, name).
+    # Table names embed it, so a handle held across a deletion
+    # addresses the tables of the incarnation it was opened on
+    # rather than those of the collection that replaces it.
+    incarnation: MappedColumn[str] = mapped_column(String(32), nullable=False)
 
 
 class SQLiteVecVectorStoreCollection(VectorStoreCollection):
@@ -490,7 +495,6 @@ class SQLiteVecVectorStore(VectorStore):
         async with self._engine.begin() as connection:
             await connection.run_sync(BaseSQLiteVecVectorStore.metadata.create_all)
 
-    @override
     async def shutdown(self) -> None:
         pass
 
@@ -506,16 +510,19 @@ class SQLiteVecVectorStore(VectorStore):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
         self._validate_metric(config.similarity_metric)
 
+        incarnation = uuid4().hex
         async with self._create_session() as session, session.begin():
-            existing_config = await self._get_stored_config(session, namespace, name)
-            if existing_config is not None:
+            if await self._get_stored_collection(session, namespace, name) is not None:
                 raise VectorStoreCollectionAlreadyExistsError(namespace, name)
 
-            await self._ensure_collection_tables(session, namespace, name, config)
+            await self._ensure_collection_tables(
+                session, namespace, name, incarnation, config
+            )
             session.add(
                 _CollectionRow(
                     namespace=namespace,
                     name=name,
+                    incarnation=incarnation,
                     config_json=config.model_dump(mode="json"),
                 )
             )
@@ -533,15 +540,16 @@ class SQLiteVecVectorStore(VectorStore):
         self._validate_metric(config.similarity_metric)
 
         async with self._create_session() as session, session.begin():
-            existing_config = await self._get_stored_config(session, namespace, name)
-            if existing_config is not None:
+            stored = await self._get_stored_collection(session, namespace, name)
+            if stored is not None:
+                existing_config, incarnation = stored
                 if existing_config != config:
                     raise VectorStoreCollectionConfigMismatchError(
                         namespace, name, existing_config, config
                     )
 
                 records_table, vector_table_name = await self._ensure_collection_tables(
-                    session, namespace, name, existing_config
+                    session, namespace, name, incarnation, existing_config
                 )
                 return SQLiteVecVectorStoreCollection(
                     create_session=self._create_session,
@@ -550,13 +558,15 @@ class SQLiteVecVectorStore(VectorStore):
                     vector_table_name=vector_table_name,
                 )
 
+            incarnation = uuid4().hex
             records_table, vector_table_name = await self._ensure_collection_tables(
-                session, namespace, name, config
+                session, namespace, name, incarnation, config
             )
             session.add(
                 _CollectionRow(
                     namespace=namespace,
                     name=name,
+                    incarnation=incarnation,
                     config_json=config.model_dump(mode="json"),
                 )
             )
@@ -576,12 +586,13 @@ class SQLiteVecVectorStore(VectorStore):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
 
         async with self._create_session() as session:
-            existing = await self._get_stored_config(session, namespace, name)
-        if existing is None:
+            stored = await self._get_stored_collection(session, namespace, name)
+        if stored is None:
             return None
+        existing, incarnation = stored
 
-        records_table = self._records_table(namespace, name)
-        vector_table_name = self._vector_table_name(namespace, name)
+        records_table = self._records_table(namespace, name, incarnation)
+        vector_table_name = self._vector_table_name(namespace, name, incarnation)
         return SQLiteVecVectorStoreCollection(
             create_session=self._create_session,
             config=existing,
@@ -599,12 +610,13 @@ class SQLiteVecVectorStore(VectorStore):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
 
         async with self._create_session() as session, session.begin():
-            existing = await self._get_stored_config(session, namespace, name)
-            if existing is None:
+            stored = await self._get_stored_collection(session, namespace, name)
+            if stored is None:
                 return
+            _, incarnation = stored
 
-            records_table = self._records_table(namespace, name)
-            vector_table_name = self._vector_table_name(namespace, name)
+            records_table = self._records_table(namespace, name, incarnation)
+            vector_table_name = self._vector_table_name(namespace, name, incarnation)
 
             await session.execute(text(f"DROP TABLE IF EXISTS [{vector_table_name}]"))
             await session.execute(text(f"DROP TABLE IF EXISTS [{records_table.name}]"))
@@ -621,18 +633,28 @@ class SQLiteVecVectorStore(VectorStore):
     # Helpers.
 
     @staticmethod
-    def _collection_prefix(namespace: str, name: str) -> str:
+    def _collection_prefix(namespace: str, name: str, incarnation: str) -> str:
+        """
+        Unique prefix for one incarnation of a logical collection.
+
+        The incarnation is appended so that deleting and recreating a
+        collection yields differently named tables, leaving a handle
+        opened on the previous incarnation addressing dropped tables.
+        Collections predating incarnations carry an empty one and keep
+        their original names.
+        """
         return (
-            f"vector_store_sqlite_vec_{len(namespace)}_{namespace}_{len(name)}_{name}"
+            f"vector_store_sqlite_vec_{len(namespace)}_{namespace}"
+            f"_{len(name)}_{name}_{incarnation}"
         )
 
     @staticmethod
-    def _records_table_name(namespace: str, name: str) -> str:
-        return f"{SQLiteVecVectorStore._collection_prefix(namespace, name)}_rc"
+    def _records_table_name(namespace: str, name: str, incarnation: str) -> str:
+        return f"{SQLiteVecVectorStore._collection_prefix(namespace, name, incarnation)}_rc"
 
     @staticmethod
-    def _vector_table_name(namespace: str, name: str) -> str:
-        return f"{SQLiteVecVectorStore._collection_prefix(namespace, name)}_vc"
+    def _vector_table_name(namespace: str, name: str, incarnation: str) -> str:
+        return f"{SQLiteVecVectorStore._collection_prefix(namespace, name, incarnation)}_vc"
 
     @staticmethod
     def _validate_metric(similarity_metric: SimilarityMetric) -> None:
@@ -649,24 +671,27 @@ class SQLiteVecVectorStore(VectorStore):
                 f"got {similarity_metric.value!r}"
             )
 
-    async def _get_stored_config(
+    async def _get_stored_collection(
         self, session: AsyncSession, namespace: str, name: str
-    ) -> VectorStoreCollectionConfig | None:
-        stored_config = (
+    ) -> tuple[VectorStoreCollectionConfig, str] | None:
+        """Get a collection's stored config and incarnation."""
+        row = (
             await session.execute(
-                select(_CollectionRow.config_json).where(
+                select(_CollectionRow.config_json, _CollectionRow.incarnation).where(
                     _CollectionRow.namespace == namespace,
                     _CollectionRow.name == name,
                 )
             )
-        ).scalar_one_or_none()
-        if stored_config is None:
+        ).one_or_none()
+        if row is None:
             return None
-        return VectorStoreCollectionConfig.model_validate(stored_config)
+        return VectorStoreCollectionConfig.model_validate(
+            row.config_json
+        ), row.incarnation
 
-    def _records_table(self, namespace: str, name: str) -> Table:
+    def _records_table(self, namespace: str, name: str, incarnation: str) -> Table:
         return Table(
-            self._records_table_name(namespace, name),
+            self._records_table_name(namespace, name, incarnation),
             self._sa_metadata,
             Column("rowid", Integer, primary_key=True, autoincrement=True),
             Column("uuid", Uuid, nullable=False, unique=True),
@@ -679,10 +704,11 @@ class SQLiteVecVectorStore(VectorStore):
         session: AsyncSession,
         namespace: str,
         name: str,
+        incarnation: str,
         config: VectorStoreCollectionConfig,
     ) -> tuple[Table, str]:
-        records_table = self._records_table(namespace, name)
-        vector_table_name = self._vector_table_name(namespace, name)
+        records_table = self._records_table(namespace, name, incarnation)
+        vector_table_name = self._vector_table_name(namespace, name, incarnation)
         distance_metric_value = self._SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE[
             config.similarity_metric
         ]
