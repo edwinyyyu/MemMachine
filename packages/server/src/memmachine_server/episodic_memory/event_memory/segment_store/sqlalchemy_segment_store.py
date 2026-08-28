@@ -929,6 +929,13 @@ class SQLAlchemySegmentStore(SegmentStore):
             self._tracker("delete_partition"),
             self._engine.begin() as connection,
         ):
+            if self._is_postgresql:
+                # Same lock the create paths take, acquired first, so a
+                # concurrent create and delete cannot reach the two parent
+                # tables in opposite order and deadlock.
+                await connection.execute(
+                    SQLAlchemySegmentStore._PG_LOCK_PARTITIONS_TABLE
+                )
             if not self._is_sqlite:
                 # Exclusive lock on the partition row blocks concurrent writes
                 # (which hold shared locks) until deletion completes.
@@ -1065,12 +1072,26 @@ class SQLAlchemySegmentStore(SegmentStore):
     async def _drop_pg_child_tables(
         connection: AsyncConnection, partition_key: str
     ) -> None:
-        """Drop PostgreSQL child partition tables for the given key."""
-        derivative_links_child = f'"segment_store_dv_ln_p_{partition_key}"'
-        segments_child = f'"segment_store_sg_p_{partition_key}"'
+        """
+        Drop PostgreSQL child partition tables for the given key.
 
-        # CASCADE drops cross-partition FK constraint dependencies.
-        await connection.execute(
-            text(f"DROP TABLE IF EXISTS {derivative_links_child} CASCADE")
+        Each child is detached before it is dropped.
+        Dropping a child while it is still attached requires CASCADE,
+        which drops the foreign key
+        between segment_store_dv_ln and segment_store_sg
+        for every partition rather than only this one.
+        """
+        children = (
+            ("segment_store_dv_ln", f"segment_store_dv_ln_p_{partition_key}"),
+            ("segment_store_sg", f"segment_store_sg_p_{partition_key}"),
         )
-        await connection.execute(text(f"DROP TABLE IF EXISTS {segments_child} CASCADE"))
+        for parent, child in children:
+            child_exists = await connection.scalar(
+                text("SELECT to_regclass(:child)"), {"child": child}
+            )
+            if child_exists is None:
+                continue
+            await connection.execute(
+                text(f'ALTER TABLE {parent} DETACH PARTITION "{child}"')
+            )
+            await connection.execute(text(f'DROP TABLE "{child}"'))

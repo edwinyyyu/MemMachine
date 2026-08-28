@@ -874,6 +874,31 @@ async def test_delete_partition_removes_data(store: SQLAlchemySegmentStore) -> N
 
 
 @pytest.mark.asyncio
+async def test_delete_partition_keeps_other_partitions_cascading(
+    store: SQLAlchemySegmentStore,
+) -> None:
+    """Deleting one partition must not disable the derivative-link cascade."""
+    keeper = await store.open_or_create_partition(
+        "keeper",
+        _plaintext_partition_config(),
+    )
+    await store.open_or_create_partition(
+        "doomed",
+        _plaintext_partition_config(),
+    )
+    segment = _seg()
+    derivative_uuid = uuid4()
+    await keeper.add_segments({segment: [derivative_uuid]})
+
+    await store.delete_partition("doomed")
+
+    # The foreign key from derivative links to segments must still cascade
+    # for the partitions that were not deleted.
+    await keeper.delete_segments([segment.uuid])
+    assert await keeper.get_derivative_uuids_by_segment_uuids([segment.uuid]) == {}
+
+
+@pytest.mark.asyncio
 async def test_delete_partition_cascades_segments(
     store: SQLAlchemySegmentStore,
 ) -> None:
