@@ -25,7 +25,6 @@ from sqlalchemy import (
     LargeBinary,
     MetaData,
     String,
-    Table,
     Uuid,
     delete,
     event,
@@ -52,7 +51,6 @@ from sqlalchemy.orm import (
     aliased,
     mapped_column,
 )
-from sqlalchemy.orm.util import AliasedClass
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -239,20 +237,16 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             # adapt_on_names: the child Table is a fresh object with no
             # lineage to the parent's columns, so the entity's attributes
             # must map onto it by column name.
-            self._segment_row: type[SegmentRow] | AliasedClass[SegmentRow] = aliased(
+            self._segment_row = aliased(
                 SegmentRow, segment_child_table, adapt_on_names=True
             )
-            self._derivative_link_row: (
-                type[DerivativeLinkRow] | AliasedClass[DerivativeLinkRow]
-            ) = aliased(
+            self._derivative_link_row = aliased(
                 DerivativeLinkRow, derivative_link_child_table, adapt_on_names=True
             )
             # insert()/delete() cannot target an aliased entity; they take
             # the child Table itself (or the ORM class on other dialects).
-            self._segment_dml_target: type[SegmentRow] | Table = segment_child_table
-            self._derivative_link_dml_target: type[DerivativeLinkRow] | Table = (
-                derivative_link_child_table
-            )
+            self._segment_dml_target = segment_child_table
+            self._derivative_link_dml_target = derivative_link_child_table
         else:
             self._segment_row = SegmentRow
             self._derivative_link_row = DerivativeLinkRow
