@@ -11,9 +11,27 @@ from weakref import WeakKeyDictionary
 
 import grpc
 import grpc.aio
+import httpx
 from pydantic import BaseModel, Field, InstanceOf
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
+
+try:  # orjson is optional; stdlib json is the fallback
+    import orjson as _fast_json
+
+    def _fast_dumps(obj: dict[str, object]) -> bytes:
+        return _fast_json.dumps(obj)
+
+    def _fast_loads(data: bytes) -> dict[str, object]:
+        return cast(dict[str, object], _fast_json.loads(data))
+except ImportError:  # pragma: no cover
+    import json as _std_json
+
+    def _fast_dumps(obj: dict[str, object]) -> bytes:
+        return _std_json.dumps(obj).encode()
+
+    def _fast_loads(data: bytes) -> dict[str, object]:
+        return cast(dict[str, object], _std_json.loads(data))
 
 from memmachine_server.common.data_types import (
     OrderedValue,
@@ -245,6 +263,127 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         self._partition_key = partition_key
         self._config = config
         self._shard_key = shard_key
+        # Direct-REST fast path for query(): bypasses qdrant-client's
+        # per-call model construction and type inspection. None = not yet
+        # probed; False = unavailable (fall back to qdrant-client forever).
+        self._fast_http: httpx.AsyncClient | bool | None = None
+        self._fast_partition_filter: dict[str, Any] | None = None
+
+    def _fast_rest_client(self) -> httpx.AsyncClient | None:
+        """Build (once) an httpx client for the direct-REST query fast path.
+
+        Reuses the qdrant-client's resolved REST URI and auth headers. Returns
+        None when the internals are not the expected shape (non-REST client,
+        library layout change) so query() falls back to qdrant-client.
+        """
+        if self._fast_http is False:
+            return None
+        if isinstance(self._fast_http, httpx.AsyncClient):
+            return self._fast_http
+        remote = getattr(self._client, "_client", None)
+        rest_uri = getattr(remote, "rest_uri", None)
+        headers = getattr(remote, "_rest_headers", None)
+        prefer_grpc = getattr(remote, "_prefer_grpc", False)
+        if not isinstance(rest_uri, str) or prefer_grpc:
+            self._fast_http = False
+            return None
+        self._fast_http = httpx.AsyncClient(
+            base_url=rest_uri,
+            headers=dict(headers) if isinstance(headers, dict) else None,
+            timeout=60,
+            limits=httpx.Limits(max_keepalive_connections=8),
+        )
+        return self._fast_http
+
+    async def _fast_query(
+        self,
+        query_vectors: list[list[float]],
+        limit: int,
+        score_threshold: float | None,
+        qdrant_filter: models.Filter,
+        return_vector: bool,
+        return_properties: bool,
+    ) -> list[QueryResult] | None:
+        """Run query() over direct REST.
+
+        Returns None on ANY failure so the caller falls back to the canonical
+        qdrant-client path (which also reproduces canonical error behavior).
+        """
+        http = self._fast_rest_client()
+        if http is None:
+            return None
+        if qdrant_filter is not self._partition_filter_model():
+            filter_dict = qdrant_filter.model_dump(exclude_none=True)
+        else:
+            if self._fast_partition_filter is None:
+                self._fast_partition_filter = qdrant_filter.model_dump(
+                    exclude_none=True
+                )
+            filter_dict = self._fast_partition_filter
+        search: dict[str, Any] = {
+            "limit": limit,
+            "filter": filter_dict,
+            "with_vector": return_vector,
+            "with_payload": return_properties,
+        }
+        if score_threshold is not None:
+            search["score_threshold"] = score_threshold
+        if self._shard_key is not None:
+            search["shard_key"] = self._shard_key
+        body = _fast_dumps(
+            {"searches": [{**search, "query": qv} for qv in query_vectors]}
+        )
+        try:
+            response = await http.post(
+                f"/collections/{self._collection_name}/points/query/batch",
+                content=body,
+                headers={"Content-Type": "application/json"},
+            )
+        except Exception:  # any transport failure -> canonical fallback below
+            return None
+        if response.status_code != 200:
+            return None
+        return self._fast_parse_results(
+            _fast_loads(response.content), return_vector, return_properties
+        )
+
+    def _fast_parse_results(
+        self,
+        payload: dict[str, object],
+        return_vector: bool,
+        return_properties: bool,
+    ) -> list[QueryResult]:
+        """Map a raw REST query/batch response onto QueryResults."""
+        query_results: list[QueryResult] = []
+        for batch in cast(list[dict[str, Any]], payload["result"]):
+            matches: list[QueryMatch] = []
+            for point in batch["points"]:
+                vector: list[float] | None = None
+                if return_vector and point.get("vector") is not None:
+                    vector = cast(list[float], point["vector"])
+                properties: dict[str, PropertyValue] | None = None
+                if return_properties and point.get("payload") is not None:
+                    properties = self._parse_payload(point["payload"])
+                matches.append(
+                    QueryMatch(
+                        score=point["score"],
+                        record=Record(
+                            uuid=UUID(str(point["id"])),
+                            vector=vector,
+                            properties=properties,
+                        ),
+                    ),
+                )
+            query_results.append(QueryResult(matches=matches))
+        return query_results
+
+    def _partition_filter_model(self) -> models.Filter:
+        """The (cached) partition-only filter model."""
+        cached = getattr(self, "_partition_filter_model_cache", None)
+        if cached is None:
+            cached = _partition_filter(self._partition_key)
+            self._partition_filter_model_cache = cached
+        return cached
 
     @property
     @override
@@ -349,7 +488,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
             if not query_vectors:
                 return []
 
-            partition_key_filter = _partition_filter(self._partition_key)
+            partition_key_filter = self._partition_filter_model()
             if property_filter:
                 if not validate_filter(property_filter):
                     raise ValueError("Filter contains an invalid property key")
@@ -361,6 +500,17 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                 )
             else:
                 qdrant_filter = partition_key_filter
+
+            fast_results = await self._fast_query(
+                query_vectors,
+                limit,
+                score_threshold,
+                qdrant_filter,
+                return_vector,
+                return_properties,
+            )
+            if fast_results is not None:
+                return fast_results
 
             requests = [
                 models.QueryRequest(

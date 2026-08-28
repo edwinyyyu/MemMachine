@@ -6,7 +6,7 @@ import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta, timezone
-from typing import override
+from typing import Any, override
 from uuid import UUID
 
 from pydantic import (
@@ -309,10 +309,105 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         if not seed_segment_uuids:
             return {}
 
-        async with (
-            self._tracker("get_segment_contexts"),
-            self._create_session() as session,
+        # Fast path for the search hot shape (seed fetch only, no property
+        # filter, PostgreSQL): raw asyncpg over the engine's own pool,
+        # bypassing session/ORM machinery. Any failure falls back to the
+        # canonical path below.
+        if (
+            max_backward_segments <= 0
+            and max_forward_segments <= 0
+            and property_filter is None
+            and not self._is_sqlite
         ):
+            async with self._tracker("get_segment_contexts"):
+                fast = await self._get_seed_segments_fast(seed_segment_uuids)
+                if fast is not None:
+                    return fast
+                return await self._get_segment_contexts_canonical(
+                    seed_segment_uuids,
+                    max_backward_segments,
+                    max_forward_segments,
+                    property_filter,
+                )
+
+        async with self._tracker("get_segment_contexts"):
+            return await self._get_segment_contexts_canonical(
+                seed_segment_uuids,
+                max_backward_segments,
+                max_forward_segments,
+                property_filter,
+            )
+
+    _FAST_SEED_SQL = (
+        'SELECT uuid, event_uuid, "index", "offset", timestamp, '
+        "timestamp_timezone_offset, context, block, properties "
+        "FROM segment_store_sg WHERE partition_key = $1 AND uuid = ANY($2::uuid[])"
+    )
+
+    async def _get_seed_segments_fast(
+        self,
+        seed_segment_uuids: set[UUID],
+    ) -> dict[UUID, list[Segment]] | None:
+        """Seed-only fetch via raw asyncpg on the engine's pooled connection.
+
+        Returns None on any failure so the caller can fall back to the
+        canonical SQLAlchemy path (which also reproduces canonical errors).
+        """
+        try:
+            async with self._engine.connect() as conn:
+                raw = await conn.get_raw_connection()
+                driver = raw.driver_connection
+                rows = await driver.fetch(
+                    SQLAlchemySegmentStorePartition._FAST_SEED_SQL,
+                    self._partition_key,
+                    list(seed_segment_uuids),
+                )
+        except Exception:  # any failure -> canonical fallback below
+            logger.debug("segment fast path failed; falling back", exc_info=True)
+            return None
+        return {
+            row["uuid"]: [self._segment_from_raw_row(row)] for row in rows
+        }
+
+    def _segment_from_raw_row(self, row: Mapping[str, Any]) -> Segment:
+        """Convert a raw asyncpg record into a Segment.
+
+        Mirrors _segment_from_segment_row exactly; asyncpg returns jsonb
+        as text, so properties may arrive as a string here.
+        """
+        context = decode_context(
+            json.loads(self._payload_codec.decode(row["context"]))
+        )
+        if context is None:
+            context = NullContext()
+        block = decode_block(json.loads(self._payload_codec.decode(row["block"])))
+        raw_properties = row["properties"]
+        if isinstance(raw_properties, str):
+            raw_properties = json.loads(raw_properties)
+        properties = decode_properties(raw_properties)
+        original_timezone = timezone(
+            timedelta(seconds=row["timestamp_timezone_offset"])
+        )
+        timestamp = ensure_tz_aware(row["timestamp"]).astimezone(original_timezone)
+        return Segment(
+            uuid=row["uuid"],
+            event_uuid=row["event_uuid"],
+            index=row["index"],
+            offset=row["offset"],
+            timestamp=timestamp,
+            context=context,
+            block=block,
+            properties=properties,
+        )
+
+    async def _get_segment_contexts_canonical(
+        self,
+        seed_segment_uuids: set[UUID],
+        max_backward_segments: int,
+        max_forward_segments: int,
+        property_filter: FilterExpr | None,
+    ) -> dict[UUID, list[Segment]]:
+        async with self._create_session() as session:
             seed_segments_query = select(SegmentRow).where(
                 SegmentRow.uuid.in_(seed_segment_uuids),
                 SegmentRow.partition_key == self._partition_key,
