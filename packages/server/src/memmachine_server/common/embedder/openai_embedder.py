@@ -240,15 +240,18 @@ class OpenAIEmbedder(Embedder):
         project = getattr(self._client, "project", None)
         if isinstance(project, str):
             headers["OpenAI-Project"] = project
+        # The canonical SDK allows up to 1000 concurrent connections; a small
+        # pool here would throttle a high-latency remote embedder relative to
+        # the canonical path.
         base = str(base_url)
         if base.startswith("http://"):
-            self._fast_http = RawHTTPPool(base, headers=headers)
+            self._fast_http = RawHTTPPool(base, headers=headers, max_connections=256)
         else:
             self._fast_http = httpx.AsyncClient(
                 base_url=base,
                 headers=headers,
                 timeout=60,
-                limits=httpx.Limits(max_keepalive_connections=8),
+                limits=httpx.Limits(max_connections=256, max_keepalive_connections=64),
             )
         return self._fast_http
 
