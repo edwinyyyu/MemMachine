@@ -46,22 +46,27 @@ def queries(n, seed):
     ]
 
 
-async def run_arm(name, thunks, c, json_out=""):
-    lat = []
-    idx = 0
+async def run_arm(name, thunks, c, json_out="", ramp=0.0):
+    # (done_offset_s, latency_s) per request; ramp staggers worker starts so
+    # an arm doesn't open c connections in one SYN burst (macOS drops SYNs
+    # beyond kern.ipc.somaxconn=128, stalling some connections for seconds).
+    recs = []
 
-    async def worker(items):
+    async def worker(i, items):
+        if ramp:
+            await asyncio.sleep(ramp * i / c)
         for t in items:
             s = time.perf_counter()
             await t()
-            lat.append(time.perf_counter() - s)
+            d = time.perf_counter()
+            recs.append((d - t0, d - s))
 
     chunks = [thunks[i::c] for i in range(c)]
     start_epoch = time.time()
     t0 = time.perf_counter()
-    await asyncio.gather(*(worker(ch) for ch in chunks))
+    await asyncio.gather(*(worker(i, ch) for i, ch in enumerate(chunks)))
     wall = time.perf_counter() - t0
-    ls = sorted(lat)
+    ls = sorted(r[1] for r in recs)
     n = len(ls)
     print(f"{name:<28} n={n:<5} {n / wall:7.1f}/s  mean {statistics.fmean(ls) * 1000:7.1f}  "
           f"p50 {ls[n // 2] * 1000:7.1f}  p95 {ls[int(n * .95)] * 1000:7.1f}  "
@@ -71,7 +76,7 @@ async def run_arm(name, thunks, c, json_out=""):
         with open(json_out, "a") as f:
             f.write(json.dumps({"name": name, "c": c, "n": n, "wall": wall,
                                 "start": start_epoch, "end": start_epoch + wall,
-                                "lat": ls}) + "\n")
+                                "ramp": ramp, "recs": recs}) + "\n")
 
 
 async def main():
@@ -86,6 +91,7 @@ async def main():
     p.add_argument("--base", default="")
     p.add_argument("--auth", default="")
     p.add_argument("--max-conns", type=int, default=64)
+    p.add_argument("--ramp", type=float, default=0.0)
     p.add_argument("--json-out", default="")
     p.add_argument("--skip-create", action="store_true")
     args = p.parse_args()
@@ -157,7 +163,7 @@ async def main():
             await q_thunk(i)()  # warmup
         for c in map(int, args.search_arms.split(",")):
             await run_arm(f"search c{c}", [q_thunk(i) for i in range(args.queries)], c,
-                          json_out=args.json_out)
+                          json_out=args.json_out, ramp=args.ramp)
             if transport_errors[0]:
                 print(f"transport errors (retried): {transport_errors[0]}",
                       flush=True)

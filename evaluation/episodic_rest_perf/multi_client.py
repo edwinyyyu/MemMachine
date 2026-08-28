@@ -26,6 +26,7 @@ async def main():
     ap.add_argument("--queries", type=int, required=True)
     ap.add_argument("--procs", type=int, default=0)
     ap.add_argument("--types", default="episodic")
+    ap.add_argument("--ramp", type=float, default=0.0)
     args = ap.parse_args()
 
     procs = args.procs or max(1, math.ceil(args.c / 64))
@@ -42,6 +43,7 @@ async def main():
             "--search-arms", str(per_c), "--queries", str(per_q),
             "--seed", str(100 + i), "--types", args.types,
             "--max-conns", str(per_c), "--json-out", out, "--skip-create",
+            "--ramp", str(args.ramp),
         ]))
 
     children = [
@@ -81,13 +83,22 @@ async def main():
     ends = [r["end"] for r in runs]
     window = max(ends) - min(starts)
     skew = (max(starts) - min(starts)) + (max(ends) - min(ends))
-    lat = sorted(x for r in runs for x in r["lat"])
+    lat = sorted(rec[1] for r in runs for rec in r["recs"])
     m = len(lat)
+    # Steady-state rate: completions inside [latest start + ramp + 2s,
+    # earliest end - 2s], excluding each child's ramp and tail drain.
+    lo = max(starts) + args.ramp + 2.0
+    hi = min(ends) - 2.0
+    steady = ""
+    if hi - lo >= 5.0:
+        k = sum(1 for r in runs for rec in r["recs"]
+                if lo <= r["start"] + rec[0] <= hi)
+        steady = f"  steady {k / (hi - lo):7.1f}/s"
     print(f"search c{args.c} ({procs}proc x c{per_c}) n={n:<6} "
           f"{n / window:7.1f}/s  mean {statistics.fmean(lat) * 1000:7.1f}  "
           f"p50 {lat[m // 2] * 1000:7.1f}  p95 {lat[int(m * .95)] * 1000:7.1f}  "
-          f"p99 {lat[int(m * .99)] * 1000:7.1f} ms  skew {skew:4.1f}s{tag}",
-          flush=True)
+          f"p99 {lat[int(m * .99)] * 1000:7.1f} ms  skew {skew:4.1f}s"
+          f"{steady}{tag}", flush=True)
 
 
 asyncio.run(main())
