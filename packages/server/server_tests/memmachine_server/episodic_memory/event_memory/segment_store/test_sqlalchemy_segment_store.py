@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from memmachine_server.common.filter.filter_parser import Comparison
@@ -871,6 +871,60 @@ async def test_delete_partition_removes_data(store: SQLAlchemySegmentStore) -> N
 
     # Partition no longer exists.
     assert await store.open_partition("to_delete") is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_delete_partition_locks_partitions_table_before_ddl(
+    pg_store: SQLAlchemySegmentStore,
+    sqlalchemy_pg_engine: AsyncEngine,
+) -> None:
+    """
+    Deletion must take the partitions-table lock the create paths take,
+    before it touches either parent table.
+
+    The create paths reach segment_store_sg then segment_store_dv_ln while
+    deletion reaches them in the opposite order, and both statements take
+    ACCESS EXCLUSIVE on the parent, so the two can only be kept apart by a
+    lock they both acquire first.
+    """
+    await pg_store.open_or_create_partition(
+        "lock_order",
+        _plaintext_partition_config(),
+    )
+
+    statements: list[str] = []
+
+    @event.listens_for(sqlalchemy_pg_engine.sync_engine, "before_cursor_execute")
+    def _record(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(" ".join(statement.split()))
+
+    try:
+        await pg_store.delete_partition("lock_order")
+    finally:
+        event.remove(
+            sqlalchemy_pg_engine.sync_engine, "before_cursor_execute", _record
+        )
+
+    lock_positions = [
+        index
+        for index, statement in enumerate(statements)
+        if "LOCK TABLE segment_store_pt IN SHARE ROW EXCLUSIVE MODE" in statement
+    ]
+    assert lock_positions, (
+        f"delete_partition issued no partitions-table lock: {statements}"
+    )
+
+    ddl_positions = [
+        index
+        for index, statement in enumerate(statements)
+        if "DETACH PARTITION" in statement or statement.startswith("DROP TABLE")
+    ]
+    assert ddl_positions, f"delete_partition issued no child DDL: {statements}"
+    assert lock_positions[0] < ddl_positions[0], (
+        "partitions-table lock must be acquired before any child DDL: "
+        f"{statements}"
+    )
 
 
 @pytest.mark.asyncio
