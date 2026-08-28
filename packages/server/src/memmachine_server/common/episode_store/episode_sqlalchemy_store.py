@@ -253,25 +253,27 @@ class SqlAlchemyEpisodeStore(EpisodeStorage):
                     f"(${base + 1}, ${base + 2}, ${base + 3}, ${base + 4}, "
                     f"${base + 5}, ${base + 6}, ${base + 7}::jsonb, ${base + 8})"
                 )
-                params.extend((
-                    entry.content,
-                    session_key,
-                    entry.producer_id,
-                    entry.producer_role,
-                    entry.produced_for_id,
-                    entry.created_at,
-                    fast_json.dumps(entry.metadata).decode()
-                    if entry.metadata is not None
-                    else None,
-                    (entry.episode_type or EpisodeType.MESSAGE).name,
-                ))
+                params.extend(
+                    (
+                        entry.content,
+                        session_key,
+                        entry.producer_id,
+                        entry.producer_role,
+                        entry.produced_for_id,
+                        entry.created_at,
+                        fast_json.dumps(entry.metadata).decode()
+                        if entry.metadata is not None
+                        else None,
+                        (entry.episode_type or EpisodeType.MESSAGE).name,
+                    )
+                )
             sql = (
                 "INSERT INTO episodestore (content, session_key, producer_id, "
                 'producer_role, produced_for_id, created_at, "metadata", '
                 "episode_type) VALUES "
                 + ", ".join(groups)
                 + " RETURNING id, content, session_key, producer_id, "
-                'producer_role, produced_for_id, episode_type, created_at, '
+                "producer_role, produced_for_id, episode_type, created_at, "
                 '"metadata"'
             )
             async with self._engine.connect() as conn:

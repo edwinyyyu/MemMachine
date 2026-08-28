@@ -28,6 +28,7 @@ _Message = MutableMapping[str, Any]
 _Receive = Callable[[], Awaitable[_Message]]
 _Send = Callable[[_Message], Awaitable[None]]
 
+
 def _all_memory_types() -> list[Any]:
     # Imported at call time to avoid an import cycle with the main package.
     from memmachine_server.main.memmachine import ALL_MEMORY_TYPES
@@ -100,9 +101,7 @@ async def fast_add_asgi(
         )
         return True
 
-    payload = fast_json.dumps(
-        {"results": [{"uid": result.uid} for result in results]}
-    )
+    payload = fast_json.dumps({"results": [{"uid": result.uid} for result in results]})
     await Response(content=payload, media_type="application/json")(
         scope, _replay(b""), send
     )

@@ -292,8 +292,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         "VALUES ($1, $2, $3)"
     )
     _FAST_LOCK_SQL = (
-        "SELECT partition_key FROM segment_store_pt WHERE partition_key = $1 "
-        "FOR SHARE"
+        "SELECT partition_key FROM segment_store_pt WHERE partition_key = $1 FOR SHARE"
     )
 
     async def _add_segments_fast(
@@ -332,9 +331,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                             )
                         )
                     ),
-                    fast_json.dumps(
-                        encode_properties(segment.properties)
-                    ).decode(),
+                    fast_json.dumps(encode_properties(segment.properties)).decode(),
                 )
                 for segment in segments_to_derivative_uuids
             ]
@@ -484,9 +481,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         except Exception:  # any failure -> canonical fallback below
             logger.debug("segment fast path failed; falling back", exc_info=True)
             return None
-        return {
-            row["uuid"]: [self._segment_from_raw_row(row)] for row in rows
-        }
+        return {row["uuid"]: [self._segment_from_raw_row(row)] for row in rows}
 
     def _segment_from_raw_row(self, row: Mapping[str, Any]) -> Segment:
         """Convert a raw asyncpg record into a Segment.
@@ -519,7 +514,10 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             if context is None:
                 context = NullContext()
         encoded_block = safe_loads(self._payload_codec.decode(row["block"]))
-        if isinstance(encoded_block, dict) and encoded_block.get("block_type") == "text":
+        if (
+            isinstance(encoded_block, dict)
+            and encoded_block.get("block_type") == "text"
+        ):
             block = fast_model.build(
                 TextBlock, {"block_type": "text", "text": encoded_block["text"]}
             )
@@ -560,9 +558,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         ") c ON true "
         "WHERE s.partition_key = $1 AND s.uuid = ANY($2::uuid[])"
     )
-    _FAST_LATERAL_BACKWARD_SQL = _FAST_LATERAL_SQL_TEMPLATE.format(
-        op="<", dir="DESC"
-    )
+    _FAST_LATERAL_BACKWARD_SQL = _FAST_LATERAL_SQL_TEMPLATE.format(op="<", dir="DESC")
     _FAST_LATERAL_FORWARD_SQL = _FAST_LATERAL_SQL_TEMPLATE.format(op=">", dir="ASC")
 
     async def _get_segment_contexts_windowed_fast(
@@ -622,9 +618,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 for seed_row in seed_rows
             }
         except Exception:  # unexpected shape/driver -> canonical path
-            logger.debug(
-                "windowed segment fast path fell back", exc_info=True
-            )
+            logger.debug("windowed segment fast path fell back", exc_info=True)
             return None
 
     def _timezone_for_offset(self, offset_seconds: int) -> timezone:

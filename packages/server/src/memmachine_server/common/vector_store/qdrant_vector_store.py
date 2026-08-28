@@ -394,9 +394,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                         },
                     ),
                 )
-            query_results.append(
-                fast_model.build(QueryResult, {"matches": matches})
-            )
+            query_results.append(fast_model.build(QueryResult, {"matches": matches}))
         return query_results
 
     def _partition_filter_model(self) -> models.Filter:
