@@ -42,6 +42,7 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     Event,
     NullContext,
     ProducerContext,
+    QueryResult,
     TextBlock,
 )
 from memmachine_server.episodic_memory.event_memory.deriver import Deriver
@@ -316,8 +317,11 @@ class LongTermMemory:
         event_memory = self._require_event_backend_live()
         assert self._episode_storage is not None
         self._validate_event_backend_filter(property_filter)
-        # Context can never exceed the remaining quota (declarative parity).
-        expand_context = min(max(0, expand_context), num_episodes_limit - 1)
+        # Context can never exceed the remaining quota (declarative parity),
+        # and can never go negative: with `num_episodes_limit == 0` the quota
+        # clamp on its own would ask the segment store for a window of -1,
+        # which the SegmentStorePartition contract does not define.
+        expand_context = max(0, min(expand_context, num_episodes_limit - 1))
         # Over-fetch from EventMemory: the per-segment results can have many
         # segments per episode under non-passthrough segmenters, and we dedup
         # them by `_episode_uid` below. Without headroom, the dedup loop can
@@ -631,7 +635,7 @@ class LongTermMemory:
 
     async def _unified_scored_event_episodes(
         self,
-        result: object,
+        result: QueryResult,
         *,
         num_episodes_limit: int,
         score_threshold: float | None,
@@ -647,7 +651,7 @@ class LongTermMemory:
         """
         assert self._episode_storage is not None
         scored_uid_contexts: list[tuple[float, str, list[str]]] = []
-        for scored_context in getattr(result, "scored_segment_contexts", []):
+        for scored_context in result.scored_segment_contexts:
             if not self._score_passes_threshold(scored_context.score, score_threshold):
                 continue
             nuclear_uid, context_uids = LongTermMemory._episode_uid_context(
