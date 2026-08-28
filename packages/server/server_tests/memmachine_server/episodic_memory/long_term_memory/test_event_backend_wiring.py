@@ -11,6 +11,7 @@ Verifies that add_episodes / search_scored / delete_episodes /
 drop_session_partition all dispatch correctly through the event backend.
 """
 
+import math
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any, override
@@ -605,15 +606,35 @@ def _timeline_episode(uid: str, content: str, minute: int) -> Episode:
 # document scores exactly 1.0 against every query. That tie makes every stored
 # episode a seed of equal rank, which hides whether context expansion
 # contributed anything: a search at `num_episodes_limit=N` returns the first N
-# episodes in store order whether or not the windows are folded in. The
-# expansion tests below embed on a keyword instead, so exactly one episode
-# matches and its neighbors have to arrive through the expansion.
-_NEEDLE = "needle"
-_NEEDLE_INDEX = 3
+# episodes in store order whether or not the windows are folded in.
+#
+# The expansion tests below give each episode its own similarity instead, by an
+# explicit search rank. The rank order is chosen so that the timeline
+# neighbours of the one matching episode are the LEAST similar of all, which is
+# what lets the tests assert on the contract ("expansion returns timeline
+# neighbours the search itself would not return") rather than on a particular
+# ranking: any correct top-k leaves those neighbours out, and any nonzero
+# window around the match reaches at least one of them, whatever the
+# backward/forward split.
+_TIMELINE_LENGTH = 7
+_MATCH_INDEX = 3
+# Timeline index -> search rank (0 = most similar). The match ranks first, the
+# two episodes farthest from it next, its four neighbours last.
+_SEARCH_RANK_BY_INDEX = {3: 0, 0: 1, 6: 2, 2: 3, 4: 4, 1: 5, 5: 6}
+_NEIGHBOUR_UIDS = frozenset({"tl-1", "tl-2", "tl-4", "tl-5"})
 
 
-class NeedleEmbedder(FakeEmbedder):
-    """Embeds `_NEEDLE`-bearing text apart from everything else."""
+def _timeline_token(index: int) -> str:
+    return f"tok-{index}"
+
+
+class RankedEmbedder(FakeEmbedder):
+    """Embeds each timeline episode at its own distance from the query.
+
+    Every text carries exactly one `tok-<index>`; the vector is placed at an
+    angle proportional to that episode's search rank, so cosine similarity is
+    strictly decreasing in the rank and no two episodes tie.
+    """
 
     @override
     async def _ingest_embed(
@@ -621,7 +642,7 @@ class NeedleEmbedder(FakeEmbedder):
         inputs: list[Any],
         max_attempts: int = 1,
     ) -> list[list[float]]:
-        return [NeedleEmbedder._vector(text) for text in inputs]
+        return [RankedEmbedder._vector(text) for text in inputs]
 
     @override
     async def _search_embed(
@@ -629,11 +650,20 @@ class NeedleEmbedder(FakeEmbedder):
         queries: list[Any],
         max_attempts: int = 1,
     ) -> list[list[float]]:
-        return [NeedleEmbedder._vector(query) for query in queries]
+        return [RankedEmbedder._vector(query) for query in queries]
 
     @staticmethod
     def _vector(text: Any) -> list[float]:
-        return [1.0, 0.0] if _NEEDLE in str(text) else [0.0, 1.0]
+        rank = next(
+            (
+                _SEARCH_RANK_BY_INDEX[index]
+                for index in range(_TIMELINE_LENGTH)
+                if _timeline_token(index) in str(text)
+            ),
+            _TIMELINE_LENGTH,
+        )
+        angle = rank * (math.pi / 2) / _TIMELINE_LENGTH
+        return [math.cos(angle), math.sin(angle)]
 
 
 @pytest.fixture
@@ -641,11 +671,10 @@ def timeline_episodes() -> list[Episode]:
     return [
         _timeline_episode(
             f"tl-{index}",
-            f"timeline message number {index}"
-            + (f" {_NEEDLE}" if index == _NEEDLE_INDEX else ""),
+            f"timeline message {_timeline_token(index)}",
             index,
         )
-        for index in range(7)
+        for index in range(_TIMELINE_LENGTH)
     ]
 
 
@@ -662,7 +691,7 @@ def timeline_long_term_memory(
     segment_store_partition,
     timeline_storage,
 ) -> LongTermMemory:
-    # `NeedleEmbedder` shares FakeEmbedder's dimensions and similarity metric,
+    # `RankedEmbedder` shares FakeEmbedder's dimensions and similarity metric,
     # so the shared `vector_store_collection` config still applies.
     return LongTermMemory(
         EventBackendParams(
@@ -674,75 +703,78 @@ def timeline_long_term_memory(
             segment_store_partition=segment_store_partition,
             partition_key="sess1",
             episode_storage=timeline_storage,
-            embedder=NeedleEmbedder(),
+            embedder=RankedEmbedder(),
             segmenter=PassthroughSegmenter(),
             deriver=WholeTextDeriver(),
         ),
     )
 
 
-async def test_expand_context_folds_in_non_matching_neighbors(
+async def test_expand_context_returns_neighbours_the_search_would_not(
     timeline_long_term_memory,
     timeline_episodes,
 ):
-    """expand_context folds the match's timeline neighbors into the result.
+    """expand_context folds the match's timeline neighbours into the result.
 
-    Only `tl-3` carries the needle, so `tl-4` and `tl-5` can only reach the
-    result through the expansion — they score zero against the query.
+    The match's neighbours are the least similar episodes in the fixture, so
+    no top-k can return them; if they come back, the expansion put them there.
     """
     await timeline_long_term_memory.add_episodes(timeline_episodes)
 
+    query = _timeline_token(_MATCH_INDEX)
     plain = await timeline_long_term_memory.search_scored(
-        _NEEDLE,
+        query,
         num_episodes_limit=3,
     )
     expanded = await timeline_long_term_memory.search_scored(
-        _NEEDLE,
+        query,
         num_episodes_limit=3,
         expand_context=2,
     )
 
-    # Without expansion: the one real match, then non-matching filler, in
-    # score order.
-    assert plain[0][1].uid == "tl-3"
-    assert plain[0][0] == pytest.approx(1.0)
-    assert all(score == pytest.approx(0.0) for score, _ in plain[1:])
+    plain_uids = {ep.uid for _, ep in plain}
+    expanded_uids = {ep.uid for _, ep in expanded}
+    assert f"tl-{_MATCH_INDEX}" in plain_uids
+    assert not (plain_uids & _NEIGHBOUR_UIDS)
+    assert expanded_uids & _NEIGHBOUR_UIDS
 
-    # expand_context=2 is 0 backward / 2 forward, so the match's window is
-    # exactly [tl-3, tl-4, tl-5]; it fits the limit, so it is taken whole and
-    # returned chronologically, each episode keeping the window's score.
-    assert [ep.uid for _, ep in expanded] == ["tl-3", "tl-4", "tl-5"]
-    assert all(score == pytest.approx(1.0) for score, _ in expanded)
+    # Expanded results come back chronologically, within the episode limit.
+    created = [ep.created_at for _, ep in expanded]
+    assert created == sorted(created)
+    assert len(expanded) <= 3
 
 
-async def test_expand_context_is_clamped_to_the_episode_limit(
+async def test_expand_context_zero_returns_matches_in_score_order(
     timeline_long_term_memory,
     timeline_episodes,
 ):
-    """An oversized expand_context cannot push the result past the limit."""
+    """Without expansion, the result is the search's own matches, best first."""
     await timeline_long_term_memory.add_episodes(timeline_episodes)
 
-    expanded = await timeline_long_term_memory.search_scored(
-        _NEEDLE,
+    scored = await timeline_long_term_memory.search_scored(
+        _timeline_token(_MATCH_INDEX),
         num_episodes_limit=3,
-        expand_context=99,
     )
-    # Clamped to num_episodes_limit - 1 = 2, i.e. the same 0-back/2-forward
-    # window rather than a 33-back/66-forward one.
-    assert [ep.uid for _, ep in expanded] == ["tl-3", "tl-4", "tl-5"]
+
+    scores = [score for score, _ in scored]
+    assert scores == sorted(scores, reverse=True)
+    assert not ({ep.uid for _, ep in scored} & _NEIGHBOUR_UIDS)
 
 
-async def test_expand_context_never_requests_a_negative_window(
+async def test_expand_context_window_stays_within_the_episode_limit(
     timeline_long_term_memory,
     timeline_episodes,
     segment_store_partition,
     monkeypatch,
 ):
-    """A zero episode limit clamps expand_context to 0, not to -1.
+    """The window asked of the segment store is clamped to [0, limit - 1].
 
-    `min(expand_context, num_episodes_limit - 1)` alone goes negative at
-    `num_episodes_limit == 0`, and a negative window is outside the
-    SegmentStorePartition contract.
+    Asserted on the store call rather than on which episodes come back, so it
+    holds however the window is split between the two directions and however
+    results are ranked. The lower bound matters on its own: at
+    `num_episodes_limit == 0` (which `SearchMemoriesSpec.top_k` allows)
+    `min(expand_context, num_episodes_limit - 1)` is -1, and a negative window
+    is outside the SegmentStorePartition contract.
     """
     await timeline_long_term_memory.add_episodes(timeline_episodes)
 
@@ -764,15 +796,19 @@ async def test_expand_context_never_requests_a_negative_window(
         recording_get_segment_contexts,
     )
 
-    scored = await timeline_long_term_memory.search_scored(
-        _NEEDLE,
-        num_episodes_limit=0,
-        expand_context=5,
-    )
-
-    assert scored == []
-    assert windows
-    assert all(backward >= 0 and forward >= 0 for backward, forward in windows)
+    for num_episodes_limit, expand_context in ((0, 5), (1, 5), (3, 99), (5, 2)):
+        windows.clear()
+        scored = await timeline_long_term_memory.search_scored(
+            _timeline_token(_MATCH_INDEX),
+            num_episodes_limit=num_episodes_limit,
+            expand_context=expand_context,
+        )
+        assert len(scored) <= num_episodes_limit
+        assert windows
+        for backward, forward in windows:
+            assert backward >= 0
+            assert forward >= 0
+            assert backward + forward <= max(0, num_episodes_limit - 1)
 
 
 def test_unify_takes_whole_contexts_while_they_fit():
