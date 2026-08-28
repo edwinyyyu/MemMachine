@@ -25,7 +25,7 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.types import ExceptionHandler, Lifespan
+from starlette.types import ExceptionHandler, Lifespan, Receive, Scope, Send
 
 from memmachine_server.common.api.version import get_version
 from memmachine_server.server.api_v2.mcp import (
@@ -60,6 +60,30 @@ def _default_response_class() -> type[Response]:
 
 class MemMachineAPI(FastAPI):
     """MemMachine API wrapper."""
+
+    _FAST_SEARCH_PATH = "/api/v2/memories/search"
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Short-circuit the search hot path around the framework stack.
+
+        Only the happy path is handled here; anything unusual (parse or
+        validation failure, service errors) replays the buffered request
+        through the full application so error responses stay canonical.
+        Requests served here bypass the HTTP middlewares (access log and
+        request metrics).
+        """
+        if (
+            scope["type"] == "http"
+            and scope["method"] == "POST"
+            and scope["path"] == MemMachineAPI._FAST_SEARCH_PATH
+        ):
+            from memmachine_server.server.api_v2.fast_search import (
+                fast_search_asgi,
+            )
+
+            if await fast_search_asgi(self, scope, receive, send):
+                return
+        await super().__call__(scope, receive, send)
 
     def __init__(
         self, lifespan: Lifespan[Any] | None = None, with_config_api: bool = False

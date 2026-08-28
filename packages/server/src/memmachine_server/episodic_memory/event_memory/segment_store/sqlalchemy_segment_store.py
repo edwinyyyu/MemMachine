@@ -52,6 +52,8 @@ from sqlalchemy.orm import (
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 
+from memmachine_server.common import fast_model
+from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.fast_json import safe_loads
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
@@ -218,6 +220,11 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         self._tracker = tracker
         self._create_session = async_sessionmaker(engine, expire_on_commit=False)
         self._is_sqlite = engine.dialect.name == "sqlite"
+        # Read-path caches: timezone objects keyed by offset seconds, and
+        # ProducerContext instances keyed by producer (contexts are treated
+        # as immutable values; sharing instances preserves equality).
+        self._timezone_cache: dict[int, timezone] = {}
+        self._producer_context_cache: dict[str, ProducerContext] = {}
 
     @override
     @property
@@ -391,9 +398,12 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         )
         context: Context | None
         if context_type == "producer":
-            context = ProducerContext.model_construct(
-                producer=encoded_context["producer"]
-            )
+            producer = encoded_context["producer"]
+            context = self._producer_context_cache.get(producer)
+            if context is None:
+                context = ProducerContext.model_construct(producer=producer)
+                if len(self._producer_context_cache) < 4096:
+                    self._producer_context_cache[producer] = context
         elif context_type == "null" or encoded_context is None:
             context = NullContext()
         else:
@@ -402,27 +412,62 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 context = NullContext()
         encoded_block = safe_loads(self._payload_codec.decode(row["block"]))
         if isinstance(encoded_block, dict) and encoded_block.get("block_type") == "text":
-            block = TextBlock.model_construct(text=encoded_block["text"])
+            block = fast_model.build(
+                TextBlock, {"block_type": "text", "text": encoded_block["text"]}
+            )
         else:
             block = decode_block(encoded_block)
         raw_properties = row["properties"]
         if isinstance(raw_properties, str):
             raw_properties = safe_loads(raw_properties)
-        properties = decode_properties(raw_properties)
-        original_timezone = timezone(
-            timedelta(seconds=row["timestamp_timezone_offset"])
+        properties = self._decode_properties_trusted(raw_properties)
+        timestamp = ensure_tz_aware(row["timestamp"]).astimezone(
+            self._timezone_for_offset(row["timestamp_timezone_offset"])
         )
-        timestamp = ensure_tz_aware(row["timestamp"]).astimezone(original_timezone)
-        return Segment.model_construct(
-            uuid=row["uuid"],
-            event_uuid=row["event_uuid"],
-            index=row["index"],
-            offset=row["offset"],
-            timestamp=timestamp,
-            context=context,
-            block=block,
-            properties=properties,
+        return fast_model.build(
+            Segment,
+            {
+                "uuid": row["uuid"],
+                "event_uuid": row["event_uuid"],
+                "index": row["index"],
+                "offset": row["offset"],
+                "timestamp": timestamp,
+                "context": context,
+                "block": block,
+                "properties": properties,
+            },
         )
+
+    def _timezone_for_offset(self, offset_seconds: int) -> timezone:
+        cached = self._timezone_cache.get(offset_seconds)
+        if cached is None:
+            cached = timezone(timedelta(seconds=offset_seconds))
+            self._timezone_cache[offset_seconds] = cached
+        return cached
+
+    def _decode_properties_trusted(
+        self, encoded: Mapping[str, Any] | None
+    ) -> dict[str, PropertyValue]:
+        """decode_properties for rows this store wrote itself.
+
+        Handles the two entry shapes the encoder produces ({t, v} scalars and
+        {t, v, tz} datetimes) without per-entry type checks; anything
+        unexpected defers to the validating decode_properties.
+        """
+        if not encoded:
+            return {}
+        try:
+            properties: dict[str, PropertyValue] = {}
+            for key, entry in encoded.items():
+                if entry["t"] == "datetime":
+                    properties[key] = ensure_tz_aware(
+                        datetime.fromisoformat(entry["v"])
+                    ).astimezone(self._timezone_for_offset(entry["tz"]))
+                else:
+                    properties[key] = entry["v"]
+        except Exception:  # unexpected shape -> validating decoder
+            return decode_properties(encoded)
+        return properties
 
     async def _get_segment_contexts_canonical(
         self,

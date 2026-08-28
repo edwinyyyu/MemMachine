@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, InstanceOf
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
-from memmachine_server.common import fast_json
+from memmachine_server.common import fast_json, fast_model
 from memmachine_server.common.data_types import (
     OrderedValue,
     PropertyValue,
@@ -254,6 +254,11 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         # False = unavailable (fall back to qdrant-client forever).
         self._fast_http: RawHTTPPool | httpx.AsyncClient | bool | None = None
         self._fast_partition_filter: dict[str, Any] | None = None
+        self._datetime_property_keys = frozenset(
+            key
+            for key, value in config.indexed_properties_schema.items()
+            if value is datetime
+        )
 
     def _fast_rest_client(self) -> RawHTTPPool | httpx.AsyncClient | None:
         """Build (once) the transport for the direct-REST query fast path.
@@ -315,7 +320,11 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
             "limit": limit,
             "filter": filter_dict,
             "with_vector": return_vector,
-            "with_payload": return_properties,
+            # The partition key is stripped during parsing anyway; excluding
+            # it server-side means it is never serialized or parsed at all.
+            "with_payload": {"exclude": [_PAYLOAD_PARTITION_KEY]}
+            if return_properties
+            else False,
         }
         if score_threshold is not None:
             search["score_threshold"] = score_threshold
@@ -350,6 +359,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         return_properties: bool,
     ) -> list[QueryResult]:
         """Map a raw REST query/batch response onto QueryResults."""
+        datetime_keys = self._datetime_property_keys
         query_results: list[QueryResult] = []
         for batch in cast(list[dict[str, Any]], payload["result"]):
             matches: list[QueryMatch] = []
@@ -359,18 +369,34 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                     vector = cast(list[float], point["vector"])
                 properties: dict[str, PropertyValue] | None = None
                 if return_properties and point.get("payload") is not None:
-                    properties = self._parse_payload(point["payload"])
+                    properties = {
+                        key: (
+                            datetime.fromisoformat(value)
+                            if key in datetime_keys and isinstance(value, str)
+                            else value
+                        )
+                        for key, value in point["payload"].items()
+                        if value is not None
+                    }
                 matches.append(
-                    QueryMatch.model_construct(
-                        score=point["score"],
-                        record=Record.model_construct(
-                            uuid=UUID(point["id"]),
-                            vector=vector,
-                            properties=properties,
-                        ),
+                    fast_model.build(
+                        QueryMatch,
+                        {
+                            "score": point["score"],
+                            "record": fast_model.build(
+                                Record,
+                                {
+                                    "uuid": UUID(point["id"]),
+                                    "vector": vector,
+                                    "properties": properties,
+                                },
+                            ),
+                        },
                     ),
                 )
-            query_results.append(QueryResult.model_construct(matches=matches))
+            query_results.append(
+                fast_model.build(QueryResult, {"matches": matches})
+            )
         return query_results
 
     def _partition_filter_model(self) -> models.Filter:
