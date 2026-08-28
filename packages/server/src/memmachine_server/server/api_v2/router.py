@@ -85,7 +85,7 @@ from memmachine_server.server.api_v2.exceptions import RestError
 from memmachine_server.server.api_v2.service import (
     _add_messages_to,
     _list_target_memories,
-    _search_target_memories,
+    _search_target_memories_response,
     _SessionData,
     get_memmachine,
 )
@@ -299,17 +299,18 @@ async def add_memories(
 @router.post(
     "/memories/search",
     description=RouterDoc.SEARCH_MEMORIES,
+    response_model=SearchResult,
     response_model_exclude_none=True,
     tags=["Memories"],
 )
 async def search_memories(
     spec: SearchMemoriesSpec,
     memmachine: Annotated[MemMachine, Depends(get_memmachine)],
-) -> SearchResult:
+) -> Response:
     """Search memories in a project."""
     target_memories = spec.types or ALL_MEMORY_TYPES
     try:
-        return await _search_target_memories(
+        return await _search_target_memories_response(
             target_memories=target_memories, spec=spec, memmachine=memmachine
         )
     except ValueError as e:

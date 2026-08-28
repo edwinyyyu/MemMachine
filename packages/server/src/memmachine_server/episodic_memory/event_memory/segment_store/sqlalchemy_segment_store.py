@@ -81,8 +81,11 @@ from memmachine_server.common.properties_json import (
 )
 from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
 from memmachine_server.episodic_memory.event_memory.data_types import (
+    Context,
     NullContext,
+    ProducerContext,
     Segment,
+    TextBlock,
     decode_block,
     decode_context,
     encode_block,
@@ -373,15 +376,35 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     def _segment_from_raw_row(self, row: Mapping[str, Any]) -> Segment:
         """Convert a raw asyncpg record into a Segment.
 
-        Mirrors _segment_from_segment_row exactly; asyncpg returns jsonb
-        as text, so properties may arrive as a string here.
+        Produces objects equal to _segment_from_segment_row's, constructed
+        without re-validating data this store wrote itself: the known
+        context/block variants dispatch on their discriminators directly
+        (unknown ones take the validating decoders), and Segment is built
+        with model_construct. asyncpg returns jsonb as text, so properties
+        may arrive as a string here.
         """
-        context = decode_context(
-            safe_loads(self._payload_codec.decode(row["context"]))
+        encoded_context = safe_loads(self._payload_codec.decode(row["context"]))
+        context_type = (
+            encoded_context.get("context_type")
+            if isinstance(encoded_context, dict)
+            else None
         )
-        if context is None:
+        context: Context | None
+        if context_type == "producer":
+            context = ProducerContext.model_construct(
+                producer=encoded_context["producer"]
+            )
+        elif context_type == "null" or encoded_context is None:
             context = NullContext()
-        block = decode_block(safe_loads(self._payload_codec.decode(row["block"])))
+        else:
+            context = decode_context(encoded_context)
+            if context is None:
+                context = NullContext()
+        encoded_block = safe_loads(self._payload_codec.decode(row["block"]))
+        if isinstance(encoded_block, dict) and encoded_block.get("block_type") == "text":
+            block = TextBlock.model_construct(text=encoded_block["text"])
+        else:
+            block = decode_block(encoded_block)
         raw_properties = row["properties"]
         if isinstance(raw_properties, str):
             raw_properties = safe_loads(raw_properties)
@@ -390,7 +413,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             timedelta(seconds=row["timestamp_timezone_offset"])
         )
         timestamp = ensure_tz_aware(row["timestamp"]).astimezone(original_timezone)
-        return Segment(
+        return Segment.model_construct(
             uuid=row["uuid"],
             event_uuid=row["event_uuid"],
             index=row["index"],

@@ -44,6 +44,7 @@ from memmachine_server.common.filter.filter_parser import (
     Or as FilterOr,
 )
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
+from memmachine_server.common.raw_http import RawHTTPPool
 from memmachine_server.common.utils import ensure_tz_aware
 
 from .data_types import (
@@ -248,21 +249,23 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         self._config = config
         self._shard_key = shard_key
         # Direct-REST fast path for query(): bypasses qdrant-client's
-        # per-call model construction and type inspection. None = not yet
-        # probed; False = unavailable (fall back to qdrant-client forever).
-        self._fast_http: httpx.AsyncClient | bool | None = None
+        # per-call model construction and type inspection. RawHTTPPool for
+        # plain-http origins, httpx for https; None = not yet probed;
+        # False = unavailable (fall back to qdrant-client forever).
+        self._fast_http: RawHTTPPool | httpx.AsyncClient | bool | None = None
         self._fast_partition_filter: dict[str, Any] | None = None
 
-    def _fast_rest_client(self) -> httpx.AsyncClient | None:
-        """Build (once) an httpx client for the direct-REST query fast path.
+    def _fast_rest_client(self) -> RawHTTPPool | httpx.AsyncClient | None:
+        """Build (once) the transport for the direct-REST query fast path.
 
-        Reuses the qdrant-client's resolved REST URI and auth headers. Returns
-        None when the internals are not the expected shape (non-REST client,
+        Reuses the qdrant-client's resolved REST URI and auth headers: a
+        RawHTTPPool for plain-http origins, httpx for https. Returns None
+        when the internals are not the expected shape (non-REST client,
         library layout change) so query() falls back to qdrant-client.
         """
         if self._fast_http is False:
             return None
-        if isinstance(self._fast_http, httpx.AsyncClient):
+        if isinstance(self._fast_http, (RawHTTPPool, httpx.AsyncClient)):
             return self._fast_http
         remote = getattr(self._client, "_client", None)
         rest_uri = getattr(remote, "rest_uri", None)
@@ -271,12 +274,16 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         if not isinstance(rest_uri, str) or prefer_grpc:
             self._fast_http = False
             return None
-        self._fast_http = httpx.AsyncClient(
-            base_url=rest_uri,
-            headers=dict(headers) if isinstance(headers, dict) else None,
-            timeout=60,
-            limits=httpx.Limits(max_keepalive_connections=8),
-        )
+        header_dict = dict(headers) if isinstance(headers, dict) else {}
+        if rest_uri.startswith("http://"):
+            self._fast_http = RawHTTPPool(rest_uri, headers=header_dict)
+        else:
+            self._fast_http = httpx.AsyncClient(
+                base_url=rest_uri,
+                headers=header_dict or None,
+                timeout=60,
+                limits=httpx.Limits(max_keepalive_connections=8),
+            )
         return self._fast_http
 
     async def _fast_query(
@@ -317,18 +324,23 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         body = fast_json.dumps(
             {"searches": [{**search, "query": qv} for qv in query_vectors]}
         )
+        path = f"/collections/{self._collection_name}/points/query/batch"
         try:
-            response = await http.post(
-                f"/collections/{self._collection_name}/points/query/batch",
-                content=body,
-                headers={"Content-Type": "application/json"},
-            )
+            if isinstance(http, RawHTTPPool):
+                content = await http.post(path, body)
+            else:
+                response = await http.post(
+                    path,
+                    content=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                if response.status_code != 200:
+                    return None
+                content = response.content
         except Exception:  # any transport failure -> canonical fallback below
             return None
-        if response.status_code != 200:
-            return None
         return self._fast_parse_results(
-            fast_json.loads(response.content), return_vector, return_properties
+            fast_json.loads(content), return_vector, return_properties
         )
 
     def _fast_parse_results(
@@ -349,16 +361,16 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                 if return_properties and point.get("payload") is not None:
                     properties = self._parse_payload(point["payload"])
                 matches.append(
-                    QueryMatch(
+                    QueryMatch.model_construct(
                         score=point["score"],
-                        record=Record(
-                            uuid=UUID(str(point["id"])),
+                        record=Record.model_construct(
+                            uuid=UUID(point["id"]),
                             vector=vector,
                             properties=properties,
                         ),
                     ),
                 )
-            query_results.append(QueryResult(matches=matches))
+            query_results.append(QueryResult.model_construct(matches=matches))
         return query_results
 
     def _partition_filter_model(self) -> models.Filter:

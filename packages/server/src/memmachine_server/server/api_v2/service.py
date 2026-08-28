@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass
 from typing import cast
 
-from fastapi import Request
+from fastapi import Request, Response
 from memmachine_common.api import MemoryType as MemoryTypeE
 from memmachine_common.api.spec import (
     AddMemoriesSpec,
@@ -24,6 +24,7 @@ from memmachine_common.api.spec import (
 from pydantic import JsonValue
 
 from memmachine_server import MemMachine
+from memmachine_server.common import fast_json
 from memmachine_server.common.episode_store.episode_model import EpisodeEntry
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,50 @@ async def _delete_memories(
         feature_ids=spec.semantic_memory_uids,
     )
     await asyncio.gather(delete_episodes, delete_semantics)
+
+
+async def _search_target_memories_response(
+    target_memories: list[MemoryTypeE],
+    spec: SearchMemoriesSpec,
+    memmachine: MemMachine,
+) -> Response:
+    """Serve search as a pre-serialized Response.
+
+    Produces the same JSON as _search_target_memories run through the
+    response model with exclude_none, without the intermediate mirror-model
+    validation and double model_dump: the internal result models dump once,
+    with exclude_none applied at the source.
+    """
+    results = await memmachine.query_search(
+        session_data=_SessionData(
+            org_id=spec.org_id,
+            project_id=spec.project_id,
+        ),
+        query=spec.query,
+        target_memories=target_memories,
+        set_metadata=spec.set_metadata,
+        search_filter=spec.filter,
+        limit=spec.top_k,
+        expand_context=spec.expand_context,
+        score_threshold=spec.score_threshold
+        if spec.score_threshold is not None
+        else -float("inf"),
+        agent_mode=spec.agent_mode,
+    )
+    content: dict[str, object] = {}
+    if results.episodic_memory is not None:
+        content["episodic_memory"] = results.episodic_memory.model_dump(
+            mode="json", exclude_none=True
+        )
+    if results.semantic_memory is not None:
+        content["semantic_memory"] = [
+            feature.model_dump(mode="json", exclude_none=True)
+            for feature in results.semantic_memory
+        ]
+    return Response(
+        content=fast_json.dumps({"status": 0, "content": content}),
+        media_type="application/json",
+    )
 
 
 async def _search_target_memories(

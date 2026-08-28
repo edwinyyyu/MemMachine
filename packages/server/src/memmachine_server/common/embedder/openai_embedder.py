@@ -18,6 +18,7 @@ from memmachine_server.common.data_types import (
     SimilarityMetric,
 )
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
+from memmachine_server.common.raw_http import RawHTTPPool
 from memmachine_server.common.utils import (
     chunk_text_balanced,
     cluster_texts,
@@ -106,9 +107,10 @@ class OpenAIEmbedder(Embedder):
 
         self._max_input_length = params.max_input_length
 
-        # Direct-httpx fast path for the embeddings call. None = not yet
-        # probed; False = unavailable (always use the canonical SDK path).
-        self._fast_http: httpx.AsyncClient | bool | None = None
+        # Direct fast path for the embeddings call: RawHTTPPool for plain
+        # http, httpx for https. None = not yet probed; False = unavailable
+        # (always use the canonical SDK path).
+        self._fast_http: RawHTTPPool | httpx.AsyncClient | bool | None = None
 
         metrics_factory = params.metrics_factory
 
@@ -216,7 +218,7 @@ class OpenAIEmbedder(Embedder):
             for chunk_embeddings in inputs_chunk_embeddings
         ]
 
-    def _fast_http_client(self) -> httpx.AsyncClient | None:
+    def _fast_http_client(self) -> RawHTTPPool | httpx.AsyncClient | None:
         """Build (once) an httpx client for the direct embeddings fast path.
 
         Returns None when the SDK client's attributes are not the expected
@@ -224,7 +226,7 @@ class OpenAIEmbedder(Embedder):
         """
         if self._fast_http is False:
             return None
-        if isinstance(self._fast_http, httpx.AsyncClient):
+        if isinstance(self._fast_http, (RawHTTPPool, httpx.AsyncClient)):
             return self._fast_http
         api_key = getattr(self._client, "api_key", None)
         base_url = getattr(self._client, "base_url", None)
@@ -238,12 +240,16 @@ class OpenAIEmbedder(Embedder):
         project = getattr(self._client, "project", None)
         if isinstance(project, str):
             headers["OpenAI-Project"] = project
-        self._fast_http = httpx.AsyncClient(
-            base_url=str(base_url),
-            headers=headers,
-            timeout=60,
-            limits=httpx.Limits(max_keepalive_connections=8),
-        )
+        base = str(base_url)
+        if base.startswith("http://"):
+            self._fast_http = RawHTTPPool(base, headers=headers)
+        else:
+            self._fast_http = httpx.AsyncClient(
+                base_url=base,
+                headers=headers,
+                timeout=60,
+                limits=httpx.Limits(max_keepalive_connections=8),
+            )
         return self._fast_http
 
     async def _fast_embed(
@@ -269,17 +275,21 @@ class OpenAIEmbedder(Embedder):
             "encoding_format": "base64",
         }
         try:
-            response = await http.post(
-                "embeddings",
-                content=fast_json.dumps(body),
-                headers={"Content-Type": "application/json"},
-            )
+            if isinstance(http, RawHTTPPool):
+                content = await http.post("/embeddings", fast_json.dumps(body))
+            else:
+                response = await http.post(
+                    "embeddings",
+                    content=fast_json.dumps(body),
+                    headers={"Content-Type": "application/json"},
+                )
+                if response.status_code != 200:
+                    return None
+                content = response.content
         except Exception:  # any transport failure -> canonical SDK path
             return None
-        if response.status_code != 200:
-            return None
         try:
-            payload = fast_json.loads(response.content)
+            payload = fast_json.loads(content)
             data = sorted(
                 cast(list[dict[str, Any]], payload["data"]), key=lambda d: d["index"]
             )

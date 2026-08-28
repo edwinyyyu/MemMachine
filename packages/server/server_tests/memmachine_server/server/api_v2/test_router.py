@@ -1,10 +1,12 @@
+import json
 from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
-from memmachine_common.api.spec import ContentType, Episode, SearchResult
+from memmachine_common.api.spec import ContentType, Episode
+from starlette.responses import Response
 
 from memmachine_server.common.configuration.episodic_config import (
     DeclarativeLongTermMemoryConf,
@@ -409,22 +411,25 @@ def test_search_memories(client, mock_memmachine):
     }
 
     with patch(
-        "memmachine_server.server.api_v2.router._search_target_memories"
+        "memmachine_server.server.api_v2.router._search_target_memories_response"
     ) as mock_search:
-        mock_search.return_value = SearchResult.model_validate(
-            {
-                "status": 0,
-                "content": {
-                    "episodic_memory": {
-                        "long_term_memory": {"episodes": []},
-                        "short_term_memory": {
-                            "episodes": [],
-                            "episode_summary": [],
+        mock_search.return_value = Response(
+            content=json.dumps(
+                {
+                    "status": 0,
+                    "content": {
+                        "episodic_memory": {
+                            "long_term_memory": {"episodes": []},
+                            "short_term_memory": {
+                                "episodes": [],
+                                "episode_summary": [],
+                            },
                         },
+                        "semantic_memory": [],
                     },
-                    "semantic_memory": [],
-                },
-            }
+                }
+            ).encode(),
+            media_type="application/json",
         )
 
         # Success
@@ -466,7 +471,7 @@ def test_search_memories(client, mock_memmachine):
 
 
 def test_search_memories_with_set_metadata(client, mock_memmachine):
-    """set_metadata in the request body is forwarded to _search_target_memories."""
+    """set_metadata in the request body is forwarded to the search service."""
     payload = {
         "org_id": "test_org",
         "project_id": "test_proj",
@@ -475,23 +480,20 @@ def test_search_memories_with_set_metadata(client, mock_memmachine):
     }
 
     with patch(
-        "memmachine_server.server.api_v2.router._search_target_memories"
+        "memmachine_server.server.api_v2.router._search_target_memories_response"
     ) as mock_search:
-        mock_search.return_value = SearchResult.model_validate(
-            {
-                "status": 0,
-                "content": {
-                    "episodic_memory": None,
-                    "semantic_memory": [],
-                },
-            }
+        mock_search.return_value = Response(
+            content=json.dumps(
+                {"status": 0, "content": {"semantic_memory": []}}
+            ).encode(),
+            media_type="application/json",
         )
 
         response = client.post("/api/v2/memories/search", json=payload)
         assert response.status_code == 200
 
         mock_search.assert_awaited_once()
-        # The spec passed to _search_target_memories must carry set_metadata
+        # The spec passed to the search service must carry set_metadata
         _, call_kwargs = mock_search.call_args
         assert call_kwargs["spec"].set_metadata == {
             "user_id": "user123",
