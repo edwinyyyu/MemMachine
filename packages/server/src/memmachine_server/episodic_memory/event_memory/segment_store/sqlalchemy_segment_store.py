@@ -23,7 +23,9 @@ from sqlalchemy import (
     Index,
     Integer,
     LargeBinary,
+    MetaData,
     String,
+    Table,
     Uuid,
     delete,
     event,
@@ -47,8 +49,10 @@ from sqlalchemy.orm import (
     DeclarativeBase,
     InstrumentedAttribute,
     MappedColumn,
+    aliased,
     mapped_column,
 )
+from sqlalchemy.orm.util import AliasedClass
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -215,6 +219,46 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         self._create_session = async_sessionmaker(engine, expire_on_commit=False)
         self._is_sqlite = engine.dialect.name == "sqlite"
 
+        if engine.dialect.name == "postgresql":
+            # Address this partition's child tables directly instead of the
+            # partitioned parents. Parent-table queries carry the partition
+            # key as a bind parameter, so once the driver's prepared
+            # statement switches to a cached generic plan (after five
+            # executions) PostgreSQL locks EVERY child partition on every
+            # execution before runtime pruning runs; with many partitions
+            # and concurrent sessions this exhausts the lock table
+            # ("out of shared memory") and saturates the planner. A query
+            # that names the child only ever plans and locks that child.
+            metadata = MetaData()
+            segment_child_table = SegmentRow.__table__.to_metadata(
+                metadata, name=f"segment_store_sg_p_{partition_key}"
+            )
+            derivative_link_child_table = DerivativeLinkRow.__table__.to_metadata(
+                metadata, name=f"segment_store_dv_ln_p_{partition_key}"
+            )
+            # adapt_on_names: the child Table is a fresh object with no
+            # lineage to the parent's columns, so the entity's attributes
+            # must map onto it by column name.
+            self._segment_row: type[SegmentRow] | AliasedClass[SegmentRow] = aliased(
+                SegmentRow, segment_child_table, adapt_on_names=True
+            )
+            self._derivative_link_row: (
+                type[DerivativeLinkRow] | AliasedClass[DerivativeLinkRow]
+            ) = aliased(
+                DerivativeLinkRow, derivative_link_child_table, adapt_on_names=True
+            )
+            # insert()/delete() cannot target an aliased entity; they take
+            # the child Table itself (or the ORM class on other dialects).
+            self._segment_dml_target: type[SegmentRow] | Table = segment_child_table
+            self._derivative_link_dml_target: type[DerivativeLinkRow] | Table = (
+                derivative_link_child_table
+            )
+        else:
+            self._segment_row = SegmentRow
+            self._derivative_link_row = DerivativeLinkRow
+            self._segment_dml_target = SegmentRow
+            self._derivative_link_dml_target = DerivativeLinkRow
+
     @override
     @property
     def config(self) -> SegmentStorePartitionConfig:
@@ -274,7 +318,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             for segment in segments
         ]
         if segment_row_values:
-            await session.execute(insert(SegmentRow), segment_row_values)
+            await session.execute(insert(self._segment_dml_target), segment_row_values)
 
     async def _insert_derivative_links(
         self,
@@ -292,7 +336,9 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             for derivative_uuid in derivative_uuids
         ]
         if derivative_row_values:
-            await session.execute(insert(DerivativeLinkRow), derivative_row_values)
+            await session.execute(
+                insert(self._derivative_link_dml_target), derivative_row_values
+            )
 
     # Retrieval
 
@@ -313,15 +359,16 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             self._tracker("get_segment_contexts"),
             self._create_session() as session,
         ):
-            seed_segments_query = select(SegmentRow).where(
-                SegmentRow.uuid.in_(seed_segment_uuids),
-                SegmentRow.partition_key == self._partition_key,
+            segment_row = self._segment_row
+            seed_segments_query = select(segment_row).where(
+                segment_row.uuid.in_(seed_segment_uuids),
+                segment_row.partition_key == self._partition_key,
             )
             if property_filter is not None:
                 seed_segments_query = seed_segments_query.where(
                     compile_sql_filter(
                         property_filter,
-                        SQLAlchemySegmentStorePartition._resolve_segment_field,
+                        self._resolve_segment_field,
                     )
                 )
             seed_segment_rows = (
@@ -385,26 +432,27 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         property_filter: FilterExpr | None,
     ) -> dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]]:
         """Get backward/forward context using LATERAL joins (non-SQLite)."""
+        segment_row = self._segment_row
         seeds_subquery = (
             select(
-                SegmentRow.uuid.label("seed_uuid"),
-                SegmentRow.timestamp.label("seed_timestamp"),
-                SegmentRow.event_uuid.label("seed_event_uuid"),
-                SegmentRow.index.label("seed_index"),
-                SegmentRow.offset.label("seed_offset"),
+                segment_row.uuid.label("seed_uuid"),
+                segment_row.timestamp.label("seed_timestamp"),
+                segment_row.event_uuid.label("seed_event_uuid"),
+                segment_row.index.label("seed_index"),
+                segment_row.offset.label("seed_offset"),
             )
             .where(
-                SegmentRow.partition_key == self._partition_key,
-                SegmentRow.uuid.in_(seed_rows_by_uuid.keys()),
+                segment_row.partition_key == self._partition_key,
+                segment_row.uuid.in_(seed_rows_by_uuid.keys()),
             )
             .subquery("seeds")
         )
 
         segment_ordering_columns = tuple_(
-            SegmentRow.timestamp,
-            SegmentRow.event_uuid,
-            SegmentRow.index,
-            SegmentRow.offset,
+            segment_row.timestamp,
+            segment_row.event_uuid,
+            segment_row.index,
+            segment_row.offset,
         )
         seed_ordering_columns = tuple_(
             seeds_subquery.c.seed_timestamp,
@@ -423,8 +471,8 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             """Get context rows per seed in the specified direction."""
             # Build a LATERAL subquery that gets context rows for each seed.
             context_rows_query = (
-                select(SegmentRow)
-                .where(SegmentRow.partition_key == partition_key, range_condition)
+                select(segment_row)
+                .where(segment_row.partition_key == partition_key, range_condition)
                 .order_by(*ordering)
                 .limit(limit)
                 .correlate(seeds_subquery)
@@ -433,7 +481,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 context_rows_query = context_rows_query.where(
                     compile_sql_filter(
                         property_filter,
-                        SQLAlchemySegmentStorePartition._resolve_segment_field,
+                        self._resolve_segment_field,
                     )
                 )
             lateral_subquery = context_rows_query.subquery().lateral("context")
@@ -474,10 +522,10 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             return rows_by_seed
 
         chronological_order = [
-            SegmentRow.timestamp,
-            SegmentRow.event_uuid,
-            SegmentRow.index,
-            SegmentRow.offset,
+            segment_row.timestamp,
+            segment_row.event_uuid,
+            segment_row.index,
+            segment_row.offset,
         ]
         reverse_chronological_order = [col.desc() for col in chronological_order]
 
@@ -518,19 +566,20 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         property_filter: FilterExpr | None,
     ) -> dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]]:
         """Get backward/forward context per seed (SQLite fallback)."""
+        segment_row = self._segment_row
         context_rows_by_seed: dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]] = {}
 
         segment_ordering_columns = tuple_(
-            SegmentRow.timestamp,
-            SegmentRow.event_uuid,
-            SegmentRow.index,
-            SegmentRow.offset,
+            segment_row.timestamp,
+            segment_row.event_uuid,
+            segment_row.index,
+            segment_row.offset,
         )
 
         compiled_property_filter = (
             compile_sql_filter(
                 property_filter,
-                SQLAlchemySegmentStorePartition._resolve_segment_field,
+                self._resolve_segment_field,
             )
             if property_filter is not None
             else None
@@ -547,16 +596,16 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             backward_rows: list[SegmentRow] = []
             if max_backward_segments > 0:
                 backward_rows_query = (
-                    select(SegmentRow)
+                    select(segment_row)
                     .where(
-                        SegmentRow.partition_key == self._partition_key,
+                        segment_row.partition_key == self._partition_key,
                         segment_ordering_columns < seed_ordering_values,
                     )
                     .order_by(
-                        SegmentRow.timestamp.desc(),
-                        SegmentRow.event_uuid.desc(),
-                        SegmentRow.index.desc(),
-                        SegmentRow.offset.desc(),
+                        segment_row.timestamp.desc(),
+                        segment_row.event_uuid.desc(),
+                        segment_row.index.desc(),
+                        segment_row.offset.desc(),
                     )
                     .limit(max_backward_segments)
                 )
@@ -571,16 +620,16 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             forward_rows: list[SegmentRow] = []
             if max_forward_segments > 0:
                 forward_rows_query = (
-                    select(SegmentRow)
+                    select(segment_row)
                     .where(
-                        SegmentRow.partition_key == self._partition_key,
+                        segment_row.partition_key == self._partition_key,
                         segment_ordering_columns > seed_ordering_values,
                     )
                     .order_by(
-                        SegmentRow.timestamp,
-                        SegmentRow.event_uuid,
-                        SegmentRow.index,
-                        SegmentRow.offset,
+                        segment_row.timestamp,
+                        segment_row.event_uuid,
+                        segment_row.index,
+                        segment_row.offset,
                     )
                     .limit(max_forward_segments)
                 )
@@ -609,9 +658,10 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             self._tracker("get_segment_uuids_by_event_uuids"),
             self._create_session() as session,
         ):
-            query = select(SegmentRow.event_uuid, SegmentRow.uuid).where(
-                SegmentRow.partition_key == self._partition_key,
-                SegmentRow.event_uuid.in_(event_uuids),
+            segment_row = self._segment_row
+            query = select(segment_row.event_uuid, segment_row.uuid).where(
+                segment_row.partition_key == self._partition_key,
+                segment_row.event_uuid.in_(event_uuids),
             )
             rows = (await session.execute(query)).all()
 
@@ -633,11 +683,12 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             self._tracker("get_derivative_uuids_by_segment_uuids"),
             self._create_session() as session,
         ):
+            derivative_link_row = self._derivative_link_row
             query = select(
-                DerivativeLinkRow.segment_uuid, DerivativeLinkRow.uuid
+                derivative_link_row.segment_uuid, derivative_link_row.uuid
             ).where(
-                DerivativeLinkRow.partition_key == self._partition_key,
-                DerivativeLinkRow.segment_uuid.in_(segment_uuids),
+                derivative_link_row.partition_key == self._partition_key,
+                derivative_link_row.segment_uuid.in_(segment_uuids),
             )
             rows = (await session.execute(query)).all()
 
@@ -663,42 +714,44 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             session.begin(),
         ):
             await self._lock_partition_for_write(session)
+            segment_row = self._segment_row
             if not self._is_sqlite:
                 # Lock rows in deterministic order to prevent deadlocks
                 # from concurrent deletions with overlapping UUID sets.
                 # SQLite relies on write serialization by the database.
                 await session.execute(
-                    select(SegmentRow.uuid)
+                    select(segment_row.uuid)
                     .where(
-                        SegmentRow.partition_key == self._partition_key,
-                        SegmentRow.uuid.in_(segment_uuids),
+                        segment_row.partition_key == self._partition_key,
+                        segment_row.uuid.in_(segment_uuids),
                     )
-                    .order_by(SegmentRow.uuid)
+                    .order_by(segment_row.uuid)
                     .with_for_update()
                 )
 
             # CASCADE deletes derivatives via FK.
             await session.execute(
-                delete(SegmentRow).where(
-                    SegmentRow.partition_key == self._partition_key,
-                    SegmentRow.uuid.in_(segment_uuids),
+                delete(self._segment_dml_target).where(
+                    segment_row.partition_key == self._partition_key,
+                    segment_row.uuid.in_(segment_uuids),
                 )
             )
 
     # Helpers
 
-    @staticmethod
     def _resolve_segment_field(
+        self,
         field: str,
     ) -> tuple[ColumnElement, FieldEncoding]:
         """Map a filter field name to a segment column and encoding."""
+        segment_row = self._segment_row
         if field == "timestamp":
-            return SegmentRow.timestamp.expression, "column"
+            return segment_row.timestamp.expression, "column"
         internal_name, is_user_metadata = normalize_filter_field(field)
         if is_user_metadata:
             key = demangle_user_metadata_key(internal_name)
-            return SegmentRow.properties[key], "properties_json"
-        return SegmentRow.properties[f"_{field}"], "properties_json"
+            return segment_row.properties[key], "properties_json"
+        return segment_row.properties[f"_{field}"], "properties_json"
 
     def _segment_from_segment_row(self, row: SegmentRow) -> Segment:
         """Convert a SegmentRow into a Segment."""
