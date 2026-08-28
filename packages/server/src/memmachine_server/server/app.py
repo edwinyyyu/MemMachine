@@ -62,27 +62,33 @@ class MemMachineAPI(FastAPI):
     """MemMachine API wrapper."""
 
     _FAST_SEARCH_PATH = "/api/v2/memories/search"
+    _FAST_ADD_PATH = "/api/v2/memories"
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Short-circuit the search hot path around the framework stack.
+        """Short-circuit the hot memory routes around the framework stack.
 
-        Only the happy path is handled here; anything unusual (parse or
+        Only the happy paths are handled here; anything unusual (parse or
         validation failure, service errors) replays the buffered request
         through the full application so error responses stay canonical.
         Requests served here bypass the HTTP middlewares (access log and
         request metrics).
         """
-        if (
-            scope["type"] == "http"
-            and scope["method"] == "POST"
-            and scope["path"] == MemMachineAPI._FAST_SEARCH_PATH
-        ):
-            from memmachine_server.server.api_v2.fast_search import (
-                fast_search_asgi,
-            )
+        if scope["type"] == "http" and scope["method"] == "POST":
+            path = scope["path"]
+            if path == MemMachineAPI._FAST_SEARCH_PATH:
+                from memmachine_server.server.api_v2.fast_search import (
+                    fast_search_asgi,
+                )
 
-            if await fast_search_asgi(self, scope, receive, send):
-                return
+                if await fast_search_asgi(self, scope, receive, send):
+                    return
+            elif path == MemMachineAPI._FAST_ADD_PATH:
+                from memmachine_server.server.api_v2.fast_search import (
+                    fast_add_asgi,
+                )
+
+                if await fast_add_asgi(self, scope, receive, send):
+                    return
         await super().__call__(scope, receive, send)
 
     def __init__(

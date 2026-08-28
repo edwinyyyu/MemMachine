@@ -13,9 +13,12 @@ from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Any
 
 from fastapi import FastAPI
-from memmachine_common.api.spec import SearchMemoriesSpec
+from memmachine_common.api.spec import AddMemoriesSpec, SearchMemoriesSpec
+from starlette.responses import PlainTextResponse, Response
 
+from memmachine_server.common import fast_json
 from memmachine_server.server.api_v2.service import (
+    _add_messages_to,
     _search_target_memories_response,
 )
 
@@ -56,6 +59,54 @@ def _replay(body: bytes) -> _Receive:
         return {"type": "http.request", "body": body, "more_body": False}
 
     return receive
+
+
+async def fast_add_asgi(
+    app: FastAPI,
+    scope: MutableMapping[str, Any],
+    receive: _Receive,
+    send: _Send,
+) -> bool:
+    """Serve POST /api/v2/memories directly; always sends some response.
+
+    Pre-service failures (parse/validation) replay the buffered request
+    through the full application, matching canonical 422s. Unlike search,
+    an add has side effects, so a SERVICE exception must NOT replay (it
+    would re-execute the write); the canonical route has no handler for it
+    either (it surfaces as the framework's plain 500), which is what is
+    sent here.
+    """
+    body = await _read_body(receive)
+    if body is None:
+        return True
+
+    try:
+        spec = AddMemoriesSpec.model_validate_json(body)
+        memmachine = app.state.mem_machine
+        target_memories = spec.types or _all_memory_types()
+    except Exception:  # parse/validation -> canonical 422 via replay
+        logger.debug("fast add fell back to the full app", exc_info=True)
+        await FastAPI.__call__(app, scope, _replay(body), send)
+        return True
+
+    try:
+        results = await _add_messages_to(
+            target_memories=target_memories, spec=spec, memmachine=memmachine
+        )
+    except Exception:  # side effects may exist; do NOT replay
+        logger.exception("add_memories failed")
+        await PlainTextResponse("Internal Server Error", status_code=500)(
+            scope, _replay(b""), send
+        )
+        return True
+
+    payload = fast_json.dumps(
+        {"results": [{"uid": result.uid} for result in results]}
+    )
+    await Response(content=payload, media_type="application/json")(
+        scope, _replay(b""), send
+    )
+    return True
 
 
 async def fast_search_asgi(

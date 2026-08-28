@@ -325,13 +325,16 @@ class LongTermMemory:
             num_episodes_limit,
         )
 
-        # Fast path: with no context expansion and no reranker, the segment
-        # texts are never read on this path - only `_episode_uid` and the
-        # score, both already present on the vector-store match payload. Skip
-        # the segment fetch and its materialization entirely. Divergence from
-        # the canonical path exists only under index/segment-store drift (a
-        # vector whose segment row was lost is kept here, dropped there).
-        if expand_context <= 0 and event_memory.reranker is None:
+        # Fast path: with no reranker, the segment texts are never read on
+        # this path - only `_episode_uid` and the score, both already present
+        # on the vector-store match payload. Skip the segment fetch and its
+        # materialization entirely. This includes expand_context > 0: the
+        # expanded contexts are equally unread here (verified: responses are
+        # byte-identical for expand_context 0 and 5), so the expansion work
+        # was pure waste on this path. Divergence from the canonical path
+        # exists only under index/segment-store drift (a vector whose segment
+        # row was lost is kept here, dropped there).
+        if event_memory.reranker is None:
             fast = await self._search_scored_event_fast(
                 event_memory,
                 query,

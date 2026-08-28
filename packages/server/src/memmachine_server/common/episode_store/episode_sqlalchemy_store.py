@@ -33,7 +33,7 @@ from sqlalchemy.orm import DeclarativeBase, mapped_column
 from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import ColumnElement
 
-from memmachine_server.common import fast_model
+from memmachine_server.common import fast_json, fast_model
 from memmachine_server.common.episode_store.episode_model import (
     ContentType,
     EpisodeEntry,
@@ -213,6 +213,11 @@ class SqlAlchemyEpisodeStore(EpisodeStorage):
 
             values_to_insert.append(entry_values)
 
+        if self._engine.dialect.name == "postgresql":
+            fast = await self._add_episodes_fast(session_key, episodes)
+            if fast is not None:
+                return fast
+
         insert_stmt = insert(Episode).returning(Episode)
 
         async with self._create_session() as session:
@@ -224,6 +229,90 @@ class SqlAlchemyEpisodeStore(EpisodeStorage):
             res_episodes = [e.to_typed_model() for e in persisted_episodes]
 
         return res_episodes
+
+    async def _add_episodes_fast(
+        self,
+        session_key: str,
+        episodes: list[EpisodeEntry],
+    ) -> list[EpisodeE] | None:
+        """add_episodes via one raw INSERT ... RETURNING.
+
+        Only handles entries with created_at supplied (the REST path always
+        supplies it; entries without it rely on the column server default,
+        which the canonical path provides). Returns None on any failure or
+        unsupported shape so the canonical path serves.
+        """
+        if any(entry.created_at is None for entry in episodes):
+            return None
+        try:
+            params: list[object] = []
+            groups: list[str] = []
+            for i, entry in enumerate(episodes):
+                base = i * 8
+                groups.append(
+                    f"(${base + 1}, ${base + 2}, ${base + 3}, ${base + 4}, "
+                    f"${base + 5}, ${base + 6}, ${base + 7}::jsonb, ${base + 8})"
+                )
+                params.extend((
+                    entry.content,
+                    session_key,
+                    entry.producer_id,
+                    entry.producer_role,
+                    entry.produced_for_id,
+                    entry.created_at,
+                    fast_json.dumps(entry.metadata).decode()
+                    if entry.metadata is not None
+                    else None,
+                    (entry.episode_type or EpisodeType.MESSAGE).name,
+                ))
+            sql = (
+                "INSERT INTO episodestore (content, session_key, producer_id, "
+                'producer_role, produced_for_id, created_at, "metadata", '
+                "episode_type) VALUES "
+                + ", ".join(groups)
+                + " RETURNING id, content, session_key, producer_id, "
+                'producer_role, produced_for_id, episode_type, created_at, '
+                '"metadata"'
+            )
+            async with self._engine.connect() as conn:
+                raw = await conn.get_raw_connection()
+                driver = raw.driver_connection
+                async with driver.transaction():
+                    rows = await driver.fetch(sql, *params)
+            result: list[EpisodeE] = []
+            for row in rows:
+                metadata = row["metadata"]
+                if isinstance(metadata, str):
+                    metadata = safe_loads(metadata)
+                created_at = row["created_at"]
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=UTC)
+                episode_type = row["episode_type"]
+                result.append(
+                    fast_model.build(
+                        EpisodeE,
+                        {
+                            "uid": EpisodeIdT(row["id"]),
+                            "content": row["content"],
+                            "session_key": row["session_key"],
+                            "created_at": created_at,
+                            "producer_id": row["producer_id"],
+                            "producer_role": row["producer_role"],
+                            "produced_for_id": row["produced_for_id"],
+                            "sequence_num": 0,
+                            "episode_type": EpisodeType[episode_type]
+                            if not isinstance(episode_type, EpisodeType)
+                            else episode_type,
+                            "content_type": ContentType.STRING,
+                            "filterable_metadata": None,
+                            "metadata": metadata or None,
+                        },
+                    )
+                )
+        except Exception:  # rolled back -> canonical path raises canonically
+            logger.debug("add_episodes fast path fell back", exc_info=True)
+            return None
+        return result
 
     @validate_call
     async def get_episode(self, episode_id: EpisodeIdT) -> EpisodeE | None:
