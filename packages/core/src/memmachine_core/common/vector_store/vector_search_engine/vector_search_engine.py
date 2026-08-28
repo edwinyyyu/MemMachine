@@ -1,0 +1,163 @@
+"""Abstract base class for a vector search engine."""
+
+from abc import ABC, abstractmethod
+from collections.abc import Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class SearchMatch:
+    """
+    A single search match.
+
+    Attributes:
+        cosine_similarity (float):
+            Cosine similarity between the query vector and the matched
+            vector, in [-1, 1]. Higher is a better match.
+        key (int): Engine key for the matched vector.
+    """
+
+    cosine_similarity: float
+    key: int
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    """
+    Result of a nearest-neighbor search for a single query vector.
+
+    Matches are ordered from best to worst.
+    """
+
+    matches: list[SearchMatch]
+
+
+class VectorSearchEngine(ABC):
+    """
+    A vector search engine that indexes vectors by integer key.
+
+    Provides nearest-neighbor search (exact or approximate) over vectors
+    identified by caller-provided integer keys.
+
+    Results are returned ordered from best to worst.
+
+    Safe for concurrent use from async tasks (single event loop).
+    Not safe across threads or processes.
+    """
+
+    @abstractmethod
+    async def add(self, vectors: Mapping[int, Sequence[float]]) -> None:
+        """
+        Add vectors.
+
+        Keys must not already exist. The caller is responsible for
+        removing existing keys before adding. Behavior on duplicate
+        keys is undefined.
+
+        Args:
+            vectors (Mapping[int, Sequence[float]]):
+                Mapping of integer keys to vectors.
+        """
+
+    @abstractmethod
+    async def search(
+        self,
+        vectors: Iterable[Sequence[float]],
+        *,
+        limit: int,
+        allowlist: Collection[int] | None = None,
+    ) -> list[SearchResult]:
+        """
+        Search for vectors similar to the query vectors.
+
+        Results may be approximate depending on the engine implementation,
+        with or without an allowlist.
+
+        Args:
+            vectors (Iterable[Sequence[float]]):
+                Query vectors.
+            limit (int):
+                Maximum number of results per query.
+            allowlist (Collection[int] | None):
+                If provided, restrict results to these keys.
+                Keys that do not exist are ignored;
+                an empty allowlist returns no results
+                (default: None).
+
+        Returns:
+            list[SearchResult]:
+                Results for each query vector,
+                ordered as in the input iterable.
+        """
+
+    @abstractmethod
+    async def get_cosine_similarities(
+        self,
+        query_vector: Sequence[float],
+        keys: Iterable[int],
+    ) -> dict[int, float]:
+        """
+        Get cosine similarities between a query vector and vectors by key.
+
+        Every key the engine can score is returned; keys it cannot score
+        are omitted. Engines with keyed vector access answer this more
+        cheaply than a search.
+
+        Similarities may be computed from quantized stored vectors,
+        so they may not be faithful to similarities computed
+        with a fresh embedding.
+
+        Args:
+            query_vector (Sequence[float]):
+                The vector to compare against.
+            keys (Iterable[int]):
+                Keys of vectors to compare.
+
+        Returns:
+            dict[int, float]:
+                Mapping of key to cosine similarity in [-1, 1]
+                for keys that exist. Missing keys are omitted.
+        """
+
+    @abstractmethod
+    async def remove(self, keys: Iterable[int]) -> None:
+        """
+        Remove vectors by key.
+
+        Missing keys are silently ignored.
+
+        Args:
+            keys (Iterable[int]):
+                Keys of vectors to remove.
+        """
+
+    @abstractmethod
+    async def save(self, path: str) -> None:
+        """
+        Publish the index at `path`, replacing whatever index is there.
+
+        Returning must mean a later `load` reads this index or the one it
+        replaced, never a half-written mixture of the two. It does *not* mean
+        the publication survives a power failure: implementations may publish
+        with an atomic rename, which a power failure can roll back after this
+        returns.
+
+        Callers must therefore treat a published index as possibly stale, but
+        never as corrupt. `SQLiteVectorStore` trims its pending-operation log
+        once this returns, so a rolled-back publication leaves records whose
+        vectors are missing from the index until they are re-upserted.
+
+        Args:
+            path (str):
+                File path to write the index to.
+        """
+
+    @abstractmethod
+    async def load(self, path: str) -> None:
+        """
+        Load the index from disk.
+
+        Args:
+            path (str):
+                File path to read the index from.
+        """

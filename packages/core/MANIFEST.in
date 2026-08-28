@@ -1,0 +1,3 @@
+# setuptools-scm's file finder adds every git-tracked file under this package
+# to the sdist. Tests are not part of the distribution.
+prune tests

@@ -1,0 +1,75 @@
+name: Check uv.lock
+
+# Ensures uv.lock is in sync with pyproject.toml and related files.
+# If uv.lock is in sync, the workflow passes.
+# If not, the workflow fails and the contributor should run `uv lock`
+# (or otherwise regenerate uv.lock) and commit the updated file before merging.
+#
+# Dependabot bumps a pyproject.toml without regenerating uv.lock, so for its
+# pull requests uv.lock is regenerated and pushed back to the branch
+# instead of failing the check.
+
+on:
+  pull_request:
+    paths:
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'packages/**/pyproject.toml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel any preceding run on the pull request after a new commit is pushed.
+concurrency:
+  group: check-uv-lock-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  check-lock:
+    # Verifies that uv.lock matches the project configuration; update it before merging if this fails.
+    # Dependabot pull requests are handled by the regenerate job below instead.
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Check uv.lock
+        run: uv lock --check
+
+  # Separate job so that only this one holds write access to the repository.
+  regenerate-lock-for-dependabot:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.head_ref }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Regenerate uv.lock
+        run: uv lock
+
+      - name: Commit regenerated uv.lock
+        run: |
+          if git diff --quiet -- uv.lock; then
+            echo "No uv.lock changes to commit"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add uv.lock
+          git commit -m "chore: regenerate uv.lock after Dependabot update"
+          git push

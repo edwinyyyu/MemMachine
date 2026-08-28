@@ -1,58 +1,34 @@
 [tool.uv.workspace]
-members = ["packages/client", "packages/common", "packages/server"]
+members = ["packages/core"]
 
 [tool.uv.sources]
-memmachine-common = { workspace = true }
-memmachine-server = { workspace = true }
-memmachine-client = { workspace = true }
-en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
+memmachine-core = { workspace = true }
 
 [tool.uv]
 constraint-dependencies = [
     "python-dotenv>=1.2.2",
-    "authlib>=1.6.11",
-    "Mako>=1.3.11",
     "langsmith>=0.7.31",
-    "python-multipart>=0.0.26",
     "langchain-core>=1.2.28",
-    "cryptography>=46.0.7",
-    "aiohttp>=3.13.4",
     "Pygments>=2.20.0",
-    "PyJWT>=2.12.0",
     "transformers>=5.0.0",
 ]
 
 [dependency-groups]
 dev = [
-    "complexipy>=5.4.1",
+    "boto3>=1.40.40",
     "complexipy>=5.4.1",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.2.0",
     "ruff==0.15.14",
-    "testcontainers[neo4j,postgres,qdrant]>=4.14.2",
+    "testcontainers[postgres,qdrant]>=4.14.2",
     "ty~=0.0.38",
-    "tomli>=2.4.1",
     "pytest-cov>=7.0.0",
-    "pytest-xdist>=3.8.0",
-]
-# Optional spaCy deps for the non-LLM multi-hop decomposer. Not a hard runtime
-# dependency of memmachine-server: when spaCy is absent, RaragQueryAgent falls
-# back to LLM-based query splitting. Kept out of the server package's install
-# deps because (1) spaCy model wheels aren't on PyPI (pip can't resolve them)
-# and (2) spaCy 3.8.x has no cp314 wheels, so they must be skipped on 3.14.
-# Install with: uv sync --group multihop
-multihop = [
-    "spacy>=3.8.0,<3.9.0; python_version < '3.14'",
-    "en-core-web-sm; python_version < '3.14'",
 ]
 
 [tool.ruff]
 exclude = [
-    "tools",
     "build",
     ".tmp",
-    "evaluation/retrieval_skill",
-    "src/memmachine-ts",
 ]
 
 [tool.ruff.lint]
@@ -99,10 +75,14 @@ select = [
     "W",
     "YTT",
 ]
+# D213 (summaries open on the second line) is enforced over its
+# mutually exclusive google-convention counterpart D212.
+extend-select = ["D213"]
 ignore = [
-    "E501", "UP015", "TRY002", "PLC0415",
-    "D102", "D212", "D203", "RET504",
-    "TRY003",
+    "E501",    # line length is the formatter's job; what remains is unsplittable
+    "PLC0415", # function-level imports defer heavy or optional dependencies
+    "D212",    # mutually exclusive with the enforced D213
+    "TRY003",  # plain exceptions with inline messages
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -110,53 +90,13 @@ convention = "google"
 
 # Do not add any new paths under packages/
 [tool.ruff.lint.per-file-ignores]
-"packages/client/client_tests/**/*.py" = ["ANN", "D", "SLF", "ARG"]
-"packages/server/server_tests/**/*.py" = ["ANN", "D", "SLF", "ARG"]
-"packages/common/common_tests/**/*.py" = ["ANN", "D", "SLF", "ARG"]
-"tools/**/*.py" = ["SIM", "DTZ", "C9", "ANN", "T201", "PT", "INP", "PTH", "D"]
-"examples/**" = [
-    "ANN",
-    "ARG",
-    "ASYNC210",
-    "C901",
-    "D",
-    "FA",
-    "PERF203",
-    "PTH",
-    "T201",
-    "TRY300",
-    "TRY401",
-]
-"integrations/**" = [
-    "ANN",
-    "T201",
-    "D",
-    "ARG",
-    "FA",
-    "PERF203",
-]
-"evaluation/**/*.py" = [
-    "D",
-    "ARG",
-    "T201",
-    "ANN",
-    "FA",
-    "PTH123",
-    "PTH120",
-    "PTH110",
-    "PTH100",
-    "ASYNC230",
-    "RUF001",
-    "N806",
-    "B023",
-    "B007",
-    "TRY300",
-    "PERF203",
-    "PERF401",
-]
+# INP: tests/ trees are deliberately namespace packages (see pytest config).
+"packages/*/tests/**/*.py" = ["ANN", "D", "SLF", "ARG", "INP"]
 
 [tool.ty.environment]
-extra-paths = ["packages/common/src", "packages/server/src", "packages/client/src"]
+extra-paths = [
+    "packages/core",
+]
 
 [tool.ty.src]
 exclude = ["packages/**/build/**"]
@@ -164,7 +104,18 @@ exclude = ["packages/**/build/**"]
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
-addopts = ["-m", "not integration"]
+# importlib import mode loads test modules by path instead of by mutating
+# sys.path, so test directories need no __init__.py and basenames need not be
+# globally unique (e.g. two test_data_types.py under different subpackages).
+addopts = ["-m", "not integration", "--import-mode=importlib"]
+# Every package's tests/ is a PEP 420 namespace package with NO __init__.py, so
+# the tests/ trees of separate workspace members merge instead of shadowing:
+# packages/core/tests/memmachine_core -> tests.memmachine_core
+# packages/server/tests/memmachine_server -> tests.memmachine_server
+# Each member's tests/ must therefore mirror its own distribution package name.
+# Adding a member means adding its directory here.
+pythonpath = ["packages/core"]
+consider_namespace_packages = true
 
 markers = [
     "integration: mark the test as an integration test",
@@ -172,7 +123,7 @@ markers = [
 ]
 
 [tool.complexipy]
-paths = ["packages/server/src", "packages/client/src", "packages/common/src"]
+paths = ["packages/core/src"]
 max-complexity-allowed = 10
 quiet = false
 ignore-complexity = false
@@ -183,9 +134,7 @@ exclude = []
 
 [tool.coverage.run]
 source = [
-    "packages/server/src/memmachine",
-    "packages/client/src/memmachine_client",
-    "packages/common/src/memmachine_common",
+    "packages/core/src/memmachine_core",
 ]
 
 [tool.coverage.report]

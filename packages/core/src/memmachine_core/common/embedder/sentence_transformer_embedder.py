@@ -1,0 +1,176 @@
+"""Sentence transformer-based embedder implementation."""
+
+import asyncio
+import logging
+import time
+from typing import override
+from uuid import uuid4
+
+import numpy as np
+from pydantic import BaseModel, Field, InstanceOf
+from sentence_transformers import SentenceTransformer
+
+from memmachine_core.common import (
+    ExternalServiceAPIError,
+)
+from memmachine_core.common.utils import chunk_text, unflatten_like
+
+from .embedder import Embedder
+
+logger = logging.getLogger(__name__)
+
+
+class SentenceTransformerEmbedderParams(BaseModel):
+    """Parameters for SentenceTransformerEmbedder."""
+
+    model_name: str = Field(
+        ...,
+        description="The name of the sentence transformer model.",
+    )
+    sentence_transformer: InstanceOf[SentenceTransformer] = Field(
+        ...,
+        description="The sentence transformer model to use for generating embeddings.",
+    )
+    max_input_length: int | None = Field(
+        default=None,
+        description="Maximum input length for the model (in Unicode code points).",
+        gt=0,
+    )
+    batch_size: int | None = Field(
+        None,
+        description="Batch size for embedding requests.",
+    )
+
+
+class SentenceTransformerEmbedder(Embedder):
+    """Embedder powered by a sentence transformer model."""
+
+    def __init__(self, params: SentenceTransformerEmbedderParams) -> None:
+        """Initialize the sentence transformer embedder."""
+        super().__init__(batch_size=params.batch_size)
+
+        self._model_name = params.model_name
+        self._sentence_transformer = params.sentence_transformer
+
+        self._dimensions = self._sentence_transformer.get_embedding_dimension() or len(
+            self._sentence_transformer.encode("")
+        )
+        if self._sentence_transformer.similarity_fn_name != "cosine":
+            logger.warning(
+                "Sentence transformer '%s' declares similarity function '%s', "
+                "but embeddings are always compared by cosine similarity",
+                self._model_name,
+                self._sentence_transformer.similarity_fn_name,
+            )
+
+        self._max_input_length = params.max_input_length
+
+    @override
+    async def _ingest_embed(
+        self,
+        inputs: list[str],
+        max_attempts: int = 1,
+    ) -> list[list[float]]:
+        return await self._embed(inputs, max_attempts)
+
+    @override
+    async def _search_embed(
+        self,
+        queries: list[str],
+        max_attempts: int = 1,
+    ) -> list[list[float]]:
+        return await self._embed(queries, max_attempts, prompt_name="query")
+
+    async def _embed(
+        self,
+        inputs: list[str],
+        max_attempts: int = 1,
+        prompt_name: str | None = None,
+    ) -> list[list[float]]:
+        """Generate embeddings with retry logic."""
+        if not inputs:
+            return []
+        if max_attempts <= 0:
+            raise ValueError("max_attempts must be a positive integer")
+
+        # Greedy max-size chunks measured more faithful to the whole-text
+        # embedding than balanced chunks when combined with the
+        # length-weighted average below: most characters get the largest
+        # available context window.
+        inputs_chunks = [
+            chunk_text(input_text, self._max_input_length)
+            if self._max_input_length is not None and input_text
+            else [input_text]
+            for input_text in inputs
+        ]
+
+        chunks: list[str] = [
+            chunk for input_chunks in inputs_chunks for chunk in input_chunks
+        ]
+
+        embed_call_uuid = uuid4()
+
+        start_time = time.monotonic()
+
+        try:
+            logger.debug(
+                "[call uuid: %s] "
+                "Attempting to create embeddings using %s sentence transformer model",
+                embed_call_uuid,
+                self._model_name,
+            )
+            response = await asyncio.to_thread(
+                self._sentence_transformer.encode,
+                chunks,
+                prompt_name=prompt_name,
+                show_progress_bar=False,
+            )
+        except Exception as e:
+            # Exception may not be retried.
+            error_message = (
+                f"[call uuid: {embed_call_uuid}] "
+                "Giving up creating embeddings "
+                f"due to assumed non-retryable {type(e).__name__}"
+            )
+            logger.exception(error_message)
+            raise ExternalServiceAPIError(error_message) from e
+
+        end_time = time.monotonic()
+        logger.debug(
+            "[call uuid: %s] Embeddings created in %.3f seconds",
+            embed_call_uuid,
+            end_time - start_time,
+        )
+
+        chunk_embeddings = np.asarray(response, dtype=float).tolist()
+        inputs_chunk_embeddings = unflatten_like(
+            chunk_embeddings,
+            inputs_chunks,
+        )
+
+        # Average chunk embeddings to get input embeddings, weighting each
+        # chunk by its length: under mean pooling the whole-text embedding is
+        # approximately a length-weighted average of its chunks' embeddings,
+        # and greedy chunking makes chunk lengths uneven.
+        return [
+            np.average(
+                chunk_embeddings,
+                axis=0,
+                weights=[max(len(chunk), 1) for chunk in input_chunks],
+            )
+            .astype(float)
+            .tolist()
+            for input_chunks, chunk_embeddings in zip(
+                inputs_chunks, inputs_chunk_embeddings, strict=True
+            )
+        ]
+
+    @property
+    @override
+    def model_id(self) -> str:
+        return self._model_name
+
+    @property
+    @override
+    def dimensions(self) -> int:
+        return self._dimensions

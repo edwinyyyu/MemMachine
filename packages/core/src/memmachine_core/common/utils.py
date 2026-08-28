@@ -1,0 +1,304 @@
+"""Common utility functions."""
+
+import asyncio
+import functools
+import math
+import re
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterable
+from contextlib import AbstractAsyncContextManager
+from datetime import UTC, datetime
+from typing import Any, ParamSpec, TypeVar, cast
+
+import numpy as np
+from nltk import sent_tokenize
+
+T = TypeVar("T")
+P = ParamSpec("P")
+
+DEFAULT_MERGE_QUEUE_MAXSIZE = 1024
+
+
+class _Done:
+    """Sentinel type used to signal completion in merge_async_iterators."""
+
+
+_DONE = _Done()
+
+
+async def merge_async_iterators[T](
+    iterators: list[AsyncIterator[T]],
+    *,
+    max_queue_size: int = DEFAULT_MERGE_QUEUE_MAXSIZE,
+) -> AsyncGenerator[T, None]:
+    """Merge multiple async iterators into one, running them in parallel."""
+    if not iterators:
+        return
+
+    queue: asyncio.Queue[T | BaseException | _Done] = asyncio.Queue(
+        maxsize=max_queue_size
+    )
+    done_count = 0
+    n = len(iterators)
+
+    async def producer(iterator: AsyncIterator[T]) -> None:
+        try:
+            async for item in iterator:
+                await queue.put(item)
+            await queue.put(_DONE)
+        except BaseException as e:
+            await queue.put(e)
+
+    tasks = [asyncio.create_task(producer(it)) for it in iterators]
+
+    try:
+        while done_count < n:
+            item = await queue.get()
+            if isinstance(item, _Done):
+                done_count += 1
+            elif isinstance(item, BaseException):
+                raise item
+            else:
+                yield cast(T, item)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def ensure_tz_aware(dt: datetime) -> datetime:
+    """Return an aware datetime; treat naive datetimes as UTC."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
+
+
+def utc_offset_seconds(dt: datetime) -> int:
+    """Return the UTC offset in seconds, treating naive datetimes as UTC."""
+    offset = dt.utcoffset()
+    return int(offset.total_seconds()) if offset is not None else 0
+
+
+async def async_with[T](
+    async_context_manager: AbstractAsyncContextManager,
+    awaitable: Awaitable[T],
+) -> T:
+    """
+    Use an async context manager while awaiting a coroutine.
+
+    Args:
+        async_context_manager (AbstractAsyncContextManager):
+            The async context manager to use.
+        awaitable (Awaitable):
+            The awaitable to execute within the context.
+
+    Returns:
+        Any:
+            The result of the awaitable.
+
+    """
+    async with async_context_manager:
+        return await awaitable
+
+
+def async_locked[**P, T](func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
+    """
+    Ensure that a coroutine function is executed with a shared lock.
+
+    The lock is shared across all invocations of the decorated coroutine function.
+    """
+    lock = asyncio.Lock()
+
+    @functools.wraps(func)
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        async with lock:
+            return await func(*args, **kwargs)
+
+    return wrapper
+
+
+def chunk_text(text: str, max_length: int) -> list[str]:
+    """
+    Chunk text into partitions not exceeding max_length.
+
+    Args:
+        text (str): The input text to chunk.
+        max_length (int): The maximum length of each chunk.
+
+    Returns:
+        list[str]: A list of text chunks.
+
+    """
+    if max_length <= 0:
+        raise ValueError("max_length must be greater than 0")
+
+    return [text[i : i + max_length] for i in range(0, len(text), max_length)]
+
+
+def chunk_text_balanced(text: str, max_length: int) -> list[str]:
+    """
+    Chunk text into balanced partitions not exceeding max_length.
+
+    Args:
+        text (str): The input text to chunk.
+        max_length (int): The maximum length of each chunk.
+
+    Returns:
+        list[str]: A list of text chunks.
+
+    """
+    if max_length <= 0:
+        raise ValueError("max_length must be greater than 0")
+
+    if len(text) == 0:
+        return []
+
+    num_chunks = math.ceil(len(text) / max_length)
+    chunk_size = math.ceil(len(text) / num_chunks)
+
+    return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
+
+
+def extract_sentences(text: str) -> set[str]:
+    """
+    Extract unique sentences from the input text.
+
+    Args:
+        text (str): The input text from which to extract sentences.
+
+    Returns:
+        set[str]: A set of unique sentences.
+
+    """
+    partitions = {
+        partition
+        for line in text.strip().splitlines()
+        for partition in sent_tokenize(line.strip())
+    }
+
+    return {
+        sentence
+        for partition in partitions
+        for sentence in re.findall(
+            r".*?(?:[?!\.\uff1f\uff01\u3002]*[?!\uff1f\uff01\u3002][?!\.\uff1f\uff01\u3002]*)+|.+$",
+            partition,
+        )
+        if any(c.isalnum() for c in sentence)
+    }
+
+
+def unflatten_like[T](
+    flat_list: list[T],
+    template_list: list[list[Any]],
+) -> list[list[T]]:
+    """
+    Unflatten a flat list into a nested list structure based on a template.
+
+    Args:
+        flat_list (list): The flat list to unflatten.
+        template_list (list): The template nested list structure.
+
+    Returns:
+        list: The unflattened nested list.
+
+    """
+    if not all(isinstance(template, list) for template in template_list):
+        raise TypeError("All elements in template_list must be lists.")
+
+    unflattened_list = []
+    current_index = 0
+
+    for template in template_list:
+        unflattened_list.append(
+            flat_list[current_index : current_index + len(template)]
+        )
+        current_index += len(template)
+
+    if current_index != len(flat_list):
+        raise ValueError("flat_list cannot be unflattened to match template_list.")
+
+    return unflattened_list
+
+
+def cluster_texts(
+    texts: Iterable[str],
+    max_num_texts_per_cluster: int,
+    max_total_length_per_cluster: int,
+) -> list[list[str]]:
+    """
+    Cluster texts based on maximum number of texts and total length of texts per cluster.
+
+    Args:
+        texts (Iterable[str]): The input texts to cluster.
+        max_num_texts_per_cluster (int): The maximum number of texts per cluster.
+        max_total_length_per_cluster (int): The maximum total length of texts per cluster.
+
+    Returns:
+        list[list[str]]: A list of text clusters.
+
+    """
+    if max_num_texts_per_cluster <= 0:
+        raise ValueError("max_num_texts_per_cluster must be greater than 0")
+    if max_total_length_per_cluster <= 0:
+        raise ValueError("max_total_length_per_cluster must be greater than 0")
+
+    clusters: list[list[str]] = []
+    current_cluster: list[str] = []
+    current_length = 0
+
+    for text in texts:
+        text_length = len(text)
+        if text_length > max_total_length_per_cluster:
+            raise ValueError(
+                f"Text length {text_length} exceeds max_total_length_per_cluster {max_total_length_per_cluster}"
+            )
+
+        if (
+            len(current_cluster) >= max_num_texts_per_cluster
+            or current_length + text_length > max_total_length_per_cluster
+        ):
+            if current_cluster:
+                clusters.append(current_cluster)
+            current_cluster = [text]
+            current_length = text_length
+        else:
+            current_cluster.append(text)
+            current_length += text_length
+
+    if current_cluster:
+        clusters.append(current_cluster)
+
+    return clusters
+
+
+def compute_cosine_similarity(
+    query_embedding: list[float],
+    candidate_embeddings: list[list[float]],
+) -> list[float]:
+    """
+    Compute cosine similarities between a query embedding and candidate embeddings.
+
+    Args:
+        query_embedding (list[float]): The embedding of the query.
+        candidate_embeddings (list[list[float]]): A list of candidate embeddings to compare against.
+
+    Returns:
+        list[float]: A cosine similarity in [-1, 1] for each candidate embedding.
+
+    """
+    if not candidate_embeddings:
+        return []
+
+    query_embedding_np = np.array(query_embedding)
+    candidate_embeddings_np = np.array(candidate_embeddings)
+
+    magnitude_products = np.linalg.norm(
+        candidate_embeddings_np,
+        axis=-1,
+    ) * np.linalg.norm(query_embedding_np)
+    magnitude_products[magnitude_products == 0] = float("inf")
+
+    cosine_similarities = (
+        np.dot(candidate_embeddings_np, query_embedding_np) / magnitude_products
+    )
+
+    return cosine_similarities.astype(float).tolist()

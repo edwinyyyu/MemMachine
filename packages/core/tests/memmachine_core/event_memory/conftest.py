@@ -1,0 +1,241 @@
+"""Shared fakes and fixtures for event memory tests."""
+
+from collections import defaultdict
+from collections.abc import Iterable, Mapping
+from datetime import datetime
+from typing import override
+from uuid import UUID
+
+import pytest
+
+from memmachine_core.common.filter import (
+    FilterExpr,
+)
+from memmachine_core.common.vector_store import (
+    VectorStoreCollectionConfig,
+)
+from memmachine_core.event_memory import (
+    EventMemory,
+    EventMemoryParams,
+    Segment,
+)
+from memmachine_core.event_memory.deriver.text_deriver import (
+    SentenceTextDeriver,
+    WholeTextDeriver,
+)
+from memmachine_core.event_memory.segment_store import (
+    SegmentStorePartition,
+    SegmentStorePartitionConfig,
+)
+from memmachine_core.event_memory.segmenter.text_segmenter import (
+    TextSegmenter,
+)
+from tests.memmachine_core.common.reranker.fake_embedder import (
+    FakeEmbedder,
+)
+from tests.memmachine_core.common.vector_store.in_memory_vector_store_collection import (
+    InMemoryVectorStoreCollection,
+    evaluate_filter,
+)
+
+# ---------------------------------------------------------------------------
+# Fakes
+# ---------------------------------------------------------------------------
+
+
+class InMemorySegmentStorePartition(SegmentStorePartition):
+    """Minimal in-memory segment store partition for testing."""
+
+    def __init__(
+        self,
+        config: SegmentStorePartitionConfig | None = None,
+    ) -> None:
+        self._config = config or SegmentStorePartitionConfig()
+        self.segments: dict[UUID, Segment] = {}
+        self.segment_order: list[UUID] = []
+        self.event_to_segments: dict[UUID, list[UUID]] = defaultdict(list)
+        self.segment_to_derivatives: dict[UUID, list[UUID]] = {}
+
+    @property
+    @override
+    def config(self) -> SegmentStorePartitionConfig:
+        return self._config
+
+    @override
+    async def add_segments(
+        self,
+        segments_to_derivative_uuids: Mapping[Segment, Iterable[UUID]],
+    ) -> None:
+        for segment, derivative_uuids in segments_to_derivative_uuids.items():
+            self.segments[segment.uuid] = segment
+            self.segment_order.append(segment.uuid)
+            self.event_to_segments[segment.event_uuid].append(segment.uuid)
+            self.segment_to_derivatives[segment.uuid] = list(derivative_uuids)
+
+    @override
+    async def get_segment_contexts(
+        self,
+        seed_segment_uuids: Iterable[UUID],
+        *,
+        max_backward_segments: int = 0,
+        max_forward_segments: int = 0,
+        since: datetime | None = None,
+        before: datetime | None = None,
+        property_filter: FilterExpr | None = None,
+    ) -> dict[UUID, list[Segment]]:
+        # Caller filter fields address segment properties exactly as written.
+        normalized_filter = property_filter
+        result: dict[UUID, list[Segment]] = {}
+        for seed_uuid in seed_segment_uuids:
+            if seed_uuid not in self.segments:
+                continue
+            try:
+                pos = self.segment_order.index(seed_uuid)
+            except ValueError:
+                continue
+            start = max(0, pos - max_backward_segments)
+            end = min(len(self.segment_order), pos + max_forward_segments + 1)
+            context = [
+                self.segments[uid]
+                for uid in self.segment_order[start:end]
+                if uid in self.segments
+                and self._in_time_range(self.segments[uid], since, before)
+                and (
+                    normalized_filter is None
+                    or evaluate_filter(normalized_filter, self.segments[uid].properties)
+                )
+            ]
+            if context:
+                result[seed_uuid] = context
+        return result
+
+    @staticmethod
+    def _in_time_range(
+        segment: Segment,
+        since: datetime | None,
+        before: datetime | None,
+    ) -> bool:
+        """Half-open [since, before) over the segment's own timestamp."""
+        if since is not None and segment.timestamp < since:
+            return False
+        return not (before is not None and segment.timestamp >= before)
+
+    @override
+    async def get_segment_uuids_by_event_uuids(
+        self,
+        event_uuids: Iterable[UUID],
+    ) -> dict[UUID, list[UUID]]:
+        result: dict[UUID, list[UUID]] = {}
+        for event_uuid in event_uuids:
+            segment_uuids = self.event_to_segments.get(event_uuid)
+            if segment_uuids:
+                result[event_uuid] = list(segment_uuids)
+        return result
+
+    @override
+    async def get_derivative_uuids_by_segment_uuids(
+        self,
+        segment_uuids: Iterable[UUID],
+    ) -> dict[UUID, list[UUID]]:
+        result: dict[UUID, list[UUID]] = {}
+        for segment_uuid in segment_uuids:
+            derivative_uuids = self.segment_to_derivatives.get(segment_uuid)
+            if derivative_uuids:
+                result[segment_uuid] = list(derivative_uuids)
+        return result
+
+    @override
+    async def get_segment_uuids_by_derivative_uuids(
+        self,
+        derivative_uuids: Iterable[UUID],
+    ) -> dict[UUID, UUID]:
+        derivative_to_segment = {
+            derivative_uuid: segment_uuid
+            for segment_uuid, segment_derivatives in self.segment_to_derivatives.items()
+            for derivative_uuid in segment_derivatives
+        }
+        return {
+            derivative_uuid: derivative_to_segment[derivative_uuid]
+            for derivative_uuid in derivative_uuids
+            if derivative_uuid in derivative_to_segment
+        }
+
+    @override
+    async def delete_segments(
+        self,
+        segment_uuids: Iterable[UUID],
+    ) -> None:
+        for segment_uuid in set(segment_uuids):
+            segment = self.segments.pop(segment_uuid, None)
+            if segment is None:
+                continue
+            self.segment_order = [
+                uid for uid in self.segment_order if uid != segment_uuid
+            ]
+            event_list = self.event_to_segments.get(segment.event_uuid)
+            if event_list is not None:
+                event_list[:] = [uid for uid in event_list if uid != segment_uuid]
+                if not event_list:
+                    del self.event_to_segments[segment.event_uuid]
+            self.segment_to_derivatives.pop(segment_uuid, None)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fake_embedder():
+    return FakeEmbedder()
+
+
+@pytest.fixture
+def fake_segment_store_partition():
+    return InMemorySegmentStorePartition()
+
+
+@pytest.fixture
+def fake_vector_store_collection(fake_embedder):
+    config = VectorStoreCollectionConfig(
+        vector_dimensions=fake_embedder.dimensions,
+        indexed_properties_schema={
+            **EventMemory.expected_vector_store_collection_schema(),
+            "color": str,
+        },
+    )
+    return InMemoryVectorStoreCollection(config)
+
+
+@pytest.fixture
+def event_memory(
+    fake_vector_store_collection,
+    fake_segment_store_partition,
+    fake_embedder,
+):
+    return EventMemory(
+        EventMemoryParams(
+            segment_store_partition=fake_segment_store_partition,
+            vector_store_collection=fake_vector_store_collection,
+            segmenter=TextSegmenter(),
+            deriver=WholeTextDeriver(),
+            embedder=fake_embedder,
+        )
+    )
+
+
+@pytest.fixture
+def event_memory_with_sentences(
+    fake_vector_store_collection,
+    fake_segment_store_partition,
+    fake_embedder,
+):
+    return EventMemory(
+        EventMemoryParams(
+            segment_store_partition=fake_segment_store_partition,
+            vector_store_collection=fake_vector_store_collection,
+            segmenter=TextSegmenter(),
+            deriver=SentenceTextDeriver(),
+            embedder=fake_embedder,
+        )
+    )

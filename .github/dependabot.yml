@@ -11,12 +11,21 @@ updates:
     # [project.dependencies] block in addition to bumping uv.lock.
     directories:
       - "/"
-      - "/packages/client"
-      - "/packages/common"
-      - "/packages/server"
+      - "/packages/core"
     schedule:
       interval: "weekly"
     groups:
       uv-workspace:
+        patterns:
+          - "*"
+
+  # Keeps the pinned `uses:` refs in .github/workflows current. Without this,
+  # exact version pins never get bumped and silently fall behind.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
         patterns:
           - "*"
