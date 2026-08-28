@@ -21,8 +21,8 @@ from memmachine_core.common import (
 from memmachine_core.common.embedder import Embedder
 from memmachine_core.common.filter import (
     And,
-    Comparison,
     FilterExpr,
+    Ordering,
     map_filter_fields,
 )
 from memmachine_core.common.metrics_factory import (
@@ -144,17 +144,16 @@ class EventMemory:
         """
         clauses: list[FilterExpr] = []
         if since is not None:
-            clauses.append(Comparison(field=field, op=">=", value=since))
+            clauses.append(Ordering(field=field, op=">=", value=since))
         if before is not None:
-            clauses.append(Comparison(field=field, op="<", value=before))
+            clauses.append(Ordering(field=field, op="<", value=before))
         if property_filter is not None:
             clauses.append(property_filter)
         if not clauses:
             return None
-        combined = clauses[0]
-        for clause in clauses[1:]:
-            combined = And(left=combined, right=clause)
-        return combined
+        if len(clauses) == 1:
+            return clauses[0]
+        return And(tuple(clauses))
 
     def __init__(self, params: EventMemoryParams) -> None:
         """

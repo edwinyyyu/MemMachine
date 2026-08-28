@@ -11,10 +11,12 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from memmachine_core.common.filter import (
     And,
-    Comparison,
+    Equals,
     In,
     Not,
+    NotEquals,
     Or,
+    Ordering,
 )
 from memmachine_core.common.vector_store import (
     Record,
@@ -234,7 +236,7 @@ class TestUpsertAndQuery:
         results = await collection.query(
             query_vectors=[updated.vector],
             limit=10,
-            property_filter=Comparison(field="name", op="=", value="updated"),
+            property_filter=Equals("name", "updated"),
         )
         assert [match.record_uuid for match in results[0].matches] == [record.uuid]
 
@@ -342,11 +344,11 @@ class TestFilters:
         await collection.upsert(records=records)
         return records, vectors[0], datetimes
 
-    async def _query(self, collection, query_vector, field, op, value):
+    async def _query(self, collection, query_vector, property_filter):
         all_results = await collection.query(
             query_vectors=[query_vector],
             limit=10,
-            property_filter=Comparison(field=field, op=op, value=value),
+            property_filter=property_filter,
         )
         return {match.record_uuid for match in all_results[0].matches}
 
@@ -355,14 +357,14 @@ class TestFilters:
     @pytest.mark.asyncio
     async def test_eq_str(self, collection):
         r1, _r2, _r3, v1 = await self._setup(collection)
-        uuids = await self._query(collection, v1, "name", "=", "alice")
+        uuids = await self._query(collection, v1, Equals("name", "alice"))
         assert r1.uuid in uuids
         assert len(uuids) == 1
 
     @pytest.mark.asyncio
     async def test_ne_str(self, collection):
         r1, r2, r3, v1 = await self._setup(collection)
-        uuids = await self._query(collection, v1, "name", "!=", "alice")
+        uuids = await self._query(collection, v1, NotEquals("name", "alice"))
         assert r1.uuid not in uuids
         assert r2.uuid in uuids
         assert r3.uuid in uuids
@@ -370,14 +372,14 @@ class TestFilters:
     @pytest.mark.asyncio
     async def test_gt_int(self, collection):
         _r1, _r2, r3, v1 = await self._setup(collection)
-        uuids = await self._query(collection, v1, "age", ">", 30)
+        uuids = await self._query(collection, v1, Ordering("age", ">", 30))
         assert len(uuids) == 1
         assert r3.uuid in uuids
 
     @pytest.mark.asyncio
     async def test_gte_int(self, collection):
         r1, _r2, r3, v1 = await self._setup(collection)
-        uuids = await self._query(collection, v1, "age", ">=", 30)
+        uuids = await self._query(collection, v1, Ordering("age", ">=", 30))
         assert r1.uuid in uuids
         assert r3.uuid in uuids
         assert len(uuids) == 2
@@ -385,14 +387,14 @@ class TestFilters:
     @pytest.mark.asyncio
     async def test_lt_int(self, collection):
         _r1, r2, _r3, v1 = await self._setup(collection)
-        uuids = await self._query(collection, v1, "age", "<", 30)
+        uuids = await self._query(collection, v1, Ordering("age", "<", 30))
         assert len(uuids) == 1
         assert r2.uuid in uuids
 
     @pytest.mark.asyncio
     async def test_lte_int(self, collection):
         r1, r2, _r3, v1 = await self._setup(collection)
-        uuids = await self._query(collection, v1, "age", "<=", 30)
+        uuids = await self._query(collection, v1, Ordering("age", "<=", 30))
         assert r1.uuid in uuids
         assert r2.uuid in uuids
         assert len(uuids) == 2
@@ -402,7 +404,7 @@ class TestFilters:
     @pytest.mark.asyncio
     async def test_eq_bool(self, collection):
         r1, r2, r3, v1 = await self._setup(collection)
-        uuids = await self._query(collection, v1, "active", "=", True)
+        uuids = await self._query(collection, v1, Equals("active", True))
         assert r1.uuid in uuids
         assert r3.uuid in uuids
         assert r2.uuid not in uuids
@@ -410,7 +412,7 @@ class TestFilters:
     @pytest.mark.asyncio
     async def test_ne_bool(self, collection):
         r1, r2, r3, v1 = await self._setup(collection)
-        uuids = await self._query(collection, v1, "active", "!=", True)
+        uuids = await self._query(collection, v1, NotEquals("active", True))
         assert r2.uuid in uuids
         assert r1.uuid not in uuids
         assert r3.uuid not in uuids
@@ -420,14 +422,14 @@ class TestFilters:
     @pytest.mark.asyncio
     async def test_eq_float(self, collection):
         records, query_vector = await self._setup_floats(collection)
-        uuids = await self._query(collection, query_vector, "score", "=", 0.5)
+        uuids = await self._query(collection, query_vector, Equals("score", 0.5))
         assert records[2].uuid in uuids
         assert len(uuids) == 1
 
     @pytest.mark.asyncio
     async def test_gt_float(self, collection):
         records, query_vector = await self._setup_floats(collection)
-        uuids = await self._query(collection, query_vector, "score", ">", 0.5)
+        uuids = await self._query(collection, query_vector, Ordering("score", ">", 0.5))
         assert records[3].uuid in uuids
         assert records[4].uuid in uuids
         assert records[2].uuid not in uuids
@@ -435,7 +437,7 @@ class TestFilters:
     @pytest.mark.asyncio
     async def test_lt_float(self, collection):
         records, query_vector = await self._setup_floats(collection)
-        uuids = await self._query(collection, query_vector, "score", "<", 0.5)
+        uuids = await self._query(collection, query_vector, Ordering("score", "<", 0.5))
         assert records[0].uuid in uuids
         assert records[1].uuid in uuids
         assert records[2].uuid not in uuids
@@ -446,7 +448,7 @@ class TestFilters:
     async def test_eq_datetime(self, collection):
         records, query_vector, datetimes = await self._setup_datetimes(collection)
         uuids = await self._query(
-            collection, query_vector, "created_at", "=", datetimes[2]
+            collection, query_vector, Equals("created_at", datetimes[2])
         )
         assert records[2].uuid in uuids
         assert len(uuids) == 1
@@ -455,7 +457,7 @@ class TestFilters:
     async def test_gt_datetime(self, collection):
         records, query_vector, datetimes = await self._setup_datetimes(collection)
         uuids = await self._query(
-            collection, query_vector, "created_at", ">", datetimes[2]
+            collection, query_vector, Ordering("created_at", ">", datetimes[2])
         )
         assert records[3].uuid in uuids
         assert records[4].uuid in uuids
@@ -465,7 +467,7 @@ class TestFilters:
     async def test_lt_datetime(self, collection):
         records, query_vector, datetimes = await self._setup_datetimes(collection)
         uuids = await self._query(
-            collection, query_vector, "created_at", "<", datetimes[2]
+            collection, query_vector, Ordering("created_at", "<", datetimes[2])
         )
         assert records[0].uuid in uuids
         assert records[1].uuid in uuids
@@ -484,7 +486,7 @@ class TestFilters:
 
         plus5 = timezone(timedelta(hours=5))
         dt_filter = datetime(2024, 6, 15, 17, 0, 0, tzinfo=plus5)
-        uuids = await self._query(collection, v1, "created_at", "=", dt_filter)
+        uuids = await self._query(collection, v1, Equals("created_at", dt_filter))
         assert r1.uuid in uuids
         assert len(uuids) == 1
 
@@ -496,7 +498,7 @@ class TestFilters:
         query_results = await collection.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=In(field="name", values=["alice", "carol"]),
+            property_filter=In("name", ("alice", "carol")),
         )
         uuids = {match.record_uuid for match in query_results[0].matches}
         assert r1.uuid in uuids
@@ -509,10 +511,7 @@ class TestFilters:
         query_results = await collection.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=And(
-                left=Comparison(field="active", op="=", value=True),
-                right=Comparison(field="age", op=">", value=30),
-            ),
+            property_filter=And((Equals("active", True), Ordering("age", ">", 30))),
         )
         matches = query_results[0].matches
         assert len(matches) == 1
@@ -524,10 +523,7 @@ class TestFilters:
         query_results = await collection.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=Or(
-                left=Comparison(field="name", op="=", value="alice"),
-                right=Comparison(field="name", op="=", value="carol"),
-            ),
+            property_filter=Or((Equals("name", "alice"), Equals("name", "carol"))),
         )
         uuids = {match.record_uuid for match in query_results[0].matches}
         assert r1.uuid in uuids
@@ -540,7 +536,7 @@ class TestFilters:
         query_results = await collection.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=Not(expr=Comparison(field="age", op=">", value=30)),
+            property_filter=Not(Ordering("age", ">", 30)),
         )
         uuids = {match.record_uuid for match in query_results[0].matches}
         assert r1.uuid in uuids
@@ -854,7 +850,7 @@ class TestUpsertBehavior:
         results = await collection.query(
             query_vectors=[v2],
             limit=10,
-            property_filter=Comparison(field="name", op="=", value="bob"),
+            property_filter=Equals("name", "bob"),
         )
         assert [match.record_uuid for match in results[0].matches] == [record_uuid]
         assert results[0].matches[0].cosine_similarity == pytest.approx(1.0, abs=0.01)
@@ -876,10 +872,7 @@ class TestFilterEdgeCases:
         results = await collection.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=Or(
-                left=Comparison(field="name", op="=", value="alice"),
-                right=Comparison(field="name", op="=", value="carol"),
-            ),
+            property_filter=Or((Equals("name", "alice"), Equals("name", "carol"))),
         )
         uuids = {m.record_uuid for m in results[0].matches}
         assert r1.uuid in uuids

@@ -25,13 +25,18 @@ from memmachine_core.common.utils import ensure_tz_aware
 
 from .filter_expression import (
     And,
-    Comparison,
+    Equals,
     FilterExpr,
     In,
-    IsNull,
+    IsMissing,
     Not,
+    NotEquals,
     Or,
+    Ordering,
+    OrderingOp,
 )
+
+type _LeafExpr = Equals | NotEquals | Ordering | In | IsMissing
 
 FieldEncoding = Literal["column", "json", "properties_json"]
 
@@ -46,9 +51,9 @@ Raises `ValueError` for unrecognised fields.
 """
 
 
-_COMPARISON_OPS: dict[str, Callable[[ColumnElement, object], ColumnElement[bool]]] = {
-    "=": lambda col, val: col == val,
-    "!=": lambda col, val: col != val,
+_ORDERING_OPS: dict[
+    OrderingOp, Callable[[ColumnElement, object], ColumnElement[bool]]
+] = {
     ">": lambda col, val: col > val,
     "<": lambda col, val: col < val,
     ">=": lambda col, val: col >= val,
@@ -56,24 +61,21 @@ _COMPARISON_OPS: dict[str, Callable[[ColumnElement, object], ColumnElement[bool]
 }
 
 
-def _get_op(op: str) -> Callable[[ColumnElement, object], ColumnElement[bool]]:
-    op_fn = _COMPARISON_OPS.get(op)
-    if op_fn is None:
-        raise ValueError(f"Unsupported operator: {op!r}")
-    return op_fn
-
-
 def _compile_column_leaf(
-    expr: IsNull | In | Comparison,
+    expr: _LeafExpr,
     column: ColumnElement,
 ) -> ColumnElement[bool]:
-    if isinstance(expr, IsNull):
-        return column.is_(None)
-    if isinstance(expr, In):
-        if not expr.values:
-            return false()
-        return column.in_(expr.values)
-    return _get_op(expr.op)(column, expr.value)
+    match expr:
+        case IsMissing():
+            return column.is_(None)
+        case In(values=values):
+            return column.in_(values) if values else false()
+        case Equals(value=value):
+            return column == value
+        case NotEquals(value=value):
+            return column != value
+        case Ordering(op=op, value=value):
+            return _ORDERING_OPS[op](column, value)
 
 
 def _cast_json_value(
@@ -101,22 +103,26 @@ def _check_json_value(value: PropertyValue) -> bool | int | float | str:
 
 
 def _compile_json_leaf(
-    expr: IsNull | In | Comparison,
+    expr: _LeafExpr,
     column: ColumnElement,
 ) -> ColumnElement[bool]:
-    if isinstance(expr, IsNull):
-        # .as_string() emits ->> instead of JSON_QUOTE(JSON_EXTRACT(...)),
-        # which preserves SQL NULL for missing keys on SQLite.
-        return column.as_string().is_(None)
-    if isinstance(expr, In):
-        if not expr.values:
-            return false()
-        return _cast_json_value(column, _check_json_value(expr.values[0])).in_(
-            expr.values
-        )
-    return _get_op(expr.op)(
-        _cast_json_value(column, _check_json_value(expr.value)), expr.value
-    )
+    match expr:
+        case IsMissing():
+            # .as_string() emits ->> instead of JSON_QUOTE(JSON_EXTRACT(...)),
+            # which preserves SQL NULL for missing keys on SQLite.
+            return column.as_string().is_(None)
+        case In(values=values):
+            if not values:
+                return false()
+            return _cast_json_value(column, _check_json_value(values[0])).in_(values)
+        case Equals(value=value):
+            return _cast_json_value(column, _check_json_value(value)) == value
+        case NotEquals(value=value):
+            return _cast_json_value(column, _check_json_value(value)) != value
+        case Ordering(op=op, value=value):
+            return _ORDERING_OPS[op](
+                _cast_json_value(column, _check_json_value(value)), value
+            )
 
 
 def _cast_properties_json_value(
@@ -141,31 +147,43 @@ def _cast_properties_json_value(
 
 
 def _compile_properties_json_leaf(
-    expr: IsNull | In | Comparison,
+    expr: _LeafExpr,
     column: ColumnElement,
 ) -> ColumnElement[bool]:
-    if isinstance(expr, IsNull):
-        return column.as_string().is_(None)
+    match expr:
+        case IsMissing():
+            return column.as_string().is_(None)
+        case In(values=values):
+            if not values:
+                return false()
+            # Values are homogeneous, so the first one names the type for all.
+            type_check = _properties_json_type_check(column, type(values[0]))
+            value_path = column[PROPERTY_VALUE_KEY]
+            if isinstance(values[0], int):
+                return and_(type_check, value_path.as_integer().in_(values))
+            return and_(type_check, value_path.as_string().in_(values))
+        case Equals(value=value) | NotEquals(value=value) | Ordering(value=value):
+            type_check = _properties_json_type_check(column, type(value))
+            casted_column, normalized_value = _cast_properties_json_value(
+                column[PROPERTY_VALUE_KEY], value
+            )
+            match expr:
+                case Equals():
+                    comparison = casted_column == normalized_value
+                case NotEquals():
+                    comparison = casted_column != normalized_value
+                case Ordering(op=op):
+                    comparison = _ORDERING_OPS[op](casted_column, normalized_value)
+            return and_(type_check, comparison)
 
-    if isinstance(expr, In):
-        if not expr.values:
-            return false()
-        first_value = expr.values[0]
-        type_name = PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[type(first_value)]
-        value_path = column[PROPERTY_VALUE_KEY]
-        type_check = column[PROPERTY_TYPE_KEY].as_string() == type_name
-        if isinstance(first_value, int):
-            return and_(type_check, value_path.as_integer().in_(expr.values))
-        return and_(type_check, value_path.as_string().in_(expr.values))
 
-    # Comparison
-    type_name = PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[type(expr.value)]
-    value_path = column[PROPERTY_VALUE_KEY]
-    type_check = column[PROPERTY_TYPE_KEY].as_string() == type_name
-    casted_column, normalized_value = _cast_properties_json_value(
-        value_path, expr.value
-    )
-    return and_(type_check, _get_op(expr.op)(casted_column, normalized_value))
+def _properties_json_type_check(
+    column: ColumnElement,
+    property_type: type[PropertyValue],
+) -> ColumnElement[bool]:
+    """Restrict a typed-JSON field to values stored with the given type."""
+    type_name = PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[property_type]
+    return column[PROPERTY_TYPE_KEY].as_string() == type_name
 
 
 def compile_sql_filter(
@@ -178,29 +196,19 @@ def compile_sql_filter(
     The `resolve_field` callback maps each field name to a
     `(column, FieldEncoding)` pair and raises `ValueError` for unknown fields.
     """
-    if isinstance(expr, Comparison | In | IsNull):
-        column, kind = resolve_field(expr.field)
-        if kind == "column":
-            return _compile_column_leaf(expr, column)
-        if kind == "json":
-            return _compile_json_leaf(expr, column)
-        if kind == "properties_json":
-            return _compile_properties_json_leaf(expr, column)
-        raise ValueError(f"Unknown field kind: {kind!r}")
-
-    if isinstance(expr, And):
-        return and_(
-            compile_sql_filter(expr.left, resolve_field),
-            compile_sql_filter(expr.right, resolve_field),
-        )
-
-    if isinstance(expr, Or):
-        return or_(
-            compile_sql_filter(expr.left, resolve_field),
-            compile_sql_filter(expr.right, resolve_field),
-        )
-
-    if isinstance(expr, Not):
-        return ~compile_sql_filter(expr.expr, resolve_field)
-
-    raise TypeError(f"Unsupported filter expression type: {type(expr)!r}")
+    match expr:
+        case Equals() | NotEquals() | Ordering() | In() | IsMissing():
+            column, kind = resolve_field(expr.field)
+            match kind:
+                case "column":
+                    return _compile_column_leaf(expr, column)
+                case "json":
+                    return _compile_json_leaf(expr, column)
+                case "properties_json":
+                    return _compile_properties_json_leaf(expr, column)
+        case And(operands):
+            return and_(*(compile_sql_filter(o, resolve_field) for o in operands))
+        case Or(operands):
+            return or_(*(compile_sql_filter(o, resolve_field) for o in operands))
+        case Not(operand):
+            return ~compile_sql_filter(operand, resolve_field)

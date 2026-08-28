@@ -9,12 +9,14 @@ from uuid import UUID
 from memmachine_core.common import PropertyValue
 from memmachine_core.common.filter import (
     And,
-    Comparison,
+    Equals,
     FilterExpr,
     In,
-    IsNull,
+    IsMissing,
     Not,
+    NotEquals,
     Or,
+    Ordering,
 )
 from memmachine_core.common.vector_store import (
     QueryMatch,
@@ -28,9 +30,7 @@ from memmachine_core.common.vector_store import (
 # Filter evaluation
 # ---------------------------------------------------------------------------
 
-_COMPARISON_OPS = {
-    "=": operator.eq,
-    "!=": operator.ne,
+_ORDERING_OPS = {
     ">": operator.gt,
     "<": operator.lt,
     ">=": operator.ge,
@@ -38,37 +38,39 @@ _COMPARISON_OPS = {
 }
 
 
-def _evaluate_comparison(prop: PropertyValue, op: str, value: PropertyValue) -> bool:
-    fn = _COMPARISON_OPS.get(op)
-    if fn is None:
-        raise ValueError(f"Unknown comparison op: {op!r}")
-    return bool(fn(prop, value))
+def _comparable(
+    properties: dict[str, PropertyValue], field: str, value: PropertyValue
+) -> PropertyValue | None:
+    """Return the stored value if the field holds one of `value`'s type, else None.
+
+    A predicate matches only a field holding a comparable value, so an absent
+    field and a field of another type are alike non-matches.
+    """
+    prop = properties.get(field)
+    return prop if type(prop) is type(value) else None
 
 
 def evaluate_filter(expr: FilterExpr, properties: dict[str, PropertyValue]) -> bool:
     """Evaluate a FilterExpr against a properties dict."""
     match expr:
-        case Comparison(field=field, op=op, value=value):
-            prop = properties.get(field)
-            if prop is None:
-                return False
-            return _evaluate_comparison(prop, op, value)
-        case In(field=field, values=values):
-            return properties.get(field) in values
-        case IsNull(field=field):
+        case Equals(field, value):
+            return _comparable(properties, field, value) == value
+        case NotEquals(field, value):
+            prop = _comparable(properties, field, value)
+            return prop is not None and prop != value
+        case Ordering(field, op, value):
+            prop = _comparable(properties, field, value)
+            return prop is not None and bool(_ORDERING_OPS[op](prop, value))
+        case In(field, values):
+            return any(_comparable(properties, field, v) == v for v in values)
+        case IsMissing(field):
             return field not in properties
-        case And(left=left, right=right):
-            return evaluate_filter(left, properties) and evaluate_filter(
-                right, properties
-            )
-        case Or(left=left, right=right):
-            return evaluate_filter(left, properties) or evaluate_filter(
-                right, properties
-            )
-        case Not(expr=inner):
-            return not evaluate_filter(inner, properties)
-        case _:
-            raise TypeError(f"Unknown filter expression type: {type(expr)}")
+        case And(operands):
+            return all(evaluate_filter(o, properties) for o in operands)
+        case Or(operands):
+            return any(evaluate_filter(o, properties) for o in operands)
+        case Not(operand):
+            return not evaluate_filter(operand, properties)
 
 
 # ---------------------------------------------------------------------------

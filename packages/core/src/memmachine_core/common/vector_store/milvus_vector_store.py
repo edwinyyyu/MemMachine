@@ -16,25 +16,15 @@ from pymilvus.exceptions import MilvusException
 
 from memmachine_core.common import PropertyValue
 from memmachine_core.common.filter import (
-    And as FilterAnd,
-)
-from memmachine_core.common.filter import (
-    Comparison as FilterComparison,
-)
-from memmachine_core.common.filter import (
+    And,
+    Equals,
     FilterExpr,
-)
-from memmachine_core.common.filter import (
-    In as FilterIn,
-)
-from memmachine_core.common.filter import (
-    IsNull as FilterIsNull,
-)
-from memmachine_core.common.filter import (
-    Not as FilterNot,
-)
-from memmachine_core.common.filter import (
-    Or as FilterOr,
+    In,
+    IsMissing,
+    Not,
+    NotEquals,
+    Or,
+    Ordering,
 )
 from memmachine_core.common.metrics_factory import MetricsFactory, OperationTracker
 from memmachine_core.common.utils import compute_cosine_similarity, ensure_tz_aware
@@ -94,41 +84,30 @@ def _normalize_property_filter_value(value: PropertyValue) -> PropertyValue:
 class MilvusVectorStoreCollection(VectorStoreCollection):
     """A logical collection backed by Milvus."""
 
-    _RANGE_OPERATORS: ClassVar[set[str]] = {">", ">=", "<", "<="}
-
     @staticmethod
     def _build_milvus_filter(expr: FilterExpr) -> str:
         """Convert a FilterExpr tree into a Milvus filter expression."""
-        if isinstance(expr, FilterComparison):
-            return MilvusVectorStoreCollection._build_milvus_comparison(expr)
-        if isinstance(expr, FilterIn):
-            if not expr.values:
-                return _FALSE_EXPR
-            values = ", ".join(_literal(value) for value in expr.values)
-            return f"{_property_field(expr.field)} in [{values}]"
-        if isinstance(expr, FilterIsNull):
-            return f"{_property_field(expr.field)} is null"
-        if isinstance(expr, FilterNot):
-            return (
-                f"not ({MilvusVectorStoreCollection._build_milvus_filter(expr.expr)})"
-            )
-        if isinstance(expr, FilterAnd):
-            left = MilvusVectorStoreCollection._build_milvus_filter(expr.left)
-            right = MilvusVectorStoreCollection._build_milvus_filter(expr.right)
-            return f"({left}) && ({right})"
-        if isinstance(expr, FilterOr):
-            left = MilvusVectorStoreCollection._build_milvus_filter(expr.left)
-            right = MilvusVectorStoreCollection._build_milvus_filter(expr.right)
-            return f"({left}) || ({right})"
-        message = f"Unsupported filter expression type: {type(expr)}"
-        raise TypeError(message)
-
-    @staticmethod
-    def _build_milvus_comparison(comparison: FilterComparison) -> str:
-        """Convert a Comparison into a Milvus filter expression."""
-        field = _property_field(comparison.field)
-        operator = "==" if comparison.op == "=" else comparison.op
-        return f"{field} {operator} {_literal(comparison.value)}"
+        build = MilvusVectorStoreCollection._build_milvus_filter
+        match expr:
+            case Equals(field, value):
+                return f"{_property_field(field)} == {_literal(value)}"
+            case NotEquals(field, value):
+                return f"{_property_field(field)} != {_literal(value)}"
+            case Ordering(field, op, value):
+                return f"{_property_field(field)} {op} {_literal(value)}"
+            case In(field, values):
+                if not values:
+                    return _FALSE_EXPR
+                literals = ", ".join(_literal(value) for value in values)
+                return f"{_property_field(field)} in [{literals}]"
+            case IsMissing(field):
+                return f"{_property_field(field)} is null"
+            case Not(operand):
+                return f"not ({build(operand)})"
+            case And(operands):
+                return " && ".join(f"({build(o)})" for o in operands)
+            case Or(operands):
+                return " || ".join(f"({build(o)})" for o in operands)
 
     @staticmethod
     def _primary_id(partition_key: str, record_uuid: UUID) -> str:

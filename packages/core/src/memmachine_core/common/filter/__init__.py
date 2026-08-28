@@ -2,27 +2,31 @@
 
 from .filter_expression import (
     And,
-    Comparison,
-    ComparisonOp,
+    Equals,
     FilterExpr,
     In,
-    IsNull,
+    IsMissing,
     Not,
+    NotEquals,
     Or,
+    Ordering,
+    OrderingOp,
     map_filter_fields,
 )
 from .sql_filter_util import FieldEncoding, compile_sql_filter
 
 __all__ = [
     "And",
-    "Comparison",
-    "ComparisonOp",
+    "Equals",
     "FieldEncoding",
     "FilterExpr",
     "In",
-    "IsNull",
+    "IsMissing",
     "Not",
+    "NotEquals",
     "Or",
+    "Ordering",
+    "OrderingOp",
     "compile_sql_filter",
     "map_filter_fields",
 ]

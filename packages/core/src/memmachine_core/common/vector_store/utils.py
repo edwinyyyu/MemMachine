@@ -3,25 +3,15 @@
 import re
 
 from memmachine_core.common.filter import (
-    And as FilterAnd,
-)
-from memmachine_core.common.filter import (
-    Comparison as FilterComparison,
-)
-from memmachine_core.common.filter import (
+    And,
+    Equals,
     FilterExpr,
-)
-from memmachine_core.common.filter import (
-    In as FilterIn,
-)
-from memmachine_core.common.filter import (
-    IsNull as FilterIsNull,
-)
-from memmachine_core.common.filter import (
-    Not as FilterNot,
-)
-from memmachine_core.common.filter import (
-    Or as FilterOr,
+    In,
+    IsMissing,
+    Not,
+    NotEquals,
+    Or,
+    Ordering,
 )
 
 _IDENTIFIER_RE = re.compile(r"^[a-z0-9_]+$")
@@ -36,12 +26,23 @@ def validate_identifier(value: str) -> bool:
     )
 
 
+def filter_fields(expr: FilterExpr) -> set[str]:
+    """Return every field name addressed by a filter tree."""
+    match expr:
+        case (
+            Equals(field)
+            | NotEquals(field)
+            | Ordering(field)
+            | In(field)
+            | IsMissing(field)
+        ):
+            return {field}
+        case Not(operand):
+            return filter_fields(operand)
+        case And(operands) | Or(operands):
+            return {field for o in operands for field in filter_fields(o)}
+
+
 def validate_filter(expr: FilterExpr) -> bool:
     """Return whether all field names in the filter tree are valid identifiers."""
-    if isinstance(expr, (FilterComparison, FilterIn, FilterIsNull)):
-        return validate_identifier(expr.field)
-    if isinstance(expr, FilterNot):
-        return validate_filter(expr.expr)
-    if isinstance(expr, (FilterAnd, FilterOr)):
-        return validate_filter(expr.left) and validate_filter(expr.right)
-    raise TypeError(f"Unsupported filter expression type: {type(expr)}")
+    return all(validate_identifier(field) for field in filter_fields(expr))

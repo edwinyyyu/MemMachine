@@ -10,10 +10,11 @@ import pytest
 from memmachine_core.common import PropertyValue
 from memmachine_core.common.filter import (
     And,
-    Comparison,
+    Equals,
     In,
-    IsNull,
+    IsMissing,
     Not,
+    NotEquals,
     Or,
 )
 from memmachine_core.common.vector_store import (
@@ -699,7 +700,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=Comparison(field="color", op="=", value="red"),
+            property_filter=Equals("color", "red"),
         )
         all_texts = {
             seg.block.text
@@ -718,7 +719,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=Comparison(field="color", op="!=", value="red"),
+            property_filter=NotEquals("color", "red"),
         )
         all_texts = {
             seg.block.text
@@ -738,7 +739,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=In(field="color", values=["red", "green"]),
+            property_filter=In("color", ("red", "green")),
         )
         all_texts = {
             seg.block.text
@@ -758,7 +759,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=IsNull(field="color"),
+            property_filter=IsMissing("color"),
         )
         all_texts = {
             seg.block.text
@@ -777,10 +778,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=And(
-                left=Comparison(field="color", op="=", value="red"),
-                right=Not(expr=IsNull(field="color")),
-            ),
+            property_filter=And((Equals("color", "red"), Not(IsMissing("color")))),
         )
         all_texts = {
             seg.block.text
@@ -800,10 +798,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=Or(
-                left=Comparison(field="color", op="=", value="red"),
-                right=Comparison(field="color", op="=", value="blue"),
-            ),
+            property_filter=Or((Equals("color", "red"), Equals("color", "blue"))),
         )
         all_texts = {
             seg.block.text
@@ -823,7 +818,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=Not(expr=Comparison(field="color", op="=", value="red")),
+            property_filter=Not(Equals("color", "red")),
         )
         all_texts = {
             seg.block.text
@@ -843,7 +838,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=Comparison(field="color", op="=", value="purple"),
+            property_filter=Equals("color", "purple"),
         )
         assert result.matches == []
 
@@ -862,9 +857,7 @@ class TestQueryWithFilter:
         with pytest.raises(ValueError, match="must match"):
             await event_memory.query(
                 "hi",
-                property_filter=Comparison(
-                    field="context.producer", op="=", value="Alice"
-                ),
+                property_filter=Equals("context.producer", "Alice"),
             )
 
 

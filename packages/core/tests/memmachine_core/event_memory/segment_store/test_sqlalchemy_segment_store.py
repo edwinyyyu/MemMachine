@@ -11,7 +11,9 @@ import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from memmachine_core.common.filter import Comparison
+from memmachine_core.common.filter import (
+    Equals,
+)
 from memmachine_core.common.payload_codec import (
     PlaintextPayloadCodecConfig,
 )
@@ -423,7 +425,7 @@ async def test_contexts_property_filter(
     s3 = _seg(event_uuid=ep, offset=3, ts_offset_seconds=3, properties={"tag": "a"})
     await partition.add_segments(_links(s0, s1, s2, s3))
 
-    filt = Comparison(field="tag", op="=", value="a")
+    filt = Equals("tag", "a")
     result = await partition.get_segment_contexts(
         [s2.uuid],
         max_backward_segments=5,
@@ -469,7 +471,7 @@ async def test_contexts_filter_by_context_producer(
     )
     await partition.add_segments(_links(s0, s1, s2))
 
-    filt = Comparison(field="context.producer", op="=", value="Alice")
+    filt = Equals("context.producer", "Alice")
     contexts = await partition.get_segment_contexts(
         [s0.uuid],
         max_backward_segments=5,
@@ -505,7 +507,7 @@ async def test_contexts_filter_by_context_type(
     )
     await partition.add_segments(_links(s0, s1, s2))
 
-    filt = Comparison(field="context.context_type", op="=", value="producer")
+    filt = Equals("context.context_type", "producer")
     contexts = await partition.get_segment_contexts(
         [s0.uuid],
         max_backward_segments=5,

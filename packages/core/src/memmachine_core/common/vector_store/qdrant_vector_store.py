@@ -20,25 +20,16 @@ from memmachine_core.common import (
     PropertyValue,
 )
 from memmachine_core.common.filter import (
-    And as FilterAnd,
-)
-from memmachine_core.common.filter import (
-    Comparison as FilterComparison,
-)
-from memmachine_core.common.filter import (
+    And,
+    Equals,
     FilterExpr,
-)
-from memmachine_core.common.filter import (
-    In as FilterIn,
-)
-from memmachine_core.common.filter import (
-    IsNull as FilterIsNull,
-)
-from memmachine_core.common.filter import (
-    Not as FilterNot,
-)
-from memmachine_core.common.filter import (
-    Or as FilterOr,
+    In,
+    IsMissing,
+    Not,
+    NotEquals,
+    Or,
+    Ordering,
+    OrderingOp,
 )
 from memmachine_core.common.metrics_factory import MetricsFactory, OperationTracker
 from memmachine_core.common.utils import compute_cosine_similarity, ensure_tz_aware
@@ -76,7 +67,7 @@ def _partition_filter(partition_key: str) -> models.Filter:
 class QdrantVectorStoreCollection(VectorStoreCollection):
     """A collection backed by Qdrant."""
 
-    _RANGE_OPERATORS: ClassVar[dict[str, str]] = {
+    _RANGE_OPERATORS: ClassVar[dict[OrderingOp, str]] = {
         ">": "gt",
         ">=": "gte",
         "<": "lt",
@@ -86,60 +77,46 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     @staticmethod
     def _build_qdrant_filter(expr: FilterExpr) -> models.Filter:
         """Convert a FilterExpr tree into a Qdrant Filter."""
-        if isinstance(expr, FilterComparison):
-            return QdrantVectorStoreCollection._build_qdrant_comparison(expr)
-        if isinstance(expr, FilterIn):
-            return QdrantVectorStoreCollection._in_filter(expr.field, expr.values)
-        if isinstance(expr, FilterIsNull):
-            return QdrantVectorStoreCollection._null_filter(expr.field, negate=False)
-        if isinstance(expr, FilterNot):
-            return models.Filter(
-                must_not=[QdrantVectorStoreCollection._build_qdrant_filter(expr.expr)]
-            )
-        if isinstance(expr, FilterAnd):
-            left = QdrantVectorStoreCollection._build_qdrant_filter(expr.left)
-            right = QdrantVectorStoreCollection._build_qdrant_filter(expr.right)
-            return models.Filter(must=[left, right])
-        if isinstance(expr, FilterOr):
-            left = QdrantVectorStoreCollection._build_qdrant_filter(expr.left)
-            right = QdrantVectorStoreCollection._build_qdrant_filter(expr.right)
-            return models.Filter(should=[left, right])
-        message = f"Unsupported filter expression type: {type(expr)}"
-        raise TypeError(message)
+        build = QdrantVectorStoreCollection._build_qdrant_filter
+        match expr:
+            case Equals(field, value):
+                return QdrantVectorStoreCollection._eq_filter(
+                    field, value, negate=False
+                )
+            case NotEquals(field, value):
+                return QdrantVectorStoreCollection._eq_filter(field, value, negate=True)
+            case Ordering(field, op, value):
+                return QdrantVectorStoreCollection._range_filter(
+                    field, value, QdrantVectorStoreCollection._RANGE_OPERATORS[op]
+                )
+            case In(field, values):
+                return QdrantVectorStoreCollection._in_filter(field, values)
+            case IsMissing(field):
+                return QdrantVectorStoreCollection._missing_filter(field)
+            case Not(operand):
+                return models.Filter(must_not=[build(operand)])
+            case And(operands):
+                return models.Filter(must=[build(o) for o in operands])
+            case Or(operands):
+                return models.Filter(should=[build(o) for o in operands])
 
     @staticmethod
-    def _build_qdrant_comparison(comparison: FilterComparison) -> models.Filter:
-        """Convert a Comparison into a Qdrant Filter."""
-        field = comparison.field
-        operator = comparison.op
-        value = comparison.value
-
-        if operator in ("=", "!="):
-            negate = operator == "!="
-            if isinstance(value, float):
-                return QdrantVectorStoreCollection._float_eq_filter(
-                    field, value, negate=negate
-                )
-            if isinstance(value, datetime):
-                return QdrantVectorStoreCollection._datetime_eq_filter(
-                    field, value, negate=negate
-                )
-            return QdrantVectorStoreCollection._match_filter(
+    def _eq_filter(
+        field: str,
+        value: PropertyValue,
+        *,
+        negate: bool,
+    ) -> models.Filter:
+        """Match a field against a value, by the only condition Qdrant offers for its type."""
+        if isinstance(value, float):
+            return QdrantVectorStoreCollection._float_eq_filter(
                 field, value, negate=negate
             )
-        if operator in QdrantVectorStoreCollection._RANGE_OPERATORS:
-            if not isinstance(value, OrderedValue):
-                message = (
-                    f"Range filter on '{field}' requires a numeric or datetime value, "
-                    f"got {type(value).__name__}"
-                )
-                raise TypeError(message)
-            return QdrantVectorStoreCollection._range_filter(
-                field, value, QdrantVectorStoreCollection._RANGE_OPERATORS[operator]
+        if isinstance(value, datetime):
+            return QdrantVectorStoreCollection._datetime_eq_filter(
+                field, value, negate=negate
             )
-
-        message = f"Unsupported filter operator: {operator}"
-        raise ValueError(message)
+        return QdrantVectorStoreCollection._match_filter(field, value, negate=negate)
 
     @staticmethod
     def _match_filter(
@@ -182,7 +159,9 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         return models.Filter(must=[condition])
 
     @staticmethod
-    def _in_filter(field: str, value: list[int] | list[str]) -> models.Filter:
+    def _in_filter(
+        field: str, value: tuple[int, ...] | tuple[str, ...]
+    ) -> models.Filter:
         return models.Filter(
             must=[
                 models.FieldCondition(
@@ -219,13 +198,11 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         )
 
     @staticmethod
-    def _null_filter(field: str, *, negate: bool) -> models.Filter:
-        condition = models.IsEmptyCondition(
-            is_empty=models.PayloadField(key=field),
+    def _missing_filter(field: str) -> models.Filter:
+        """Match records that do not carry the field. Negation is `Not`'s job."""
+        return models.Filter(
+            must=[models.IsEmptyCondition(is_empty=models.PayloadField(key=field))]
         )
-        if negate:
-            return models.Filter(must_not=[condition])
-        return models.Filter(must=[condition])
 
     def __init__(
         self,
