@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.types import ExceptionHandler, Lifespan
 
 from memmachine_server.common.api.version import get_version
@@ -45,6 +45,19 @@ from memmachine_server.server.middleware import (
 logger = logging.getLogger(__name__)
 
 
+def _default_response_class() -> type[Response]:
+    """ORJSONResponse when orjson is installed; the FastAPI default otherwise.
+
+    Output is equivalent JSON either way; orjson only makes serializing it
+    cheaper.
+    """
+    try:
+        from fastapi.responses import ORJSONResponse
+    except ImportError:  # pragma: no cover
+        return JSONResponse
+    return ORJSONResponse
+
+
 class MemMachineAPI(FastAPI):
     """MemMachine API wrapper."""
 
@@ -58,6 +71,7 @@ class MemMachineAPI(FastAPI):
             title=title,
             description=description,
             lifespan=cast(Any, lifespan),
+            default_response_class=_default_response_class(),
         )
         self._with_config_api = with_config_api
         self._configure()

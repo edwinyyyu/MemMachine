@@ -16,23 +16,7 @@ from pydantic import BaseModel, Field, InstanceOf
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
-try:  # orjson is optional; stdlib json is the fallback
-    import orjson as _fast_json
-
-    def _fast_dumps(obj: dict[str, object]) -> bytes:
-        return _fast_json.dumps(obj)
-
-    def _fast_loads(data: bytes) -> dict[str, object]:
-        return cast(dict[str, object], _fast_json.loads(data))
-except ImportError:  # pragma: no cover
-    import json as _std_json
-
-    def _fast_dumps(obj: dict[str, object]) -> bytes:
-        return _std_json.dumps(obj).encode()
-
-    def _fast_loads(data: bytes) -> dict[str, object]:
-        return cast(dict[str, object], _std_json.loads(data))
-
+from memmachine_server.common import fast_json
 from memmachine_server.common.data_types import (
     OrderedValue,
     PropertyValue,
@@ -330,7 +314,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
             search["score_threshold"] = score_threshold
         if self._shard_key is not None:
             search["shard_key"] = self._shard_key
-        body = _fast_dumps(
+        body = fast_json.dumps(
             {"searches": [{**search, "query": qv} for qv in query_vectors]}
         )
         try:
@@ -344,7 +328,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         if response.status_code != 200:
             return None
         return self._fast_parse_results(
-            _fast_loads(response.content), return_vector, return_properties
+            fast_json.loads(response.content), return_vector, return_properties
         )
 
     def _fast_parse_results(

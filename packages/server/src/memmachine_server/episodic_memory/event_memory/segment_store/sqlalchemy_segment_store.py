@@ -52,6 +52,7 @@ from sqlalchemy.orm import (
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 
+from memmachine_server.common.fast_json import safe_loads
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
     demangle_user_metadata_key,
@@ -376,14 +377,14 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         as text, so properties may arrive as a string here.
         """
         context = decode_context(
-            json.loads(self._payload_codec.decode(row["context"]))
+            safe_loads(self._payload_codec.decode(row["context"]))
         )
         if context is None:
             context = NullContext()
-        block = decode_block(json.loads(self._payload_codec.decode(row["block"])))
+        block = decode_block(safe_loads(self._payload_codec.decode(row["block"])))
         raw_properties = row["properties"]
         if isinstance(raw_properties, str):
-            raw_properties = json.loads(raw_properties)
+            raw_properties = safe_loads(raw_properties)
         properties = decode_properties(raw_properties)
         original_timezone = timezone(
             timedelta(seconds=row["timestamp_timezone_offset"])
@@ -797,10 +798,10 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
 
     def _segment_from_segment_row(self, row: SegmentRow) -> Segment:
         """Convert a SegmentRow into a Segment."""
-        context = decode_context(json.loads(self._payload_codec.decode(row.context)))
+        context = decode_context(safe_loads(self._payload_codec.decode(row.context)))
         if context is None:
             context = NullContext()
-        block = decode_block(json.loads(self._payload_codec.decode(row.block)))
+        block = decode_block(safe_loads(self._payload_codec.decode(row.block)))
         properties = decode_properties(row.properties)
         original_timezone = timezone(timedelta(seconds=row.timestamp_timezone_offset))
         timestamp = ensure_tz_aware(row.timestamp).astimezone(original_timezone)

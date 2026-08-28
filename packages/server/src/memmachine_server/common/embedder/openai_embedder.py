@@ -1,15 +1,18 @@
 """OpenAI-based embedder implementation."""
 
 import asyncio
+import base64
 import logging
 import re
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
+import httpx
 import numpy as np
 import openai
 from pydantic import BaseModel, Field, InstanceOf
 
+from memmachine_server.common import fast_json
 from memmachine_server.common.data_types import (
     ExternalServiceAPIError,
     SimilarityMetric,
@@ -102,6 +105,10 @@ class OpenAIEmbedder(Embedder):
         self._max_retry_interval_seconds = params.max_retry_interval_seconds
 
         self._max_input_length = params.max_input_length
+
+        # Direct-httpx fast path for the embeddings call. None = not yet
+        # probed; False = unavailable (always use the canonical SDK path).
+        self._fast_http: httpx.AsyncClient | bool | None = None
 
         metrics_factory = params.metrics_factory
 
@@ -209,6 +216,101 @@ class OpenAIEmbedder(Embedder):
             for chunk_embeddings in inputs_chunk_embeddings
         ]
 
+    def _fast_http_client(self) -> httpx.AsyncClient | None:
+        """Build (once) an httpx client for the direct embeddings fast path.
+
+        Returns None when the SDK client's attributes are not the expected
+        shape, so callers fall back to the canonical SDK path.
+        """
+        if self._fast_http is False:
+            return None
+        if isinstance(self._fast_http, httpx.AsyncClient):
+            return self._fast_http
+        api_key = getattr(self._client, "api_key", None)
+        base_url = getattr(self._client, "base_url", None)
+        if not isinstance(api_key, str) or base_url is None:
+            self._fast_http = False
+            return None
+        headers = {"Authorization": f"Bearer {api_key}"}
+        organization = getattr(self._client, "organization", None)
+        if isinstance(organization, str):
+            headers["OpenAI-Organization"] = organization
+        project = getattr(self._client, "project", None)
+        if isinstance(project, str):
+            headers["OpenAI-Project"] = project
+        self._fast_http = httpx.AsyncClient(
+            base_url=str(base_url),
+            headers=headers,
+            timeout=60,
+            limits=httpx.Limits(max_keepalive_connections=8),
+        )
+        return self._fast_http
+
+    async def _fast_embed(
+        self,
+        embed_call_uuid: UUID,
+        chunk_cluster: list[str],
+    ) -> list[list[float]] | None:
+        """Embed one cluster over direct httpx, base64 wire format.
+
+        Returns None on ANY request failure so the caller runs the canonical
+        SDK path, which owns retries, the dimensions-parameter fallback, and
+        canonical error types. Usage metrics and the dimensionality check are
+        replicated here so a fast-path success is indistinguishable from a
+        canonical one.
+        """
+        http = self._fast_http_client()
+        if http is None or not self._use_dimensions_parameter:
+            return None
+        body: dict[str, object] = {
+            "input": chunk_cluster,
+            "model": self._model,
+            "dimensions": self._dimensions,
+            "encoding_format": "base64",
+        }
+        try:
+            response = await http.post(
+                "embeddings",
+                content=fast_json.dumps(body),
+                headers={"Content-Type": "application/json"},
+            )
+        except Exception:  # any transport failure -> canonical SDK path
+            return None
+        if response.status_code != 200:
+            return None
+        try:
+            payload = fast_json.loads(response.content)
+            data = sorted(
+                cast(list[dict[str, Any]], payload["data"]), key=lambda d: d["index"]
+            )
+            embeddings = [
+                np.frombuffer(
+                    base64.b64decode(datum["embedding"]), dtype="float32"
+                ).tolist()
+                if isinstance(datum["embedding"], str)
+                else cast(list[float], datum["embedding"])
+                for datum in data
+            ]
+        except Exception:  # unexpected response shape -> canonical SDK path
+            return None
+        if self._should_collect_metrics:
+            usage = cast(dict[str, int], payload.get("usage") or {})
+            self._prompt_tokens_usage_counter.increment(
+                value=usage.get("prompt_tokens", 0),
+            )
+            self._total_tokens_usage_counter.increment(
+                value=usage.get("total_tokens", 0),
+            )
+        if len(embeddings[0]) != self._dimensions:
+            error_message = (
+                f"[call uuid: {embed_call_uuid}] "
+                f"Received embedding dimensionality {len(embeddings[0])} "
+                f"does not match expected dimensionality {self._dimensions}"
+            )
+            logger.exception(error_message)
+            raise ExternalServiceAPIError(error_message)
+        return embeddings
+
     async def _embed_chunk_cluster(
         self,
         embed_call_uuid: UUID,
@@ -216,6 +318,10 @@ class OpenAIEmbedder(Embedder):
         chunk_cluster: list[str],
         max_attempts: int = 1,
     ) -> list[list[float]]:
+        fast_embeddings = await self._fast_embed(embed_call_uuid, chunk_cluster)
+        if fast_embeddings is not None:
+            return fast_embeddings
+
         sleep_seconds = 1
         for attempt in range(1, max_attempts + 1):
             logger.debug(
