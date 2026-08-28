@@ -3,6 +3,7 @@
 from typing import override
 from uuid import uuid4
 
+from memmachine_server.common import fast_model
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Event,
     FormatOptions,
@@ -24,15 +25,18 @@ class PassthroughSegmenter(Segmenter):
         format_options: FormatOptions | None = None,
     ) -> list[Segment]:
         return [
-            Segment(
-                uuid=uuid4(),
-                event_uuid=event.uuid,
-                index=index,
-                offset=0,
-                timestamp=event.timestamp,
-                block=block,
-                context=event.context,
-                properties=event.properties,
+            fast_model.build(
+                Segment,
+                {
+                    "uuid": uuid4(),
+                    "event_uuid": event.uuid,
+                    "index": index,
+                    "offset": 0,
+                    "timestamp": event.timestamp,
+                    "block": block,
+                    "context": event.context,
+                    "properties": event.properties,
+                },
             )
             for index, block in enumerate(event.blocks)
         ]

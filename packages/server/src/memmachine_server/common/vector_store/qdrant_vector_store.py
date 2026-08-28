@@ -474,8 +474,34 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                         payload=self._build_payload(properties),
                     )
                 )
-            if points:
+            if points and not await self._fast_upsert(points):
                 await self._upsert_with_backoff(points)
+
+    async def _fast_upsert(self, points: list[models.PointStruct]) -> bool:
+        """Upsert over direct REST; False on any failure (canonical retries)."""
+        http = self._fast_rest_client()
+        if not isinstance(http, RawHTTPPool):
+            return False
+        body: dict[str, Any] = {
+            "points": [
+                {
+                    "id": str(point.id),
+                    "vector": point.vector,
+                    "payload": point.payload,
+                }
+                for point in points
+            ]
+        }
+        if self._shard_key is not None:
+            body["shard_key"] = self._shard_key
+        try:
+            await http.post(
+                f"/collections/{self._collection_name}/points?wait=true",
+                fast_json.dumps(body),
+            )
+        except Exception:  # any failure -> canonical upsert with backoff
+            return False
+        return True
 
     async def _upsert_with_backoff(self, points: Iterable[models.PointStruct]) -> None:
         """Upsert points, splitting the batch in half on failure and retrying."""

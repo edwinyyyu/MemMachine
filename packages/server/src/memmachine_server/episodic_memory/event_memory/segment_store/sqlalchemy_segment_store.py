@@ -52,7 +52,7 @@ from sqlalchemy.orm import (
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 
-from memmachine_server.common import fast_model
+from memmachine_server.common import fast_json, fast_model
 from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.fast_json import safe_loads
 from memmachine_server.common.filter.filter_parser import (
@@ -83,6 +83,7 @@ from memmachine_server.common.properties_json import (
 )
 from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
 from memmachine_server.episodic_memory.event_memory.data_types import (
+    Block,
     Context,
     NullContext,
     ProducerContext,
@@ -231,6 +232,22 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     def config(self) -> SegmentStorePartitionConfig:
         return self._config
 
+    @staticmethod
+    def _encode_context_fast(context: Context | None) -> dict[str, JsonValue] | None:
+        """encode_context without the TypeAdapter for the known variants."""
+        if isinstance(context, ProducerContext):
+            return {"context_type": "producer", "producer": context.producer}
+        if isinstance(context, NullContext):
+            return {"context_type": "null"}
+        return encode_context(context)
+
+    @staticmethod
+    def _encode_block_fast(block: Block) -> dict[str, JsonValue]:
+        """encode_block without the TypeAdapter for the known variant."""
+        if isinstance(block, TextBlock):
+            return {"block_type": "text", "text": block.text}
+        return encode_block(block)
+
     async def _lock_partition_for_write(self, session: AsyncSession) -> None:
         """Acquire a shared lock on the partition row to prevent concurrent deletion."""
         if not self._is_sqlite:
@@ -250,14 +267,104 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         self,
         segments_to_derivative_uuids: Mapping[Segment, Iterable[UUID]],
     ) -> None:
-        async with (
-            self._tracker("add_segments"),
-            self._create_session() as session,
-            session.begin(),
-        ):
-            await self._lock_partition_for_write(session)
-            await self._insert_segments(session, segments_to_derivative_uuids.keys())
-            await self._insert_derivative_links(session, segments_to_derivative_uuids)
+        async with self._tracker("add_segments"):
+            if not self._is_sqlite and await self._add_segments_fast(
+                segments_to_derivative_uuids
+            ):
+                return
+            async with self._create_session() as session, session.begin():
+                await self._lock_partition_for_write(session)
+                await self._insert_segments(
+                    session, segments_to_derivative_uuids.keys()
+                )
+                await self._insert_derivative_links(
+                    session, segments_to_derivative_uuids
+                )
+
+    _FAST_INSERT_SEGMENT_SQL = (
+        "INSERT INTO segment_store_sg (partition_key, uuid, event_uuid, "
+        '"index", "offset", timestamp, timestamp_timezone_offset, context, '
+        "block, properties) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, "
+        "$10::jsonb)"
+    )
+    _FAST_INSERT_LINK_SQL = (
+        "INSERT INTO segment_store_dv_ln (partition_key, uuid, segment_uuid) "
+        "VALUES ($1, $2, $3)"
+    )
+    _FAST_LOCK_SQL = (
+        "SELECT partition_key FROM segment_store_pt WHERE partition_key = $1 "
+        "FOR SHARE"
+    )
+
+    async def _add_segments_fast(
+        self,
+        segments_to_derivative_uuids: Mapping[Segment, Iterable[UUID]],
+    ) -> bool:
+        """add_segments via raw asyncpg in one transaction.
+
+        Replicates the canonical shape exactly: shared partition-row lock,
+        segment inserts, derivative-link inserts, commit. False on any
+        failure (transaction rolled back) so the canonical path serves and
+        raises canonical errors.
+        """
+        codec_encode = self._payload_codec.encode
+        try:
+            segment_values = [
+                (
+                    self._partition_key,
+                    segment.uuid,
+                    segment.event_uuid,
+                    segment.index,
+                    segment.offset,
+                    ensure_tz_aware(segment.timestamp),
+                    utc_offset_seconds(segment.timestamp),
+                    codec_encode(
+                        fast_json.dumps(
+                            SQLAlchemySegmentStorePartition._encode_context_fast(
+                                segment.context
+                            )
+                        )
+                    ),
+                    codec_encode(
+                        fast_json.dumps(
+                            SQLAlchemySegmentStorePartition._encode_block_fast(
+                                segment.block
+                            )
+                        )
+                    ),
+                    fast_json.dumps(
+                        encode_properties(segment.properties)
+                    ).decode(),
+                )
+                for segment in segments_to_derivative_uuids
+            ]
+            link_values = [
+                (self._partition_key, derivative_uuid, segment.uuid)
+                for segment, derivative_uuids in segments_to_derivative_uuids.items()
+                for derivative_uuid in derivative_uuids
+            ]
+            async with self._engine.connect() as conn:
+                raw = await conn.get_raw_connection()
+                driver = raw.driver_connection
+                async with driver.transaction():
+                    await driver.fetch(
+                        SQLAlchemySegmentStorePartition._FAST_LOCK_SQL,
+                        self._partition_key,
+                    )
+                    if segment_values:
+                        await driver.executemany(
+                            SQLAlchemySegmentStorePartition._FAST_INSERT_SEGMENT_SQL,
+                            segment_values,
+                        )
+                    if link_values:
+                        await driver.executemany(
+                            SQLAlchemySegmentStorePartition._FAST_INSERT_LINK_SQL,
+                            link_values,
+                        )
+        except Exception:  # rolled back -> canonical path raises canonically
+            logger.debug("add_segments fast path fell back", exc_info=True)
+            return False
+        return True
 
     async def _insert_segments(
         self,
@@ -320,18 +427,19 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         if not seed_segment_uuids:
             return {}
 
-        # Fast path for the search hot shape (seed fetch only, no property
-        # filter, PostgreSQL): raw asyncpg over the engine's own pool,
-        # bypassing session/ORM machinery. Any failure falls back to the
-        # canonical path below.
-        if (
-            max_backward_segments <= 0
-            and max_forward_segments <= 0
-            and property_filter is None
-            and not self._is_sqlite
-        ):
+        # Fast paths (no property filter, PostgreSQL): raw asyncpg over the
+        # engine's own pool, bypassing session/ORM machinery. Any failure
+        # falls back to the canonical path below.
+        if property_filter is None and not self._is_sqlite:
             async with self._tracker("get_segment_contexts"):
-                fast = await self._get_seed_segments_fast(seed_segment_uuids)
+                if max_backward_segments <= 0 and max_forward_segments <= 0:
+                    fast = await self._get_seed_segments_fast(seed_segment_uuids)
+                else:
+                    fast = await self._get_segment_contexts_windowed_fast(
+                        seed_segment_uuids,
+                        max_backward_segments,
+                        max_forward_segments,
+                    )
                 if fast is not None:
                     return fast
                 return await self._get_segment_contexts_canonical(
@@ -437,6 +545,87 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 "properties": properties,
             },
         )
+
+    _FAST_LATERAL_SQL_TEMPLATE = (
+        'SELECT s.uuid AS seed_uuid, c.uuid, c.event_uuid, c."index", '
+        'c."offset", c.timestamp, c.timestamp_timezone_offset, c.context, '
+        "c.block, c.properties "
+        "FROM segment_store_sg s "
+        "JOIN LATERAL ("
+        "SELECT * FROM segment_store_sg c WHERE c.partition_key = $1 "
+        'AND (c.timestamp, c.event_uuid, c."index", c."offset") {op} '
+        '(s.timestamp, s.event_uuid, s."index", s."offset") '
+        'ORDER BY c.timestamp {dir}, c.event_uuid {dir}, c."index" {dir}, '
+        'c."offset" {dir} LIMIT $3'
+        ") c ON true "
+        "WHERE s.partition_key = $1 AND s.uuid = ANY($2::uuid[])"
+    )
+    _FAST_LATERAL_BACKWARD_SQL = _FAST_LATERAL_SQL_TEMPLATE.format(
+        op="<", dir="DESC"
+    )
+    _FAST_LATERAL_FORWARD_SQL = _FAST_LATERAL_SQL_TEMPLATE.format(op=">", dir="ASC")
+
+    async def _get_segment_contexts_windowed_fast(
+        self,
+        seed_segment_uuids: set[UUID],
+        max_backward_segments: int,
+        max_forward_segments: int,
+    ) -> dict[UUID, list[Segment]] | None:
+        """Windowed context fetch via raw asyncpg LATERAL queries.
+
+        Same query shape as the canonical LATERAL path; assembles
+        [backward reversed, seed, forward] per seed. None on any failure.
+        """
+        try:
+            uuid_list = list(seed_segment_uuids)
+            async with self._engine.connect() as conn:
+                raw = await conn.get_raw_connection()
+                driver = raw.driver_connection
+                seed_rows = await driver.fetch(
+                    SQLAlchemySegmentStorePartition._FAST_SEED_SQL,
+                    self._partition_key,
+                    uuid_list,
+                )
+                if not seed_rows:
+                    return {}
+                backward: dict[UUID, list[Mapping[str, Any]]] = {
+                    row["uuid"]: [] for row in seed_rows
+                }
+                forward: dict[UUID, list[Mapping[str, Any]]] = {
+                    row["uuid"]: [] for row in seed_rows
+                }
+                if max_backward_segments > 0:
+                    for row in await driver.fetch(
+                        SQLAlchemySegmentStorePartition._FAST_LATERAL_BACKWARD_SQL,
+                        self._partition_key,
+                        uuid_list,
+                        max_backward_segments,
+                    ):
+                        backward[row["seed_uuid"]].append(row)
+                if max_forward_segments > 0:
+                    for row in await driver.fetch(
+                        SQLAlchemySegmentStorePartition._FAST_LATERAL_FORWARD_SQL,
+                        self._partition_key,
+                        uuid_list,
+                        max_forward_segments,
+                    ):
+                        forward[row["seed_uuid"]].append(row)
+            return {
+                seed_row["uuid"]: [
+                    self._segment_from_raw_row(row)
+                    for row in [
+                        *reversed(backward[seed_row["uuid"]]),
+                        seed_row,
+                        *forward[seed_row["uuid"]],
+                    ]
+                ]
+                for seed_row in seed_rows
+            }
+        except Exception:  # unexpected shape/driver -> canonical path
+            logger.debug(
+                "windowed segment fast path fell back", exc_info=True
+            )
+            return None
 
     def _timezone_for_offset(self, offset_seconds: int) -> timezone:
         cached = self._timezone_cache.get(offset_seconds)

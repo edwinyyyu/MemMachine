@@ -11,6 +11,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, InstanceOf
 
+from memmachine_server.common import fast_model
 from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.embedder import Embedder
 from memmachine_server.common.filter.filter_parser import (
@@ -331,10 +332,13 @@ class EventMemory:
         # User-defined properties.
         properties.update(derivative.properties)
 
-        return Record(
-            uuid=derivative.uuid,
-            vector=list(derivative_embedding),
-            properties=properties,
+        return fast_model.build(
+            Record,
+            {
+                "uuid": derivative.uuid,
+                "vector": list(derivative_embedding),
+                "properties": properties,
+            },
         )
 
     @property
@@ -515,8 +519,13 @@ class EventMemory:
 
         # Return scored contexts ordered by score.
         scored_segment_contexts = [
-            ScoredSegmentContext(
-                score=score, seed_segment_uuid=seed_uuid, segments=context
+            fast_model.build(
+                ScoredSegmentContext,
+                {
+                    "score": score,
+                    "seed_segment_uuid": seed_uuid,
+                    "segments": context,
+                },
             )
             for score, seed_uuid, context in sorted(
                 zip(
@@ -550,7 +559,9 @@ class EventMemory:
             for phase, duration in phase_durations.items():
                 self._query_phase_seconds.observe(duration, labels={"phase": phase})
 
-        return QueryResult(scored_segment_contexts=scored_segment_contexts)
+        return fast_model.build(
+            QueryResult, {"scored_segment_contexts": scored_segment_contexts}
+        )
 
     async def _score_segment_contexts(
         self,

@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from typing import override
 from uuid import uuid4
 
+from memmachine_server.common import fast_model
 from memmachine_server.common.utils import extract_sentences
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Context,
@@ -56,13 +57,18 @@ def _format_for_embedding(
 def _build_text_derivatives(segment: Segment, texts: Iterable[str]) -> list[Derivative]:
     """Build derivatives from a segment and text strings."""
     return [
-        Derivative(
-            uuid=uuid4(),
-            segment_uuid=segment.uuid,
-            timestamp=segment.timestamp,
-            context=segment.context,
-            block=TextBlock(text=text),
-            properties=segment.properties,
+        fast_model.build(
+            Derivative,
+            {
+                "uuid": uuid4(),
+                "segment_uuid": segment.uuid,
+                "timestamp": segment.timestamp,
+                "context": segment.context,
+                "block": fast_model.build(
+                    TextBlock, {"block_type": "text", "text": text}
+                ),
+                "properties": segment.properties,
+            },
         )
         for text in texts
     ]
