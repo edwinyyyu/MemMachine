@@ -324,6 +324,25 @@ class LongTermMemory:
             num_episodes_limit * _EVENT_BACKEND_DEDUP_OVERFETCH,
             num_episodes_limit,
         )
+
+        # Fast path: with no context expansion and no reranker, the segment
+        # texts are never read on this path - only `_episode_uid` and the
+        # score, both already present on the vector-store match payload. Skip
+        # the segment fetch and its materialization entirely. Divergence from
+        # the canonical path exists only under index/segment-store drift (a
+        # vector whose segment row was lost is kept here, dropped there).
+        if expand_context <= 0 and event_memory.reranker is None:
+            fast = await self._search_scored_event_fast(
+                event_memory,
+                query,
+                num_episodes_limit=num_episodes_limit,
+                vector_search_limit=vector_search_limit,
+                score_threshold=score_threshold,
+                property_filter=property_filter,
+            )
+            if fast is not None:
+                return fast
+
         result = await event_memory.query(
             query,
             vector_search_limit=vector_search_limit,
@@ -371,6 +390,83 @@ class LongTermMemory:
                 missing,
             )
 
+        return [
+            (scores_by_uid[uid], episodes_by_uid[uid])
+            for uid in ordered_uids
+            if uid in episodes_by_uid
+        ]
+
+    async def _search_scored_event_fast(
+        self,
+        event_memory: EventMemory,
+        query: str,
+        *,
+        num_episodes_limit: int,
+        vector_search_limit: int,
+        score_threshold: float | None,
+        property_filter: FilterExpr | None,
+    ) -> list[tuple[float, Episode]] | None:
+        """Episode search straight off the vector-store matches.
+
+        Mirrors _search_scored_event exactly for the no-expansion,
+        no-reranker case: same embed, same collection query, same
+        threshold/dedup/limit walk (match order equals EventMemory's score
+        order here), same episode hydration. Returns None on anything
+        unexpected so the canonical path serves.
+        """
+        assert self._episode_storage is not None
+        try:
+            embedding = (await event_memory.embedder.search_embed([query]))[0]
+            collection_filter = (
+                map_filter_fields(
+                    property_filter, EventMemory.to_vector_record_property
+                )
+                if property_filter is not None
+                else None
+            )
+            [query_result] = await event_memory.vector_store_collection.query(
+                query_vectors=[embedding],
+                limit=vector_search_limit,
+                property_filter=collection_filter,
+                return_vector=False,
+                return_properties=True,
+            )
+        except Exception:  # unexpected internals -> canonical path
+            logger.debug("event fast search fell back", exc_info=True)
+            return None
+
+        ordered_uids: list[str] = []
+        scores_by_uid: dict[str, float] = {}
+        for match in query_result.matches:
+            properties = match.record.properties
+            if properties is None:
+                return None
+            if not self._score_passes_threshold(match.score, score_threshold):
+                continue
+            episode_uid = properties.get(_EPISODE_UID_FIELD)
+            if episode_uid is None:
+                return None
+            episode_uid = str(episode_uid)
+            if episode_uid in scores_by_uid:
+                continue
+            scores_by_uid[episode_uid] = match.score
+            ordered_uids.append(episode_uid)
+            if len(ordered_uids) >= num_episodes_limit:
+                break
+
+        if not ordered_uids:
+            return []
+
+        episodes = await self._episode_storage.get_episodes(ordered_uids)
+        episodes_by_uid: dict[str, Episode] = {ep.uid: ep for ep in episodes}
+        missing = [uid for uid in ordered_uids if uid not in episodes_by_uid]
+        if missing:
+            logger.warning(
+                "search_scored dropped %d episode(s) found in the event index "
+                "but missing from EpisodeStorage (likely index/storage drift): %s",
+                len(missing),
+                missing,
+            )
         return [
             (scores_by_uid[uid], episodes_by_uid[uid])
             for uid in ordered_uids

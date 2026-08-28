@@ -337,6 +337,26 @@ class EventMemory:
             properties=properties,
         )
 
+    @property
+    def embedder(self) -> Embedder:
+        """The embedder this memory queries with."""
+        return self._embedder
+
+    @property
+    def reranker(self) -> Reranker | None:
+        """The reranker, or None when embedding scores are used directly."""
+        return self._reranker
+
+    @property
+    def vector_store_collection(self) -> VectorStoreCollection:
+        """The vector-store collection holding this memory's derivatives."""
+        return self._vector_store_collection
+
+    @classmethod
+    def to_vector_record_property(cls, field: str) -> str:
+        """Public alias of the client-field -> record-property translation."""
+        return cls._to_vector_record_property(field)
+
     @classmethod
     def _to_vector_record_property(cls, field: str) -> str:
         """

@@ -33,11 +33,13 @@ from sqlalchemy.orm import DeclarativeBase, mapped_column
 from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import ColumnElement
 
-from memmachine_server.common.episode_store.episode_model import Episode as EpisodeE
+from memmachine_server.common import fast_model
 from memmachine_server.common.episode_store.episode_model import (
+    ContentType,
     EpisodeEntry,
     EpisodeType,
 )
+from memmachine_server.common.episode_store.episode_model import Episode as EpisodeE
 from memmachine_server.common.episode_store.episode_storage import (
     EpisodeIdT,
     EpisodeStorage,
@@ -47,6 +49,7 @@ from memmachine_server.common.errors import (
     InvalidArgumentError,
     ResourceNotFoundError,
 )
+from memmachine_server.common.fast_json import safe_loads
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
     demangle_user_metadata_key,
@@ -255,6 +258,11 @@ class SqlAlchemyEpisodeStore(EpisodeStorage):
         if not int_ids:
             return []
 
+        if self._engine.dialect.name == "postgresql":
+            fast = await self._get_episodes_fast(int_ids)
+            if fast is not None:
+                return fast
+
         stmt = select(Episode).where(Episode.id.in_(int_ids))
 
         async with self._create_session() as session:
@@ -262,6 +270,58 @@ class SqlAlchemyEpisodeStore(EpisodeStorage):
             rows = result.scalars().all()
 
         return [row.to_typed_model() for row in rows]
+
+    _FAST_EPISODES_SQL = (
+        "SELECT id, content, session_key, producer_id, producer_role, "
+        'produced_for_id, episode_type, created_at, "metadata" '
+        "FROM episodestore WHERE id = ANY($1::integer[])"
+    )
+
+    async def _get_episodes_fast(self, int_ids: set[int]) -> list[EpisodeE] | None:
+        """get_episodes via raw asyncpg and trusted Episode construction.
+
+        Returns None on any failure so the canonical path serves instead.
+        """
+        try:
+            async with self._engine.connect() as conn:
+                raw = await conn.get_raw_connection()
+                rows = await raw.driver_connection.fetch(
+                    SqlAlchemyEpisodeStore._FAST_EPISODES_SQL, list(int_ids)
+                )
+            episodes: list[EpisodeE] = []
+            for row in rows:
+                metadata = row["metadata"]
+                if isinstance(metadata, str):
+                    metadata = safe_loads(metadata)
+                created_at = row["created_at"]
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=UTC)
+                episode_type = row["episode_type"]
+                episodes.append(
+                    fast_model.build(
+                        EpisodeE,
+                        {
+                            "uid": EpisodeIdT(row["id"]),
+                            "content": row["content"],
+                            "session_key": row["session_key"],
+                            "created_at": created_at,
+                            "producer_id": row["producer_id"],
+                            "producer_role": row["producer_role"],
+                            "produced_for_id": row["produced_for_id"],
+                            "sequence_num": 0,
+                            "episode_type": EpisodeType[episode_type]
+                            if not isinstance(episode_type, EpisodeType)
+                            else episode_type,
+                            "content_type": ContentType.STRING,
+                            "filterable_metadata": None,
+                            "metadata": metadata or None,
+                        },
+                    )
+                )
+        except Exception:  # unexpected shape/driver -> canonical path
+            logger.debug("episode fast path fell back", exc_info=True)
+            return None
+        return episodes
 
     @overload
     def _apply_episode_filter(
