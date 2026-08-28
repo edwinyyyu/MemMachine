@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -922,6 +923,69 @@ async def test_delete_partition_locks_partitions_table_before_ddl(
     assert lock_positions[0] < ddl_positions[0], (
         f"partitions-table lock must be acquired before any child DDL: {statements}"
     )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_segment_dml_addresses_only_the_partition_child_tables(
+    pg_store: SQLAlchemySegmentStore,
+    sqlalchemy_pg_engine: AsyncEngine,
+) -> None:
+    """
+    Every segment read and write must name the partition's child tables,
+    never the partitioned parents.
+
+    Parent-table statements carry the partition key as a bind parameter, so
+    once the driver's prepared statement switches to a cached generic plan,
+    PostgreSQL locks every child partition on every execution before runtime
+    pruning; with many partitions and concurrent sessions that exhausts the
+    lock table and saturates the database (#1546). A statement that names
+    the child can only ever reference one partition. The emitted SQL is the
+    deterministic observable; the lock counts themselves would need
+    timing-dependent sampling of pg_locks.
+    """
+    partition = await pg_store.open_or_create_partition(
+        "child_dml",
+        _plaintext_partition_config(),
+    )
+    # A sibling ensures parent-table plans would have more than one child to
+    # reference, mirroring the multi-partition deployments that fail.
+    await pg_store.open_or_create_partition(
+        "child_dml_sibling",
+        _plaintext_partition_config(),
+    )
+
+    segments = [
+        _seg(ts_offset_seconds=i, properties={"flavor": "sweet"}) for i in range(6)
+    ]
+    statements: list[str] = []
+
+    @event.listens_for(sqlalchemy_pg_engine.sync_engine, "before_cursor_execute")
+    def _record(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(" ".join(statement.split()))
+
+    try:
+        await partition.add_segments(_links(*segments))
+        await partition.get_segment_contexts([segments[2].uuid])
+        await partition.get_segment_contexts(
+            [segments[2].uuid],
+            max_backward_segments=2,
+            max_forward_segments=2,
+            property_filter=Comparison(field="m.flavor", op="=", value="sweet"),
+        )
+        await partition.get_segment_uuids_by_event_uuids([segments[0].event_uuid])
+        await partition.get_derivative_uuids_by_segment_uuids([segments[0].uuid])
+        await partition.delete_segments([segments[5].uuid])
+    finally:
+        event.remove(sqlalchemy_pg_engine.sync_engine, "before_cursor_execute", _record)
+
+    # \b rejects the parents while letting the children through: a child
+    # name continues with "_p_<key>", so the boundary does not match there.
+    parent_reference = re.compile(r"\bsegment_store_(?:sg|dv_ln)\b")
+    offending = [s for s in statements if parent_reference.search(s)]
+    assert not offending, offending
+    child_references = [s for s in statements if "segment_store_sg_p_child_dml" in s]
+    assert child_references, statements
 
 
 @pytest.mark.asyncio
