@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta, timezone
 from typing import override
 from uuid import UUID
@@ -56,8 +56,6 @@ from memmachine_core.common.filter import (
     FieldEncoding,
     FilterExpr,
     compile_sql_filter,
-    demangle_user_metadata_key,
-    normalize_filter_field,
 )
 from memmachine_core.common.metrics_factory import (
     MetricsFactory,
@@ -304,6 +302,8 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         *,
         max_backward_segments: int = 0,
         max_forward_segments: int = 0,
+        since: datetime | None = None,
+        before: datetime | None = None,
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, list[Segment]]:
         seed_segment_uuids = set(seed_segment_uuids)
@@ -314,9 +314,11 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             self._tracker("get_segment_contexts"),
             self._create_session() as session,
         ):
+            time_conditions = self._time_range_conditions(since, before)
             seed_segments_query = select(SegmentRow).where(
                 SegmentRow.uuid.in_(seed_segment_uuids),
                 SegmentRow.partition_key == self._partition_key,
+                *time_conditions,
             )
             if property_filter is not None:
                 seed_segments_query = seed_segments_query.where(
@@ -353,6 +355,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     seed_segment_rows_by_uuid,
                     max_backward_segments,
                     max_forward_segments,
+                    time_conditions,
                     property_filter,
                 )
             else:
@@ -361,6 +364,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     seed_segment_rows_by_uuid,
                     max_backward_segments,
                     max_forward_segments,
+                    time_conditions,
                     property_filter,
                 )
 
@@ -383,6 +387,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         seed_rows_by_uuid: Mapping[UUID, SegmentRow],
         max_backward_segments: int,
         max_forward_segments: int,
+        time_conditions: Sequence[ColumnElement[bool]],
         property_filter: FilterExpr | None,
     ) -> dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]]:
         """Get backward/forward context using LATERAL joins (non-SQLite)."""
@@ -425,7 +430,11 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             # Build a LATERAL subquery that gets context rows for each seed.
             context_rows_query = (
                 select(SegmentRow)
-                .where(SegmentRow.partition_key == partition_key, range_condition)
+                .where(
+                    SegmentRow.partition_key == partition_key,
+                    range_condition,
+                    *time_conditions,
+                )
                 .order_by(*ordering)
                 .limit(limit)
                 .correlate(seeds_subquery)
@@ -516,6 +525,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         seed_rows_by_uuid: Mapping[UUID, SegmentRow],
         max_backward_segments: int,
         max_forward_segments: int,
+        time_conditions: Sequence[ColumnElement[bool]],
         property_filter: FilterExpr | None,
     ) -> dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]]:
         """Get backward/forward context per seed (SQLite fallback)."""
@@ -561,6 +571,8 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     )
                     .limit(max_backward_segments)
                 )
+                if time_conditions:
+                    backward_rows_query = backward_rows_query.where(*time_conditions)
                 if compiled_property_filter is not None:
                     backward_rows_query = backward_rows_query.where(
                         compiled_property_filter
@@ -585,6 +597,8 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     )
                     .limit(max_forward_segments)
                 )
+                if time_conditions:
+                    forward_rows_query = forward_rows_query.where(*time_conditions)
                 if compiled_property_filter is not None:
                     forward_rows_query = forward_rows_query.where(
                         compiled_property_filter
@@ -712,17 +726,37 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     # Helpers
 
     @staticmethod
+    def _time_range_conditions(
+        since: datetime | None,
+        before: datetime | None,
+    ) -> list[ColumnElement[bool]]:
+        """
+        Build conditions for a half-open [since, before) range.
+
+        `since` is inclusive and `before` exclusive, so adjacent ranges tile
+        without overlapping or leaving a gap.
+        """
+        conditions: list[ColumnElement[bool]] = []
+        if since is not None:
+            conditions.append(SegmentRow.timestamp >= ensure_tz_aware(since))
+        if before is not None:
+            conditions.append(SegmentRow.timestamp < ensure_tz_aware(before))
+        return conditions
+
+    @staticmethod
     def _resolve_segment_field(
         field: str,
     ) -> tuple[ColumnElement, FieldEncoding]:
-        """Map a filter field name to a segment column and encoding."""
-        if field == "timestamp":
-            return SegmentRow.timestamp.expression, "column"
-        internal_name, is_user_metadata = normalize_filter_field(field)
-        if is_user_metadata:
-            key = demangle_user_metadata_key(internal_name)
-            return SegmentRow.properties[key], "properties_json"
-        return SegmentRow.properties[f"_{field}"], "properties_json"
+        """
+        Map a filter field name to a segment column and encoding.
+
+        Caller property keys address the properties JSON exactly as written; no
+        prefix or rewrite is applied, so a caller may use any legal key --
+        including `timestamp`, which is a property like any other. The segment's
+        own timestamp is not a property and is reached with the `since` and
+        `before` arguments instead.
+        """
+        return SegmentRow.properties[field], "properties_json"
 
     def _segment_from_segment_row(self, row: SegmentRow) -> Segment:
         """Convert a SegmentRow into a Segment."""

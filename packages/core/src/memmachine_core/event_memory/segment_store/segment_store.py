@@ -6,6 +6,7 @@ Defines an interface for adding, retrieving, and deleting segments of events.
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
+from datetime import datetime
 from uuid import UUID
 
 from memmachine_core.common.filter import FilterExpr
@@ -48,6 +49,8 @@ class SegmentStorePartition(ABC):
         *,
         max_backward_segments: int = 0,
         max_forward_segments: int = 0,
+        since: datetime | None = None,
+        before: datetime | None = None,
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, list[Segment]]:
         """
@@ -60,8 +63,17 @@ class SegmentStorePartition(ABC):
                 The maximum number of segments to include before each seed segment (default: 0).
             max_forward_segments (int):
                 The maximum number of segments to include after each seed segment (default: 0).
+            since (datetime | None):
+                Start of the segment timestamp range, INCLUSIVE (default: None).
+            before (datetime | None):
+                End of the segment timestamp range, EXCLUSIVE, so the range is
+                `since <= timestamp < before` and consecutive ranges meet
+                without overlapping (default: None).
             property_filter (FilterExpr | None):
-                An optional filter expression to apply to the segments (default: None).
+                An optional filter over segment properties. Field names address
+                properties exactly as written; the segment's own timestamp is
+                not a property and is reached with `since`/`before`
+                (default: None).
 
         Returns:
             dict[UUID, list[Segment]]:

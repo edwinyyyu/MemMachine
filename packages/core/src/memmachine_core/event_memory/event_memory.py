@@ -11,13 +11,19 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, InstanceOf
 
-from memmachine_core.common import PropertyValue
+from memmachine_core.common import (
+    RESERVED_PROPERTY_KEY_PREFIX,
+    PropertyValue,
+    is_reserved_property_key,
+    reserved_property_key,
+    validate_caller_property_key,
+)
 from memmachine_core.common.embedder import Embedder
 from memmachine_core.common.filter import (
+    And,
+    Comparison,
     FilterExpr,
-    demangle_user_metadata_key,
     map_filter_fields,
-    normalize_filter_field,
 )
 from memmachine_core.common.metrics_factory import (
     MetricsFactory,
@@ -97,26 +103,58 @@ class EventMemoryParams(BaseModel):
 class EventMemory:
     """Event memory system."""
 
-    # System-defined metadata field names. Reserved.
-    _SEGMENT_UUID_FIELD_NAME = "_segment_uuid"
-    _TIMESTAMP_FIELD_NAME = "_timestamp"
+    # The reserved namespace is shared by every MemMachine memory system, so a
+    # key names the system that owns it. Built rather than written out so the
+    # alphabet and length budget are checked at import time.
+    _TIMESTAMP_FIELD_NAME: ClassVar[str] = reserved_property_key("event", "timestamp")
 
-    _BASE_EVENT_MEMORY_FIELD_NAMES: ClassVar[frozenset[str]] = frozenset(
-        {_SEGMENT_UUID_FIELD_NAME, _TIMESTAMP_FIELD_NAME}
-    )
+    _RESERVED_PROPERTY_SCHEMA: ClassVar[dict[str, type[PropertyValue]]] = {
+        _TIMESTAMP_FIELD_NAME: cast(type[PropertyValue], datetime.datetime),
+    }
 
     @classmethod
     def expected_vector_store_collection_schema(cls) -> dict[str, type[PropertyValue]]:
         """
         Return the vector store collection schema expected by EventMemory.
 
-        Callers should merge this with any user or external system-defined properties
-        when creating the collection so that EventMemory's reserved fields are efficiently filterable.
+        Callers should merge this with their own properties when creating the
+        collection so that EventMemory's reserved fields are efficiently filterable.
         """
-        return {
-            cls._SEGMENT_UUID_FIELD_NAME: cast(type[PropertyValue], str),
-            cls._TIMESTAMP_FIELD_NAME: cast(type[PropertyValue], datetime.datetime),
-        }
+        return dict(cls._RESERVED_PROPERTY_SCHEMA)
+
+    @classmethod
+    def _validated_filter_field(cls, field: str) -> str:
+        """Return `field` unchanged, raising if it is not a legal property key."""
+        validate_caller_property_key(field)
+        return field
+
+    @staticmethod
+    def _with_time_range(
+        property_filter: FilterExpr | None,
+        since: datetime.datetime | None,
+        before: datetime.datetime | None,
+        field: str,
+    ) -> FilterExpr | None:
+        """
+        Conjoin a half-open [since, before) range onto a caller filter.
+
+        `since` is inclusive and `before` is exclusive, so adjacent ranges tile
+        without overlapping or leaving a gap and a whole day is
+        `since=<day>, before=<next day>`.
+        """
+        clauses: list[FilterExpr] = []
+        if since is not None:
+            clauses.append(Comparison(field=field, op=">=", value=since))
+        if before is not None:
+            clauses.append(Comparison(field=field, op="<", value=before))
+        if property_filter is not None:
+            clauses.append(property_filter)
+        if not clauses:
+            return None
+        combined = clauses[0]
+        for clause in clauses[1:]:
+            combined = And(left=combined, right=clause)
+        return combined
 
     def __init__(self, params: EventMemoryParams) -> None:
         """
@@ -142,13 +180,33 @@ class EventMemory:
             params.vector_store_collection.config.indexed_properties_schema
         )
 
-        missing_base_fields = (
-            EventMemory._BASE_EVENT_MEMORY_FIELD_NAMES - self._schema_fields
+        declared_schema = (
+            params.vector_store_collection.config.indexed_properties_schema
         )
-        if missing_base_fields:
+        for key, expected_type in EventMemory._RESERVED_PROPERTY_SCHEMA.items():
+            declared_type = declared_schema.get(key)
+            if declared_type is None:
+                raise ValueError(
+                    f"Collection schema missing field required by EventMemory: {key}. "
+                    f"Merge EventMemory.expected_vector_store_collection_schema() "
+                    f"into the collection schema."
+                )
+            if declared_type is not expected_type:
+                raise ValueError(
+                    f"Collection schema declares {key} as {declared_type.__name__}, "
+                    f"but EventMemory requires {expected_type.__name__}."
+                )
+        squatted = sorted(
+            key
+            for key in declared_schema
+            if is_reserved_property_key(key)
+            and key not in EventMemory._RESERVED_PROPERTY_SCHEMA
+        )
+        if squatted:
             raise ValueError(
-                f"Collection schema missing fields required by EventMemory: "
-                f"{', '.join(sorted(missing_base_fields))}"
+                f"Collection schema declares reserved property keys: "
+                f"{', '.join(squatted)}. Keys beginning with "
+                f"{RESERVED_PROPERTY_KEY_PREFIX!r} belong to MemMachine."
             )
 
         self._encode_events_phase_seconds: MetricsFactory.Histogram | None = None
@@ -174,17 +232,9 @@ class EventMemory:
         """
         events = list(events)
 
-        reserved_fields = {
-            field
-            for event in events
-            for field in event.properties
-            if field in EventMemory._BASE_EVENT_MEMORY_FIELD_NAMES
-        }
-        if reserved_fields:
-            raise ValueError(
-                f"Event properties must not contain reserved fields: "
-                f"{', '.join(sorted(reserved_fields))}"
-            )
+        for event in events:
+            for key in event.properties:
+                validate_caller_property_key(key)
 
     async def encode_events(
         self,
@@ -311,14 +361,11 @@ class EventMemory:
         derivative_embedding: Sequence[float],
     ) -> Record:
         """Build a vector record from a derivative and its embedding."""
-        properties: dict[str, PropertyValue] = {}
-
-        # System-defined metadata (underscore-prefixed).
-        properties[cls._SEGMENT_UUID_FIELD_NAME] = str(derivative.segment_uuid)
+        # Caller properties first: a reserved key cannot reach here (encode_events
+        # validates), but building in this order means the invariant is enforced
+        # by the merge itself rather than by a check in a different function.
+        properties: dict[str, PropertyValue] = dict(derivative.properties)
         properties[cls._TIMESTAMP_FIELD_NAME] = derivative.timestamp
-
-        # User-defined properties.
-        properties.update(derivative.properties)
 
         return Record(
             uuid=derivative.uuid,
@@ -326,25 +373,14 @@ class EventMemory:
             properties=properties,
         )
 
-    @classmethod
-    def _to_vector_record_property(cls, field: str) -> str:
-        """
-        Translates canonical filter field name to vector record property.
-
-        Event memory base properties (`foo`) translate to `_foo`.
-        User-defined properties (`m.foo` / `metadata.foo`) translate to `foo`.
-        """
-        internal_name, is_user_metadata = normalize_filter_field(field)
-        if is_user_metadata:
-            return demangle_user_metadata_key(internal_name)
-        return f"_{field}"
-
     async def query(
         self,
         query: str,
         *,
         vector_search_limit: int = 20,
         expand_context: int = 0,
+        since: datetime.datetime | None = None,
+        before: datetime.datetime | None = None,
         property_filter: FilterExpr | None = None,
     ) -> QueryResult:
         """
@@ -361,9 +397,18 @@ class EventMemory:
                 The number of additional segments to include
                 around each matched segment for additional context
                 (default: 0).
+            since (datetime.datetime | None):
+                Start of the time range, INCLUSIVE
+                (default: None).
+            before (datetime.datetime | None):
+                End of the time range, EXCLUSIVE, so the range is
+                `since <= timestamp < before` and consecutive ranges meet
+                without overlapping
+                (default: None).
             property_filter (FilterExpr | None):
-                Property fields and values
-                to use for filtering segments
+                Filter over caller-supplied properties.
+                Field names are used exactly as written; see
+                `validate_property_key` for which keys are legal
                 (default: None).
 
         Returns:
@@ -376,6 +421,8 @@ class EventMemory:
                 query,
                 vector_search_limit=vector_search_limit,
                 expand_context=expand_context,
+                since=since,
+                before=before,
                 property_filter=property_filter,
             )
 
@@ -385,6 +432,8 @@ class EventMemory:
         *,
         vector_search_limit: int,
         expand_context: int,
+        since: datetime.datetime | None,
+        before: datetime.datetime | None,
         property_filter: FilterExpr | None,
     ) -> QueryResult:
         t_start = time.monotonic()
@@ -395,11 +444,15 @@ class EventMemory:
         )[0]
         t_embedding = time.monotonic()
 
-        # Translate filter fields for vector store.
-        collection_filter = (
-            map_filter_fields(property_filter, EventMemory._to_vector_record_property)
-            if property_filter is not None
-            else None
+        # Reject caller filter fields that are not legal property keys, so an
+        # unfilterable name fails loudly instead of silently matching nothing.
+        if property_filter is not None:
+            map_filter_fields(property_filter, EventMemory._validated_filter_field)
+
+        # Caller filter fields reach the store exactly as written; only the
+        # time range, which addresses a reserved key, is assembled here.
+        collection_filter = EventMemory._with_time_range(
+            property_filter, since, before, EventMemory._TIMESTAMP_FIELD_NAME
         )
 
         # Search derivative collection for matches.
@@ -440,6 +493,8 @@ class EventMemory:
                 seed_segment_uuids=seed_segment_uuids,
                 max_backward_segments=max_backward_segments,
                 max_forward_segments=max_forward_segments,
+                since=since,
+                before=before,
                 property_filter=property_filter,
             )
         )

@@ -27,7 +27,6 @@ from memmachine_core.common.filter import (
     Not,
     Or,
     compile_sql_filter,
-    parse_filter,
 )
 from memmachine_core.common.properties_json import encode_properties
 
@@ -116,9 +115,8 @@ def json_session():
         yield s
 
 
-def _query_json_names(session: Session, filter_str: str) -> set[str]:
-    """Parse filter, compile to SQL, execute, and return set of matching names."""
-    expr = parse_filter(filter_str)
+def _query_json_names(session: Session, expr) -> set[str]:
+    """Compile a filter to SQL, execute it, and return the matching names."""
     clause = compile_sql_filter(expr, _resolve_json_field)
     stmt = select(_Item.name).where(clause)
     return {row[0] for row in session.execute(stmt)}
@@ -128,11 +126,14 @@ def _query_json_names(session: Session, filter_str: str) -> set[str]:
 
 
 def test_json_int_greater_than(json_session):
-    assert _query_json_names(json_session, "m.count > 10") == {"gamma", "delta"}
+    assert _query_json_names(json_session, Comparison("m.count", ">", 10)) == {
+        "gamma",
+        "delta",
+    }
 
 
 def test_json_int_greater_equal(json_session):
-    assert _query_json_names(json_session, "m.count >= 10") == {
+    assert _query_json_names(json_session, Comparison("m.count", ">=", 10)) == {
         "beta",
         "gamma",
         "delta",
@@ -140,22 +141,25 @@ def test_json_int_greater_equal(json_session):
 
 
 def test_json_int_less_than(json_session):
-    assert _query_json_names(json_session, "m.count < 10") == {"alpha"}
+    assert _query_json_names(json_session, Comparison("m.count", "<", 10)) == {"alpha"}
 
 
 def test_json_int_less_equal(json_session):
-    assert _query_json_names(json_session, "m.count <= 10") == {"alpha", "beta"}
+    assert _query_json_names(json_session, Comparison("m.count", "<=", 10)) == {
+        "alpha",
+        "beta",
+    }
 
 
 # --- Integer equality ---
 
 
 def test_json_int_equality(json_session):
-    assert _query_json_names(json_session, "m.count = 10") == {"beta"}
+    assert _query_json_names(json_session, Comparison("m.count", "=", 10)) == {"beta"}
 
 
 def test_json_int_not_equal(json_session):
-    assert _query_json_names(json_session, "m.count != 10") == {
+    assert _query_json_names(json_session, Comparison("m.count", "!=", 10)) == {
         "alpha",
         "gamma",
         "delta",
@@ -166,7 +170,7 @@ def test_json_int_not_equal(json_session):
 
 
 def test_json_float_greater_than(json_session):
-    assert _query_json_names(json_session, "m.score > 2.0") == {
+    assert _query_json_names(json_session, Comparison("m.score", ">", 2.0)) == {
         "beta",
         "gamma",
         "delta",
@@ -174,33 +178,45 @@ def test_json_float_greater_than(json_session):
 
 
 def test_json_float_less_than(json_session):
-    assert _query_json_names(json_session, "m.score < 3.0") == {"alpha", "beta"}
+    assert _query_json_names(json_session, Comparison("m.score", "<", 3.0)) == {
+        "alpha",
+        "beta",
+    }
 
 
 def test_json_float_less_equal(json_session):
-    assert _query_json_names(json_session, "m.score <= 2.5") == {"alpha", "beta"}
+    assert _query_json_names(json_session, Comparison("m.score", "<=", 2.5)) == {
+        "alpha",
+        "beta",
+    }
 
 
 # --- Boolean equality ---
 
 
 def test_json_bool_true(json_session):
-    assert _query_json_names(json_session, "m.active = true") == {"alpha", "gamma"}
+    assert _query_json_names(json_session, Comparison("m.active", "=", True)) == {
+        "alpha",
+        "gamma",
+    }
 
 
 def test_json_bool_false(json_session):
-    assert _query_json_names(json_session, "m.active = false") == {"beta", "delta"}
+    assert _query_json_names(json_session, Comparison("m.active", "=", False)) == {
+        "beta",
+        "delta",
+    }
 
 
 # --- String equality ---
 
 
 def test_json_string_equality(json_session):
-    assert _query_json_names(json_session, "m.tag = 'a'") == {"alpha"}
+    assert _query_json_names(json_session, Comparison("m.tag", "=", "a")) == {"alpha"}
 
 
 def test_json_string_not_equal(json_session):
-    assert _query_json_names(json_session, "m.tag != 'a'") == {
+    assert _query_json_names(json_session, Comparison("m.tag", "!=", "a")) == {
         "beta",
         "gamma",
         "delta",
@@ -211,29 +227,32 @@ def test_json_string_not_equal(json_session):
 
 
 def test_json_int_in(json_session):
-    assert _query_json_names(json_session, "m.count IN (5, 15)") == {"alpha", "gamma"}
+    assert _query_json_names(json_session, In("m.count", [5, 15])) == {"alpha", "gamma"}
 
 
 def test_json_string_in(json_session):
-    assert _query_json_names(json_session, "m.tag IN ('a', 'b')") == {"alpha", "beta"}
+    assert _query_json_names(json_session, In("m.tag", ["a", "b"])) == {"alpha", "beta"}
 
 
 # --- IS NULL ---
 
 
 def test_json_is_null(json_session):
-    assert _query_json_names(json_session, "m.tag IS NULL") == {"epsilon"}
+    assert _query_json_names(json_session, IsNull("m.tag")) == {"epsilon"}
 
 
 # --- NOT / NOT IN ---
 
 
 def test_json_not_comparison(json_session):
-    assert _query_json_names(json_session, "NOT m.count > 10") == {"alpha", "beta"}
+    assert _query_json_names(json_session, Not(Comparison("m.count", ">", 10))) == {
+        "alpha",
+        "beta",
+    }
 
 
 def test_json_not_in(json_session):
-    assert _query_json_names(json_session, "m.tag NOT IN ('a', 'b')") == {
+    assert _query_json_names(json_session, Not(In("m.tag", ["a", "b"]))) == {
         "gamma",
         "delta",
     }
@@ -243,11 +262,13 @@ def test_json_not_in(json_session):
 
 
 def test_column_equality(json_session):
-    assert _query_json_names(json_session, "name = 'alpha'") == {"alpha"}
+    assert _query_json_names(json_session, Comparison("name", "=", "alpha")) == {
+        "alpha"
+    }
 
 
 def test_column_in(json_session):
-    assert _query_json_names(json_session, "name IN ('alpha', 'beta')") == {
+    assert _query_json_names(json_session, In("name", ["alpha", "beta"])) == {
         "alpha",
         "beta",
     }
@@ -257,19 +278,27 @@ def test_column_in(json_session):
 
 
 def test_json_not_and_compound(json_session):
-    result = _query_json_names(json_session, "NOT (m.count > 10 AND m.active = true)")
+    result = _query_json_names(
+        json_session,
+        Not(And(Comparison("m.count", ">", 10), Comparison("m.active", "=", True))),
+    )
     assert result == {"alpha", "beta", "delta"}
 
 
 def test_json_or(json_session):
-    assert _query_json_names(json_session, "m.tag = 'a' OR m.tag = 'c'") == {
+    assert _query_json_names(
+        json_session, Or(Comparison("m.tag", "=", "a"), Comparison("m.tag", "=", "c"))
+    ) == {
         "alpha",
         "gamma",
     }
 
 
 def test_json_not_or_compound(json_session):
-    assert _query_json_names(json_session, "NOT (m.tag = 'a' OR m.tag = 'b')") == {
+    assert _query_json_names(
+        json_session,
+        Not(Or(Comparison("m.tag", "=", "a"), Comparison("m.tag", "=", "b"))),
+    ) == {
         "gamma",
         "delta",
     }
@@ -280,7 +309,7 @@ def test_json_not_or_compound(json_session):
 
 def test_unknown_field_raises(json_session):
     with pytest.raises(ValueError, match="Unknown filter field"):
-        _query_json_names(json_session, "nonexistent = 1")
+        _query_json_names(json_session, Comparison("nonexistent", "=", 1))
 
 
 def test_unsupported_expr_type():

@@ -23,7 +23,7 @@ from memmachine_core.common.properties_json import (
 )
 from memmachine_core.common.utils import ensure_tz_aware
 
-from .filter_parser import (
+from .filter_expression import (
     And,
     Comparison,
     FilterExpr,

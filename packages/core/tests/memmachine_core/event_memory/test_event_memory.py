@@ -92,8 +92,7 @@ def _ts(minutes: int) -> datetime.datetime:
 class TestSchema:
     def test_expected_vector_store_collection_schema_only_has_base_fields(self):
         assert EventMemory.expected_vector_store_collection_schema() == {
-            "_segment_uuid": str,
-            "_timestamp": datetime.datetime,
+            "memmachine_event_timestamp": datetime.datetime,
         }
 
 
@@ -125,8 +124,7 @@ class TestEncodeEvents:
         assert len(fake_vector_store_collection.records) == 1
         record = next(iter(fake_vector_store_collection.records.values()))
         props = _record_properties(record)
-        assert props["_segment_uuid"] == str(segment.uuid)
-        assert props["_timestamp"] == event.timestamp
+        assert props["memmachine_event_timestamp"] == event.timestamp
 
     async def test_producer_context(
         self,
@@ -213,8 +211,7 @@ class TestEncodeEvents:
         config = VectorStoreCollectionConfig(
             vector_dimensions=2,
             indexed_properties_schema={
-                "_segment_uuid": str,
-                "_timestamp": datetime.datetime,
+                "memmachine_event_timestamp": datetime.datetime,
             },
         )
         collection = InMemoryVectorStoreCollection(config)
@@ -237,19 +234,17 @@ class TestEncodeEvents:
         assert "_context_type" not in props
         assert "_context_producer" not in props
 
-    async def test_init_raises_on_missing_base_field(self, fake_embedder):
-        # Collection without _timestamp — base field required at init.
+    async def test_init_raises_on_missing_reserved_field(self, fake_embedder):
+        # Collection without memmachine_event_timestamp — reserved field required at init.
         config = VectorStoreCollectionConfig(
             vector_dimensions=2,
-            indexed_properties_schema={
-                "_segment_uuid": str,
-            },
+            indexed_properties_schema={"color": str},
         )
         collection = InMemoryVectorStoreCollection(config)
         partition = InMemorySegmentStorePartition()
         with pytest.raises(
             ValueError,
-            match="Collection schema missing fields required by EventMemory",
+            match="Collection schema missing field required by EventMemory",
         ):
             EventMemory(
                 EventMemoryParams(
@@ -704,7 +699,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=Comparison(field="m.color", op="=", value="red"),
+            property_filter=Comparison(field="color", op="=", value="red"),
         )
         all_texts = {
             seg.block.text
@@ -723,7 +718,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=Comparison(field="m.color", op="!=", value="red"),
+            property_filter=Comparison(field="color", op="!=", value="red"),
         )
         all_texts = {
             seg.block.text
@@ -743,7 +738,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=In(field="m.color", values=["red", "green"]),
+            property_filter=In(field="color", values=["red", "green"]),
         )
         all_texts = {
             seg.block.text
@@ -763,7 +758,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=IsNull(field="m.color"),
+            property_filter=IsNull(field="color"),
         )
         all_texts = {
             seg.block.text
@@ -783,8 +778,8 @@ class TestQueryWithFilter:
         result = await event_memory.query(
             "thing",
             property_filter=And(
-                left=Comparison(field="m.color", op="=", value="red"),
-                right=Not(expr=IsNull(field="m.color")),
+                left=Comparison(field="color", op="=", value="red"),
+                right=Not(expr=IsNull(field="color")),
             ),
         )
         all_texts = {
@@ -806,8 +801,8 @@ class TestQueryWithFilter:
         result = await event_memory.query(
             "thing",
             property_filter=Or(
-                left=Comparison(field="m.color", op="=", value="red"),
-                right=Comparison(field="m.color", op="=", value="blue"),
+                left=Comparison(field="color", op="=", value="red"),
+                right=Comparison(field="color", op="=", value="blue"),
             ),
         )
         all_texts = {
@@ -828,7 +823,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=Not(expr=Comparison(field="m.color", op="=", value="red")),
+            property_filter=Not(expr=Comparison(field="color", op="=", value="red")),
         )
         all_texts = {
             seg.block.text
@@ -848,24 +843,29 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=Comparison(field="m.color", op="=", value="purple"),
+            property_filter=Comparison(field="color", op="=", value="purple"),
         )
         assert result.matches == []
 
-    async def test_context_filter_returns_no_results(self, event_memory: EventMemory):
-        """Context fields are no longer filterable."""
+    async def test_context_is_not_filterable(self, event_memory: EventMemory):
+        """
+        Context is never filterable, and naming it is rejected rather than
+        silently matching nothing.
+
+        Context goes through the payload codec and is stored opaquely, so an
+        application that needs to filter on provenance projects it into a
+        property instead.
+        """
         event = _make_event("hi", context=ProducerContext(producer="Alice"))
         await event_memory.encode_events([event])
 
-        result = await event_memory.query(
-            "hi",
-            property_filter=Comparison(
-                field="context.producer",
-                op="=",
-                value="Alice",
-            ),
-        )
-        assert result.matches == []
+        with pytest.raises(ValueError, match="must match"):
+            await event_memory.query(
+                "hi",
+                property_filter=Comparison(
+                    field="context.producer", op="=", value="Alice"
+                ),
+            )
 
 
 # ===================================================================

@@ -2,6 +2,7 @@
 
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
+from datetime import datetime
 from typing import override
 from uuid import UUID
 
@@ -9,9 +10,6 @@ import pytest
 
 from memmachine_core.common.filter import (
     FilterExpr,
-    demangle_user_metadata_key,
-    map_filter_fields,
-    normalize_filter_field,
 )
 from memmachine_core.common.vector_store import (
     VectorStoreCollectionConfig,
@@ -81,15 +79,12 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         *,
         max_backward_segments: int = 0,
         max_forward_segments: int = 0,
+        since: datetime | None = None,
+        before: datetime | None = None,
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, list[Segment]]:
-        # Normalize canonical field names (e.g. "m.color" → "color") to
-        # match the raw keys stored in segment.properties.
-        normalized_filter = (
-            map_filter_fields(property_filter, self._normalize_segment_field)
-            if property_filter is not None
-            else None
-        )
+        # Caller filter fields address segment properties exactly as written.
+        normalized_filter = property_filter
         result: dict[UUID, list[Segment]] = {}
         for seed_uuid in seed_segment_uuids:
             if seed_uuid not in self.segments:
@@ -104,6 +99,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
                 self.segments[uid]
                 for uid in self.segment_order[start:end]
                 if uid in self.segments
+                and self._in_time_range(self.segments[uid], since, before)
                 and (
                     normalized_filter is None
                     or evaluate_filter(normalized_filter, self.segments[uid].properties)
@@ -114,19 +110,15 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         return result
 
     @staticmethod
-    def _normalize_segment_field(field: str) -> str:
-        """
-        Translate canonical filter field names to raw segment property keys.
-
-        Mirrors SQLAlchemySegmentStorePartition._resolve_segment_field:
-        - `m.<key>` / `metadata.<key>` → user metadata, bare key.
-        - any other bare name → system field, `_<field>` (matches the
-          LongTermMemory event-backend property layout).
-        """
-        internal_name, is_user_metadata = normalize_filter_field(field)
-        if is_user_metadata:
-            return demangle_user_metadata_key(internal_name)
-        return f"_{field}"
+    def _in_time_range(
+        segment: Segment,
+        since: datetime | None,
+        before: datetime | None,
+    ) -> bool:
+        """Half-open [since, before) over the segment's own timestamp."""
+        if since is not None and segment.timestamp < since:
+            return False
+        return not (before is not None and segment.timestamp >= before)
 
     @override
     async def get_segment_uuids_by_event_uuids(

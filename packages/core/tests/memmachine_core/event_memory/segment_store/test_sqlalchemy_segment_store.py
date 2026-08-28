@@ -423,7 +423,7 @@ async def test_contexts_property_filter(
     s3 = _seg(event_uuid=ep, offset=3, ts_offset_seconds=3, properties={"tag": "a"})
     await partition.add_segments(_links(s0, s1, s2, s3))
 
-    filt = Comparison(field="m.tag", op="=", value="a")
+    filt = Comparison(field="tag", op="=", value="a")
     result = await partition.get_segment_contexts(
         [s2.uuid],
         max_backward_segments=5,
@@ -443,10 +443,10 @@ async def test_contexts_filter_by_context_producer(
     """
     `context.producer` is not a stored property; the filter just matches nothing.
 
-    Bare names that aren't `timestamp` are looked up as `_<name>` in the JSON
-    properties (matching EventMemory's `_to_vector_record_property` convention
-    for system fields). `context.producer` becomes `_context.producer`, which
-    isn't a stored key on any segment, so the filter returns no contexts.
+    Names other than `timestamp` address the JSON properties verbatim.
+    `context.producer` is not a stored property key, so the filter matches no
+    segment. EventMemory rejects the name outright; the segment store, being a
+    lower layer, simply finds nothing.
     """
     ep = uuid4()
     s0 = _seg(
