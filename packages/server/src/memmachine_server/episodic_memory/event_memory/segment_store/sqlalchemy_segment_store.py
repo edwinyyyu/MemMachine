@@ -197,6 +197,11 @@ class DerivativeLinkRow(BaseSegmentStore):
     )
 
 
+def _pg_child_table_name(parent_table_name: str, partition_key: str) -> str:
+    """Name of the PostgreSQL child table holding one partition's rows."""
+    return f"{parent_table_name}_p_{partition_key}"
+
+
 class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     """SQLAlchemy-backed partition handle."""
 
@@ -229,10 +234,14 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             # that names the child only ever plans and locks that child.
             metadata = MetaData()
             segment_child_table = SegmentRow.__table__.to_metadata(
-                metadata, name=f"segment_store_sg_p_{partition_key}"
+                metadata,
+                name=_pg_child_table_name(SegmentRow.__tablename__, partition_key),
             )
             derivative_link_child_table = DerivativeLinkRow.__table__.to_metadata(
-                metadata, name=f"segment_store_dv_ln_p_{partition_key}"
+                metadata,
+                name=_pg_child_table_name(
+                    DerivativeLinkRow.__tablename__, partition_key
+                ),
             )
             # adapt_on_names: the child Table is a fresh object with no
             # lineage to the parent's columns, so the entity's attributes
@@ -1100,20 +1109,14 @@ class SQLAlchemySegmentStore(SegmentStore):
         connection: AsyncConnection, partition_key: str
     ) -> None:
         """Create PostgreSQL child partition tables for the given key."""
-        segments_child = f'"segment_store_sg_p_{partition_key}"'
-        derivative_links_child = f'"segment_store_dv_ln_p_{partition_key}"'
-        await connection.execute(
-            text(
-                f"CREATE TABLE {segments_child} PARTITION OF"
-                f" segment_store_sg FOR VALUES IN ('{partition_key}')"
+        for parent in (SegmentRow.__tablename__, DerivativeLinkRow.__tablename__):
+            child = _pg_child_table_name(parent, partition_key)
+            await connection.execute(
+                text(
+                    f'CREATE TABLE "{child}" PARTITION OF'
+                    f" {parent} FOR VALUES IN ('{partition_key}')"
+                )
             )
-        )
-        await connection.execute(
-            text(
-                f"CREATE TABLE {derivative_links_child} PARTITION OF"
-                f" segment_store_dv_ln FOR VALUES IN ('{partition_key}')"
-            )
-        )
 
     @staticmethod
     async def _drop_pg_child_tables(
@@ -1128,11 +1131,8 @@ class SQLAlchemySegmentStore(SegmentStore):
         between segment_store_dv_ln and segment_store_sg
         for every partition rather than only this one.
         """
-        children = (
-            ("segment_store_dv_ln", f"segment_store_dv_ln_p_{partition_key}"),
-            ("segment_store_sg", f"segment_store_sg_p_{partition_key}"),
-        )
-        for parent, child in children:
+        for parent in (DerivativeLinkRow.__tablename__, SegmentRow.__tablename__):
+            child = _pg_child_table_name(parent, partition_key)
             child_exists = await connection.scalar(
                 text("SELECT to_regclass(:child)"), {"child": child}
             )
