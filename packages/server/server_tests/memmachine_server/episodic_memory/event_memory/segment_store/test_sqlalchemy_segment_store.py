@@ -902,9 +902,7 @@ async def test_delete_partition_locks_partitions_table_before_ddl(
     try:
         await pg_store.delete_partition("lock_order")
     finally:
-        event.remove(
-            sqlalchemy_pg_engine.sync_engine, "before_cursor_execute", _record
-        )
+        event.remove(sqlalchemy_pg_engine.sync_engine, "before_cursor_execute", _record)
 
     lock_positions = [
         index
@@ -922,8 +920,7 @@ async def test_delete_partition_locks_partitions_table_before_ddl(
     ]
     assert ddl_positions, f"delete_partition issued no child DDL: {statements}"
     assert lock_positions[0] < ddl_positions[0], (
-        "partitions-table lock must be acquired before any child DDL: "
-        f"{statements}"
+        f"partitions-table lock must be acquired before any child DDL: {statements}"
     )
 
 
