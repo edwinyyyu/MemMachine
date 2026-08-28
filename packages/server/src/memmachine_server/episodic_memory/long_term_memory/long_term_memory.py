@@ -664,7 +664,9 @@ class LongTermMemory:
             )
             if nuclear_uid is None:
                 continue
-            scored_uid_contexts.append((scored_context.score, nuclear_uid, context_uids))
+            scored_uid_contexts.append(
+                (scored_context.score, nuclear_uid, context_uids)
+            )
 
         episode_scores = LongTermMemory._unify_scored_uid_contexts(
             scored_uid_contexts,
@@ -744,7 +746,9 @@ class LongTermMemory:
                 continue
             nuclear_index = context.index(nuclear_uid)
 
-            def weighted_index_proximity(index: int, anchor: int = nuclear_index) -> float:
+            def weighted_index_proximity(
+                index: int, anchor: int = nuclear_index
+            ) -> float:
                 proximity = index - anchor
                 if proximity >= 0:
                     # Forward recall is better than backward recall.
