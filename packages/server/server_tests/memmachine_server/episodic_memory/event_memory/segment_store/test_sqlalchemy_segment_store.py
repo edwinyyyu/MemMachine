@@ -9,7 +9,8 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event, func, select
+from sqlalchemy import event, func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from memmachine_server.common.filter.filter_parser import Comparison
@@ -872,6 +873,67 @@ async def test_delete_partition_removes_data(store: SQLAlchemySegmentStore) -> N
 
     # Partition no longer exists.
     assert await store.open_partition("to_delete") is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_delete_partition_keeps_foreign_key_enforced(
+    pg_store: SQLAlchemySegmentStore,
+    sqlalchemy_pg_engine: AsyncEngine,
+) -> None:
+    """Deleting one partition must not drop the derivative-link foreign key."""
+    await pg_store.open_or_create_partition("keeper_fk", _plaintext_partition_config())
+    await pg_store.open_or_create_partition("doomed_fk", _plaintext_partition_config())
+
+    await pg_store.delete_partition("doomed_fk")
+
+    # A derivative link pointing at no segment must still be rejected in the
+    # partition that survived.
+    with pytest.raises(IntegrityError):
+        async with sqlalchemy_pg_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO segment_store_dv_ln"
+                    " (partition_key, uuid, segment_uuid)"
+                    " VALUES (:partition_key, :uuid, :segment_uuid)"
+                ),
+                {
+                    "partition_key": "keeper_fk",
+                    "uuid": uuid4(),
+                    "segment_uuid": uuid4(),
+                },
+            )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_delete_partition_drops_an_already_detached_child(
+    pg_store: SQLAlchemySegmentStore,
+    sqlalchemy_pg_engine: AsyncEngine,
+) -> None:
+    """
+    A child table left detached must not jam deletion.
+
+    Manual maintenance, or an interrupted DETACH PARTITION CONCURRENTLY, can
+    leave a child table that exists but is no longer a partition. DETACH
+    raises on such a table, so deletion has to drop it directly; otherwise the
+    partition becomes neither deletable nor recreatable.
+    """
+    await pg_store.open_or_create_partition("detached", _plaintext_partition_config())
+    async with sqlalchemy_pg_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "ALTER TABLE segment_store_sg"
+                ' DETACH PARTITION "segment_store_sg_p_detached"'
+            )
+        )
+
+    await pg_store.delete_partition("detached")
+
+    assert await pg_store.open_partition("detached") is None
+    # The key is reusable afterwards.
+    await pg_store.open_or_create_partition("detached", _plaintext_partition_config())
+    await pg_store.delete_partition("detached")
 
 
 @pytest.mark.integration
