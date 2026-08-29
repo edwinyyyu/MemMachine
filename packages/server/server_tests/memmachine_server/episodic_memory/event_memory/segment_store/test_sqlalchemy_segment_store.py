@@ -33,6 +33,7 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
     SQLAlchemySegmentStorePartition,
+    _pg_partition_entities,
 )
 
 PARTITION_KEY = "test_partition"
@@ -1123,6 +1124,31 @@ async def test_partition_key_validation_too_long(
 ) -> None:
     with pytest.raises(ValueError, match="too long"):
         await store.create_partition("a" * 33, _plaintext_partition_config())
+
+
+def test_pg_partition_entities_memoized_and_validated() -> None:
+    """
+    Handles for one partition must share the same child Table objects.
+
+    SQLAlchemy's compiled-statement cache keys on the Table OBJECTS a
+    statement references, so per-handle tables would make every handle's
+    statements recompile and would pollute the cache for everything else.
+    The naming path also validates the key, so every SQL string built from
+    a child table name is safe by construction.
+    """
+    first = _pg_partition_entities("memo_key")
+    second = _pg_partition_entities("memo_key")
+    assert all(a is b for a, b in zip(first, second, strict=True))
+
+    segment_entity = first[2]
+    statement_a = select(segment_entity).where(segment_entity.partition_key == "k")
+    statement_b = select(second[2]).where(second[2].partition_key == "k")
+    assert statement_a._generate_cache_key() == statement_b._generate_cache_key()
+
+    assert first[0].name == "segment_store_sg_p_memo_key"
+    assert first[1].name == "segment_store_dv_ln_p_memo_key"
+    with pytest.raises(ValueError, match="invalid characters"):
+        _pg_partition_entities("Quote'; DROP TABLE x")
 
 
 # --- PostgreSQL-only ---
