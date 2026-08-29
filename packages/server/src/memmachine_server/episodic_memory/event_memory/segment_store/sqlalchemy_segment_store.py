@@ -858,6 +858,21 @@ class SQLAlchemySegmentStore(SegmentStore):
         "LOCK TABLE segment_store_pt IN SHARE ROW EXCLUSIVE MODE"
     )
 
+    _PG_CHILD_TABLE_STATE = text(
+        """
+        SELECT child.name AS name,
+               to_regclass(child.name) IS NOT NULL AS table_exists,
+               EXISTS (
+                   SELECT 1
+                   FROM pg_inherits
+                   WHERE inhrelid = to_regclass(child.name)
+                     AND inhparent = to_regclass(child.parent)
+               ) AS attached
+        FROM unnest(cast(:names AS text[]), cast(:parents AS text[]))
+             AS child(name, parent)
+        """
+    )
+
     @override
     async def create_partition(
         self,
@@ -985,16 +1000,11 @@ class SQLAlchemySegmentStore(SegmentStore):
             self._tracker("delete_partition"),
             self._engine.begin() as connection,
         ):
-            if self._is_postgresql:
-                # Same lock the create paths take, acquired first, so a
-                # concurrent create and delete cannot reach the two parent
-                # tables in opposite order and deadlock.
-                await connection.execute(
-                    SQLAlchemySegmentStore._PG_LOCK_PARTITIONS_TABLE
-                )
             if not self._is_sqlite:
                 # Exclusive lock on the partition row blocks concurrent writes
                 # (which hold shared locks) until deletion completes.
+                # Taken before the partitions-table lock so that waiting for
+                # in-flight writers does not hold a store-wide lock.
                 # SQLite relies on write serialization by the database.
                 await connection.execute(
                     select(PartitionRow.partition_key)
@@ -1002,6 +1012,12 @@ class SQLAlchemySegmentStore(SegmentStore):
                     .with_for_update()
                 )
             if self._is_postgresql:
+                # Same lock the create paths take, held across the child DDL,
+                # so a concurrent create and delete cannot reach the two
+                # parent tables in opposite order and deadlock.
+                await connection.execute(
+                    SQLAlchemySegmentStore._PG_LOCK_PARTITIONS_TABLE
+                )
                 await SQLAlchemySegmentStore._drop_pg_child_tables(
                     connection, partition_key
                 )
@@ -1125,20 +1141,36 @@ class SQLAlchemySegmentStore(SegmentStore):
         """
         Drop PostgreSQL child partition tables for the given key.
 
-        Each child is detached before it is dropped.
+        An attached child is detached before it is dropped.
         Dropping a child while it is still attached requires CASCADE,
         which drops the foreign key
         between segment_store_dv_ln and segment_store_sg
         for every partition rather than only this one.
+
+        A child that exists but is already detached
+        (left behind by manual maintenance,
+        or by an interrupted DETACH PARTITION CONCURRENTLY,
+        which is not transactional)
+        is dropped directly:
+        DETACH raises "is not a partition of" on such a table,
+        which would leave the partition neither deletable nor recreatable.
         """
-        for parent in (DerivativeLinkRow.__tablename__, SegmentRow.__tablename__):
-            child = _pg_child_table_name(parent, partition_key)
-            child_exists = await connection.scalar(
-                text("SELECT to_regclass(:child)"), {"child": child}
-            )
-            if child_exists is None:
-                continue
+        parents = [DerivativeLinkRow.__tablename__, SegmentRow.__tablename__]
+        children = [_pg_child_table_name(parent, partition_key) for parent in parents]
+        rows = (
             await connection.execute(
-                text(f'ALTER TABLE {parent} DETACH PARTITION "{child}"')
+                SQLAlchemySegmentStore._PG_CHILD_TABLE_STATE,
+                {"names": children, "parents": parents},
             )
+        ).all()
+        state = {row.name: (row.table_exists, row.attached) for row in rows}
+
+        for parent, child in zip(parents, children, strict=True):
+            table_exists, attached = state[child]
+            if not table_exists:
+                continue
+            if attached:
+                await connection.execute(
+                    text(f'ALTER TABLE {parent} DETACH PARTITION "{child}"')
+                )
             await connection.execute(text(f'DROP TABLE "{child}"'))
