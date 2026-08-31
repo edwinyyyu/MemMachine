@@ -902,7 +902,9 @@ async def test_delete_partition_keeps_foreign_key_enforced(
     sqlalchemy_pg_engine: AsyncEngine,
 ) -> None:
     """Deleting one partition must not drop the derivative-link foreign key."""
-    await pg_store.open_or_create_partition("keeper_fk", _plaintext_partition_config())
+    keeper = await pg_store.open_or_create_partition(
+        "keeper_fk", _plaintext_partition_config()
+    )
     await pg_store.open_or_create_partition("doomed_fk", _plaintext_partition_config())
 
     await pg_store.delete_partition("doomed_fk")
@@ -914,11 +916,11 @@ async def test_delete_partition_keeps_foreign_key_enforced(
             await connection.execute(
                 text(
                     "INSERT INTO segment_store_dv_ln"
-                    " (partition_key, uuid, segment_uuid)"
-                    " VALUES (:partition_key, :uuid, :segment_uuid)"
+                    " (incarnation, uuid, segment_uuid)"
+                    " VALUES (:incarnation, :uuid, :segment_uuid)"
                 ),
                 {
-                    "partition_key": "keeper_fk",
+                    "incarnation": keeper._incarnation,
                     "uuid": uuid4(),
                     "segment_uuid": uuid4(),
                 },
@@ -1126,7 +1128,7 @@ async def test_recreated_partition_is_isolated_from_old_rows(
     )
     seg = _seg()
     await partition.add_segments(_links(seg))
-    old_physical_key = partition._physical_partition_key
+    old_incarnation = partition._incarnation
 
     await store.delete_partition("isolated")
     successor = await store.open_or_create_partition(
@@ -1140,7 +1142,7 @@ async def test_recreated_partition_is_isolated_from_old_rows(
             await session.execute(
                 select(func.count())
                 .select_from(SegmentRow)
-                .where(SegmentRow.partition_key == old_physical_key)
+                .where(SegmentRow.incarnation == old_incarnation)
             )
         ).scalar_one()
     assert remaining == 1
@@ -1158,7 +1160,7 @@ async def test_purge_reclaims_only_dead_incarnations(
     doomed = await store.open_or_create_partition(
         "doomed_p", _plaintext_partition_config()
     )
-    doomed_physical_key = doomed._physical_partition_key
+    doomed_incarnation = doomed._incarnation
     await doomed.add_segments(_links(_seg(), _seg(), _seg()))
     await store.delete_partition("doomed_p")
 
@@ -1170,7 +1172,7 @@ async def test_purge_reclaims_only_dead_incarnations(
             await session.execute(
                 select(func.count())
                 .select_from(SegmentRow)
-                .where(SegmentRow.partition_key == doomed_physical_key)
+                .where(SegmentRow.incarnation == doomed_incarnation)
             )
         ).scalar_one()
         queue_depth = (

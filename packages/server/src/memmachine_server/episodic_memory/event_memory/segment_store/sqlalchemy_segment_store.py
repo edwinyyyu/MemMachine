@@ -97,7 +97,6 @@ from memmachine_server.episodic_memory.event_memory.segment_store.segment_store 
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.utils import (
     new_incarnation,
-    physical_partition_key,
     validate_partition_key,
 )
 
@@ -119,7 +118,7 @@ class PartitionRow(BaseSegmentStore):
     __tablename__ = "segment_store_pt"
 
     partition_key: MappedColumn[str] = mapped_column(String(255), primary_key=True)
-    incarnation: MappedColumn[str] = mapped_column(String(16), nullable=False)
+    incarnation: MappedColumn[UUID] = mapped_column(Uuid, nullable=False, unique=True)
     payload_codec_config: MappedColumn[dict[str, JsonValue]] = mapped_column(
         _JSON_AUTO,
         nullable=False,
@@ -131,7 +130,7 @@ class SegmentRow(BaseSegmentStore):
 
     __tablename__ = "segment_store_sg"
 
-    partition_key: MappedColumn[str] = mapped_column(String(255), primary_key=True)
+    incarnation: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
 
     uuid: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
     event_uuid: MappedColumn[UUID] = mapped_column(Uuid, nullable=False)
@@ -154,13 +153,13 @@ class SegmentRow(BaseSegmentStore):
     # (O(1)) and the purge queue reclaims data rows asynchronously.
     __table_args__ = (
         Index(
-            "segment_store_sg__pk_ev",
-            "partition_key",
+            "segment_store_sg__inc_ev",
+            "incarnation",
             "event_uuid",
         ),
         Index(
-            "segment_store_sg__pk_ts_ev_bk_ix",
-            "partition_key",
+            "segment_store_sg__inc_ts_ev_bk_ix",
+            "incarnation",
             "timestamp",
             "event_uuid",
             "index",
@@ -174,36 +173,39 @@ class DerivativeLinkRow(BaseSegmentStore):
 
     __tablename__ = "segment_store_dv_ln"
 
-    partition_key: MappedColumn[str] = mapped_column(String(255), primary_key=True)
+    incarnation: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
 
     uuid: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
     segment_uuid: MappedColumn[UUID] = mapped_column(Uuid, nullable=False)
 
     __table_args__ = (
         ForeignKeyConstraint(
-            ["partition_key", "segment_uuid"],
+            ["incarnation", "segment_uuid"],
             [
-                "segment_store_sg.partition_key",
+                "segment_store_sg.incarnation",
                 "segment_store_sg.uuid",
             ],
             ondelete="CASCADE",
         ),
         Index(
-            "segment_store_dv_ln__pk_su",
-            "partition_key",
+            "segment_store_dv_ln__inc_su",
+            "incarnation",
             "segment_uuid",
         ),
     )
 
 
 class PurgeRow(BaseSegmentStore):
-    """The purge queue: one row per dead physical partition key."""
+    """The purge queue: one row per dead partition incarnation.
+
+    Carries the logical key purely for forensics; the incarnation alone
+    identifies the rows to reclaim.
+    """
 
     __tablename__ = "segment_store_gc"
 
-    physical_partition_key: MappedColumn[str] = mapped_column(
-        String(255), primary_key=True
-    )
+    incarnation: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
+    partition_key: MappedColumn[str] = mapped_column(String(255), nullable=False)
     enqueued_at: MappedColumn[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -215,7 +217,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     def __init__(
         self,
         partition_key: str,
-        incarnation: str,
+        incarnation: UUID,
         engine: AsyncEngine,
         config: SegmentStorePartitionConfig,
         payload_codec: PayloadCodec,
@@ -223,14 +225,12 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     ) -> None:
         """Initialize with a partition key, its incarnation, and an engine."""
         self._logical_partition_key = partition_key
+        # Data rows are keyed by the incarnation alone: rows of a
+        # deleted-and-recreated partition under the same logical key are
+        # invisible to the new incarnation while the purge queue reclaims
+        # them, and a data query cannot even be built without resolving
+        # the registry first.
         self._incarnation = incarnation
-        # All data rows are keyed by the physical key, which scopes them to
-        # this incarnation: rows of a deleted-and-recreated partition under
-        # the same logical key are invisible to the new incarnation while
-        # the purge queue reclaims them.
-        self._physical_partition_key = physical_partition_key(
-            partition_key, incarnation
-        )
         self._engine = engine
         self._config = config
         self._payload_codec = payload_codec
@@ -303,7 +303,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         segment_row_values = [
             {
                 "uuid": segment.uuid,
-                "partition_key": self._physical_partition_key,
+                "incarnation": self._incarnation,
                 "event_uuid": segment.event_uuid,
                 "index": segment.index,
                 "offset": segment.offset,
@@ -331,7 +331,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         derivative_row_values = [
             {
                 "uuid": derivative_uuid,
-                "partition_key": self._physical_partition_key,
+                "incarnation": self._incarnation,
                 "segment_uuid": segment.uuid,
             }
             for segment, derivative_uuids in segments_to_derivative_uuids.items()
@@ -362,7 +362,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             await self._ensure_partition_live(session)
             seed_segments_query = select(SegmentRow).where(
                 SegmentRow.uuid.in_(seed_segment_uuids),
-                SegmentRow.partition_key == self._physical_partition_key,
+                SegmentRow.incarnation == self._incarnation,
             )
             if property_filter is not None:
                 seed_segments_query = seed_segments_query.where(
@@ -441,7 +441,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 SegmentRow.offset.label("seed_offset"),
             )
             .where(
-                SegmentRow.partition_key == self._physical_partition_key,
+                SegmentRow.incarnation == self._incarnation,
                 SegmentRow.uuid.in_(seed_rows_by_uuid.keys()),
             )
             .subquery("seeds")
@@ -460,7 +460,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             seeds_subquery.c.seed_offset,
         )
 
-        partition_key = self._physical_partition_key
+        incarnation = self._incarnation
 
         async def get_context_rows_directional(
             range_condition: ColumnElement[bool],
@@ -471,7 +471,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             # Build a LATERAL subquery that gets context rows for each seed.
             context_rows_query = (
                 select(SegmentRow)
-                .where(SegmentRow.partition_key == partition_key, range_condition)
+                .where(SegmentRow.incarnation == incarnation, range_condition)
                 .order_by(*ordering)
                 .limit(limit)
                 .correlate(seeds_subquery)
@@ -507,7 +507,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 rows_by_seed[row.seed_uuid].append(
                     SegmentRow(
                         uuid=row.uuid,
-                        partition_key=partition_key,
+                        incarnation=incarnation,
                         event_uuid=row.event_uuid,
                         index=row.index,
                         offset=row.offset,
@@ -596,7 +596,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 backward_rows_query = (
                     select(SegmentRow)
                     .where(
-                        SegmentRow.partition_key == self._physical_partition_key,
+                        SegmentRow.incarnation == self._incarnation,
                         segment_ordering_columns < seed_ordering_values,
                     )
                     .order_by(
@@ -620,7 +620,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 forward_rows_query = (
                     select(SegmentRow)
                     .where(
-                        SegmentRow.partition_key == self._physical_partition_key,
+                        SegmentRow.incarnation == self._incarnation,
                         segment_ordering_columns > seed_ordering_values,
                     )
                     .order_by(
@@ -658,7 +658,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         ):
             await self._ensure_partition_live(session)
             query = select(SegmentRow.event_uuid, SegmentRow.uuid).where(
-                SegmentRow.partition_key == self._physical_partition_key,
+                SegmentRow.incarnation == self._incarnation,
                 SegmentRow.event_uuid.in_(event_uuids),
             )
             rows = (await session.execute(query)).all()
@@ -685,7 +685,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             query = select(
                 DerivativeLinkRow.segment_uuid, DerivativeLinkRow.uuid
             ).where(
-                DerivativeLinkRow.partition_key == self._physical_partition_key,
+                DerivativeLinkRow.incarnation == self._incarnation,
                 DerivativeLinkRow.segment_uuid.in_(segment_uuids),
             )
             rows = (await session.execute(query)).all()
@@ -719,7 +719,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 await session.execute(
                     select(SegmentRow.uuid)
                     .where(
-                        SegmentRow.partition_key == self._physical_partition_key,
+                        SegmentRow.incarnation == self._incarnation,
                         SegmentRow.uuid.in_(segment_uuids),
                     )
                     .order_by(SegmentRow.uuid)
@@ -729,7 +729,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             # CASCADE deletes derivatives via FK.
             await session.execute(
                 delete(SegmentRow).where(
-                    SegmentRow.partition_key == self._physical_partition_key,
+                    SegmentRow.incarnation == self._incarnation,
                     SegmentRow.uuid.in_(segment_uuids),
                 )
             )
@@ -956,8 +956,9 @@ class SQLAlchemySegmentStore(SegmentStore):
         """Unregister the partition and queue its rows for purging.
 
         O(1) regardless of partition size: the exclusive row lock waits out
-        in-flight writers (which hold shared pins on the row), the physical
-        key goes onto the purge queue, and the registry row is deleted.
+        in-flight writers (which hold shared pins on the row), the
+        incarnation goes onto the purge queue, and the registry row is
+        deleted.
         Data rows become unreachable immediately -- every operation
         resolves the registry first -- and purge_deleted_partitions
         reclaims them asynchronously.
@@ -979,9 +980,8 @@ class SQLAlchemySegmentStore(SegmentStore):
                 return
             await session.execute(
                 insert(PurgeRow).values(
-                    physical_partition_key=physical_partition_key(
-                        partition_key, row.incarnation
-                    ),
+                    incarnation=row.incarnation,
+                    partition_key=partition_key,
                     enqueued_at=datetime.now(UTC),
                 )
             )
@@ -1006,26 +1006,26 @@ class SQLAlchemySegmentStore(SegmentStore):
         batches = 0
         async with self._tracker("purge_deleted_partitions"):
             async with self._create_session() as session:
-                physical_keys = (
-                    (await session.execute(select(PurgeRow.physical_partition_key)))
+                dead_incarnations = (
+                    (await session.execute(select(PurgeRow.incarnation)))
                     .scalars()
                     .all()
                 )
-            for physical_key in physical_keys:
+            for incarnation in dead_incarnations:
                 while True:
                     if max_batches is not None and batches >= max_batches:
                         return total
                     async with self._create_session() as session, session.begin():
                         chunk = (
                             select(SegmentRow.uuid)
-                            .where(SegmentRow.partition_key == physical_key)
+                            .where(SegmentRow.incarnation == incarnation)
                             .limit(batch_size)
                             .scalar_subquery()
                         )
                         # The link-table cascade follows each segment chunk.
                         result = await session.execute(
                             delete(SegmentRow).where(
-                                SegmentRow.partition_key == physical_key,
+                                SegmentRow.incarnation == incarnation,
                                 SegmentRow.uuid.in_(chunk),
                             )
                         )
@@ -1041,13 +1041,11 @@ class SQLAlchemySegmentStore(SegmentStore):
                     # retire the queue entry.
                     await session.execute(
                         delete(DerivativeLinkRow).where(
-                            DerivativeLinkRow.partition_key == physical_key
+                            DerivativeLinkRow.incarnation == incarnation
                         )
                     )
                     await session.execute(
-                        delete(PurgeRow).where(
-                            PurgeRow.physical_partition_key == physical_key
-                        )
+                        delete(PurgeRow).where(PurgeRow.incarnation == incarnation)
                     )
         return total
 
