@@ -1011,16 +1011,11 @@ class SQLAlchemySegmentStore(SegmentStore):
 
     @override
     async def delete_partition(self, partition_key: str) -> None:
-        """Unregister the partition and queue its rows for purging.
-
-        O(1) regardless of partition size: the exclusive row lock waits out
-        in-flight writers (which hold shared pins on the row), the
-        incarnation goes onto the purge queue, and the registry row is
-        deleted.
-        Data rows become unreachable immediately -- every operation
-        resolves the registry first -- and purge_deleted_partitions
-        reclaims them asynchronously.
-        """
+        # O(1) regardless of partition size: the exclusive row lock waits
+        # out in-flight writers (which hold shared pins on the row), the
+        # incarnation goes onto the purge queue, and the registry row is
+        # deleted. Data rows become unreachable immediately -- every
+        # operation resolves the registry first.
         validate_partition_key(partition_key)
         async with (
             self._tracker("delete_partition"),
@@ -1053,35 +1048,17 @@ class SQLAlchemySegmentStore(SegmentStore):
         *,
         max_segments: int | None = None,
     ) -> bool:
-        """Physically reclaim rows of deleted partitions, bounded per call.
-
-        Each call is a single transaction: it reclaims up to
-        max_segments segment rows (with their links, and queue entries
-        it drains) and either commits that progress or rolls back to the
-        state before the call. Draining a large backlog is the caller's
-        loop -- each iteration is one bounded transaction, so reclamation
-        never holds a long transaction and survives interruption with
-        completed calls' progress intact.
-
-        Safe to run concurrently, including from multiple processes: each
-        call claims queue entries with `FOR UPDATE SKIP LOCKED`, so
-        concurrent purgers partition the queue instead of contending.
-        Only the claiming call touches a dead incarnation's rows (writers
-        cannot -- the fence pins live incarnations only), which makes
-        reclamation deadlock-free by construction rather than by lock
-        ordering. Entries claimed by another purger are skipped; their
-        reclamation is that purger's, or a later call's if it rolls back.
-
-        Args:
-            max_segments (int | None):
-                Upper bound on segment rows reclaimed in this call, or
-                None for the store's configured default (default: None).
-
-        Returns:
-            bool:
-                True if another call may reclaim more; False if this call
-                drained every queue entry it could claim.
-        """
+        # One transaction per call: up to max_segments segment rows (with
+        # their links, and queue entries it drains) are reclaimed and
+        # committed, or nothing is -- so a large backlog never holds a
+        # long transaction and interruption keeps completed calls'
+        # progress. Queue entries are claimed with FOR UPDATE SKIP
+        # LOCKED, so concurrent purgers partition the queue instead of
+        # contending: only the claiming call touches a dead incarnation's
+        # rows (writers cannot; the fence pins live incarnations only),
+        # making reclamation deadlock-free by construction. Entries
+        # claimed by another purger are skipped; their reclamation is
+        # that purger's, or a later call's if it rolls back.
         remaining = (
             self._default_purge_max_segments if max_segments is None else max_segments
         )
