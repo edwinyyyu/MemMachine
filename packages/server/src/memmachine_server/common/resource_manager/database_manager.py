@@ -613,6 +613,7 @@ class DatabaseManager:
             params = QdrantVectorStoreParams(
                 client=client,
                 registry_replication_factor=conf.registry_replication_factor,
+                metrics_factory=conf.get_metrics_factory(),
             )
             try:
                 store = QdrantVectorStore(params)

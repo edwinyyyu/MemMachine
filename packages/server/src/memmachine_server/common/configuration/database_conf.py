@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, SecretStr, field_validator, model_validat
 
 from memmachine_server.common.configuration.mixin_confs import (
     ApiKeyMixin,
+    MetricsFactoryIdMixin,
     PasswordMixin,
     WithValueFromEnv,
     YamlSerializableMixin,
@@ -228,7 +229,7 @@ class NebulaGraphConf(YamlSerializableMixin, PasswordMixin):
         return self.hosts
 
 
-class QdrantConf(YamlSerializableMixin, ApiKeyMixin):
+class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
     """Configuration options for a Qdrant instance."""
 
     host: str = Field(
