@@ -7,7 +7,7 @@ _PARTITION_KEY_MAX_BYTES = 32
 
 
 def validate_partition_key(partition_key: str) -> None:
-    """Raise ValueError unless the key is valid (a-z0-9_, max 32 bytes)."""
+    """Raise ValueError unless the key matches `[a-z0-9_]+` and is at most 32 bytes."""
     if not _PARTITION_KEY_RE.match(partition_key):
         raise ValueError(
             f"Partition key {partition_key!r} contains invalid characters. "
