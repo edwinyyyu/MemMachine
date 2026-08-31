@@ -1,7 +1,6 @@
 """Data types for segment store."""
 
 import json
-import re
 from collections.abc import Mapping
 
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, field_validator
@@ -14,30 +13,6 @@ from memmachine_server.common.payload_codec.payload_codec_config import (
 )
 
 _JSON_OBJECT_ADAPTER = TypeAdapter(dict[str, JsonValue])
-
-_PARTITION_KEY_RE = re.compile(r"^[a-z0-9_]+$")
-_PARTITION_KEY_MAX_LENGTH = 32
-
-
-def validate_partition_key(partition_key: str) -> None:
-    """Validate a partition key against the segment store contract.
-
-    Implementations embed partition keys in native storage identifiers
-    (e.g. SQL table names), so keys are restricted to a form every
-    backend can embed safely: lowercase alphanumeric and underscores,
-    at most 32 characters.
-    """
-    if not _PARTITION_KEY_RE.match(partition_key):
-        raise ValueError(
-            f"Partition key {partition_key!r} contains invalid characters. "
-            "Only lowercase alphanumeric and underscores are allowed."
-        )
-    if len(partition_key) > _PARTITION_KEY_MAX_LENGTH:
-        raise ValueError(
-            f"Partition key {partition_key!r} is too long "
-            f"({len(partition_key)} characters). "
-            f"Maximum is {_PARTITION_KEY_MAX_LENGTH}."
-        )
 
 
 class SegmentStorePartitionConfig(BaseModel):
