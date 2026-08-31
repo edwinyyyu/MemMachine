@@ -1,6 +1,7 @@
 """Tests for SQLAlchemySegmentStore — SQLite (unit) and PostgreSQL (integration)."""
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta, timezone
@@ -8,7 +9,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event, func, select, text
+from sqlalchemy import delete, event, func, insert, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -30,6 +31,7 @@ from memmachine_server.episodic_memory.event_memory.segment_store import (
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_segment_store import (
     BaseSegmentStore,
+    PartitionRow,
     PurgeRow,
     SegmentRow,
     SQLAlchemySegmentStore,
@@ -1227,8 +1229,8 @@ async def test_purge_reclaims_only_dead_incarnations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Purging erases queued incarnations and leaves live partitions alone."""
-    # Force the chunked-deletion loop to take multiple transactions.
-    monkeypatch.setattr(sqlalchemy_segment_store, "_PURGE_CHUNK_SIZE", 2)
+    # Small default slice, so draining takes the caller's loop.
+    monkeypatch.setattr(sqlalchemy_segment_store, "_PURGE_SLICE_SEGMENTS", 2)
 
     live = await store.open_or_create_partition("live_p", _plaintext_partition_config())
     live_seg = _seg()
@@ -1241,8 +1243,11 @@ async def test_purge_reclaims_only_dead_incarnations(
     await doomed.add_segments(_links(_seg(), _seg(), _seg()))
     await store.delete_partition("doomed_p")
 
-    drained = await store.purge_deleted_partitions()
-    assert drained is False
+    slices = 0
+    while await store.purge_deleted_partitions():
+        slices += 1
+        assert slices < 10
+    assert slices > 0
 
     async with live._create_session() as session:
         dead_rows = (
@@ -1298,6 +1303,121 @@ async def test_purge_respects_max_segments(
         ).scalar_one()
     assert dead_rows == 0
     assert queue_depth == 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_write_landing_during_delete_is_never_orphaned(
+    pg_store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write racing a delete can never leave untracked rows behind.
+
+    The writer's registry-row pin forces delete_partition to wait, so any
+    write that takes its pin commits before the incarnation is enqueued
+    for purging -- its rows are always covered by the queue entry. Without
+    the pin, the delete (and a purge) can complete while the write is in
+    flight, and the write then lands rows under an incarnation the queue
+    no longer tracks: garbage no purge will ever reclaim.
+    """
+    partition = await pg_store.open_or_create_partition(
+        "orphan_race", _plaintext_partition_config()
+    )
+    incarnation = partition._incarnation
+
+    reached_pause = asyncio.Event()
+    release = asyncio.Event()
+    original_insert_segments = partition._insert_segments
+
+    async def pausing_insert_segments(session, segments) -> None:
+        reached_pause.set()
+        await release.wait()
+        await original_insert_segments(session, segments)
+
+    monkeypatch.setattr(partition, "_insert_segments", pausing_insert_segments)
+
+    writer = asyncio.create_task(partition.add_segments(_links(_seg())))
+    await asyncio.wait_for(reached_pause.wait(), 30)
+    deleter = asyncio.create_task(pg_store.delete_partition("orphan_race"))
+    await asyncio.sleep(0.4)
+    if deleter.done():
+        # Broken-locking world: the delete did not wait for the writer.
+        # A purge in this window retires the queue entry before the
+        # write lands.
+        await pg_store.purge_deleted_partitions()
+
+    release.set()
+    with contextlib.suppress(SegmentStorePartitionHandleStaleError):
+        await asyncio.wait_for(writer, 30)
+    await asyncio.wait_for(deleter, 30)
+
+    assert await pg_store.purge_deleted_partitions() is False
+    async with partition._create_session() as session:
+        leftover_rows = (
+            await session.execute(
+                select(func.count())
+                .select_from(SegmentRow)
+                .where(SegmentRow.incarnation == incarnation)
+            )
+        ).scalar_one()
+    assert leftover_rows == 0, (
+        "rows landed under an incarnation the purge queue no longer "
+        "tracks: the writer's registry-row pin is not draining writes "
+        "before deletion commits"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_remote_delete_yields_single_queue_entry(
+    pg_store: SQLAlchemySegmentStore,
+) -> None:
+    """Racing deletions enqueue a dead incarnation exactly once.
+
+    Emulates a delete_partition from another process at the wire level
+    (exclusive row pin, queue insert, registry delete, held uncommitted)
+    and races the store's delete_partition against it: the store's delete
+    must block on the row pin and, once the remote transaction commits,
+    observe the registry row gone and no-op -- one queue entry, no
+    integrity error surfacing to the caller.
+    """
+    partition = await pg_store.open_or_create_partition(
+        "remote_del", _plaintext_partition_config()
+    )
+    incarnation = partition._incarnation
+
+    async with partition._create_session() as remote_session:
+        async with remote_session.begin():
+            await remote_session.execute(
+                select(PartitionRow.incarnation)
+                .where(PartitionRow.partition_key == "remote_del")
+                .with_for_update()
+            )
+            await remote_session.execute(
+                insert(PurgeRow).values(
+                    incarnation=incarnation,
+                    partition_key="remote_del",
+                    enqueued_at=datetime.now(UTC),
+                )
+            )
+            await remote_session.execute(
+                delete(PartitionRow).where(PartitionRow.partition_key == "remote_del")
+            )
+
+            local_delete = asyncio.create_task(pg_store.delete_partition("remote_del"))
+            await asyncio.sleep(0.4)
+            assert not local_delete.done(), (
+                "delete_partition proceeded despite a concurrent deletion "
+                "holding the exclusive registry-row pin"
+            )
+        # Remote transaction committed on exiting begin().
+        await asyncio.wait_for(local_delete, 30)
+
+    async with partition._create_session() as session:
+        queue_entries = (
+            await session.execute(select(func.count()).select_from(PurgeRow))
+        ).scalar_one()
+    assert queue_entries == 1
 
 
 @pytest.mark.integration
