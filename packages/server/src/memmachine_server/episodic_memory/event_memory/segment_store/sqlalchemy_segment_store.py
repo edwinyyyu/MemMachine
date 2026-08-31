@@ -4,9 +4,8 @@ import json
 import logging
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
-from datetime import datetime, timedelta, timezone
-from functools import lru_cache
-from typing import NamedTuple, override
+from datetime import UTC, datetime, timedelta, timezone
+from typing import override
 from uuid import UUID
 
 from pydantic import (
@@ -18,23 +17,19 @@ from pydantic import (
 )
 from sqlalchemy import (
     JSON,
-    Column,
+    CursorResult,
     DateTime,
     ForeignKeyConstraint,
     Index,
     Integer,
     LargeBinary,
-    MetaData,
     String,
-    Table,
     Uuid,
     delete,
     event,
     insert,
-    inspect,
     literal,
     select,
-    text,
     true,
     tuple_,
 )
@@ -42,7 +37,6 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine.interfaces import DBAPIConnection
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
-    AsyncConnection,
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
@@ -51,7 +45,6 @@ from sqlalchemy.orm import (
     DeclarativeBase,
     InstrumentedAttribute,
     MappedColumn,
-    aliased,
     mapped_column,
 )
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
@@ -96,12 +89,15 @@ from memmachine_server.episodic_memory.event_memory.segment_store.data_types imp
     SegmentStorePartitionAlreadyExistsError,
     SegmentStorePartitionConfig,
     SegmentStorePartitionConfigMismatchError,
+    SegmentStorePartitionStaleError,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.segment_store import (
     SegmentStore,
     SegmentStorePartition,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.utils import (
+    new_incarnation,
+    physical_partition_key,
     validate_partition_key,
 )
 
@@ -118,11 +114,12 @@ class BaseSegmentStore(DeclarativeBase):
 
 
 class PartitionRow(BaseSegmentStore):
-    """Tracks known partitions."""
+    """The tenant registry: one row per live partition incarnation."""
 
     __tablename__ = "segment_store_pt"
 
     partition_key: MappedColumn[str] = mapped_column(String(255), primary_key=True)
+    incarnation: MappedColumn[str] = mapped_column(String(16), nullable=False)
     payload_codec_config: MappedColumn[dict[str, JsonValue]] = mapped_column(
         _JSON_AUTO,
         nullable=False,
@@ -152,12 +149,10 @@ class SegmentRow(BaseSegmentStore):
         _JSON_AUTO, nullable=False, default=dict
     )
 
+    # No foreign key to the registry: registry rows and data rows are
+    # deliberately decoupled so that partition deletion is a registry write
+    # (O(1)) and the purge queue reclaims data rows asynchronously.
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["partition_key"],
-            ["segment_store_pt.partition_key"],
-            ondelete="CASCADE",
-        ),
         Index(
             "segment_store_sg__pk_ev",
             "partition_key",
@@ -171,7 +166,6 @@ class SegmentRow(BaseSegmentStore):
             "index",
             "offset",
         ),
-        {"postgresql_partition_by": "LIST (partition_key)"},
     )
 
 
@@ -199,73 +193,19 @@ class DerivativeLinkRow(BaseSegmentStore):
             "partition_key",
             "segment_uuid",
         ),
-        {"postgresql_partition_by": "LIST (partition_key)"},
     )
 
 
-def _pg_child_table_name(parent_table_name: str, partition_key: str) -> str:
-    """Name of the PostgreSQL child table holding one partition's rows.
+class PurgeRow(BaseSegmentStore):
+    """The purge queue: one row per dead physical partition key."""
 
-    Validates the key so that every SQL string built from a child table
-    name is safe by construction, wherever it is built from.
-    """
-    validate_partition_key(partition_key)
-    return f"{parent_table_name}_p_{partition_key}"
+    __tablename__ = "segment_store_gc"
 
-
-class _PartitionEntities(NamedTuple):
-    """One partition's child tables and the ORM entities mapped onto them.
-
-    The row entities are aliases of the mapped classes; SQLAlchemy's typing
-    convention represents an aliased entity as the mapped class type.
-    """
-
-    segment_table: Table
-    derivative_link_table: Table
-    segment_row: type[SegmentRow]
-    derivative_link_row: type[DerivativeLinkRow]
-
-
-# Bounded so tenant churn over a long-lived process cannot grow the cache
-# without limit; the cap is far above the number of concurrently active
-# partitions a worker serves. Eviction is harmless: a rebuilt entry is
-# identical, at the one-time cost of recompiling that partition's
-# statements -- and entries for deleted partitions stop being touched, so
-# they are the first LRU victims.
-@lru_cache(maxsize=4096)
-def _pg_partition_entities(partition_key: str) -> _PartitionEntities:
-    """Child tables and ORM aliases for one partition, built once per key.
-
-    Cached because SQLAlchemy's compiled-statement cache keys on the Table
-    OBJECTS a statement references: rebuilding these per handle would make
-    every handle's statements recompile and would pollute the cache. The
-    tables carry columns only -- no copied constraints or indexes -- since
-    they exist purely to emit DML against the already-created children,
-    never DDL.
-    """
-    metadata = MetaData()
-
-    def child_table(parent_table_name: str, parent_columns: Iterable[Column]) -> Table:
-        return Table(
-            _pg_child_table_name(parent_table_name, partition_key),
-            metadata,
-            *(Column(column.name, column.type) for column in parent_columns),
-        )
-
-    segment_child_table = child_table(
-        SegmentRow.__tablename__, inspect(SegmentRow).columns
+    physical_partition_key: MappedColumn[str] = mapped_column(
+        String(255), primary_key=True
     )
-    derivative_link_child_table = child_table(
-        DerivativeLinkRow.__tablename__, inspect(DerivativeLinkRow).columns
-    )
-    # adapt_on_names: the child Table is a fresh object with no lineage to
-    # the parent's columns, so the entity's attributes must map onto it by
-    # column name.
-    return _PartitionEntities(
-        segment_child_table,
-        derivative_link_child_table,
-        aliased(SegmentRow, segment_child_table, adapt_on_names=True),
-        aliased(DerivativeLinkRow, derivative_link_child_table, adapt_on_names=True),
+    enqueued_at: MappedColumn[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )
 
 
@@ -275,13 +215,22 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     def __init__(
         self,
         partition_key: str,
+        incarnation: str,
         engine: AsyncEngine,
         config: SegmentStorePartitionConfig,
         payload_codec: PayloadCodec,
         tracker: OperationTracker,
     ) -> None:
-        """Initialize with a partition key and engine."""
-        self._partition_key = partition_key
+        """Initialize with a partition key, its incarnation, and an engine."""
+        self._logical_partition_key = partition_key
+        self._incarnation = incarnation
+        # All data rows are keyed by the physical key, which scopes them to
+        # this incarnation: rows of a deleted-and-recreated partition under
+        # the same logical key are invisible to the new incarnation while
+        # the purge queue reclaims them.
+        self._physical_partition_key = physical_partition_key(
+            partition_key, incarnation
+        )
         self._engine = engine
         self._config = config
         self._payload_codec = payload_codec
@@ -289,49 +238,45 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         self._create_session = async_sessionmaker(engine, expire_on_commit=False)
         self._is_sqlite = engine.dialect.name == "sqlite"
 
-        if engine.dialect.name == "postgresql":
-            # Address this partition's child tables directly instead of the
-            # partitioned parents. Parent-table queries carry the partition
-            # key as a bind parameter, so once the driver's prepared
-            # statement switches to a cached generic plan (after five
-            # executions) PostgreSQL locks EVERY child partition on every
-            # execution before runtime pruning runs; with many partitions
-            # and concurrent sessions this exhausts the lock table
-            # ("out of shared memory") and saturates the planner. A query
-            # that names the child only ever plans and locks that child --
-            # though PostgreSQL's own foreign-key integrity triggers still
-            # address the parents internally, which costs a one-shot lock
-            # spike per backend on writes/deletes when a trigger's plan
-            # first goes generic.
-            entities = _pg_partition_entities(partition_key)
-            self._segment_row = entities.segment_row
-            self._derivative_link_row = entities.derivative_link_row
-            # insert()/delete() cannot target an aliased entity; they take
-            # the child Table itself (or the ORM class on other dialects).
-            self._segment_dml_target = entities.segment_table
-            self._derivative_link_dml_target = entities.derivative_link_table
-        else:
-            self._segment_row = SegmentRow
-            self._derivative_link_row = DerivativeLinkRow
-            self._segment_dml_target = SegmentRow
-            self._derivative_link_dml_target = DerivativeLinkRow
-
     @override
     @property
     def config(self) -> SegmentStorePartitionConfig:
         return self._config
 
     async def _lock_partition_for_write(self, session: AsyncSession) -> None:
-        """Acquire a shared lock on the partition row to prevent concurrent deletion."""
-        if not self._is_sqlite:
-            # Shared lock on the partition row blocks concurrent deletions
-            # (which hold exclusive locks) until write completes.
-            # SQLite relies on write serialization by the database.
+        """Pin this incarnation's registry row; raise if the handle is stale.
+
+        The shared row lock blocks concurrent deletion (which takes the
+        exclusive row lock) until the write completes; the incarnation
+        predicate fences a handle that outlived its partition. SQLite
+        ignores the locking clause and relies on database-level write
+        serialization; the fencing check still applies.
+        """
+        row = (
             await session.execute(
                 select(PartitionRow.partition_key)
-                .where(PartitionRow.partition_key == self._partition_key)
+                .where(
+                    PartitionRow.partition_key == self._logical_partition_key,
+                    PartitionRow.incarnation == self._incarnation,
+                )
                 .with_for_update(read=True)
             )
+        ).scalar_one_or_none()
+        if row is None:
+            raise SegmentStorePartitionStaleError(self._logical_partition_key)
+
+    async def _ensure_partition_live(self, session: AsyncSession) -> None:
+        """Raise if this handle's incarnation is no longer registered."""
+        row = (
+            await session.execute(
+                select(PartitionRow.partition_key).where(
+                    PartitionRow.partition_key == self._logical_partition_key,
+                    PartitionRow.incarnation == self._incarnation,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise SegmentStorePartitionStaleError(self._logical_partition_key)
 
     # Registration
 
@@ -358,7 +303,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         segment_row_values = [
             {
                 "uuid": segment.uuid,
-                "partition_key": self._partition_key,
+                "partition_key": self._physical_partition_key,
                 "event_uuid": segment.event_uuid,
                 "index": segment.index,
                 "offset": segment.offset,
@@ -375,7 +320,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             for segment in segments
         ]
         if segment_row_values:
-            await session.execute(insert(self._segment_dml_target), segment_row_values)
+            await session.execute(insert(SegmentRow), segment_row_values)
 
     async def _insert_derivative_links(
         self,
@@ -386,16 +331,14 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         derivative_row_values = [
             {
                 "uuid": derivative_uuid,
-                "partition_key": self._partition_key,
+                "partition_key": self._physical_partition_key,
                 "segment_uuid": segment.uuid,
             }
             for segment, derivative_uuids in segments_to_derivative_uuids.items()
             for derivative_uuid in derivative_uuids
         ]
         if derivative_row_values:
-            await session.execute(
-                insert(self._derivative_link_dml_target), derivative_row_values
-            )
+            await session.execute(insert(DerivativeLinkRow), derivative_row_values)
 
     # Retrieval
 
@@ -416,10 +359,10 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             self._tracker("get_segment_contexts"),
             self._create_session() as session,
         ):
-            segment_row = self._segment_row
-            seed_segments_query = select(segment_row).where(
-                segment_row.uuid.in_(seed_segment_uuids),
-                segment_row.partition_key == self._partition_key,
+            await self._ensure_partition_live(session)
+            seed_segments_query = select(SegmentRow).where(
+                SegmentRow.uuid.in_(seed_segment_uuids),
+                SegmentRow.partition_key == self._physical_partition_key,
             )
             if property_filter is not None:
                 seed_segments_query = seed_segments_query.where(
@@ -489,27 +432,26 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         property_filter: FilterExpr | None,
     ) -> dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]]:
         """Get backward/forward context using LATERAL joins (non-SQLite)."""
-        segment_row = self._segment_row
         seeds_subquery = (
             select(
-                segment_row.uuid.label("seed_uuid"),
-                segment_row.timestamp.label("seed_timestamp"),
-                segment_row.event_uuid.label("seed_event_uuid"),
-                segment_row.index.label("seed_index"),
-                segment_row.offset.label("seed_offset"),
+                SegmentRow.uuid.label("seed_uuid"),
+                SegmentRow.timestamp.label("seed_timestamp"),
+                SegmentRow.event_uuid.label("seed_event_uuid"),
+                SegmentRow.index.label("seed_index"),
+                SegmentRow.offset.label("seed_offset"),
             )
             .where(
-                segment_row.partition_key == self._partition_key,
-                segment_row.uuid.in_(seed_rows_by_uuid.keys()),
+                SegmentRow.partition_key == self._physical_partition_key,
+                SegmentRow.uuid.in_(seed_rows_by_uuid.keys()),
             )
             .subquery("seeds")
         )
 
         segment_ordering_columns = tuple_(
-            segment_row.timestamp,
-            segment_row.event_uuid,
-            segment_row.index,
-            segment_row.offset,
+            SegmentRow.timestamp,
+            SegmentRow.event_uuid,
+            SegmentRow.index,
+            SegmentRow.offset,
         )
         seed_ordering_columns = tuple_(
             seeds_subquery.c.seed_timestamp,
@@ -518,7 +460,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             seeds_subquery.c.seed_offset,
         )
 
-        partition_key = self._partition_key
+        partition_key = self._physical_partition_key
 
         async def get_context_rows_directional(
             range_condition: ColumnElement[bool],
@@ -528,8 +470,8 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             """Get context rows per seed in the specified direction."""
             # Build a LATERAL subquery that gets context rows for each seed.
             context_rows_query = (
-                select(segment_row)
-                .where(segment_row.partition_key == partition_key, range_condition)
+                select(SegmentRow)
+                .where(SegmentRow.partition_key == partition_key, range_condition)
                 .order_by(*ordering)
                 .limit(limit)
                 .correlate(seeds_subquery)
@@ -579,10 +521,10 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             return rows_by_seed
 
         chronological_order = [
-            segment_row.timestamp,
-            segment_row.event_uuid,
-            segment_row.index,
-            segment_row.offset,
+            SegmentRow.timestamp,
+            SegmentRow.event_uuid,
+            SegmentRow.index,
+            SegmentRow.offset,
         ]
         reverse_chronological_order = [col.desc() for col in chronological_order]
 
@@ -623,14 +565,13 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         property_filter: FilterExpr | None,
     ) -> dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]]:
         """Get backward/forward context per seed (SQLite fallback)."""
-        segment_row = self._segment_row
         context_rows_by_seed: dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]] = {}
 
         segment_ordering_columns = tuple_(
-            segment_row.timestamp,
-            segment_row.event_uuid,
-            segment_row.index,
-            segment_row.offset,
+            SegmentRow.timestamp,
+            SegmentRow.event_uuid,
+            SegmentRow.index,
+            SegmentRow.offset,
         )
 
         compiled_property_filter = (
@@ -653,16 +594,16 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             backward_rows: list[SegmentRow] = []
             if max_backward_segments > 0:
                 backward_rows_query = (
-                    select(segment_row)
+                    select(SegmentRow)
                     .where(
-                        segment_row.partition_key == self._partition_key,
+                        SegmentRow.partition_key == self._physical_partition_key,
                         segment_ordering_columns < seed_ordering_values,
                     )
                     .order_by(
-                        segment_row.timestamp.desc(),
-                        segment_row.event_uuid.desc(),
-                        segment_row.index.desc(),
-                        segment_row.offset.desc(),
+                        SegmentRow.timestamp.desc(),
+                        SegmentRow.event_uuid.desc(),
+                        SegmentRow.index.desc(),
+                        SegmentRow.offset.desc(),
                     )
                     .limit(max_backward_segments)
                 )
@@ -677,16 +618,16 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             forward_rows: list[SegmentRow] = []
             if max_forward_segments > 0:
                 forward_rows_query = (
-                    select(segment_row)
+                    select(SegmentRow)
                     .where(
-                        segment_row.partition_key == self._partition_key,
+                        SegmentRow.partition_key == self._physical_partition_key,
                         segment_ordering_columns > seed_ordering_values,
                     )
                     .order_by(
-                        segment_row.timestamp,
-                        segment_row.event_uuid,
-                        segment_row.index,
-                        segment_row.offset,
+                        SegmentRow.timestamp,
+                        SegmentRow.event_uuid,
+                        SegmentRow.index,
+                        SegmentRow.offset,
                     )
                     .limit(max_forward_segments)
                 )
@@ -715,10 +656,10 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             self._tracker("get_segment_uuids_by_event_uuids"),
             self._create_session() as session,
         ):
-            segment_row = self._segment_row
-            query = select(segment_row.event_uuid, segment_row.uuid).where(
-                segment_row.partition_key == self._partition_key,
-                segment_row.event_uuid.in_(event_uuids),
+            await self._ensure_partition_live(session)
+            query = select(SegmentRow.event_uuid, SegmentRow.uuid).where(
+                SegmentRow.partition_key == self._physical_partition_key,
+                SegmentRow.event_uuid.in_(event_uuids),
             )
             rows = (await session.execute(query)).all()
 
@@ -740,12 +681,12 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             self._tracker("get_derivative_uuids_by_segment_uuids"),
             self._create_session() as session,
         ):
-            derivative_link_row = self._derivative_link_row
+            await self._ensure_partition_live(session)
             query = select(
-                derivative_link_row.segment_uuid, derivative_link_row.uuid
+                DerivativeLinkRow.segment_uuid, DerivativeLinkRow.uuid
             ).where(
-                derivative_link_row.partition_key == self._partition_key,
-                derivative_link_row.segment_uuid.in_(segment_uuids),
+                DerivativeLinkRow.partition_key == self._physical_partition_key,
+                DerivativeLinkRow.segment_uuid.in_(segment_uuids),
             )
             rows = (await session.execute(query)).all()
 
@@ -771,26 +712,25 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             session.begin(),
         ):
             await self._lock_partition_for_write(session)
-            segment_row = self._segment_row
             if not self._is_sqlite:
                 # Lock rows in deterministic order to prevent deadlocks
                 # from concurrent deletions with overlapping UUID sets.
                 # SQLite relies on write serialization by the database.
                 await session.execute(
-                    select(segment_row.uuid)
+                    select(SegmentRow.uuid)
                     .where(
-                        segment_row.partition_key == self._partition_key,
-                        segment_row.uuid.in_(segment_uuids),
+                        SegmentRow.partition_key == self._physical_partition_key,
+                        SegmentRow.uuid.in_(segment_uuids),
                     )
-                    .order_by(segment_row.uuid)
+                    .order_by(SegmentRow.uuid)
                     .with_for_update()
                 )
 
             # CASCADE deletes derivatives via FK.
             await session.execute(
-                delete(self._segment_dml_target).where(
-                    segment_row.partition_key == self._partition_key,
-                    segment_row.uuid.in_(segment_uuids),
+                delete(SegmentRow).where(
+                    SegmentRow.partition_key == self._physical_partition_key,
+                    SegmentRow.uuid.in_(segment_uuids),
                 )
             )
 
@@ -801,14 +741,13 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         field: str,
     ) -> tuple[ColumnElement, FieldEncoding]:
         """Map a filter field name to a segment column and encoding."""
-        segment_row = self._segment_row
         if field == "timestamp":
-            return segment_row.timestamp.expression, "column"
+            return SegmentRow.timestamp.expression, "column"
         internal_name, is_user_metadata = normalize_filter_field(field)
         if is_user_metadata:
             key = demangle_user_metadata_key(internal_name)
-            return segment_row.properties[key], "properties_json"
-        return segment_row.properties[f"_{field}"], "properties_json"
+            return SegmentRow.properties[key], "properties_json"
+        return SegmentRow.properties[f"_{field}"], "properties_json"
 
     def _segment_from_segment_row(self, row: SegmentRow) -> Segment:
         """Convert a SegmentRow into a Segment."""
@@ -906,25 +845,6 @@ class SQLAlchemySegmentStore(SegmentStore):
 
     # Partition management
 
-    _PG_LOCK_PARTITIONS_TABLE = text(
-        "LOCK TABLE segment_store_pt IN SHARE ROW EXCLUSIVE MODE"
-    )
-
-    _PG_CHILD_TABLE_STATE = text(
-        """
-        SELECT child.name AS name,
-               to_regclass(child.name) IS NOT NULL AS table_exists,
-               EXISTS (
-                   SELECT 1
-                   FROM pg_inherits
-                   WHERE inhrelid = to_regclass(child.name)
-                     AND inhparent = to_regclass(child.parent)
-               ) AS attached
-        FROM unnest(cast(:names AS text[]), cast(:parents AS text[]))
-             AS child(name, parent)
-        """
-    )
-
     @override
     async def create_partition(
         self,
@@ -934,17 +854,14 @@ class SQLAlchemySegmentStore(SegmentStore):
         validate_partition_key(partition_key)
         async with (
             self._tracker("create_partition"),
-            self._engine.begin() as connection,
+            self._create_session() as session,
+            session.begin(),
         ):
-            if self._is_postgresql:
-                await connection.execute(
-                    SQLAlchemySegmentStore._PG_LOCK_PARTITIONS_TABLE
-                )
-
             try:
-                await connection.execute(
+                await session.execute(
                     insert(PartitionRow).values(
                         partition_key=partition_key,
+                        incarnation=new_incarnation(),
                         payload_codec_config=encode_payload_codec_config(
                             config.payload_codec_config
                         ),
@@ -952,10 +869,6 @@ class SQLAlchemySegmentStore(SegmentStore):
                 )
             except IntegrityError as err:
                 raise SegmentStorePartitionAlreadyExistsError(partition_key) from err
-            if self._is_postgresql:
-                await SQLAlchemySegmentStore._create_pg_child_tables(
-                    connection, partition_key
-                )
 
     @override
     async def open_partition(
@@ -987,9 +900,6 @@ class SQLAlchemySegmentStore(SegmentStore):
         partition_key: str,
         config: SegmentStorePartitionConfig,
     ) -> SQLAlchemySegmentStorePartition:
-        # Fast path: opening an existing partition takes no management lock,
-        # so request-path opens never serialize behind a concurrent
-        # partition deletion's DDL window.
         async with self._create_session() as session:
             partition_row = await SQLAlchemySegmentStore._get_partition_row(
                 session, partition_key
@@ -1000,48 +910,30 @@ class SQLAlchemySegmentStore(SegmentStore):
             )
             return await self._partition_from_partition_row(partition_row)
 
+        incarnation = new_incarnation()
         try:
             async with self._create_session() as session, session.begin():
-                if self._is_postgresql:
-                    await session.execute(
-                        SQLAlchemySegmentStore._PG_LOCK_PARTITIONS_TABLE
-                    )
-
-                # Re-check under the lock: a concurrent creator may have won.
-                partition_row = await SQLAlchemySegmentStore._get_partition_row(
-                    session, partition_key
-                )
-                if partition_row is None:
-                    payload_codec = await self._load_payload_codec(config)
-                    await session.execute(
-                        insert(PartitionRow).values(
-                            partition_key=partition_key,
-                            payload_codec_config=encode_payload_codec_config(
-                                config.payload_codec_config
-                            ),
-                        )
-                    )
-                    if self._is_postgresql:
-                        connection = await session.connection()
-                        await SQLAlchemySegmentStore._create_pg_child_tables(
-                            connection, partition_key
-                        )
-
-                    return SQLAlchemySegmentStorePartition(
+                await session.execute(
+                    insert(PartitionRow).values(
                         partition_key=partition_key,
-                        engine=self._engine,
-                        config=config,
-                        payload_codec=payload_codec,
-                        tracker=self._tracker,
+                        incarnation=incarnation,
+                        payload_codec_config=encode_payload_codec_config(
+                            config.payload_codec_config
+                        ),
                     )
-
-                SQLAlchemySegmentStore._raise_if_partition_config_mismatch(
-                    partition_row, config
                 )
-                return await self._partition_from_partition_row(partition_row)
-
         except IntegrityError:
             pass  # Concurrent creation: partition now exists.
+        else:
+            payload_codec = await self._load_payload_codec(config)
+            return SQLAlchemySegmentStorePartition(
+                partition_key=partition_key,
+                incarnation=incarnation,
+                engine=self._engine,
+                config=config,
+                payload_codec=payload_codec,
+                tracker=self._tracker,
+            )
 
         async with self._create_session() as session:
             partition_row = await SQLAlchemySegmentStore._get_partition_row(
@@ -1061,37 +953,103 @@ class SQLAlchemySegmentStore(SegmentStore):
 
     @override
     async def delete_partition(self, partition_key: str) -> None:
+        """Unregister the partition and queue its rows for purging.
+
+        O(1) regardless of partition size: the exclusive row lock waits out
+        in-flight writers (which hold shared pins on the row), the physical
+        key goes onto the purge queue, and the registry row is deleted.
+        Data rows become unreachable immediately -- every operation
+        resolves the registry first -- and purge_deleted_partitions
+        reclaims them asynchronously.
+        """
         validate_partition_key(partition_key)
         async with (
             self._tracker("delete_partition"),
-            self._engine.begin() as connection,
+            self._create_session() as session,
+            session.begin(),
         ):
-            if not self._is_sqlite:
-                # Exclusive lock on the partition row blocks concurrent writes
-                # (which hold shared locks) until deletion completes.
-                # Taken before the partitions-table lock so that waiting for
-                # in-flight writers does not hold a store-wide lock.
-                # SQLite relies on write serialization by the database.
-                await connection.execute(
-                    select(PartitionRow.partition_key)
+            row = (
+                await session.execute(
+                    select(PartitionRow)
                     .where(PartitionRow.partition_key == partition_key)
                     .with_for_update()
                 )
-            if self._is_postgresql:
-                # Same lock the create paths take, held across the child DDL,
-                # so a concurrent create and delete cannot reach the two
-                # parent tables in opposite order and deadlock.
-                await connection.execute(
-                    SQLAlchemySegmentStore._PG_LOCK_PARTITIONS_TABLE
+            ).scalar_one_or_none()
+            if row is None:
+                return
+            await session.execute(
+                insert(PurgeRow).values(
+                    physical_partition_key=physical_partition_key(
+                        partition_key, row.incarnation
+                    ),
+                    enqueued_at=datetime.now(UTC),
                 )
-                await SQLAlchemySegmentStore._drop_pg_child_tables(
-                    connection, partition_key
-                )
-
-            # CASCADE from PartitionRow deletes segments and derivatives.
-            await connection.execute(
+            )
+            await session.execute(
                 delete(PartitionRow).where(PartitionRow.partition_key == partition_key)
             )
+
+    async def purge_deleted_partitions(
+        self,
+        *,
+        batch_size: int = 10_000,
+        max_batches: int | None = None,
+    ) -> int:
+        """Physically reclaim rows of deleted partitions; return rows deleted.
+
+        Drains the purge queue with chunked deletes so long-running
+        reclamation of a large partition never holds long transactions.
+        Intended to be scheduled as background work; call with
+        max_batches=None to purge to completion.
+        """
+        total = 0
+        batches = 0
+        async with self._tracker("purge_deleted_partitions"):
+            async with self._create_session() as session:
+                physical_keys = (
+                    (await session.execute(select(PurgeRow.physical_partition_key)))
+                    .scalars()
+                    .all()
+                )
+            for physical_key in physical_keys:
+                while True:
+                    if max_batches is not None and batches >= max_batches:
+                        return total
+                    async with self._create_session() as session, session.begin():
+                        chunk = (
+                            select(SegmentRow.uuid)
+                            .where(SegmentRow.partition_key == physical_key)
+                            .limit(batch_size)
+                            .scalar_subquery()
+                        )
+                        # The link-table cascade follows each segment chunk.
+                        result = await session.execute(
+                            delete(SegmentRow).where(
+                                SegmentRow.partition_key == physical_key,
+                                SegmentRow.uuid.in_(chunk),
+                            )
+                        )
+                    # Session.execute is typed Result; DML returns a
+                    # CursorResult, which carries the affected-row count.
+                    deleted = result.rowcount if isinstance(result, CursorResult) else 0
+                    batches += 1
+                    total += deleted
+                    if deleted < batch_size:
+                        break
+                async with self._create_session() as session, session.begin():
+                    # Sweep links whose segments were already gone, then
+                    # retire the queue entry.
+                    await session.execute(
+                        delete(DerivativeLinkRow).where(
+                            DerivativeLinkRow.partition_key == physical_key
+                        )
+                    )
+                    await session.execute(
+                        delete(PurgeRow).where(
+                            PurgeRow.physical_partition_key == physical_key
+                        )
+                    )
+        return total
 
     # Helpers
 
@@ -1113,29 +1071,16 @@ class SQLAlchemySegmentStore(SegmentStore):
         self,
         partition_row: PartitionRow,
     ) -> SQLAlchemySegmentStorePartition:
-        """Materialize a partition handle from a DB row."""
+        """Materialize a partition handle from a registry row."""
         config = SegmentStorePartitionConfig(
             payload_codec_config=decode_payload_codec_config(
                 partition_row.payload_codec_config
             )
         )
-        return await self._partition_from_config(
-            partition_row.partition_key,
-            config,
-        )
-
-    async def _partition_from_config(
-        self,
-        partition_key: str,
-        config: SegmentStorePartitionConfig,
-        *,
-        payload_codec: PayloadCodec | None = None,
-    ) -> SQLAlchemySegmentStorePartition:
-        """Materialize a partition handle from config."""
-        if payload_codec is None:
-            payload_codec = await self._load_payload_codec(config)
+        payload_codec = await self._load_payload_codec(config)
         return SQLAlchemySegmentStorePartition(
-            partition_key=partition_key,
+            partition_key=partition_row.partition_key,
+            incarnation=partition_row.incarnation,
             engine=self._engine,
             config=config,
             payload_codec=payload_codec,
@@ -1171,58 +1116,3 @@ class SQLAlchemySegmentStore(SegmentStore):
                 existing_config,
                 config,
             )
-
-    @staticmethod
-    async def _create_pg_child_tables(
-        connection: AsyncConnection, partition_key: str
-    ) -> None:
-        """Create PostgreSQL child partition tables for the given key."""
-        for parent in (SegmentRow.__tablename__, DerivativeLinkRow.__tablename__):
-            child = _pg_child_table_name(parent, partition_key)
-            await connection.execute(
-                text(
-                    f'CREATE TABLE "{child}" PARTITION OF'
-                    f" {parent} FOR VALUES IN ('{partition_key}')"
-                )
-            )
-
-    @staticmethod
-    async def _drop_pg_child_tables(
-        connection: AsyncConnection, partition_key: str
-    ) -> None:
-        """
-        Drop PostgreSQL child partition tables for the given key.
-
-        An attached child is detached before it is dropped.
-        Dropping a child while it is still attached requires CASCADE,
-        which drops the foreign key
-        between segment_store_dv_ln and segment_store_sg
-        for every partition rather than only this one.
-
-        A child that exists but is already detached
-        (left behind by manual maintenance,
-        or by an interrupted DETACH PARTITION CONCURRENTLY,
-        which is not transactional)
-        is dropped directly:
-        DETACH raises "is not a partition of" on such a table,
-        which would leave the partition neither deletable nor recreatable.
-        """
-        parents = [DerivativeLinkRow.__tablename__, SegmentRow.__tablename__]
-        children = [_pg_child_table_name(parent, partition_key) for parent in parents]
-        rows = (
-            await connection.execute(
-                SQLAlchemySegmentStore._PG_CHILD_TABLE_STATE,
-                {"names": children, "parents": parents},
-            )
-        ).all()
-        state = {row.name: (row.table_exists, row.attached) for row in rows}
-
-        for parent, child in zip(parents, children, strict=True):
-            table_exists, attached = state[child]
-            if not table_exists:
-                continue
-            if attached:
-                await connection.execute(
-                    text(f'ALTER TABLE {parent} DETACH PARTITION "{child}"')
-                )
-            await connection.execute(text(f'DROP TABLE IF EXISTS "{child}"'))
