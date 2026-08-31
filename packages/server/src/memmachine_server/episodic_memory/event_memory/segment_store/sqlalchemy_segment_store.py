@@ -89,7 +89,7 @@ from memmachine_server.episodic_memory.event_memory.segment_store.data_types imp
     SegmentStorePartitionAlreadyExistsError,
     SegmentStorePartitionConfig,
     SegmentStorePartitionConfigMismatchError,
-    SegmentStorePartitionStaleError,
+    SegmentStorePartitionHandleStaleError,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.segment_store import (
     SegmentStore,
@@ -260,7 +260,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             )
         ).scalar_one_or_none()
         if row is None:
-            raise SegmentStorePartitionStaleError(self._logical_partition_key)
+            raise SegmentStorePartitionHandleStaleError(self._logical_partition_key)
 
     async def _ensure_partition_live(self, session: AsyncSession) -> None:
         """Raise if this handle's incarnation is no longer registered."""
@@ -272,7 +272,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             )
         ).scalar_one_or_none()
         if row is None:
-            raise SegmentStorePartitionStaleError(self._logical_partition_key)
+            raise SegmentStorePartitionHandleStaleError(self._logical_partition_key)
 
     # Registration
 

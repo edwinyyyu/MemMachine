@@ -94,7 +94,7 @@ purge queue tracks.
 Every write pins the registry row with
 `SELECT ... WHERE incarnation = :incarnation FOR SHARE` -- the incarnation
 alone resolves the row, exactly like the data queries -- and raises a
-stale-partition error when no row matches; reads perform the same check
+stale-handle error when no row matches; reads perform the same check
 without the lock. A handle held across delete, or across
 delete and re-create, fails loudly instead of operating on the successor
 tenant -- on every dialect, including SQLite, which previously had no
