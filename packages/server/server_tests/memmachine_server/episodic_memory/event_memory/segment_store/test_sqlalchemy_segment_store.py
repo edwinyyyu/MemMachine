@@ -26,6 +26,7 @@ from memmachine_server.episodic_memory.event_memory.segment_store import (
     SegmentStorePartitionAlreadyExistsError,
     SegmentStorePartitionConfig,
     SegmentStorePartitionHandleStaleError,
+    sqlalchemy_segment_store,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_segment_store import (
     BaseSegmentStore,
@@ -1223,8 +1224,12 @@ async def test_recreated_partition_is_isolated_from_old_rows(
 @pytest.mark.asyncio
 async def test_purge_reclaims_only_dead_incarnations(
     store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Purging erases queued incarnations and leaves live partitions alone."""
+    # Force the chunked-deletion loop to take multiple transactions.
+    monkeypatch.setattr(sqlalchemy_segment_store, "_PURGE_CHUNK_SIZE", 2)
+
     live = await store.open_or_create_partition("live_p", _plaintext_partition_config())
     live_seg = _seg()
     await live.add_segments(_links(live_seg))
@@ -1236,7 +1241,7 @@ async def test_purge_reclaims_only_dead_incarnations(
     await doomed.add_segments(_links(_seg(), _seg(), _seg()))
     await store.delete_partition("doomed_p")
 
-    drained = await store.purge_deleted_partitions(batch_size=2)
+    drained = await store.purge_deleted_partitions()
     assert drained is False
 
     async with live._create_session() as session:

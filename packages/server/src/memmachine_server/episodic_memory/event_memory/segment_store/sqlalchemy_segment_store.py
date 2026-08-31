@@ -103,6 +103,10 @@ logger = logging.getLogger(__name__)
 
 _JSON_AUTO = JSON().with_variant(JSONB, "postgresql")
 
+# Segment rows deleted per purge transaction: transaction sizing is engine
+# policy, not caller policy -- callers bound a purge call with max_segments.
+_PURGE_CHUNK_SIZE = 10_000
+
 
 # ORM models
 
@@ -991,7 +995,6 @@ class SQLAlchemySegmentStore(SegmentStore):
         self,
         *,
         max_segments: int | None = None,
-        batch_size: int = 10_000,
     ) -> bool:
         """Physically reclaim rows of deleted partitions.
 
@@ -1002,9 +1005,6 @@ class SQLAlchemySegmentStore(SegmentStore):
             max_segments (int | None):
                 Upper bound on segment rows reclaimed in this call, or
                 None for no bound (default: None).
-            batch_size (int):
-                Maximum segment rows deleted per transaction
-                (default: 10000).
 
         Returns:
             bool:
@@ -1024,7 +1024,9 @@ class SQLAlchemySegmentStore(SegmentStore):
                     if remaining is not None and remaining <= 0:
                         return True
                     limit = (
-                        batch_size if remaining is None else min(batch_size, remaining)
+                        _PURGE_CHUNK_SIZE
+                        if remaining is None
+                        else min(_PURGE_CHUNK_SIZE, remaining)
                     )
                     async with self._create_session() as session, session.begin():
                         chunk = (
