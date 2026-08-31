@@ -237,24 +237,27 @@ class SegmentStore(ABC):
         max_segments: int | None = None,
     ) -> bool:
         """
-        Physically reclaim storage for deleted partitions.
+        Physically reclaim one bounded slice of deleted partitions' storage.
 
-        Performs any reclamation that `delete_partition` deferred. The store
-        never schedules this itself; callers decide when and how often to
-        run it. Implementations that reclaim physically in `delete_partition`
-        may implement this as a no-op returning False.
+        Performs reclamation that `delete_partition` deferred, one slice
+        per call: progress committed by a call persists, and repeating a
+        call is always safe. Draining a backlog is the caller's loop --
+        call until this returns False. The store never schedules this
+        itself; callers decide when and how often to run it.
+        Implementations that reclaim physically in `delete_partition` may
+        implement this as a no-op returning False.
 
         Args:
             max_segments (int | None):
                 Upper bound on the number of segments to reclaim in this
-                call, or None for no bound (default: None). Associated
-                derivative links are reclaimed with their segments and do
-                not count toward the bound.
+                call, or None for an implementation-chosen bound
+                (default: None). Associated derivative links are
+                reclaimed with their segments and do not count toward
+                the bound.
 
         Returns:
             bool:
-                True if reclaimable work may remain
-                (the call stopped at its bound);
+                True if another call may reclaim more;
                 False if all deferred reclamation known to the store
                 was completed.
         """

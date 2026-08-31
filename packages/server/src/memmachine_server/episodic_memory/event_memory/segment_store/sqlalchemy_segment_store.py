@@ -103,9 +103,10 @@ logger = logging.getLogger(__name__)
 
 _JSON_AUTO = JSON().with_variant(JSONB, "postgresql")
 
-# Segment rows deleted per purge transaction: transaction sizing is engine
-# policy, not caller policy -- callers bound a purge call with max_segments.
-_PURGE_CHUNK_SIZE = 10_000
+# Slice bound for a purge call when the caller does not pass one: each
+# call is one transaction, so the default keeps engine-appropriate
+# transaction sizing out of callers' hands.
+_PURGE_SLICE_SEGMENTS = 10_000
 
 
 # ORM models
@@ -901,31 +902,35 @@ class SQLAlchemySegmentStore(SegmentStore):
         partition_key: str,
         config: SegmentStorePartitionConfig,
     ) -> SQLAlchemySegmentStorePartition:
-        async with self._create_session() as session:
-            partition_row = await SQLAlchemySegmentStore._get_partition_row(
-                session, partition_key
-            )
-        if partition_row is not None:
-            SQLAlchemySegmentStore._raise_if_partition_config_mismatch(
-                partition_row, config
-            )
-            return await self._partition_from_partition_row(partition_row)
-
-        incarnation = uuid4()
-        try:
-            async with self._create_session() as session, session.begin():
-                await session.execute(
-                    insert(PartitionRow).values(
-                        partition_key=partition_key,
-                        incarnation=incarnation,
-                        payload_codec_config=encode_payload_codec_config(
-                            config.payload_codec_config
-                        ),
-                    )
+        # Read-then-insert, retried: losing the insert race means a
+        # concurrent creator won (reopen its row), and finding no row
+        # after losing means a concurrent delete removed the winner --
+        # every retry requires another actor to have changed the state.
+        while True:
+            async with self._create_session() as session:
+                partition_row = await SQLAlchemySegmentStore._get_partition_row(
+                    session, partition_key
                 )
-        except IntegrityError:
-            pass  # Concurrent creation: partition now exists.
-        else:
+            if partition_row is not None:
+                SQLAlchemySegmentStore._raise_if_partition_config_mismatch(
+                    partition_row, config
+                )
+                return await self._partition_from_partition_row(partition_row)
+
+            incarnation = uuid4()
+            try:
+                async with self._create_session() as session, session.begin():
+                    await session.execute(
+                        insert(PartitionRow).values(
+                            partition_key=partition_key,
+                            incarnation=incarnation,
+                            payload_codec_config=encode_payload_codec_config(
+                                config.payload_codec_config
+                            ),
+                        )
+                    )
+            except IntegrityError:
+                continue  # Concurrent creation: reopen the winner's row.
             payload_codec = await self._load_payload_codec(config)
             return SQLAlchemySegmentStorePartition(
                 partition_key=partition_key,
@@ -935,16 +940,6 @@ class SQLAlchemySegmentStore(SegmentStore):
                 payload_codec=payload_codec,
                 tracker=self._tracker,
             )
-
-        async with self._create_session() as session:
-            partition_row = await SQLAlchemySegmentStore._get_partition_row(
-                session, partition_key
-            )
-        if partition_row is None:
-            raise RuntimeError(f"Partition {partition_key!r} could not be opened")
-
-        self._raise_if_partition_config_mismatch(partition_row, config)
-        return await self._partition_from_partition_row(partition_row)
 
     @override
     async def close_partition(
@@ -996,70 +991,69 @@ class SQLAlchemySegmentStore(SegmentStore):
         *,
         max_segments: int | None = None,
     ) -> bool:
-        """Physically reclaim rows of deleted partitions.
+        """Physically reclaim one slice of deleted partitions' rows.
 
-        Drains the purge queue with chunked deletes so long-running
-        reclamation of a large partition never holds long transactions.
+        Each call is a single transaction: it reclaims up to the slice
+        bound and either commits that progress or rolls back to the state
+        before the call. Draining a large backlog is the caller's loop --
+        each iteration holds only a slice-sized transaction, so
+        reclamation never holds a long transaction and survives
+        interruption with all committed slices intact.
 
         Args:
             max_segments (int | None):
                 Upper bound on segment rows reclaimed in this call, or
-                None for no bound (default: None).
+                None for the store-chosen slice size (default: None).
 
         Returns:
             bool:
-                True if reclaimable work may remain; False if the purge
+                True if another call may reclaim more; False if the purge
                 queue was drained.
         """
-        remaining = max_segments
-        async with self._tracker("purge_deleted_partitions"):
-            async with self._create_session() as session:
-                dead_incarnations = (
-                    (await session.execute(select(PurgeRow.incarnation)))
-                    .scalars()
-                    .all()
-                )
+        remaining = _PURGE_SLICE_SEGMENTS if max_segments is None else max_segments
+        async with (
+            self._tracker("purge_deleted_partitions"),
+            self._create_session() as session,
+            session.begin(),
+        ):
+            dead_incarnations = (
+                (await session.execute(select(PurgeRow.incarnation))).scalars().all()
+            )
             for incarnation in dead_incarnations:
-                while True:
-                    if remaining is not None and remaining <= 0:
-                        return True
-                    limit = (
-                        _PURGE_CHUNK_SIZE
-                        if remaining is None
-                        else min(_PURGE_CHUNK_SIZE, remaining)
+                if remaining <= 0:
+                    return True
+                chunk = (
+                    select(SegmentRow.uuid)
+                    .where(SegmentRow.incarnation == incarnation)
+                    .limit(remaining)
+                    .scalar_subquery()
+                )
+                # The link-table cascade follows the deleted segments.
+                result = await session.execute(
+                    delete(SegmentRow).where(
+                        SegmentRow.incarnation == incarnation,
+                        SegmentRow.uuid.in_(chunk),
                     )
-                    async with self._create_session() as session, session.begin():
-                        chunk = (
-                            select(SegmentRow.uuid)
-                            .where(SegmentRow.incarnation == incarnation)
-                            .limit(limit)
-                            .scalar_subquery()
-                        )
-                        # The link-table cascade follows each segment chunk.
-                        result = await session.execute(
-                            delete(SegmentRow).where(
-                                SegmentRow.incarnation == incarnation,
-                                SegmentRow.uuid.in_(chunk),
-                            )
-                        )
-                    # Session.execute is typed Result; DML returns a
-                    # CursorResult, which carries the affected-row count.
-                    deleted = result.rowcount if isinstance(result, CursorResult) else 0
-                    if remaining is not None:
-                        remaining -= deleted
-                    if deleted < limit:
-                        break
-                async with self._create_session() as session, session.begin():
-                    # Sweep links whose segments were already gone, then
-                    # retire the queue entry.
-                    await session.execute(
-                        delete(DerivativeLinkRow).where(
-                            DerivativeLinkRow.incarnation == incarnation
-                        )
+                )
+                # Session.execute is typed Result; DML returns a
+                # CursorResult, which carries the affected-row count.
+                deleted = result.rowcount if isinstance(result, CursorResult) else 0
+                if deleted == remaining:
+                    # The bound was consumed exactly; this incarnation may
+                    # have more rows, so leave its queue entry for the
+                    # next call.
+                    return True
+                remaining -= deleted
+                # Sweep links whose segments were already gone, then
+                # retire the queue entry.
+                await session.execute(
+                    delete(DerivativeLinkRow).where(
+                        DerivativeLinkRow.incarnation == incarnation
                     )
-                    await session.execute(
-                        delete(PurgeRow).where(PurgeRow.incarnation == incarnation)
-                    )
+                )
+                await session.execute(
+                    delete(PurgeRow).where(PurgeRow.incarnation == incarnation)
+                )
         return False
 
     # Helpers

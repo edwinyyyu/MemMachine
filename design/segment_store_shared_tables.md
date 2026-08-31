@@ -81,17 +81,20 @@ purge queue tracks.
   time -- the old incarnation's rows are invisible to the successor, even
   while the purger is still sweeping them.
 - **Purge**: `purge_deleted_partitions(*, max_segments) -> bool` on the
-  `SegmentStore` ABC -- True means reclaimable work may remain, so callers
-  can loop or reschedule. The store never schedules it itself: when and how
-  often to purge is the caller's policy, and implementations whose deletes
-  reclaim physically implement it as a no-op returning False. This store
-  drains the queue with chunked deletes (`uuid IN (SELECT ... LIMIT n)`
-  sub-selects, portable across dialects), letting the link-table cascade
-  follow, and removes the queue row when the incarnation's rows are gone.
-  Deletion latency contracts are "unreachable immediately, physically
-  erased asynchronously". Measured deletion throughput ~147k rows/s on the
-  benchmark box, so a ten-million-row tenant erases in about a minute of
-  background work.
+  `SegmentStore` ABC. Each call reclaims one bounded slice -- in this
+  store, a single transaction that deletes up to the bound
+  (`uuid IN (SELECT ... LIMIT n)` sub-selects, portable across dialects),
+  lets the link-table cascade follow, and retires queue rows whose
+  incarnations are drained. `max_segments=None` means a store-chosen
+  slice size, so callers never need engine-appropriate transaction
+  sizing; True means another call may reclaim more, so draining a backlog
+  is the caller's loop and committed slices survive interruption. The
+  store never schedules purging itself: when and how often is the
+  caller's policy, and implementations whose deletes reclaim physically
+  implement it as a no-op returning False. Deletion latency contracts are
+  "unreachable immediately, physically erased asynchronously". Measured
+  deletion throughput ~147k rows/s on the benchmark box, so a
+  ten-million-row tenant erases in about a minute of background work.
 
 ### Fencing (resolves #1549)
 
