@@ -336,6 +336,11 @@ class DatabaseManager:
             if conf.pool_pre_ping is not None:
                 engine_kwargs["pool_pre_ping"] = conf.pool_pre_ping
 
+            # The event-backend segment store compiles per-partition
+            # statements (each open partition contributes its own statement
+            # shapes), so the default 500-entry compiled-statement cache
+            # thrashes once enough partitions are live at once.
+            engine_kwargs.setdefault("query_cache_size", 4096)
             engine = create_async_engine(conf.uri, **engine_kwargs)
             if validate:
                 await self.validate_sql_engine(name, engine)
