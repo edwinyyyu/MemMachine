@@ -81,6 +81,37 @@ def _plaintext_partition_config() -> SegmentStorePartitionConfig:
     return SegmentStorePartitionConfig()
 
 
+async def _wait_until_blocked_or_done(
+    engine: AsyncEngine,
+    task: "asyncio.Task[None]",
+) -> str:
+    """Wait until `task` finishes ("done") or its backend waits on a lock ("blocked").
+
+    Decided by observed database state (pg_stat_activity), not elapsed
+    wall-clock time: with correct locking the task enters a lock wait
+    within a few round trips, and with a lock ablated it finishes instead.
+    """
+    deadline = asyncio.get_running_loop().time() + 30
+    while True:
+        if task.done():
+            return "done"
+        async with engine.connect() as connection:
+            blocked = (
+                await connection.execute(
+                    text(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE wait_event_type = 'Lock' "
+                        "AND pid != pg_backend_pid()"
+                    )
+                )
+            ).scalar_one()
+        if blocked:
+            return "blocked"
+        if asyncio.get_running_loop().time() > deadline:
+            raise TimeoutError("task neither blocked on a lock nor finished")
+        await asyncio.sleep(0.01)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -1309,6 +1340,7 @@ async def test_purge_respects_max_segments(
 @pytest.mark.asyncio
 async def test_write_landing_during_delete_is_never_orphaned(
     pg_store: SQLAlchemySegmentStore,
+    sqlalchemy_pg_engine: AsyncEngine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A write racing a delete can never leave untracked rows behind.
@@ -1337,19 +1369,29 @@ async def test_write_landing_during_delete_is_never_orphaned(
     monkeypatch.setattr(partition, "_insert_segments", pausing_insert_segments)
 
     writer = asyncio.create_task(partition.add_segments(_links(_seg())))
-    await asyncio.wait_for(reached_pause.wait(), 30)
-    deleter = asyncio.create_task(pg_store.delete_partition("orphan_race"))
-    await asyncio.sleep(0.4)
-    if deleter.done():
-        # Broken-locking world: the delete did not wait for the writer.
-        # A purge in this window retires the queue entry before the
-        # write lands.
-        await pg_store.purge_deleted_partitions()
+    deleter = None
+    try:
+        await asyncio.wait_for(reached_pause.wait(), 30)
+        deleter = asyncio.create_task(pg_store.delete_partition("orphan_race"))
+        outcome = await _wait_until_blocked_or_done(sqlalchemy_pg_engine, deleter)
+        if outcome == "done":
+            # Broken-locking world: the delete did not wait for the writer.
+            # A purge in this window retires the queue entry before the
+            # write lands.
+            await pg_store.purge_deleted_partitions()
+    finally:
+        # Unpause the writer even on failure so its open transaction cannot
+        # wedge fixture teardown.
+        release.set()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(writer, 30)
+        if deleter is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(deleter, 30)
 
-    release.set()
     with contextlib.suppress(SegmentStorePartitionHandleStaleError):
-        await asyncio.wait_for(writer, 30)
-    await asyncio.wait_for(deleter, 30)
+        await writer
+    await deleter
 
     assert await pg_store.purge_deleted_partitions() is False
     async with partition._create_session() as session:
@@ -1371,6 +1413,7 @@ async def test_write_landing_during_delete_is_never_orphaned(
 @pytest.mark.asyncio
 async def test_concurrent_remote_delete_yields_single_queue_entry(
     pg_store: SQLAlchemySegmentStore,
+    sqlalchemy_pg_engine: AsyncEngine,
 ) -> None:
     """Racing deletions enqueue a dead incarnation exactly once.
 
@@ -1405,11 +1448,10 @@ async def test_concurrent_remote_delete_yields_single_queue_entry(
             )
 
             local_delete = asyncio.create_task(pg_store.delete_partition("remote_del"))
-            await asyncio.sleep(0.4)
-            assert not local_delete.done(), (
-                "delete_partition proceeded despite a concurrent deletion "
-                "holding the exclusive registry-row pin"
-            )
+            # Wait for the local delete to block (on the registry-row pin
+            # with correct locking; on the queue insert without it) so the
+            # race is staged before the remote transaction commits.
+            await _wait_until_blocked_or_done(sqlalchemy_pg_engine, local_delete)
         # Remote transaction committed on exiting begin().
         await asyncio.wait_for(local_delete, 30)
 
