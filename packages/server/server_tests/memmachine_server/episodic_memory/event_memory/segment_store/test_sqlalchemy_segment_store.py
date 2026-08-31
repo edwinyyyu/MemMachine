@@ -1110,11 +1110,11 @@ async def test_delete_partition_idempotent(store: SQLAlchemySegmentStore) -> Non
 async def test_partition_key_validation_invalid_chars(
     store: SQLAlchemySegmentStore,
 ) -> None:
-    with pytest.raises(ValueError, match="invalid characters"):
+    with pytest.raises(ValueError, match="must match"):
         await store.create_partition("UPPER", _plaintext_partition_config())
-    with pytest.raises(ValueError, match="invalid characters"):
+    with pytest.raises(ValueError, match="must match"):
         await store.create_partition("has-hyphen", _plaintext_partition_config())
-    with pytest.raises(ValueError, match="invalid characters"):
+    with pytest.raises(ValueError, match="must match"):
         await store.create_partition("has space", _plaintext_partition_config())
 
 
@@ -1122,7 +1122,7 @@ async def test_partition_key_validation_invalid_chars(
 async def test_partition_key_validation_too_long(
     store: SQLAlchemySegmentStore,
 ) -> None:
-    with pytest.raises(ValueError, match="too long"):
+    with pytest.raises(ValueError, match="must match"):
         await store.create_partition("a" * 33, _plaintext_partition_config())
 
 
@@ -1147,7 +1147,7 @@ def test_pg_partition_entities_memoized_and_validated() -> None:
 
     assert first[0].name == "segment_store_sg_p_memo_key"
     assert first[1].name == "segment_store_dv_ln_p_memo_key"
-    with pytest.raises(ValueError, match="invalid characters"):
+    with pytest.raises(ValueError, match="must match"):
         _pg_partition_entities("Quote'; DROP TABLE x")
 
 

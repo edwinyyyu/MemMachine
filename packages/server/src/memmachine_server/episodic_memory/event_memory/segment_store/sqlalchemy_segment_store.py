@@ -208,7 +208,11 @@ def _pg_child_table_name(parent_table_name: str, partition_key: str) -> str:
     Validates the key so that every SQL string built from a child table
     name is safe by construction, wherever it is built from.
     """
-    validate_partition_key(partition_key)
+    if not validate_partition_key(partition_key):
+        raise ValueError(
+            f"Partition key {partition_key!r} must match [a-z0-9_]+ "
+            "and be at most 32 bytes"
+        )
     return f"{parent_table_name}_p_{partition_key}"
 
 
@@ -906,7 +910,11 @@ class SQLAlchemySegmentStore(SegmentStore):
         partition_key: str,
         config: SegmentStorePartitionConfig,
     ) -> None:
-        validate_partition_key(partition_key)
+        if not validate_partition_key(partition_key):
+            raise ValueError(
+                f"Partition key {partition_key!r} must match [a-z0-9_]+ "
+                "and be at most 32 bytes"
+            )
         async with (
             self._tracker("create_partition"),
             self._engine.begin() as connection,
@@ -936,7 +944,11 @@ class SQLAlchemySegmentStore(SegmentStore):
     async def open_partition(
         self, partition_key: str
     ) -> SQLAlchemySegmentStorePartition | None:
-        validate_partition_key(partition_key)
+        if not validate_partition_key(partition_key):
+            raise ValueError(
+                f"Partition key {partition_key!r} must match [a-z0-9_]+ "
+                "and be at most 32 bytes"
+            )
         async with self._tracker("open_partition"):
             async with self._create_session() as session:
                 partition_row = await SQLAlchemySegmentStore._get_partition_row(
@@ -953,7 +965,11 @@ class SQLAlchemySegmentStore(SegmentStore):
         partition_key: str,
         config: SegmentStorePartitionConfig,
     ) -> SQLAlchemySegmentStorePartition:
-        validate_partition_key(partition_key)
+        if not validate_partition_key(partition_key):
+            raise ValueError(
+                f"Partition key {partition_key!r} must match [a-z0-9_]+ "
+                "and be at most 32 bytes"
+            )
         async with self._tracker("open_or_create_partition"):
             return await self._open_or_create_partition(partition_key, config)
 
@@ -1022,7 +1038,11 @@ class SQLAlchemySegmentStore(SegmentStore):
 
     @override
     async def delete_partition(self, partition_key: str) -> None:
-        validate_partition_key(partition_key)
+        if not validate_partition_key(partition_key):
+            raise ValueError(
+                f"Partition key {partition_key!r} must match [a-z0-9_]+ "
+                "and be at most 32 bytes"
+            )
         async with (
             self._tracker("delete_partition"),
             self._engine.begin() as connection,
