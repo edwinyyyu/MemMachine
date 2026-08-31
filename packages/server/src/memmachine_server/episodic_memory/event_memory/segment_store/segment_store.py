@@ -237,12 +237,12 @@ class SegmentStore(ABC):
         max_segments: int | None = None,
     ) -> bool:
         """
-        Physically reclaim one bounded slice of deleted partitions' storage.
+        Physically reclaim storage for deleted partitions, bounded per call.
 
-        Performs reclamation that `delete_partition` deferred, one slice
-        per call: progress committed by a call persists, and repeating a
-        call is always safe. Draining a backlog is the caller's loop --
-        call until this returns False. Concurrent calls, including from
+        Performs reclamation that `delete_partition` deferred: each call
+        reclaims at most `max_segments` segments, the progress it commits
+        persists, and repeating a call is always safe. Draining a backlog
+        is the caller's loop -- call until this returns False. Concurrent calls, including from
         other processes, must be safe: implementations coordinate so that
         racing purgers neither error nor deadlock. The store never
         schedules this itself; callers decide when and how often to run

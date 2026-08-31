@@ -93,14 +93,15 @@ purge queue tracks.
   time -- the old incarnation's rows are invisible to the successor, even
   while the purger is still sweeping them.
 - **Purge**: `purge_deleted_partitions(*, max_segments) -> bool` on the
-  `SegmentStore` ABC. Each call reclaims one bounded slice -- in this
-  store, a single transaction that deletes up to the bound
+  `SegmentStore` ABC. Each call is bounded -- in this store, a single
+  transaction that deletes up to `max_segments` rows
   (`uuid IN (SELECT ... LIMIT n)` sub-selects, portable across dialects),
   lets the link-table cascade follow, and retires queue rows whose
   incarnations are drained. `max_segments=None` means a store-chosen
-  slice size, so callers never need engine-appropriate transaction
+  default bound, so callers never need engine-appropriate transaction
   sizing; True means another call may reclaim more, so draining a backlog
-  is the caller's loop and committed slices survive interruption. Each
+  is the caller's loop and each call's committed progress survives
+  interruption. Each
   call claims its queue entries with `FOR UPDATE SKIP LOCKED`, so
   concurrent purgers -- including from other processes -- partition the
   queue instead of contending: only the claiming call touches a dead
