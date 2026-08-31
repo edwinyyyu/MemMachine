@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta, timezone
 from typing import override
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import (
     BaseModel,
@@ -96,7 +96,6 @@ from memmachine_server.episodic_memory.event_memory.segment_store.segment_store 
     SegmentStorePartition,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.utils import (
-    new_incarnation,
     validate_partition_key,
 )
 
@@ -857,7 +856,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                 await session.execute(
                     insert(PartitionRow).values(
                         partition_key=partition_key,
-                        incarnation=new_incarnation(),
+                        incarnation=uuid4(),
                         payload_codec_config=encode_payload_codec_config(
                             config.payload_codec_config
                         ),
@@ -906,7 +905,7 @@ class SQLAlchemySegmentStore(SegmentStore):
             )
             return await self._partition_from_partition_row(partition_row)
 
-        incarnation = new_incarnation()
+        incarnation = uuid4()
         try:
             async with self._create_session() as session, session.begin():
                 await session.execute(
