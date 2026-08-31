@@ -828,7 +828,6 @@ class SQLAlchemySegmentStore(SegmentStore):
             prefix="segment_store_sqlalchemy",
         )
 
-        self._is_postgresql = self._engine.dialect.name == "postgresql"
         self._is_sqlite = self._engine.dialect.name == "sqlite"
 
         # SQLite requires PRAGMA foreign_keys = ON for CASCADE deletes.

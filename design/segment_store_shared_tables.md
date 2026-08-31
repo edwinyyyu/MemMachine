@@ -78,7 +78,8 @@ purge queue tracks.
 ### Tenant lifecycle
 
 - **Create**: validate the logical key, generate an incarnation, insert the
-  registry row. One row insert -- no DDL, no management lock, ~microseconds.
+  registry row and re-check the purge queue in the same transaction -- no
+  DDL, no management lock, ~microseconds.
   A duplicate key fails on the primary key (partition-exists error); a
   minted incarnation that collides with one still leaving traces is
   rejected (constraint or queue re-check) and re-minted.
@@ -130,11 +131,15 @@ mechanism for this at all.
 
 Row locks only. Writers hold `FOR SHARE` on their registry row for the
 duration of a write transaction; deletion takes `FOR UPDATE` on the same
-row. There is no table-level management lock, no DDL, and no lock upgrade
-anywhere in the store, which removes the measured deadlock classes at the
-root: writers and tenant lifecycle operations no longer share any lockable
-object except the one registry row of the same tenant, where blocking is
-the intended semantics.
+row; the purger claims queue rows with `FOR UPDATE SKIP LOCKED`, so it
+never waits; the mint's queue re-check takes `FOR SHARE` on a queue row
+only in the collision case. There is no table-level management lock, no
+DDL, and no lock upgrade anywhere in the store, which removes the
+measured deadlock classes at the root: writers and tenant lifecycle
+operations share no lockable object except the one registry row of the
+same tenant, where blocking is the intended semantics, and reclamation
+touches only rows no other operation can reach -- claimed queue entries
+and dead incarnations' data.
 
 ## Alternatives considered
 
@@ -169,8 +174,10 @@ which the tenant-count requirement excludes.
   the compiled-statement-cache tuning. The generic-plan behavior is benign
   on unpartitioned tables (a plan references one table), so no plan-mode
   tuning is needed.
-- One architecture on every dialect; the remaining dialect split is the
-  LATERAL-vs-loop read strategy.
+- One architecture on every dialect; the remaining dialect splits are the
+  LATERAL-vs-loop read strategy, the PostgreSQL-only ordered row locks in
+  `delete_segments`, and SQLite's foreign-key pragma (SQLAlchemy itself
+  drops locking clauses on SQLite).
 - Replication and sharding: four ordinary tables; logical replication
   covers new tenants automatically (they are rows, not relations); moving a
   tenant between nodes is an indexed row copy plus a registry insert whose
