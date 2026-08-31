@@ -1633,6 +1633,81 @@ async def test_incarnation_with_garbage_left_is_never_reused(
     assert queue_depth == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "create_via",
+    ["create_partition", "open_or_create_partition"],
+)
+async def test_incarnation_colliding_with_live_partition_is_never_reused(
+    store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+    create_via: str,
+) -> None:
+    """A minted incarnation colliding with a live one is re-minted.
+
+    The registry's unique constraint rejects the insert; the mint must
+    classify that as an incarnation collision (the key is free), mint a
+    fresh uuid, and succeed -- not misreport the partition as already
+    existing.
+    """
+    live = await store.open_or_create_partition(
+        "live_src", _plaintext_partition_config()
+    )
+    live_incarnation = live._incarnation
+
+    offered = []
+
+    def colliding_uuid4() -> UUID:
+        if not offered:
+            offered.append(live_incarnation)
+            return live_incarnation
+        return uuid4()
+
+    monkeypatch.setattr(sqlalchemy_segment_store, "uuid4", colliding_uuid4)
+
+    if create_via == "create_partition":
+        await store.create_partition("fresh_p", _plaintext_partition_config())
+        fresh = await store.open_partition("fresh_p")
+    else:
+        fresh = await store.open_or_create_partition(
+            "fresh_p", _plaintext_partition_config()
+        )
+    assert fresh is not None
+    assert offered, "the colliding uuid was never offered to the mint"
+    assert fresh._incarnation != live_incarnation
+
+    # The live partition is unharmed.
+    reopened = await store.open_partition("live_src")
+    assert reopened is not None
+    assert reopened._incarnation == live_incarnation
+
+
+@pytest.mark.asyncio
+async def test_default_purge_bound_comes_from_params(
+    sqlalchemy_sqlite_engine: AsyncEngine,
+) -> None:
+    """The configured default bound governs purge calls with no bound."""
+    store = SQLAlchemySegmentStore(
+        SQLAlchemySegmentStoreParams(
+            engine=sqlalchemy_sqlite_engine,
+            default_purge_max_segments=2,
+        )
+    )
+    await store.startup()
+    try:
+        partition = await store.open_or_create_partition(
+            "bound_p", _plaintext_partition_config()
+        )
+        await partition.add_segments(_links(_seg(), _seg(), _seg()))
+        await store.delete_partition("bound_p")
+
+        assert await store.purge_deleted_partitions() is True
+        assert await store.purge_deleted_partitions() is False
+    finally:
+        async with sqlalchemy_sqlite_engine.begin() as conn:
+            await conn.run_sync(BaseSegmentStore.metadata.drop_all)
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_delete_partition_touches_only_registry_and_queue(
