@@ -60,7 +60,7 @@ One physical schema on every dialect: the ORM models are the tables.
   carrying the logical key purely for forensics.
 
 The link table keeps its foreign key to the segment table (`ON DELETE
-CASCADE`), both sides using physical keys. The segment table's foreign key
+CASCADE`), both sides keyed by incarnation. The segment table's foreign key
 to the registry is removed: registry rows and data rows are decoupled so
 that registry deletion is O(1); orphaned data rows are exactly what the
 purge queue tracks.
@@ -71,19 +71,19 @@ purge queue tracks.
   registry row. One row insert -- no DDL, no management lock, ~microseconds.
   A duplicate key fails on the primary key (partition-exists error).
 - **Open**: read the registry row; the handle captures the logical key,
-  incarnation, physical key, and codec.
+  the incarnation, and the codec.
 - **Delete**: one transaction -- `SELECT ... FOR UPDATE` on the registry row
   (waits out in-flight writers, who hold `FOR SHARE` pins on it), insert the
   incarnation into the purge queue, delete the registry row. O(1)
   regardless of tenant size. The tenant is immediately unreachable: every
   subsequent operation resolves the registry first.
 - **Re-create**: a new registry row with a fresh incarnation. Safe at any
-  time -- the old incarnation's rows are invisible to the new physical key,
-  even while the purger is still sweeping them.
+  time -- the old incarnation's rows are invisible to the successor, even
+  while the purger is still sweeping them.
 - **Purge**: a store-level operation that drains the queue with chunked
   deletes (`uuid IN (SELECT ... LIMIT n)` sub-selects, portable across
   dialects), letting the link-table cascade follow, and removes the queue
-  row when the physical key is empty. Callers schedule it as background
+  row when the incarnation's rows are gone. Callers schedule it as background
   work; deletion latency contracts are "unreachable immediately, physically
   erased asynchronously". Measured deletion throughput ~147k rows/s on the
   benchmark box, so a ten-million-row tenant erases in about a minute of
