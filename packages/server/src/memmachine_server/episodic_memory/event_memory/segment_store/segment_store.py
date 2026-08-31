@@ -125,10 +125,9 @@ class SegmentStore(ABC):
 
     Manages partition-scoped handles.
 
-    Naming constraints:
-        - Partition keys must match `[a-z0-9_]+`
-          (lowercase alphanumeric and underscores only).
-        - Each partition key must be at most 32 bytes.
+    Partition keys must match `[a-z0-9_]+`
+    (lowercase alphanumeric and underscores only)
+    and be at most 32 bytes.
     """
 
     @abstractmethod
