@@ -25,7 +25,7 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
 from memmachine_server.episodic_memory.event_memory.segment_store import (
     SegmentStorePartitionAlreadyExistsError,
     SegmentStorePartitionConfig,
-    SegmentStorePartitionStaleError,
+    SegmentStorePartitionHandleStaleError,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_segment_store import (
     BaseSegmentStore,
@@ -1092,11 +1092,11 @@ async def test_stale_handle_raises_after_delete(
 
     await store.delete_partition("fenced")
 
-    with pytest.raises(SegmentStorePartitionStaleError):
+    with pytest.raises(SegmentStorePartitionHandleStaleError):
         await partition.add_segments(_links(_seg()))
-    with pytest.raises(SegmentStorePartitionStaleError):
+    with pytest.raises(SegmentStorePartitionHandleStaleError):
         await partition.get_segment_contexts([seg.uuid])
-    with pytest.raises(SegmentStorePartitionStaleError):
+    with pytest.raises(SegmentStorePartitionHandleStaleError):
         await partition.get_derivative_uuids_by_segment_uuids([seg.uuid])
 
 
@@ -1113,7 +1113,7 @@ async def test_stale_handle_raises_after_recreate(
         "reborn", _plaintext_partition_config()
     )
 
-    with pytest.raises(SegmentStorePartitionStaleError):
+    with pytest.raises(SegmentStorePartitionHandleStaleError):
         await old_handle.add_segments(_links(_seg()))
     await new_handle.add_segments(_links(_seg()))  # the live handle works
 
