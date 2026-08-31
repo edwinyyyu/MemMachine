@@ -83,7 +83,7 @@ def _links(*segments: Segment) -> dict[Segment, list[UUID]]:
 
 async def _wait_until_blocked_or_done(
     engine: AsyncEngine,
-    task: "asyncio.Task[None]",
+    task: asyncio.Task,
 ) -> str:
     """Wait until `task` finishes ("done") or its backend waits on a lock ("blocked").
 
