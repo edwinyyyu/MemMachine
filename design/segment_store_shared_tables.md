@@ -80,11 +80,15 @@ purge queue tracks.
 - **Re-create**: a new registry row with a fresh incarnation. Safe at any
   time -- the old incarnation's rows are invisible to the successor, even
   while the purger is still sweeping them.
-- **Purge**: a store-level operation that drains the queue with chunked
-  deletes (`uuid IN (SELECT ... LIMIT n)` sub-selects, portable across
-  dialects), letting the link-table cascade follow, and removes the queue
-  row when the incarnation's rows are gone. Callers schedule it as background
-  work; deletion latency contracts are "unreachable immediately, physically
+- **Purge**: `purge_deleted_partitions(*, max_segments) -> bool` on the
+  `SegmentStore` ABC -- True means reclaimable work may remain, so callers
+  can loop or reschedule. The store never schedules it itself: when and how
+  often to purge is the caller's policy, and implementations whose deletes
+  reclaim physically implement it as a no-op returning False. This store
+  drains the queue with chunked deletes (`uuid IN (SELECT ... LIMIT n)`
+  sub-selects, portable across dialects), letting the link-table cascade
+  follow, and removes the queue row when the incarnation's rows are gone.
+  Deletion latency contracts are "unreachable immediately, physically
   erased asynchronously". Measured deletion throughput ~147k rows/s on the
   benchmark box, so a ten-million-row tenant erases in about a minute of
   background work.

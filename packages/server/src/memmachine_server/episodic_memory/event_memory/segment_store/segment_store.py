@@ -221,8 +221,41 @@ class SegmentStore(ABC):
         This will delete all data in the partition.
         for the given partition. It is idempotent.
 
+        The partition becomes unreachable immediately; implementations may
+        defer physical reclamation of its data to `purge_deleted_partitions`.
+
         Args:
             partition_key (str):
                 The key of the partition to delete.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def purge_deleted_partitions(
+        self,
+        *,
+        max_segments: int | None = None,
+    ) -> bool:
+        """
+        Physically reclaim storage for deleted partitions.
+
+        Performs any reclamation that `delete_partition` deferred. The store
+        never schedules this itself; callers decide when and how often to
+        run it. Implementations that reclaim physically in `delete_partition`
+        may implement this as a no-op returning False.
+
+        Args:
+            max_segments (int | None):
+                Upper bound on the number of segments to reclaim in this
+                call, or None for no bound (default: None). Associated
+                derivative links are reclaimed with their segments and do
+                not count toward the bound.
+
+        Returns:
+            bool:
+                True if reclaimable work may remain
+                (the call stopped at its bound);
+                False if all deferred reclamation known to the store
+                was completed.
         """
         raise NotImplementedError
