@@ -212,10 +212,11 @@ def _pg_child_table_name(parent_table_name: str, partition_key: str) -> str:
     return f"{parent_table_name}_p_{partition_key}"
 
 
-# ~29 KiB per entry (measured), so the cap bounds the cache at ~115 MiB per
-# process while covering far more concurrently active partitions than a
-# worker serves. Eviction is harmless: a rebuilt entry is identical, at the
-# one-time cost of recompiling that partition's statements.
+# Bounded so tenant churn over a long-lived process cannot grow the cache
+# without limit; the cap is far above the number of concurrently active
+# partitions a worker serves. Eviction is harmless: a rebuilt entry is
+# identical, at the one-time cost of recompiling that partition's
+# statements.
 @lru_cache(maxsize=4096)
 def _pg_partition_entities(partition_key: str) -> tuple[Table, Table, object, object]:
     """Child tables and ORM aliases for one partition, built once per key.
