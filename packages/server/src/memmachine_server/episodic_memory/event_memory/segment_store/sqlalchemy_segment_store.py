@@ -986,21 +986,32 @@ class SQLAlchemySegmentStore(SegmentStore):
                 delete(PartitionRow).where(PartitionRow.partition_key == partition_key)
             )
 
+    @override
     async def purge_deleted_partitions(
         self,
         *,
+        max_segments: int | None = None,
         batch_size: int = 10_000,
-        max_batches: int | None = None,
-    ) -> int:
-        """Physically reclaim rows of deleted partitions; return rows deleted.
+    ) -> bool:
+        """Physically reclaim rows of deleted partitions.
 
         Drains the purge queue with chunked deletes so long-running
         reclamation of a large partition never holds long transactions.
-        Intended to be scheduled as background work; call with
-        max_batches=None to purge to completion.
+
+        Args:
+            max_segments (int | None):
+                Upper bound on segment rows reclaimed in this call, or
+                None for no bound (default: None).
+            batch_size (int):
+                Maximum segment rows deleted per transaction
+                (default: 10000).
+
+        Returns:
+            bool:
+                True if reclaimable work may remain; False if the purge
+                queue was drained.
         """
-        total = 0
-        batches = 0
+        remaining = max_segments
         async with self._tracker("purge_deleted_partitions"):
             async with self._create_session() as session:
                 dead_incarnations = (
@@ -1010,13 +1021,16 @@ class SQLAlchemySegmentStore(SegmentStore):
                 )
             for incarnation in dead_incarnations:
                 while True:
-                    if max_batches is not None and batches >= max_batches:
-                        return total
+                    if remaining is not None and remaining <= 0:
+                        return True
+                    limit = (
+                        batch_size if remaining is None else min(batch_size, remaining)
+                    )
                     async with self._create_session() as session, session.begin():
                         chunk = (
                             select(SegmentRow.uuid)
                             .where(SegmentRow.incarnation == incarnation)
-                            .limit(batch_size)
+                            .limit(limit)
                             .scalar_subquery()
                         )
                         # The link-table cascade follows each segment chunk.
@@ -1029,9 +1043,9 @@ class SQLAlchemySegmentStore(SegmentStore):
                     # Session.execute is typed Result; DML returns a
                     # CursorResult, which carries the affected-row count.
                     deleted = result.rowcount if isinstance(result, CursorResult) else 0
-                    batches += 1
-                    total += deleted
-                    if deleted < batch_size:
+                    if remaining is not None:
+                        remaining -= deleted
+                    if deleted < limit:
                         break
                 async with self._create_session() as session, session.begin():
                     # Sweep links whose segments were already gone, then
@@ -1044,7 +1058,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                     await session.execute(
                         delete(PurgeRow).where(PurgeRow.incarnation == incarnation)
                     )
-        return total
+        return False
 
     # Helpers
 

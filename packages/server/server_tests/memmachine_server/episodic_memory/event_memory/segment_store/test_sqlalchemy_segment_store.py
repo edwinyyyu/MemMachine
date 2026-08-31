@@ -1236,8 +1236,8 @@ async def test_purge_reclaims_only_dead_incarnations(
     await doomed.add_segments(_links(_seg(), _seg(), _seg()))
     await store.delete_partition("doomed_p")
 
-    purged = await store.purge_deleted_partitions(batch_size=2)
-    assert purged == 3
+    drained = await store.purge_deleted_partitions(batch_size=2)
+    assert drained is False
 
     async with live._create_session() as session:
         dead_rows = (
@@ -1253,6 +1253,46 @@ async def test_purge_reclaims_only_dead_incarnations(
     assert dead_rows == 0
     assert queue_depth == 0
     assert (await live.get_segment_contexts([live_seg.uuid]))[live_seg.uuid]
+
+
+@pytest.mark.asyncio
+async def test_purge_respects_max_segments(
+    store: SQLAlchemySegmentStore,
+) -> None:
+    """A bounded purge stops at its bound and reports remaining work."""
+    doomed = await store.open_or_create_partition(
+        "doomed_p", _plaintext_partition_config()
+    )
+    doomed_incarnation = doomed._incarnation
+    await doomed.add_segments(_links(_seg(), _seg(), _seg()))
+    await store.delete_partition("doomed_p")
+
+    assert await store.purge_deleted_partitions(max_segments=2) is True
+
+    async with doomed._create_session() as session:
+        dead_rows = (
+            await session.execute(
+                select(func.count())
+                .select_from(SegmentRow)
+                .where(SegmentRow.incarnation == doomed_incarnation)
+            )
+        ).scalar_one()
+    assert dead_rows == 1
+
+    assert await store.purge_deleted_partitions() is False
+    async with doomed._create_session() as session:
+        dead_rows = (
+            await session.execute(
+                select(func.count())
+                .select_from(SegmentRow)
+                .where(SegmentRow.incarnation == doomed_incarnation)
+            )
+        ).scalar_one()
+        queue_depth = (
+            await session.execute(select(func.count()).select_from(PurgeRow))
+        ).scalar_one()
+    assert dead_rows == 0
+    assert queue_depth == 0
 
 
 @pytest.mark.integration
