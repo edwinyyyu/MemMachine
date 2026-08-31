@@ -95,11 +95,13 @@ from memmachine_server.episodic_memory.event_memory.segment_store.data_types imp
     SegmentStorePartitionAlreadyExistsError,
     SegmentStorePartitionConfig,
     SegmentStorePartitionConfigMismatchError,
-    validate_partition_key,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.segment_store import (
     SegmentStore,
     SegmentStorePartition,
+)
+from memmachine_server.episodic_memory.event_memory.segment_store.utils import (
+    validate_partition_key,
 )
 
 logger = logging.getLogger(__name__)
