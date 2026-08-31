@@ -50,9 +50,19 @@ One physical schema on every dialect: the ORM models are the tables.
   guarded. A 16-byte UUID (vs a composite key string) also narrows every
   index entry, and random UUIDs are globally unique across nodes without
   coordination, so moving a tenant between databases carries its rows
-  verbatim. Collisions among incarnations that still have traces are
-  rejected by constraints (unique on the registry, primary key on the
-  purge queue) rather than left to probability. "Incarnation" is the
+  verbatim. Within one database, a colliding mint is rejected rather than
+  left to probability: a collision with a live incarnation violates the
+  registry's unique constraint, and one whose predecessor still has
+  garbage awaiting purge is caught by an in-transaction re-check of the
+  purge queue at mint time -- race-free because the check runs after the
+  registry insert (a concurrent deletion moving the colliding row to the
+  queue is already visible once the insert's unique-index wait resolves),
+  and no new queue entry for the minted value can appear before commit,
+  since the only registry row carrying it is uncommitted. Double
+  enqueueing is rejected by the queue's primary key. An incarnation value
+  therefore cannot be reused while any trace of it remains; across
+  databases, uniqueness rests on random-uuid collision resistance.
+  "Incarnation" is the
   established term for exactly this construct (a per-lifetime random
   identifier; cf. Kafka's broker incarnation ID) -- deliberately not
   "generation" or "epoch", which would imply ordered, comparable values.
@@ -69,7 +79,9 @@ purge queue tracks.
 
 - **Create**: validate the logical key, generate an incarnation, insert the
   registry row. One row insert -- no DDL, no management lock, ~microseconds.
-  A duplicate key fails on the primary key (partition-exists error).
+  A duplicate key fails on the primary key (partition-exists error); a
+  minted incarnation that collides with one still leaving traces is
+  rejected (constraint or queue re-check) and re-minted.
 - **Open**: read the registry row; the handle captures the logical key,
   the incarnation, and the codec.
 - **Delete**: one transaction -- `SELECT ... FOR UPDATE` on the registry row
