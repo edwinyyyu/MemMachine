@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
-from typing import NamedTuple, cast, override
+from typing import NamedTuple, override
 from uuid import UUID
 
 from pydantic import (
@@ -31,6 +31,7 @@ from sqlalchemy import (
     delete,
     event,
     insert,
+    inspect,
     literal,
     select,
     text,
@@ -53,7 +54,6 @@ from sqlalchemy.orm import (
     aliased,
     mapped_column,
 )
-from sqlalchemy.orm.util import AliasedClass
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -214,12 +214,16 @@ def _pg_child_table_name(parent_table_name: str, partition_key: str) -> str:
 
 
 class _PartitionEntities(NamedTuple):
-    """One partition's child tables and the ORM entities mapped onto them."""
+    """One partition's child tables and the ORM entities mapped onto them.
+
+    The row entities are aliases of the mapped classes; SQLAlchemy's typing
+    convention represents an aliased entity as the mapped class type.
+    """
 
     segment_table: Table
     derivative_link_table: Table
-    segment_row: AliasedClass[SegmentRow]
-    derivative_link_row: AliasedClass[DerivativeLinkRow]
+    segment_row: type[SegmentRow]
+    derivative_link_row: type[DerivativeLinkRow]
 
 
 # Bounded so tenant churn over a long-lived process cannot grow the cache
@@ -241,18 +245,18 @@ def _pg_partition_entities(partition_key: str) -> _PartitionEntities:
     """
     metadata = MetaData()
 
-    def child_table(parent: Table) -> Table:
+    def child_table(parent_table_name: str, parent_columns: Iterable[Column]) -> Table:
         return Table(
-            _pg_child_table_name(parent.name, partition_key),
+            _pg_child_table_name(parent_table_name, partition_key),
             metadata,
-            *(Column(column.name, column.type) for column in parent.columns),
+            *(Column(column.name, column.type) for column in parent_columns),
         )
 
-    # cast: a declarative model's __table__ is a Table; the stubs type the
-    # attribute as FromClause.
-    segment_child_table = child_table(cast("Table", SegmentRow.__table__))
+    segment_child_table = child_table(
+        SegmentRow.__tablename__, inspect(SegmentRow).columns
+    )
     derivative_link_child_table = child_table(
-        cast("Table", DerivativeLinkRow.__table__)
+        DerivativeLinkRow.__tablename__, inspect(DerivativeLinkRow).columns
     )
     # adapt_on_names: the child Table is a fresh object with no lineage to
     # the parent's columns, so the entity's attributes must map onto it by
@@ -260,16 +264,8 @@ def _pg_partition_entities(partition_key: str) -> _PartitionEntities:
     return _PartitionEntities(
         segment_child_table,
         derivative_link_child_table,
-        cast(
-            "AliasedClass[SegmentRow]",
-            aliased(SegmentRow, segment_child_table, adapt_on_names=True),
-        ),
-        cast(
-            "AliasedClass[DerivativeLinkRow]",
-            aliased(
-                DerivativeLinkRow, derivative_link_child_table, adapt_on_names=True
-            ),
-        ),
+        aliased(SegmentRow, segment_child_table, adapt_on_names=True),
+        aliased(DerivativeLinkRow, derivative_link_child_table, adapt_on_names=True),
     )
 
 
