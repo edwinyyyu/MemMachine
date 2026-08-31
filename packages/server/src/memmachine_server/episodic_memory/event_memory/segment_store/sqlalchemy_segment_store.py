@@ -255,10 +255,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         row = (
             await session.execute(
                 select(PartitionRow.partition_key)
-                .where(
-                    PartitionRow.partition_key == self._logical_partition_key,
-                    PartitionRow.incarnation == self._incarnation,
-                )
+                .where(PartitionRow.incarnation == self._incarnation)
                 .with_for_update(read=True)
             )
         ).scalar_one_or_none()
@@ -270,8 +267,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         row = (
             await session.execute(
                 select(PartitionRow.partition_key).where(
-                    PartitionRow.partition_key == self._logical_partition_key,
-                    PartitionRow.incarnation == self._incarnation,
+                    PartitionRow.incarnation == self._incarnation
                 )
             )
         ).scalar_one_or_none()
