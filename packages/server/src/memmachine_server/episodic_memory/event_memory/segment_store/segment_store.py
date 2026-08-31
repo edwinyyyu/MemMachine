@@ -151,7 +151,10 @@ class SegmentStore(ABC):
 
         Args:
             partition_key (str):
-                The key of the partition.
+                The key of the partition. Keys are embedded in native
+                storage identifiers, so they must be lowercase
+                alphanumeric/underscore and at most 32 characters
+                (see data_types.validate_partition_key).
             config (SegmentStorePartitionConfig):
                 Configuration for the partition.
 
