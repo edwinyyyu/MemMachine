@@ -110,7 +110,12 @@ _PURGE_SLICE_SEGMENTS = 10_000
 
 
 class _IncarnationCollisionError(Exception):
-    """A freshly minted incarnation still has garbage awaiting purge."""
+    """A freshly minted incarnation collides with one that still has traces.
+
+    Whether the colliding incarnation is live or dead with garbage
+    awaiting purge, the minted value is unusable and the remedy is the
+    same: mint a fresh incarnation and retry.
+    """
 
 
 # ORM models
@@ -862,18 +867,8 @@ class SQLAlchemySegmentStore(SegmentStore):
             while True:
                 try:
                     await self._insert_partition_row(partition_key, uuid4(), config)
-                except IntegrityError as err:
-                    async with self._create_session() as session:
-                        partition_row = await SQLAlchemySegmentStore._get_partition_row(
-                            session, partition_key
-                        )
-                    if partition_row is not None:
-                        raise SegmentStorePartitionAlreadyExistsError(
-                            partition_key
-                        ) from err
-                    continue  # Live-incarnation collision: mint afresh.
                 except _IncarnationCollisionError:
-                    continue  # Garbage-incarnation collision: mint afresh.
+                    continue  # Mint a fresh incarnation.
                 return
 
     async def _insert_partition_row(
@@ -897,32 +892,44 @@ class SQLAlchemySegmentStore(SegmentStore):
         whose plain reads serve transaction-start snapshots.
 
         Raises:
-            IntegrityError:
-                The partition key or the incarnation collides with a live
-                registry row.
+            SegmentStorePartitionAlreadyExistsError:
+                The partition key is taken; open or delete the existing
+                partition instead.
             _IncarnationCollisionError:
-                The incarnation still has garbage awaiting purge; mint a
-                fresh one and retry.
+                The incarnation collides with one that is live or still
+                has garbage awaiting purge; mint a fresh one and retry.
         """
-        async with self._create_session() as session, session.begin():
-            await session.execute(
-                insert(PartitionRow).values(
-                    partition_key=partition_key,
-                    incarnation=incarnation,
-                    payload_codec_config=encode_payload_codec_config(
-                        config.payload_codec_config
-                    ),
-                )
-            )
-            garbage_row = (
+        try:
+            async with self._create_session() as session, session.begin():
                 await session.execute(
-                    select(PurgeRow.incarnation)
-                    .where(PurgeRow.incarnation == incarnation)
-                    .with_for_update(read=True)
+                    insert(PartitionRow).values(
+                        partition_key=partition_key,
+                        incarnation=incarnation,
+                        payload_codec_config=encode_payload_codec_config(
+                            config.payload_codec_config
+                        ),
+                    )
                 )
-            ).scalar_one_or_none()
-            if garbage_row is not None:
-                raise _IncarnationCollisionError(str(incarnation))
+                garbage_row = (
+                    await session.execute(
+                        select(PurgeRow.incarnation)
+                        .where(PurgeRow.incarnation == incarnation)
+                        .with_for_update(read=True)
+                    )
+                ).scalar_one_or_none()
+                if garbage_row is not None:
+                    raise _IncarnationCollisionError(str(incarnation))
+        except IntegrityError as err:
+            # The insert violated either the key primary key or the
+            # incarnation unique constraint; a committed row under this
+            # key resolves which.
+            async with self._create_session() as session:
+                partition_row = await SQLAlchemySegmentStore._get_partition_row(
+                    session, partition_key
+                )
+            if partition_row is not None:
+                raise SegmentStorePartitionAlreadyExistsError(partition_key) from err
+            raise _IncarnationCollisionError(str(incarnation)) from err
 
     @override
     async def open_partition(
@@ -973,10 +980,10 @@ class SQLAlchemySegmentStore(SegmentStore):
             incarnation = uuid4()
             try:
                 await self._insert_partition_row(partition_key, incarnation, config)
-            except IntegrityError:
+            except SegmentStorePartitionAlreadyExistsError:
                 continue  # Concurrent creation: reopen the winner's row.
             except _IncarnationCollisionError:
-                continue  # Garbage-incarnation collision: mint afresh.
+                continue  # Mint a fresh incarnation.
             payload_codec = await self._load_payload_codec(config)
             return SQLAlchemySegmentStorePartition(
                 partition_key=partition_key,
