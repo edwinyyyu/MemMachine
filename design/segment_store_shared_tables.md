@@ -40,14 +40,24 @@ range from tens of thousands to tens of millions of rows.
 One physical schema on every dialect: the ORM models are the tables.
 
 - `segment_store_pt` -- the tenant registry. One row per live tenant:
-  logical partition key (primary key), an `incarnation` token generated at
-  creation, and the payload codec config.
+  logical partition key (primary key), an `incarnation` (a random UUID
+  generated at creation, unique-constrained), and the payload codec config.
 - `segment_store_sg` and `segment_store_dv_ln` -- shared segment and
-  derivative-link tables, not partitioned. Rows are keyed by a **physical
-  partition key**: `<logical_key>@<incarnation>`. The `@` cannot appear in a
-  logical key (the key contract is `[a-z0-9_]`, max 32 bytes), so physical
-  keys cannot collide with logical keys or each other across incarnations.
-- `segment_store_gc` -- the purge queue: one row per dead physical key.
+  derivative-link tables, not partitioned. Rows carry **no logical key at
+  all**: they are keyed by the incarnation UUID alone, so a data query
+  cannot even be constructed without resolving the registry first --
+  referencing the wrong tenant is structurally impossible, not merely
+  guarded. A 16-byte UUID (vs a composite key string) also narrows every
+  index entry, and random UUIDs are globally unique across nodes without
+  coordination, so moving a tenant between databases carries its rows
+  verbatim. Collisions among incarnations that still have traces are
+  rejected by constraints (unique on the registry, primary key on the
+  purge queue) rather than left to probability. "Incarnation" is the
+  established term for exactly this construct (a per-lifetime random
+  identifier; cf. Kafka's broker incarnation ID) -- deliberately not
+  "generation" or "epoch", which would imply ordered, comparable values.
+- `segment_store_gc` -- the purge queue: one row per dead incarnation,
+  carrying the logical key purely for forensics.
 
 The link table keeps its foreign key to the segment table (`ON DELETE
 CASCADE`), both sides using physical keys. The segment table's foreign key
@@ -64,7 +74,7 @@ purge queue tracks.
   incarnation, physical key, and codec.
 - **Delete**: one transaction -- `SELECT ... FOR UPDATE` on the registry row
   (waits out in-flight writers, who hold `FOR SHARE` pins on it), insert the
-  physical key into the purge queue, delete the registry row. O(1)
+  incarnation into the purge queue, delete the registry row. O(1)
   regardless of tenant size. The tenant is immediately unreachable: every
   subsequent operation resolves the registry first.
 - **Re-create**: a new registry row with a fresh incarnation. Safe at any

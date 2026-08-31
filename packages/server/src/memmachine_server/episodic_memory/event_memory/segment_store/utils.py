@@ -1,7 +1,7 @@
 """Shared utilities for segment store implementations."""
 
 import re
-import secrets
+from uuid import UUID, uuid4
 
 _PARTITION_KEY_RE = re.compile(r"^[a-z0-9_]+$")
 _PARTITION_KEY_MAX_BYTES = 32
@@ -23,15 +23,11 @@ def validate_partition_key(partition_key: str) -> None:
         )
 
 
-def new_incarnation() -> str:
-    """A fresh incarnation token for a partition registry row."""
-    return secrets.token_hex(4)
+def new_incarnation() -> UUID:
+    """A fresh incarnation identifier for a partition registry row.
 
-
-def physical_partition_key(partition_key: str, incarnation: str) -> str:
-    """The key data rows are stored under: `<logical_key>@<incarnation>`.
-
-    `@` cannot appear in a logical key, so physical keys cannot collide
-    with logical keys or with other incarnations of the same key.
+    A random UUID so incarnations are globally unique across nodes
+    without coordination; tenant moves between databases carry rows
+    verbatim.
     """
-    return f"{partition_key}@{incarnation}"
+    return uuid4()
