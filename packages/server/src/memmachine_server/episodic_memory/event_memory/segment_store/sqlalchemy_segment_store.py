@@ -103,10 +103,10 @@ logger = logging.getLogger(__name__)
 
 _JSON_AUTO = JSON().with_variant(JSONB, "postgresql")
 
-# Slice bound for a purge call when the caller does not pass one: each
-# call is one transaction, so the default keeps engine-appropriate
-# transaction sizing out of callers' hands.
-_PURGE_SLICE_SEGMENTS = 10_000
+# Bound on segment rows reclaimed by a purge call when the caller does
+# not pass max_segments: each call is one transaction, so the default
+# keeps engine-appropriate transaction sizing out of callers' hands.
+_DEFAULT_PURGE_MAX_SEGMENTS = 10_000
 
 
 class _IncarnationCollisionError(Exception):
@@ -1044,14 +1044,15 @@ class SQLAlchemySegmentStore(SegmentStore):
         *,
         max_segments: int | None = None,
     ) -> bool:
-        """Physically reclaim one slice of deleted partitions' rows.
+        """Physically reclaim rows of deleted partitions, bounded per call.
 
-        Each call is a single transaction: it reclaims up to the slice
-        bound and either commits that progress or rolls back to the state
-        before the call. Draining a large backlog is the caller's loop --
-        each iteration holds only a slice-sized transaction, so
-        reclamation never holds a long transaction and survives
-        interruption with all committed slices intact.
+        Each call is a single transaction: it reclaims up to
+        max_segments segment rows (with their links, and queue entries
+        it drains) and either commits that progress or rolls back to the
+        state before the call. Draining a large backlog is the caller's
+        loop -- each iteration is one bounded transaction, so reclamation
+        never holds a long transaction and survives interruption with
+        completed calls' progress intact.
 
         Safe to run concurrently, including from multiple processes: each
         call claims queue entries with `FOR UPDATE SKIP LOCKED`, so
@@ -1065,14 +1066,16 @@ class SQLAlchemySegmentStore(SegmentStore):
         Args:
             max_segments (int | None):
                 Upper bound on segment rows reclaimed in this call, or
-                None for the store-chosen slice size (default: None).
+                None for the store default (default: None).
 
         Returns:
             bool:
                 True if another call may reclaim more; False if this call
                 drained every queue entry it could claim.
         """
-        remaining = _PURGE_SLICE_SEGMENTS if max_segments is None else max_segments
+        remaining = (
+            _DEFAULT_PURGE_MAX_SEGMENTS if max_segments is None else max_segments
+        )
         async with (
             self._tracker("purge_deleted_partitions"),
             self._create_session() as session,
