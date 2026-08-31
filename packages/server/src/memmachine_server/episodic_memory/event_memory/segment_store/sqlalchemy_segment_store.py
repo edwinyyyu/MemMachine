@@ -5,7 +5,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta, timezone
-from functools import cache
+from functools import lru_cache
 from typing import override
 from uuid import UUID
 
@@ -212,9 +212,13 @@ def _pg_child_table_name(parent_table_name: str, partition_key: str) -> str:
     return f"{parent_table_name}_p_{partition_key}"
 
 
-@cache
+# ~29 KiB per entry (measured), so the cap bounds the cache at ~115 MiB per
+# process while covering far more concurrently active partitions than a
+# worker serves. Eviction is harmless: a rebuilt entry is identical, at the
+# one-time cost of recompiling that partition's statements.
+@lru_cache(maxsize=4096)
 def _pg_partition_entities(partition_key: str) -> tuple[Table, Table, object, object]:
-    """Child tables and ORM aliases for one partition, built once per process.
+    """Child tables and ORM aliases for one partition, built once per key.
 
     Cached because SQLAlchemy's compiled-statement cache keys on the Table
     OBJECTS a statement references: rebuilding these per handle would make
