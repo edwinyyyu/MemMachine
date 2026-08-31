@@ -103,11 +103,6 @@ logger = logging.getLogger(__name__)
 
 _JSON_AUTO = JSON().with_variant(JSONB, "postgresql")
 
-# Bound on segment rows reclaimed by a purge call when the caller does
-# not pass max_segments: each call is one transaction, so the default
-# keeps engine-appropriate transaction sizing out of callers' hands.
-_DEFAULT_PURGE_MAX_SEGMENTS = 10_000
-
 
 class _IncarnationCollisionError(Exception):
     """A freshly minted incarnation collides with one that still has traces.
@@ -791,12 +786,26 @@ class SQLAlchemySegmentStoreParams(BaseModel):
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
+        default_purge_max_segments (int):
+            Bound on segment rows reclaimed by a purge call whose caller
+            does not pass max_segments (default: 10000). Each purge call
+            is one transaction, so this is where deployments set
+            engine-appropriate transaction sizing instead of every
+            caller.
     """
 
     engine: InstanceOf[AsyncEngine] = Field(..., description="Async SQLAlchemy engine")
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
         description="An instance of MetricsFactory for collecting usage metrics",
+    )
+    default_purge_max_segments: int = Field(
+        10_000,
+        gt=0,
+        description=(
+            "Bound on segment rows reclaimed by a purge call whose caller "
+            "does not pass max_segments"
+        ),
     )
 
     @field_validator("engine")
@@ -829,6 +838,7 @@ class SQLAlchemySegmentStore(SegmentStore):
         )
 
         self._is_sqlite = self._engine.dialect.name == "sqlite"
+        self._default_purge_max_segments = params.default_purge_max_segments
 
         # SQLite requires PRAGMA foreign_keys = ON for CASCADE deletes.
         if self._is_sqlite:
@@ -1065,7 +1075,7 @@ class SQLAlchemySegmentStore(SegmentStore):
         Args:
             max_segments (int | None):
                 Upper bound on segment rows reclaimed in this call, or
-                None for the store default (default: None).
+                None for the store's configured default (default: None).
 
         Returns:
             bool:
@@ -1073,7 +1083,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                 drained every queue entry it could claim.
         """
         remaining = (
-            _DEFAULT_PURGE_MAX_SEGMENTS if max_segments is None else max_segments
+            self._default_purge_max_segments if max_segments is None else max_segments
         )
         async with (
             self._tracker("purge_deleted_partitions"),
