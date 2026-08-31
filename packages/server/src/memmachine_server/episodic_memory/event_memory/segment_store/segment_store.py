@@ -125,9 +125,10 @@ class SegmentStore(ABC):
 
     Manages partition-scoped handles.
 
-    Partition keys must match `[a-z0-9_]+`
-    (lowercase alphanumeric and underscores only)
-    and be at most 32 bytes.
+    Naming constraints:
+        - Partition keys must match `[a-z0-9_]+`
+          (lowercase alphanumeric and underscores only).
+        - Each partition key must be at most 32 bytes.
     """
 
     @abstractmethod
@@ -151,7 +152,7 @@ class SegmentStore(ABC):
 
         Args:
             partition_key (str):
-                The key of the partition (a-z0-9_, max 32 characters).
+                The key of the partition.
             config (SegmentStorePartitionConfig):
                 Configuration for the partition.
 
