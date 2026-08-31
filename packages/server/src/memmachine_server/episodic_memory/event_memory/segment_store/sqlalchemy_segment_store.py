@@ -1000,6 +1000,15 @@ class SQLAlchemySegmentStore(SegmentStore):
         reclamation never holds a long transaction and survives
         interruption with all committed slices intact.
 
+        Safe to run concurrently, including from multiple processes: each
+        call claims queue entries with `FOR UPDATE SKIP LOCKED`, so
+        concurrent purgers partition the queue instead of contending.
+        Only the claiming call touches a dead incarnation's rows (writers
+        cannot -- the fence pins live incarnations only), which makes
+        reclamation deadlock-free by construction rather than by lock
+        ordering. Entries claimed by another purger are skipped; their
+        reclamation is that purger's, or a later call's if it rolls back.
+
         Args:
             max_segments (int | None):
                 Upper bound on segment rows reclaimed in this call, or
@@ -1007,8 +1016,8 @@ class SQLAlchemySegmentStore(SegmentStore):
 
         Returns:
             bool:
-                True if another call may reclaim more; False if the purge
-                queue was drained.
+                True if another call may reclaim more; False if this call
+                drained every queue entry it could claim.
         """
         remaining = _PURGE_SLICE_SEGMENTS if max_segments is None else max_segments
         async with (
@@ -1017,7 +1026,13 @@ class SQLAlchemySegmentStore(SegmentStore):
             session.begin(),
         ):
             dead_incarnations = (
-                (await session.execute(select(PurgeRow.incarnation))).scalars().all()
+                (
+                    await session.execute(
+                        select(PurgeRow.incarnation).with_for_update(skip_locked=True)
+                    )
+                )
+                .scalars()
+                .all()
             )
             for incarnation in dead_incarnations:
                 if remaining <= 0:

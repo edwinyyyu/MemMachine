@@ -19,9 +19,10 @@ generations:
   fail even with all locks intact -- lifecycle churn deadlocked there by
   construction (create/delete DDL lock cycles through the shared
   parents), which is what the shared-table overhaul removed.
-- The ordered segment-row locks in `delete_segments` are defense in
-  depth; see `test_overlapping_segment_deletes_do_not_deadlock` for why
-  their ablation is not observable today.
+- The ordered segment-row locks in `delete_segments` impose an
+  acquisition order no engine guarantees on its own; see
+  `test_overlapping_segment_deletes_do_not_deadlock` for why their
+  ablation is not observable on PostgreSQL today.
 """
 
 import asyncio
@@ -188,12 +189,13 @@ async def test_overlapping_segment_deletes_do_not_deadlock(
     """Overlapping concurrent `delete_segments` stay deadlock-free.
 
     Regression canary rather than a lock-necessity proof: ablating the
-    ordered pre-lock does not make this fail, because identical DELETE
-    shapes acquire row locks in identical orders on PostgreSQL (scalar
-    array probes are sorted; bitmap scans lock in TID order) -- the AB/BA
-    cycle needs plan divergence the store does not produce today. The
-    pre-lock is defense in depth against that divergence appearing; this
-    test catches it if it ever does.
+    ordered pre-lock does not make this fail on PostgreSQL, whose current
+    executor happens to acquire row locks in consistent orders for
+    identical DELETE shapes (scalar array probes are sorted; bitmap scans
+    lock in TID order). That consistency is engine behavior, not a
+    guarantee any database documents, so the pre-lock imposes the order
+    deliberately; this test catches the AB/BA cycle wherever an engine or
+    plan change ever produces divergent orders.
     """
     partition = await locking_store.open_or_create_partition(
         "lk_row_order", SegmentStorePartitionConfig()

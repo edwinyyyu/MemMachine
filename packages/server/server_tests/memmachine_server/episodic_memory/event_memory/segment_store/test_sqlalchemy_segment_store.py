@@ -1336,6 +1336,114 @@ async def test_purge_respects_max_segments(
     assert queue_depth == 0
 
 
+@pytest.mark.asyncio
+async def test_concurrent_purges_reclaim_everything(
+    store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Racing purgers neither error nor leave garbage behind.
+
+    Queue-entry claiming partitions the work: whatever the interleaving,
+    every dead incarnation is reclaimed exactly once and the drain loops
+    all terminate cleanly.
+    """
+    monkeypatch.setattr(sqlalchemy_segment_store, "_PURGE_SLICE_SEGMENTS", 2)
+    incarnations = []
+    for index in range(3):
+        partition = await store.open_or_create_partition(
+            f"gc_race_{index}", _plaintext_partition_config()
+        )
+        incarnations.append(partition._incarnation)
+        await partition.add_segments(_links(_seg(), _seg(), _seg()))
+        await store.delete_partition(f"gc_race_{index}")
+
+    async def drain() -> None:
+        while await store.purge_deleted_partitions():
+            pass
+
+    await asyncio.wait_for(asyncio.gather(drain(), drain(), drain()), 60)
+
+    async with partition._create_session() as session:
+        dead_rows = (
+            await session.execute(
+                select(func.count())
+                .select_from(SegmentRow)
+                .where(SegmentRow.incarnation.in_(incarnations))
+            )
+        ).scalar_one()
+        queue_depth = (
+            await session.execute(select(func.count()).select_from(PurgeRow))
+        ).scalar_one()
+    assert dead_rows == 0
+    assert queue_depth == 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_purge_skips_entries_claimed_by_concurrent_purger(
+    pg_store: SQLAlchemySegmentStore,
+    sqlalchemy_pg_engine: AsyncEngine,
+) -> None:
+    """A purge never waits on another purger's claimed queue entries.
+
+    Emulates a purger from another process holding its claim (`FOR
+    UPDATE` on a queue row, uncommitted): a concurrent purge must skip
+    that entry -- reclaiming everything else and completing without
+    blocking -- rather than deadlocking on or waiting for the other
+    purger's work.
+    """
+    partitions = {}
+    for key in ("gc_held", "gc_free"):
+        partition = await pg_store.open_or_create_partition(
+            key, _plaintext_partition_config()
+        )
+        partitions[key] = partition._incarnation
+        await partition.add_segments(_links(_seg()))
+        await pg_store.delete_partition(key)
+
+    async with (
+        partition._create_session() as remote_session,
+        remote_session.begin(),
+    ):
+        await remote_session.execute(
+            select(PurgeRow)
+            .where(PurgeRow.incarnation == partitions["gc_held"])
+            .with_for_update()
+        )
+        purge = asyncio.create_task(pg_store.purge_deleted_partitions())
+        outcome = await _wait_until_blocked_or_done(sqlalchemy_pg_engine, purge)
+        assert outcome == "done", (
+            "purge blocked on a queue entry claimed by a concurrent "
+            "purger instead of skipping it"
+        )
+        assert await purge is False
+
+    async with partition._create_session() as session:
+        held_rows = (
+            await session.execute(
+                select(func.count())
+                .select_from(SegmentRow)
+                .where(SegmentRow.incarnation == partitions["gc_held"])
+            )
+        ).scalar_one()
+        free_rows = (
+            await session.execute(
+                select(func.count())
+                .select_from(SegmentRow)
+                .where(SegmentRow.incarnation == partitions["gc_free"])
+            )
+        ).scalar_one()
+    assert held_rows == 1
+    assert free_rows == 0
+
+    assert await pg_store.purge_deleted_partitions() is False
+    async with partition._create_session() as session:
+        queue_depth = (
+            await session.execute(select(func.count()).select_from(PurgeRow))
+        ).scalar_one()
+    assert queue_depth == 0
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_write_landing_during_delete_is_never_orphaned(
