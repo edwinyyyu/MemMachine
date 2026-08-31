@@ -1,7 +1,6 @@
 """Shared utilities for segment store implementations."""
 
 import re
-from uuid import UUID, uuid4
 
 _PARTITION_KEY_RE = re.compile(r"^[a-z0-9_]+$")
 _PARTITION_KEY_MAX_BYTES = 32
@@ -21,13 +20,3 @@ def validate_partition_key(partition_key: str) -> None:
             f"({key_length_bytes} bytes). "
             f"Maximum is {_PARTITION_KEY_MAX_BYTES}."
         )
-
-
-def new_incarnation() -> UUID:
-    """A fresh incarnation identifier for a partition registry row.
-
-    A random UUID so incarnations are globally unique across nodes
-    without coordination; tenant moves between databases carry rows
-    verbatim.
-    """
-    return uuid4()
