@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
-from typing import override
+from typing import NamedTuple, cast, override
 from uuid import UUID
 
 from pydantic import (
@@ -53,6 +53,7 @@ from sqlalchemy.orm import (
     aliased,
     mapped_column,
 )
+from sqlalchemy.orm.util import AliasedClass
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -212,13 +213,23 @@ def _pg_child_table_name(parent_table_name: str, partition_key: str) -> str:
     return f"{parent_table_name}_p_{partition_key}"
 
 
+class _PartitionEntities(NamedTuple):
+    """One partition's child tables and the ORM entities mapped onto them."""
+
+    segment_table: Table
+    derivative_link_table: Table
+    segment_row: AliasedClass[SegmentRow]
+    derivative_link_row: AliasedClass[DerivativeLinkRow]
+
+
 # Bounded so tenant churn over a long-lived process cannot grow the cache
 # without limit; the cap is far above the number of concurrently active
 # partitions a worker serves. Eviction is harmless: a rebuilt entry is
 # identical, at the one-time cost of recompiling that partition's
-# statements.
+# statements -- and entries for deleted partitions stop being touched, so
+# they are the first LRU victims.
 @lru_cache(maxsize=4096)
-def _pg_partition_entities(partition_key: str) -> tuple[Table, Table, object, object]:
+def _pg_partition_entities(partition_key: str) -> _PartitionEntities:
     """Child tables and ORM aliases for one partition, built once per key.
 
     Cached because SQLAlchemy's compiled-statement cache keys on the Table
@@ -237,16 +248,28 @@ def _pg_partition_entities(partition_key: str) -> tuple[Table, Table, object, ob
             *(Column(column.name, column.type) for column in parent.columns),
         )
 
-    segment_child_table = child_table(SegmentRow.__table__)
-    derivative_link_child_table = child_table(DerivativeLinkRow.__table__)
+    # cast: a declarative model's __table__ is a Table; the stubs type the
+    # attribute as FromClause.
+    segment_child_table = child_table(cast("Table", SegmentRow.__table__))
+    derivative_link_child_table = child_table(
+        cast("Table", DerivativeLinkRow.__table__)
+    )
     # adapt_on_names: the child Table is a fresh object with no lineage to
     # the parent's columns, so the entity's attributes must map onto it by
     # column name.
-    return (
+    return _PartitionEntities(
         segment_child_table,
         derivative_link_child_table,
-        aliased(SegmentRow, segment_child_table, adapt_on_names=True),
-        aliased(DerivativeLinkRow, derivative_link_child_table, adapt_on_names=True),
+        cast(
+            "AliasedClass[SegmentRow]",
+            aliased(SegmentRow, segment_child_table, adapt_on_names=True),
+        ),
+        cast(
+            "AliasedClass[DerivativeLinkRow]",
+            aliased(
+                DerivativeLinkRow, derivative_link_child_table, adapt_on_names=True
+            ),
+        ),
     )
 
 
@@ -279,17 +302,18 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             # execution before runtime pruning runs; with many partitions
             # and concurrent sessions this exhausts the lock table
             # ("out of shared memory") and saturates the planner. A query
-            # that names the child only ever plans and locks that child.
-            (
-                segment_child_table,
-                derivative_link_child_table,
-                self._segment_row,
-                self._derivative_link_row,
-            ) = _pg_partition_entities(partition_key)
+            # that names the child only ever plans and locks that child --
+            # though PostgreSQL's own foreign-key integrity triggers still
+            # address the parents internally, which costs a one-shot lock
+            # spike per backend on writes/deletes when a trigger's plan
+            # first goes generic.
+            entities = _pg_partition_entities(partition_key)
+            self._segment_row = entities.segment_row
+            self._derivative_link_row = entities.derivative_link_row
             # insert()/delete() cannot target an aliased entity; they take
             # the child Table itself (or the ORM class on other dialects).
-            self._segment_dml_target = segment_child_table
-            self._derivative_link_dml_target = derivative_link_child_table
+            self._segment_dml_target = entities.segment_table
+            self._derivative_link_dml_target = entities.derivative_link_table
         else:
             self._segment_row = SegmentRow
             self._derivative_link_row = DerivativeLinkRow
@@ -967,6 +991,19 @@ class SQLAlchemySegmentStore(SegmentStore):
         partition_key: str,
         config: SegmentStorePartitionConfig,
     ) -> SQLAlchemySegmentStorePartition:
+        # Fast path: opening an existing partition takes no management lock,
+        # so request-path opens never serialize behind a concurrent
+        # partition deletion's DDL window.
+        async with self._create_session() as session:
+            partition_row = await SQLAlchemySegmentStore._get_partition_row(
+                session, partition_key
+            )
+        if partition_row is not None:
+            SQLAlchemySegmentStore._raise_if_partition_config_mismatch(
+                partition_row, config
+            )
+            return await self._partition_from_partition_row(partition_row)
+
         try:
             async with self._create_session() as session, session.begin():
                 if self._is_postgresql:
@@ -974,6 +1011,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                         SQLAlchemySegmentStore._PG_LOCK_PARTITIONS_TABLE
                     )
 
+                # Re-check under the lock: a concurrent creator may have won.
                 partition_row = await SQLAlchemySegmentStore._get_partition_row(
                     session, partition_key
                 )
@@ -1191,4 +1229,4 @@ class SQLAlchemySegmentStore(SegmentStore):
                 await connection.execute(
                     text(f'ALTER TABLE {parent} DETACH PARTITION "{child}"')
                 )
-            await connection.execute(text(f'DROP TABLE "{child}"'))
+            await connection.execute(text(f'DROP TABLE IF EXISTS "{child}"'))

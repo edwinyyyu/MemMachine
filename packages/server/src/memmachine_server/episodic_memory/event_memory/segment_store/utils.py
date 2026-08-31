@@ -13,9 +13,10 @@ def validate_partition_key(partition_key: str) -> None:
             f"Partition key {partition_key!r} contains invalid characters. "
             "Only lowercase alphanumeric and underscores are allowed."
         )
-    if len(partition_key.encode()) > _PARTITION_KEY_MAX_BYTES:
+    key_length_bytes = len(partition_key.encode())
+    if key_length_bytes > _PARTITION_KEY_MAX_BYTES:
         raise ValueError(
             f"Partition key {partition_key!r} is too long "
-            f"({len(partition_key.encode())} bytes). "
+            f"({key_length_bytes} bytes). "
             f"Maximum is {_PARTITION_KEY_MAX_BYTES}."
         )

@@ -3,7 +3,7 @@
 import asyncio
 import json
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -117,6 +117,25 @@ async def pg_store(
 )
 def store(request) -> SQLAlchemySegmentStore:
     return request.getfixturevalue(request.param)
+
+
+@pytest.fixture
+def recorded_statements(
+    sqlalchemy_pg_engine: AsyncEngine,
+) -> Iterator[list[str]]:
+    """Every statement the engine executes, normalized to one line.
+
+    Recording starts at fixture setup; tests clear the list after their own
+    setup so assertions cover only the exercised operations.
+    """
+    statements: list[str] = []
+
+    def _record(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(" ".join(statement.split()))
+
+    event.listen(sqlalchemy_pg_engine.sync_engine, "before_cursor_execute", _record)
+    yield statements
+    event.remove(sqlalchemy_pg_engine.sync_engine, "before_cursor_execute", _record)
 
 
 @pytest_asyncio.fixture
@@ -921,27 +940,38 @@ async def test_delete_partition_drops_an_already_detached_child(
     partition becomes neither deletable nor recreatable.
     """
     await pg_store.open_or_create_partition("detached", _plaintext_partition_config())
-    async with sqlalchemy_pg_engine.begin() as connection:
-        await connection.execute(
-            text(
-                "ALTER TABLE segment_store_sg"
-                ' DETACH PARTITION "segment_store_sg_p_detached"'
+    try:
+        async with sqlalchemy_pg_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "ALTER TABLE segment_store_sg"
+                    ' DETACH PARTITION "segment_store_sg_p_detached"'
+                )
             )
+
+        await pg_store.delete_partition("detached")
+
+        assert await pg_store.open_partition("detached") is None
+        # The key is reusable afterwards.
+        await pg_store.open_or_create_partition(
+            "detached", _plaintext_partition_config()
         )
-
-    await pg_store.delete_partition("detached")
-
-    assert await pg_store.open_partition("detached") is None
-    # The key is reusable afterwards.
-    await pg_store.open_or_create_partition("detached", _plaintext_partition_config())
-    await pg_store.delete_partition("detached")
+        await pg_store.delete_partition("detached")
+    finally:
+        # A failure above must not leave the detached child behind: its
+        # foreign key to segment_store_pt breaks the session-scoped
+        # container's teardown for every later PostgreSQL test.
+        async with sqlalchemy_pg_engine.begin() as connection:
+            await connection.execute(
+                text('DROP TABLE IF EXISTS "segment_store_sg_p_detached"')
+            )
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_delete_partition_locks_partitions_table_before_ddl(
     pg_store: SQLAlchemySegmentStore,
-    sqlalchemy_pg_engine: AsyncEngine,
+    recorded_statements: list[str],
 ) -> None:
     """
     Deletion must take the partitions-table lock the create paths take,
@@ -957,16 +987,9 @@ async def test_delete_partition_locks_partitions_table_before_ddl(
         _plaintext_partition_config(),
     )
 
-    statements: list[str] = []
-
-    @event.listens_for(sqlalchemy_pg_engine.sync_engine, "before_cursor_execute")
-    def _record(_conn, _cursor, statement, _parameters, _context, _executemany):
-        statements.append(" ".join(statement.split()))
-
-    try:
-        await pg_store.delete_partition("lock_order")
-    finally:
-        event.remove(sqlalchemy_pg_engine.sync_engine, "before_cursor_execute", _record)
+    statements = recorded_statements
+    statements.clear()
+    await pg_store.delete_partition("lock_order")
 
     lock_positions = [
         index
@@ -990,9 +1013,31 @@ async def test_delete_partition_locks_partitions_table_before_ddl(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_open_existing_partition_takes_no_management_lock(
+    pg_store: SQLAlchemySegmentStore,
+    recorded_statements: list[str],
+) -> None:
+    """
+    Opening an existing partition must not take the store-wide lock.
+
+    open_or_create_partition runs on the request path; taking the
+    management lock for a plain open would serialize every request behind
+    a concurrent partition deletion's DDL window.
+    """
+    await pg_store.open_or_create_partition("fast_open", _plaintext_partition_config())
+    recorded_statements.clear()
+
+    await pg_store.open_or_create_partition("fast_open", _plaintext_partition_config())
+
+    locking = [s for s in recorded_statements if "LOCK TABLE" in s]
+    assert not locking, locking
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_segment_dml_addresses_only_the_partition_child_tables(
     pg_store: SQLAlchemySegmentStore,
-    sqlalchemy_pg_engine: AsyncEngine,
+    recorded_statements: list[str],
 ) -> None:
     """
     Every segment read and write must name the partition's child tables,
@@ -1005,7 +1050,9 @@ async def test_segment_dml_addresses_only_the_partition_child_tables(
     lock table and saturates the database (#1546). A statement that names
     the child can only ever reference one partition. The emitted SQL is the
     deterministic observable; the lock counts themselves would need
-    timing-dependent sampling of pg_locks.
+    timing-dependent sampling of pg_locks. This covers only client-emitted
+    statements: PostgreSQL's foreign-key integrity triggers still address
+    the parents internally on writes and deletes.
     """
     partition = await pg_store.open_or_create_partition(
         "child_dml",
@@ -1021,26 +1068,20 @@ async def test_segment_dml_addresses_only_the_partition_child_tables(
     segments = [
         _seg(ts_offset_seconds=i, properties={"flavor": "sweet"}) for i in range(6)
     ]
-    statements: list[str] = []
+    statements = recorded_statements
+    statements.clear()
 
-    @event.listens_for(sqlalchemy_pg_engine.sync_engine, "before_cursor_execute")
-    def _record(_conn, _cursor, statement, _parameters, _context, _executemany):
-        statements.append(" ".join(statement.split()))
-
-    try:
-        await partition.add_segments(_links(*segments))
-        await partition.get_segment_contexts([segments[2].uuid])
-        await partition.get_segment_contexts(
-            [segments[2].uuid],
-            max_backward_segments=2,
-            max_forward_segments=2,
-            property_filter=Comparison(field="m.flavor", op="=", value="sweet"),
-        )
-        await partition.get_segment_uuids_by_event_uuids([segments[0].event_uuid])
-        await partition.get_derivative_uuids_by_segment_uuids([segments[0].uuid])
-        await partition.delete_segments([segments[5].uuid])
-    finally:
-        event.remove(sqlalchemy_pg_engine.sync_engine, "before_cursor_execute", _record)
+    await partition.add_segments(_links(*segments))
+    await partition.get_segment_contexts([segments[2].uuid])
+    await partition.get_segment_contexts(
+        [segments[2].uuid],
+        max_backward_segments=2,
+        max_forward_segments=2,
+        property_filter=Comparison(field="m.flavor", op="=", value="sweet"),
+    )
+    await partition.get_segment_uuids_by_event_uuids([segments[0].event_uuid])
+    await partition.get_derivative_uuids_by_segment_uuids([segments[0].uuid])
+    await partition.delete_segments([segments[5].uuid])
 
     # \b rejects the parents while letting the children through: a child
     # name continues with "_p_<key>", so the boundary does not match there.
@@ -1140,13 +1181,8 @@ def test_pg_partition_entities_memoized_and_validated() -> None:
     second = _pg_partition_entities("memo_key")
     assert all(a is b for a, b in zip(first, second, strict=True))
 
-    segment_entity = first[2]
-    statement_a = select(segment_entity).where(segment_entity.partition_key == "k")
-    statement_b = select(second[2]).where(second[2].partition_key == "k")
-    assert statement_a._generate_cache_key() == statement_b._generate_cache_key()
-
-    assert first[0].name == "segment_store_sg_p_memo_key"
-    assert first[1].name == "segment_store_dv_ln_p_memo_key"
+    assert first.segment_table.name == "segment_store_sg_p_memo_key"
+    assert first.derivative_link_table.name == "segment_store_dv_ln_p_memo_key"
     with pytest.raises(ValueError, match="invalid characters"):
         _pg_partition_entities("Quote'; DROP TABLE x")
 
