@@ -66,6 +66,18 @@ class SegmentStorePartitionConfigMismatchError(Exception):
         )
 
 
+class SegmentStorePartitionStaleError(Exception):
+    """A partition handle outlived its partition incarnation."""
+
+    def __init__(self, partition_key: str) -> None:
+        """Record the logical partition key the stale handle belonged to."""
+        super().__init__(
+            f"Partition {partition_key!r} was deleted (or re-created) after "
+            "this handle was opened"
+        )
+        self.partition_key = partition_key
+
+
 class SegmentStorePartitionAlreadyExistsError(Exception):
     """Raised when creating a partition that already exists."""
 

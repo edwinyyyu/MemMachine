@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import re
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -26,14 +25,15 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
 from memmachine_server.episodic_memory.event_memory.segment_store import (
     SegmentStorePartitionAlreadyExistsError,
     SegmentStorePartitionConfig,
+    SegmentStorePartitionStaleError,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_segment_store import (
     BaseSegmentStore,
+    PurgeRow,
     SegmentRow,
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
     SQLAlchemySegmentStorePartition,
-    _pg_partition_entities,
 )
 
 PARTITION_KEY = "test_partition"
@@ -925,173 +925,6 @@ async def test_delete_partition_keeps_foreign_key_enforced(
             )
 
 
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_delete_partition_drops_an_already_detached_child(
-    pg_store: SQLAlchemySegmentStore,
-    sqlalchemy_pg_engine: AsyncEngine,
-) -> None:
-    """
-    A child table left detached must not jam deletion.
-
-    Manual maintenance, or an interrupted DETACH PARTITION CONCURRENTLY, can
-    leave a child table that exists but is no longer a partition. DETACH
-    raises on such a table, so deletion has to drop it directly; otherwise the
-    partition becomes neither deletable nor recreatable.
-    """
-    await pg_store.open_or_create_partition("detached", _plaintext_partition_config())
-    try:
-        async with sqlalchemy_pg_engine.begin() as connection:
-            await connection.execute(
-                text(
-                    "ALTER TABLE segment_store_sg"
-                    ' DETACH PARTITION "segment_store_sg_p_detached"'
-                )
-            )
-
-        await pg_store.delete_partition("detached")
-
-        assert await pg_store.open_partition("detached") is None
-        # The key is reusable afterwards.
-        await pg_store.open_or_create_partition(
-            "detached", _plaintext_partition_config()
-        )
-        await pg_store.delete_partition("detached")
-    finally:
-        # A failure above must not leave the detached child behind: its
-        # foreign key to segment_store_pt breaks the session-scoped
-        # container's teardown for every later PostgreSQL test.
-        async with sqlalchemy_pg_engine.begin() as connection:
-            await connection.execute(
-                text('DROP TABLE IF EXISTS "segment_store_sg_p_detached"')
-            )
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_delete_partition_locks_partitions_table_before_ddl(
-    pg_store: SQLAlchemySegmentStore,
-    recorded_statements: list[str],
-) -> None:
-    """
-    Deletion must take the partitions-table lock the create paths take,
-    before it touches either parent table.
-
-    The create paths reach segment_store_sg then segment_store_dv_ln while
-    deletion reaches them in the opposite order, and both statements take
-    ACCESS EXCLUSIVE on the parent, so the two can only be kept apart by a
-    lock they both acquire first.
-    """
-    await pg_store.open_or_create_partition(
-        "lock_order",
-        _plaintext_partition_config(),
-    )
-
-    statements = recorded_statements
-    statements.clear()
-    await pg_store.delete_partition("lock_order")
-
-    lock_positions = [
-        index
-        for index, statement in enumerate(statements)
-        if "LOCK TABLE segment_store_pt IN SHARE ROW EXCLUSIVE MODE" in statement
-    ]
-    assert lock_positions, (
-        f"delete_partition issued no partitions-table lock: {statements}"
-    )
-
-    ddl_positions = [
-        index
-        for index, statement in enumerate(statements)
-        if "DETACH PARTITION" in statement or statement.startswith("DROP TABLE")
-    ]
-    assert ddl_positions, f"delete_partition issued no child DDL: {statements}"
-    assert lock_positions[0] < ddl_positions[0], (
-        f"partitions-table lock must be acquired before any child DDL: {statements}"
-    )
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_open_existing_partition_takes_no_management_lock(
-    pg_store: SQLAlchemySegmentStore,
-    recorded_statements: list[str],
-) -> None:
-    """
-    Opening an existing partition must not take the store-wide lock.
-
-    open_or_create_partition runs on the request path; taking the
-    management lock for a plain open would serialize every request behind
-    a concurrent partition deletion's DDL window.
-    """
-    await pg_store.open_or_create_partition("fast_open", _plaintext_partition_config())
-    recorded_statements.clear()
-
-    await pg_store.open_or_create_partition("fast_open", _plaintext_partition_config())
-
-    locking = [s for s in recorded_statements if "LOCK TABLE" in s]
-    assert not locking, locking
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_segment_dml_addresses_only_the_partition_child_tables(
-    pg_store: SQLAlchemySegmentStore,
-    recorded_statements: list[str],
-) -> None:
-    """
-    Every segment read and write must name the partition's child tables,
-    never the partitioned parents.
-
-    Parent-table statements carry the partition key as a bind parameter, so
-    once the driver's prepared statement switches to a cached generic plan,
-    PostgreSQL locks every child partition on every execution before runtime
-    pruning; with many partitions and concurrent sessions that exhausts the
-    lock table and saturates the database (#1546). A statement that names
-    the child can only ever reference one partition. The emitted SQL is the
-    deterministic observable; the lock counts themselves would need
-    timing-dependent sampling of pg_locks. This covers only client-emitted
-    statements: PostgreSQL's foreign-key integrity triggers still address
-    the parents internally on writes and deletes.
-    """
-    partition = await pg_store.open_or_create_partition(
-        "child_dml",
-        _plaintext_partition_config(),
-    )
-    # A sibling ensures parent-table plans would have more than one child to
-    # reference, mirroring the multi-partition deployments that fail.
-    await pg_store.open_or_create_partition(
-        "child_dml_sibling",
-        _plaintext_partition_config(),
-    )
-
-    segments = [
-        _seg(ts_offset_seconds=i, properties={"flavor": "sweet"}) for i in range(6)
-    ]
-    statements = recorded_statements
-    statements.clear()
-
-    await partition.add_segments(_links(*segments))
-    await partition.get_segment_contexts([segments[2].uuid])
-    await partition.get_segment_contexts(
-        [segments[2].uuid],
-        max_backward_segments=2,
-        max_forward_segments=2,
-        property_filter=Comparison(field="m.flavor", op="=", value="sweet"),
-    )
-    await partition.get_segment_uuids_by_event_uuids([segments[0].event_uuid])
-    await partition.get_derivative_uuids_by_segment_uuids([segments[0].uuid])
-    await partition.delete_segments([segments[5].uuid])
-
-    # \b rejects the parents while letting the children through: a child
-    # name continues with "_p_<key>", so the boundary does not match there.
-    parent_reference = re.compile(r"\bsegment_store_(?:sg|dv_ln)\b")
-    offending = [s for s in statements if parent_reference.search(s)]
-    assert not offending, offending
-    child_references = [s for s in statements if "segment_store_sg_p_child_dml" in s]
-    assert child_references, statements
-
-
 @pytest.mark.asyncio
 async def test_delete_partition_keeps_other_partitions_cascading(
     store: SQLAlchemySegmentStore,
@@ -1167,29 +1000,6 @@ async def test_partition_key_validation_too_long(
         await store.create_partition("a" * 33, _plaintext_partition_config())
 
 
-def test_pg_partition_entities_memoized_and_validated() -> None:
-    """
-    Handles for one partition must share the same child Table objects.
-
-    SQLAlchemy's compiled-statement cache keys on the Table OBJECTS a
-    statement references, so per-handle tables would make every handle's
-    statements recompile and would pollute the cache for everything else.
-    The naming path also validates the key, so every SQL string built from
-    a child table name is safe by construction.
-    """
-    first = _pg_partition_entities("memo_key")
-    second = _pg_partition_entities("memo_key")
-    assert all(a is b for a, b in zip(first, second, strict=True))
-
-    assert first.segment_table.name == "segment_store_sg_p_memo_key"
-    assert first.derivative_link_table.name == "segment_store_dv_ln_p_memo_key"
-    with pytest.raises(ValueError, match="invalid characters"):
-        _pg_partition_entities("Quote'; DROP TABLE x")
-
-
-# --- PostgreSQL-only ---
-
-
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_pg_context_preserved_via_lateral_join(
@@ -1260,3 +1070,138 @@ async def test_pg_mixed_context_types(
 
     result = await partition.get_segment_contexts([s_none.uuid])
     assert result[s_none.uuid][0].context == NullContext()
+
+
+# ===================================================================
+# Incarnation fencing and O(1) deletion
+# ===================================================================
+
+
+@pytest.mark.asyncio
+async def test_stale_handle_raises_after_delete(
+    store: SQLAlchemySegmentStore,
+) -> None:
+    """A handle held across deletion must fail loudly, not act."""
+    partition = await store.open_or_create_partition(
+        "fenced", _plaintext_partition_config()
+    )
+    seg = _seg()
+    await partition.add_segments(_links(seg))
+
+    await store.delete_partition("fenced")
+
+    with pytest.raises(SegmentStorePartitionStaleError):
+        await partition.add_segments(_links(_seg()))
+    with pytest.raises(SegmentStorePartitionStaleError):
+        await partition.get_segment_contexts([seg.uuid])
+    with pytest.raises(SegmentStorePartitionStaleError):
+        await partition.get_derivative_uuids_by_segment_uuids([seg.uuid])
+
+
+@pytest.mark.asyncio
+async def test_stale_handle_raises_after_recreate(
+    store: SQLAlchemySegmentStore,
+) -> None:
+    """Re-creating the key must not let an old handle act on the successor."""
+    old_handle = await store.open_or_create_partition(
+        "reborn", _plaintext_partition_config()
+    )
+    await store.delete_partition("reborn")
+    new_handle = await store.open_or_create_partition(
+        "reborn", _plaintext_partition_config()
+    )
+
+    with pytest.raises(SegmentStorePartitionStaleError):
+        await old_handle.add_segments(_links(_seg()))
+    await new_handle.add_segments(_links(_seg()))  # the live handle works
+
+
+@pytest.mark.asyncio
+async def test_recreated_partition_is_isolated_from_old_rows(
+    store: SQLAlchemySegmentStore,
+) -> None:
+    """Old-incarnation rows are invisible to the successor before purging."""
+    partition = await store.open_or_create_partition(
+        "isolated", _plaintext_partition_config()
+    )
+    seg = _seg()
+    await partition.add_segments(_links(seg))
+    old_physical_key = partition._physical_partition_key
+
+    await store.delete_partition("isolated")
+    successor = await store.open_or_create_partition(
+        "isolated", _plaintext_partition_config()
+    )
+
+    assert await successor.get_segment_contexts([seg.uuid]) == {}
+    # The old rows still physically exist until the purger reclaims them.
+    async with successor._create_session() as session:
+        remaining = (
+            await session.execute(
+                select(func.count())
+                .select_from(SegmentRow)
+                .where(SegmentRow.partition_key == old_physical_key)
+            )
+        ).scalar_one()
+    assert remaining == 1
+
+
+@pytest.mark.asyncio
+async def test_purge_reclaims_only_dead_incarnations(
+    store: SQLAlchemySegmentStore,
+) -> None:
+    """Purging erases queued incarnations and leaves live partitions alone."""
+    live = await store.open_or_create_partition("live_p", _plaintext_partition_config())
+    live_seg = _seg()
+    await live.add_segments(_links(live_seg))
+
+    doomed = await store.open_or_create_partition(
+        "doomed_p", _plaintext_partition_config()
+    )
+    doomed_physical_key = doomed._physical_partition_key
+    await doomed.add_segments(_links(_seg(), _seg(), _seg()))
+    await store.delete_partition("doomed_p")
+
+    purged = await store.purge_deleted_partitions(batch_size=2)
+    assert purged == 3
+
+    async with live._create_session() as session:
+        dead_rows = (
+            await session.execute(
+                select(func.count())
+                .select_from(SegmentRow)
+                .where(SegmentRow.partition_key == doomed_physical_key)
+            )
+        ).scalar_one()
+        queue_depth = (
+            await session.execute(select(func.count()).select_from(PurgeRow))
+        ).scalar_one()
+    assert dead_rows == 0
+    assert queue_depth == 0
+    assert (await live.get_segment_contexts([live_seg.uuid]))[live_seg.uuid]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_delete_partition_touches_only_registry_and_queue(
+    pg_store: SQLAlchemySegmentStore,
+    recorded_statements: list[str],
+) -> None:
+    """Deletion is O(1): no data-table statements, regardless of size."""
+    partition = await pg_store.open_or_create_partition(
+        "big_delete", _plaintext_partition_config()
+    )
+    await partition.add_segments(
+        _links(*(_seg(ts_offset_seconds=i) for i in range(20)))
+    )
+    recorded_statements.clear()
+
+    await pg_store.delete_partition("big_delete")
+
+    touching_data = [
+        s
+        for s in recorded_statements
+        if "segment_store_sg" in s or "segment_store_dv_ln" in s
+    ]
+    assert not touching_data, touching_data
+    assert any("segment_store_gc" in s for s in recorded_statements)
