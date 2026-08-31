@@ -2,7 +2,6 @@
 
 import json
 import logging
-import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta, timezone
@@ -96,6 +95,7 @@ from memmachine_server.episodic_memory.event_memory.segment_store.data_types imp
     SegmentStorePartitionAlreadyExistsError,
     SegmentStorePartitionConfig,
     SegmentStorePartitionConfigMismatchError,
+    validate_partition_key,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.segment_store import (
     SegmentStore,
@@ -200,30 +200,13 @@ class DerivativeLinkRow(BaseSegmentStore):
     )
 
 
-_PARTITION_KEY_RE = re.compile(r"^[a-z0-9_]+$")
-
-
-def _validate_partition_key(partition_key: str) -> None:
-    """Validate that a partition key is safe for use in SQL identifiers."""
-    if not _PARTITION_KEY_RE.match(partition_key):
-        raise ValueError(
-            f"Partition key {partition_key!r} contains invalid characters. "
-            "Only lowercase alphanumeric and underscores are allowed."
-        )
-    if len(partition_key) > 32:
-        raise ValueError(
-            f"Partition key {partition_key!r} is too long "
-            f"({len(partition_key)} characters). Maximum is 32."
-        )
-
-
 def _pg_child_table_name(parent_table_name: str, partition_key: str) -> str:
     """Name of the PostgreSQL child table holding one partition's rows.
 
     Validates the key so that every SQL string built from a child table
     name is safe by construction, wherever it is built from.
     """
-    _validate_partition_key(partition_key)
+    validate_partition_key(partition_key)
     return f"{parent_table_name}_p_{partition_key}"
 
 
@@ -921,7 +904,7 @@ class SQLAlchemySegmentStore(SegmentStore):
         partition_key: str,
         config: SegmentStorePartitionConfig,
     ) -> None:
-        _validate_partition_key(partition_key)
+        validate_partition_key(partition_key)
         async with (
             self._tracker("create_partition"),
             self._engine.begin() as connection,
@@ -951,7 +934,7 @@ class SQLAlchemySegmentStore(SegmentStore):
     async def open_partition(
         self, partition_key: str
     ) -> SQLAlchemySegmentStorePartition | None:
-        _validate_partition_key(partition_key)
+        validate_partition_key(partition_key)
         async with self._tracker("open_partition"):
             async with self._create_session() as session:
                 partition_row = await SQLAlchemySegmentStore._get_partition_row(
@@ -968,7 +951,7 @@ class SQLAlchemySegmentStore(SegmentStore):
         partition_key: str,
         config: SegmentStorePartitionConfig,
     ) -> SQLAlchemySegmentStorePartition:
-        _validate_partition_key(partition_key)
+        validate_partition_key(partition_key)
         async with self._tracker("open_or_create_partition"):
             return await self._open_or_create_partition(partition_key, config)
 
@@ -1037,7 +1020,7 @@ class SQLAlchemySegmentStore(SegmentStore):
 
     @override
     async def delete_partition(self, partition_key: str) -> None:
-        _validate_partition_key(partition_key)
+        validate_partition_key(partition_key)
         async with (
             self._tracker("delete_partition"),
             self._engine.begin() as connection,
