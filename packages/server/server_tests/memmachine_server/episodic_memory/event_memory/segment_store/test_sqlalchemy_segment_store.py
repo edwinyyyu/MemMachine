@@ -1263,7 +1263,7 @@ async def test_purge_reclaims_only_dead_incarnations(
 ) -> None:
     """Purging erases queued incarnations and leaves live partitions alone."""
     # Small default bound, so draining takes the caller's loop.
-    monkeypatch.setattr(sqlalchemy_segment_store, "_DEFAULT_PURGE_MAX_SEGMENTS", 2)
+    monkeypatch.setattr(store, "_default_purge_max_segments", 2)
 
     live = await store.open_or_create_partition("live_p", _plaintext_partition_config())
     live_seg = _seg()
@@ -1349,7 +1349,7 @@ async def test_concurrent_purges_reclaim_everything(
     every dead incarnation is reclaimed exactly once and the drain loops
     all terminate cleanly.
     """
-    monkeypatch.setattr(sqlalchemy_segment_store, "_DEFAULT_PURGE_MAX_SEGMENTS", 2)
+    monkeypatch.setattr(store, "_default_purge_max_segments", 2)
     incarnations = []
     for index in range(3):
         partition = await store.open_or_create_partition(

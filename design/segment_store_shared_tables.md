@@ -98,9 +98,12 @@ purge queue tracks.
   transaction that deletes up to `max_segments` rows
   (`uuid IN (SELECT ... LIMIT n)` sub-selects, portable across dialects),
   lets the link-table cascade follow, and retires queue rows whose
-  incarnations are drained. `max_segments=None` means a store-chosen
-  default bound, so callers never need engine-appropriate transaction
-  sizing; True means another call may reclaim more, so draining a backlog
+  incarnations are drained. `max_segments=None` means the store's
+  configured default bound
+  (`SQLAlchemySegmentStoreParams.default_purge_max_segments`), so a
+  deployment sets engine-appropriate transaction sizing once -- different
+  limits may suit PostgreSQL, SQLite, or other dialects -- and callers
+  never need to; True means another call may reclaim more, so draining a backlog
   is the caller's loop and each call's committed progress survives
   interruption. Each
   call claims its queue entries with `FOR UPDATE SKIP LOCKED`, so
