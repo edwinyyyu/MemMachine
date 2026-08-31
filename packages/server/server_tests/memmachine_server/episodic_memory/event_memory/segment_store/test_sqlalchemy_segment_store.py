@@ -1570,6 +1570,67 @@ async def test_concurrent_remote_delete_yields_single_queue_entry(
     assert queue_entries == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "create_via",
+    ["create_partition", "open_or_create_partition"],
+)
+async def test_incarnation_with_garbage_left_is_never_reused(
+    store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+    create_via: str,
+) -> None:
+    """A minted incarnation colliding with unpurged garbage is re-minted.
+
+    Data rows are keyed by incarnation alone, so a new partition reusing a
+    dead incarnation's uuid would adopt its garbage and then be erased by
+    the purger. The mint transaction re-checks the purge queue and retries
+    with a fresh uuid instead.
+    """
+    doomed = await store.open_or_create_partition(
+        "gc_reuse", _plaintext_partition_config()
+    )
+    dead_incarnation = doomed._incarnation
+    await doomed.add_segments(_links(_seg()))
+    await store.delete_partition("gc_reuse")
+
+    offered = []
+
+    def colliding_uuid4() -> UUID:
+        if not offered:
+            offered.append(dead_incarnation)
+            return dead_incarnation
+        return uuid4()
+
+    monkeypatch.setattr(sqlalchemy_segment_store, "uuid4", colliding_uuid4)
+
+    if create_via == "create_partition":
+        await store.create_partition("fresh_p", _plaintext_partition_config())
+        fresh = await store.open_partition("fresh_p")
+    else:
+        fresh = await store.open_or_create_partition(
+            "fresh_p", _plaintext_partition_config()
+        )
+    assert fresh is not None
+    assert offered, "the colliding uuid was never offered to the mint"
+    assert fresh._incarnation != dead_incarnation
+
+    # The dead incarnation's garbage is untouched and still tracked.
+    async with fresh._create_session() as session:
+        dead_rows = (
+            await session.execute(
+                select(func.count())
+                .select_from(SegmentRow)
+                .where(SegmentRow.incarnation == dead_incarnation)
+            )
+        ).scalar_one()
+        queue_depth = (
+            await session.execute(select(func.count()).select_from(PurgeRow))
+        ).scalar_one()
+    assert dead_rows == 1
+    assert queue_depth == 1
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_delete_partition_touches_only_registry_and_queue(
