@@ -66,13 +66,13 @@ class SegmentStorePartitionConfigMismatchError(Exception):
         )
 
 
-class SegmentStorePermanentError(Exception):
-    """A failure that retrying will not fix; diagnose instead.
+class SegmentStoreRetriesExhaustedError(Exception):
+    """The store exhausted its internal retries; diagnose the cause.
 
-    Raised when the store exhausts internal retries on an error that
-    should be impossible under normal operation, such as repeated
-    integrity failures while minting a partition incarnation. The
-    underlying database error is chained as the cause.
+    Raised when an operation kept failing in a way that should not recur
+    under normal operation, such as repeated integrity failures while
+    minting a partition incarnation. An immediate retry is unlikely to
+    succeed; the underlying database error is chained as the cause.
     """
 
 
