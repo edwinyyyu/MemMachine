@@ -1150,27 +1150,17 @@ class SQLAlchemySegmentStore(SegmentStore):
 
     @override
     async def purge_deleted_partitions(self) -> bool:
-        # One transaction per call: up to purge_max_segments rows (with
-        # their links, and queue entries it drains) are reclaimed and
-        # committed, or nothing is -- so a large backlog never holds a
-        # long transaction and interruption keeps completed calls'
-        # progress. Queue entries are claimed one at a time with
-        # FOR UPDATE SKIP LOCKED, so a bounded call never locks entries
-        # it will not process and concurrent purgers share the backlog
-        # instead of contending: only the claiming call touches a dead
-        # incarnation's rows (writers cannot; the fence pins live
-        # incarnations only), making reclamation deadlock-free by
-        # construction. Entries claimed by another purger are skipped;
-        # their reclamation is that purger's, or a later call's if it
-        # rolls back. SQLite drops the locking clause and defers BEGIN
-        # to the first DML, so there the claim is a plain read and
-        # purgers serialize on the database write lock at the DELETE
-        # instead: two purgers may claim the same entry, and the second
-        # then deletes whatever rows the first left (none, once the
-        # first retired the entry) and re-retires it -- duplicated
-        # round trips, never duplicated or missed reclamation, because
-        # each purger retires an entry only on its own DELETE finding
-        # fewer rows than its remaining budget.
+        # One transaction per call: reclaim up to the configured bounds
+        # and commit, or nothing. Entries are claimed one at a time
+        # with FOR UPDATE SKIP LOCKED, so racing purgers split the
+        # backlog instead of contending, and only the claiming call
+        # touches a dead incarnation's rows -- deadlock-free by
+        # construction. SQLite drops the locking clause; there purgers
+        # serialize at the DELETE, and a doubly-claimed entry costs
+        # empty round trips, never duplicated or missed reclamation
+        # (an entry is retired only when the retirer's own DELETE found
+        # fewer rows than its budget). Full rationale:
+        # design/segment_store_shared_tables.md.
         remaining = self._purge_max_segments
         entries = 0
         # Pure Core DML on an engine connection: unlike Session.execute,
