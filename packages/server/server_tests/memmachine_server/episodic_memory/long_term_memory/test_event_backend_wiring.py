@@ -299,6 +299,19 @@ async def test_drop_session_partition_calls_parent_lifecycle_hooks(
     segment_store.purge_deleted_partitions.assert_awaited()
 
 
+async def test_drop_session_partition_nulls_handles_even_if_drain_raises(
+    long_term_memory,
+    segment_store,
+    episodes,
+):
+    """A failed drain must not leave handles pointing at deleted resources."""
+    segment_store.purge_deleted_partitions.side_effect = ConnectionError("dropped")
+    with pytest.raises(ConnectionError):
+        await long_term_memory.drop_session_partition()
+    with pytest.raises(RuntimeError, match="drop_session_partition"):
+        await long_term_memory.add_episodes(episodes)
+
+
 async def test_event_backend_unusable_after_drop_session_partition(
     long_term_memory,
     episodes,

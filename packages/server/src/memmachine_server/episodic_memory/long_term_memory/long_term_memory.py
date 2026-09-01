@@ -412,24 +412,28 @@ class LongTermMemory:
         assert self._vector_store_namespace is not None
         assert self._segment_store is not None
         assert self._partition_key is not None
+        segment_store = self._segment_store
         await self._vector_store.delete_collection(
             namespace=self._vector_store_namespace,
             name=self._partition_key,
         )
-        await self._segment_store.delete_partition(self._partition_key)
-        # delete_all is the erasure path: drain the purge queue inline so
-        # the partition's rows are physically reclaimed before returning,
-        # matching the physical removal the partitioned layout performed.
-        # Entries claimed by concurrent purgers are skipped and remain
-        # their owners' work.
-        while await self._segment_store.purge_deleted_partitions():
-            pass
+        await segment_store.delete_partition(self._partition_key)
         # Drop references to the now-deleted resources so any further
         # add_episodes / search_scored / delete_episodes calls raise
-        # rather than silently operating on stale handles.
+        # rather than silently operating on stale handles -- before the
+        # drain below, so a drain failure cannot leave them populated.
         self._event_memory = None
         self._vector_store = None
         self._segment_store = None
+        # This is the erasure path: drain the purge queue inline so the
+        # partition's rows are physically reclaimed before returning, as
+        # the partitioned layout's synchronous drop did. The queue is
+        # global and the drain is uncapped; the server schedules no other
+        # purger, so the backlog is what concurrent drops enqueue, and an
+        # entry a concurrent drain has already claimed (possibly this
+        # partition's) is finished by that drain rather than this one.
+        while await segment_store.purge_deleted_partitions():
+            pass
 
     async def close(self) -> None:
         # Backends do not own resources we can close at this layer; the
