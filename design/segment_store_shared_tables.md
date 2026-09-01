@@ -117,7 +117,11 @@ purge queue tracks.
   deletes about 3x cheaper than a segment row (1.0 vs 3.3 us/row,
   batched deletes on the benchmark box), so one budget calibrated on
   segment rows upper-bounds the call without assuming any ratio -- a
-  separate link limit could only be safe by guessing that ratio.
+  separate link limit could only be safe by guessing that ratio. The
+  measured direction is the precondition, not just support: the shared
+  budget stays conservative only while a link row deletes cheaper than
+  a segment row, so widening the link table or adding indexes to it
+  revisits this choice.
   Entries are claimed oldest-first (FIFO by
   enqueue time, stamped by the database clock so every server's entries
   order on one clock, at its resolution) and carry their own per-call bound
