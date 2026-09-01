@@ -17,7 +17,6 @@ from pydantic import (
 )
 from sqlalchemy import (
     JSON,
-    CursorResult,
     DateTime,
     ForeignKeyConstraint,
     Index,
@@ -1061,10 +1060,12 @@ class SQLAlchemySegmentStore(SegmentStore):
         remaining = (
             self._default_purge_max_segments if max_segments is None else max_segments
         )
+        # Pure Core DML on an engine connection: unlike Session.execute,
+        # AsyncConnection.execute is typed CursorResult, whose rowcount
+        # the batch loop needs.
         async with (
             self._tracker("purge_deleted_partitions"),
-            self._create_session() as session,
-            session.begin(),
+            self._engine.begin() as connection,
         ):
             while True:
                 if remaining <= 0:
@@ -1073,7 +1074,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                 # already claimed cannot come back because each is
                 # deleted before the next claim.
                 incarnation = (
-                    await session.execute(
+                    await connection.execute(
                         select(PurgeQueueRow.incarnation)
                         .limit(1)
                         .with_for_update(skip_locked=True)
@@ -1088,15 +1089,14 @@ class SQLAlchemySegmentStore(SegmentStore):
                     .scalar_subquery()
                 )
                 # The link-table cascade follows the deleted segments.
-                result = await session.execute(
-                    delete(SegmentRow).where(
-                        SegmentRow.incarnation == incarnation,
-                        SegmentRow.uuid.in_(batch),
+                deleted = (
+                    await connection.execute(
+                        delete(SegmentRow).where(
+                            SegmentRow.incarnation == incarnation,
+                            SegmentRow.uuid.in_(batch),
+                        )
                     )
-                )
-                # Session.execute is typed Result; DML returns a
-                # CursorResult, which carries the affected-row count.
-                deleted = result.rowcount if isinstance(result, CursorResult) else 0
+                ).rowcount
                 if deleted == remaining:
                     # The bound was consumed exactly; this incarnation may
                     # have more rows, so leave its queue entry for the
@@ -1105,12 +1105,12 @@ class SQLAlchemySegmentStore(SegmentStore):
                 remaining -= deleted
                 # Sweep links whose segments were already gone, then
                 # retire the queue entry.
-                await session.execute(
+                await connection.execute(
                     delete(DerivativeLinkRow).where(
                         DerivativeLinkRow.incarnation == incarnation
                     )
                 )
-                await session.execute(
+                await connection.execute(
                     delete(PurgeQueueRow).where(
                         PurgeQueueRow.incarnation == incarnation
                     )
