@@ -86,11 +86,11 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     encode_context,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.data_types import (
+    SegmentStoreAttemptsExhaustedError,
     SegmentStorePartitionAlreadyExistsError,
     SegmentStorePartitionConfig,
     SegmentStorePartitionConfigMismatchError,
     SegmentStorePartitionHandleStaleError,
-    SegmentStoreRetriesExhaustedError,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.segment_store import (
     SegmentStore,
@@ -105,8 +105,8 @@ logger = logging.getLogger(__name__)
 _JSON_AUTO = JSON().with_variant(JSONB, "postgresql")
 
 
-# Consecutive incarnation-collision retries before the mint concludes it
-# is retrying a persistent database error rather than losing races: a real
+# Consecutive failed mint attempts before the store concludes it
+# is re-attempting a persistent database error rather than losing races: a real
 # uuid collision is a once-in-the-universe event and each race retry
 # requires another actor to have changed the registry in a ~millisecond
 # window, so consecutive failures at this depth mean the IntegrityError
@@ -918,7 +918,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                     last_collision = collision
                     continue  # Mint a fresh incarnation.
                 return
-            raise SegmentStoreRetriesExhaustedError(
+            raise SegmentStoreAttemptsExhaustedError(
                 f"Minting an incarnation for partition {partition_key!r} "
                 f"failed {_MAX_MINT_ATTEMPTS} consecutive times"
             ) from last_collision
@@ -1017,7 +1017,7 @@ class SQLAlchemySegmentStore(SegmentStore):
         # fails without committing a registry row for a partition that
         # could never be opened.
         payload_codec = await self._load_payload_codec(config)
-        retries = 0
+        attempts = 0
         # Read-then-insert, retried: losing the insert race means a
         # concurrent creator won (reopen its row), and finding no row
         # after losing means a concurrent delete removed the winner --
@@ -1041,9 +1041,9 @@ class SQLAlchemySegmentStore(SegmentStore):
                 SegmentStorePartitionAlreadyExistsError,
                 _IncarnationCollisionError,
             ) as err:
-                retries += 1
-                if retries >= _MAX_MINT_ATTEMPTS:
-                    raise SegmentStoreRetriesExhaustedError(
+                attempts += 1
+                if attempts >= _MAX_MINT_ATTEMPTS:
+                    raise SegmentStoreAttemptsExhaustedError(
                         f"Opening or creating partition {partition_key!r} "
                         f"made no progress after {_MAX_MINT_ATTEMPTS} "
                         f"attempts"

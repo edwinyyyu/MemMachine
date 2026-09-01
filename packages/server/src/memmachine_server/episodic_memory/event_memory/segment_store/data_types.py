@@ -66,8 +66,8 @@ class SegmentStorePartitionConfigMismatchError(Exception):
         )
 
 
-class SegmentStoreRetriesExhaustedError(Exception):
-    """The store exhausted its internal retries; diagnose the cause.
+class SegmentStoreAttemptsExhaustedError(Exception):
+    """The store exhausted its internal attempts; diagnose the cause.
 
     Raised when an operation kept failing in a way that should not recur
     under normal operation. An immediate retry is unlikely to succeed;

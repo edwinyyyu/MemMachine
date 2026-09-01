@@ -25,11 +25,11 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     TextBlock,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store import (
+    SegmentStoreAttemptsExhaustedError,
     SegmentStorePartitionAlreadyExistsError,
     SegmentStorePartitionConfig,
     SegmentStorePartitionConfigMismatchError,
     SegmentStorePartitionHandleStaleError,
-    SegmentStoreRetriesExhaustedError,
     sqlalchemy_segment_store,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_segment_store import (
@@ -1873,11 +1873,11 @@ async def test_persistent_mint_failure_raises_instead_of_looping(
     store: SQLAlchemySegmentStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A persistent constraint failure surfaces after bounded mint retries.
+    """A persistent constraint failure surfaces after bounded mint attempts.
 
     Every realistic trip through the collision-retry path beyond a few
     attempts is a persistent database error being retried, not a race;
-    the mint raises SegmentStoreRetriesExhaustedError instead of
+    the mint raises SegmentStoreAttemptsExhaustedError instead of
     hot-looping, with the underlying error chained for diagnosis.
     """
     cause = IntegrityError("stmt", None, Exception("persistent"))
@@ -1891,7 +1891,7 @@ async def test_persistent_mint_failure_raises_instead_of_looping(
 
     monkeypatch.setattr(store, "_insert_partition_row", always_colliding)
 
-    with pytest.raises(SegmentStoreRetriesExhaustedError) as exc_info:
+    with pytest.raises(SegmentStoreAttemptsExhaustedError) as exc_info:
         await store.create_partition("mint_cap", _plaintext_partition_config())
     assert len(attempts) == sqlalchemy_segment_store._MAX_MINT_ATTEMPTS
     # The underlying database error stays reachable for diagnosis.
@@ -1900,7 +1900,7 @@ async def test_persistent_mint_failure_raises_instead_of_looping(
     assert collision.__cause__ is cause
 
     attempts.clear()
-    with pytest.raises(SegmentStoreRetriesExhaustedError):
+    with pytest.raises(SegmentStoreAttemptsExhaustedError):
         await store.open_or_create_partition("mint_cap", _plaintext_partition_config())
     assert len(attempts) == sqlalchemy_segment_store._MAX_MINT_ATTEMPTS
 
@@ -1913,7 +1913,7 @@ async def test_persistent_mint_failure_raises_instead_of_looping(
         raise SegmentStorePartitionAlreadyExistsError(partition_key)
 
     monkeypatch.setattr(store, "_insert_partition_row", always_losing)
-    with pytest.raises(SegmentStoreRetriesExhaustedError):
+    with pytest.raises(SegmentStoreAttemptsExhaustedError):
         await store.open_or_create_partition("mint_cap", _plaintext_partition_config())
     assert len(attempts) == sqlalchemy_segment_store._MAX_MINT_ATTEMPTS
 

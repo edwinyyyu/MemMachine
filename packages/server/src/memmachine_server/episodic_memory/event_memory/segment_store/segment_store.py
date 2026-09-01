@@ -163,10 +163,10 @@ class SegmentStore(ABC):
 
         Raises:
             SegmentStorePartitionAlreadyExistsError: If the partition already exists.
-            SegmentStoreRetriesExhaustedError:
-                If creation exhausted internal retries on a failure that
-                should not recur; an immediate retry is unlikely to
-                succeed -- diagnose the chained cause.
+            SegmentStoreAttemptsExhaustedError:
+                If creation exhausted its internal attempts on a
+                failure that should not recur; an immediate retry is
+                unlikely to succeed -- diagnose the chained cause.
         """
         raise NotImplementedError
 
@@ -207,10 +207,10 @@ class SegmentStore(ABC):
         Raises:
             SegmentStorePartitionConfigMismatchError:
                 If the partition already exists with a different configuration.
-            SegmentStoreRetriesExhaustedError:
-                If creation exhausted internal retries on a failure that
-                should not recur; an immediate retry is unlikely to
-                succeed -- diagnose the chained cause.
+            SegmentStoreAttemptsExhaustedError:
+                If creation exhausted its internal attempts on a
+                failure that should not recur; an immediate retry is
+                unlikely to succeed -- diagnose the chained cause.
         """
         raise NotImplementedError
 
