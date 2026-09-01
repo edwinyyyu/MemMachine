@@ -613,29 +613,16 @@ class TestPropsJsonCompileErrors:
 
 
 class TestColumnDatetimeNormalization:
-    """Datetime bounds are normalized to UTC only for stores that opt in."""
+    """Datetime bounds against columns are always normalized to UTC."""
 
-    @staticmethod
-    def _compiled_bind_value(*, column_datetimes_are_utc: bool) -> datetime:
+    def test_bounds_are_normalized_to_utc(self):
         bound = datetime(2024, 1, 1, 8, 0, tzinfo=timezone(timedelta(hours=8)))
         column = Column("ts", String)
 
         def resolve(field: str):
             return column, "column"
 
-        clause = compile_sql_filter(
-            Comparison("ts", "<=", bound),
-            resolve,
-            column_datetimes_are_utc=column_datetimes_are_utc,
-        )
-        return clause.right.value
-
-    def test_default_leaves_bounds_verbatim(self):
-        value = self._compiled_bind_value(column_datetimes_are_utc=False)
-        assert value.hour == 8
-        assert value.utcoffset() == timedelta(hours=8)
-
-    def test_opt_in_normalizes_bounds_to_utc(self):
-        value = self._compiled_bind_value(column_datetimes_are_utc=True)
+        clause = compile_sql_filter(Comparison("ts", "<=", bound), resolve)
+        value = clause.right.value
         assert value.hour == 0
         assert value.utcoffset() == timedelta(0)

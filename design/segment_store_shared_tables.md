@@ -98,7 +98,13 @@ purge queue tracks.
   transaction that deletes up to `max_segments` rows
   (`uuid IN (SELECT ... LIMIT n)` sub-selects, portable across dialects),
   lets the link-table cascade follow, and retires queue rows whose
-  incarnations are drained. `max_segments=None` means the store's
+  incarnations are drained. Entries are claimed oldest-first (FIFO by
+  enqueue time) and carry their own per-call bound
+  (`SQLAlchemySegmentStoreParams.purge_max_partitions`), since their
+  cost is round trips rather than row deletions: empty partitions are
+  cheap to create and delete, so a large backlog of empty entries is
+  easy to accumulate and must not turn one bounded call into an
+  unbounded transaction. `max_segments=None` means the store's
   configured default bound
   (`SQLAlchemySegmentStoreParams.default_purge_max_segments`), so a
   deployment sets engine-appropriate transaction sizing once -- different
@@ -127,9 +133,12 @@ Every write pins the registry row with
 alone resolves the row, exactly like the data queries -- and raises a
 stale-handle error when no row matches; reads perform the same check
 without the lock. On SQLite, whose driver defers BEGIN until the first
-write, the write-side fence first issues a no-op registry-row UPDATE so
-the check runs inside the write transaction (and deletion does the same
-before its row check, so racing deletions serialize). A handle held
+write, a SELECT-only fence would run outside the write transaction; the
+proper primitive, BEGIN IMMEDIATE, is only expressible engine-wide in
+SQLAlchemy, so the write fence is a self-checking registry-row UPDATE
+instead -- it acquires the same write lock scoped to the transaction,
+and its match count is the staleness check (deletion opens its
+transaction the same way, so racing deletions serialize). A handle held
 across delete, or across
 delete and re-create, fails loudly instead of operating on the successor
 tenant -- on every dialect, including SQLite, which previously had no
