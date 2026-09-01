@@ -237,31 +237,21 @@ class SegmentStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def purge_deleted_partitions(
-        self,
-        *,
-        max_segments: int | None = None,
-    ) -> bool:
+    async def purge_deleted_partitions(self) -> bool:
         """
         Physically reclaim storage for deleted partitions, bounded per call.
 
         Performs reclamation that `delete_partition` deferred: each call
-        reclaims at most `max_segments` segments, the progress it commits
-        persists, and repeating a call is always safe. Draining a backlog
-        is the caller's loop -- call until this returns False. Concurrent calls, including from
+        reclaims a bounded amount -- the bounds are implementation
+        policy, not the caller's concern -- the progress it commits
+        persists, and repeating a call is always safe. Draining a
+        backlog is the caller's loop -- call until this returns False.
+        Concurrent calls, including from
         other processes, must be safe: implementations coordinate so that
         racing purgers neither error nor deadlock. The store never
         schedules this itself; callers decide when and how often to run
         it. Implementations that reclaim physically in `delete_partition`
         may implement this as a no-op returning False.
-
-        Args:
-            max_segments (int | None):
-                Maximum number of segments to reclaim in this call, or
-                None for an implementation-chosen maximum
-                (default: None). Associated derivative links are
-                reclaimed with their segments and do not count toward
-                the bound.
 
         Returns:
             bool:
