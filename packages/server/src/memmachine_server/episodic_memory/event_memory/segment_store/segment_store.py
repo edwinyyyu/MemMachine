@@ -268,7 +268,6 @@ class SegmentStore(ABC):
                 True if another call may reclaim more;
                 False if no further reclamation is available to this
                 call -- work owned by a concurrent purger is not
-                counted, so a later call may still find some (for
-                example if that purger rolls back).
+                counted, so a later call may still find some.
         """
         raise NotImplementedError

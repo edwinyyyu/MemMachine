@@ -70,9 +70,8 @@ class SegmentStoreRetriesExhaustedError(Exception):
     """The store exhausted its internal retries; diagnose the cause.
 
     Raised when an operation kept failing in a way that should not recur
-    under normal operation, such as repeated integrity failures while
-    minting a partition incarnation. An immediate retry is unlikely to
-    succeed; the underlying database error is chained as the cause.
+    under normal operation. An immediate retry is unlikely to succeed;
+    the underlying database error is chained as the cause.
     """
 
 
