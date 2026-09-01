@@ -2098,6 +2098,30 @@ async def test_purge_queue_stamps_enqueue_time_from_database_clock(
     assert "now()" in enqueues[0]
 
 
+class _ForeignPayloadCodecConfig(PlaintextPayloadCodecConfig):
+    """A distinct codec-config type standing in for a future variant."""
+
+
+@pytest.mark.asyncio
+async def test_open_or_create_with_different_config_raises_mismatch(
+    store: SQLAlchemySegmentStore,
+) -> None:
+    """Reopening a key under a different config is refused, not adapted."""
+    await store.create_partition("cfg_guard", _plaintext_partition_config())
+
+    requested = SegmentStorePartitionConfig(
+        payload_codec_config=_ForeignPayloadCodecConfig()
+    )
+    with pytest.raises(SegmentStorePartitionConfigMismatchError) as exc_info:
+        await store.open_or_create_partition("cfg_guard", requested)
+    assert exc_info.value.partition_key == "cfg_guard"
+    assert exc_info.value.existing_config == _plaintext_partition_config()
+    assert exc_info.value.requested_config == requested
+
+    # The partition itself is untouched and still opens.
+    assert await store.open_partition("cfg_guard") is not None
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("create", ["create_partition", "open_or_create_partition"])
 async def test_unloadable_codec_config_commits_no_registry_row(
