@@ -159,8 +159,11 @@ def vector_store_collection(fake_embedder):
 
 @pytest.fixture
 def segment_store():
-    """Stand-in for the parent SegmentStore: only delete_partition is invoked."""
-    return create_autospec(SegmentStore, instance=True)
+    """Stand-in for the parent SegmentStore lifecycle methods."""
+    store = create_autospec(SegmentStore, instance=True)
+    # The erasure path drains the purge queue until it reports done.
+    store.purge_deleted_partitions.return_value = False
+    return store
 
 
 @pytest.fixture
@@ -293,6 +296,7 @@ async def test_drop_session_partition_calls_parent_lifecycle_hooks(
         name="sess1",
     )
     segment_store.delete_partition.assert_awaited_once_with("sess1")
+    segment_store.purge_deleted_partitions.assert_awaited()
 
 
 async def test_event_backend_unusable_after_drop_session_partition(

@@ -417,6 +417,13 @@ class LongTermMemory:
             name=self._partition_key,
         )
         await self._segment_store.delete_partition(self._partition_key)
+        # delete_all is the erasure path: drain the purge queue inline so
+        # the partition's rows are physically reclaimed before returning,
+        # matching the physical removal the partitioned layout performed.
+        # Entries claimed by concurrent purgers are skipped and remain
+        # their owners' work.
+        while await self._segment_store.purge_deleted_partitions():
+            pass
         # Drop references to the now-deleted resources so any further
         # add_episodes / search_scored / delete_episodes calls raise
         # rather than silently operating on stale handles.
