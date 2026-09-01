@@ -874,9 +874,10 @@ class SQLAlchemySegmentStore(SegmentStore):
             prefix="segment_store_sqlalchemy",
         )
 
-        self._is_sqlite = self._engine.dialect.name == "sqlite"
         self._purge_max_segments = params.purge_max_segments
         self._purge_max_partitions = params.purge_max_partitions
+
+        self._is_sqlite = self._engine.dialect.name == "sqlite"
 
         # SQLite requires PRAGMA foreign_keys = ON for CASCADE deletes.
         if self._is_sqlite:
@@ -1028,6 +1029,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                 partition_row = await SQLAlchemySegmentStore._get_partition_row(
                     session, partition_key
                 )
+
             if partition_row is not None:
                 SQLAlchemySegmentStore._raise_if_partition_config_mismatch(
                     partition_row, config
@@ -1093,6 +1095,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                 )
                 if pinned.rowcount == 0:
                     return
+
             row = (
                 await session.execute(
                     select(PartitionRow)
@@ -1102,6 +1105,7 @@ class SQLAlchemySegmentStore(SegmentStore):
             ).scalar_one_or_none()
             if row is None:
                 return
+
             await session.execute(
                 insert(PurgeQueueRow).values(
                     incarnation=row.incarnation,
