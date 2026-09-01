@@ -90,7 +90,7 @@ from memmachine_server.episodic_memory.event_memory.segment_store.data_types imp
     SegmentStorePartitionConfig,
     SegmentStorePartitionConfigMismatchError,
     SegmentStorePartitionHandleStaleError,
-    SegmentStorePermanentError,
+    SegmentStoreRetriesExhaustedError,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.segment_store import (
     SegmentStore,
@@ -918,7 +918,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                     last_collision = collision
                     continue  # Mint a fresh incarnation.
                 return
-            raise SegmentStorePermanentError(
+            raise SegmentStoreRetriesExhaustedError(
                 f"Minting an incarnation for partition {partition_key!r} "
                 f"failed {_MAX_MINT_ATTEMPTS} consecutive times"
             ) from last_collision
@@ -1042,7 +1042,7 @@ class SQLAlchemySegmentStore(SegmentStore):
             except _IncarnationCollisionError as collision:
                 collisions += 1
                 if collisions >= _MAX_MINT_ATTEMPTS:
-                    raise SegmentStorePermanentError(
+                    raise SegmentStoreRetriesExhaustedError(
                         f"Minting an incarnation for partition "
                         f"{partition_key!r} failed {_MAX_MINT_ATTEMPTS} "
                         f"consecutive times"
