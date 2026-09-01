@@ -2348,37 +2348,3 @@ async def test_sqlite_mint_detects_collision_with_concurrent_deletion(
     while await sqlite_store.purge_deleted_partitions():
         pass
     assert (await sqlite_store.open_partition("sq_mint_fresh")) is not None
-
-
-@pytest.mark.asyncio
-async def test_derivatives_per_segment_capped_at_ingestion(
-    sqlalchemy_sqlite_engine: AsyncEngine,
-) -> None:
-    """The ingestion cap bounds purge-time cascade fan-out.
-
-    Purge relies on the link-table cascade (measured faster than manual
-    link deletion), so the cascade work per purged segment is bounded
-    here, at the only point where links are created.
-    """
-    store = SQLAlchemySegmentStore(
-        SQLAlchemySegmentStoreParams(
-            engine=sqlalchemy_sqlite_engine,
-            max_derivatives_per_segment=2,
-        )
-    )
-    await store.startup()
-    try:
-        partition = await store.open_or_create_partition(
-            "cap_p", _plaintext_partition_config()
-        )
-        over = _seg()
-        with pytest.raises(ValueError, match="derivatives"):
-            await partition.add_segments({over: [uuid4(), uuid4(), uuid4()]})
-        assert await partition.get_segment_contexts([over.uuid]) == {}
-
-        within = _seg()
-        await partition.add_segments({within: [uuid4(), uuid4()]})
-        assert within.uuid in await partition.get_segment_contexts([within.uuid])
-    finally:
-        async with sqlalchemy_sqlite_engine.begin() as conn:
-            await conn.run_sync(BaseSegmentStore.metadata.drop_all)

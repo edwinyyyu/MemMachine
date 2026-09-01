@@ -242,7 +242,6 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         config: SegmentStorePartitionConfig,
         payload_codec: PayloadCodec,
         tracker: OperationTracker,
-        max_derivatives_per_segment: int,
     ) -> None:
         """Initialize with a partition key, its incarnation, and an engine."""
         self._partition_key = partition_key
@@ -256,7 +255,6 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         self._config = config
         self._payload_codec = payload_codec
         self._tracker = tracker
-        self._max_derivatives_per_segment = max_derivatives_per_segment
         self._create_session = async_sessionmaker(engine, expire_on_commit=False)
         self._is_sqlite = engine.dialect.name == "sqlite"
 
@@ -320,19 +318,6 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         self,
         segments_to_derivative_uuids: Mapping[Segment, Iterable[UUID]],
     ) -> None:
-        # The ingestion-time cap on links per segment is what bounds the
-        # purge-time cascade fan-out; validated before anything is written.
-        segments_to_derivative_uuids = {
-            segment: list(derivative_uuids)
-            for segment, derivative_uuids in segments_to_derivative_uuids.items()
-        }
-        for segment, derivative_uuids in segments_to_derivative_uuids.items():
-            if len(derivative_uuids) > self._max_derivatives_per_segment:
-                raise ValueError(
-                    f"Segment {segment.uuid} has {len(derivative_uuids)} "
-                    f"derivatives; maximum is "
-                    f"{self._max_derivatives_per_segment}."
-                )
         async with (
             self._tracker("add_segments"),
             self._create_session() as session,
@@ -833,13 +818,6 @@ class SQLAlchemySegmentStoreParams(BaseModel):
         purge_max_segments (int):
             Maximum number of segment rows purged per call
             (default: 10000).
-        max_derivatives_per_segment (int):
-            Maximum derivative links accepted per segment at ingestion
-            (default: 100). Purge relies on the link-table cascade
-            (measured faster than deleting links manually), so this
-            ingestion-time cap is what bounds a purge call's cascade
-            fan-out: at most purge_max_segments times this many link
-            rows per call.
         purge_max_partitions (int):
             Maximum number of queue entries a purge call processes
             (default: 1000). Entries cost round trips rather than row
@@ -857,11 +835,6 @@ class SQLAlchemySegmentStoreParams(BaseModel):
         10_000,
         gt=0,
         description="Maximum number of segment rows purged per call",
-    )
-    max_derivatives_per_segment: int = Field(
-        100,
-        gt=0,
-        description="Maximum derivative links accepted per segment at ingestion",
     )
     purge_max_partitions: int = Field(
         1000,
@@ -900,7 +873,6 @@ class SQLAlchemySegmentStore(SegmentStore):
 
         self._is_sqlite = self._engine.dialect.name == "sqlite"
         self._purge_max_segments = params.purge_max_segments
-        self._max_derivatives_per_segment = params.max_derivatives_per_segment
         self._purge_max_partitions = params.purge_max_partitions
 
         # SQLite requires PRAGMA foreign_keys = ON for CASCADE deletes.
@@ -1074,7 +1046,6 @@ class SQLAlchemySegmentStore(SegmentStore):
                 config=config,
                 payload_codec=payload_codec,
                 tracker=self._tracker,
-                max_derivatives_per_segment=self._max_derivatives_per_segment,
             )
 
     @override
@@ -1248,7 +1219,6 @@ class SQLAlchemySegmentStore(SegmentStore):
             config=config,
             payload_codec=payload_codec,
             tracker=self._tracker,
-            max_derivatives_per_segment=self._max_derivatives_per_segment,
         )
 
     @staticmethod
