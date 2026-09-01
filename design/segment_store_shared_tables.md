@@ -254,3 +254,9 @@ which the tenant-count requirement excludes.
   returns.
 - No migration from the partitioned layout is provided (the event backend
   is opt-in and pre-GA); existing databases recreate their schema.
+- Datetime convention: filter nodes normalize to UTC-aware instants at
+  construction (`FilterExpr`'s contract); storage write paths spell
+  `ensure_tz_aware(...).astimezone(UTC)` as two explicit steps at each
+  site. A composed `to_utc` helper was rejected -- the name pins only
+  the conversion, not the naive-means-UTC tagging decision -- so the
+  per-site repetition is deliberate, not debt to consolidate.
