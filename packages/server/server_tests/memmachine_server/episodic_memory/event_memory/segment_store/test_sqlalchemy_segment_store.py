@@ -2105,30 +2105,6 @@ async def test_unloadable_codec_config_commits_no_registry_row(
 
 
 @pytest.mark.asyncio
-async def test_startup_refuses_partitioned_layout(
-    sqlalchemy_engine: AsyncEngine,
-) -> None:
-    """An old-layout registry gets a directive, not a missing-column error."""
-    async with sqlalchemy_engine.begin() as connection:
-        await connection.execute(
-            text(
-                "CREATE TABLE segment_store_pt ("
-                "partition_key VARCHAR(255) PRIMARY KEY, "
-                "payload_codec_config TEXT NOT NULL)"
-            )
-        )
-    store = SQLAlchemySegmentStore(
-        SQLAlchemySegmentStoreParams(engine=sqlalchemy_engine)
-    )
-    try:
-        with pytest.raises(RuntimeError, match="partitioned layout"):
-            await store.startup()
-    finally:
-        async with sqlalchemy_engine.begin() as connection:
-            await connection.execute(text("DROP TABLE segment_store_pt"))
-
-
-@pytest.mark.asyncio
 async def test_partition_key_with_trailing_newline_is_rejected(
     store: SQLAlchemySegmentStore,
 ) -> None:

@@ -29,7 +29,6 @@ from sqlalchemy import (
     event,
     func,
     insert,
-    inspect,
     literal,
     select,
     true,
@@ -37,7 +36,6 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.engine import Connection
 from sqlalchemy.engine.interfaces import DBAPIConnection
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
@@ -236,29 +234,6 @@ class PurgeQueueRow(BaseSegmentStore):
     )
 
     __table_args__ = (Index("segment_store_gc__ea", "enqueued_at"),)
-
-
-def _raise_if_partitioned_layout(connection: Connection) -> None:
-    """Refuse to start over the partitioned layout this store replaced.
-
-    There is no migration from it; without this check, create_all would
-    leave the old tables in place and the first partition operation would
-    fail on a missing column instead of saying what to do.
-    """
-    inspector = inspect(connection)
-    if not inspector.has_table(PartitionRow.__tablename__):
-        return
-    columns = {
-        column["name"] for column in inspector.get_columns(PartitionRow.__tablename__)
-    }
-    if PartitionRow.incarnation.key not in columns:
-        tables = ", ".join(sorted(BaseSegmentStore.metadata.tables))
-        raise RuntimeError(
-            f"Table {PartitionRow.__tablename__!r} has the partitioned layout "
-            f"this segment store no longer supports, and there is no "
-            f"migration: drop the segment store tables ({tables}) and "
-            f"restart to recreate them"
-        )
 
 
 class SQLAlchemySegmentStorePartition(SegmentStorePartition):
@@ -943,7 +918,6 @@ class SQLAlchemySegmentStore(SegmentStore):
     @override
     async def startup(self) -> None:
         async with self._tracker("startup"), self._engine.begin() as connection:
-            await connection.run_sync(_raise_if_partitioned_layout)
             await connection.run_sync(BaseSegmentStore.metadata.create_all)
 
     @override
