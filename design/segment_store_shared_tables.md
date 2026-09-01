@@ -257,6 +257,11 @@ which the tenant-count requirement excludes.
 - Datetime convention: filter nodes normalize to UTC-aware instants at
   construction (`FilterExpr`'s contract); storage write paths spell
   `ensure_tz_aware(...).astimezone(UTC)` as two explicit steps at each
-  site. A composed `to_utc` helper was rejected -- the name pins only
-  the conversion, not the naive-means-UTC tagging decision -- so the
+  site. A composed `to_utc` helper was rejected on two grounds: the
+  name pins only the conversion, not the naive-means-UTC tagging
+  decision; and it could not structurally prevent half-applied
+  normalization anyway, because read paths legitimately need the
+  tagging step alone (segment reads reapply the stored original
+  offset; cluster and episode reads only tag naive database values),
+  so the first step stays independently available no matter what. The
   per-site repetition is deliberate, not debt to consolidate.
