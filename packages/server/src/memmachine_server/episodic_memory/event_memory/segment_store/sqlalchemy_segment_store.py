@@ -374,7 +374,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 seed_segments_query = seed_segments_query.where(
                     compile_sql_filter(
                         property_filter,
-                        self._resolve_segment_field,
+                        SQLAlchemySegmentStorePartition._resolve_segment_field,
                     )
                 )
             seed_segment_rows = (
@@ -486,7 +486,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 context_rows_query = context_rows_query.where(
                     compile_sql_filter(
                         property_filter,
-                        self._resolve_segment_field,
+                        SQLAlchemySegmentStorePartition._resolve_segment_field,
                     )
                 )
             lateral_subquery = context_rows_query.subquery().lateral("context")
@@ -583,7 +583,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         compiled_property_filter = (
             compile_sql_filter(
                 property_filter,
-                self._resolve_segment_field,
+                SQLAlchemySegmentStorePartition._resolve_segment_field,
             )
             if property_filter is not None
             else None
@@ -742,8 +742,8 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
 
     # Helpers
 
+    @staticmethod
     def _resolve_segment_field(
-        self,
         field: str,
     ) -> tuple[ColumnElement, FieldEncoding]:
         """Map a filter field name to a segment column and encoding."""
