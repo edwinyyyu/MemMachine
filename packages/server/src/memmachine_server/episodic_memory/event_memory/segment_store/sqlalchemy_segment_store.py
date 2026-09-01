@@ -837,18 +837,18 @@ class SQLAlchemySegmentStoreParams(BaseModel):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
         purge_max_segments (int):
-            Maximum number of segment rows purged per call
-            (default: 10000). Their derivative links follow by cascade,
-            so a call's transaction also scales with the deployment's
-            links per segment; size the bound with that fan-out in mind.
+            Maximum number of segment rows purged per call. Their
+            derivative links follow by cascade, so a call's transaction
+            also scales with the deployment's links per segment; size
+            the bound with that fan-out in mind (default: 10000).
         purge_max_partitions (int):
-            Maximum number of queue entries a purge call processes
-            (default: 100). Entries cost round trips rather than row
-            deletions -- orders of magnitude more per unit than segment
-            rows -- so they carry their own bound, sized so a
-            full-entry call and a full-row call hold transactions of
-            the same order of duration; a backlog of empty partitions
-            cannot turn one bounded call into an unbounded transaction.
+            Maximum number of queue entries a purge call processes.
+            Entries cost round trips rather than row deletions --
+            orders of magnitude more per unit than segment rows -- so
+            they carry their own bound, sized so a full-entry call and
+            a full-row call hold transactions of the same order of
+            duration; a backlog of empty partitions cannot turn one
+            bounded call into an unbounded transaction (default: 100).
     """
 
     engine: InstanceOf[AsyncEngine] = Field(..., description="Async SQLAlchemy engine")
@@ -859,12 +859,25 @@ class SQLAlchemySegmentStoreParams(BaseModel):
     purge_max_segments: int = Field(
         10_000,
         gt=0,
-        description="Maximum number of segment rows purged per call",
+        description=(
+            "Maximum number of segment rows purged per call. Their "
+            "derivative links follow by cascade, so a call's transaction "
+            "also scales with the deployment's links per segment; size "
+            "the bound with that fan-out in mind"
+        ),
     )
     purge_max_partitions: int = Field(
         100,
         gt=0,
-        description="Maximum number of queue entries a purge call processes",
+        description=(
+            "Maximum number of queue entries a purge call processes. "
+            "Entries cost round trips rather than row deletions -- orders "
+            "of magnitude more per unit than segment rows -- so they "
+            "carry their own bound, sized so a full-entry call and a "
+            "full-row call hold transactions of the same order of "
+            "duration; a backlog of empty partitions cannot turn one "
+            "bounded call into an unbounded transaction"
+        ),
     )
 
     @field_validator("engine")
