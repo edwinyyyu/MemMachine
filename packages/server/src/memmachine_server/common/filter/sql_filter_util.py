@@ -65,17 +65,13 @@ def _get_op(op: str) -> Callable[[ColumnElement, object], ColumnElement[bool]]:
 def _normalize_column_value(value: PropertyValue) -> PropertyValue:
     """Normalize a datetime to UTC before comparing it against a stored column.
 
-    Timestamp columns hold the UTC instant, because SQLite's DateTime does not
-    persist tzinfo and a non-UTC value written verbatim reads back shifted. The
-    comparison side has to agree. Bound as-is, an aware value is rendered with its
-    own offset and compared against the stored text lexically, so the WALL CLOCK
-    decides: `<= 2024-01-01T08:00+08:00` excludes a row stored at 00:00Z even
-    though that is the same instant.
-
-    PostgreSQL compares TIMESTAMPTZ by instant and is unaffected either way, so
-    normalizing here makes the two backends agree rather than changing Postgres.
-    This is the same conversion the write path and the typed-JSON comparison path
-    already perform.
+    For stores whose write path normalizes DateTime columns to UTC: SQLite's
+    DateTime does not persist tzinfo, so a bound rendered with its own offset
+    is compared against the stored text lexically and the WALL CLOCK decides --
+    `<= 2024-01-01T08:00+08:00` excludes a row stored at 00:00Z even though
+    that is the same instant. PostgreSQL compares TIMESTAMPTZ by instant and
+    is unaffected either way. Callers whose write paths store wall-clock
+    verbatim must NOT opt in, or filters stop matching the rows they wrote.
     """
     if isinstance(value, datetime):
         return ensure_tz_aware(value).astimezone(UTC)
@@ -85,14 +81,20 @@ def _normalize_column_value(value: PropertyValue) -> PropertyValue:
 def _compile_column_leaf(
     expr: IsNull | In | Comparison,
     column: ColumnElement,
+    *,
+    column_datetimes_are_utc: bool,
 ) -> ColumnElement[bool]:
     if isinstance(expr, IsNull):
         return column.is_(None)
     if isinstance(expr, In):
         if not expr.values:
             return false()
-        return column.in_([_normalize_column_value(v) for v in expr.values])
-    return _get_op(expr.op)(column, _normalize_column_value(expr.value))
+        if column_datetimes_are_utc:
+            return column.in_([_normalize_column_value(v) for v in expr.values])
+        return column.in_(expr.values)
+    if column_datetimes_are_utc:
+        return _get_op(expr.op)(column, _normalize_column_value(expr.value))
+    return _get_op(expr.op)(column, expr.value)
 
 
 def _cast_json_value(
@@ -190,17 +192,26 @@ def _compile_properties_json_leaf(
 def compile_sql_filter(
     expr: FilterExpr,
     resolve_field: FieldResolver,
+    *,
+    column_datetimes_are_utc: bool = False,
 ) -> ColumnElement[bool]:
     """
     Compile a FilterExpr tree into a SQLAlchemy boolean expression.
 
     The `resolve_field` callback maps each field name to a
     `(column, FieldEncoding)` pair and raises `ValueError` for unknown fields.
+
+    Pass `column_datetimes_are_utc=True` only for stores whose write path
+    normalizes DateTime columns to UTC: datetime comparison values are then
+    normalized to UTC before binding, so bounds name instants rather than
+    wall clocks on dialects that drop tzinfo (SQLite).
     """
     if isinstance(expr, Comparison | In | IsNull):
         column, kind = resolve_field(expr.field)
         if kind == "column":
-            return _compile_column_leaf(expr, column)
+            return _compile_column_leaf(
+                expr, column, column_datetimes_are_utc=column_datetimes_are_utc
+            )
         if kind == "json":
             return _compile_json_leaf(expr, column)
         if kind == "properties_json":
@@ -209,17 +220,37 @@ def compile_sql_filter(
 
     if isinstance(expr, And):
         return and_(
-            compile_sql_filter(expr.left, resolve_field),
-            compile_sql_filter(expr.right, resolve_field),
+            compile_sql_filter(
+                expr.left,
+                resolve_field,
+                column_datetimes_are_utc=column_datetimes_are_utc,
+            ),
+            compile_sql_filter(
+                expr.right,
+                resolve_field,
+                column_datetimes_are_utc=column_datetimes_are_utc,
+            ),
         )
 
     if isinstance(expr, Or):
         return or_(
-            compile_sql_filter(expr.left, resolve_field),
-            compile_sql_filter(expr.right, resolve_field),
+            compile_sql_filter(
+                expr.left,
+                resolve_field,
+                column_datetimes_are_utc=column_datetimes_are_utc,
+            ),
+            compile_sql_filter(
+                expr.right,
+                resolve_field,
+                column_datetimes_are_utc=column_datetimes_are_utc,
+            ),
         )
 
     if isinstance(expr, Not):
-        return ~compile_sql_filter(expr.expr, resolve_field)
+        return ~compile_sql_filter(
+            expr.expr,
+            resolve_field,
+            column_datetimes_are_utc=column_datetimes_are_utc,
+        )
 
     raise TypeError(f"Unsupported filter expression type: {type(expr)!r}")

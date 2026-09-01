@@ -18,7 +18,13 @@ from memmachine_server.episodic_memory.event_memory.segment_store.data_types imp
 
 
 class SegmentStorePartition(ABC):
-    """Partition-scoped handle for a segment store."""
+    """Partition-scoped handle for a segment store.
+
+    A handle is bound to the partition incarnation it was opened on: after
+    the partition is deleted (or deleted and re-created), every method
+    raises `SegmentStorePartitionHandleStaleError` instead of operating on
+    the successor partition. Obtain a fresh handle to continue.
+    """
 
     @property
     @abstractmethod
@@ -260,7 +266,9 @@ class SegmentStore(ABC):
         Returns:
             bool:
                 True if another call may reclaim more;
-                False if all deferred reclamation known to the store
-                was completed.
+                False if no further reclamation is available to this
+                call -- work owned by a concurrent purger is not
+                counted, so a later call may still find some (for
+                example if that purger rolls back).
         """
         raise NotImplementedError

@@ -103,6 +103,7 @@ async def _wait_until_blocked_or_done(
                     text(
                         "SELECT count(*) FROM pg_stat_activity "
                         "WHERE wait_event_type = 'Lock' "
+                        "AND datname = current_database() "
                         "AND pid != pg_backend_pid()"
                     )
                 )
@@ -1840,6 +1841,167 @@ async def test_purge_claims_queue_entries_incrementally(
             await session.execute(select(func.count()).select_from(PurgeQueueRow))
         ).scalar_one()
     assert queue_depth == 0
+
+
+@pytest.mark.asyncio
+async def test_sqlite_write_racing_delete_cannot_orphan_rows(
+    sqlite_store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On SQLite the write fence opens the write transaction before checking.
+
+    The driver defers BEGIN to the first data-modifying statement, so a
+    SELECT-only fence would run outside the write transaction: a delete and
+    a full purge could complete between the check and the insert, and the
+    write would then commit rows no queue entry tracks. The fence's no-op
+    registry UPDATE opens the write transaction first, so the racing
+    deletion must wait for the writer and the rows stay reclaimable.
+    """
+    partition = await sqlite_store.open_or_create_partition(
+        "sqlite_fence", _plaintext_partition_config()
+    )
+    incarnation = partition._incarnation
+
+    reached_pause = asyncio.Event()
+    release = asyncio.Event()
+    original_insert_segments = partition._insert_segments
+
+    async def pausing_insert_segments(session, segments) -> None:
+        reached_pause.set()
+        await release.wait()
+        await original_insert_segments(session, segments)
+
+    monkeypatch.setattr(partition, "_insert_segments", pausing_insert_segments)
+
+    writer = asyncio.create_task(partition.add_segments(_links(_seg())))
+    await asyncio.wait_for(reached_pause.wait(), 30)
+    deleter = asyncio.create_task(sqlite_store.delete_partition("sqlite_fence"))
+    # With the fence transaction open, the deleter CANNOT finish while the
+    # writer is paused; without it, it finishes immediately (broken world),
+    # and a purge in this window would sweep the queue before the write.
+    done, _pending = await asyncio.wait([deleter], timeout=1.0)
+    if done:
+        while await sqlite_store.purge_deleted_partitions():
+            pass
+    release.set()
+    with contextlib.suppress(SegmentStorePartitionHandleStaleError):
+        await asyncio.wait_for(writer, 30)
+    await asyncio.wait_for(deleter, 30)
+
+    while await sqlite_store.purge_deleted_partitions():
+        pass
+    async with partition._create_session() as session:
+        leftover_rows = (
+            await session.execute(
+                select(func.count())
+                .select_from(SegmentRow)
+                .where(SegmentRow.incarnation == incarnation)
+            )
+        ).scalar_one()
+    assert leftover_rows == 0, (
+        "rows were committed under an incarnation the purge queue no "
+        "longer tracks: the SQLite fence did not open the write "
+        "transaction before checking"
+    )
+
+
+@pytest.mark.asyncio
+async def test_persistent_mint_failure_raises_instead_of_looping(
+    store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A persistent constraint failure surfaces after bounded mint retries.
+
+    Every realistic trip through the collision-retry path beyond a few
+    attempts is a persistent database error being retried, not a race;
+    the mint re-raises the underlying error instead of hot-looping.
+    """
+    cause = IntegrityError("stmt", None, Exception("persistent"))
+    attempts = []
+
+    async def always_colliding(partition_key, incarnation, config) -> None:
+        attempts.append(incarnation)
+        raise sqlalchemy_segment_store._IncarnationCollisionError(
+            str(incarnation)
+        ) from cause
+
+    monkeypatch.setattr(store, "_insert_partition_row", always_colliding)
+
+    with pytest.raises(IntegrityError):
+        await store.create_partition("mint_cap", _plaintext_partition_config())
+    assert len(attempts) == sqlalchemy_segment_store._MAX_MINT_ATTEMPTS
+
+    attempts.clear()
+    with pytest.raises(IntegrityError):
+        await store.open_or_create_partition(
+            "mint_cap", _plaintext_partition_config()
+        )
+    assert len(attempts) == sqlalchemy_segment_store._MAX_MINT_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_purge_rejects_non_positive_bound(
+    store: SQLAlchemySegmentStore,
+) -> None:
+    """A non-positive bound raises instead of spinning the drain loop."""
+    with pytest.raises(ValueError, match="max_segments"):
+        await store.purge_deleted_partitions(max_segments=0)
+    with pytest.raises(ValueError, match="max_segments"):
+        await store.purge_deleted_partitions(max_segments=-5)
+
+
+@pytest.mark.asyncio
+async def test_purge_bounds_entries_retired_per_call(
+    store: SQLAlchemySegmentStore,
+) -> None:
+    """Empty incarnations charge budget too, bounding entries per call.
+
+    Without the charge, a backlog of empty tenants consumes no segment
+    budget and one "bounded" call drains the whole queue in a single
+    transaction.
+    """
+    for index in range(5):
+        await store.create_partition(
+            f"empty_{index}", _plaintext_partition_config()
+        )
+        await store.delete_partition(f"empty_{index}")
+
+    assert await store.purge_deleted_partitions(max_segments=2) is True
+    async with store._create_session() as session:
+        queue_depth = (
+            await session.execute(select(func.count()).select_from(PurgeQueueRow))
+        ).scalar_one()
+    assert queue_depth == 3
+
+    while await store.purge_deleted_partitions(max_segments=2):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_unloadable_codec_config_commits_no_registry_row(
+    store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A codec that cannot be materialized leaves no registry row behind."""
+
+    async def unloadable(config) -> None:
+        raise NotImplementedError("unsupported codec")
+
+    monkeypatch.setattr(store, "_load_payload_codec", unloadable)
+    with pytest.raises(NotImplementedError):
+        await store.open_or_create_partition(
+            "codec_p", _plaintext_partition_config()
+        )
+    assert await store.open_partition("codec_p") is None
+
+
+@pytest.mark.asyncio
+async def test_partition_key_with_trailing_newline_is_rejected(
+    store: SQLAlchemySegmentStore,
+) -> None:
+    """`$` matches before a trailing newline; the validator must not."""
+    with pytest.raises(ValueError, match="invalid characters"):
+        await store.create_partition("bad_key\n", _plaintext_partition_config())
 
 
 @pytest.mark.integration

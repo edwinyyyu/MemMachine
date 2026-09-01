@@ -31,6 +31,7 @@ from sqlalchemy import (
     select,
     true,
     tuple_,
+    update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine.interfaces import DBAPIConnection
@@ -101,6 +102,15 @@ from memmachine_server.episodic_memory.event_memory.segment_store.utils import (
 logger = logging.getLogger(__name__)
 
 _JSON_AUTO = JSON().with_variant(JSONB, "postgresql")
+
+
+# Consecutive incarnation-collision retries before the mint concludes it
+# is retrying a persistent database error rather than losing races: a real
+# uuid collision is a once-in-the-universe event and each race retry
+# requires another actor to have changed the registry in a ~millisecond
+# window, so consecutive failures at this depth mean the IntegrityError
+# has some other, permanent cause.
+_MAX_MINT_ATTEMPTS = 8
 
 
 class _IncarnationCollisionError(Exception):
@@ -256,9 +266,18 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         The shared row lock blocks concurrent deletion (which takes the
         exclusive row lock) until the write completes; the incarnation
         predicate fences a handle that outlived its partition. SQLite
-        ignores the locking clause and relies on database-level write
-        serialization; the fencing check still applies.
+        drops the locking clause, and its driver defers BEGIN until the
+        first data-modifying statement -- a plain SELECT here would run
+        outside the write transaction and fence nothing -- so a no-op
+        UPDATE on the registry row opens the write transaction first,
+        serializing this write against deletion.
         """
+        if self._is_sqlite:
+            await session.execute(
+                update(PartitionRow)
+                .where(PartitionRow.incarnation == self._incarnation)
+                .values(incarnation=self._incarnation)
+            )
         row = (
             await session.execute(
                 select(PartitionRow.partition_key)
@@ -374,6 +393,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     compile_sql_filter(
                         property_filter,
                         SQLAlchemySegmentStorePartition._resolve_segment_field,
+                        column_datetimes_are_utc=True,
                     )
                 )
             seed_segment_rows = (
@@ -486,6 +506,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     compile_sql_filter(
                         property_filter,
                         SQLAlchemySegmentStorePartition._resolve_segment_field,
+                        column_datetimes_are_utc=True,
                     )
                 )
             lateral_subquery = context_rows_query.subquery().lateral("context")
@@ -583,6 +604,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             compile_sql_filter(
                 property_filter,
                 SQLAlchemySegmentStorePartition._resolve_segment_field,
+                column_datetimes_are_utc=True,
             )
             if property_filter is not None
             else None
@@ -869,12 +891,14 @@ class SQLAlchemySegmentStore(SegmentStore):
     ) -> None:
         validate_partition_key(partition_key)
         async with self._tracker("create_partition"):
-            while True:
+            for _ in range(_MAX_MINT_ATTEMPTS):
                 try:
                     await self._insert_partition_row(partition_key, uuid4(), config)
-                except _IncarnationCollisionError:
+                except _IncarnationCollisionError as collision:
+                    last_collision = collision
                     continue  # Mint a fresh incarnation.
                 return
+            raise last_collision.__cause__ or last_collision
 
     async def _insert_partition_row(
         self,
@@ -966,6 +990,11 @@ class SQLAlchemySegmentStore(SegmentStore):
         partition_key: str,
         config: SegmentStorePartitionConfig,
     ) -> SQLAlchemySegmentStorePartition:
+        # Materialized before the insert so an unloadable codec config
+        # fails without committing a registry row for a partition that
+        # could never be opened.
+        payload_codec = await self._load_payload_codec(config)
+        collisions = 0
         # Read-then-insert, retried: losing the insert race means a
         # concurrent creator won (reopen its row), and finding no row
         # after losing means a concurrent delete removed the winner --
@@ -987,10 +1016,12 @@ class SQLAlchemySegmentStore(SegmentStore):
                 await self._insert_partition_row(partition_key, incarnation, config)
             except SegmentStorePartitionAlreadyExistsError:
                 continue  # Concurrent creation: reopen the winner's row.
-            except _IncarnationCollisionError:
+            except _IncarnationCollisionError as collision:
+                collisions += 1
+                if collisions >= _MAX_MINT_ATTEMPTS:
+                    raise collision.__cause__ or collision from None
                 continue  # Mint a fresh incarnation.
 
-            payload_codec = await self._load_payload_codec(config)
             return SQLAlchemySegmentStorePartition(
                 partition_key=partition_key,
                 incarnation=incarnation,
@@ -1019,6 +1050,15 @@ class SQLAlchemySegmentStore(SegmentStore):
             self._create_session() as session,
             session.begin(),
         ):
+            if self._is_sqlite:
+                # Open the write transaction before the row check (see
+                # _lock_partition_for_write) so racing deletions serialize
+                # instead of both enqueueing the incarnation.
+                await session.execute(
+                    update(PartitionRow)
+                    .where(PartitionRow.partition_key == partition_key)
+                    .values(partition_key=partition_key)
+                )
             row = (
                 await session.execute(
                     select(PartitionRow)
@@ -1058,6 +1098,8 @@ class SQLAlchemySegmentStore(SegmentStore):
         # construction. Entries claimed by another purger are skipped;
         # their reclamation is that purger's, or a later call's if it
         # rolls back.
+        if max_segments is not None and max_segments <= 0:
+            raise ValueError(f"max_segments must be positive, got {max_segments}")
         remaining = (
             self._default_purge_max_segments if max_segments is None else max_segments
         )
@@ -1107,9 +1149,15 @@ class SQLAlchemySegmentStore(SegmentStore):
                     # next call.
                     return True
 
-                remaining -= deleted
-                # Sweep links whose segments were already gone, then
-                # retire the queue entry.
+                # An incarnation with no rows left still charges one
+                # segment of budget, so the entries a call retires are
+                # bounded by max_segments too -- a backlog of empty
+                # tenants cannot turn one bounded call into an unbounded
+                # transaction.
+                remaining -= deleted or 1
+                # The cascade has already removed the deleted segments'
+                # links; this guards retirement against rows that escaped
+                # referential integrity, then retires the queue entry.
                 await connection.execute(
                     delete(DerivativeLinkRow).where(
                         DerivativeLinkRow.incarnation == incarnation
