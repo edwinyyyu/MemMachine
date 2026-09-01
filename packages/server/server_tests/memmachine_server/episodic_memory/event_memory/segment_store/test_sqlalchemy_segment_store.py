@@ -1264,7 +1264,7 @@ async def test_purge_reclaims_only_dead_incarnations(
 ) -> None:
     """Purging erases queued incarnations and leaves live partitions alone."""
     # Small default bound, so draining takes the caller's loop.
-    monkeypatch.setattr(store, "_default_purge_max_segments", 2)
+    monkeypatch.setattr(store, "_purge_max_segments", 2)
 
     live = await store.open_or_create_partition("live_p", _plaintext_partition_config())
     live_seg = _seg()
@@ -1300,46 +1300,6 @@ async def test_purge_reclaims_only_dead_incarnations(
 
 
 @pytest.mark.asyncio
-async def test_purge_respects_max_segments(
-    store: SQLAlchemySegmentStore,
-) -> None:
-    """A bounded purge stops at its bound and reports remaining work."""
-    doomed = await store.open_or_create_partition(
-        "doomed_p", _plaintext_partition_config()
-    )
-    doomed_incarnation = doomed._incarnation
-    await doomed.add_segments(_links(_seg(), _seg(), _seg()))
-    await store.delete_partition("doomed_p")
-
-    assert await store.purge_deleted_partitions(max_segments=2) is True
-
-    async with doomed._create_session() as session:
-        dead_rows = (
-            await session.execute(
-                select(func.count())
-                .select_from(SegmentRow)
-                .where(SegmentRow.incarnation == doomed_incarnation)
-            )
-        ).scalar_one()
-    assert dead_rows == 1
-
-    assert await store.purge_deleted_partitions() is False
-    async with doomed._create_session() as session:
-        dead_rows = (
-            await session.execute(
-                select(func.count())
-                .select_from(SegmentRow)
-                .where(SegmentRow.incarnation == doomed_incarnation)
-            )
-        ).scalar_one()
-        queue_depth = (
-            await session.execute(select(func.count()).select_from(PurgeQueueRow))
-        ).scalar_one()
-    assert dead_rows == 0
-    assert queue_depth == 0
-
-
-@pytest.mark.asyncio
 async def test_concurrent_purges_reclaim_everything(
     store: SQLAlchemySegmentStore,
     monkeypatch: pytest.MonkeyPatch,
@@ -1350,7 +1310,7 @@ async def test_concurrent_purges_reclaim_everything(
     every dead incarnation is reclaimed exactly once and the drain loops
     all terminate cleanly.
     """
-    monkeypatch.setattr(store, "_default_purge_max_segments", 2)
+    monkeypatch.setattr(store, "_purge_max_segments", 2)
     incarnations = []
     for index in range(3):
         partition = await store.open_or_create_partition(
@@ -1684,14 +1644,14 @@ async def test_incarnation_colliding_with_live_partition_is_never_reused(
 
 
 @pytest.mark.asyncio
-async def test_default_purge_bound_comes_from_params(
+async def test_purge_bound_comes_from_params(
     sqlalchemy_sqlite_engine: AsyncEngine,
 ) -> None:
-    """The configured default bound governs purge calls with no bound."""
+    """The configured bound governs every purge call."""
     store = SQLAlchemySegmentStore(
         SQLAlchemySegmentStoreParams(
             engine=sqlalchemy_sqlite_engine,
-            default_purge_max_segments=2,
+            purge_max_segments=2,
         )
     )
     await store.startup()
@@ -1805,6 +1765,7 @@ async def test_mint_detects_collision_with_concurrent_deletion(
 async def test_purge_claims_queue_entries_incrementally(
     pg_store: SQLAlchemySegmentStore,
     recorded_statements: list[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A bounded purge never claims queue entries it will not process.
 
@@ -1819,9 +1780,10 @@ async def test_purge_claims_queue_entries_incrementally(
         )
         await partition.add_segments(_links(_seg(), _seg(), _seg()))
         await pg_store.delete_partition(f"inc_claim_{index}")
+    monkeypatch.setattr(pg_store, "_purge_max_segments", 2)
     recorded_statements.clear()
 
-    assert await pg_store.purge_deleted_partitions(max_segments=2) is True
+    assert await pg_store.purge_deleted_partitions() is True
 
     claim_statements = [
         statement
@@ -1834,7 +1796,7 @@ async def test_purge_claims_queue_entries_incrementally(
     )
     assert len(claim_statements) == 1
 
-    while await pg_store.purge_deleted_partitions(max_segments=2):
+    while await pg_store.purge_deleted_partitions():
         pass
     async with partition._create_session() as session:
         queue_depth = (
@@ -1938,17 +1900,6 @@ async def test_persistent_mint_failure_raises_instead_of_looping(
 
 
 @pytest.mark.asyncio
-async def test_purge_rejects_non_positive_bound(
-    store: SQLAlchemySegmentStore,
-) -> None:
-    """A non-positive bound raises instead of spinning the drain loop."""
-    with pytest.raises(ValueError, match="max_segments"):
-        await store.purge_deleted_partitions(max_segments=0)
-    with pytest.raises(ValueError, match="max_segments"):
-        await store.purge_deleted_partitions(max_segments=-5)
-
-
-@pytest.mark.asyncio
 async def test_purge_bounds_entries_processed_per_call(
     sqlalchemy_sqlite_engine: AsyncEngine,
 ) -> None:
@@ -1957,7 +1908,7 @@ async def test_purge_bounds_entries_processed_per_call(
     Empty partitions are cheap to create and delete, so a large backlog
     of empty entries is easy to accumulate; entries cost round trips
     rather than row deletions, so they are bounded by
-    purge_max_partitions rather than charged against max_segments.
+    purge_max_partitions rather than charged against the row bound.
     """
     store = SQLAlchemySegmentStore(
         SQLAlchemySegmentStoreParams(
@@ -1990,8 +1941,10 @@ async def test_purge_bounds_entries_processed_per_call(
 @pytest.mark.asyncio
 async def test_empty_incarnations_do_not_consume_row_budget(
     store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A backlog of empty entries leaves max_segments for real rows."""
+    """A backlog of empty entries leaves the row budget for real rows."""
+    monkeypatch.setattr(store, "_purge_max_segments", 2)
     for index in range(3):
         await store.create_partition(f"noop_{index}", _plaintext_partition_config())
         await store.delete_partition(f"noop_{index}")
@@ -2002,7 +1955,7 @@ async def test_empty_incarnations_do_not_consume_row_budget(
     await store.delete_partition("rowful")
 
     # One call: three empty entries retired for free, then both rows.
-    assert await store.purge_deleted_partitions(max_segments=2) is True
+    assert await store.purge_deleted_partitions() is True
     async with rowful._create_session() as session:
         remaining_rows = (
             await session.execute(select(func.count()).select_from(SegmentRow))
@@ -2038,7 +1991,8 @@ async def test_purge_reclaims_oldest_garbage_first(
         await store.delete_partition(key)
 
     # One row of budget: only the oldest entry's row may die.
-    assert await store.purge_deleted_partitions(max_segments=1) is True
+    monkeypatch.setattr(store, "_purge_max_segments", 1)
+    assert await store.purge_deleted_partitions() is True
     async with partition._create_session() as session:
         counts = {
             key: (
@@ -2394,3 +2348,37 @@ async def test_sqlite_mint_detects_collision_with_concurrent_deletion(
     while await sqlite_store.purge_deleted_partitions():
         pass
     assert (await sqlite_store.open_partition("sq_mint_fresh")) is not None
+
+
+@pytest.mark.asyncio
+async def test_derivatives_per_segment_capped_at_ingestion(
+    sqlalchemy_sqlite_engine: AsyncEngine,
+) -> None:
+    """The ingestion cap bounds purge-time cascade fan-out.
+
+    Purge relies on the link-table cascade (measured faster than manual
+    link deletion), so the cascade work per purged segment is bounded
+    here, at the only point where links are created.
+    """
+    store = SQLAlchemySegmentStore(
+        SQLAlchemySegmentStoreParams(
+            engine=sqlalchemy_sqlite_engine,
+            max_derivatives_per_segment=2,
+        )
+    )
+    await store.startup()
+    try:
+        partition = await store.open_or_create_partition(
+            "cap_p", _plaintext_partition_config()
+        )
+        over = _seg()
+        with pytest.raises(ValueError, match="derivatives"):
+            await partition.add_segments({over: [uuid4(), uuid4(), uuid4()]})
+        assert await partition.get_segment_contexts([over.uuid]) == {}
+
+        within = _seg()
+        await partition.add_segments({within: [uuid4(), uuid4()]})
+        assert within.uuid in await partition.get_segment_contexts([within.uuid])
+    finally:
+        async with sqlalchemy_sqlite_engine.begin() as conn:
+            await conn.run_sync(BaseSegmentStore.metadata.drop_all)

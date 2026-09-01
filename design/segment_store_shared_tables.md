@@ -93,25 +93,29 @@ purge queue tracks.
 - **Re-create**: a new registry row with a fresh incarnation. Safe at any
   time -- the old incarnation's rows are invisible to the successor, even
   while the purger is still sweeping them.
-- **Purge**: `purge_deleted_partitions(*, max_segments) -> bool` on the
-  `SegmentStore` ABC. Each call is bounded -- in this store, a single
-  transaction that deletes up to `max_segments` rows
+- **Purge**: `purge_deleted_partitions() -> bool` on the `SegmentStore`
+  ABC. The caller's whole protocol is "call until False"; how much a
+  call does is implementation policy, not a call argument -- in this
+  store, a single transaction that deletes up to
+  `SQLAlchemySegmentStoreParams.purge_max_segments` rows
   (`uuid IN (SELECT ... LIMIT n)` sub-selects, portable across dialects),
-  lets the link-table cascade follow, and retires queue rows whose
-  incarnations are drained. Entries are claimed oldest-first (FIFO by
+  lets the link-table cascade follow (measured faster than deleting the
+  link rows manually, at one and at four links per segment), and retires
+  queue rows whose incarnations are drained. The cascade fan-out is
+  bounded at the only place links are created: ingestion rejects more
+  than `max_derivatives_per_segment` links per segment, so one call's
+  work is at most `purge_max_segments` segment rows plus that many times
+  the cap in link rows. Entries are claimed oldest-first (FIFO by
   enqueue time) and carry their own per-call bound
   (`SQLAlchemySegmentStoreParams.purge_max_partitions`), since their
   cost is round trips rather than row deletions: empty partitions are
   cheap to create and delete, so a large backlog of empty entries is
   easy to accumulate and must not turn one bounded call into an
-  unbounded transaction. `max_segments=None` means the store's
-  configured default bound
-  (`SQLAlchemySegmentStoreParams.default_purge_max_segments`), so a
-  deployment sets engine-appropriate transaction sizing once -- different
-  limits may suit PostgreSQL, SQLite, or other dialects -- and callers
-  never need to; True means another call may reclaim more, so draining a backlog
-  is the caller's loop and each call's committed progress survives
-  interruption. Queue
+  unbounded transaction. A deployment sets engine-appropriate transaction sizing once at
+  construction -- different limits may suit PostgreSQL, SQLite, or other
+  dialects -- and callers never see sizing at all; True means another
+  call may reclaim more, so draining a backlog is the caller's loop and
+  each call's committed progress survives interruption. Queue
   entries are claimed one at a time with `FOR UPDATE SKIP LOCKED` as the
   call processes them, so a bounded call neither materializes nor locks
   the rest of the backlog, and concurrent purgers -- including from other
