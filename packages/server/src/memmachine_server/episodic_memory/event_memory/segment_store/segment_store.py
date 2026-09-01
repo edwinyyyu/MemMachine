@@ -24,7 +24,7 @@ class SegmentStorePartition(ABC):
     deleting the partition permanently invalidates the handle, and its
     data operations raise `SegmentStorePartitionHandleStaleError` from
     then on, even if a partition is later created under the same key.
-    A call with empty input does no work and returns without checking
+    A call with empty input may do no work and return without checking
     the handle.
     """
 
