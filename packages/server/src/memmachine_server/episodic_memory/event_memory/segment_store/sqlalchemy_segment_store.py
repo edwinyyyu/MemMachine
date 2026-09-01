@@ -90,6 +90,7 @@ from memmachine_server.episodic_memory.event_memory.segment_store.data_types imp
     SegmentStorePartitionConfig,
     SegmentStorePartitionConfigMismatchError,
     SegmentStorePartitionHandleStaleError,
+    SegmentStorePermanentError,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.segment_store import (
     SegmentStore,
@@ -820,12 +821,12 @@ class SQLAlchemySegmentStoreParams(BaseModel):
             (default: 10000).
         purge_max_partitions (int):
             Maximum number of queue entries a purge call processes
-            (default: 50). Entries cost round trips rather than row
+            (default: 100). Entries cost round trips rather than row
             deletions -- orders of magnitude more per unit than segment
-            rows -- so they carry their own bound, chosen so a
+            rows -- so they carry their own bound, sized so a
             full-entry call and a full-row call hold transactions of
-            comparable duration; a backlog of empty partitions cannot
-            turn one bounded call into an unbounded transaction.
+            the same order of duration; a backlog of empty partitions
+            cannot turn one bounded call into an unbounded transaction.
     """
 
     engine: InstanceOf[AsyncEngine] = Field(..., description="Async SQLAlchemy engine")
@@ -839,7 +840,7 @@ class SQLAlchemySegmentStoreParams(BaseModel):
         description="Maximum number of segment rows purged per call",
     )
     purge_max_partitions: int = Field(
-        50,
+        100,
         gt=0,
         description="Maximum number of queue entries a purge call processes",
     )
@@ -917,7 +918,10 @@ class SQLAlchemySegmentStore(SegmentStore):
                     last_collision = collision
                     continue  # Mint a fresh incarnation.
                 return
-            raise last_collision.__cause__ or last_collision
+            raise SegmentStorePermanentError(
+                f"Minting an incarnation for partition {partition_key!r} "
+                f"failed {_MAX_MINT_ATTEMPTS} consecutive times"
+            ) from last_collision
 
     async def _insert_partition_row(
         self,
@@ -1038,7 +1042,11 @@ class SQLAlchemySegmentStore(SegmentStore):
             except _IncarnationCollisionError as collision:
                 collisions += 1
                 if collisions >= _MAX_MINT_ATTEMPTS:
-                    raise collision.__cause__ or collision from None
+                    raise SegmentStorePermanentError(
+                        f"Minting an incarnation for partition "
+                        f"{partition_key!r} failed {_MAX_MINT_ATTEMPTS} "
+                        f"consecutive times"
+                    ) from collision
                 continue  # Mint a fresh incarnation.
 
             return SQLAlchemySegmentStorePartition(
