@@ -863,7 +863,9 @@ class SQLAlchemySegmentStoreParams(BaseModel):
             (default: None).
         purge_max_segments (int):
             Maximum number of segment rows purged per call
-            (default: 10000).
+            (default: 10000). Their derivative links follow by cascade,
+            so a call's transaction also scales with the deployment's
+            links per segment; size the bound with that fan-out in mind.
         purge_max_partitions (int):
             Maximum number of queue entries a purge call processes
             (default: 100). Entries cost round trips rather than row
@@ -1162,6 +1164,9 @@ class SQLAlchemySegmentStore(SegmentStore):
                 insert(PurgeQueueRow).values(
                     incarnation=row.incarnation,
                     partition_key=partition_key,
+                    # The database clock: transaction start on PostgreSQL,
+                    # and one deletion per transaction, so one stamp per
+                    # entry.
                     enqueued_at=func.now(),
                 )
             )
