@@ -920,7 +920,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                 return
             raise SegmentStoreAttemptsExhaustedError(
                 f"Minting an incarnation for partition {partition_key!r} "
-                f"failed {_MAX_MINT_ATTEMPTS} consecutive times"
+                f"failed {_MAX_MINT_ATTEMPTS} consecutive attempts"
             ) from last_collision
 
     async def _insert_partition_row(
