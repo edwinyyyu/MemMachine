@@ -105,13 +105,14 @@ purge queue tracks.
   limits may suit PostgreSQL, SQLite, or other dialects -- and callers
   never need to; True means another call may reclaim more, so draining a backlog
   is the caller's loop and each call's committed progress survives
-  interruption. Each
-  call claims its queue entries with `FOR UPDATE SKIP LOCKED`, so
-  concurrent purgers -- including from other processes -- partition the
-  queue instead of contending: only the claiming call touches a dead
-  incarnation's rows (writers cannot; the fence pins live incarnations
-  only), making reclamation deadlock-free by construction rather than by
-  lock ordering. The
+  interruption. Queue
+  entries are claimed one at a time with `FOR UPDATE SKIP LOCKED` as the
+  call processes them, so a bounded call neither materializes nor locks
+  the rest of the backlog, and concurrent purgers -- including from other
+  processes -- share the queue instead of contending: only the claiming
+  call touches a dead incarnation's rows (writers cannot; the fence pins
+  live incarnations only), making reclamation deadlock-free by
+  construction rather than by lock ordering. The
   store never schedules purging itself: when and how often is the
   caller's policy, and implementations whose deletes reclaim physically
   implement it as a no-op returning False. Deletion latency contracts are
