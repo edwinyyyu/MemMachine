@@ -120,11 +120,7 @@ class Episode(BaseEpisodeStore):
     )
 
     def to_typed_model(self) -> EpisodeE:
-        created_at = (
-            self.created_at.replace(tzinfo=UTC)
-            if self.created_at.tzinfo is None
-            else self.created_at
-        )
+        created_at = ensure_tz_aware(self.created_at)
         return EpisodeE(
             uid=EpisodeIdT(self.id),
             content=self.content,

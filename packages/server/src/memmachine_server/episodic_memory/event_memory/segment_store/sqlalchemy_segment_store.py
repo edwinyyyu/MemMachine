@@ -1055,10 +1055,6 @@ class SQLAlchemySegmentStore(SegmentStore):
         partition_key: str,
         config: SegmentStorePartitionConfig,
     ) -> SQLAlchemySegmentStorePartition:
-        # Materialized before the insert so an unloadable codec config
-        # fails without committing a registry row for a partition that
-        # could never be opened.
-        payload_codec = await self._load_payload_codec(config)
         attempts = 0
         # Read-then-insert, retried: losing the insert race means a
         # concurrent creator won (reopen its row), and finding no row
@@ -1077,6 +1073,11 @@ class SQLAlchemySegmentStore(SegmentStore):
                 )
                 return await self._partition_from_partition_row(partition_row)
 
+            # Materialized before the insert so an unloadable codec
+            # config fails without committing a registry row for a
+            # partition that could never be opened; the open path above
+            # loads its codec from the committed row instead.
+            payload_codec = await self._load_payload_codec(config)
             incarnation = uuid4()
             try:
                 await self._insert_partition_row(partition_key, incarnation, config)
@@ -1128,28 +1129,31 @@ class SQLAlchemySegmentStore(SegmentStore):
                 # Same primitive as _lock_partition_for_write: the row
                 # UPDATE opens the write transaction so racing deletions
                 # serialize instead of both enqueueing the incarnation,
-                # and a zero match count is the idempotent no-op case.
+                # and no matched row is the idempotent no-op case.
+                # RETURNING resolves the incarnation in the same round
+                # trip; the locking select below is PostgreSQL's path
+                # (SQLite drops its locking clause anyway).
                 pinned = await (await session.connection()).execute(
                     update(PartitionRow)
                     .where(PartitionRow.partition_key == partition_key)
                     .values(partition_key=partition_key)
+                    .returning(PartitionRow.incarnation)
                 )
-                if pinned.rowcount == 0:
-                    return
-
-            row = (
-                await session.execute(
-                    select(PartitionRow)
-                    .where(PartitionRow.partition_key == partition_key)
-                    .with_for_update()
-                )
-            ).scalar_one_or_none()
-            if row is None:
+                incarnation = pinned.scalar_one_or_none()
+            else:
+                incarnation = (
+                    await session.execute(
+                        select(PartitionRow.incarnation)
+                        .where(PartitionRow.partition_key == partition_key)
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+            if incarnation is None:
                 return
 
             await session.execute(
                 insert(PurgeQueueRow).values(
-                    incarnation=row.incarnation,
+                    incarnation=incarnation,
                     partition_key=partition_key,
                     # The database clock: transaction start on PostgreSQL,
                     # and one deletion per transaction, so one stamp per
@@ -1224,6 +1228,8 @@ class SQLAlchemySegmentStore(SegmentStore):
                 # The cascade has already removed the deleted segments'
                 # links; this guards retirement against rows that escaped
                 # referential integrity, then retires the queue entry.
+                # Normally a zero-row delete; unbounded only if integrity
+                # was actually broken.
                 await connection.execute(
                     delete(DerivativeLinkRow).where(
                         DerivativeLinkRow.incarnation == incarnation
