@@ -11,9 +11,11 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
+from pydantic import ValidationError
 from sqlalchemy import delete, event, func, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.pool import StaticPool
 
 from memmachine_server.common.filter.filter_parser import Comparison, parse_filter
 from memmachine_server.common.payload_codec.payload_codec_config import (
@@ -1204,6 +1206,9 @@ async def test_stale_handle_raises_after_delete(
 
     await store.delete_partition("fenced")
 
+    # Empty input may skip the handle check (the ABC-permitted shortcut).
+    await partition.add_segments({})
+
     with pytest.raises(SegmentStorePartitionHandleStaleError):
         await partition.add_segments(_links(_seg()))
     with pytest.raises(SegmentStorePartitionHandleStaleError):
@@ -2203,6 +2208,19 @@ async def test_unloadable_codec_config_commits_no_registry_row(
         assert (
             await SQLAlchemySegmentStore._get_partition_row(session, "codec_p")
         ) is None
+
+
+@pytest.mark.asyncio
+async def test_static_pool_engine_is_rejected(tmp_path) -> None:
+    """StaticPool shares one connection; the params must refuse it loudly."""
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'static_pool.db'}", poolclass=StaticPool
+    )
+    try:
+        with pytest.raises(ValidationError, match="StaticPool"):
+            SQLAlchemySegmentStoreParams(engine=engine)
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
