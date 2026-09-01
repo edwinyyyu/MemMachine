@@ -232,7 +232,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         tracker: OperationTracker,
     ) -> None:
         """Initialize with a partition key, its incarnation, and an engine."""
-        self._logical_partition_key = partition_key
+        self._partition_key = partition_key
         # Data rows are keyed by the incarnation alone: rows of a
         # deleted-and-recreated partition under the same logical key are
         # invisible to the new incarnation while the purge queue reclaims
@@ -268,7 +268,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             )
         ).scalar_one_or_none()
         if row is None:
-            raise SegmentStorePartitionHandleStaleError(self._logical_partition_key)
+            raise SegmentStorePartitionHandleStaleError(self._partition_key)
 
     async def _ensure_partition_live(self, session: AsyncSession) -> None:
         """Raise if this handle's incarnation is no longer registered."""
@@ -280,7 +280,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             )
         ).scalar_one_or_none()
         if row is None:
-            raise SegmentStorePartitionHandleStaleError(self._logical_partition_key)
+            raise SegmentStorePartitionHandleStaleError(self._partition_key)
 
     # Registration
 
