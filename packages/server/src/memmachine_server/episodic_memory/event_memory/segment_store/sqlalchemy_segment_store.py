@@ -1081,7 +1081,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                 ).scalar_one_or_none()
                 if incarnation is None:
                     return False
-                chunk = (
+                batch = (
                     select(SegmentRow.uuid)
                     .where(SegmentRow.incarnation == incarnation)
                     .limit(remaining)
@@ -1091,7 +1091,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                 result = await session.execute(
                     delete(SegmentRow).where(
                         SegmentRow.incarnation == incarnation,
-                        SegmentRow.uuid.in_(chunk),
+                        SegmentRow.uuid.in_(batch),
                     )
                 )
                 # Session.execute is typed Result; DML returns a

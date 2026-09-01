@@ -159,7 +159,7 @@ with a 500k-pair tenant among 50 small tenants; pgvector:pg16, 2 CPUs):
 At scale (1M pairs, big-tenant reads): shared 0.41 ms seed / 0.23 ms window
 vs per-tenant 0.46 / 0.36 -- the serving path is point lookups and short
 index ranges, which do not suffer from tenants interleaving in a shared
-heap. Chunked deletion measured faster on the shared layout (147k vs 93k
+heap. Batched deletion measured faster on the shared layout (147k vs 93k
 rows/s). Per-tenant tables win only small-tenant removal latency (9 ms drop
 vs 58 ms row delete), which does not justify their catalog cost at the
 required tenant counts; both per-tenant options also retain the RI-trigger
@@ -167,7 +167,7 @@ lock fan-out (parent-level FK) or require dialect-conditional constraints
 on the shared models to avoid doubled foreign keys.
 
 The industry norm for this shape (pool model) matches: O(1) logical
-deletion via a registry plus asynchronous chunked reclamation; O(1)
+deletion via a registry plus asynchronous batched reclamation; O(1)
 physical drops exist only in per-tenant-resource (silo) architectures,
 which the tenant-count requirement excludes.
 
