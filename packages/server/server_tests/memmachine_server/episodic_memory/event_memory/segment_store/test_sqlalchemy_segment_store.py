@@ -1710,6 +1710,97 @@ async def test_default_purge_bound_comes_from_params(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_mint_detects_collision_with_concurrent_deletion(
+    pg_store: SQLAlchemySegmentStore,
+    sqlalchemy_pg_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mint checks the purge queue AFTER inserting the registry row.
+
+    Pins the statement ordering inside the mint transaction, which only a
+    concurrent interleave can distinguish (the sequential collision test
+    passes under either order): while a deletion holds its uncommitted
+    registry delete, a colliding mint blocks on the unique index; once the
+    deletion commits, the insert succeeds -- and only a check that runs
+    AFTER the insert sees the just-committed queue entry. Checking before
+    the insert reads the queue too early and commits a live partition
+    whose incarnation is on the purge queue, handing its rows to the
+    purger.
+    """
+    victim = await pg_store.open_or_create_partition(
+        "mint_victim", _plaintext_partition_config()
+    )
+    victim_incarnation = victim._incarnation
+    await victim.add_segments(_links(_seg()))
+
+    offered = []
+
+    def colliding_uuid4() -> UUID:
+        if not offered:
+            offered.append(victim_incarnation)
+            return victim_incarnation
+        return uuid4()
+
+    monkeypatch.setattr(sqlalchemy_segment_store, "uuid4", colliding_uuid4)
+
+    async with (
+        victim._create_session() as remote_session,
+        remote_session.begin(),
+    ):
+        # Emulate a delete_partition from another process, held uncommitted.
+        await remote_session.execute(
+            select(PartitionRow)
+            .where(PartitionRow.partition_key == "mint_victim")
+            .with_for_update()
+        )
+        await remote_session.execute(
+            insert(PurgeQueueRow).values(
+                incarnation=victim_incarnation,
+                partition_key="mint_victim",
+                enqueued_at=datetime.now(UTC),
+            )
+        )
+        await remote_session.execute(
+            delete(PartitionRow).where(PartitionRow.partition_key == "mint_victim")
+        )
+
+        creator = asyncio.create_task(
+            pg_store.create_partition("mint_fresh", _plaintext_partition_config())
+        )
+        # The colliding insert must be waiting on the uncommitted registry
+        # delete before the deletion commits, or no interleave is staged.
+        outcome = await _wait_until_blocked_or_done(sqlalchemy_pg_engine, creator)
+        assert outcome == "blocked", (
+            "the colliding mint did not block on the concurrent deletion"
+        )
+    # Deletion committed on exiting begin().
+    await asyncio.wait_for(creator, 30)
+
+    fresh = await pg_store.open_partition("mint_fresh")
+    assert fresh is not None
+    assert offered, "the colliding uuid was never offered to the mint"
+    assert fresh._incarnation != victim_incarnation, (
+        "the mint reused an incarnation that a concurrent deletion had "
+        "just moved to the purge queue"
+    )
+
+    # The dead incarnation's garbage is still tracked; purging it leaves
+    # the fresh partition alone.
+    assert await pg_store.purge_deleted_partitions() is False
+    async with fresh._create_session() as session:
+        dead_rows = (
+            await session.execute(
+                select(func.count())
+                .select_from(SegmentRow)
+                .where(SegmentRow.incarnation == victim_incarnation)
+            )
+        ).scalar_one()
+    assert dead_rows == 0
+    assert await pg_store.open_partition("mint_fresh") is not None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_delete_partition_touches_only_registry_and_queue(
     pg_store: SQLAlchemySegmentStore,
     recorded_statements: list[str],
