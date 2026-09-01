@@ -55,6 +55,8 @@ from memmachine_server.semantic_memory.semantic_session_manager import (
 
 logger = logging.getLogger(__name__)
 
+_SEGMENT_STORE_PURGE_INTERVAL_SECONDS = 60.0
+
 
 class ResourceManagerImpl:
     """Concrete resource manager for MemMachine services."""
@@ -83,6 +85,7 @@ class ResourceManagerImpl:
         self._episode_storage: EpisodeStorage | None = None
         self._semantic_manager: SemanticResourceManager | None = None
         self._segment_stores: dict[str, SegmentStore] = {}
+        self._segment_store_purge_tasks: list[asyncio.Task[None]] = []
 
         self._session_data_manager_lock = Lock()
         self._episodic_memory_manager_lock = Lock()
@@ -105,6 +108,10 @@ class ResourceManagerImpl:
 
     async def close(self) -> None:
         """Close resources and clean up state."""
+        for purge_task in self._segment_store_purge_tasks:
+            purge_task.cancel()
+        await asyncio.gather(*self._segment_store_purge_tasks, return_exceptions=True)
+
         tasks = []
         if self._semantic_manager is not None:
             tasks.append(self._semantic_manager.close())
@@ -155,7 +162,28 @@ class ResourceManagerImpl:
                     )
                     await store.startup()
                     self._segment_stores[name] = store
+                    self._segment_store_purge_tasks.append(
+                        asyncio.create_task(
+                            self._purge_deleted_partitions_forever(store)
+                        )
+                    )
         return self._segment_stores[name]
+
+    async def _purge_deleted_partitions_forever(self, store: SegmentStore) -> None:
+        """Drive the store's bounded purge on a fixed tick.
+
+        The store never schedules reclamation itself; this loop is the
+        deployment's scheduler. One bounded call per tick keeps the
+        background work bounded by construction (a backlog drains over
+        successive ticks), concurrent purgers are safe by the store's
+        contract, and a failed call is logged and retried next tick.
+        """
+        while True:
+            await asyncio.sleep(_SEGMENT_STORE_PURGE_INTERVAL_SECONDS)
+            try:
+                await store.purge_deleted_partitions()
+            except Exception:
+                logger.exception("Segment store purge failed; retrying next tick")
 
     async def get_embedder(self, name: str, validate: bool = False) -> Embedder:
         """Return an embedder by name."""

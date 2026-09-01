@@ -139,7 +139,14 @@ purge queue tracks.
   DELETE found fewer rows than its remaining budget. The
   store never schedules purging itself: when and how often is the
   caller's policy, and implementations whose deletes reclaim physically
-  implement it as a no-op returning False. Deletion latency contracts are
+  implement it as a no-op returning False. In the server, the resource
+  manager is that scheduler: a background task per store makes one
+  bounded call per fixed tick (failures log and retry next tick;
+  cancelled on close), alongside LongTermMemory's inline drain on
+  session drop -- so a backlog left by an interrupted drain is
+  reclaimed within a tick instead of waiting for the next deletion,
+  and racing purgers need no coordination because claiming already
+  handles them. Deletion latency contracts are
   "unreachable immediately, physically erased asynchronously". Measured
   deletion throughput ~147k rows/s on the benchmark box, so a
   ten-million-row tenant erases in about a minute of background work.

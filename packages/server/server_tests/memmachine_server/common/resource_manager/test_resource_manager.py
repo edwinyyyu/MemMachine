@@ -1,5 +1,8 @@
 """tests for resource_manager.py"""
 
+import asyncio
+from unittest.mock import create_autospec
+
 import pytest
 from pydantic import SecretStr
 
@@ -31,9 +34,13 @@ from memmachine_server.common.errors import (
     InvalidRerankerError,
 )
 from memmachine_server.common.resource_manager import CommonResourceManager
+from memmachine_server.common.resource_manager import (
+    resource_manager as resource_manager_module,
+)
 from memmachine_server.common.resource_manager.resource_manager import (
     ResourceManagerImpl,
 )
+from memmachine_server.episodic_memory.event_memory.segment_store import SegmentStore
 
 RERANKER_ID = "my_reranker"
 EMBEDDER_ID = "my_embedder"
@@ -179,3 +186,63 @@ def test_resource_manager_config_property(invalid_configure):
     """Test that config property returns the configuration."""
     resource_manager = ResourceManagerImpl(invalid_configure)
     assert resource_manager.config == invalid_configure
+
+
+@pytest.mark.asyncio
+async def test_segment_store_purge_loop_ticks_and_survives_failures(
+    invalid_resource_manager, monkeypatch
+):
+    """The background purge keeps driving the store past a failing call."""
+    monkeypatch.setattr(
+        resource_manager_module, "_SEGMENT_STORE_PURGE_INTERVAL_SECONDS", 0
+    )
+    store = create_autospec(SegmentStore, instance=True)
+    calls = 0
+    third_call = asyncio.Event()
+
+    async def counting_purge() -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ConnectionError("dropped mid-purge")
+        if calls >= 3:
+            third_call.set()
+        return False
+
+    store.purge_deleted_partitions.side_effect = counting_purge
+
+    task = asyncio.create_task(
+        invalid_resource_manager._purge_deleted_partitions_forever(store)
+    )
+    await asyncio.wait_for(third_call.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_close_cancels_segment_store_purge_tasks(
+    invalid_resource_manager, monkeypatch
+):
+    """close() ends the background purge before shutting stores down."""
+    monkeypatch.setattr(
+        resource_manager_module, "_SEGMENT_STORE_PURGE_INTERVAL_SECONDS", 0
+    )
+    store = create_autospec(SegmentStore, instance=True)
+    started = asyncio.Event()
+
+    async def signalling_purge() -> bool:
+        started.set()
+        return False
+
+    store.purge_deleted_partitions.side_effect = signalling_purge
+
+    task = asyncio.create_task(
+        invalid_resource_manager._purge_deleted_partitions_forever(store)
+    )
+    invalid_resource_manager._segment_store_purge_tasks.append(task)
+    await asyncio.wait_for(started.wait(), 5)
+
+    await invalid_resource_manager.close()
+
+    assert task.cancelled()
