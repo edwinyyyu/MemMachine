@@ -111,7 +111,14 @@ purge queue tracks.
   request serving; every bound above exists to keep that promise. Measured, cascade
   deletion saturates around 3M link rows/s as density grows (380k
   segments/s at one link per segment, 46k at 64), so even
-  heavily-linked partitions purge in sub-second bounded calls. Entries are claimed oldest-first (FIFO by
+  heavily-linked partitions purge in sub-second bounded calls.
+  Integrity-escaped link rows (the retire-path guard) draw
+  count-for-count on the same per-call budget: measured, a link row
+  deletes about 3x cheaper than a segment row (1.0 vs 3.3 us/row,
+  batched deletes on the benchmark box), so one budget calibrated on
+  segment rows upper-bounds the call without assuming any ratio -- a
+  separate link limit could only be safe by guessing that ratio.
+  Entries are claimed oldest-first (FIFO by
   enqueue time, stamped by the database clock so every server's entries
   order on one clock, at its resolution) and carry their own per-call bound
   (`SQLAlchemySegmentStoreParams.purge_max_partitions`), since their
