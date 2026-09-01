@@ -331,6 +331,9 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         self,
         segments_to_derivative_uuids: Mapping[Segment, Iterable[UUID]],
     ) -> None:
+        if not segments_to_derivative_uuids:
+            return
+
         async with (
             self._tracker("add_segments"),
             self._create_session() as session,
@@ -883,10 +886,15 @@ class SQLAlchemySegmentStoreParams(BaseModel):
     @field_validator("engine")
     @classmethod
     def _validate_engine(cls, engine: AsyncEngine) -> AsyncEngine:
-        assert not isinstance(engine.pool, StaticPool), (
-            "Engine uses StaticPool, which shares one connection across sessions. "
-            "Use a multi-connection pool instead."
-        )
+        # A value judgment, not an argument-type check: pydantic turns
+        # only ValueError/AssertionError into a ValidationError, so a
+        # TypeError here would escape model construction raw.
+        engine_shares_one_connection = isinstance(engine.pool, StaticPool)
+        if engine_shares_one_connection:
+            raise ValueError(
+                "Engine uses StaticPool, which shares one connection across "
+                "sessions. Use a multi-connection pool instead."
+            )
         db = engine.url.database
         if engine.dialect.name == "sqlite" and (db is None or db == ":memory:"):
             raise ValueError(
