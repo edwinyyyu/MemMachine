@@ -170,20 +170,23 @@ class ResourceManagerImpl:
         return self._segment_stores[name]
 
     async def _purge_deleted_partitions_forever(self, store: SegmentStore) -> None:
-        """Drive the store's bounded purge on a fixed tick.
+        """Drive the store's bounded purge; sleep only when it reports done.
 
         The store never schedules reclamation itself; this loop is the
-        deployment's scheduler. One bounded call per tick keeps the
-        background work bounded by construction (a backlog drains over
-        successive ticks), concurrent purgers are safe by the store's
-        contract, and a failed call is logged and retried next tick.
+        deployment's scheduler. Each call is bounded, and a True return
+        means more work remains, so a backlog drains at full rate in
+        bounded calls while an idle store costs one call per tick. A
+        failed call is logged and retried a tick later, and concurrent
+        purgers are safe by the store's contract.
         """
         while True:
-            await asyncio.sleep(_SEGMENT_STORE_PURGE_INTERVAL_SECONDS)
             try:
-                await store.purge_deleted_partitions()
+                more = await store.purge_deleted_partitions()
             except Exception:
                 logger.exception("Segment store purge failed; retrying next tick")
+                more = False
+            if not more:
+                await asyncio.sleep(_SEGMENT_STORE_PURGE_INTERVAL_SECONDS)
 
     async def get_embedder(self, name: str, validate: bool = False) -> Embedder:
         """Return an embedder by name."""
