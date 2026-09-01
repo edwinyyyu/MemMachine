@@ -104,7 +104,11 @@ purge queue tracks.
   queue rows whose incarnations are drained. Link fan-out is a
   property of the ingestion pipeline -- the deriver produces a small,
   design-bounded number of derivatives per segment -- not something the
-  store can meaningfully reject after derivation. Measured, cascade
+  store can meaningfully reject after derivation: by then the caller
+  cannot act on a dedicated error, and only a deployment's choice of
+  segmenter/deriver can actually change the shape. The caller's one
+  promise is that a purge call does not noticeably degrade concurrent
+  request serving; every bound above exists to keep that promise. Measured, cascade
   deletion saturates around 3M link rows/s as density grows (380k
   segments/s at one link per segment, 46k at 64), so even
   heavily-linked partitions purge in sub-second bounded calls. Entries are claimed oldest-first (FIFO by

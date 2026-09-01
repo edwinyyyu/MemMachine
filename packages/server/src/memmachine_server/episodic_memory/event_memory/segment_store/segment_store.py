@@ -242,9 +242,11 @@ class SegmentStore(ABC):
         Physically reclaim storage for deleted partitions, bounded per call.
 
         Performs reclamation that `delete_partition` deferred: each call
-        reclaims a bounded amount -- the bounds are implementation
-        policy, not the caller's concern -- the progress it commits
-        persists, and repeating a call is always safe. Draining a
+        reclaims a bounded amount, the progress it commits persists, and
+        repeating a call is always safe. The bounds are implementation
+        policy, not the caller's concern; what the caller is promised is
+        that a purge call does not noticeably degrade the serving of
+        concurrent requests. Draining a
         backlog is the caller's loop -- call until this returns False.
         Concurrent calls, including from
         other processes, must be safe: implementations coordinate so that
