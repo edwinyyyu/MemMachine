@@ -88,6 +88,7 @@ class ResourceManagerImpl:
         self._segment_stores: dict[str, SegmentStore] = {}
         self._segment_store_purge_tasks: list[asyncio.Task[None]] = []
 
+        self._closed = False
         self._session_data_manager_lock = Lock()
         self._episodic_memory_manager_lock = Lock()
         self._episode_storage_lock = Lock()
@@ -109,23 +110,30 @@ class ResourceManagerImpl:
 
     async def close(self) -> None:
         """Close resources and clean up state."""
-        for purge_task in self._segment_store_purge_tasks:
+        # The closed flag and the snapshots share the store lock with
+        # get_segment_store, so a racing get either completes before the
+        # flag flips or observes it and refuses -- no store or purge task
+        # can be created into the cleared containers.
+        async with self._segment_store_lock:
+            self._closed = True
+            purge_tasks = list(self._segment_store_purge_tasks)
+            self._segment_store_purge_tasks.clear()
+            segment_stores = list(self._segment_stores.values())
+            self._segment_stores.clear()
+
+        for purge_task in purge_tasks:
             purge_task.cancel()
-        await asyncio.gather(*self._segment_store_purge_tasks, return_exceptions=True)
-        self._segment_store_purge_tasks.clear()
+        await asyncio.gather(*purge_tasks, return_exceptions=True)
 
         tasks = []
         if self._semantic_manager is not None:
             tasks.append(self._semantic_manager.close())
 
-        tasks.extend(
-            segment_store.shutdown() for segment_store in self._segment_stores.values()
-        )
+        tasks.extend(segment_store.shutdown() for segment_store in segment_stores)
 
         tasks.append(self._database_manager.close())
 
         await asyncio.gather(*tasks)
-        self._segment_stores.clear()
 
     async def get_sql_engine(self, name: str, validate: bool = False) -> AsyncEngine:
         """Return a SQL engine by name."""
@@ -151,6 +159,10 @@ class ResourceManagerImpl:
         """Return a segment store by name, constructing it on first access."""
         if name not in self._segment_stores:
             async with self._segment_store_lock:
+                if self._closed:
+                    raise RuntimeError(
+                        "Resource manager is closed; no new segment stores can be built"
+                    )
                 if name not in self._segment_stores:
                     engine = await self.get_sql_engine(name)
                     store = SQLAlchemySegmentStore(
