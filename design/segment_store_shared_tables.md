@@ -136,7 +136,9 @@ purge queue tracks.
   whatever rows the first left (none, once the first retired the entry)
   and re-retires it -- duplicated round trips, never duplicated or missed
   reclamation, since an entry is retired only by a purger whose own
-  DELETE found fewer rows than its remaining budget. The
+  DELETEs (segments, then any integrity-escaped link rows -- reclaimed
+  in batches under the same budget and logged as a warning) found
+  fewer rows than its remaining budget. The
   store never schedules purging itself: when and how often is the
   caller's policy, and implementations whose deletes reclaim physically
   implement it as a no-op returning False. In the server, the resource

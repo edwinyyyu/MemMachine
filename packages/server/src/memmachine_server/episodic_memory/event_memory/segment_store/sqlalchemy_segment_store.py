@@ -1012,6 +1012,12 @@ class SQLAlchemySegmentStore(SegmentStore):
                     )
                 ).scalar_one_or_none()
                 if garbage_row is not None:
+                    logger.warning(
+                        "Incarnation %s minted for partition %r collides "
+                        "with garbage awaiting purge; re-minting",
+                        incarnation,
+                        partition_key,
+                    )
                     raise _IncarnationCollisionError(str(incarnation))
         except IntegrityError as err:
             # The insert violated either the key primary key or the
@@ -1023,6 +1029,12 @@ class SQLAlchemySegmentStore(SegmentStore):
                 )
             if partition_row is not None:
                 raise SegmentStorePartitionAlreadyExistsError(partition_key) from err
+            logger.warning(
+                "Incarnation %s minted for partition %r collided in the "
+                "registry; re-minting",
+                incarnation,
+                partition_key,
+            )
             raise _IncarnationCollisionError(str(incarnation)) from err
 
     @override
@@ -1175,7 +1187,7 @@ class SQLAlchemySegmentStore(SegmentStore):
         # construction. SQLite drops the locking clause; there purgers
         # serialize at the DELETE, and a doubly-claimed entry costs
         # empty round trips, never duplicated or missed reclamation
-        # (an entry is retired only when the retirer's own DELETE found
+        # (an entry is retired only when the retirer's own DELETEs found
         # fewer rows than its budget). Full rationale:
         # design/segment_store_shared_tables.md.
         remaining = self._purge_max_segments
@@ -1227,14 +1239,35 @@ class SQLAlchemySegmentStore(SegmentStore):
                 remaining -= deleted
                 # The cascade has already removed the deleted segments'
                 # links; this guards retirement against rows that escaped
-                # referential integrity, then retires the queue entry.
-                # Normally a zero-row delete; unbounded only if integrity
-                # was actually broken.
-                await connection.execute(
-                    delete(DerivativeLinkRow).where(
-                        DerivativeLinkRow.incarnation == incarnation
-                    )
+                # referential integrity. Normally a zero-row delete; if
+                # integrity was actually broken, the leak is reclaimed in
+                # batches under the same budget as the segments, and a
+                # full batch leaves the entry for the next call.
+                leaked_batch = (
+                    select(DerivativeLinkRow.uuid)
+                    .where(DerivativeLinkRow.incarnation == incarnation)
+                    .limit(remaining)
+                    .scalar_subquery()
                 )
+                leaked = (
+                    await connection.execute(
+                        delete(DerivativeLinkRow).where(
+                            DerivativeLinkRow.incarnation == incarnation,
+                            DerivativeLinkRow.uuid.in_(leaked_batch),
+                        )
+                    )
+                ).rowcount
+                if leaked:
+                    logger.warning(
+                        "Purged %d derivative-link rows that referential "
+                        "integrity should have removed with their segments "
+                        "(incarnation %s); check foreign-key enforcement",
+                        leaked,
+                        incarnation,
+                    )
+                    if leaked == remaining:
+                        return True
+                    remaining -= leaked
                 await connection.execute(
                     delete(PurgeQueueRow).where(
                         PurgeQueueRow.incarnation == incarnation
