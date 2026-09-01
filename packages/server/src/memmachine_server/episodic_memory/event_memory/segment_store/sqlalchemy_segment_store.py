@@ -111,7 +111,7 @@ _JSON_AUTO = JSON().with_variant(JSONB, "postgresql")
 # requires another actor to have changed the registry in a ~millisecond
 # window, so consecutive failures at this depth mean the IntegrityError
 # has some other, permanent cause.
-_MAX_MINT_ATTEMPTS = 8
+_MAX_MINT_ATTEMPTS = 10
 
 
 class _IncarnationCollisionError(Exception):
