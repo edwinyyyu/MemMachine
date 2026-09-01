@@ -207,15 +207,53 @@ tool, not a self-policed system prompt.
 
 ---
 
-## 5. Diminishing returns is computed, not self-judged
+## 5. Novelty is computed, but it is deliberately not a stop signal
 
 The daemon keeps a per-(partition, session) set of segment uuids surfaced so far,
-shared across ambient recall and the MCP tools. Every search reports *new vs
-already-seen*. Zero-new is the honest **"recall is saturating"** signal —
-surfaced as data ("0 new — try a different angle or stop"), never asked of the
-model as "are you done?". This is the legitimate give-up cue: the
-diminishing-returns mechanism humans actually use, computed externally.
-(`MemoryCore` also carries its own set for the daemon-less standalone path.)
+shared across ambient recall and the MCP tools, and every search counts how many
+of its hits are new. (`MemoryCore` also carries its own set for the daemon-less
+standalone path.) That count drives two things, and neither of them is
+model-facing:
+
+- **Suppression in the involuntary channels.** The ambient hook injects only hits
+  this session has not already been shown, so re-injection does not bloat the
+  context window; the reflective Stop hook gates on the same `is_new` flag.
+- **Telemetry.** Every search records `new_count` and a `saturated` flag (the
+  search returned hits, but none of them were new) to the observability log, so
+  the distribution can be inspected after the fact.
+
+What the model sees is `render_search_result`, which prints one line per hit and
+nothing else. There is deliberately **no "0 new — try a different angle" line on
+search results**, because segment-level novelty turns out to be a poor proxy for
+"you have learned nothing new here":
+
+- **Paraphrases score as novel.** Two rewordings of the same question returned
+  only 3 of 8 hits in common (measured 2026-09-01 against this store, on two
+  independent question pairs). Re-asking a question you have already asked would
+  therefore report 5 new hits out of 8 — it would look productive while adding
+  almost nothing.
+- **Compaction inverts the meaning.** The seen set is not cleared when a session
+  compacts, but the hits it remembers were compacted out of the context window.
+  After a compaction, "already seen" means the opposite of what it claims: those
+  memories are precisely the ones the model can no longer read.
+- **The set is not durable.** It lives in daemon memory and dies with the
+  daemon's idle-exit (`CLAUDE_MEMORY_DAEMON_IDLE`, default 1800s), so within a
+  single session the same search can be all-seen before the exit and all-new
+  after it, with nothing to indicate which happened.
+- **It can attach to the wrong session.** MCP calls carry no session id, so
+  novelty attaches to the partition's most recently active session (§9).
+
+On this store, 32 of the 343 deliberate searches that returned hits had zero new
+hits — 9.3% over 2026-08-08 to 2026-09-01. So the condition does occur, but it is
+a minority, and a signal that fires on roughly one call in eleven while being
+wrong in the four ways above does not earn a line in every search result.
+
+The give-up discipline lives in the skill and in the `memory_search` tool
+description instead, and it is judged from content rather than from bookkeeping:
+stop when the results are about a different *kind* of thing than the cue was, and
+after about two rewrites. That test reads what is on the screen, so compaction,
+daemon restarts and rewording cannot corrupt it — and repeated `mem:` handles are
+visible in the transcript anyway.
 
 ---
 
@@ -233,10 +271,11 @@ diminishing-returns mechanism humans actually use, computed externally.
 So this system does **not** try to make the model self-judge sufficiency, and it
 does **not** rely on a visible budget counter (telling a model "turn 3 of 10" is
 a *self-monitoring* task models calibrate poorly; availability ≠ activation).
-Instead, stopping rests on: (a) the computed diminishing-returns signal of §5,
-and (b) the model being Claude, which has trained satisficing calibration. This
-mirrors how Claude Code itself stops: not on a harness budget (there is none),
-but on verifiable task-state plus trained judgment.
+Instead, stopping rests on: (a) the content-judged give-up test of §5 — are
+these results even the right kind of thing — and (b) the model being Claude,
+which has trained satisficing calibration. This mirrors how Claude Code itself
+stops: not on a harness budget (there is none), but on verifiable task-state
+plus trained judgment.
 
 A future **groundedness** check (separate actor/verifier call) is the right way
 to harden commitment — see §9. It checks *support*, not *completeness*.
