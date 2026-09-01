@@ -150,7 +150,7 @@ class ClusterStateStorageSqlAlchemy(ClusterStateStorage):
             row.cluster_id: ClusterInfo(
                 centroid=list(row.centroid),
                 count=row.count,
-                last_ts=self._normalize_timestamp(row.last_ts),
+                last_ts=ensure_tz_aware(row.last_ts),
             )
             for row in cluster_rows
         }
@@ -158,7 +158,7 @@ class ClusterStateStorageSqlAlchemy(ClusterStateStorage):
         pending_events: dict[str, dict[str, datetime]] = {}
         for row in pending_rows:
             pending_events.setdefault(row.cluster_id, {})[row.event_id] = (
-                self._normalize_timestamp(row.created_at)
+                ensure_tz_aware(row.created_at)
             )
         next_cluster_id = state_row.next_cluster_id if state_row is not None else 0
         split_records = {
@@ -278,9 +278,3 @@ class ClusterStateStorageSqlAlchemy(ClusterStateStorage):
                 delete(ClusterSplitRow).where(ClusterSplitRow.set_id == set_key)
             )
             await session.commit()
-
-    @staticmethod
-    def _normalize_timestamp(value: datetime) -> datetime:
-        if value.tzinfo is None:
-            return value.replace(tzinfo=UTC)
-        return value

@@ -112,7 +112,8 @@ purge queue tracks.
   deletion saturates around 3M link rows/s as density grows (380k
   segments/s at one link per segment, 46k at 64), so even
   heavily-linked partitions purge in sub-second bounded calls. Entries are claimed oldest-first (FIFO by
-  enqueue time) and carry their own per-call bound
+  enqueue time, stamped by the database clock so every server's entries
+  order on one clock, at its resolution) and carry their own per-call bound
   (`SQLAlchemySegmentStoreParams.purge_max_partitions`), since their
   cost is round trips rather than row deletions: empty partitions are
   cheap to create and delete, so a large backlog of empty entries is
@@ -128,7 +129,14 @@ purge queue tracks.
   processes -- share the queue instead of contending: only the claiming
   call touches a dead incarnation's rows (writers cannot; the fence pins
   live incarnations only), making reclamation deadlock-free by
-  construction rather than by lock ordering. The
+  construction rather than by lock ordering. On SQLite, which drops
+  locking clauses and defers BEGIN to the first DML, the claim is a plain
+  read and purgers serialize on the database write lock at the DELETE
+  instead: two purgers may claim the same entry, and the second deletes
+  whatever rows the first left (none, once the first retired the entry)
+  and re-retires it -- duplicated round trips, never duplicated or missed
+  reclamation, since an entry is retired only by a purger whose own
+  DELETE found fewer rows than its remaining budget. The
   store never schedules purging itself: when and how often is the
   caller's policy, and implementations whose deletes reclaim physically
   implement it as a no-op returning False. Deletion latency contracts are
@@ -141,8 +149,12 @@ purge queue tracks.
 Every write pins the registry row with
 `SELECT ... WHERE incarnation = :incarnation FOR SHARE` -- the incarnation
 alone resolves the row, exactly like the data queries -- and raises a
-stale-handle error when no row matches; reads perform the same check
-without the lock. On SQLite, whose driver defers BEGIN until the first
+stale-handle error when no row matches. Reads conjoin the same predicate
+to their data statements as an `EXISTS`, so one statement (one snapshot)
+both checks liveness and reads -- a stale handle reads nothing, at no
+extra round trip -- and issue the check as its own statement only when a
+read returns no rows, to tell an empty partition from a stale handle.
+On SQLite, whose driver defers BEGIN until the first
 write, a SELECT-only fence would run outside the write transaction; the
 proper primitive, BEGIN IMMEDIATE, requires taking over the engine's
 transaction management in SQLAlchemy (isolation_level=None plus a
@@ -215,3 +227,7 @@ which the tenant-count requirement excludes.
   that require synchronous physical erasure must run the purge inline.
 - No migration from the partitioned layout is provided (the event backend
   is opt-in and pre-GA); existing databases recreate their schema.
+  `startup()` detects the old layout (a registry without the incarnation
+  column) and refuses with that directive, rather than letting
+  `create_all` leave the old tables in place for an opaque missing-column
+  error on the first partition operation.

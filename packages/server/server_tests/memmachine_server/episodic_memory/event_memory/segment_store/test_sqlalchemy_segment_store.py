@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, event, func, insert, select, text
+from sqlalchemy import delete, event, func, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -1207,7 +1207,40 @@ async def test_stale_handle_raises_after_delete(
     with pytest.raises(SegmentStorePartitionHandleStaleError):
         await partition.get_segment_contexts([seg.uuid])
     with pytest.raises(SegmentStorePartitionHandleStaleError):
+        await partition.get_segment_uuids_by_event_uuids([seg.event_uuid])
+    with pytest.raises(SegmentStorePartitionHandleStaleError):
         await partition.get_derivative_uuids_by_segment_uuids([seg.uuid])
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_reads_check_liveness_inside_the_data_statement(
+    pg_store: SQLAlchemySegmentStore,
+    recorded_statements: list[str],
+) -> None:
+    """A read that finds rows is one statement; the registry check rides in it.
+
+    Only a read that finds nothing pays a second statement, to tell an
+    empty partition from a stale handle.
+    """
+    partition = await pg_store.open_or_create_partition(
+        "folded", _plaintext_partition_config()
+    )
+    seg = _seg()
+    await partition.add_segments(_links(seg))
+    recorded_statements.clear()
+
+    await partition.get_segment_contexts([seg.uuid])
+    await partition.get_segment_uuids_by_event_uuids([seg.event_uuid])
+    await partition.get_derivative_uuids_by_segment_uuids([seg.uuid])
+    assert len(recorded_statements) == 3
+    assert all(
+        "EXISTS (SELECT" in s and "segment_store_pt" in s for s in recorded_statements
+    )
+
+    recorded_statements.clear()
+    assert await partition.get_segment_contexts([uuid4()]) == {}
+    assert len(recorded_statements) == 2
 
 
 @pytest.mark.asyncio
@@ -1988,17 +2021,7 @@ async def test_purge_reclaims_oldest_garbage_first(
     store: SQLAlchemySegmentStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The queue is FIFO: claims follow enqueue order."""
-    base = datetime(2026, 1, 1, tzinfo=UTC)
-    ticks = iter(range(1, 1000))
-
-    class TickingDatetime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return base + timedelta(seconds=next(ticks))
-
-    monkeypatch.setattr(sqlalchemy_segment_store, "datetime", TickingDatetime)
-
+    """The queue is FIFO: claims follow the enqueue stamp, not insertion."""
     incarnations = {}
     partition = None
     for key in ("fifo_a", "fifo_b", "fifo_c"):
@@ -2008,6 +2031,18 @@ async def test_purge_reclaims_oldest_garbage_first(
         incarnations[key] = partition._incarnation
         await partition.add_segments(_links(_seg()))
         await store.delete_partition(key)
+
+    # Stamps come from the database clock, whose resolution need not
+    # separate back-to-back deletions; set them so the LAST-inserted entry
+    # is the oldest, so only the ordering key can produce the expectation.
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    async with partition._create_session() as session, session.begin():
+        for age, key in enumerate(incarnations):
+            await session.execute(
+                update(PurgeQueueRow)
+                .where(PurgeQueueRow.incarnation == incarnations[key])
+                .values(enqueued_at=base - timedelta(seconds=age))
+            )
 
     # One row of budget: only the oldest entry's row may die.
     monkeypatch.setattr(store, "_purge_max_segments", 1)
@@ -2023,16 +2058,37 @@ async def test_purge_reclaims_oldest_garbage_first(
             ).scalar_one()
             for key in incarnations
         }
-    assert counts == {"fifo_a": 0, "fifo_b": 1, "fifo_c": 1}
+    assert counts == {"fifo_a": 1, "fifo_b": 1, "fifo_c": 0}
 
     while await store.purge_deleted_partitions():
         pass
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
+async def test_purge_queue_stamps_enqueue_time_from_database_clock(
+    pg_store: SQLAlchemySegmentStore,
+    recorded_statements: list[str],
+) -> None:
+    """The FIFO key is one clock for every server: the database's."""
+    await pg_store.create_partition("db_clock", _plaintext_partition_config())
+    recorded_statements.clear()
+
+    await pg_store.delete_partition("db_clock")
+
+    enqueues = [
+        s for s in recorded_statements if s.startswith("INSERT INTO segment_store_gc")
+    ]
+    assert len(enqueues) == 1
+    assert "now()" in enqueues[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("create", ["create_partition", "open_or_create_partition"])
 async def test_unloadable_codec_config_commits_no_registry_row(
     store: SQLAlchemySegmentStore,
     monkeypatch: pytest.MonkeyPatch,
+    create: str,
 ) -> None:
     """A codec that cannot be materialized leaves no registry row behind."""
 
@@ -2041,8 +2097,35 @@ async def test_unloadable_codec_config_commits_no_registry_row(
 
     monkeypatch.setattr(store, "_load_payload_codec", unloadable)
     with pytest.raises(NotImplementedError):
-        await store.open_or_create_partition("codec_p", _plaintext_partition_config())
-    assert await store.open_partition("codec_p") is None
+        await getattr(store, create)("codec_p", _plaintext_partition_config())
+    async with store._create_session() as session:
+        assert (
+            await SQLAlchemySegmentStore._get_partition_row(session, "codec_p")
+        ) is None
+
+
+@pytest.mark.asyncio
+async def test_startup_refuses_partitioned_layout(
+    sqlalchemy_engine: AsyncEngine,
+) -> None:
+    """An old-layout registry gets a directive, not a missing-column error."""
+    async with sqlalchemy_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "CREATE TABLE segment_store_pt ("
+                "partition_key VARCHAR(255) PRIMARY KEY, "
+                "payload_codec_config TEXT NOT NULL)"
+            )
+        )
+    store = SQLAlchemySegmentStore(
+        SQLAlchemySegmentStoreParams(engine=sqlalchemy_engine)
+    )
+    try:
+        with pytest.raises(RuntimeError, match="partitioned layout"):
+            await store.startup()
+    finally:
+        async with sqlalchemy_engine.begin() as connection:
+            await connection.execute(text("DROP TABLE segment_store_pt"))
 
 
 @pytest.mark.asyncio
