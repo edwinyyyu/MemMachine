@@ -221,6 +221,37 @@ async def test_segment_store_purge_loop_ticks_and_survives_failures(
 
 
 @pytest.mark.asyncio
+async def test_segment_store_purge_drains_backlog_without_waiting(
+    invalid_resource_manager, monkeypatch
+):
+    """True from a purge call means more work: the next call is immediate."""
+    monkeypatch.setattr(
+        resource_manager_module, "_SEGMENT_STORE_PURGE_INTERVAL_SECONDS", 3600
+    )
+    store = create_autospec(SegmentStore, instance=True)
+    calls = 0
+    drained = asyncio.Event()
+
+    async def backlogged_purge() -> bool:
+        nonlocal calls
+        calls += 1
+        if calls >= 3:
+            drained.set()
+            return False
+        return True
+
+    store.purge_deleted_partitions.side_effect = backlogged_purge
+
+    task = asyncio.create_task(
+        invalid_resource_manager._purge_deleted_partitions_forever(store)
+    )
+    await asyncio.wait_for(drained.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
 async def test_close_cancels_segment_store_purge_tasks(
     invalid_resource_manager, monkeypatch
 ):
