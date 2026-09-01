@@ -66,6 +66,16 @@ class SegmentStorePartitionConfigMismatchError(Exception):
         )
 
 
+class SegmentStorePermanentError(Exception):
+    """A failure that retrying will not fix; diagnose instead.
+
+    Raised when the store exhausts internal retries on an error that
+    should be impossible under normal operation, such as repeated
+    integrity failures while minting a partition incarnation. The
+    underlying database error is chained as the cause.
+    """
+
+
 class SegmentStorePartitionHandleStaleError(Exception):
     """A partition handle outlived the partition incarnation it was opened on."""
 

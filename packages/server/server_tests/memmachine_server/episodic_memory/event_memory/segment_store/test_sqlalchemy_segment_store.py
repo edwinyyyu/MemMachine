@@ -29,6 +29,7 @@ from memmachine_server.episodic_memory.event_memory.segment_store import (
     SegmentStorePartitionConfig,
     SegmentStorePartitionConfigMismatchError,
     SegmentStorePartitionHandleStaleError,
+    SegmentStorePermanentError,
     sqlalchemy_segment_store,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_segment_store import (
@@ -1876,7 +1877,8 @@ async def test_persistent_mint_failure_raises_instead_of_looping(
 
     Every realistic trip through the collision-retry path beyond a few
     attempts is a persistent database error being retried, not a race;
-    the mint re-raises the underlying error instead of hot-looping.
+    the mint raises SegmentStorePermanentError instead of hot-looping,
+    with the underlying error chained for diagnosis.
     """
     cause = IntegrityError("stmt", None, Exception("persistent"))
     attempts = []
@@ -1889,12 +1891,16 @@ async def test_persistent_mint_failure_raises_instead_of_looping(
 
     monkeypatch.setattr(store, "_insert_partition_row", always_colliding)
 
-    with pytest.raises(IntegrityError):
+    with pytest.raises(SegmentStorePermanentError) as exc_info:
         await store.create_partition("mint_cap", _plaintext_partition_config())
     assert len(attempts) == sqlalchemy_segment_store._MAX_MINT_ATTEMPTS
+    # The underlying database error stays reachable for diagnosis.
+    collision = exc_info.value.__cause__
+    assert collision is not None
+    assert collision.__cause__ is cause
 
     attempts.clear()
-    with pytest.raises(IntegrityError):
+    with pytest.raises(SegmentStorePermanentError):
         await store.open_or_create_partition("mint_cap", _plaintext_partition_config())
     assert len(attempts) == sqlalchemy_segment_store._MAX_MINT_ATTEMPTS
 
