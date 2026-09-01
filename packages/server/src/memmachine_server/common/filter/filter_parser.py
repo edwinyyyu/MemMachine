@@ -16,7 +16,12 @@ class FilterParseError(ValueError):
 
 @runtime_checkable
 class FilterExpr(Protocol):
-    """Marker protocol for filter expression nodes."""
+    """Marker protocol for filter expression nodes.
+
+    A value-carrying node normalizes datetime values to UTC-aware
+    instants at construction (naive means UTC); compilers rely on this
+    and bind instants without re-normalizing.
+    """
 
 
 ComparisonOp = Literal["=", "!=", ">", "<", ">=", "<="]

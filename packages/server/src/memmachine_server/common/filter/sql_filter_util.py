@@ -62,28 +62,6 @@ def _get_op(op: str) -> Callable[[ColumnElement, object], ColumnElement[bool]]:
     return op_fn
 
 
-def normalize_column_value(value: PropertyValue) -> PropertyValue:
-    """Normalize a datetime to UTC before comparing it against a stored column.
-
-    DateTime columns hold UTC instants everywhere: app-supplied values are
-    normalized to UTC on every write path, and server-generated columns
-    (`server_default=func.now()`) are UTC already. The comparison side has
-    to agree, because SQLite's DateTime does not persist tzinfo: a bound
-    rendered with its own offset is compared against the stored text
-    lexically and the WALL CLOCK decides -- `<= 2024-01-01T08:00+08:00`
-    excludes a row stored at 00:00Z even though that is the same instant.
-    PostgreSQL compares TIMESTAMPTZ by instant and is unaffected either
-    way, so normalizing here makes the two backends agree.
-
-    Filter trees never need this call: `Comparison`/`In` normalize their
-    values at node construction. It exists for datetime bounds passed
-    outside a filter tree, such as the episode store's start/end times.
-    """
-    if isinstance(value, datetime):
-        return ensure_tz_aware(value).astimezone(UTC)
-    return value
-
-
 def _compile_column_leaf(
     expr: IsNull | In | Comparison,
     column: ColumnElement,
