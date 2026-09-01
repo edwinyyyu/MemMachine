@@ -1241,8 +1241,12 @@ class SQLAlchemySegmentStore(SegmentStore):
                 # links; this guards retirement against rows that escaped
                 # referential integrity. Normally a zero-row delete; if
                 # integrity was actually broken, the leak is reclaimed in
-                # batches under the same budget as the segments, and a
-                # full batch leaves the entry for the next call.
+                # batches drawing count-for-count on the same budget as
+                # the segments, and a full batch leaves the entry for the
+                # next call. A link row deletes cheaper than a segment
+                # row (narrower, fewer indexes, no cascade), so the
+                # shared budget is an upper bound on a call sized for
+                # segment rows, not a guessed ratio.
                 leaked_batch = (
                     select(DerivativeLinkRow.uuid)
                     .where(DerivativeLinkRow.incarnation == incarnation)
