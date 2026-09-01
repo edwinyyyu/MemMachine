@@ -251,8 +251,8 @@ class SegmentStore(ABC):
 
         Args:
             max_segments (int | None):
-                Upper bound on the number of segments to reclaim in this
-                call, or None for an implementation-chosen bound
+                Maximum number of segments to reclaim in this call, or
+                None for an implementation-chosen maximum
                 (default: None). Associated derivative links are
                 reclaimed with their segments and do not count toward
                 the bound.
