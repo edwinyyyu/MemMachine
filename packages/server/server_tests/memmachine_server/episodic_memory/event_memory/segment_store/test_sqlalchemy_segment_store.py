@@ -34,7 +34,7 @@ from memmachine_server.episodic_memory.event_memory.segment_store import (
 from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_segment_store import (
     BaseSegmentStore,
     PartitionRow,
-    PurgeRow,
+    PurgeQueueRow,
     SegmentRow,
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
@@ -1291,7 +1291,7 @@ async def test_purge_reclaims_only_dead_incarnations(
             )
         ).scalar_one()
         queue_depth = (
-            await session.execute(select(func.count()).select_from(PurgeRow))
+            await session.execute(select(func.count()).select_from(PurgeQueueRow))
         ).scalar_one()
     assert dead_rows == 0
     assert queue_depth == 0
@@ -1332,7 +1332,7 @@ async def test_purge_respects_max_segments(
             )
         ).scalar_one()
         queue_depth = (
-            await session.execute(select(func.count()).select_from(PurgeRow))
+            await session.execute(select(func.count()).select_from(PurgeQueueRow))
         ).scalar_one()
     assert dead_rows == 0
     assert queue_depth == 0
@@ -1374,7 +1374,7 @@ async def test_concurrent_purges_reclaim_everything(
             )
         ).scalar_one()
         queue_depth = (
-            await session.execute(select(func.count()).select_from(PurgeRow))
+            await session.execute(select(func.count()).select_from(PurgeQueueRow))
         ).scalar_one()
     assert dead_rows == 0
     assert queue_depth == 0
@@ -1408,8 +1408,8 @@ async def test_purge_skips_entries_claimed_by_concurrent_purger(
         remote_session.begin(),
     ):
         await remote_session.execute(
-            select(PurgeRow)
-            .where(PurgeRow.incarnation == partitions["gc_held"])
+            select(PurgeQueueRow)
+            .where(PurgeQueueRow.incarnation == partitions["gc_held"])
             .with_for_update()
         )
         purge = asyncio.create_task(pg_store.purge_deleted_partitions())
@@ -1441,7 +1441,7 @@ async def test_purge_skips_entries_claimed_by_concurrent_purger(
     assert await pg_store.purge_deleted_partitions() is False
     async with partition._create_session() as session:
         queue_depth = (
-            await session.execute(select(func.count()).select_from(PurgeRow))
+            await session.execute(select(func.count()).select_from(PurgeQueueRow))
         ).scalar_one()
     assert queue_depth == 0
 
@@ -1547,7 +1547,7 @@ async def test_concurrent_remote_delete_yields_single_queue_entry(
                 .with_for_update()
             )
             await remote_session.execute(
-                insert(PurgeRow).values(
+                insert(PurgeQueueRow).values(
                     incarnation=incarnation,
                     partition_key="remote_del",
                     enqueued_at=datetime.now(UTC),
@@ -1567,7 +1567,7 @@ async def test_concurrent_remote_delete_yields_single_queue_entry(
 
     async with partition._create_session() as session:
         queue_entries = (
-            await session.execute(select(func.count()).select_from(PurgeRow))
+            await session.execute(select(func.count()).select_from(PurgeQueueRow))
         ).scalar_one()
     assert queue_entries == 1
 
@@ -1627,7 +1627,7 @@ async def test_incarnation_with_garbage_left_is_never_reused(
             )
         ).scalar_one()
         queue_depth = (
-            await session.execute(select(func.count()).select_from(PurgeRow))
+            await session.execute(select(func.count()).select_from(PurgeQueueRow))
         ).scalar_one()
     assert dead_rows == 1
     assert queue_depth == 1
