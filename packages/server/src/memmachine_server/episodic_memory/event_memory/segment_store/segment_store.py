@@ -20,10 +20,10 @@ from memmachine_server.episodic_memory.event_memory.segment_store.data_types imp
 class SegmentStorePartition(ABC):
     """Partition-scoped handle for a segment store.
 
-    A handle is bound to the partition incarnation it was opened on: after
-    the partition is deleted (or deleted and re-created), every data
-    operation raises `SegmentStorePartitionHandleStaleError` instead of
-    operating on the successor partition. Obtain a fresh handle to continue.
+    A handle is bound to the partition incarnation it was opened on:
+    deleting the partition permanently invalidates the handle, and its
+    data operations raise `SegmentStorePartitionHandleStaleError` from
+    then on, even if a partition is later created under the same key.
     """
 
     @property
