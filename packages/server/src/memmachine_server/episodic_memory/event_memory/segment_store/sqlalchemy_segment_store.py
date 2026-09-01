@@ -1049,13 +1049,15 @@ class SQLAlchemySegmentStore(SegmentStore):
         # their links, and queue entries it drains) are reclaimed and
         # committed, or nothing is -- so a large backlog never holds a
         # long transaction and interruption keeps completed calls'
-        # progress. Queue entries are claimed with FOR UPDATE SKIP
-        # LOCKED, so concurrent purgers partition the queue instead of
-        # contending: only the claiming call touches a dead incarnation's
-        # rows (writers cannot; the fence pins live incarnations only),
-        # making reclamation deadlock-free by construction. Entries
-        # claimed by another purger are skipped; their reclamation is
-        # that purger's, or a later call's if it rolls back.
+        # progress. Queue entries are claimed one at a time with
+        # FOR UPDATE SKIP LOCKED, so a bounded call never locks entries
+        # it will not process and concurrent purgers share the backlog
+        # instead of contending: only the claiming call touches a dead
+        # incarnation's rows (writers cannot; the fence pins live
+        # incarnations only), making reclamation deadlock-free by
+        # construction. Entries claimed by another purger are skipped;
+        # their reclamation is that purger's, or a later call's if it
+        # rolls back.
         remaining = (
             self._default_purge_max_segments if max_segments is None else max_segments
         )
@@ -1064,20 +1066,21 @@ class SQLAlchemySegmentStore(SegmentStore):
             self._create_session() as session,
             session.begin(),
         ):
-            dead_incarnations = (
-                (
-                    await session.execute(
-                        select(PurgeQueueRow.incarnation).with_for_update(
-                            skip_locked=True
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            for incarnation in dead_incarnations:
+            while True:
                 if remaining <= 0:
                     return True
+                # Skips only OTHER transactions' locks; entries this call
+                # already claimed cannot come back because each is
+                # deleted before the next claim.
+                incarnation = (
+                    await session.execute(
+                        select(PurgeQueueRow.incarnation)
+                        .limit(1)
+                        .with_for_update(skip_locked=True)
+                    )
+                ).scalar_one_or_none()
+                if incarnation is None:
+                    return False
                 chunk = (
                     select(SegmentRow.uuid)
                     .where(SegmentRow.incarnation == incarnation)
@@ -1112,7 +1115,6 @@ class SQLAlchemySegmentStore(SegmentStore):
                         PurgeQueueRow.incarnation == incarnation
                     )
                 )
-        return False
 
     # Helpers
 

@@ -1801,6 +1801,49 @@ async def test_mint_detects_collision_with_concurrent_deletion(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_purge_claims_queue_entries_incrementally(
+    pg_store: SQLAlchemySegmentStore,
+    recorded_statements: list[str],
+) -> None:
+    """A bounded purge never claims queue entries it will not process.
+
+    Claims are one entry at a time, so a call whose bound exhausts on its
+    first incarnation issues exactly one claim -- it neither materializes
+    nor locks the rest of the backlog, leaving those entries claimable by
+    concurrent purgers.
+    """
+    for index in range(3):
+        partition = await pg_store.open_or_create_partition(
+            f"inc_claim_{index}", _plaintext_partition_config()
+        )
+        await partition.add_segments(_links(_seg(), _seg(), _seg()))
+        await pg_store.delete_partition(f"inc_claim_{index}")
+    recorded_statements.clear()
+
+    assert await pg_store.purge_deleted_partitions(max_segments=2) is True
+
+    claim_statements = [
+        statement
+        for statement in recorded_statements
+        if statement.startswith("SELECT") and "segment_store_gc" in statement
+    ]
+    assert claim_statements, "no queue claim was recorded"
+    assert all("LIMIT" in statement for statement in claim_statements), (
+        "an unbounded queue claim materialized the whole backlog"
+    )
+    assert len(claim_statements) == 1
+
+    while await pg_store.purge_deleted_partitions(max_segments=2):
+        pass
+    async with partition._create_session() as session:
+        queue_depth = (
+            await session.execute(select(func.count()).select_from(PurgeQueueRow))
+        ).scalar_one()
+    assert queue_depth == 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_delete_partition_touches_only_registry_and_queue(
     pg_store: SQLAlchemySegmentStore,
     recorded_statements: list[str],
