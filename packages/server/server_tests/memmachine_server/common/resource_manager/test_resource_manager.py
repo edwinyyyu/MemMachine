@@ -281,3 +281,11 @@ async def test_close_cancels_segment_store_purge_tasks(
     await invalid_resource_manager.close()
 
     assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_get_segment_store_after_close_raises(invalid_resource_manager):
+    """A get racing or following close must refuse, not rebuild on a dead engine."""
+    await invalid_resource_manager.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        await invalid_resource_manager.get_segment_store(SQLDB_ID)
