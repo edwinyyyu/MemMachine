@@ -203,7 +203,7 @@ class DerivativeLinkRow(BaseSegmentStore):
     )
 
 
-class PurgeRow(BaseSegmentStore):
+class PurgeQueueRow(BaseSegmentStore):
     """The purge queue: one row per dead partition incarnation.
 
     Carries the logical key purely for forensics; the incarnation alone
@@ -921,8 +921,8 @@ class SQLAlchemySegmentStore(SegmentStore):
                 )
                 garbage_row = (
                     await session.execute(
-                        select(PurgeRow.incarnation)
-                        .where(PurgeRow.incarnation == incarnation)
+                        select(PurgeQueueRow.incarnation)
+                        .where(PurgeQueueRow.incarnation == incarnation)
                         .with_for_update(read=True)
                     )
                 ).scalar_one_or_none()
@@ -1032,7 +1032,7 @@ class SQLAlchemySegmentStore(SegmentStore):
             if row is None:
                 return
             await session.execute(
-                insert(PurgeRow).values(
+                insert(PurgeQueueRow).values(
                     incarnation=row.incarnation,
                     partition_key=partition_key,
                     enqueued_at=datetime.now(UTC),
@@ -1070,7 +1070,9 @@ class SQLAlchemySegmentStore(SegmentStore):
             dead_incarnations = (
                 (
                     await session.execute(
-                        select(PurgeRow.incarnation).with_for_update(skip_locked=True)
+                        select(PurgeQueueRow.incarnation).with_for_update(
+                            skip_locked=True
+                        )
                     )
                 )
                 .scalars()
@@ -1109,7 +1111,9 @@ class SQLAlchemySegmentStore(SegmentStore):
                     )
                 )
                 await session.execute(
-                    delete(PurgeRow).where(PurgeRow.incarnation == incarnation)
+                    delete(PurgeQueueRow).where(
+                        PurgeQueueRow.incarnation == incarnation
+                    )
                 )
         return False
 
