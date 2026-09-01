@@ -989,6 +989,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                 continue  # Concurrent creation: reopen the winner's row.
             except _IncarnationCollisionError:
                 continue  # Mint a fresh incarnation.
+
             payload_codec = await self._load_payload_codec(config)
             return SQLAlchemySegmentStorePartition(
                 partition_key=partition_key,
@@ -1070,6 +1071,7 @@ class SQLAlchemySegmentStore(SegmentStore):
             while True:
                 if remaining <= 0:
                     return True
+
                 # Skips only OTHER transactions' locks; entries this call
                 # already claimed cannot come back because each is
                 # deleted before the next claim.
@@ -1082,12 +1084,14 @@ class SQLAlchemySegmentStore(SegmentStore):
                 ).scalar_one_or_none()
                 if incarnation is None:
                     return False
+
                 batch = (
                     select(SegmentRow.uuid)
                     .where(SegmentRow.incarnation == incarnation)
                     .limit(remaining)
                     .scalar_subquery()
                 )
+
                 # The link-table cascade follows the deleted segments.
                 deleted = (
                     await connection.execute(
@@ -1102,6 +1106,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                     # have more rows, so leave its queue entry for the
                     # next call.
                     return True
+
                 remaining -= deleted
                 # Sweep links whose segments were already gone, then
                 # retire the queue entry.
