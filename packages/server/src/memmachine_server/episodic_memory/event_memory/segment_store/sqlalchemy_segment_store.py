@@ -170,12 +170,12 @@ class SegmentRow(BaseSegmentStore):
     # (O(1)) and the purge queue reclaims data rows asynchronously.
     __table_args__ = (
         Index(
-            "segment_store_sg__inc_ev",
+            "segment_store_sg__in_ev",
             "incarnation",
             "event_uuid",
         ),
         Index(
-            "segment_store_sg__inc_ts_ev_bk_ix",
+            "segment_store_sg__in_ts_ev_bk_ix",
             "incarnation",
             "timestamp",
             "event_uuid",
@@ -205,7 +205,7 @@ class DerivativeLinkRow(BaseSegmentStore):
             ondelete="CASCADE",
         ),
         Index(
-            "segment_store_dv_ln__inc_su",
+            "segment_store_dv_ln__in_su",
             "incarnation",
             "segment_uuid",
         ),
@@ -228,7 +228,7 @@ class PurgeQueueRow(BaseSegmentStore):
         DateTime(timezone=True), nullable=False
     )
 
-    __table_args__ = (Index("segment_store_gc__enq", "enqueued_at"),)
+    __table_args__ = (Index("segment_store_gc__ea", "enqueued_at"),)
 
 
 class SQLAlchemySegmentStorePartition(SegmentStorePartition):
