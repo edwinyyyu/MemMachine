@@ -820,10 +820,12 @@ class SQLAlchemySegmentStoreParams(BaseModel):
             (default: 10000).
         purge_max_partitions (int):
             Maximum number of queue entries a purge call processes
-            (default: 1000). Entries cost round trips rather than row
-            deletions, so they carry their own bound: a backlog of empty
-            partitions cannot turn one bounded call into an unbounded
-            transaction.
+            (default: 50). Entries cost round trips rather than row
+            deletions -- orders of magnitude more per unit than segment
+            rows -- so they carry their own bound, chosen so a
+            full-entry call and a full-row call hold transactions of
+            comparable duration; a backlog of empty partitions cannot
+            turn one bounded call into an unbounded transaction.
     """
 
     engine: InstanceOf[AsyncEngine] = Field(..., description="Async SQLAlchemy engine")
@@ -837,7 +839,7 @@ class SQLAlchemySegmentStoreParams(BaseModel):
         description="Maximum number of segment rows purged per call",
     )
     purge_max_partitions: int = Field(
-        1000,
+        50,
         gt=0,
         description="Maximum number of queue entries a purge call processes",
     )
