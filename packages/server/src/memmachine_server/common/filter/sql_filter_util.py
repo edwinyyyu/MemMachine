@@ -74,6 +74,10 @@ def normalize_column_value(value: PropertyValue) -> PropertyValue:
     excludes a row stored at 00:00Z even though that is the same instant.
     PostgreSQL compares TIMESTAMPTZ by instant and is unaffected either
     way, so normalizing here makes the two backends agree.
+
+    Filter trees never need this call: `Comparison`/`In` normalize their
+    values at node construction. It exists for datetime bounds passed
+    outside a filter tree, such as the episode store's start/end times.
     """
     if isinstance(value, datetime):
         return ensure_tz_aware(value).astimezone(UTC)
@@ -89,8 +93,8 @@ def _compile_column_leaf(
     if isinstance(expr, In):
         if not expr.values:
             return false()
-        return column.in_([normalize_column_value(v) for v in expr.values])
-    return _get_op(expr.op)(column, normalize_column_value(expr.value))
+        return column.in_(expr.values)
+    return _get_op(expr.op)(column, expr.value)
 
 
 def _cast_json_value(
@@ -200,10 +204,10 @@ def compile_sql_filter(
     The `resolve_field` callback maps each field name to a
     `(column, FieldEncoding)` pair and raises `ValueError` for unknown fields.
 
-    Datetime comparison values against "column"-encoded fields are
-    normalized to UTC before binding: every store's DateTime columns hold
-    UTC instants, so bounds name instants rather than wall clocks on
-    dialects that drop tzinfo (SQLite).
+    Datetime values arrive already normalized -- `Comparison`/`In` nodes
+    convert them to UTC-aware instants at construction -- so
+    column-encoded leaves bind them as-is, and the JSON-text encodings
+    only choose a representation.
     """
     if isinstance(expr, Comparison | In | IsNull):
         column, kind = resolve_field(expr.field)
