@@ -1871,10 +1871,25 @@ async def test_sqlite_write_racing_delete_cannot_orphan_rows(
 
     writer = asyncio.create_task(partition.add_segments(_links(_seg())))
     await asyncio.wait_for(reached_pause.wait(), 30)
+
+    deleter_started = asyncio.Event()
+    original_delete_partition = sqlite_store.delete_partition
+
+    async def signalling_delete_partition(partition_key: str) -> None:
+        deleter_started.set()
+        await original_delete_partition(partition_key)
+
+    monkeypatch.setattr(sqlite_store, "delete_partition", signalling_delete_partition)
     deleter = asyncio.create_task(sqlite_store.delete_partition("sqlite_fence"))
-    # With the fence transaction open, the deleter CANNOT finish while the
-    # writer is paused; without it, it finishes immediately (broken world),
-    # and a purge in this window would sweep the queue before the write.
+    # The started event proves the deleter ran before the sample below,
+    # so a loaded box cannot pass vacuously by never scheduling it. With
+    # the fence transaction open, the deleter CANNOT finish while the
+    # writer is paused; without it, it finishes immediately (broken
+    # world), and a purge in this window would sweep the queue before
+    # the write. The grace period is the one wall-clock element left:
+    # SQLite exposes no lock-wait state to observe, so "still blocked"
+    # can only be sampled.
+    await asyncio.wait_for(deleter_started.wait(), 30)
     done, _pending = await asyncio.wait([deleter], timeout=1.0)
     if done:
         while await sqlite_store.purge_deleted_partitions():
@@ -2392,6 +2407,17 @@ async def test_sqlite_mint_detects_collision_with_concurrent_deletion(
 
     monkeypatch.setattr(sqlalchemy_segment_store, "uuid4", colliding_uuid4)
 
+    creator_started = asyncio.Event()
+    original_insert_partition_row = sqlite_store._insert_partition_row
+
+    async def signalling_insert_partition_row(partition_key, incarnation, config):
+        creator_started.set()
+        await original_insert_partition_row(partition_key, incarnation, config)
+
+    monkeypatch.setattr(
+        sqlite_store, "_insert_partition_row", signalling_insert_partition_row
+    )
+
     async with (
         victim._create_session() as remote_session,
         remote_session.begin(),
@@ -2412,7 +2438,11 @@ async def test_sqlite_mint_detects_collision_with_concurrent_deletion(
                 "sq_mint_fresh", _plaintext_partition_config()
             )
         )
-        # While the deletion's write lock is held, the mint cannot finish.
+        # The started event proves the mint reached its insert before the
+        # sample below; the grace period is the unavoidable wall-clock
+        # element (SQLite exposes no lock-wait state to observe). While
+        # the deletion's write lock is held, the mint cannot finish.
+        await asyncio.wait_for(creator_started.wait(), 30)
         done, _pending = await asyncio.wait([creator], timeout=0.8)
         assert not done, "the colliding mint did not wait for the deletion"
     # Deletion committed on exiting begin().

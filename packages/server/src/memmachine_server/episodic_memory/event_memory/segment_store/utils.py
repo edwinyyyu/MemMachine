@@ -3,7 +3,9 @@
 import re
 
 _PARTITION_KEY_RE = re.compile(r"^[a-z0-9_]+$")
-_PARTITION_KEY_MAX_BYTES = 32
+
+PARTITION_KEY_MAX_BYTES = 32
+"""Maximum partition key length in bytes."""
 
 
 def validate_partition_key(partition_key: str) -> None:
@@ -14,9 +16,9 @@ def validate_partition_key(partition_key: str) -> None:
             "Only lowercase alphanumeric and underscores are allowed."
         )
     key_length_bytes = len(partition_key.encode())
-    if key_length_bytes > _PARTITION_KEY_MAX_BYTES:
+    if key_length_bytes > PARTITION_KEY_MAX_BYTES:
         raise ValueError(
             f"Partition key {partition_key!r} is too long "
             f"({key_length_bytes} bytes). "
-            f"Maximum is {_PARTITION_KEY_MAX_BYTES}."
+            f"Maximum is {PARTITION_KEY_MAX_BYTES}."
         )
