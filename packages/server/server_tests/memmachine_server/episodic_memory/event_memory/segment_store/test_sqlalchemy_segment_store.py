@@ -1904,6 +1904,19 @@ async def test_persistent_mint_failure_raises_instead_of_looping(
         await store.open_or_create_partition("mint_cap", _plaintext_partition_config())
     assert len(attempts) == sqlalchemy_segment_store._MAX_MINT_ATTEMPTS
 
+    # The lost-race arm is bounded by the same cap: an insert that keeps
+    # losing to a winner that keeps vanishing must not livelock.
+    attempts.clear()
+
+    async def always_losing(partition_key, incarnation, config) -> None:
+        attempts.append(incarnation)
+        raise SegmentStorePartitionAlreadyExistsError(partition_key)
+
+    monkeypatch.setattr(store, "_insert_partition_row", always_losing)
+    with pytest.raises(SegmentStoreRetriesExhaustedError):
+        await store.open_or_create_partition("mint_cap", _plaintext_partition_config())
+    assert len(attempts) == sqlalchemy_segment_store._MAX_MINT_ATTEMPTS
+
 
 @pytest.mark.asyncio
 async def test_purge_bounds_entries_processed_per_call(
