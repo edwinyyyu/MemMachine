@@ -161,13 +161,10 @@ def store(request) -> SQLAlchemySegmentStore:
     return request.getfixturevalue(request.param)
 
 
-@pytest.fixture
-def recorded_statements(
-    sqlalchemy_pg_engine: AsyncEngine,
-) -> Iterator[list[str]]:
-    """Every statement the engine executes, normalized to one line.
+def _record_statements(engine: AsyncEngine) -> Iterator[list[str]]:
+    """Record every statement the engine executes, normalized to one line.
 
-    Recording starts at fixture setup; tests clear the list after their own
+    Recording starts immediately; tests clear the list after their own
     setup so assertions cover only the exercised operations.
     """
     statements: list[str] = []
@@ -175,9 +172,16 @@ def recorded_statements(
     def _record(_conn, _cursor, statement, _parameters, _context, _executemany):
         statements.append(" ".join(statement.split()))
 
-    event.listen(sqlalchemy_pg_engine.sync_engine, "before_cursor_execute", _record)
+    event.listen(engine.sync_engine, "before_cursor_execute", _record)
     yield statements
-    event.remove(sqlalchemy_pg_engine.sync_engine, "before_cursor_execute", _record)
+    event.remove(engine.sync_engine, "before_cursor_execute", _record)
+
+
+@pytest.fixture
+def recorded_statements(
+    sqlalchemy_pg_engine: AsyncEngine,
+) -> Iterator[list[str]]:
+    yield from _record_statements(sqlalchemy_pg_engine)
 
 
 @pytest_asyncio.fixture
@@ -2224,6 +2228,38 @@ async def test_static_pool_engine_is_rejected(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_startup_refuses_engine_without_foreign_key_enforcement(
+    tmp_path,
+) -> None:
+    """Cascade deletes need PRAGMA foreign_keys=ON from engine creation.
+
+    A listener added by the store would miss connections the caller's
+    shared engine pooled earlier and would race a live pool's event
+    dispatch, so the store verifies and refuses loudly instead.
+    """
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'bare.db'}")
+    store = SQLAlchemySegmentStore(SQLAlchemySegmentStoreParams(engine=engine))
+    try:
+        with pytest.raises(RuntimeError, match="foreign keys"):
+            await store.startup()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_old_sqlite_runtime_is_rejected(
+    sqlalchemy_sqlite_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Partition deletion depends on RETURNING; refuse pre-3.35 SQLite loudly."""
+    monkeypatch.setattr(
+        sqlalchemy_segment_store.sqlite3, "sqlite_version_info", (3, 34, 0)
+    )
+    with pytest.raises(ValidationError, match="RETURNING"):
+        SQLAlchemySegmentStoreParams(engine=sqlalchemy_sqlite_engine)
+
+
+@pytest.mark.asyncio
 async def test_partition_key_with_trailing_newline_is_rejected(
     store: SQLAlchemySegmentStore,
 ) -> None:
@@ -2448,14 +2484,7 @@ def sqlite_recorded_statements(
     sqlalchemy_sqlite_engine: AsyncEngine,
 ) -> Iterator[list[str]]:
     """SQLite counterpart of recorded_statements."""
-    statements: list[str] = []
-
-    def _record(_conn, _cursor, statement, _parameters, _context, _executemany):
-        statements.append(" ".join(statement.split()))
-
-    event.listen(sqlalchemy_sqlite_engine.sync_engine, "before_cursor_execute", _record)
-    yield statements
-    event.remove(sqlalchemy_sqlite_engine.sync_engine, "before_cursor_execute", _record)
+    yield from _record_statements(sqlalchemy_sqlite_engine)
 
 
 @pytest.mark.asyncio
