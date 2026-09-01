@@ -1933,9 +1933,7 @@ async def test_persistent_mint_failure_raises_instead_of_looping(
 
     attempts.clear()
     with pytest.raises(IntegrityError):
-        await store.open_or_create_partition(
-            "mint_cap", _plaintext_partition_config()
-        )
+        await store.open_or_create_partition("mint_cap", _plaintext_partition_config())
     assert len(attempts) == sqlalchemy_segment_store._MAX_MINT_ATTEMPTS
 
 
@@ -1951,29 +1949,110 @@ async def test_purge_rejects_non_positive_bound(
 
 
 @pytest.mark.asyncio
-async def test_purge_bounds_entries_retired_per_call(
+async def test_purge_bounds_entries_processed_per_call(
+    sqlalchemy_sqlite_engine: AsyncEngine,
+) -> None:
+    """Queue entries carry their own per-call bound, separate from rows.
+
+    Empty partitions are cheap to create and delete, so a large backlog
+    of empty entries is easy to accumulate; entries cost round trips
+    rather than row deletions, so they are bounded by
+    purge_max_partitions rather than charged against max_segments.
+    """
+    store = SQLAlchemySegmentStore(
+        SQLAlchemySegmentStoreParams(
+            engine=sqlalchemy_sqlite_engine,
+            purge_max_partitions=2,
+        )
+    )
+    await store.startup()
+    try:
+        for index in range(5):
+            await store.create_partition(
+                f"empty_{index}", _plaintext_partition_config()
+            )
+            await store.delete_partition(f"empty_{index}")
+
+        assert await store.purge_deleted_partitions() is True
+        async with store._create_session() as session:
+            queue_depth = (
+                await session.execute(select(func.count()).select_from(PurgeQueueRow))
+            ).scalar_one()
+        assert queue_depth == 3
+
+        while await store.purge_deleted_partitions():
+            pass
+    finally:
+        async with sqlalchemy_sqlite_engine.begin() as conn:
+            await conn.run_sync(BaseSegmentStore.metadata.drop_all)
+
+
+@pytest.mark.asyncio
+async def test_empty_incarnations_do_not_consume_row_budget(
     store: SQLAlchemySegmentStore,
 ) -> None:
-    """Empty incarnations charge budget too, bounding entries per call.
+    """A backlog of empty entries leaves max_segments for real rows."""
+    for index in range(3):
+        await store.create_partition(f"noop_{index}", _plaintext_partition_config())
+        await store.delete_partition(f"noop_{index}")
+    rowful = await store.open_or_create_partition(
+        "rowful", _plaintext_partition_config()
+    )
+    await rowful.add_segments(_links(_seg(), _seg()))
+    await store.delete_partition("rowful")
 
-    Without the charge, a backlog of empty tenants consumes no segment
-    budget and one "bounded" call drains the whole queue in a single
-    transaction.
-    """
-    for index in range(5):
-        await store.create_partition(
-            f"empty_{index}", _plaintext_partition_config()
-        )
-        await store.delete_partition(f"empty_{index}")
-
+    # One call: three empty entries retired for free, then both rows.
     assert await store.purge_deleted_partitions(max_segments=2) is True
-    async with store._create_session() as session:
-        queue_depth = (
-            await session.execute(select(func.count()).select_from(PurgeQueueRow))
+    async with rowful._create_session() as session:
+        remaining_rows = (
+            await session.execute(select(func.count()).select_from(SegmentRow))
         ).scalar_one()
-    assert queue_depth == 3
+    assert remaining_rows == 0
+    assert await store.purge_deleted_partitions() is False
 
-    while await store.purge_deleted_partitions(max_segments=2):
+
+@pytest.mark.asyncio
+async def test_purge_reclaims_oldest_garbage_first(
+    store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The queue is FIFO: claims follow enqueue order."""
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    ticks = iter(range(1, 1000))
+
+    class TickingDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return base + timedelta(seconds=next(ticks))
+
+    monkeypatch.setattr(sqlalchemy_segment_store, "datetime", TickingDatetime)
+
+    incarnations = {}
+    partition = None
+    for key in ("fifo_a", "fifo_b", "fifo_c"):
+        partition = await store.open_or_create_partition(
+            key, _plaintext_partition_config()
+        )
+        incarnations[key] = partition._incarnation
+        await partition.add_segments(_links(_seg()))
+        await store.delete_partition(key)
+
+    # One row of budget: only the oldest entry's row may die.
+    assert await store.purge_deleted_partitions(max_segments=1) is True
+    async with partition._create_session() as session:
+        counts = {
+            key: (
+                await session.execute(
+                    select(func.count())
+                    .select_from(SegmentRow)
+                    .where(SegmentRow.incarnation == incarnations[key])
+                )
+            ).scalar_one()
+            for key in incarnations
+        }
+    assert counts == {"fifo_a": 0, "fifo_b": 1, "fifo_c": 1}
+
+    while await store.purge_deleted_partitions():
         pass
 
 
@@ -1989,9 +2068,7 @@ async def test_unloadable_codec_config_commits_no_registry_row(
 
     monkeypatch.setattr(store, "_load_payload_codec", unloadable)
     with pytest.raises(NotImplementedError):
-        await store.open_or_create_partition(
-            "codec_p", _plaintext_partition_config()
-        )
+        await store.open_or_create_partition("codec_p", _plaintext_partition_config())
     assert await store.open_partition("codec_p") is None
 
 
@@ -2110,10 +2187,9 @@ async def test_write_pin_blocks_partition_delete(
     assert await pg_store.open_partition("lk_write_pin") is None
 
 
-@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_overlapping_segment_deletes_do_not_deadlock(
-    pg_store: SQLAlchemySegmentStore,
+    store: SQLAlchemySegmentStore,
 ) -> None:
     """Overlapping concurrent `delete_segments` stay deadlock-free.
 
@@ -2126,7 +2202,7 @@ async def test_overlapping_segment_deletes_do_not_deadlock(
     deliberately; this test catches the AB/BA cycle wherever an engine or
     plan change ever produces divergent orders.
     """
-    partition = await pg_store.open_or_create_partition(
+    partition = await store.open_or_create_partition(
         "lk_row_order", _plaintext_partition_config()
     )
 
@@ -2147,10 +2223,9 @@ async def test_overlapping_segment_deletes_do_not_deadlock(
         await asyncio.wait_for(round_trip(rng), 30)
 
 
-@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_lifecycle_churn_completes_without_database_errors(
-    pg_store: SQLAlchemySegmentStore,
+    store: SQLAlchemySegmentStore,
 ) -> None:
     """Concurrent create/open/delete churn never aborts on lock cycles.
 
@@ -2171,13 +2246,13 @@ async def test_lifecycle_churn_completes_without_database_errors(
             operation = rng.randrange(4)
             try:
                 if operation == 0:
-                    await pg_store.create_partition(key, config)
+                    await store.create_partition(key, config)
                 elif operation == 1:
-                    await pg_store.open_or_create_partition(key, config)
+                    await store.open_or_create_partition(key, config)
                 elif operation == 2:
-                    await pg_store.open_partition(key)
+                    await store.open_partition(key)
                 else:
-                    await pg_store.delete_partition(key)
+                    await store.delete_partition(key)
             except (
                 SegmentStorePartitionAlreadyExistsError,
                 SegmentStorePartitionConfigMismatchError,
@@ -2190,10 +2265,9 @@ async def test_lifecycle_churn_completes_without_database_errors(
     )
 
 
-@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_concurrent_partition_deletes_are_clean(
-    pg_store: SQLAlchemySegmentStore,
+    store: SQLAlchemySegmentStore,
 ) -> None:
     """Racing deletions of one partition serialize through the row pin.
 
@@ -2202,13 +2276,121 @@ async def test_concurrent_partition_deletes_are_clean(
     and the partition must be cleanly re-creatable afterwards.
     """
     config = _plaintext_partition_config()
-    for _ in range(10):
-        await pg_store.create_partition("lk_del_race", config)
+    for cycle in range(10):
+        await store.create_partition("lk_del_race", config)
         await asyncio.wait_for(
-            asyncio.gather(
-                *(pg_store.delete_partition("lk_del_race") for _ in range(4))
-            ),
+            asyncio.gather(*(store.delete_partition("lk_del_race") for _ in range(4))),
             30,
         )
-        assert await pg_store.open_partition("lk_del_race") is None
-    await pg_store.create_partition("lk_del_race", config)
+        assert await store.open_partition("lk_del_race") is None
+        async with store._create_session() as session:
+            queue_depth = (
+                await session.execute(select(func.count()).select_from(PurgeQueueRow))
+            ).scalar_one()
+        # Racing deletions enqueued the dead incarnation exactly once.
+        assert queue_depth == cycle + 1
+    await store.create_partition("lk_del_race", config)
+
+
+@pytest.fixture
+def sqlite_recorded_statements(
+    sqlalchemy_sqlite_engine: AsyncEngine,
+) -> Iterator[list[str]]:
+    """SQLite counterpart of recorded_statements."""
+    statements: list[str] = []
+
+    def _record(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(" ".join(statement.split()))
+
+    event.listen(sqlalchemy_sqlite_engine.sync_engine, "before_cursor_execute", _record)
+    yield statements
+    event.remove(sqlalchemy_sqlite_engine.sync_engine, "before_cursor_execute", _record)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_delete_partition_touches_only_registry_and_queue(
+    sqlite_store: SQLAlchemySegmentStore,
+    sqlite_recorded_statements: list[str],
+) -> None:
+    """Deletion is O(1) on SQLite too: no data-table statements."""
+    partition = await sqlite_store.open_or_create_partition(
+        "sqlite_big_delete", _plaintext_partition_config()
+    )
+    await partition.add_segments(
+        _links(*(_seg(ts_offset_seconds=i) for i in range(20)))
+    )
+    sqlite_recorded_statements.clear()
+
+    await sqlite_store.delete_partition("sqlite_big_delete")
+
+    data_statements = [
+        statement
+        for statement in sqlite_recorded_statements
+        if "segment_store_sg" in statement or "segment_store_dv_ln" in statement
+    ]
+    assert not data_statements
+    assert any("segment_store_gc" in s for s in sqlite_recorded_statements)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_mint_detects_collision_with_concurrent_deletion(
+    sqlite_store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SQLite counterpart of the concurrent mint-collision test.
+
+    A deletion holds its write transaction open; the colliding mint's
+    registry insert must wait on SQLite's write lock, and once the
+    deletion commits, the post-insert queue re-check sees the entry and
+    re-mints.
+    """
+    victim = await sqlite_store.open_or_create_partition(
+        "sq_mint_victim", _plaintext_partition_config()
+    )
+    victim_incarnation = victim._incarnation
+    await victim.add_segments(_links(_seg()))
+
+    offered = []
+
+    def colliding_uuid4() -> UUID:
+        if not offered:
+            offered.append(victim_incarnation)
+            return victim_incarnation
+        return uuid4()
+
+    monkeypatch.setattr(sqlalchemy_segment_store, "uuid4", colliding_uuid4)
+
+    async with (
+        victim._create_session() as remote_session,
+        remote_session.begin(),
+    ):
+        # DML opens the write transaction and holds SQLite's write lock.
+        await remote_session.execute(
+            insert(PurgeQueueRow).values(
+                incarnation=victim_incarnation,
+                partition_key="sq_mint_victim",
+                enqueued_at=datetime.now(UTC),
+            )
+        )
+        await remote_session.execute(
+            delete(PartitionRow).where(PartitionRow.partition_key == "sq_mint_victim")
+        )
+        creator = asyncio.create_task(
+            sqlite_store.create_partition(
+                "sq_mint_fresh", _plaintext_partition_config()
+            )
+        )
+        # While the deletion's write lock is held, the mint cannot finish.
+        done, _pending = await asyncio.wait([creator], timeout=0.8)
+        assert not done, "the colliding mint did not wait for the deletion"
+    # Deletion committed on exiting begin().
+    await asyncio.wait_for(creator, 30)
+
+    fresh = await sqlite_store.open_partition("sq_mint_fresh")
+    assert fresh is not None
+    assert offered
+    assert fresh._incarnation != victim_incarnation
+
+    while await sqlite_store.purge_deleted_partitions():
+        pass
+    assert (await sqlite_store.open_partition("sq_mint_fresh")) is not None

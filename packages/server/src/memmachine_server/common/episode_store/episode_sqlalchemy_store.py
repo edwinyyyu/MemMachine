@@ -61,6 +61,7 @@ from memmachine_server.common.metrics_factory import (
     OperationTracker,
     timed,
 )
+from memmachine_server.common.utils import ensure_tz_aware
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +221,11 @@ class SqlAlchemyEpisodeStore(EpisodeStorage):
                 entry_values["json_metadata"] = entry.metadata
 
             if entry.created_at is not None:
-                entry_values["created_at"] = entry.created_at
+                # SQLite does not persist tzinfo on DateTime(timezone=True);
+                # store the UTC instant so the value roundtrips correctly.
+                entry_values["created_at"] = ensure_tz_aware(
+                    entry.created_at
+                ).astimezone(UTC)
 
             values_to_insert.append(entry_values)
 
@@ -313,11 +318,17 @@ class SqlAlchemyEpisodeStore(EpisodeStorage):
             if parsed_filter is not None:
                 filters.append(parsed_filter)
 
+        # created_at is persisted as a UTC instant; normalize the bounds to UTC
+        # so comparisons are consistent on dialects that drop tzinfo (SQLite).
         if start_time is not None:
-            filters.append(Episode.created_at >= start_time)
+            filters.append(
+                Episode.created_at >= ensure_tz_aware(start_time).astimezone(UTC)
+            )
 
         if end_time is not None:
-            filters.append(Episode.created_at <= end_time)
+            filters.append(
+                Episode.created_at <= ensure_tz_aware(end_time).astimezone(UTC)
+            )
 
         if not filters:
             return stmt

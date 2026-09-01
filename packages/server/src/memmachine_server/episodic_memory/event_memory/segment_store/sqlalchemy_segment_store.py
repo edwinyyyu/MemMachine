@@ -215,8 +215,9 @@ class DerivativeLinkRow(BaseSegmentStore):
 class PurgeQueueRow(BaseSegmentStore):
     """The purge queue: one row per dead partition incarnation.
 
-    Carries the logical key purely for forensics; the incarnation alone
-    identifies the rows to reclaim.
+    Claimed in enqueue order (FIFO), so the oldest garbage is reclaimed
+    first. Carries the logical key purely for forensics; the incarnation
+    alone identifies the rows to reclaim.
     """
 
     __tablename__ = "segment_store_gc"
@@ -226,6 +227,8 @@ class PurgeQueueRow(BaseSegmentStore):
     enqueued_at: MappedColumn[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+
+    __table_args__ = (Index("segment_store_gc__enq", "enqueued_at"),)
 
 
 class SQLAlchemySegmentStorePartition(SegmentStorePartition):
@@ -266,18 +269,23 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         The shared row lock blocks concurrent deletion (which takes the
         exclusive row lock) until the write completes; the incarnation
         predicate fences a handle that outlived its partition. SQLite
-        drops the locking clause, and its driver defers BEGIN until the
-        first data-modifying statement -- a plain SELECT here would run
-        outside the write transaction and fence nothing -- so a no-op
-        UPDATE on the registry row opens the write transaction first,
-        serializing this write against deletion.
+        drops locking clauses and its driver defers BEGIN until the first
+        data-modifying statement -- a SELECT-only fence would run outside
+        the write transaction and fence nothing. The proper primitive,
+        BEGIN IMMEDIATE, is only expressible engine-wide in SQLAlchemy,
+        so the fence is a self-checking registry-row UPDATE instead: it
+        acquires the same write lock scoped to this transaction, and its
+        match count is the staleness check.
         """
         if self._is_sqlite:
-            await session.execute(
+            fenced = await (await session.connection()).execute(
                 update(PartitionRow)
                 .where(PartitionRow.incarnation == self._incarnation)
                 .values(incarnation=self._incarnation)
             )
+            if fenced.rowcount == 0:
+                raise SegmentStorePartitionHandleStaleError(self._partition_key)
+            return
         row = (
             await session.execute(
                 select(PartitionRow.partition_key)
@@ -393,7 +401,6 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     compile_sql_filter(
                         property_filter,
                         SQLAlchemySegmentStorePartition._resolve_segment_field,
-                        column_datetimes_are_utc=True,
                     )
                 )
             seed_segment_rows = (
@@ -506,7 +513,6 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     compile_sql_filter(
                         property_filter,
                         SQLAlchemySegmentStorePartition._resolve_segment_field,
-                        column_datetimes_are_utc=True,
                     )
                 )
             lateral_subquery = context_rows_query.subquery().lateral("context")
@@ -604,7 +610,6 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             compile_sql_filter(
                 property_filter,
                 SQLAlchemySegmentStorePartition._resolve_segment_field,
-                column_datetimes_are_utc=True,
             )
             if property_filter is not None
             else None
@@ -810,6 +815,12 @@ class SQLAlchemySegmentStoreParams(BaseModel):
         default_purge_max_segments (int):
             Maximum number of segment rows purged per call when the
             caller does not pass max_segments (default: 10000).
+        purge_max_partitions (int):
+            Maximum number of queue entries a purge call processes
+            (default: 1000). Entries cost round trips rather than row
+            deletions, so they carry their own bound: a backlog of empty
+            partitions cannot turn one bounded call into an unbounded
+            transaction.
     """
 
     engine: InstanceOf[AsyncEngine] = Field(..., description="Async SQLAlchemy engine")
@@ -824,6 +835,11 @@ class SQLAlchemySegmentStoreParams(BaseModel):
             "Maximum number of segment rows purged per call when the caller "
             "does not pass max_segments"
         ),
+    )
+    purge_max_partitions: int = Field(
+        1000,
+        gt=0,
+        description="Maximum number of queue entries a purge call processes",
     )
 
     @field_validator("engine")
@@ -857,6 +873,7 @@ class SQLAlchemySegmentStore(SegmentStore):
 
         self._is_sqlite = self._engine.dialect.name == "sqlite"
         self._default_purge_max_segments = params.default_purge_max_segments
+        self._purge_max_partitions = params.purge_max_partitions
 
         # SQLite requires PRAGMA foreign_keys = ON for CASCADE deletes.
         if self._is_sqlite:
@@ -1051,14 +1068,17 @@ class SQLAlchemySegmentStore(SegmentStore):
             session.begin(),
         ):
             if self._is_sqlite:
-                # Open the write transaction before the row check (see
-                # _lock_partition_for_write) so racing deletions serialize
-                # instead of both enqueueing the incarnation.
-                await session.execute(
+                # Same primitive as _lock_partition_for_write: the row
+                # UPDATE opens the write transaction so racing deletions
+                # serialize instead of both enqueueing the incarnation,
+                # and a zero match count is the idempotent no-op case.
+                pinned = await (await session.connection()).execute(
                     update(PartitionRow)
                     .where(PartitionRow.partition_key == partition_key)
                     .values(partition_key=partition_key)
                 )
+                if pinned.rowcount == 0:
+                    return
             row = (
                 await session.execute(
                     select(PartitionRow)
@@ -1103,6 +1123,7 @@ class SQLAlchemySegmentStore(SegmentStore):
         remaining = (
             self._default_purge_max_segments if max_segments is None else max_segments
         )
+        entries = 0
         # Pure Core DML on an engine connection: unlike Session.execute,
         # AsyncConnection.execute is typed CursorResult, whose rowcount
         # the batch loop needs.
@@ -1120,6 +1141,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                 incarnation = (
                     await connection.execute(
                         select(PurgeQueueRow.incarnation)
+                        .order_by(PurgeQueueRow.enqueued_at)
                         .limit(1)
                         .with_for_update(skip_locked=True)
                     )
@@ -1149,12 +1171,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                     # next call.
                     return True
 
-                # An incarnation with no rows left still charges one
-                # segment of budget, so the entries a call retires are
-                # bounded by max_segments too -- a backlog of empty
-                # tenants cannot turn one bounded call into an unbounded
-                # transaction.
-                remaining -= deleted or 1
+                remaining -= deleted
                 # The cascade has already removed the deleted segments'
                 # links; this guards retirement against rows that escaped
                 # referential integrity, then retires the queue entry.
@@ -1168,6 +1185,13 @@ class SQLAlchemySegmentStore(SegmentStore):
                         PurgeQueueRow.incarnation == incarnation
                     )
                 )
+                # Entries cost round trips, not row deletions, so they
+                # carry their own bound: a backlog of empty partitions
+                # consumes no segment budget yet must not turn one
+                # bounded call into an unbounded transaction.
+                entries += 1
+                if entries >= self._purge_max_partitions:
+                    return True
 
     # Helpers
 
