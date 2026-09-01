@@ -272,10 +272,13 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         drops locking clauses and its driver defers BEGIN until the first
         data-modifying statement -- a SELECT-only fence would run outside
         the write transaction and fence nothing. The proper primitive,
-        BEGIN IMMEDIATE, is only expressible engine-wide in SQLAlchemy,
-        so the fence is a self-checking registry-row UPDATE instead: it
-        acquires the same write lock scoped to this transaction, and its
-        match count is the staleness check.
+        BEGIN IMMEDIATE, requires taking over transaction management of
+        the whole engine in SQLAlchemy (isolation_level=None plus a
+        begin-event hook), which this store cannot do to a caller-owned,
+        possibly shared engine -- so the fence is a self-checking
+        registry-row UPDATE instead: the driver emits BEGIN before DML
+        and SQLite takes the same write lock, scoped to this
+        transaction, with the match count as the staleness check.
         """
         if self._is_sqlite:
             fenced = await (await session.connection()).execute(

@@ -134,9 +134,11 @@ alone resolves the row, exactly like the data queries -- and raises a
 stale-handle error when no row matches; reads perform the same check
 without the lock. On SQLite, whose driver defers BEGIN until the first
 write, a SELECT-only fence would run outside the write transaction; the
-proper primitive, BEGIN IMMEDIATE, is only expressible engine-wide in
-SQLAlchemy, so the write fence is a self-checking registry-row UPDATE
-instead -- it acquires the same write lock scoped to the transaction,
+proper primitive, BEGIN IMMEDIATE, requires taking over the engine's
+transaction management in SQLAlchemy (isolation_level=None plus a
+begin-event hook), which the store cannot do to a caller-owned, possibly
+shared engine -- so the write fence is a self-checking registry-row
+UPDATE instead: it acquires the same write lock scoped to the transaction,
 and its match count is the staleness check (deletion opens its
 transaction the same way, so racing deletions serialize). A handle held
 across delete, or across
