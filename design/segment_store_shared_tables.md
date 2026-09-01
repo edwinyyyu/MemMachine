@@ -126,7 +126,11 @@ Every write pins the registry row with
 `SELECT ... WHERE incarnation = :incarnation FOR SHARE` -- the incarnation
 alone resolves the row, exactly like the data queries -- and raises a
 stale-handle error when no row matches; reads perform the same check
-without the lock. A handle held across delete, or across
+without the lock. On SQLite, whose driver defers BEGIN until the first
+write, the write-side fence first issues a no-op registry-row UPDATE so
+the check runs inside the write transaction (and deletion does the same
+before its row check, so racing deletions serialize). A handle held
+across delete, or across
 delete and re-create, fails loudly instead of operating on the successor
 tenant -- on every dialect, including SQLite, which previously had no
 mechanism for this at all.
