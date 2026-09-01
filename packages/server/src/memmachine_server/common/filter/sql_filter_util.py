@@ -62,7 +62,7 @@ def _get_op(op: str) -> Callable[[ColumnElement, object], ColumnElement[bool]]:
     return op_fn
 
 
-def _normalize_column_value(value: PropertyValue) -> PropertyValue:
+def normalize_column_value(value: PropertyValue) -> PropertyValue:
     """Normalize a datetime to UTC before comparing it against a stored column.
 
     DateTime columns hold UTC instants everywhere: app-supplied values are
@@ -89,8 +89,8 @@ def _compile_column_leaf(
     if isinstance(expr, In):
         if not expr.values:
             return false()
-        return column.in_([_normalize_column_value(v) for v in expr.values])
-    return _get_op(expr.op)(column, _normalize_column_value(expr.value))
+        return column.in_([normalize_column_value(v) for v in expr.values])
+    return _get_op(expr.op)(column, normalize_column_value(expr.value))
 
 
 def _cast_json_value(
@@ -171,9 +171,14 @@ def _compile_properties_json_leaf(
         type_name = PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[type(first_value)]
         value_path = column[PROPERTY_VALUE_KEY]
         type_check = column[PROPERTY_TYPE_KEY].as_string() == type_name
-        if isinstance(first_value, int):
-            return and_(type_check, value_path.as_integer().in_(expr.values))
-        return and_(type_check, value_path.as_string().in_(expr.values))
+        # One cast-and-normalize rule for both leaf shapes: the casted
+        # path comes from the first value, every member is normalized
+        # the same way a Comparison value would be.
+        casted_column, _ = _cast_properties_json_value(value_path, first_value)
+        normalized_values = [
+            _cast_properties_json_value(value_path, value)[1] for value in expr.values
+        ]
+        return and_(type_check, casted_column.in_(normalized_values))
 
     # Comparison
     type_name = PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[type(expr.value)]

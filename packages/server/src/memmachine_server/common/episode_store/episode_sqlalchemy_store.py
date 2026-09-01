@@ -55,6 +55,7 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.filter.sql_filter_util import (
     FieldEncoding,
     compile_sql_filter,
+    normalize_column_value,
 )
 from memmachine_server.common.metrics_factory import (
     MetricsFactory,
@@ -314,17 +315,14 @@ class SqlAlchemyEpisodeStore(EpisodeStorage):
             if parsed_filter is not None:
                 filters.append(parsed_filter)
 
-        # created_at is persisted as a UTC instant; normalize the bounds to UTC
-        # so comparisons are consistent on dialects that drop tzinfo (SQLite).
+        # created_at is persisted as a UTC instant; the shared filter
+        # normalizer keeps these bounds on the same rule as compiled
+        # created_at comparisons.
         if start_time is not None:
-            filters.append(
-                Episode.created_at >= ensure_tz_aware(start_time).astimezone(UTC)
-            )
+            filters.append(Episode.created_at >= normalize_column_value(start_time))
 
         if end_time is not None:
-            filters.append(
-                Episode.created_at <= ensure_tz_aware(end_time).astimezone(UTC)
-            )
+            filters.append(Episode.created_at <= normalize_column_value(end_time))
 
         if not filters:
             return stmt
