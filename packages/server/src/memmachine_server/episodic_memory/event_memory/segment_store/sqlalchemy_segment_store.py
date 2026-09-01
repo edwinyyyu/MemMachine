@@ -1017,7 +1017,7 @@ class SQLAlchemySegmentStore(SegmentStore):
         # fails without committing a registry row for a partition that
         # could never be opened.
         payload_codec = await self._load_payload_codec(config)
-        collisions = 0
+        retries = 0
         # Read-then-insert, retried: losing the insert race means a
         # concurrent creator won (reopen its row), and finding no row
         # after losing means a concurrent delete removed the winner --
@@ -1037,17 +1037,21 @@ class SQLAlchemySegmentStore(SegmentStore):
             incarnation = uuid4()
             try:
                 await self._insert_partition_row(partition_key, incarnation, config)
-            except SegmentStorePartitionAlreadyExistsError:
-                continue  # Concurrent creation: reopen the winner's row.
-            except _IncarnationCollisionError as collision:
-                collisions += 1
-                if collisions >= _MAX_MINT_ATTEMPTS:
+            except (
+                SegmentStorePartitionAlreadyExistsError,
+                _IncarnationCollisionError,
+            ) as err:
+                retries += 1
+                if retries >= _MAX_MINT_ATTEMPTS:
                     raise SegmentStoreRetriesExhaustedError(
-                        f"Minting an incarnation for partition "
-                        f"{partition_key!r} failed {_MAX_MINT_ATTEMPTS} "
-                        f"consecutive times"
-                    ) from collision
-                continue  # Mint a fresh incarnation.
+                        f"Opening or creating partition {partition_key!r} "
+                        f"made no progress after {_MAX_MINT_ATTEMPTS} "
+                        f"attempts"
+                    ) from err
+                # Lost the creation race (reopen the winner's row next
+                # iteration) or minted a colliding incarnation (mint a
+                # fresh one).
+                continue
 
             return SQLAlchemySegmentStorePartition(
                 partition_key=partition_key,
