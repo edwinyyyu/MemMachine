@@ -787,10 +787,10 @@ class SQLAlchemySegmentStoreParams(BaseModel):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
         default_purge_max_segments (int):
-            Bound on segment rows reclaimed by a purge call whose caller
-            does not pass max_segments (default: 10000). Each purge call
-            is one transaction, so this is where deployments set
-            engine-appropriate transaction sizing instead of every
+            Maximum number of segment rows purged per call when the
+            caller does not pass max_segments (default: 10000). Each
+            purge call is one transaction, so this is where deployments
+            set engine-appropriate transaction sizing instead of every
             caller.
     """
 
@@ -803,7 +803,7 @@ class SQLAlchemySegmentStoreParams(BaseModel):
         10_000,
         gt=0,
         description=(
-            "Bound on segment rows reclaimed by a purge call whose caller "
+            "Maximum number of segment rows purged per call when the caller "
             "does not pass max_segments"
         ),
     )
