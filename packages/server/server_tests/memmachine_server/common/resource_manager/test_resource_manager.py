@@ -224,9 +224,13 @@ async def test_segment_store_purge_loop_ticks_and_survives_failures(
 async def test_segment_store_purge_drains_backlog_without_waiting(
     invalid_resource_manager, monkeypatch
 ):
-    """True from a purge call means more work: the next call is immediate."""
+    """True from a purge call means more work: the next call comes after
+    the short busy pause, never the idle tick."""
     monkeypatch.setattr(
         resource_manager_module, "_SEGMENT_STORE_PURGE_INTERVAL_SECONDS", 3600
+    )
+    monkeypatch.setattr(
+        resource_manager_module, "_SEGMENT_STORE_PURGE_BUSY_PAUSE_SECONDS", 0
     )
     store = create_autospec(SegmentStore, instance=True)
     calls = 0

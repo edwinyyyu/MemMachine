@@ -131,7 +131,9 @@ purge queue tracks.
   easy to accumulate and must not turn one bounded call into an
   unbounded transaction. A deployment sets engine-appropriate transaction sizing once at
   construction -- different limits may suit PostgreSQL, SQLite, or other
-  dialects -- and callers never see sizing at all; True means another
+  dialects -- and callers never see sizing at all (the server currently
+  constructs its stores with the defaults; wiring the bounds into
+  server configuration is future work); True means another
   call may reclaim more, so draining a backlog is the caller's loop and
   each call's committed progress survives interruption. Queue
   entries are claimed one at a time with `FOR UPDATE SKIP LOCKED` as the
@@ -154,8 +156,10 @@ purge queue tracks.
   caller's policy, and implementations whose deletes reclaim physically
   implement it as a no-op returning False. In the server, the resource
   manager is that scheduler: a background task per store loops bounded
-  calls while the store reports more work and sleeps one tick when it
-  does not (failures log and retry a tick later; cancelled on close),
+  calls a short pause apart while the store reports more work -- the
+  pause yields the database to request serving -- and sleeps a full
+  tick when it does not (failures log and retry a tick later;
+  cancelled on close),
   alongside LongTermMemory's inline drain on session drop -- so a
   backlog left by an interrupted drain is reclaimed promptly rather
   than waiting for the next deletion, and racing purgers need no
@@ -244,6 +248,9 @@ which the tenant-count requirement excludes.
   tenant between nodes is an indexed row copy plus a registry insert whose
   fresh incarnation fences all stale handles.
 - Tenant deletion is O(rows) physically, in the background; deployments
-  that require synchronous physical erasure must run the purge inline.
+  that require synchronous physical erasure must run the purge inline,
+  accepting that an entry a concurrent purger has already claimed
+  completes in that purger's bounded call moments after the drain
+  returns.
 - No migration from the partitioned layout is provided (the event backend
   is opt-in and pre-GA); existing databases recreate their schema.
