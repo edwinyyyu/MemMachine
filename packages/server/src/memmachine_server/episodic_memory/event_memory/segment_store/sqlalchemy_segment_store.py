@@ -788,10 +788,7 @@ class SQLAlchemySegmentStoreParams(BaseModel):
             (default: None).
         default_purge_max_segments (int):
             Maximum number of segment rows purged per call when the
-            caller does not pass max_segments (default: 10000). Each
-            purge call is one transaction, so this is where deployments
-            set engine-appropriate transaction sizing instead of every
-            caller.
+            caller does not pass max_segments (default: 10000).
     """
 
     engine: InstanceOf[AsyncEngine] = Field(..., description="Async SQLAlchemy engine")
