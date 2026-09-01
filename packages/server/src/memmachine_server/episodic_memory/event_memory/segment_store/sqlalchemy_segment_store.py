@@ -2,6 +2,7 @@
 
 import json
 import logging
+import sqlite3
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta, timezone
@@ -26,17 +27,16 @@ from sqlalchemy import (
     String,
     Uuid,
     delete,
-    event,
     func,
     insert,
     literal,
     select,
+    text,
     true,
     tuple_,
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.engine.interfaces import DBAPIConnection
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -49,7 +49,7 @@ from sqlalchemy.orm import (
     MappedColumn,
     mapped_column,
 )
-from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 
 from memmachine_server.common.filter.filter_parser import (
@@ -178,7 +178,7 @@ class SegmentRow(BaseSegmentStore):
             "event_uuid",
         ),
         Index(
-            "segment_store_sg__in_ts_ev_bk_ix",
+            "segment_store_sg__in_ts_ev_ix_of",
             "incarnation",
             "timestamp",
             "event_uuid",
@@ -243,12 +243,13 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         self,
         partition_key: str,
         incarnation: UUID,
-        engine: AsyncEngine,
+        create_session: async_sessionmaker[AsyncSession],
+        is_sqlite: bool,
         config: SegmentStorePartitionConfig,
         payload_codec: PayloadCodec,
         tracker: OperationTracker,
     ) -> None:
-        """Initialize with a partition key, its incarnation, and an engine."""
+        """Initialize with a partition key, its incarnation, and the store's session factory."""
         self._partition_key = partition_key
         # Data rows are keyed by the incarnation alone: rows of a
         # deleted-and-recreated partition under the same logical key are
@@ -256,12 +257,11 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         # them, and a data query cannot even be built without resolving
         # the registry first.
         self._incarnation = incarnation
-        self._engine = engine
         self._config = config
         self._payload_codec = payload_codec
         self._tracker = tracker
-        self._create_session = async_sessionmaker(engine, expire_on_commit=False)
-        self._is_sqlite = engine.dialect.name == "sqlite"
+        self._create_session = create_session
+        self._is_sqlite = is_sqlite
 
     @override
     @property
@@ -445,7 +445,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 }
 
             # Get backward/forward context rows.
-            if session.bind.dialect.name != "sqlite":
+            if not self._is_sqlite:
                 context_rows_by_seed = await self._get_context_rows_lateral(
                     session,
                     seed_segment_rows_by_uuid,
@@ -901,6 +901,12 @@ class SQLAlchemySegmentStoreParams(BaseModel):
                 "Engine uses ephemeral SQLite, where each connection gets a separate database. "
                 "Use a file path instead."
             )
+        if engine.dialect.name == "sqlite" and sqlite3.sqlite_version_info < (3, 35):
+            raise ValueError(
+                f"SQLite runtime {sqlite3.sqlite_version} lacks the RETURNING "
+                "support partition deletion depends on. Use SQLite 3.35 or "
+                "newer."
+            )
         return engine
 
 
@@ -922,23 +928,30 @@ class SQLAlchemySegmentStore(SegmentStore):
 
         self._is_sqlite = self._engine.dialect.name == "sqlite"
 
-        # SQLite requires PRAGMA foreign_keys = ON for CASCADE deletes.
-        if self._is_sqlite:
-
-            @event.listens_for(self._engine.sync_engine, "connect")
-            def _enable_sqlite_fks(
-                dbapi_connection: DBAPIConnection,
-                _connection_record: ConnectionPoolEntry,
-            ) -> None:
-                cursor = dbapi_connection.cursor()
-                cursor.execute("PRAGMA foreign_keys=ON")
-                cursor.close()
-
     # Lifecycle
 
     @override
     async def startup(self) -> None:
         async with self._tracker("startup"), self._engine.begin() as connection:
+            # Foreign-key enforcement is per-connection state on SQLite
+            # and must be registered at ENGINE creation: a listener added
+            # by this store would miss connections the caller's shared
+            # engine pooled earlier -- silently disabling the link-table
+            # cascade on exactly those connections -- and registering
+            # listeners on a live pool races its event dispatch. The
+            # store therefore verifies rather than mutates.
+            if self._is_sqlite:
+                enforced = (
+                    await connection.execute(text("PRAGMA foreign_keys"))
+                ).scalar()
+                if not enforced:
+                    raise RuntimeError(
+                        "SQLite engine does not enforce foreign keys, so "
+                        "cascade deletes would silently orphan link rows. "
+                        "Register PRAGMA foreign_keys=ON at engine creation "
+                        "(enable_sqlite_foreign_keys) before constructing "
+                        "the store."
+                    )
             await connection.run_sync(BaseSegmentStore.metadata.create_all)
 
     @override
@@ -1120,7 +1133,8 @@ class SQLAlchemySegmentStore(SegmentStore):
             return SQLAlchemySegmentStorePartition(
                 partition_key=partition_key,
                 incarnation=incarnation,
-                engine=self._engine,
+                create_session=self._create_session,
+                is_sqlite=self._is_sqlite,
                 config=config,
                 payload_codec=payload_codec,
                 tracker=self._tracker,
@@ -1323,7 +1337,8 @@ class SQLAlchemySegmentStore(SegmentStore):
         return SQLAlchemySegmentStorePartition(
             partition_key=partition_row.partition_key,
             incarnation=partition_row.incarnation,
-            engine=self._engine,
+            create_session=self._create_session,
+            is_sqlite=self._is_sqlite,
             config=config,
             payload_codec=payload_codec,
             tracker=self._tracker,

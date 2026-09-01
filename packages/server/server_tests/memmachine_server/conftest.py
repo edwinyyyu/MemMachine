@@ -318,8 +318,13 @@ async def sqlalchemy_pg_engine(pg_server):
 
 @pytest_asyncio.fixture
 async def sqlalchemy_sqlite_engine(tmp_path):
+    from memmachine_server.common.resource_manager.database_manager import (
+        enable_sqlite_foreign_keys,
+    )
+
     db_path = tmp_path / "test.db"
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    enable_sqlite_foreign_keys(engine)
 
     yield engine
     await engine.dispose()
