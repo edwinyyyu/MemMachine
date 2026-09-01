@@ -227,7 +227,3 @@ which the tenant-count requirement excludes.
   that require synchronous physical erasure must run the purge inline.
 - No migration from the partitioned layout is provided (the event backend
   is opt-in and pre-GA); existing databases recreate their schema.
-  `startup()` detects the old layout (a registry without the incarnation
-  column) and refuses with that directive, rather than letting
-  `create_all` leave the old tables in place for an opaque missing-column
-  error on the first partition operation.
