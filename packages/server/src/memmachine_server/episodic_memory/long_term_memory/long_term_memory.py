@@ -435,12 +435,15 @@ class LongTermMemory:
         self._vector_store = None
         self._segment_store = None
         # This is the erasure path: drain the purge queue inline so the
-        # partition's rows are physically reclaimed before returning, as
-        # the partitioned layout's synchronous drop did. The queue is
-        # global and the drain is uncapped; the server schedules no other
-        # purger, so the backlog is what concurrent drops enqueue, and an
-        # entry a concurrent drain has already claimed (possibly this
-        # partition's) is finished by that drain rather than this one.
+        # partition's rows are physically reclaimed promptly -- normally
+        # before returning, as the partitioned layout's synchronous drop
+        # did. The queue is global and the drain is uncapped; the
+        # backlog is what concurrent drops enqueue minus what the
+        # resource manager's background purger has already reclaimed. An
+        # entry another purger has claimed (possibly this partition's)
+        # is skipped here and finished by that purger within its own
+        # bounded call, so reclamation can complete moments after this
+        # returns rather than before it.
         while await segment_store.purge_deleted_partitions():
             pass
 

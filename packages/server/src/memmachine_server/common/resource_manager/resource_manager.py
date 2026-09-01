@@ -56,6 +56,7 @@ from memmachine_server.semantic_memory.semantic_session_manager import (
 logger = logging.getLogger(__name__)
 
 _SEGMENT_STORE_PURGE_INTERVAL_SECONDS = 60.0
+_SEGMENT_STORE_PURGE_BUSY_PAUSE_SECONDS = 1.0
 
 
 class ResourceManagerImpl:
@@ -111,6 +112,7 @@ class ResourceManagerImpl:
         for purge_task in self._segment_store_purge_tasks:
             purge_task.cancel()
         await asyncio.gather(*self._segment_store_purge_tasks, return_exceptions=True)
+        self._segment_store_purge_tasks.clear()
 
         tasks = []
         if self._semantic_manager is not None:
@@ -123,6 +125,7 @@ class ResourceManagerImpl:
         tasks.append(self._database_manager.close())
 
         await asyncio.gather(*tasks)
+        self._segment_stores.clear()
 
     async def get_sql_engine(self, name: str, validate: bool = False) -> AsyncEngine:
         """Return a SQL engine by name."""
@@ -170,14 +173,16 @@ class ResourceManagerImpl:
         return self._segment_stores[name]
 
     async def _purge_deleted_partitions_forever(self, store: SegmentStore) -> None:
-        """Drive the store's bounded purge; sleep only when it reports done.
+        """Drive the store's bounded purge, paced by its backlog signal.
 
         The store never schedules reclamation itself; this loop is the
         deployment's scheduler. Each call is bounded, and a True return
-        means more work remains, so a backlog drains at full rate in
-        bounded calls while an idle store costs one call per tick. A
-        failed call is logged and retried a tick later, and concurrent
-        purgers are safe by the store's contract.
+        means more work remains, so a backlog drains at one bounded call
+        per short pause -- the pause yields the database (and SQLite's
+        single write lock) to request serving between calls -- while an
+        idle store costs one call per tick. A failed call is logged and
+        retried a tick later, and concurrent purgers are safe by the
+        store's contract.
         """
         while True:
             try:
@@ -185,8 +190,11 @@ class ResourceManagerImpl:
             except Exception:
                 logger.exception("Segment store purge failed; retrying next tick")
                 more = False
-            if not more:
-                await asyncio.sleep(_SEGMENT_STORE_PURGE_INTERVAL_SECONDS)
+            await asyncio.sleep(
+                _SEGMENT_STORE_PURGE_BUSY_PAUSE_SECONDS
+                if more
+                else _SEGMENT_STORE_PURGE_INTERVAL_SECONDS
+            )
 
     async def get_embedder(self, name: str, validate: bool = False) -> Embedder:
         """Return an embedder by name."""
