@@ -21,9 +21,6 @@ from memmachine_server.common.filter.filter_parser import Comparison, parse_filt
 from memmachine_server.common.payload_codec.payload_codec_config import (
     PlaintextPayloadCodecConfig,
 )
-from memmachine_server.common.resource_manager.database_manager import (
-    enable_sqlite_foreign_keys,
-)
 from memmachine_server.episodic_memory.event_memory.data_types import (
     NullContext,
     ProducerContext,
@@ -1947,7 +1944,7 @@ async def test_persistent_mint_failure_raises_instead_of_looping(
 
     async def always_colliding(partition_key, incarnation, config) -> None:
         attempts.append(incarnation)
-        raise sqlalchemy_segment_store._IncarnationCollisionError(
+        raise sqlalchemy_segment_store._RegistryInsertRejectedError(
             str(incarnation)
         ) from cause
 
@@ -1981,27 +1978,27 @@ async def test_persistent_mint_failure_raises_instead_of_looping(
 
 
 @pytest.mark.asyncio
-async def test_non_unique_integrity_error_surfaces_as_itself(
+async def test_persistent_integrity_error_surfaces_with_cause(
     store: SQLAlchemySegmentStore,
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Only unique-constraint violations enter the collision-retry path.
+    """Any integrity rejection is retried boundedly; the cause stays chained.
 
-    Any other integrity failure on the registry insert is a bug, not a
-    race: it surfaces as the driver's error, once, instead of ten logged
-    re-minting attempts ending in SegmentStoreAttemptsExhaustedError.
-    A NOT NULL violation on the incarnation column stands in for the
-    class.
+    A rejected registry insert is treated as a possible incarnation
+    collision and re-minted up to the attempt bound; a persistent cause
+    surfaces through SegmentStoreAttemptsExhaustedError with the
+    driver's error chained for diagnosis. A NOT NULL violation on the
+    incarnation column stands in for a cause that is not a collision.
     """
     monkeypatch.setattr(sqlalchemy_segment_store, "uuid4", lambda: None)
 
-    with caplog.at_level(logging.WARNING), pytest.raises(IntegrityError):
-        await store.create_partition("not_null", _plaintext_partition_config())
-    assert "re-minting" not in caplog.text
-
-    with pytest.raises(IntegrityError):
-        await store.open_or_create_partition("not_null", _plaintext_partition_config())
+    for create in (store.create_partition, store.open_or_create_partition):
+        with pytest.raises(SegmentStoreAttemptsExhaustedError) as exc_info:
+            await create("not_null", _plaintext_partition_config())
+        cause: BaseException | None = exc_info.value.__cause__
+        while cause is not None and not isinstance(cause, IntegrityError):
+            cause = cause.__cause__
+        assert isinstance(cause, IntegrityError)
 
 
 @pytest.mark.asyncio
@@ -2250,48 +2247,6 @@ async def test_static_pool_engine_is_rejected(tmp_path) -> None:
     try:
         with pytest.raises(ValidationError, match="StaticPool"):
             SQLAlchemySegmentStoreParams(engine=engine)
-    finally:
-        await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_startup_refuses_mixed_pool(tmp_path) -> None:
-    """The guard probes every pooled connection, not one.
-
-    A pool that held a connection before the pragma was registered is
-    mixed; a single FIFO draw would get the compliant connection
-    returned first and pass, leaving the stale one to orphan link rows
-    on a later delete.
-    """
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'mixed.db'}")
-    try:
-        stale = await engine.connect()  # pooled before registration: no pragma
-        enable_sqlite_foreign_keys(engine)
-        fresh = await engine.connect()  # created after registration
-        await fresh.close()  # returned first: a single draw would get it
-        await stale.close()
-        store = SQLAlchemySegmentStore(SQLAlchemySegmentStoreParams(engine=engine))
-        with pytest.raises(RuntimeError, match="foreign keys"):
-            await store.startup()
-    finally:
-        await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_startup_refuses_engine_without_foreign_key_enforcement(
-    tmp_path,
-) -> None:
-    """Cascade deletes need PRAGMA foreign_keys=ON from engine creation.
-
-    A listener added by the store would miss connections the caller's
-    shared engine pooled earlier and would race a live pool's event
-    dispatch, so the store verifies and refuses loudly instead.
-    """
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'bare.db'}")
-    store = SQLAlchemySegmentStore(SQLAlchemySegmentStoreParams(engine=engine))
-    try:
-        with pytest.raises(RuntimeError, match="foreign keys"):
-            await store.startup()
     finally:
         await engine.dispose()
 

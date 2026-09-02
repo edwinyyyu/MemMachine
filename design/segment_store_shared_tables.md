@@ -242,10 +242,13 @@ which the tenant-count requirement excludes.
 - One architecture on every dialect; the remaining dialect splits are the
   LATERAL-vs-loop read strategy, the PostgreSQL-only ordered row locks in
   `delete_segments`, and SQLite's foreign-key pragma -- per-connection
-  state registered at ENGINE creation and verified at store startup on
-  every pooled connection, since a listener added later would miss
-  already-pooled connections and silently disable the cascade on them
-  (SQLAlchemy itself drops locking clauses on SQLite).
+  state the engine's owner registers at ENGINE creation, which the store
+  requires and does not verify: the reference practice for SQLite
+  foreign keys (SQLAlchemy's dialect docs, Django's and Rails' adapters)
+  is to register the pragma at connection creation and trust it, and a
+  listener added later by the store would miss already-pooled
+  connections and silently disable the cascade on them (SQLAlchemy
+  itself drops locking clauses on SQLite).
 - Replication and sharding: four ordinary tables; logical replication
   covers new tenants automatically (they are rows, not relations); moving a
   tenant between nodes is an indexed row copy plus a registry insert whose
