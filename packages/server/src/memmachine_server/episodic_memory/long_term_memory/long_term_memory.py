@@ -421,12 +421,11 @@ class LongTermMemory:
         assert self._vector_store_namespace is not None
         assert self._segment_store is not None
         assert self._partition_key is not None
-        segment_store = self._segment_store
         await self._vector_store.delete_collection(
             namespace=self._vector_store_namespace,
             name=self._partition_key,
         )
-        await segment_store.delete_partition(self._partition_key)
+        await self._segment_store.delete_partition(self._partition_key)
         # Drop references to the now-deleted resources so any further
         # add_episodes / search_scored / delete_episodes calls raise
         # rather than silently operating on stale handles.
