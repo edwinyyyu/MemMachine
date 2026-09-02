@@ -5,7 +5,6 @@ import logging
 import sqlite3
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
-from contextlib import AsyncExitStack
 from datetime import UTC, datetime, timedelta, timezone
 from typing import override
 from uuid import UUID, uuid4
@@ -32,7 +31,6 @@ from sqlalchemy import (
     insert,
     literal,
     select,
-    text,
     true,
     tuple_,
     update,
@@ -50,7 +48,7 @@ from sqlalchemy.orm import (
     MappedColumn,
     mapped_column,
 )
-from sqlalchemy.pool import QueuePool, StaticPool
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 
 from memmachine_server.common.filter.filter_parser import (
@@ -117,36 +115,17 @@ _JSON_AUTO = JSON().with_variant(JSONB, "postgresql")
 _MAX_MINT_ATTEMPTS = 10
 
 
-def _is_unique_violation(error: IntegrityError) -> bool:
-    """Whether a driver integrity error is a unique or primary-key violation.
+class _RegistryInsertRejectedError(Exception):
+    """A registry insert that must not stand; mint afresh and retry.
 
-    The registry insert's retry logic is sound only for the two
-    constraints it reasons about (the key primary key and the
-    incarnation unique constraint); any other integrity failure is a bug
-    to surface as itself, not a race to retry. Drivers report the class
-    differently: PostgreSQL drivers expose SQLSTATE (23505), sqlite3 an
-    extended result name. A driver this cannot classify keeps the retry
-    behavior.
-    """
-    driver_error = error.orig
-    sqlstate = getattr(driver_error, "sqlstate", None)
-    if sqlstate is not None:
-        return sqlstate == "23505"
-    sqlite_errorname = getattr(driver_error, "sqlite_errorname", None)
-    if sqlite_errorname is not None:
-        return sqlite_errorname in {
-            "SQLITE_CONSTRAINT_UNIQUE",
-            "SQLITE_CONSTRAINT_PRIMARYKEY",
-        }
-    return True
-
-
-class _IncarnationCollisionError(Exception):
-    """A freshly minted incarnation collides with one that still has traces.
-
-    Whether the colliding incarnation is live or dead with garbage
-    awaiting purge, the minted value is unusable and the remedy is the
-    same: mint a fresh incarnation and retry.
+    Raised when the database rejected the insert with an integrity error
+    while no row exists under the key, or when the minted incarnation
+    turns out to have garbage awaiting purge. The causes -- an
+    incarnation collision, a concurrent creator that won and was then
+    deleted, some other constraint -- are not told apart: the remedy is
+    the same, bounded by `_MAX_MINT_ATTEMPTS`, and a persistent cause
+    surfaces through `SegmentStoreAttemptsExhaustedError` with the
+    database error chained.
     """
 
 
@@ -867,7 +846,10 @@ class SQLAlchemySegmentStoreParams(BaseModel):
 
     Attributes:
         engine (AsyncEngine):
-            Async SQLAlchemy engine.
+            Async SQLAlchemy engine. On SQLite it must enforce foreign
+            keys on every connection, registered at engine creation
+            (enable_sqlite_foreign_keys): the store relies on the
+            link-table cascade and does not verify enforcement.
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -886,7 +868,15 @@ class SQLAlchemySegmentStoreParams(BaseModel):
             bounded call into an unbounded transaction (default: 100).
     """
 
-    engine: InstanceOf[AsyncEngine] = Field(..., description="Async SQLAlchemy engine")
+    engine: InstanceOf[AsyncEngine] = Field(
+        ...,
+        description=(
+            "Async SQLAlchemy engine. On SQLite it must enforce foreign keys "
+            "on every connection, registered at engine creation "
+            "(enable_sqlite_foreign_keys): the store relies on the "
+            "link-table cascade and does not verify enforcement"
+        ),
+    )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
         description="An instance of MetricsFactory for collecting usage metrics",
@@ -964,48 +954,12 @@ class SQLAlchemySegmentStore(SegmentStore):
 
     @override
     async def startup(self) -> None:
-        async with self._tracker("startup"):
-            if self._is_sqlite:
-                await self._verify_foreign_keys_enforced()
-            async with self._engine.begin() as connection:
-                await connection.run_sync(BaseSegmentStore.metadata.create_all)
-
-    async def _verify_foreign_keys_enforced(self) -> None:
-        """Refuse a SQLite engine whose connections do not enforce foreign keys.
-
-        Enforcement is per-connection state that must be registered at
-        ENGINE creation: a listener added by this store would miss
-        connections the caller's shared engine pooled earlier -- silently
-        disabling the link-table cascade on exactly those connections --
-        and registering listeners on a live pool races its event
-        dispatch. The store therefore verifies rather than mutates, and
-        verifies every connection the pool holds rather than one: a pool
-        that held connections before the pragma was registered is mixed,
-        and a single draw would pass or fail by which connection it
-        happened to get. Drawing them all at once probes each; connections
-        checked out elsewhere at this moment are the residual.
-        """
-        pool = self._engine.pool
-        # Only a queue pool retains connections between uses; other pools
-        # hand out fresh ones, which one probe covers.
-        pooled = pool.checkedin() if isinstance(pool, QueuePool) else 0
-        async with AsyncExitStack() as stack:
-            connections = [
-                await stack.enter_async_context(self._engine.connect())
-                for _ in range(max(pooled, 1))
-            ]
-            for connection in connections:
-                enforced = (
-                    await connection.execute(text("PRAGMA foreign_keys"))
-                ).scalar()
-                if not enforced:
-                    raise RuntimeError(
-                        "SQLite engine does not enforce foreign keys, so "
-                        "cascade deletes would silently orphan link rows. "
-                        "Register PRAGMA foreign_keys=ON at engine creation "
-                        "(enable_sqlite_foreign_keys) before constructing "
-                        "the store."
-                    )
+        # SQLite foreign-key enforcement is per-connection state the
+        # engine's owner registers at engine creation (see the `engine`
+        # parameter); the store relies on it for the link-table cascade
+        # and does not verify it.
+        async with self._tracker("startup"), self._engine.begin() as connection:
+            await connection.run_sync(BaseSegmentStore.metadata.create_all)
 
     @override
     async def shutdown(self) -> None:
@@ -1029,7 +983,7 @@ class SQLAlchemySegmentStore(SegmentStore):
             while True:
                 try:
                     await self._insert_partition_row(partition_key, uuid4(), config)
-                except _IncarnationCollisionError as err:
+                except _RegistryInsertRejectedError as err:
                     attempts += 1
                     if attempts >= _MAX_MINT_ATTEMPTS:
                         raise SegmentStoreAttemptsExhaustedError(
@@ -1063,9 +1017,10 @@ class SQLAlchemySegmentStore(SegmentStore):
             SegmentStorePartitionAlreadyExistsError:
                 The partition key is taken; open or delete the existing
                 partition instead.
-            _IncarnationCollisionError:
-                The incarnation collides with one that is live or still
-                has garbage awaiting purge; mint a fresh one and retry.
+            _RegistryInsertRejectedError:
+                The insert was rejected with an integrity error and no
+                row exists under the key, or the minted incarnation has
+                garbage awaiting purge; mint a fresh one and retry.
         """
         try:
             async with self._create_session() as session, session.begin():
@@ -1092,13 +1047,11 @@ class SQLAlchemySegmentStore(SegmentStore):
                         incarnation,
                         partition_key,
                     )
-                    raise _IncarnationCollisionError(str(incarnation))
+                    raise _RegistryInsertRejectedError(str(incarnation))
         except IntegrityError as err:
-            if not _is_unique_violation(err):
-                raise
-            # The insert violated either the key primary key or the
-            # incarnation unique constraint; a committed row under this
-            # key resolves which.
+            # A committed row under this key means the key is taken; with
+            # none, the cause is not told apart -- see
+            # _RegistryInsertRejectedError.
             async with self._create_session() as session:
                 partition_row = await SQLAlchemySegmentStore._get_partition_row(
                     session, partition_key
@@ -1106,13 +1059,14 @@ class SQLAlchemySegmentStore(SegmentStore):
             if partition_row is not None:
                 raise SegmentStorePartitionAlreadyExistsError(partition_key) from err
             logger.warning(
-                "Registry insert for partition %r failed and the key is now "
-                "absent: either minted incarnation %s collided or a "
-                "concurrent creator won and was deleted; re-minting",
+                "Registry insert for partition %r was rejected and no row "
+                "exists under the key (incarnation %s collided, a concurrent "
+                "creator won and was deleted, or another constraint "
+                "failed); re-minting",
                 partition_key,
                 incarnation,
             )
-            raise _IncarnationCollisionError(str(incarnation)) from err
+            raise _RegistryInsertRejectedError(str(incarnation)) from err
 
     @override
     async def open_partition(
@@ -1172,7 +1126,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                 await self._insert_partition_row(partition_key, incarnation, config)
             except (
                 SegmentStorePartitionAlreadyExistsError,
-                _IncarnationCollisionError,
+                _RegistryInsertRejectedError,
             ) as err:
                 attempts += 1
                 if attempts >= _MAX_MINT_ATTEMPTS:
