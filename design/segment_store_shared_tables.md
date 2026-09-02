@@ -259,8 +259,9 @@ which the tenant-count requirement excludes.
   is opt-in and pre-GA); existing databases recreate their schema.
 - Datetime convention: filter nodes normalize to UTC-aware instants at
   construction (`FilterExpr`'s contract), for every consumer -- the Neo4j
-  compiler's `datetime.timestamp()` therefore sees instants, where a
-  naive value used to be read in the server's local zone; that backend
+  compiler's `datetime.timestamp()` therefore sees instants (ISO-string
+  filter values are parsed and normalized there under the same rule),
+  where a naive value used to be read in the server's local zone; that backend
   now agrees with the naive-means-UTC rule the rest of the codebase
   applies, a deliberate alignment; storage write paths spell
   `ensure_tz_aware(...).astimezone(UTC)` as two explicit steps at each
