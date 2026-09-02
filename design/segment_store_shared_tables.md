@@ -92,9 +92,13 @@ on random-UUID collision resistance.
 - **Re-create**: a new registry row with a fresh incarnation, safe at any
   time; the old incarnation's rows are invisible to the successor even
   while the purger is still sweeping them.
-- **Purge**: `purge_deleted_partitions() -> bool` on the `SegmentStore`
-  ABC. The caller's whole protocol is "call until False"; how much one call
-  does is implementation policy. The caller is promised only that a call
+- **Purge**: two methods on the `SegmentStore` ABC share one
+  implementation and differ only in what they claim.
+  `purge_deleted_partitions() -> bool`, the sweeper, claims the oldest
+  entry across all keys; `purge_partition(key) -> bool`, the delete path's
+  companion, claims this key's oldest entry only. Both return True while
+  more work remains for their scope, and the caller's whole protocol is
+  "call until False"; how much one call does is implementation policy. The caller is promised only that a call
   does not noticeably degrade concurrent request serving, and every bound
   below exists to keep that promise. The deletion contract is "unreachable
   immediately, erased asynchronously".
@@ -124,6 +128,28 @@ on random-UUID collision resistance.
     the queue instead of contending, and only the claiming call touches a
     dead incarnation's rows (writers cannot, since the fence pins live
     incarnations only), so reclamation is deadlock-free by construction.
+  - The targeted purge claims with a plain `FOR UPDATE` and waits: its set
+    is bounded and known, so a sweeper holding one of the key's entries is
+    a short wait rather than a skip that would return with nothing
+    reclaimed. That is why it is a second method and not a mode flag: the
+    two want different locking, and their True means different things
+    ("more work anywhere" versus "more work for this key").
+    Deadlock-freedom survives, because a cycle needs both parties waiting
+    and the sweeper never waits. The targeted purge is keyed by the
+    partition key the caller already holds, not by an incarnation:
+    incarnations stay an implementation detail, and no backend has to
+    mint or accept an identity token. The queue row's key column is
+    therefore load-bearing at no schema cost. Every dead generation under
+    the key is reclaimed, oldest first, which is stronger erasure than
+    targeting one incarnation (garbage from an earlier crashed drain of the
+    same key goes too), and a recreated key is safe by construction, since
+    its live incarnation is never in the queue.
+  - Draining the global queue from the delete path was tried and rejected.
+    The queue is FIFO, so a deletion's own entry is the newest at enqueue
+    time: the loop cleared every older tenant's garbage first and then kept
+    going through entries that arrived after it started, work that delayed
+    the request without serving it, with completion time inflating by the
+    usual queueing factor under sustained deletion traffic.
   - An entry is retired only when the retiring call's own deletes found
     fewer rows than its remaining budget. Before retiring, the call also
     deletes any link rows still carrying the incarnation, in batches drawn
@@ -145,9 +171,12 @@ on random-UUID collision resistance.
     per store: bounded calls a short pause apart while the store reports
     more work (the pause yields the database to request serving), a full
     tick apart otherwise; failures are logged and retried next tick, and
-    the task is cancelled on close. `LongTermMemory` also drains the queue
-    inline on session drop, so a backlog left by an interrupted drain is
-    reclaimed promptly; claiming makes the two purgers safe together.
+    the task is cancelled on close. `LongTermMemory` loops
+    `purge_partition` on its own key on session drop, so a deletion
+    returns with its rows physically gone. Because the delete path no
+    longer sweeps the global queue, a deployment must run the sweeper
+    somewhere; `purge_partition` is an erasure-promptness optimization,
+    not a substitute, and the ABC says so.
   - Measured deletion throughput is about 147k rows/s on the benchmark
     box, so a ten-million-row tenant erases in about a minute of
     background work.
@@ -239,10 +268,10 @@ requirement excludes.
   covers new tenants automatically (they are rows, not relations), and
   moving a tenant between nodes is an indexed row copy plus a registry
   insert whose fresh incarnation fences all stale handles.
-- Tenant deletion is O(rows) physically, in the background. A deployment
-  that needs synchronous erasure runs the purge inline and accepts that an
-  entry a concurrent purger has already claimed completes in that purger's
-  bounded call, moments after the drain returns.
+- Tenant deletion is O(rows) physically. The delete path reclaims its own
+  key inline through `purge_partition`, waiting for a sweeper's claim
+  rather than skipping it, so a deletion returns with its rows gone; the
+  global backlog is the sweeper's, and a deployment must run one.
 - No migration from the partitioned layout is provided (the event backend
   is opt-in and pre-GA); existing databases recreate their schema.
 - Datetime convention: filter nodes normalize datetime values to UTC-aware
