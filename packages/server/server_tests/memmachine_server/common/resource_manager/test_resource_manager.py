@@ -1,6 +1,8 @@
 """tests for resource_manager.py"""
 
 import asyncio
+import gc
+import weakref
 from unittest.mock import create_autospec
 
 import pytest
@@ -213,7 +215,7 @@ async def test_segment_store_purge_loop_ticks_and_survives_failures(
     store.purge_deleted_partitions.side_effect = counting_purge
 
     task = asyncio.create_task(
-        invalid_resource_manager._purge_deleted_partitions_forever(store)
+        resource_manager_module._purge_deleted_partitions_forever(store)
     )
     await asyncio.wait_for(third_call.wait(), 5)
     task.cancel()
@@ -248,7 +250,7 @@ async def test_segment_store_purge_drains_backlog_without_waiting(
     store.purge_deleted_partitions.side_effect = backlogged_purge
 
     task = asyncio.create_task(
-        invalid_resource_manager._purge_deleted_partitions_forever(store)
+        resource_manager_module._purge_deleted_partitions_forever(store)
     )
     await asyncio.wait_for(drained.wait(), 5)
     task.cancel()
@@ -274,7 +276,7 @@ async def test_close_cancels_segment_store_purge_tasks(
     store.purge_deleted_partitions.side_effect = signalling_purge
 
     task = asyncio.create_task(
-        invalid_resource_manager._purge_deleted_partitions_forever(store)
+        resource_manager_module._purge_deleted_partitions_forever(store)
     )
     invalid_resource_manager._segment_store_purge_tasks.append(task)
     await asyncio.wait_for(started.wait(), 5)
@@ -282,6 +284,32 @@ async def test_close_cancels_segment_store_purge_tasks(
     await invalid_resource_manager.close()
 
     assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_purge_task_does_not_pin_the_manager(invalid_configure, monkeypatch):
+    """A pending purge task keeps its store alive, not the manager that
+    started it: a manager dropped without close() is collectable."""
+    monkeypatch.setattr(
+        resource_manager_module, "_SEGMENT_STORE_PURGE_INTERVAL_SECONDS", 3600
+    )
+    manager = ResourceManagerImpl(invalid_configure)
+    store = create_autospec(SegmentStore, instance=True)
+    store.purge_deleted_partitions.return_value = False
+    task = asyncio.create_task(
+        resource_manager_module._purge_deleted_partitions_forever(store)
+    )
+    manager._segment_store_purge_tasks.append(task)
+    manager_ref = weakref.ref(manager)
+    await asyncio.sleep(0)  # the loop makes its first call and parks in sleep
+
+    del manager
+    gc.collect()
+
+    assert manager_ref() is None
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 @pytest.mark.asyncio

@@ -60,6 +60,37 @@ _SEGMENT_STORE_PURGE_INTERVAL_SECONDS = 60.0
 _SEGMENT_STORE_PURGE_BUSY_PAUSE_SECONDS = 1.0
 
 
+async def _purge_deleted_partitions_forever(store: SegmentStore) -> None:
+    """Drive the store's bounded purge, paced by its backlog signal.
+
+    The store never schedules reclamation itself; this loop is the
+    deployment's scheduler. Each call is bounded, and a True return
+    means more work remains, so a backlog drains at one bounded call
+    per short pause -- the pause yields the database (and SQLite's
+    single write lock) to request serving between calls -- while an
+    idle store costs one call per tick. A failed call is logged and
+    retried a tick later, and concurrent purgers are safe by the
+    store's contract.
+
+    A module-level coroutine on purpose: the event loop keeps a pending
+    task alive while it sleeps, so the task pins whatever its frame
+    references. Referencing only the store lets a manager dropped
+    without close() be collected instead of pinned, with its loop
+    querying the engine, for the process lifetime.
+    """
+    while True:
+        try:
+            more = await store.purge_deleted_partitions()
+        except Exception:
+            logger.exception("Segment store purge failed; retrying next tick")
+            more = False
+        await asyncio.sleep(
+            _SEGMENT_STORE_PURGE_BUSY_PAUSE_SECONDS
+            if more
+            else _SEGMENT_STORE_PURGE_INTERVAL_SECONDS
+        )
+
+
 class ResourceManagerImpl:
     """Concrete resource manager for MemMachine services."""
 
@@ -179,35 +210,9 @@ class ResourceManagerImpl:
                     await store.startup()
                     self._segment_stores[name] = store
                     self._segment_store_purge_tasks.append(
-                        asyncio.create_task(
-                            self._purge_deleted_partitions_forever(store)
-                        )
+                        asyncio.create_task(_purge_deleted_partitions_forever(store))
                     )
         return self._segment_stores[name]
-
-    async def _purge_deleted_partitions_forever(self, store: SegmentStore) -> None:
-        """Drive the store's bounded purge, paced by its backlog signal.
-
-        The store never schedules reclamation itself; this loop is the
-        deployment's scheduler. Each call is bounded, and a True return
-        means more work remains, so a backlog drains at one bounded call
-        per short pause -- the pause yields the database (and SQLite's
-        single write lock) to request serving between calls -- while an
-        idle store costs one call per tick. A failed call is logged and
-        retried a tick later, and concurrent purgers are safe by the
-        store's contract.
-        """
-        while True:
-            try:
-                more = await store.purge_deleted_partitions()
-            except Exception:
-                logger.exception("Segment store purge failed; retrying next tick")
-                more = False
-            await asyncio.sleep(
-                _SEGMENT_STORE_PURGE_BUSY_PAUSE_SECONDS
-                if more
-                else _SEGMENT_STORE_PURGE_INTERVAL_SECONDS
-            )
 
     async def get_embedder(self, name: str, validate: bool = False) -> Embedder:
         """Return an embedder by name."""

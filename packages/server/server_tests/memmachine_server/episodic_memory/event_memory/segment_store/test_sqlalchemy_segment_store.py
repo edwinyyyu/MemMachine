@@ -21,6 +21,9 @@ from memmachine_server.common.filter.filter_parser import Comparison, parse_filt
 from memmachine_server.common.payload_codec.payload_codec_config import (
     PlaintextPayloadCodecConfig,
 )
+from memmachine_server.common.resource_manager.database_manager import (
+    enable_sqlite_foreign_keys,
+)
 from memmachine_server.episodic_memory.event_memory.data_types import (
     NullContext,
     ProducerContext,
@@ -1978,6 +1981,30 @@ async def test_persistent_mint_failure_raises_instead_of_looping(
 
 
 @pytest.mark.asyncio
+async def test_non_unique_integrity_error_surfaces_as_itself(
+    store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Only unique-constraint violations enter the collision-retry path.
+
+    Any other integrity failure on the registry insert is a bug, not a
+    race: it surfaces as the driver's error, once, instead of ten logged
+    re-minting attempts ending in SegmentStoreAttemptsExhaustedError.
+    A NOT NULL violation on the incarnation column stands in for the
+    class.
+    """
+    monkeypatch.setattr(sqlalchemy_segment_store, "uuid4", lambda: None)
+
+    with caplog.at_level(logging.WARNING), pytest.raises(IntegrityError):
+        await store.create_partition("not_null", _plaintext_partition_config())
+    assert "re-minting" not in caplog.text
+
+    with pytest.raises(IntegrityError):
+        await store.open_or_create_partition("not_null", _plaintext_partition_config())
+
+
+@pytest.mark.asyncio
 async def test_purge_bounds_entries_processed_per_call(
     sqlalchemy_sqlite_engine: AsyncEngine,
 ) -> None:
@@ -2223,6 +2250,29 @@ async def test_static_pool_engine_is_rejected(tmp_path) -> None:
     try:
         with pytest.raises(ValidationError, match="StaticPool"):
             SQLAlchemySegmentStoreParams(engine=engine)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_startup_refuses_mixed_pool(tmp_path) -> None:
+    """The guard probes every pooled connection, not one.
+
+    A pool that held a connection before the pragma was registered is
+    mixed; a single FIFO draw would get the compliant connection
+    returned first and pass, leaving the stale one to orphan link rows
+    on a later delete.
+    """
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'mixed.db'}")
+    try:
+        stale = await engine.connect()  # pooled before registration: no pragma
+        enable_sqlite_foreign_keys(engine)
+        fresh = await engine.connect()  # created after registration
+        await fresh.close()  # returned first: a single draw would get it
+        await stale.close()
+        store = SQLAlchemySegmentStore(SQLAlchemySegmentStoreParams(engine=engine))
+        with pytest.raises(RuntimeError, match="foreign keys"):
+            await store.startup()
     finally:
         await engine.dispose()
 

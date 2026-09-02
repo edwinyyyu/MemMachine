@@ -6,6 +6,10 @@ import pytest
 from memmachine_server.common.neo4j_utils import coerce_datetime_to_timestamp
 
 
+@pytest.mark.skipif(
+    not hasattr(time, "tzset"),
+    reason="tzset is POSIX-only; the process zone cannot be pinned on Windows",
+)
 def test_iso_string_coerces_as_utc_instant(monkeypatch: pytest.MonkeyPatch) -> None:
     """A naive ISO string means UTC, like every other filter datetime.
 

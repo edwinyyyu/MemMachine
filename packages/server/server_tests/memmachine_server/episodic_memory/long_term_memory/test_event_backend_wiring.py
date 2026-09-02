@@ -11,6 +11,7 @@ Verifies that add_episodes / search_scored / delete_episodes /
 drop_session_partition all dispatch correctly through the event backend.
 """
 
+import logging
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import override
@@ -299,15 +300,20 @@ async def test_drop_session_partition_calls_parent_lifecycle_hooks(
     segment_store.purge_deleted_partitions.assert_awaited()
 
 
-async def test_drop_session_partition_nulls_handles_even_if_drain_raises(
+async def test_drop_session_partition_survives_drain_failure(
     long_term_memory,
     segment_store,
     episodes,
+    caplog,
 ):
-    """A failed drain must not leave handles pointing at deleted resources."""
+    """A drain failure after the destructive work has committed is logged,
+    not raised: the erasure happened, the background purger completes
+    reclamation, and the handles are nulled all the same."""
     segment_store.purge_deleted_partitions.side_effect = ConnectionError("dropped")
-    with pytest.raises(ConnectionError):
+    with caplog.at_level(logging.ERROR):
         await long_term_memory.drop_session_partition()
+    segment_store.delete_partition.assert_awaited_once_with("sess1")
+    assert "background purger completes reclamation" in caplog.text
     with pytest.raises(RuntimeError, match="drop_session_partition"):
         await long_term_memory.add_episodes(episodes)
 

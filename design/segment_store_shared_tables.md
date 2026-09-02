@@ -242,10 +242,10 @@ which the tenant-count requirement excludes.
 - One architecture on every dialect; the remaining dialect splits are the
   LATERAL-vs-loop read strategy, the PostgreSQL-only ordered row locks in
   `delete_segments`, and SQLite's foreign-key pragma -- per-connection
-  state registered at ENGINE creation and verified at store startup,
-  since a listener added later would miss already-pooled connections and
-  silently disable the cascade on them (SQLAlchemy itself drops locking
-  clauses on SQLite).
+  state registered at ENGINE creation and verified at store startup on
+  every pooled connection, since a listener added later would miss
+  already-pooled connections and silently disable the cascade on them
+  (SQLAlchemy itself drops locking clauses on SQLite).
 - Replication and sharding: four ordinary tables; logical replication
   covers new tenants automatically (they are rows, not relations); moving a
   tenant between nodes is an indexed row copy plus a registry insert whose
@@ -263,7 +263,10 @@ which the tenant-count requirement excludes.
   filter values are parsed and normalized there under the same rule),
   where a naive value used to be read in the server's local zone; that backend
   now agrees with the naive-means-UTC rule the rest of the codebase
-  applies, a deliberate alignment; storage write paths spell
+  applies, a deliberate alignment; the in-memory short-term evaluator
+  tags a naive stored metadata datetime under the same rule at
+  comparison time, since stored user data is not rewritten; storage
+  write paths spell
   `ensure_tz_aware(...).astimezone(UTC)` as two explicit steps at each
   site. A composed `to_utc` helper was rejected on two grounds: the
   name pins only the conversion, not the naive-means-UTC tagging
