@@ -2,7 +2,6 @@
 
 import datetime
 import logging
-import time
 from collections.abc import Iterable
 from typing import Annotated, Literal, cast
 from uuid import UUID, uuid4, uuid5
@@ -58,15 +57,6 @@ from memmachine_server.episodic_memory.event_memory.segment_store import (
 from memmachine_server.episodic_memory.event_memory.segmenter import Segmenter
 
 logger = logging.getLogger(__name__)
-
-# A deletion still purging after this long is either a very large
-# partition or a stalled claim held by another purger. The loop is
-# unbounded on purpose; warnings name the key and the elapsed time, the
-# first at this threshold and another each time the wait doubles, so the
-# second case is findable, since a polling loop shows no lock wait in the
-# database. Elapsed time is checked between calls, so a single slow call
-# is noticed only when it returns.
-_PURGE_SLOW_WARNING_SECONDS = 30.0
 
 # Stable namespace for deterministic Episode.uid -> Event.uuid mapping. Do not
 # change without a data migration.
@@ -439,42 +429,13 @@ class LongTermMemory:
         await segment_store.delete_partition(self._partition_key)
         # Drop references to the now-deleted resources so any further
         # add_episodes / search_scored / delete_episodes calls raise
-        # rather than silently operating on stale handles -- before the
-        # drain below, so a drain failure cannot leave them populated.
+        # rather than silently operating on stale handles.
         self._event_memory = None
         self._vector_store = None
         self._segment_store = None
-        # The erasure path: reclaim this partition's garbage inline so its
-        # rows are physically gone before returning, as the partitioned
-        # layout's synchronous drop was. Only this key's entries are
-        # targeted; the global backlog belongs to the resource manager's
-        # background sweeper. If the sweeper holds one of this key's
-        # entries, the call reports more work and paces itself, so the
-        # loop ends only when the key is clear.
-        try:
-            started_at = time.monotonic()
-            next_warning_at = _PURGE_SLOW_WARNING_SECONDS
-            while await segment_store.purge_partition(self._partition_key):
-                elapsed = time.monotonic() - started_at
-                if elapsed >= next_warning_at:
-                    logger.warning(
-                        "Purging partition %r is still running after %.0f s; "
-                        "a very large partition, or a concurrent purger "
-                        "holding one of its queue entries",
-                        self._partition_key,
-                        elapsed,
-                    )
-                    next_warning_at = elapsed * 2
-        except Exception:
-            # The destructive work above has committed: a drain failure
-            # must not report a completed erasure as failed, and a retry
-            # would find the handles already nulled. The background
-            # purger finishes reclamation on its own tick.
-            logger.exception(
-                "Purge drain after dropping partition %r failed; the "
-                "background purger completes reclamation",
-                self._partition_key,
-            )
+        # Physical reclamation is the sweeper's, which the resource manager
+        # runs: the partition is unreachable now, and its rows are reclaimed
+        # within the sweeper's interval.
 
     async def close(self) -> None:
         # Backends do not own resources we can close at this layer; the

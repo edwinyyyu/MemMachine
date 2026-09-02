@@ -50,7 +50,7 @@ One physical schema on every dialect; the ORM models are the tables.
   composite string key, and random UUIDs are unique across nodes without
   coordination, so a tenant's rows move between databases verbatim.
 - `segment_store_gc`, the purge queue: one row per dead incarnation, with
-  the logical key, which `purge_partition` claims by.
+  the logical key kept for forensics.
 
 The link table keeps its foreign key to the segment table (`ON DELETE
 CASCADE`), both sides keyed by incarnation. The segment table has no
@@ -92,12 +92,9 @@ on random-UUID collision resistance.
 - **Re-create**: a new registry row with a fresh incarnation, safe at any
   time; the old incarnation's rows are invisible to the successor even
   while the purger is still sweeping them.
-- **Purge**: two methods on the `SegmentStore` ABC share one
-  implementation and differ only in what they claim.
-  `purge_deleted_partitions() -> bool`, the sweeper, claims the oldest
-  entry across all keys; `purge_partition(key) -> bool`, the delete path's
-  companion, claims this key's oldest entry only. Both return True while
-  more work remains for their scope, and the caller's whole protocol is
+- **Purge**: `purge_deleted_partitions() -> bool` on the `SegmentStore`
+  ABC, the sweeper: it claims the oldest entry across all keys, returns
+  True while more work may remain, and the caller's whole protocol is
   "call until False"; how much one call does is implementation policy. The caller is promised only that a call
   does not noticeably degrade concurrent request serving, and every bound
   below exists to keep that promise. The deletion contract is "unreachable
@@ -129,37 +126,14 @@ on random-UUID collision resistance.
     the queue instead of contending, and only the claiming call touches a
     dead incarnation's rows (writers cannot, since the fence pins live
     incarnations only), so reclamation is deadlock-free by construction.
-  - The targeted purge also claims skip-locked, within the key, so on
-    PostgreSQL no call ever waits on another purger's claim (SQLite drops
-    the clause and waits at the DELETE for the driver's busy timeout,
-    #1542). A plain `FOR UPDATE` was tried and rejected, not for a holder
-    that never finishes (the loop is unbounded either way) but because
-    skip-locked keeps reclaiming the key's other generations while one is
-    held and never stalls behind a sweeper's short legitimate claim, at
-    the cost of polling while an entry is held. When
-    nothing is claimable, one unlocked read of the key decides the
-    return: no entry means False, so False is exact; a held entry means
-    True, and the call pauses briefly before returning it so the caller's
-    loop polls instead of spinning while the sweeper finishes its one
-    bounded call. That is why it is a second method and not a mode flag:
-    the two return values mean different things ("more work anywhere"
-    versus "more work for this key"). The targeted purge is keyed by the
-    partition key the caller already holds, not by an incarnation:
-    incarnations stay an implementation detail, and no backend has to
-    mint or accept an identity token. The queue row's key column is
-    therefore load-bearing, indexed with the stamp so the claim, the
-    existence read and the within-key order are one index range. Every
-    dead generation under the key is reclaimed, oldest first at the
-    clock's resolution, which is stronger erasure than
-    targeting one incarnation (garbage from an earlier crashed drain of the
-    same key goes too), and a recreated key is safe by construction, since
-    its live incarnation is never in the queue.
-  - Draining the global queue from the delete path was tried and rejected.
-    The queue is FIFO, so a deletion's own entry is the newest at enqueue
-    time: the loop cleared every older tenant's garbage first and then kept
-    going through entries that arrived after it started, work that delayed
-    the request without serving it, with completion time inflating by the
-    usual queueing factor under sustained deletion traffic.
+  - The delete path does not purge. An inline drain was tried twice,
+    first of the global queue and then scoped to the deleted key, and
+    removed: prompt physical erasure is not a promise the store can keep
+    on every dialect (on SQLite any writer past the busy timeout fails),
+    and a global drain made one deletion pay for other tenants' backlog.
+    A deleted partition is unreachable at once and its rows are reclaimed
+    within the sweeper's interval. Waking the sweeper from the delete
+    path is future work with the tenant lifecycle layer.
   - An entry is retired only when the retiring call's own deletes found
     fewer rows than its remaining budget. Before retiring, the call also
     deletes any link rows still carrying the incarnation, in batches drawn
@@ -181,12 +155,9 @@ on random-UUID collision resistance.
     per store: bounded calls a short pause apart while the store reports
     more work (the pause yields the database to request serving), a full
     tick apart otherwise; failures are logged and retried next tick, and
-    the task is cancelled on close. `LongTermMemory` loops
-    `purge_partition` on its own key on session drop, so a deletion
-    returns with its rows physically gone. Because the delete path no
-    longer sweeps the global queue, a deployment must run the sweeper
-    somewhere; `purge_partition` is an erasure-promptness optimization,
-    not a substitute, and the ABC says so.
+    the task is cancelled on close. `LongTermMemory` does not purge on
+    session drop; a deployment must run the sweeper somewhere, and the
+    ABC says so.
   - Measured deletion throughput is about 147k rows/s on the benchmark
     box, so a ten-million-row tenant erases in about a minute of
     background work.
@@ -278,16 +249,9 @@ requirement excludes.
   covers new tenants automatically (they are rows, not relations), and
   moving a tenant between nodes is an indexed row copy plus a registry
   insert whose fresh incarnation fences all stale handles.
-- Tenant deletion is O(rows) physically. The delete path reclaims its own
-  key inline through `purge_partition`, looping until the key is clear,
-  so a deletion returns with its rows gone unless a purge call fails on
-  backend contention (SQLite past the driver's busy timeout, a condition
-  every SQLite writer shares), in which case the failure is logged and
-  the rest is the sweeper's. The global backlog is the
-  sweeper's, and a deployment must run one. The loop is unbounded on
-  purpose: a purger that holds one of the key's entries and never
-  finishes would stall it, an operational incident rather than a case
-  to design for.
+- Tenant deletion is O(rows) physically, in the background: a deleted
+  partition is unreachable at once, and its rows are reclaimed by the
+  sweeper within its interval. A deployment must run the sweeper.
 - No migration from the partitioned layout is provided (the event backend
   is opt-in and pre-GA); existing databases recreate their schema.
 - Datetime convention: filter nodes normalize datetime values to UTC-aware

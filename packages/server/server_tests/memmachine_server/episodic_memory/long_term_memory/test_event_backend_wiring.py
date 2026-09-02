@@ -48,9 +48,6 @@ from memmachine_server.episodic_memory.long_term_memory import (
     EventBackendParams,
     LongTermMemory,
 )
-from memmachine_server.episodic_memory.long_term_memory import (
-    long_term_memory as long_term_memory_module,
-)
 from server_tests.memmachine_server.common.reranker.fake_embedder import FakeEmbedder
 from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_collection import (
     InMemoryVectorStoreCollection,
@@ -165,8 +162,6 @@ def vector_store_collection(fake_embedder):
 def segment_store():
     """Stand-in for the parent SegmentStore lifecycle methods."""
     store = create_autospec(SegmentStore, instance=True)
-    # The erasure path purges its own key until the store reports done.
-    store.purge_partition.return_value = False
     store.purge_deleted_partitions.return_value = False
     return store
 
@@ -243,7 +238,6 @@ async def test_search_warns_on_index_storage_drift(
     """If the event index references an episode UID that EpisodeStorage no
     longer has (index/storage drift), the dropped UID is logged as a warning
     and the remaining episodes are still returned."""
-    import logging
 
     await long_term_memory.add_episodes(episodes)
     # Simulate drift: index keeps ep-2's segment, but EpisodeStorage forgets it.
@@ -301,61 +295,8 @@ async def test_drop_session_partition_calls_parent_lifecycle_hooks(
         name="sess1",
     )
     segment_store.delete_partition.assert_awaited_once_with("sess1")
-    segment_store.purge_partition.assert_awaited_with("sess1")
+    # Reclamation is the sweeper's; the delete path never purges.
     segment_store.purge_deleted_partitions.assert_not_awaited()
-
-
-async def test_drop_session_partition_survives_drain_failure(
-    long_term_memory,
-    segment_store,
-    episodes,
-    caplog,
-):
-    """A drain failure after the destructive work has committed is logged,
-    not raised: the erasure happened, the background purger completes
-    reclamation, and the handles are nulled all the same."""
-    segment_store.purge_partition.side_effect = ConnectionError("dropped")
-    with caplog.at_level(logging.ERROR):
-        await long_term_memory.drop_session_partition()
-    segment_store.delete_partition.assert_awaited_once_with("sess1")
-    assert "background purger completes reclamation" in caplog.text
-    with pytest.raises(RuntimeError, match="drop_session_partition"):
-        await long_term_memory.add_episodes(episodes)
-
-
-async def test_drop_session_partition_warns_as_a_long_purge_doubles(
-    long_term_memory,
-    segment_store,
-    caplog,
-    monkeypatch,
-):
-    """A long-running purge warns with the elapsed time, again as it doubles.
-
-    The loop is unbounded by design; the warnings are what make a stalled
-    claim elsewhere findable, since polling shows no lock wait, and the
-    elapsed figure is what tells thirty seconds from forty minutes.
-    """
-
-    class FakeClock:
-        now = 0.0
-
-        def monotonic(self) -> float:
-            self.now += 1.0
-            return self.now
-
-    monkeypatch.setattr(long_term_memory_module, "time", FakeClock())
-    monkeypatch.setattr(long_term_memory_module, "_PURGE_SLOW_WARNING_SECONDS", 2.5)
-    segment_store.purge_partition.side_effect = [True] * 8 + [False]
-    with caplog.at_level(logging.WARNING):
-        await long_term_memory.drop_session_partition()
-    messages = [
-        record.getMessage()
-        for record in caplog.records
-        if "still running" in record.getMessage()
-    ]
-    assert [m.split("after ")[1].split(" s")[0] for m in messages] == ["3", "6"]
-    assert all("'sess1'" in m for m in messages)
-    assert segment_store.purge_partition.await_count == 9
 
 
 async def test_event_backend_unusable_after_drop_session_partition(

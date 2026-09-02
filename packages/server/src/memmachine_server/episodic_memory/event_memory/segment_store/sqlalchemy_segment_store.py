@@ -1,6 +1,5 @@
 """SQLAlchemy implementation of the SegmentStore interface."""
 
-import asyncio
 import json
 import logging
 import sqlite3
@@ -115,11 +114,6 @@ _JSON_AUTO = JSON().with_variant(JSONB, "postgresql")
 # has some other, permanent cause.
 _MAX_MINT_ATTEMPTS = 10
 
-# Pause before reporting a key whose remaining entries a concurrent purger
-# holds: a caller loops on True, and without it the loop would spin for
-# the length of that purger's bounded call.
-_PURGE_HELD_PAUSE_SECONDS = 0.01
-
 # Partition deletion depends on RETURNING, which SQLite added in 3.35.
 _MIN_SQLITE_VERSION = (3, 35)
 
@@ -232,8 +226,7 @@ class PurgeQueueRow(BaseSegmentStore):
     Claimed oldest-first by the enqueue stamp, which is the database clock,
     so entries from every server order on one clock; entries stamped in the
     same tick are unordered among themselves. The incarnation identifies
-    the rows to reclaim; the logical key lets `purge_partition` claim one
-    key's entries.
+    the rows to reclaim; the logical key is carried for forensics.
     """
 
     __tablename__ = "segment_store_gc"
@@ -244,10 +237,7 @@ class PurgeQueueRow(BaseSegmentStore):
         DateTime(timezone=True), nullable=False
     )
 
-    __table_args__ = (
-        Index("segment_store_gc__ea", "enqueued_at"),
-        Index("segment_store_gc__pk_ea", "partition_key", "enqueued_at"),
-    )
+    __table_args__ = (Index("segment_store_gc__ea", "enqueued_at"),)
 
 
 class SQLAlchemySegmentStorePartition(SegmentStorePartition):
@@ -1217,78 +1207,41 @@ class SQLAlchemySegmentStore(SegmentStore):
             )
 
     @override
-    async def purge_deleted_partitions(self) -> bool:
-        async with self._tracker("purge_deleted_partitions"):
-            # Skips only OTHER transactions' locks; entries this call has
-            # already claimed cannot come back, each being deleted before
-            # the next claim.
-            claim = (
-                select(PurgeQueueRow.incarnation)
-                .order_by(PurgeQueueRow.enqueued_at)
-                .limit(1)
-                .with_for_update(skip_locked=True)
-            )
-            return await self._purge(claim)
-
     @override
-    async def purge_partition(self, partition_key: str) -> bool:
-        validate_partition_key(partition_key)
-        async with self._tracker("purge_partition"):
-            # Skip-locked within the key: on PostgreSQL the call never waits
-            # on a concurrent purger's claim, the read below makes False
-            # exact, and the pause keeps a caller's loop from spinning while
-            # a sweeper finishes its one bounded call. SQLite drops the
-            # locking clause: the plain read sees a held entry and the DELETE
-            # then waits on the database write lock for the driver's busy
-            # timeout, raising if it expires (engine settings: #1542).
-            claim = (
-                select(PurgeQueueRow.incarnation)
-                .where(PurgeQueueRow.partition_key == partition_key)
-                .order_by(PurgeQueueRow.enqueued_at)
-                .limit(1)
-                .with_for_update(skip_locked=True)
-            )
-            if await self._purge(claim):
-                return True
-            if not await self._key_has_garbage(partition_key):
-                return False
-        await asyncio.sleep(_PURGE_HELD_PAUSE_SECONDS)
-        return True
-
-    async def _key_has_garbage(self, partition_key: str) -> bool:
-        """Whether any queue entry, claimed or not, remains under this key."""
-        async with self._engine.connect() as connection:
-            entry = (
-                await connection.execute(
-                    select(PurgeQueueRow.incarnation)
-                    .where(PurgeQueueRow.partition_key == partition_key)
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-        return entry is not None
-
-    async def _purge(self, claim: Select[tuple[UUID]]) -> bool:
-        """Reclaim the incarnations `claim` yields, within the per-call bounds.
-
-        One transaction per call: reclaim up to the configured bounds and
-        commit, or nothing. That is what makes a call that fails on
-        contention safe to repeat, as the ABC promises: a raise rolls the
-        whole call back. Entries are claimed one at a time, so only
-        the claiming call touches a dead incarnation's rows. SQLite drops
-        locking clauses; there purgers serialize at the DELETE, and a
-        doubly-claimed entry costs empty round trips, never duplicated or
-        missed reclamation (an entry is retired only when the retirer's
-        own DELETEs found fewer rows than its budget). Full rationale:
-        design/segment_store_shared_tables.md.
-        """
+    async def purge_deleted_partitions(self) -> bool:
+        # Reclaim dead incarnations oldest-first, within the per-call bounds.
+        #
+        # One transaction per call: reclaim up to the configured bounds and
+        # commit, or nothing. That is what makes a call that fails on
+        # contention safe to repeat, as the ABC promises: a raise rolls the
+        # whole call back. Entries are claimed one at a time, so only
+        # the claiming call touches a dead incarnation's rows. SQLite drops
+        # locking clauses; there purgers serialize at the DELETE, and a
+        # doubly-claimed entry costs empty round trips, never duplicated or
+        # missed reclamation (an entry is retired only when the retirer's
+        # own DELETEs found fewer rows than its budget). Full rationale:
+        # design/segment_store_shared_tables.md.
         remaining = self._purge_max_segments
         entries = 0
         # Pure Core DML on an engine connection: unlike Session.execute,
         # AsyncConnection.execute is typed CursorResult, whose rowcount
         # the batch loop needs.
-        async with self._engine.begin() as connection:
+        async with (
+            self._tracker("purge_deleted_partitions"),
+            self._engine.begin() as connection,
+        ):
             while True:
-                incarnation = (await connection.execute(claim)).scalar_one_or_none()
+                incarnation = (
+                    await connection.execute(
+                        # Skips only OTHER transactions' locks; entries this
+                        # call has already claimed cannot come back, each
+                        # being deleted before the next claim.
+                        select(PurgeQueueRow.incarnation)
+                        .order_by(PurgeQueueRow.enqueued_at)
+                        .limit(1)
+                        .with_for_update(skip_locked=True)
+                    )
+                ).scalar_one_or_none()
                 if incarnation is None:
                     return False
 
