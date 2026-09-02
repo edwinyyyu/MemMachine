@@ -5,6 +5,8 @@ import contextlib
 import json
 import logging
 import random
+import sqlite3
+import time
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta, timezone
 from uuid import UUID, uuid4
@@ -44,6 +46,9 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
     SQLAlchemySegmentStorePartition,
+)
+from memmachine_server.episodic_memory.event_memory.segment_store.utils import (
+    validate_partition_key,
 )
 
 PARTITION_KEY = "test_partition"
@@ -1408,6 +1413,48 @@ async def test_purge_queue_indexes_key_and_stamp(
     by_name = {index["name"]: index["column_names"] for index in indexes}
     assert by_name["segment_store_gc__pk_ea"] == ["partition_key", "enqueued_at"]
     assert by_name["segment_store_gc__ea"] == ["enqueued_at"]
+
+
+@pytest.mark.asyncio
+async def test_purge_partition_waits_out_a_brief_write_lock_on_sqlite(
+    sqlalchemy_sqlite_engine: AsyncEngine,
+) -> None:
+    """SQLite has no skip-locked claim: the call waits on the write lock.
+
+    The counterpart of the PostgreSQL held-entry test. Another connection
+    holds the database write lock, as a sweeper mid-DELETE would; the
+    targeted purge neither skips the key nor errors within the driver's
+    busy timeout, it waits and then completes.
+    """
+    store = SQLAlchemySegmentStore(
+        SQLAlchemySegmentStoreParams(engine=sqlalchemy_sqlite_engine)
+    )
+    await store.startup()
+    partition = await store.open_or_create_partition(
+        "gc_busy", _plaintext_partition_config()
+    )
+    await partition.add_segments(_links(_seg()))
+    await store.delete_partition("gc_busy")
+
+    holder = sqlite3.connect(str(sqlalchemy_sqlite_engine.url.database), timeout=0.1)
+    holder.execute("BEGIN IMMEDIATE")
+    holder.execute("DELETE FROM segment_store_sg WHERE 0")
+    hold_seconds = 0.3
+
+    def release() -> None:
+        holder.commit()
+        holder.close()
+
+    asyncio.get_running_loop().call_later(hold_seconds, release)
+    started = time.monotonic()
+    assert await store.purge_partition("gc_busy") is False
+    assert time.monotonic() - started >= hold_seconds * 0.8
+
+    async with partition._create_session() as session:
+        queue_depth = (
+            await session.execute(select(func.count()).select_from(PurgeQueueRow))
+        ).scalar_one()
+    assert queue_depth == 0
 
 
 @pytest.mark.asyncio
@@ -2834,3 +2881,9 @@ async def test_sqlite_mint_detects_collision_with_concurrent_deletion(
     while await sqlite_store.purge_deleted_partitions():
         pass
     assert (await sqlite_store.open_partition("sq_mint_fresh")) is not None
+
+
+def test_empty_partition_key_is_named_as_empty() -> None:
+    """An empty key is reported as empty, not as containing invalid characters."""
+    with pytest.raises(ValueError, match="must not be empty"):
+        validate_partition_key("")

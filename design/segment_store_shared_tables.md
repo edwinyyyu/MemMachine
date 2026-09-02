@@ -280,7 +280,9 @@ requirement excludes.
   insert whose fresh incarnation fences all stale handles.
 - Tenant deletion is O(rows) physically. The delete path reclaims its own
   key inline through `purge_partition`, looping until the key is clear,
-  so a deletion returns with its rows gone; the global backlog is the
+  so a deletion normally returns with its rows gone; a purge call that
+  fails on backend contention (SQLite past the driver's busy timeout) is
+  logged and the rest is the sweeper's. The global backlog is the
   sweeper's, and a deployment must run one. The loop is unbounded on
   purpose: a purger that holds one of the key's entries and never
   finishes would stall it, an operational incident rather than a case

@@ -18,6 +18,8 @@ widens.
 
 def validate_partition_key(partition_key: str) -> None:
     """Raise ValueError unless the key matches `[a-z0-9_]+` within PARTITION_KEY_MAX_BYTES."""
+    if not partition_key:
+        raise ValueError("Partition key must not be empty.")
     if not _PARTITION_KEY_RE.fullmatch(partition_key):
         raise ValueError(
             f"Partition key {partition_key!r} contains invalid characters. "
