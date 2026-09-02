@@ -32,6 +32,7 @@ from memmachine_server.common.errors import (
     InvalidEmbedderError,
     InvalidLanguageModelError,
     InvalidRerankerError,
+    ResourceManagerClosedError,
 )
 from memmachine_server.common.resource_manager import CommonResourceManager
 from memmachine_server.common.resource_manager import (
@@ -287,5 +288,5 @@ async def test_close_cancels_segment_store_purge_tasks(
 async def test_get_segment_store_after_close_raises(invalid_resource_manager):
     """A get racing or following close must refuse, not rebuild on a dead engine."""
     await invalid_resource_manager.close()
-    with pytest.raises(RuntimeError, match="closed"):
+    with pytest.raises(ResourceManagerClosedError):
         await invalid_resource_manager.get_segment_store(SQLDB_ID)

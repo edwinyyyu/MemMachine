@@ -153,13 +153,14 @@ def _compile_properties_json_leaf(
         type_name = PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[type(first_value)]
         value_path = column[PROPERTY_VALUE_KEY]
         type_check = column[PROPERTY_TYPE_KEY].as_string() == type_name
-        # One cast-and-normalize rule for both leaf shapes: the casted
-        # path comes from the first value, every member is normalized
-        # the same way a Comparison value would be.
-        casted_column, _ = _cast_properties_json_value(value_path, first_value)
-        normalized_values = [
-            _cast_properties_json_value(value_path, value)[1] for value in expr.values
+        # One cast-and-normalize rule for both leaf shapes: every member
+        # is cast and normalized the way a Comparison value would be, and
+        # the column takes the first member's cast.
+        casts = [
+            _cast_properties_json_value(value_path, value) for value in expr.values
         ]
+        casted_column = casts[0][0]
+        normalized_values = [normalized for _, normalized in casts]
         return and_(type_check, casted_column.in_(normalized_values))
 
     # Comparison

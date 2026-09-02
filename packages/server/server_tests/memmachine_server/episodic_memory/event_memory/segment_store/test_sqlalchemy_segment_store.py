@@ -2260,6 +2260,41 @@ async def test_old_sqlite_runtime_is_rejected(
 
 
 @pytest.mark.asyncio
+async def test_windowed_read_raises_when_partition_dies_between_statements(
+    store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seeds found, then deletion commits before the context statements.
+
+    Each statement takes its own snapshot, so the context statements
+    would return nothing; the read must raise rather than hand back
+    seeds with silently empty context.
+    """
+    partition = await store.open_or_create_partition(
+        "mid_read", _plaintext_partition_config()
+    )
+    segs = [_seg(ts_offset_seconds=i) for i in range(3)]
+    await partition.add_segments(_links(*segs))
+
+    context_method = (
+        "_get_context_rows_loop"
+        if partition._is_sqlite
+        else "_get_context_rows_lateral"
+    )
+    original = getattr(partition, context_method)
+
+    async def delete_then_read(*args, **kwargs):
+        await store.delete_partition("mid_read")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(partition, context_method, delete_then_read)
+    with pytest.raises(SegmentStorePartitionHandleStaleError):
+        await partition.get_segment_contexts(
+            [segs[1].uuid], max_backward_segments=1, max_forward_segments=1
+        )
+
+
+@pytest.mark.asyncio
 async def test_partition_key_with_trailing_newline_is_rejected(
     store: SQLAlchemySegmentStore,
 ) -> None:

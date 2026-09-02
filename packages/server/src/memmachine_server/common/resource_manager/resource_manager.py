@@ -17,6 +17,7 @@ from memmachine_server.common.episode_store import (
 from memmachine_server.common.episode_store.episode_sqlalchemy_store import (
     SqlAlchemyEpisodeStore,
 )
+from memmachine_server.common.errors import ResourceManagerClosedError
 from memmachine_server.common.language_model import LanguageModel
 from memmachine_server.common.metrics_factory import MetricsFactory
 from memmachine_server.common.reranker import Reranker
@@ -160,7 +161,7 @@ class ResourceManagerImpl:
         if name not in self._segment_stores:
             async with self._segment_store_lock:
                 if self._closed:
-                    raise RuntimeError(
+                    raise ResourceManagerClosedError(
                         "Resource manager is closed; no new segment stores can be built"
                     )
                 if name not in self._segment_stores:

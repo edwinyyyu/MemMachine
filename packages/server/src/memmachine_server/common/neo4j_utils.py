@@ -99,6 +99,9 @@ def coerce_datetime_to_timestamp(
     value: FilterValue,
 ) -> FilterValue:
     """Convert filter values into epoch timestamps when appropriate."""
+    # Filter nodes deliver UTC-aware instants (FilterExpr normalizes at
+    # construction; naive means UTC), so this is the instant's epoch
+    # rather than a naive value read in the server's local zone.
     if isinstance(value, _dt.datetime):
         return value.timestamp()
     if isinstance(value, str):
