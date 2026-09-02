@@ -237,7 +237,7 @@ class SegmentStore(ABC):
         The partition becomes unreachable immediately: it can no longer be
         opened, and handles opened on it raise from then on.
         Implementations may defer physically reclaiming its rows to
-        `purge_partition` and `purge_deleted_partitions`. Idempotent.
+        `purge_deleted_partitions`. Idempotent.
 
         Args:
             partition_key (str):
@@ -259,8 +259,8 @@ class SegmentStore(ABC):
         another writer, and to run concurrently from any process. The
         store never schedules
         it; a deployment must run it somewhere (the server's resource
-        manager runs it in the background), and `purge_partition` is not
-        a substitute. Implementations that reclaim physically in
+        manager runs it in the background). Implementations that reclaim
+        physically in
         `delete_partition` may return False without doing anything.
 
         Returns:
@@ -268,36 +268,5 @@ class SegmentStore(ABC):
                 True if another call may reclaim more. False if this call
                 found nothing to claim; entries a concurrent purger holds
                 are that purger's to finish, so the caller may back off.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    async def purge_partition(self, partition_key: str) -> bool:
-        """
-        Physically reclaim one deleted partition's storage, bounded per call.
-
-        Reclaims only what `delete_partition` deferred for this key,
-        oldest generation first if the key was deleted more than once
-        (same-tick deletions are unordered), so a caller can make a
-        deletion physically complete before returning
-        without draining other partitions' backlog. Same bounds and
-        protocol as the sweeper. False is exact: this key has no garbage
-        left. True means more remains, in this call's hands or a
-        concurrent purger's; an implementation must not let a caller's
-        loop spin in the latter case. A call may fail on backend
-        contention with another purger; repeating it is always safe, and
-        whatever it leaves is the sweeper's. Not a substitute for the
-        sweeper, which a deployment must still run. Implementations that
-        reclaim physically in `delete_partition` may return False without
-        doing anything.
-
-        Args:
-            partition_key (str):
-                The key of the deleted partition.
-
-        Returns:
-            bool:
-                True if another call may reclaim more of this key's
-                garbage; False if none is left.
         """
         raise NotImplementedError
