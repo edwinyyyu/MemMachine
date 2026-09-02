@@ -25,6 +25,9 @@ Requirements that shape everything below:
 - Horizontal scaling without sharding: any process serves any tenant, no
   process owns a tenant, nothing is coordinated in process memory.
   Twenty thousand tenants now; millions at the next levels of scale.
+- Per-tenant DDL is avoided where it would be expensive in a large
+  deployment. The SQLite stores are not for large deployments: they are
+  fine as long as they work and obey the contracts.
 - Garbage that is never collected is unacceptable. Wasted writes are
   acceptable.
 - Rejection of operations on a deleted tenant is structural, by database
@@ -150,7 +153,9 @@ Named so the redesign can be checked against it.
    Nothing is looked up lazily, nothing is mutated at runtime, a bad
    document fails startup.
 9. Schema is versioned migrations applied by an operator's command.
-   Serving and reconciler processes verify the schema and never run DDL.
+   Serving and reconciler processes verify the schema and never run
+   migrations. The backends of large deployments hold tenants as rows or
+   values; only the SQLite stores create per-tenant tables.
 
 ## Architecture
 
@@ -496,8 +501,9 @@ reject keys.
   stores keep a table (and, for the usearch store, an index file) per
   collection: `sqlite_vec_vector_store.py:4` records that partition keys
   were avoided because a future sqlite-vec ANN index may not support
-  them, and both stores are single-process by contract, so the shared
-  container that horizontal scaling needs is not asked of them.
+  them. Both stores are single-process by contract and not for large
+  deployments, so a table per tenant costs nothing that matters there;
+  what is asked of them is the contracts, not scale.
 - `create_collection(key, container)`: one ledger insert; on the SQLite
   stores, followed by the collection's table, created after the ledger
   row and inside the `ensure` job.
@@ -717,12 +723,12 @@ Two kinds of schema:
    and data tables, each subsystem's per-tenant table, the vector
    ledger, and the native containers of the vector backends. Static,
    versioned, migrated by an operator's command.
-2. Per-tenant resources: rows, in every store, with one exception: the
-   two SQLite vector stores create a table per collection. They are
-   single-process by contract, so no version skew across processes can
-   arise; the DDL runs inside the `ensure` and `reclaim` steps of a job,
-   after the ledger row that records the key. Nothing else creates or
-   drops a table outside `memmachine schema upgrade`.
+2. Per-tenant resources: rows, in every store that a large deployment
+   uses. The two SQLite vector stores create a table per collection,
+   which is fine at their scale: the DDL runs inside the `ensure` and
+   `reclaim` steps of a job, after the ledger row that records the key,
+   in the one process that owns the file. Nothing else creates or drops
+   a table outside `memmachine schema upgrade`.
 
 Component schema:
 
