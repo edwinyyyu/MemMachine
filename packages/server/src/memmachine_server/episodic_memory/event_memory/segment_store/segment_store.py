@@ -234,11 +234,10 @@ class SegmentStore(ABC):
         """
         Delete a partition.
 
-        Deletes all data in the partition. It is idempotent.
-
-        The partition becomes unreachable immediately; implementations may
-        defer physical reclamation of its data to `purge_partition` and
-        `purge_deleted_partitions`.
+        The partition becomes unreachable immediately: it can no longer be
+        opened, and handles opened on it raise from then on.
+        Implementations may defer physically reclaiming its rows to
+        `purge_partition` and `purge_deleted_partitions`. Idempotent.
 
         Args:
             partition_key (str):
@@ -251,54 +250,40 @@ class SegmentStore(ABC):
         """
         Physically reclaim storage for deleted partitions, bounded per call.
 
-        The sweeper: performs reclamation that `delete_partition`
-        deferred, for every partition, oldest deletion first. Each call
-        reclaims a bounded amount, the progress it commits persists, and
-        repeating a call is always safe. The bounds are implementation
-        policy, not the caller's concern; what the caller is promised is
-        that a call does not noticeably degrade the serving of concurrent
-        requests. Draining a backlog is the caller's loop: call until
-        this returns False. Concurrent calls, including from other
-        processes, must be safe: implementations coordinate so that
-        racing purgers neither error nor deadlock.
-
-        The store never schedules this itself, and nothing else reclaims
-        the backlog: a deployment must run it somewhere (the server's
-        resource manager runs it in the background). `purge_partition`
-        reclaims one partition promptly but is not a substitute.
-        Implementations that reclaim physically in `delete_partition`
-        may implement this as a no-op returning False.
+        The sweeper: reclaims what `delete_partition` deferred, for every
+        partition, oldest deletion first. Each call does a bounded amount
+        of work, sized so it does not noticeably degrade concurrent
+        request serving, commits what it did, and is safe to repeat and
+        to run concurrently from any process. The store never schedules
+        it; a deployment must run it somewhere (the server's resource
+        manager runs it in the background), and `purge_partition` is not
+        a substitute. Implementations that reclaim physically in
+        `delete_partition` may return False without doing anything.
 
         Returns:
             bool:
-                True if another call may reclaim more;
-                False if no further reclamation is available to this
-                call -- work owned by a concurrent purger is not
-                counted, so a later call may still find some.
+                True if another call may reclaim more. False if this call
+                found nothing to claim; entries a concurrent purger holds
+                are that purger's to finish, so the caller may back off.
         """
         raise NotImplementedError
 
     @abstractmethod
     async def purge_partition(self, partition_key: str) -> bool:
         """
-        Physically reclaim a deleted partition's storage, bounded per call.
+        Physically reclaim one deleted partition's storage, bounded per call.
 
-        The delete path's companion to `purge_deleted_partitions`:
-        reclaims only what `delete_partition` deferred for this key, so a
-        caller that wants a deletion physically complete before it
-        returns can loop on this without draining other partitions'
-        backlog. Same bounds, same contract, and the same "call until
-        False" protocol as the sweeper; if the key has been deleted more
-        than once, its dead generations are reclaimed oldest first. False
-        is exact: this key has no garbage left. True means more remains,
-        whether this call reclaimed some or a concurrent purger holds the
-        rest; the call paces itself in that case, so a caller's loop does
-        not spin.
-
-        An erasure-promptness optimization, not a substitute for the
-        sweeper: a deployment must still run `purge_deleted_partitions`.
-        Implementations that reclaim physically in `delete_partition` may
-        implement this as a no-op returning False.
+        Reclaims only what `delete_partition` deferred for this key,
+        oldest generation first if the key was deleted more than once, so
+        a caller can make a deletion physically complete before returning
+        without draining other partitions' backlog. Same bounds and
+        protocol as the sweeper. False is exact: this key has no garbage
+        left. True means more remains, in this call's hands or a
+        concurrent purger's; the call paces itself in the latter case so
+        a caller's loop does not spin. Not a substitute for the sweeper,
+        which a deployment must still run. Implementations that reclaim
+        physically in `delete_partition` may return False without doing
+        anything.
 
         Args:
             partition_key (str):
