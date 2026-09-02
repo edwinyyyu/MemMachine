@@ -116,7 +116,7 @@ _MAX_MINT_ATTEMPTS = 10
 
 
 class _RegistryInsertRejectedError(Exception):
-    """A registry insert that must not stand; mint afresh and retry.
+    """A registry insert was rejected; retry with a fresh incarnation.
 
     Raised when the database rejected the insert with an integrity error
     while no row exists under the key, or when the minted incarnation
