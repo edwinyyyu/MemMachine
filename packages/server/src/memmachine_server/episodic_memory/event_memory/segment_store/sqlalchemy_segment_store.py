@@ -1271,7 +1271,9 @@ class SQLAlchemySegmentStore(SegmentStore):
         """Reclaim the incarnations `claim` yields, within the per-call bounds.
 
         One transaction per call: reclaim up to the configured bounds and
-        commit, or nothing. Entries are claimed one at a time, so only
+        commit, or nothing. That is what makes a call that fails on
+        contention safe to repeat, as the ABC promises: a raise rolls the
+        whole call back. Entries are claimed one at a time, so only
         the claiming call touches a dead incarnation's rows. SQLite drops
         locking clauses; there purgers serialize at the DELETE, and a
         doubly-claimed entry costs empty round trips, never duplicated or
