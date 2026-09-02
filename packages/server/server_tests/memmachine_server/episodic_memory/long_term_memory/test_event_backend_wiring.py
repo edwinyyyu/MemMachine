@@ -48,6 +48,9 @@ from memmachine_server.episodic_memory.long_term_memory import (
     EventBackendParams,
     LongTermMemory,
 )
+from memmachine_server.episodic_memory.long_term_memory import (
+    long_term_memory as long_term_memory_module,
+)
 from server_tests.memmachine_server.common.reranker.fake_embedder import FakeEmbedder
 from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_collection import (
     InMemoryVectorStoreCollection,
@@ -318,6 +321,29 @@ async def test_drop_session_partition_survives_drain_failure(
     assert "background purger completes reclamation" in caplog.text
     with pytest.raises(RuntimeError, match="drop_session_partition"):
         await long_term_memory.add_episodes(episodes)
+
+
+async def test_drop_session_partition_warns_once_when_purge_runs_long(
+    long_term_memory,
+    segment_store,
+    caplog,
+    monkeypatch,
+):
+    """A long-running purge logs one warning naming the key, then keeps going.
+
+    The loop is unbounded by design; the warning is what makes a stalled
+    claim elsewhere findable, since polling shows no lock wait.
+    """
+    monkeypatch.setattr(long_term_memory_module, "_PURGE_SLOW_WARNING_SECONDS", 0.0)
+    segment_store.purge_partition.side_effect = [True, True, True, False]
+    with caplog.at_level(logging.WARNING):
+        await long_term_memory.drop_session_partition()
+    warnings = [
+        record for record in caplog.records if "still running" in record.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert "'sess1'" in warnings[0].getMessage()
+    assert segment_store.purge_partition.await_count == 4
 
 
 async def test_event_backend_unusable_after_drop_session_partition(

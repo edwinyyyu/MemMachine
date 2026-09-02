@@ -2,6 +2,7 @@
 
 import datetime
 import logging
+import time
 from collections.abc import Iterable
 from typing import Annotated, Literal, cast
 from uuid import UUID, uuid4, uuid5
@@ -56,6 +57,12 @@ from memmachine_server.episodic_memory.event_memory.segment_store import (
 from memmachine_server.episodic_memory.event_memory.segmenter import Segmenter
 
 logger = logging.getLogger(__name__)
+
+# A deletion still purging after this long is either a very large
+# partition or a stalled claim held by another purger. The loop is
+# unbounded on purpose; one warning names the key so the second case is
+# findable, since a polling loop shows no lock wait in the database.
+_PURGE_SLOW_WARNING_SECONDS = 30.0
 
 # Stable namespace for deterministic Episode.uid -> Event.uuid mapping. Do not
 # change without a data migration.
@@ -433,8 +440,21 @@ class LongTermMemory:
         # entries, the call reports more work and paces itself, so the
         # loop ends only when the key is clear.
         try:
+            started_at = time.monotonic()
+            warned = False
             while await segment_store.purge_partition(self._partition_key):
-                pass
+                if (
+                    not warned
+                    and time.monotonic() - started_at > _PURGE_SLOW_WARNING_SECONDS
+                ):
+                    logger.warning(
+                        "Purging partition %r is still running after %.0f s; "
+                        "a very large partition, or a concurrent purger "
+                        "holding one of its queue entries",
+                        self._partition_key,
+                        _PURGE_SLOW_WARNING_SECONDS,
+                    )
+                    warned = True
         except Exception:
             # The destructive work above has committed: a drain failure
             # must not report a completed erasure as failed, and a retry
