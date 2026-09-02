@@ -120,6 +120,9 @@ _MAX_MINT_ATTEMPTS = 10
 # the length of that purger's bounded call.
 _PURGE_HELD_PAUSE_SECONDS = 0.01
 
+# Partition deletion depends on RETURNING, which SQLite added in 3.35.
+_MIN_SQLITE_VERSION = (3, 35)
+
 
 class _RegistryInsertRejectedError(Exception):
     """A registry insert was rejected; retry with a fresh incarnation.
@@ -927,11 +930,15 @@ class SQLAlchemySegmentStoreParams(BaseModel):
                 "Engine uses ephemeral SQLite, where each connection gets a separate database. "
                 "Use a file path instead."
             )
-        if engine.dialect.name == "sqlite" and sqlite3.sqlite_version_info < (3, 35):
+        if (
+            engine.dialect.name == "sqlite"
+            and sqlite3.sqlite_version_info < _MIN_SQLITE_VERSION
+        ):
+            minimum = ".".join(str(part) for part in _MIN_SQLITE_VERSION)
             raise ValueError(
                 f"SQLite runtime {sqlite3.sqlite_version} lacks the RETURNING "
-                "support partition deletion depends on. Use SQLite 3.35 or "
-                "newer."
+                f"support partition deletion depends on. Use SQLite {minimum} "
+                "or newer."
             )
         return engine
 

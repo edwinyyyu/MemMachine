@@ -7,7 +7,13 @@ import re
 _PARTITION_KEY_RE = re.compile(r"[a-z0-9_]+")
 
 PARTITION_KEY_MAX_BYTES = 32
-"""Maximum partition key length in bytes."""
+"""Maximum partition key length in bytes.
+
+The charset is ASCII, so this equals the character count today; bytes is
+the unit on purpose, because the budgets a key must fit (identifier and
+column widths) are byte-denominated and stay honest if the charset ever
+widens.
+"""
 
 
 def validate_partition_key(partition_key: str) -> None:
