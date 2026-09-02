@@ -289,10 +289,11 @@ class SegmentStore(ABC):
         returns can loop on this without draining other partitions'
         backlog. Same bounds, same contract, and the same "call until
         False" protocol as the sweeper; if the key has been deleted more
-        than once, its dead generations are reclaimed oldest first. An
-        entry a concurrent sweeper has already claimed is waited for
-        rather than skipped, so a False return means this key has no
-        garbage left.
+        than once, its dead generations are reclaimed oldest first. False
+        is exact: this key has no garbage left. True means more remains,
+        whether this call reclaimed some or a concurrent purger holds the
+        rest; the call paces itself in that case, so a caller's loop does
+        not spin.
 
         An erasure-promptness optimization, not a substitute for the
         sweeper: a deployment must still run `purge_deleted_partitions`.

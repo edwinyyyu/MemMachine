@@ -1480,26 +1480,26 @@ async def test_purge_partition_reclaims_dead_generations_oldest_first(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_purge_partition_waits_for_sweeper_holding_its_entry(
+async def test_purge_partition_reports_held_entry_and_finishes_after_sweeper(
     pg_store: SQLAlchemySegmentStore,
     sqlalchemy_pg_engine: AsyncEngine,
 ) -> None:
-    """The targeted purge waits for a sweeper's claim instead of skipping it.
+    """A sweeper's claim is neither waited on nor mistaken for a clear key.
 
-    A sweeper (emulated: another transaction holding the key's oldest
-    entry under `FOR UPDATE`, uncommitted) must block the targeted purge,
-    not be skipped; once the sweeper retires that entry and commits, the
-    targeted purge continues with the key's next dead generation and
-    returns False only when the key is clear.
+    With a sweeper (emulated: another transaction holding the key's
+    oldest entry under `FOR UPDATE`, uncommitted) the targeted purge
+    still returns promptly, reclaims the key's other dead generation, and
+    reports True because the held entry remains; once the sweeper retires
+    that entry and commits, the next call returns False.
     """
     generations = []
     for _ in range(2):
         partition = await pg_store.open_or_create_partition(
-            "gc_wait", _plaintext_partition_config()
+            "gc_held_key", _plaintext_partition_config()
         )
         generations.append(partition._incarnation)
         await partition.add_segments(_links(_seg()))
-        await pg_store.delete_partition("gc_wait")
+        await pg_store.delete_partition("gc_held_key")
     older, newer = generations
 
     async with (
@@ -1511,30 +1511,30 @@ async def test_purge_partition_waits_for_sweeper_holding_its_entry(
             .where(PurgeQueueRow.incarnation == older)
             .with_for_update()
         )
-        targeted = asyncio.create_task(pg_store.purge_partition("gc_wait"))
+        targeted = asyncio.create_task(pg_store.purge_partition("gc_held_key"))
         outcome = await _wait_until_blocked_or_done(sqlalchemy_pg_engine, targeted)
-        assert outcome == "blocked", (
-            "targeted purge skipped an entry a sweeper had claimed"
-        )
+        assert outcome == "done", "targeted purge waited on a sweeper's claim"
+        assert await targeted is True
+        async with partition._create_session() as session:
+            newer_rows = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(SegmentRow)
+                    .where(SegmentRow.incarnation == newer)
+                )
+            ).scalar_one()
+        assert newer_rows == 0
         # The sweeper finishes its claim: rows, then the entry.
         await sweeper.execute(delete(SegmentRow).where(SegmentRow.incarnation == older))
         await sweeper.execute(
             delete(PurgeQueueRow).where(PurgeQueueRow.incarnation == older)
         )
-    assert await targeted is False
 
+    assert await pg_store.purge_partition("gc_held_key") is False
     async with partition._create_session() as session:
-        newer_rows = (
-            await session.execute(
-                select(func.count())
-                .select_from(SegmentRow)
-                .where(SegmentRow.incarnation == newer)
-            )
-        ).scalar_one()
         queue_depth = (
             await session.execute(select(func.count()).select_from(PurgeQueueRow))
         ).scalar_one()
-    assert newer_rows == 0
     assert queue_depth == 0
 
 
