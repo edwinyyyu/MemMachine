@@ -281,11 +281,13 @@ class SegmentStore(ABC):
         without draining other partitions' backlog. Same bounds and
         protocol as the sweeper. False is exact: this key has no garbage
         left. True means more remains, in this call's hands or a
-        concurrent purger's; the call paces itself in the latter case so
-        a caller's loop does not spin. Not a substitute for the sweeper,
-        which a deployment must still run. Implementations that reclaim
-        physically in `delete_partition` may return False without doing
-        anything.
+        concurrent purger's; an implementation must not let a caller's
+        loop spin in the latter case. A call may fail on backend
+        contention with another purger; repeating it is always safe, and
+        whatever it leaves is the sweeper's. Not a substitute for the
+        sweeper, which a deployment must still run. Implementations that
+        reclaim physically in `delete_partition` may return False without
+        doing anything.
 
         Args:
             partition_key (str):
