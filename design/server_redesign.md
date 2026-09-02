@@ -25,9 +25,12 @@ Requirements that shape everything below:
 - Horizontal scaling without sharding: any process serves any tenant, no
   process owns a tenant, nothing is coordinated in process memory.
   Twenty thousand tenants now; millions at the next levels of scale.
-- Per-tenant DDL is avoided where it would be expensive in a large
-  deployment. The SQLite stores are not for large deployments: they are
-  fine as long as they work and obey the contracts.
+- DDL that is not tenant-specific runs only in a dedicated setup step
+  that serves no requests and cannot race. Tenant-specific DDL is the
+  only DDL allowed anywhere else, and it is avoided where it would be
+  expensive in a large deployment. The SQLite stores are not for large
+  deployments: they are fine as long as they work and obey the
+  contracts.
 - Garbage that is never collected is unacceptable. Wasted writes are
   acceptable.
 - Rejection of operations on a deleted tenant is structural, by database
@@ -152,10 +155,11 @@ Named so the redesign can be checked against it.
    in dependency order, by constructor injection of resolved objects.
    Nothing is looked up lazily, nothing is mutated at runtime, a bad
    document fails startup.
-9. Schema is versioned migrations applied by an operator's command.
-   Serving and reconciler processes verify the schema and never run
-   migrations. The backends of large deployments hold tenants as rows or
-   values; only the SQLite stores create per-tenant tables.
+9. Schema that is not tenant-specific is versioned migrations applied
+   by an operator's command that serves nothing and races with nothing;
+   serving and reconciler processes verify it and never run it.
+   Tenant-specific DDL is the only DDL a job may run, and the backends
+   of large deployments avoid it by holding tenants as rows or values.
 
 ## Architecture
 
@@ -723,12 +727,14 @@ Two kinds of schema:
    and data tables, each subsystem's per-tenant table, the vector
    ledger, and the native containers of the vector backends. Static,
    versioned, migrated by an operator's command.
-2. Per-tenant resources: rows, in every store that a large deployment
-   uses. The two SQLite vector stores create a table per collection,
-   which is fine at their scale: the DDL runs inside the `ensure` and
-   `reclaim` steps of a job, after the ledger row that records the key,
-   in the one process that owns the file. Nothing else creates or drops
-   a table outside `memmachine schema upgrade`.
+2. Per-tenant resources. Tenant-specific DDL is the only DDL allowed
+   outside `memmachine schema upgrade`: a job's `ensure` or `reclaim`
+   step may create or drop a tenant's own table, after the registry row
+   that records the key. It is avoided where it would be expensive in a
+   large deployment, so every store a large deployment uses holds
+   tenants as rows or values. The two SQLite vector stores create a
+   table per collection, which is fine at their scale, in the one
+   process that owns the file.
 
 Component schema:
 
