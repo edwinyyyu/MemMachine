@@ -254,8 +254,10 @@ class SegmentStore(ABC):
         partition, oldest deletion first at the database clock's
         resolution. Each call does a bounded amount
         of work, sized so it does not noticeably degrade concurrent
-        request serving, commits what it did, and is safe to repeat and
-        to run concurrently from any process. The store never schedules
+        request serving, commits what it did or nothing, and is safe to
+        repeat, including after a failure on backend contention with
+        another writer, and to run concurrently from any process. The
+        store never schedules
         it; a deployment must run it somewhere (the server's resource
         manager runs it in the background), and `purge_partition` is not
         a substitute. Implementations that reclaim physically in
