@@ -50,7 +50,7 @@ One physical schema on every dialect; the ORM models are the tables.
   composite string key, and random UUIDs are unique across nodes without
   coordination, so a tenant's rows move between databases verbatim.
 - `segment_store_gc`, the purge queue: one row per dead incarnation, with
-  the logical key kept for forensics only.
+  the logical key, which `purge_partition` claims by.
 
 The link table keeps its foreign key to the segment table (`ON DELETE
 CASCADE`), both sides keyed by incarnation. The segment table has no
@@ -122,16 +122,21 @@ on random-UUID collision resistance.
     server currently uses the defaults, and wiring them into server
     configuration is future work.
   - Entries are claimed oldest-first (enqueue time stamped by the database
-    clock, so every server's entries order on one clock) with `FOR UPDATE
+    clock, so every server's entries order on one clock, at its
+    resolution) with `FOR UPDATE
     SKIP LOCKED`, one at a time, so a call neither materializes nor locks
     the rest of the backlog. Concurrent purgers, from any process, share
     the queue instead of contending, and only the claiming call touches a
     dead incarnation's rows (writers cannot, since the fence pins live
     incarnations only), so reclamation is deadlock-free by construction.
-  - The targeted purge also claims skip-locked, within the key, so no call
-    ever waits on another purger's claim. A plain `FOR UPDATE` was tried
-    and rejected: a holder that never finishes would hang the delete
-    request, and PostgreSQL's default lock timeout is unbounded. When
+  - The targeted purge also claims skip-locked, within the key, so on
+    PostgreSQL no call ever waits on another purger's claim (SQLite drops
+    the clause and waits at the DELETE for the driver's busy timeout,
+    #1542). A plain `FOR UPDATE` was tried and rejected, not for a holder
+    that never finishes (the loop is unbounded either way) but because
+    skip-locked keeps reclaiming the key's other generations while one is
+    held and never stalls behind a sweeper's short legitimate claim, at
+    the cost of polling while an entry is held. When
     nothing is claimable, one unlocked read of the key decides the
     return: no entry means False, so False is exact; a held entry means
     True, and the call pauses briefly before returning it so the caller's
@@ -142,8 +147,10 @@ on random-UUID collision resistance.
     partition key the caller already holds, not by an incarnation:
     incarnations stay an implementation detail, and no backend has to
     mint or accept an identity token. The queue row's key column is
-    therefore load-bearing at no schema cost. Every dead generation under
-    the key is reclaimed, oldest first, which is stronger erasure than
+    therefore load-bearing, indexed with the stamp so the claim, the
+    existence read and the within-key order are one index range. Every
+    dead generation under the key is reclaimed, oldest first at the
+    clock's resolution, which is stronger erasure than
     targeting one incarnation (garbage from an earlier crashed drain of the
     same key goes too), and a recreated key is safe by construction, since
     its live incarnation is never in the queue.

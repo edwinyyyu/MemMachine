@@ -251,7 +251,8 @@ class SegmentStore(ABC):
         Physically reclaim storage for deleted partitions, bounded per call.
 
         The sweeper: reclaims what `delete_partition` deferred, for every
-        partition, oldest deletion first. Each call does a bounded amount
+        partition, oldest deletion first at the database clock's
+        resolution. Each call does a bounded amount
         of work, sized so it does not noticeably degrade concurrent
         request serving, commits what it did, and is safe to repeat and
         to run concurrently from any process. The store never schedules
@@ -274,8 +275,9 @@ class SegmentStore(ABC):
         Physically reclaim one deleted partition's storage, bounded per call.
 
         Reclaims only what `delete_partition` deferred for this key,
-        oldest generation first if the key was deleted more than once, so
-        a caller can make a deletion physically complete before returning
+        oldest generation first if the key was deleted more than once
+        (same-tick deletions are unordered), so a caller can make a
+        deletion physically complete before returning
         without draining other partitions' backlog. Same bounds and
         protocol as the sweeper. False is exact: this key has no garbage
         left. True means more remains, in this call's hands or a

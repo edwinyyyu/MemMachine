@@ -229,11 +229,11 @@ class DerivativeLinkRow(BaseSegmentStore):
 class PurgeQueueRow(BaseSegmentStore):
     """The purge queue: one row per dead partition incarnation.
 
-    Claimed in enqueue order (FIFO), so the oldest garbage is reclaimed
-    first; the enqueue stamp is the database clock, so entries from every
-    server order on one clock, at its resolution. Carries the logical key
-    purely for forensics; the incarnation alone identifies the rows to
-    reclaim.
+    Claimed oldest-first by the enqueue stamp, which is the database clock,
+    so entries from every server order on one clock; entries stamped in the
+    same tick are unordered among themselves. The incarnation identifies
+    the rows to reclaim; the logical key lets `purge_partition` claim one
+    key's entries.
     """
 
     __tablename__ = "segment_store_gc"
@@ -244,7 +244,10 @@ class PurgeQueueRow(BaseSegmentStore):
         DateTime(timezone=True), nullable=False
     )
 
-    __table_args__ = (Index("segment_store_gc__ea", "enqueued_at"),)
+    __table_args__ = (
+        Index("segment_store_gc__ea", "enqueued_at"),
+        Index("segment_store_gc__pk_ea", "partition_key", "enqueued_at"),
+    )
 
 
 class SQLAlchemySegmentStorePartition(SegmentStorePartition):
@@ -1231,12 +1234,13 @@ class SQLAlchemySegmentStore(SegmentStore):
     async def purge_partition(self, partition_key: str) -> bool:
         validate_partition_key(partition_key)
         async with self._tracker("purge_partition"):
-            # Skip-locked within the key, so the call never waits on a
-            # concurrent purger's claim; the read below makes False exact,
-            # and the pause keeps a caller's loop from spinning while a
-            # sweeper finishes its one bounded call. On SQLite the locking
-            # clause is dropped: the plain read sees a held entry and the
-            # purgers serialize at the DELETE, so the wait happens there.
+            # Skip-locked within the key: on PostgreSQL the call never waits
+            # on a concurrent purger's claim, the read below makes False
+            # exact, and the pause keeps a caller's loop from spinning while
+            # a sweeper finishes its one bounded call. SQLite drops the
+            # locking clause: the plain read sees a held entry and the DELETE
+            # then waits on the database write lock for the driver's busy
+            # timeout, raising if it expires (engine settings: #1542).
             claim = (
                 select(PurgeQueueRow.incarnation)
                 .where(PurgeQueueRow.partition_key == partition_key)

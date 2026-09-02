@@ -61,8 +61,11 @@ logger = logging.getLogger(__name__)
 
 # A deletion still purging after this long is either a very large
 # partition or a stalled claim held by another purger. The loop is
-# unbounded on purpose; one warning names the key so the second case is
-# findable, since a polling loop shows no lock wait in the database.
+# unbounded on purpose; warnings name the key and the elapsed time, the
+# first at this threshold and another each time the wait doubles, so the
+# second case is findable, since a polling loop shows no lock wait in the
+# database. Elapsed time is checked between calls, so a single slow call
+# is noticed only when it returns.
 _PURGE_SLOW_WARNING_SECONDS = 30.0
 
 # Stable namespace for deterministic Episode.uid -> Event.uuid mapping. Do not
@@ -450,20 +453,18 @@ class LongTermMemory:
         # loop ends only when the key is clear.
         try:
             started_at = time.monotonic()
-            warned = False
+            next_warning_at = _PURGE_SLOW_WARNING_SECONDS
             while await segment_store.purge_partition(self._partition_key):
-                if (
-                    not warned
-                    and time.monotonic() - started_at > _PURGE_SLOW_WARNING_SECONDS
-                ):
+                elapsed = time.monotonic() - started_at
+                if elapsed >= next_warning_at:
                     logger.warning(
                         "Purging partition %r is still running after %.0f s; "
                         "a very large partition, or a concurrent purger "
                         "holding one of its queue entries",
                         self._partition_key,
-                        _PURGE_SLOW_WARNING_SECONDS,
+                        elapsed,
                     )
-                    warned = True
+                    next_warning_at = elapsed * 2
         except Exception:
             # The destructive work above has committed: a drain failure
             # must not report a completed erasure as failed, and a retry

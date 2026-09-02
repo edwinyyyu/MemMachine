@@ -323,27 +323,39 @@ async def test_drop_session_partition_survives_drain_failure(
         await long_term_memory.add_episodes(episodes)
 
 
-async def test_drop_session_partition_warns_once_when_purge_runs_long(
+async def test_drop_session_partition_warns_as_a_long_purge_doubles(
     long_term_memory,
     segment_store,
     caplog,
     monkeypatch,
 ):
-    """A long-running purge logs one warning naming the key, then keeps going.
+    """A long-running purge warns with the elapsed time, again as it doubles.
 
-    The loop is unbounded by design; the warning is what makes a stalled
-    claim elsewhere findable, since polling shows no lock wait.
+    The loop is unbounded by design; the warnings are what make a stalled
+    claim elsewhere findable, since polling shows no lock wait, and the
+    elapsed figure is what tells thirty seconds from forty minutes.
     """
-    monkeypatch.setattr(long_term_memory_module, "_PURGE_SLOW_WARNING_SECONDS", 0.0)
-    segment_store.purge_partition.side_effect = [True, True, True, False]
+
+    class FakeClock:
+        now = 0.0
+
+        def monotonic(self) -> float:
+            self.now += 1.0
+            return self.now
+
+    monkeypatch.setattr(long_term_memory_module, "time", FakeClock())
+    monkeypatch.setattr(long_term_memory_module, "_PURGE_SLOW_WARNING_SECONDS", 2.5)
+    segment_store.purge_partition.side_effect = [True] * 8 + [False]
     with caplog.at_level(logging.WARNING):
         await long_term_memory.drop_session_partition()
-    warnings = [
-        record for record in caplog.records if "still running" in record.getMessage()
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "still running" in record.getMessage()
     ]
-    assert len(warnings) == 1
-    assert "'sess1'" in warnings[0].getMessage()
-    assert segment_store.purge_partition.await_count == 4
+    assert [m.split("after ")[1].split(" s")[0] for m in messages] == ["3", "6"]
+    assert all("'sess1'" in m for m in messages)
+    assert segment_store.purge_partition.await_count == 9
 
 
 async def test_event_backend_unusable_after_drop_session_partition(
