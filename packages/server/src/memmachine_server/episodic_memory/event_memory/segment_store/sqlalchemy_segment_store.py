@@ -118,14 +118,12 @@ _MAX_MINT_ATTEMPTS = 10
 class _RegistryInsertRejectedError(Exception):
     """A registry insert was rejected; retry with a fresh incarnation.
 
-    Raised when the database rejected the insert with an integrity error
-    while no row exists under the key, or when the minted incarnation
-    turns out to have garbage awaiting purge. The causes -- an
-    incarnation collision, a concurrent creator that won and was then
-    deleted, some other constraint -- are not told apart: the remedy is
-    the same, bounded by `_MAX_MINT_ATTEMPTS`, and a persistent cause
-    surfaces through `SegmentStoreAttemptsExhaustedError` with the
-    database error chained.
+    Raised when the insert fails with an integrity error but no row
+    exists under the key, or when the minted incarnation still has
+    garbage awaiting purge. Either way the fix is a fresh incarnation,
+    retried up to `_MAX_MINT_ATTEMPTS`; a persistent failure raises
+    `SegmentStoreAttemptsExhaustedError` with the database error
+    chained.
     """
 
 
@@ -954,10 +952,6 @@ class SQLAlchemySegmentStore(SegmentStore):
 
     @override
     async def startup(self) -> None:
-        # SQLite foreign-key enforcement is per-connection state the
-        # engine's owner registers at engine creation (see the `engine`
-        # parameter); the store relies on it for the link-table cascade
-        # and does not verify it.
         async with self._tracker("startup"), self._engine.begin() as connection:
             await connection.run_sync(BaseSegmentStore.metadata.create_all)
 
@@ -1018,9 +1012,8 @@ class SQLAlchemySegmentStore(SegmentStore):
                 The partition key is taken; open or delete the existing
                 partition instead.
             _RegistryInsertRejectedError:
-                The insert was rejected with an integrity error and no
-                row exists under the key, or the minted incarnation has
-                garbage awaiting purge; mint a fresh one and retry.
+                The insert cannot be kept, for a reason other than the
+                key being taken. Retry with a fresh incarnation.
         """
         try:
             async with self._create_session() as session, session.begin():
@@ -1049,9 +1042,8 @@ class SQLAlchemySegmentStore(SegmentStore):
                     )
                     raise _RegistryInsertRejectedError(str(incarnation))
         except IntegrityError as err:
-            # A committed row under this key means the key is taken; with
-            # none, the cause is not told apart -- see
-            # _RegistryInsertRejectedError.
+            # If a committed row exists under this key, the key is taken.
+            # Otherwise retry with a fresh incarnation.
             async with self._create_session() as session:
                 partition_row = await SQLAlchemySegmentStore._get_partition_row(
                     session, partition_key
@@ -1059,10 +1051,9 @@ class SQLAlchemySegmentStore(SegmentStore):
             if partition_row is not None:
                 raise SegmentStorePartitionAlreadyExistsError(partition_key) from err
             logger.warning(
-                "Registry insert for partition %r was rejected and no row "
-                "exists under the key (incarnation %s collided, a concurrent "
-                "creator won and was deleted, or another constraint "
-                "failed); re-minting",
+                "Registry insert for partition %r with incarnation %s failed "
+                "and no row exists under the key; retrying with a fresh "
+                "incarnation",
                 partition_key,
                 incarnation,
             )
