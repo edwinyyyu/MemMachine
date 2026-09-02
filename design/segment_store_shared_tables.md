@@ -163,9 +163,9 @@ on random-UUID collision resistance.
   - An entry is retired only when the retiring call's own deletes found
     fewer rows than its remaining budget. Before retiring, the call also
     deletes any link rows still carrying the incarnation, in batches drawn
-    from the same budget and logged as a warning: normally none, since the
-    cascade removed them, but an engine without foreign-key enforcement
-    leaves them behind. A link row deletes about 3x cheaper than a segment
+    from the same budget and logged as a warning: none when the cascade
+    is enforced; an engine without foreign-key enforcement leaves them
+    behind. A link row deletes about 3x cheaper than a segment
     row (1.0 vs 3.3 us per row, batched, on the benchmark box), so one
     budget calibrated on segment rows bounds the call without assuming a
     ratio; widening or indexing the link table revisits this.
