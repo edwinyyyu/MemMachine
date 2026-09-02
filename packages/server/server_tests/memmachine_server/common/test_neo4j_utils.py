@@ -22,5 +22,8 @@ def test_iso_string_coerces_as_utc_instant(monkeypatch: pytest.MonkeyPatch) -> N
             == expected
         )
     finally:
+        # undo() restores the variable but not libc's cached zone; without
+        # this tzset() the whole process stays on Los Angeles time for
+        # every later test in the run.
         monkeypatch.undo()
         time.tzset()
