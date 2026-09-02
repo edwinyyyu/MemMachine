@@ -2,14 +2,16 @@
 
 import re
 
-_PARTITION_KEY_RE = re.compile(r"^[a-z0-9_]+$")
+# Matched with fullmatch: anchors would only suggest `$` does the work,
+# and `$` matches before a trailing newline -- the bug fullmatch fixed.
+_PARTITION_KEY_RE = re.compile(r"[a-z0-9_]+")
 
 PARTITION_KEY_MAX_BYTES = 32
 """Maximum partition key length in bytes."""
 
 
 def validate_partition_key(partition_key: str) -> None:
-    """Raise ValueError unless the key matches `[a-z0-9_]+` and is at most 32 bytes."""
+    """Raise ValueError unless the key matches `[a-z0-9_]+` within PARTITION_KEY_MAX_BYTES."""
     if not _PARTITION_KEY_RE.fullmatch(partition_key):
         raise ValueError(
             f"Partition key {partition_key!r} contains invalid characters. "

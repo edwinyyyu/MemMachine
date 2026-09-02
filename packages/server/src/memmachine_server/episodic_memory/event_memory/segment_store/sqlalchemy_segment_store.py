@@ -462,6 +462,13 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     property_filter,
                 )
 
+            # Each statement above took its own snapshot (READ COMMITTED):
+            # a deletion committing between the seeds statement and the
+            # context statements would leave the seeds with silently
+            # empty context. One registry read after the last statement
+            # turns that window into the contractual stale-handle error.
+            await self._ensure_partition_live(session)
+
             # Assemble results: [backward (reversed) + seed + forward].
             segments_by_seed: dict[UUID, list[Segment]] = {}
             for seed_uuid, seed_row in seed_segment_rows_by_uuid.items():
@@ -1051,10 +1058,11 @@ class SQLAlchemySegmentStore(SegmentStore):
             if partition_row is not None:
                 raise SegmentStorePartitionAlreadyExistsError(partition_key) from err
             logger.warning(
-                "Incarnation %s minted for partition %r collided in the "
-                "registry; re-minting",
-                incarnation,
+                "Registry insert for partition %r failed and the key is now "
+                "absent: either minted incarnation %s collided or a "
+                "concurrent creator won and was deleted; re-minting",
                 partition_key,
+                incarnation,
             )
             raise _IncarnationCollisionError(str(incarnation)) from err
 
