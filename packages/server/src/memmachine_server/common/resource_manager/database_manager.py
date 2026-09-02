@@ -15,6 +15,7 @@ from sqlalchemy.pool import ConnectionPoolEntry
 from memmachine_server.common.configuration.database_conf import (
     DatabasesConf,
     Neo4jConf,
+    SqlAlchemyConf,
     SQLiteVectorStoreConf,
     SQLiteVectorStoreEngine,
 )
@@ -67,6 +68,33 @@ def enable_sqlite_foreign_keys(engine: AsyncEngine) -> None:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
+
+
+def _sql_engine_kwargs(conf: SqlAlchemyConf) -> dict[str, Any]:
+    """Build create_async_engine keywords, omitting anything left unset."""
+    kwargs: dict[str, Any] = {"echo": False, "future": True}
+    for attr in (
+        "pool_size",
+        "max_overflow",
+        "pool_timeout",
+        "pool_recycle",
+        "pool_pre_ping",
+    ):
+        value = getattr(conf, attr)
+        if value is not None:
+            kwargs[attr] = value
+
+    # Gate on the driver, not the dialect: these reach asyncpg.connect() and
+    # mean nothing to aiosqlite or aiomysql.
+    if conf.driver == "asyncpg":
+        connect_args: dict[str, float] = {}
+        if conf.command_timeout is not None:
+            connect_args["command_timeout"] = conf.command_timeout
+        if conf.connect_timeout is not None:
+            connect_args["timeout"] = conf.connect_timeout
+        if connect_args:
+            kwargs["connect_args"] = connect_args
+    return kwargs
 
 
 class DatabaseManager:
@@ -349,22 +377,7 @@ class DatabaseManager:
             if not conf:
                 raise ValueError(f"SQL config '{name}' not found.")
 
-            engine_kwargs: dict[str, bool | int] = {
-                "echo": False,
-                "future": True,
-            }
-            if conf.pool_size is not None:
-                engine_kwargs["pool_size"] = conf.pool_size
-            if conf.max_overflow is not None:
-                engine_kwargs["max_overflow"] = conf.max_overflow
-            if conf.pool_timeout is not None:
-                engine_kwargs["pool_timeout"] = conf.pool_timeout
-            if conf.pool_recycle is not None:
-                engine_kwargs["pool_recycle"] = conf.pool_recycle
-            if conf.pool_pre_ping is not None:
-                engine_kwargs["pool_pre_ping"] = conf.pool_pre_ping
-
-            engine = create_async_engine(conf.uri, **engine_kwargs)
+            engine = create_async_engine(conf.uri, **_sql_engine_kwargs(conf))
             enable_sqlite_foreign_keys(engine)
             if validate:
                 await self.validate_sql_engine(name, engine)
@@ -617,6 +630,7 @@ class DatabaseManager:
                 client=client,
                 is_distributed=conf.is_distributed,
                 registry_replication_factor=conf.registry_replication_factor,
+                metrics_factory=conf.get_metrics_factory(),
             )
             try:
                 store = QdrantVectorStore(params)
