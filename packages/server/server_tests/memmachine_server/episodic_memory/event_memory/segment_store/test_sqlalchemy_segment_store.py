@@ -1386,6 +1386,158 @@ async def test_concurrent_purges_reclaim_everything(
     assert queue_depth == 0
 
 
+@pytest.mark.asyncio
+async def test_purge_partition_reclaims_only_its_key(
+    store: SQLAlchemySegmentStore,
+) -> None:
+    """The targeted purge reclaims this key's garbage and nothing else.
+
+    Two partitions are deleted, the other one first so it is the older
+    queue entry: purging the newer key must retire that key alone, and a
+    second call on the now-clear key must return False rather than fall
+    back to the global backlog.
+    """
+    incarnations = {}
+    for key in ("gc_older", "gc_target"):
+        partition = await store.open_or_create_partition(
+            key, _plaintext_partition_config()
+        )
+        incarnations[key] = partition._incarnation
+        await partition.add_segments(_links(_seg()))
+        await store.delete_partition(key)
+
+    assert await store.purge_partition("gc_target") is False
+    assert await store.purge_partition("gc_target") is False
+
+    async with partition._create_session() as session:
+        rows = {
+            key: (
+                await session.execute(
+                    select(func.count())
+                    .select_from(SegmentRow)
+                    .where(SegmentRow.incarnation == incarnation)
+                )
+            ).scalar_one()
+            for key, incarnation in incarnations.items()
+        }
+        queued = set(
+            (await session.execute(select(PurgeQueueRow.partition_key))).scalars().all()
+        )
+    assert rows == {"gc_older": 1, "gc_target": 0}
+    assert queued == {"gc_older"}
+
+    assert await store.purge_deleted_partitions() is False
+    async with partition._create_session() as session:
+        queue_depth = (
+            await session.execute(select(func.count()).select_from(PurgeQueueRow))
+        ).scalar_one()
+    assert queue_depth == 0
+
+
+@pytest.mark.asyncio
+async def test_purge_partition_reclaims_dead_generations_oldest_first(
+    sqlalchemy_sqlite_engine: AsyncEngine,
+) -> None:
+    """A key deleted twice has two dead generations; the live one is spared.
+
+    With the entry bound at one, each call retires one generation, oldest
+    first, reporting more work until the key is clear; rows of the live
+    recreation are never touched.
+    """
+    store = SQLAlchemySegmentStore(
+        SQLAlchemySegmentStoreParams(
+            engine=sqlalchemy_sqlite_engine, purge_max_partitions=1
+        )
+    )
+    await store.startup()
+    generations = []
+    for _ in range(3):
+        partition = await store.open_or_create_partition(
+            "gc_gen", _plaintext_partition_config()
+        )
+        generations.append(partition._incarnation)
+        await partition.add_segments(_links(_seg()))
+        if len(generations) < 3:
+            await store.delete_partition("gc_gen")
+
+    async def rows_of(incarnation: UUID) -> int:
+        async with partition._create_session() as session:
+            return (
+                await session.execute(
+                    select(func.count())
+                    .select_from(SegmentRow)
+                    .where(SegmentRow.incarnation == incarnation)
+                )
+            ).scalar_one()
+
+    assert await store.purge_partition("gc_gen") is True
+    assert [await rows_of(g) for g in generations] == [0, 1, 1]
+    assert await store.purge_partition("gc_gen") is True
+    assert [await rows_of(g) for g in generations] == [0, 0, 1]
+    assert await store.purge_partition("gc_gen") is False
+    assert await rows_of(generations[2]) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_purge_partition_waits_for_sweeper_holding_its_entry(
+    pg_store: SQLAlchemySegmentStore,
+    sqlalchemy_pg_engine: AsyncEngine,
+) -> None:
+    """The targeted purge waits for a sweeper's claim instead of skipping it.
+
+    A sweeper (emulated: another transaction holding the key's oldest
+    entry under `FOR UPDATE`, uncommitted) must block the targeted purge,
+    not be skipped; once the sweeper retires that entry and commits, the
+    targeted purge continues with the key's next dead generation and
+    returns False only when the key is clear.
+    """
+    generations = []
+    for _ in range(2):
+        partition = await pg_store.open_or_create_partition(
+            "gc_wait", _plaintext_partition_config()
+        )
+        generations.append(partition._incarnation)
+        await partition.add_segments(_links(_seg()))
+        await pg_store.delete_partition("gc_wait")
+    older, newer = generations
+
+    async with (
+        partition._create_session() as sweeper,
+        sweeper.begin(),
+    ):
+        await sweeper.execute(
+            select(PurgeQueueRow)
+            .where(PurgeQueueRow.incarnation == older)
+            .with_for_update()
+        )
+        targeted = asyncio.create_task(pg_store.purge_partition("gc_wait"))
+        outcome = await _wait_until_blocked_or_done(sqlalchemy_pg_engine, targeted)
+        assert outcome == "blocked", (
+            "targeted purge skipped an entry a sweeper had claimed"
+        )
+        # The sweeper finishes its claim: rows, then the entry.
+        await sweeper.execute(delete(SegmentRow).where(SegmentRow.incarnation == older))
+        await sweeper.execute(
+            delete(PurgeQueueRow).where(PurgeQueueRow.incarnation == older)
+        )
+    assert await targeted is False
+
+    async with partition._create_session() as session:
+        newer_rows = (
+            await session.execute(
+                select(func.count())
+                .select_from(SegmentRow)
+                .where(SegmentRow.incarnation == newer)
+            )
+        ).scalar_one()
+        queue_depth = (
+            await session.execute(select(func.count()).select_from(PurgeQueueRow))
+        ).scalar_one()
+    assert newer_rows == 0
+    assert queue_depth == 0
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_purge_skips_entries_claimed_by_concurrent_purger(

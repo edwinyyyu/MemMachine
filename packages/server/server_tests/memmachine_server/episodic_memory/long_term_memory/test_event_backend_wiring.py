@@ -162,7 +162,8 @@ def vector_store_collection(fake_embedder):
 def segment_store():
     """Stand-in for the parent SegmentStore lifecycle methods."""
     store = create_autospec(SegmentStore, instance=True)
-    # The erasure path drains the purge queue until it reports done.
+    # The erasure path purges its own key until the store reports done.
+    store.purge_partition.return_value = False
     store.purge_deleted_partitions.return_value = False
     return store
 
@@ -297,7 +298,8 @@ async def test_drop_session_partition_calls_parent_lifecycle_hooks(
         name="sess1",
     )
     segment_store.delete_partition.assert_awaited_once_with("sess1")
-    segment_store.purge_deleted_partitions.assert_awaited()
+    segment_store.purge_partition.assert_awaited_with("sess1")
+    segment_store.purge_deleted_partitions.assert_not_awaited()
 
 
 async def test_drop_session_partition_survives_drain_failure(
@@ -309,7 +311,7 @@ async def test_drop_session_partition_survives_drain_failure(
     """A drain failure after the destructive work has committed is logged,
     not raised: the erasure happened, the background purger completes
     reclamation, and the handles are nulled all the same."""
-    segment_store.purge_deleted_partitions.side_effect = ConnectionError("dropped")
+    segment_store.purge_partition.side_effect = ConnectionError("dropped")
     with caplog.at_level(logging.ERROR):
         await long_term_memory.drop_session_partition()
     segment_store.delete_partition.assert_awaited_once_with("sess1")

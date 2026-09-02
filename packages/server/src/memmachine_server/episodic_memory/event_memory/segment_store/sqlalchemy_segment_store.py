@@ -1202,38 +1202,57 @@ class SQLAlchemySegmentStore(SegmentStore):
 
     @override
     async def purge_deleted_partitions(self) -> bool:
-        # One transaction per call: reclaim up to the configured bounds
-        # and commit, or nothing. Entries are claimed one at a time
-        # with FOR UPDATE SKIP LOCKED, so racing purgers split the
-        # backlog instead of contending, and only the claiming call
-        # touches a dead incarnation's rows -- deadlock-free by
-        # construction. SQLite drops the locking clause; there purgers
-        # serialize at the DELETE, and a doubly-claimed entry costs
-        # empty round trips, never duplicated or missed reclamation
-        # (an entry is retired only when the retirer's own DELETEs found
-        # fewer rows than its budget). Full rationale:
-        # design/segment_store_shared_tables.md.
+        async with self._tracker("purge_deleted_partitions"):
+            # Skips only OTHER transactions' locks; entries this call has
+            # already claimed cannot come back, each being deleted before
+            # the next claim.
+            claim = (
+                select(PurgeQueueRow.incarnation)
+                .order_by(PurgeQueueRow.enqueued_at)
+                .limit(1)
+                .with_for_update(skip_locked=True)
+            )
+            return await self._purge(claim)
+
+    @override
+    async def purge_partition(self, partition_key: str) -> bool:
+        validate_partition_key(partition_key)
+        async with self._tracker("purge_partition"):
+            # A plain FOR UPDATE: the set to wait for is this key's
+            # entries, bounded and known, so a sweeper holding one is a
+            # short wait rather than a skip that would return having
+            # reclaimed nothing. Deadlock-free: a cycle needs both parties
+            # waiting, and the sweeper never waits because it skips, so
+            # there is no second edge.
+            claim = (
+                select(PurgeQueueRow.incarnation)
+                .where(PurgeQueueRow.partition_key == partition_key)
+                .order_by(PurgeQueueRow.enqueued_at)
+                .limit(1)
+                .with_for_update()
+            )
+            return await self._purge(claim)
+
+    async def _purge(self, claim: Select[tuple[UUID]]) -> bool:
+        """Reclaim the incarnations `claim` yields, within the per-call bounds.
+
+        One transaction per call: reclaim up to the configured bounds and
+        commit, or nothing. Entries are claimed one at a time, so only
+        the claiming call touches a dead incarnation's rows. SQLite drops
+        locking clauses; there purgers serialize at the DELETE, and a
+        doubly-claimed entry costs empty round trips, never duplicated or
+        missed reclamation (an entry is retired only when the retirer's
+        own DELETEs found fewer rows than its budget). Full rationale:
+        design/segment_store_shared_tables.md.
+        """
         remaining = self._purge_max_segments
         entries = 0
         # Pure Core DML on an engine connection: unlike Session.execute,
         # AsyncConnection.execute is typed CursorResult, whose rowcount
         # the batch loop needs.
-        async with (
-            self._tracker("purge_deleted_partitions"),
-            self._engine.begin() as connection,
-        ):
+        async with self._engine.begin() as connection:
             while True:
-                # Skips only OTHER transactions' locks; entries this call
-                # already claimed cannot come back because each is
-                # deleted before the next claim.
-                incarnation = (
-                    await connection.execute(
-                        select(PurgeQueueRow.incarnation)
-                        .order_by(PurgeQueueRow.enqueued_at)
-                        .limit(1)
-                        .with_for_update(skip_locked=True)
-                    )
-                ).scalar_one_or_none()
+                incarnation = (await connection.execute(claim)).scalar_one_or_none()
                 if incarnation is None:
                     return False
 

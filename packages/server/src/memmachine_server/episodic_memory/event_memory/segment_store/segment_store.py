@@ -234,11 +234,11 @@ class SegmentStore(ABC):
         """
         Delete a partition.
 
-        This will delete all data in the partition.
-        for the given partition. It is idempotent.
+        Deletes all data in the partition. It is idempotent.
 
         The partition becomes unreachable immediately; implementations may
-        defer physical reclamation of its data to `purge_deleted_partitions`.
+        defer physical reclamation of its data to `purge_partition` and
+        `purge_deleted_partitions`.
 
         Args:
             partition_key (str):
@@ -251,18 +251,22 @@ class SegmentStore(ABC):
         """
         Physically reclaim storage for deleted partitions, bounded per call.
 
-        Performs reclamation that `delete_partition` deferred: each call
+        The sweeper: performs reclamation that `delete_partition`
+        deferred, for every partition, oldest deletion first. Each call
         reclaims a bounded amount, the progress it commits persists, and
         repeating a call is always safe. The bounds are implementation
         policy, not the caller's concern; what the caller is promised is
-        that a purge call does not noticeably degrade the serving of
-        concurrent requests. Draining a
-        backlog is the caller's loop -- call until this returns False.
-        Concurrent calls, including from
-        other processes, must be safe: implementations coordinate so that
-        racing purgers neither error nor deadlock. The store never
-        schedules this itself; callers decide when and how often to run
-        it. Implementations that reclaim physically in `delete_partition`
+        that a call does not noticeably degrade the serving of concurrent
+        requests. Draining a backlog is the caller's loop: call until
+        this returns False. Concurrent calls, including from other
+        processes, must be safe: implementations coordinate so that
+        racing purgers neither error nor deadlock.
+
+        The store never schedules this itself, and nothing else reclaims
+        the backlog: a deployment must run it somewhere (the server's
+        resource manager runs it in the background). `purge_partition`
+        reclaims one partition promptly but is not a substitute.
+        Implementations that reclaim physically in `delete_partition`
         may implement this as a no-op returning False.
 
         Returns:
@@ -271,5 +275,37 @@ class SegmentStore(ABC):
                 False if no further reclamation is available to this
                 call -- work owned by a concurrent purger is not
                 counted, so a later call may still find some.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def purge_partition(self, partition_key: str) -> bool:
+        """
+        Physically reclaim a deleted partition's storage, bounded per call.
+
+        The delete path's companion to `purge_deleted_partitions`:
+        reclaims only what `delete_partition` deferred for this key, so a
+        caller that wants a deletion physically complete before it
+        returns can loop on this without draining other partitions'
+        backlog. Same bounds, same contract, and the same "call until
+        False" protocol as the sweeper; if the key has been deleted more
+        than once, its dead generations are reclaimed oldest first. An
+        entry a concurrent sweeper has already claimed is waited for
+        rather than skipped, so a False return means this key has no
+        garbage left.
+
+        An erasure-promptness optimization, not a substitute for the
+        sweeper: a deployment must still run `purge_deleted_partitions`.
+        Implementations that reclaim physically in `delete_partition` may
+        implement this as a no-op returning False.
+
+        Args:
+            partition_key (str):
+                The key of the deleted partition.
+
+        Returns:
+            bool:
+                True if another call may reclaim more of this key's
+                garbage; False if none is left.
         """
         raise NotImplementedError
