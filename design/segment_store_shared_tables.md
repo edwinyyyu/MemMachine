@@ -128,14 +128,17 @@ on random-UUID collision resistance.
     the queue instead of contending, and only the claiming call touches a
     dead incarnation's rows (writers cannot, since the fence pins live
     incarnations only), so reclamation is deadlock-free by construction.
-  - The targeted purge claims with a plain `FOR UPDATE` and waits: its set
-    is bounded and known, so a sweeper holding one of the key's entries is
-    a short wait rather than a skip that would return with nothing
-    reclaimed. That is why it is a second method and not a mode flag: the
-    two want different locking, and their True means different things
-    ("more work anywhere" versus "more work for this key").
-    Deadlock-freedom survives, because a cycle needs both parties waiting
-    and the sweeper never waits. The targeted purge is keyed by the
+  - The targeted purge also claims skip-locked, within the key, so no call
+    ever waits on another purger's claim. A plain `FOR UPDATE` was tried
+    and rejected: a holder that never finishes would hang the delete
+    request, and PostgreSQL's default lock timeout is unbounded. When
+    nothing is claimable, one unlocked read of the key decides the
+    return: no entry means False, so False is exact; a held entry means
+    True, and the call pauses briefly before returning it so the caller's
+    loop polls instead of spinning while the sweeper finishes its one
+    bounded call. That is why it is a second method and not a mode flag:
+    the two return values mean different things ("more work anywhere"
+    versus "more work for this key"). The targeted purge is keyed by the
     partition key the caller already holds, not by an incarnation:
     incarnations stay an implementation detail, and no backend has to
     mint or accept an identity token. The queue row's key column is
@@ -269,9 +272,12 @@ requirement excludes.
   moving a tenant between nodes is an indexed row copy plus a registry
   insert whose fresh incarnation fences all stale handles.
 - Tenant deletion is O(rows) physically. The delete path reclaims its own
-  key inline through `purge_partition`, waiting for a sweeper's claim
-  rather than skipping it, so a deletion returns with its rows gone; the
-  global backlog is the sweeper's, and a deployment must run one.
+  key inline through `purge_partition`, looping until the key is clear,
+  so a deletion returns with its rows gone; the global backlog is the
+  sweeper's, and a deployment must run one. The loop is unbounded on
+  purpose: a purger that holds one of the key's entries and never
+  finishes would stall it, an operational incident rather than a case
+  to design for.
 - No migration from the partitioned layout is provided (the event backend
   is opt-in and pre-GA); existing databases recreate their schema.
 - Datetime convention: filter nodes normalize datetime values to UTC-aware

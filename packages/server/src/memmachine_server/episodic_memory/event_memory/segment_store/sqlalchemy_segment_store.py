@@ -1,5 +1,6 @@
 """SQLAlchemy implementation of the SegmentStore interface."""
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -113,6 +114,11 @@ _JSON_AUTO = JSON().with_variant(JSONB, "postgresql")
 # window, so consecutive failures at this depth mean the IntegrityError
 # has some other, permanent cause.
 _MAX_MINT_ATTEMPTS = 10
+
+# Pause before reporting a key whose remaining entries a concurrent purger
+# holds: a caller loops on True, and without it the loop would spin for
+# the length of that purger's bounded call.
+_PURGE_HELD_PAUSE_SECONDS = 0.01
 
 
 class _RegistryInsertRejectedError(Exception):
@@ -1218,20 +1224,37 @@ class SQLAlchemySegmentStore(SegmentStore):
     async def purge_partition(self, partition_key: str) -> bool:
         validate_partition_key(partition_key)
         async with self._tracker("purge_partition"):
-            # A plain FOR UPDATE: the set to wait for is this key's
-            # entries, bounded and known, so a sweeper holding one is a
-            # short wait rather than a skip that would return having
-            # reclaimed nothing. Deadlock-free: a cycle needs both parties
-            # waiting, and the sweeper never waits because it skips, so
-            # there is no second edge.
+            # Skip-locked within the key, so the call never waits on a
+            # concurrent purger's claim; the read below makes False exact,
+            # and the pause keeps a caller's loop from spinning while a
+            # sweeper finishes its one bounded call. On SQLite the locking
+            # clause is dropped: the plain read sees a held entry and the
+            # purgers serialize at the DELETE, so the wait happens there.
             claim = (
                 select(PurgeQueueRow.incarnation)
                 .where(PurgeQueueRow.partition_key == partition_key)
                 .order_by(PurgeQueueRow.enqueued_at)
                 .limit(1)
-                .with_for_update()
+                .with_for_update(skip_locked=True)
             )
-            return await self._purge(claim)
+            if await self._purge(claim):
+                return True
+            if not await self._key_has_garbage(partition_key):
+                return False
+        await asyncio.sleep(_PURGE_HELD_PAUSE_SECONDS)
+        return True
+
+    async def _key_has_garbage(self, partition_key: str) -> bool:
+        """Whether any queue entry, claimed or not, remains under this key."""
+        async with self._engine.connect() as connection:
+            entry = (
+                await connection.execute(
+                    select(PurgeQueueRow.incarnation)
+                    .where(PurgeQueueRow.partition_key == partition_key)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        return entry is not None
 
     async def _purge(self, claim: Select[tuple[UUID]]) -> bool:
         """Reclaim the incarnations `claim` yields, within the per-call bounds.

@@ -438,8 +438,9 @@ class LongTermMemory:
         # rows are physically gone before returning, as the partitioned
         # layout's synchronous drop was. Only this key's entries are
         # targeted; the global backlog belongs to the resource manager's
-        # background sweeper. An entry the sweeper has already claimed is
-        # waited for, not skipped.
+        # background sweeper. If the sweeper holds one of this key's
+        # entries, the call reports more work and paces itself, so the
+        # loop ends only when the key is clear.
         try:
             while await segment_store.purge_partition(self._partition_key):
                 pass
