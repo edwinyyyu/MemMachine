@@ -435,8 +435,19 @@ class LongTermMemory:
         # is skipped here and finished by that purger within its own
         # bounded call, so reclamation can complete moments after this
         # returns rather than before it.
-        while await segment_store.purge_deleted_partitions():
-            pass
+        try:
+            while await segment_store.purge_deleted_partitions():
+                pass
+        except Exception:
+            # The destructive work above has committed: a drain failure
+            # must not report a completed erasure as failed, and a retry
+            # would find the handles already nulled. The background
+            # purger finishes reclamation on its own tick.
+            logger.exception(
+                "Purge drain after dropping partition %r failed; the "
+                "background purger completes reclamation",
+                self._partition_key,
+            )
 
     async def close(self) -> None:
         # Backends do not own resources we can close at this layer; the
