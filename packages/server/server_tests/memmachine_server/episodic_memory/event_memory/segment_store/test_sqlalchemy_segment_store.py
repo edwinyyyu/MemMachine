@@ -2408,10 +2408,13 @@ async def test_old_sqlite_runtime_is_rejected(
     sqlalchemy_sqlite_engine: AsyncEngine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Partition deletion depends on RETURNING; refuse pre-3.35 SQLite loudly."""
-    monkeypatch.setattr(
-        sqlalchemy_segment_store.sqlite3, "sqlite_version_info", (3, 34, 0)
-    )
+    """Partition deletion depends on RETURNING; refuse an older SQLite loudly.
+
+    The store's own minimum is raised past the runtime rather than the
+    stdlib's version tuple being patched process-wide, which SQLAlchemy's
+    dialect also reads.
+    """
+    monkeypatch.setattr(sqlalchemy_segment_store, "_MIN_SQLITE_VERSION", (99, 0))
     with pytest.raises(ValidationError, match="RETURNING"):
         SQLAlchemySegmentStoreParams(engine=sqlalchemy_sqlite_engine)
 
