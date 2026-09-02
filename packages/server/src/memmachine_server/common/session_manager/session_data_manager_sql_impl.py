@@ -212,7 +212,7 @@ class SessionDataManagerSQL(SessionDataManager):
                 )
             )
 
-    async def create_new_session(
+    async def create_new_session_if_not_exist(
         self,
         session_key: str,
         configuration: dict[str, JsonValue],
