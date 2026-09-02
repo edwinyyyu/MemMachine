@@ -1461,6 +1461,7 @@ async def test_purge_partition_reclaims_only_its_key(
 @pytest.mark.asyncio
 async def test_purge_partition_reclaims_dead_generations_oldest_first(
     sqlalchemy_sqlite_engine: AsyncEngine,
+    sqlite_recorded_statements: list[str],
 ) -> None:
     """A key deleted twice has two dead generations; the live one is spared.
 
@@ -1506,7 +1507,18 @@ async def test_purge_partition_reclaims_dead_generations_oldest_first(
                 )
             ).scalar_one()
 
+    # The composite index yields stamp order on its own, so no data can
+    # tell the ORDER BY from the access path; the clause is pinned in
+    # the statement, since a different plan would otherwise drop the
+    # order silently.
+    sqlite_recorded_statements.clear()
     assert await store.purge_partition("gc_gen") is True
+    claim = next(
+        statement
+        for statement in sqlite_recorded_statements
+        if statement.upper().startswith("SELECT") and "segment_store_gc" in statement
+    )
+    assert "ORDER BY segment_store_gc.enqueued_at" in claim
     assert [await rows_of(g) for g in generations] == [1, 0, 1]
     assert await store.purge_partition("gc_gen") is True
     assert [await rows_of(g) for g in generations] == [0, 0, 1]
