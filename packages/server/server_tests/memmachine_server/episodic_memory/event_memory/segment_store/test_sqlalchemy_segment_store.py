@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 from pydantic import ValidationError
-from sqlalchemy import delete, event, func, insert, select, text, update
+from sqlalchemy import delete, event, func, insert, inspect, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -1387,6 +1387,30 @@ async def test_concurrent_purges_reclaim_everything(
 
 
 @pytest.mark.asyncio
+async def test_purge_queue_indexes_key_and_stamp(
+    sqlalchemy_sqlite_engine: AsyncEngine,
+) -> None:
+    """The targeted claim and existence read filter the queue by key.
+
+    Without an index leading on the key, the call that concludes a key is
+    clear, which every drop makes, scans the whole backlog.
+    """
+    store = SQLAlchemySegmentStore(
+        SQLAlchemySegmentStoreParams(engine=sqlalchemy_sqlite_engine)
+    )
+    await store.startup()
+    async with sqlalchemy_sqlite_engine.connect() as connection:
+        indexes = await connection.run_sync(
+            lambda sync_connection: inspect(sync_connection).get_indexes(
+                "segment_store_gc"
+            )
+        )
+    by_name = {index["name"]: index["column_names"] for index in indexes}
+    assert by_name["segment_store_gc__pk_ea"] == ["partition_key", "enqueued_at"]
+    assert by_name["segment_store_gc__ea"] == ["enqueued_at"]
+
+
+@pytest.mark.asyncio
 async def test_purge_partition_reclaims_only_its_key(
     store: SQLAlchemySegmentStore,
 ) -> None:
@@ -1440,9 +1464,9 @@ async def test_purge_partition_reclaims_dead_generations_oldest_first(
 ) -> None:
     """A key deleted twice has two dead generations; the live one is spared.
 
-    With the entry bound at one, each call retires one generation, oldest
-    first, reporting more work until the key is clear; rows of the live
-    recreation are never touched.
+    With the entry bound at one, each call retires one generation in
+    stamp order, reporting more work until the key is clear; rows of the
+    live recreation are never touched.
     """
     store = SQLAlchemySegmentStore(
         SQLAlchemySegmentStoreParams(
@@ -1460,6 +1484,18 @@ async def test_purge_partition_reclaims_dead_generations_oldest_first(
         if len(generations) < 3:
             await store.delete_partition("gc_gen")
 
+    # Stamps come from the database clock, whose resolution need not
+    # separate back-to-back deletions; make the second-deleted generation
+    # the older entry, so only the ordering key can produce the expectation.
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    async with partition._create_session() as session, session.begin():
+        for age, incarnation in enumerate(generations[:2]):
+            await session.execute(
+                update(PurgeQueueRow)
+                .where(PurgeQueueRow.incarnation == incarnation)
+                .values(enqueued_at=base - timedelta(seconds=age))
+            )
+
     async def rows_of(incarnation: UUID) -> int:
         async with partition._create_session() as session:
             return (
@@ -1471,7 +1507,7 @@ async def test_purge_partition_reclaims_dead_generations_oldest_first(
             ).scalar_one()
 
     assert await store.purge_partition("gc_gen") is True
-    assert [await rows_of(g) for g in generations] == [0, 1, 1]
+    assert [await rows_of(g) for g in generations] == [1, 0, 1]
     assert await store.purge_partition("gc_gen") is True
     assert [await rows_of(g) for g in generations] == [0, 0, 1]
     assert await store.purge_partition("gc_gen") is False
@@ -1482,7 +1518,6 @@ async def test_purge_partition_reclaims_dead_generations_oldest_first(
 @pytest.mark.asyncio
 async def test_purge_partition_reports_held_entry_and_finishes_after_sweeper(
     pg_store: SQLAlchemySegmentStore,
-    sqlalchemy_pg_engine: AsyncEngine,
 ) -> None:
     """A sweeper's claim is neither waited on nor mistaken for a clear key.
 
@@ -1512,9 +1547,12 @@ async def test_purge_partition_reports_held_entry_and_finishes_after_sweeper(
             .with_for_update()
         )
         targeted = asyncio.create_task(pg_store.purge_partition("gc_held_key"))
-        outcome = await _wait_until_blocked_or_done(sqlalchemy_pg_engine, targeted)
-        assert outcome == "done", "targeted purge waited on a sweeper's claim"
-        assert await targeted is True
+        try:
+            held = await asyncio.wait_for(targeted, timeout=5)
+        except TimeoutError:
+            targeted.cancel()
+            pytest.fail("targeted purge waited on a sweeper's claim")
+        assert held is True
         async with partition._create_session() as session:
             newer_rows = (
                 await session.execute(
