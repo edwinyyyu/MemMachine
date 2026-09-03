@@ -297,10 +297,10 @@ Create, `POST /v1/tenants`:
    component name or an invalid option is 422.
 2. Insert the tenant row as `provisioning` and one `ensure` job per
    registered component, in one transaction. A duplicate name fails on
-   the unique index: 409, with the existing tenant's record in the body,
-   so the caller that lost the race has what it needs without a second
-   request. There is no get-or-create flag; that body is what it would
-   have returned.
+   the unique index: 409 `tenant_exists`, and nothing else. A caller
+   that wants the existing tenant looks it up by name; an error response
+   does not carry another tenant's record, and there is no get-or-create
+   flag.
 3. Respond 202 with the tenant in `provisioning`. With `?wait=` the
    request instead blocks until the tenant is `active` or the wait
    elapses, and responds 201 or 202 accordingly. While waiting, the
@@ -817,18 +817,29 @@ to numbers only.
 
 The SQLite stores. Both are rewritten away from a table per collection,
 like the segment store: the sqlite-vec store keeps one `vec0` table per
-container with the tenant key as its partition key (verified on the
-pinned 0.1.9), the usearch store keeps records in one shared table and
+container with the tenant key as its partition key, the usearch store
+keeps records in one shared table and
 one index file per tenant (a file it owns, not schema; index state
 lives in process memory, which is why it stays at `process` scope), and
 both keep their ledger in the same file, so their fence is in-statement
 and the sqlite-vec store reaches `host` scope. The O(1) drop that a
 table per collection gave becomes a keyed delete run by the reclaim
 job, as in the segment store; unreachability is immediate through the
-ledger either way. `sqlite_vec_vector_store.py:4` records that
-partition keys were avoided in case a future sqlite-vec ANN index does
-not support them; if that comes to pass, the store stays brute-force,
-which is what it is today and what its scope is for.
+ledger either way. A `vec0` partition key is not a filter over a shared
+scan: vec0 stores each partition value's vectors in chunks of its own,
+and a KNN constrained on the key reads only those chunks. Measured on
+the pinned 0.1.9 with 400 tenants of 25 vectors each at 1024
+dimensions, the constrained query cost two orders of magnitude less
+than an unconstrained one over the same table. The cost of a partition
+is the chunk allocation: every partition value holds at least one
+chunk of `chunk_size` vectors, `chunk_size` times dimensions times four
+bytes, which a table per collection paid identically (measured: the
+same size per tenant either way). `chunk_size` is a per-table setting
+the store exposes, and a deployment with many small tenants sets it
+low. `sqlite_vec_vector_store.py:4` records that partition keys were
+avoided in case a future sqlite-vec ANN index does not support them;
+if that comes to pass, the store stays brute-force, which is what it is
+today and what its scope is for.
 
 A read on a deleted key raises on the post-query verification, so no
 dead tenant's records reach a caller.
@@ -841,11 +852,17 @@ built by hand, in a script with no configuration at all, or by a
 different configuration system, and never learns which. The loader is
 the only code that reflects.
 
-- A resource's constructor takes its dependencies as parameters
-  annotated with resource types (`engine: AsyncEngine`, `embedder:
-  Embedder`, `embedders: Mapping[str, Embedder]`) and its own options as
-  one Pydantic `Params` parameter of scalar fields. Nothing in the
-  class refers to ids, references, or the loader.
+- A kind names a callable: a class, or a factory function, ours or a
+  third party's. Its parameters are what the loader reflects.
+  Dependencies are parameters annotated with resource types (`engine:
+  AsyncEngine`, `embedder: Embedder`, `embedders: Mapping[str,
+  Embedder]`); options are scalar parameters, grouped into a Pydantic
+  `Params` parameter where that reads better and left as plain keyword
+  parameters where it does not. A third-party constructor with typed
+  keyword parameters is registered as it is (`AsyncQdrantClient`); one
+  whose signature is `**kwargs` or untyped gets a factory function of a
+  few lines with explicit typed parameters, and no `Params` model.
+  Nothing in a resource refers to ids, references, or the loader.
 - The document is one flat map, `resources`, from id to
   `{kind: ..., <constructor arguments>}`. Ids are unique across all
   resources, so a database and an embedder cannot share one. `kind`
@@ -854,19 +871,27 @@ the only code that reflects.
   registration point. A dependency argument holds the id of another
   resource; a `Mapping[str, T]` argument holds a list of ids; `Params`
   fields are inline.
-- The loader validates each entry against the constructor: every
-  argument named exists, every dependency id names a resource whose
-  class satisfies the annotated type, and the `Params` fields validate.
-  It orders construction by dependencies (a topological sort, cycles an
-  error), calls each class with the built objects, and passes exactly
-  what the constructor declares. Types are checked at the injection
-  point, so a wrong id fails at startup with the argument named.
-- Third-party clients are resources through factory kinds whose
-  `Params` mirror the client's own options: a `postgres` kind produces a
-  SQLAlchemy `AsyncEngine` from `url` and pool settings, a `qdrant`
-  kind produces an `AsyncQdrantClient` from `url` and credentials. That
-  is what `databases` entries of the earlier draft were; they are
-  resources like any other.
+- The loader validates each entry against the callable's signature
+  (`inspect.signature` with `typing.get_type_hints`): every argument
+  named exists, scalar arguments validate against their annotations,
+  and every dependency id names a built resource that satisfies the
+  annotated type. It orders construction by dependencies (a topological
+  sort, cycles an error) and calls each callable with exactly what it
+  declares. The dependency check is a runtime instance check of the
+  resolved object against the annotation, which Pydantic performs from
+  the signature (`validate_call` with arbitrary types allowed):
+  `isinstance` for classes and abstract base classes, method presence
+  for runtime-checkable protocols, element-wise for `Mapping[str, T]`
+  and unions. It catches a wrong id or a wrongly typed resource at
+  startup with the argument named; it does not prove more than
+  `isinstance` can, and hand wiring is checked by the type checker
+  like any other call, since a resource is called the same way with or
+  without the loader.
+- Third-party clients are resources like any other: a `postgres` kind
+  is a factory function producing a SQLAlchemy `AsyncEngine` from `url`
+  and the pool settings it names, since `create_async_engine` takes
+  `**kwargs`; a `qdrant` kind is `AsyncQdrantClient` itself. That is
+  what the `databases` entries of the earlier draft were.
 - Where a component offers tenants a choice among providers, its
   constructor takes `Mapping[str, Embedder]` and the entry lists ids;
   the loader passes exactly those objects keyed by id, and a tenant
@@ -988,7 +1013,7 @@ Tenants:
 
 | Method and path | Effect | Status |
 | --- | --- | --- |
-| `POST /v1/tenants` | create; body `name`, `template`, `configuration` | 202 provisioning, or 201 with `wait` once active; 409 with the existing tenant; 422 |
+| `POST /v1/tenants` | create; body `name`, `template`, `configuration` | 202 provisioning, or 201 with `wait` once active; 409 `tenant_exists`; 422 |
 | `GET /v1/tenants?name=` | look up by name | 200; 404 |
 | `GET /v1/tenants?prefix=&cursor=` | list, paged | 200 |
 | `GET /v1/tenants/{id}` | record, state, requested and applied configuration versions, jobs with attempts and last error | 200; 404 |
