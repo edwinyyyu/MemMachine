@@ -1261,13 +1261,20 @@ router and the traceback-carrying error model; `semantic_memory/`;
 `retrieval_agent/`; `installation/`; `memmachine_common/api/spec.py`.
 
 Migration from the current server, should a cutover happen with data in
-place, is per-tenant jobs rather than export and re-ingest: rekey a
-tenant's segment rows to its new id in the database, rekey its vector
-records in the backend (a payload update by filter on Qdrant; a copy
-with the vectors read back on Milvus), and backfill its events from
-`episodestore` into the event store with positions. Proportional to
-records, bounded per pass like every other job, and free of embedding
-calls, because nothing is re-embedded.
+place, moves no segment row and no vector record. The current server's
+store key is already the first 32 hex characters of the SHA-256 of the
+session string (`partition_key_for_session`), which parses as a UUID,
+and the same value names the vector collection; a legacy tenant's id is
+set to that value, and every store finds its data under it. New tenants
+mint `uuid4`; the two coexist in one column, and the collision math is
+unaffected. What remains proportional to records is the backfill of a
+tenant's events from `episodestore` into the event store with
+positions, a per-tenant job bounded per pass like every other. Nothing
+is re-embedded. This is why the tenant id is the physical key in every
+store rather than a registry-minted identity behind it: the one thing
+such an indirection would buy, adopting data keyed some other way, is
+not needed, and it would cost a mint per create, a second identity per
+store, and a mapping row that outlives reclamation.
 
 ## Relation to open issues
 
