@@ -29,9 +29,9 @@ Requirements that shape everything below:
   at the next levels of scale.
 - Every component declares its concurrency scope, the widest deployment
   boundary within which concurrent instances may manage the same
-  resources (`process`, `machine`, `cluster`; #1531). A deployment
-  declares the scope it runs at, and startup refuses any component
-  narrower than that. The SQLite stores declare `process` or `machine`;
+  resources (`process`, `machine`, `cluster`). A deployment declares
+  the scope it runs at, and startup refuses any component narrower than
+  that. The SQLite stores declare `process` or `machine`;
   within their scope they obey every contract, and nothing about scale
   is asked of them.
 - DDL that is not tenant-specific runs only in a dedicated setup step
@@ -957,10 +957,10 @@ through its API and an ingest through the new one.
   values, single-use keys, reclamation plus tombstone sweep. In-flight
   registry PRs are measured against that section.
 - #1570: "Schema management".
-- #1531: `ConcurrencyScope` is adopted as is, with declarations
-  recomputed for the ledger: Qdrant and Milvus widen from `process` to
-  the ledger's scope, and the sqlite-vec store from `process` to
-  `machine`. The deployment-side check is added here.
+- #1531: the reference for the concurrency scope idea. The levels,
+  the declarations and the deployment-side check above are this
+  design's own; they differ from #1531 where the ledger changes what a
+  store can promise (Qdrant, Milvus and sqlite-vec widen).
 - #1542: SQLite pragmas become fields of the SQLite database component's
   params (`busy_timeout`, `journal_mode`); the reconciler's retry covers
   the busy-timeout raise.
