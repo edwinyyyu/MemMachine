@@ -623,16 +623,23 @@ requires a server-side object to stay open across processes.
 | Pinecone | namespace, a call parameter; created implicitly on first upsert | none | no | yes | delete all in the namespace, O(1) |
 | S3 Vectors | filterable metadata value (indexes per bucket are capped, so not one per tenant) | none | no | no | no delete by filter: filtered query, delete returned keys, repeat |
 | Weaviate | native tenant, one shard each, activity tiers | `with_tenant` wrapper, built client-side | yes (tenant not found) | yes | remove tenant, O(1) |
-| Chroma | metadata value (a collection per tenant costs an index each) | none | no | no | delete by `where` |
+| Chroma | collection per tenant (Chroma's own write-up warns that metadata filtering "can become slow" as users and documents grow) | `Collection` handle: a client-side object holding the collection's UUID; `get_collection` is one round trip resolving name to UUID, and every data operation addresses the UUID | yes (unknown collection id) | yes (`list_collections`, paged) | `delete_collection`, O(1) |
 | SQLite stores | table per collection | table name | yes (dropped table) | yes | drop table |
 
 Pinecone's implicit namespace creation and any backend's inability to
 reject are covered the same way: the ledger row exists before the first
-record, and reclaim deletes by the tenant's value. A backend whose
-per-tenant object must be opened by a server call is admissible: the
-instance cache holds it, opening costs one call on a miss, and the LRU
-bounds what a process holds. Limits quoted for S3 Vectors are as
-documented at its preview and are verified before an implementation.
+record, and reclaim deletes by the tenant's value. Chroma is the one
+backend whose per-tenant object needs a server call: `get_collection`
+resolves the name to the collection's UUID, after which the object is a
+struct the client addresses operations by. That is cheap enough to make
+and discard per request, and the instance cache makes it once per open
+instead; storing the UUID in the ledger row at creation and calling the
+REST API by id removes the call altogether, at the price of not using
+the Python client's public constructor. The per-collection cost on a
+single Chroma node (an index each) and the collection count Chroma Cloud
+supports are not verified here and are checked before an implementation,
+as are the limits quoted for S3 Vectors from its preview
+documentation.
 
 Reads through a stale handle raise on the post-query verification, so
 no dead tenant's records reach a caller.
