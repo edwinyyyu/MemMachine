@@ -1046,7 +1046,7 @@ resources:
     kind: qdrant_vector_store
     client: vectors
     ledger_engine: main
-    indexed_properties:      # declared once per store; system fields are implicit
+    indexed_properties:      # once per store; system fields implicit
       kind: string
       score: integer
   episodic_memory:
