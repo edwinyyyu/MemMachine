@@ -1300,7 +1300,11 @@ In the first deployment, because the first records freeze it:
    A key scheme written into every record cannot be changed later on
    backends that cannot rename; the reconciler that executes deletions
    may land after, but the rows and jobs it needs must exist before the
-   first delete.
+   first delete. This includes the key being the physical key inside
+   each store's own tables: the segment store's rows keyed by the
+   tenant id with no incarnation column, because a store's schema is
+   permanent from its first row, and a store-private identity written
+   then could never be removed.
 2. The event store as the system of record, with positions. Derived
    data written without it can never be reprocessed or handed to a
    subsystem added later, because no other copy of the events exists in
