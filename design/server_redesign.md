@@ -1276,6 +1276,62 @@ such an indirection would buy, adopting data keyed some other way, is
 not needed, and it would cost a mint per create, a second identity per
 store, and a mapping row that outlives reclamation.
 
+## What must be built first
+
+The first deployment of this design carries no data forward, so nothing
+is urgent because existing data would be expensive to change. What is
+urgent is what the first deployment freezes: anything written into
+stored records, and anything a client integrates against. Those parts
+must be in place before the first tenant is created, whatever else is
+still partial. Everything else can follow without touching a record or
+a client.
+
+In the first deployment, because the first records freeze it:
+
+1. The tenant id as the store key, minted per life, and the tenant table
+   with its tombstones, with create, delete and status recorded there.
+   A key scheme written into every record cannot be changed later on
+   backends that cannot rename; the reconciler that executes deletions
+   may land after, but the rows and jobs it needs must exist before the
+   first delete.
+2. The event store as the system of record, with positions. Derived
+   data written without it can never be reprocessed or handed to a
+   subsystem added later, because no other copy of the events exists in
+   this server.
+3. What goes into stored records: system fields under the reserved
+   `memmachine_` keys, scalar-only bounded properties, the declared
+   index schema per vector store, and containers per embedder. Every
+   vector payload and segment row written freezes them, and most
+   backends cannot rewrite a payload key in place.
+4. A registry row for every vector key, with strict create and the check
+   after each operation. The row is what makes a key's garbage
+   addressable at all; reclamation and the tombstone sweep can follow,
+   but a key that was never registered can never be reclaimed.
+5. The public surface: the v1 API, the event shape, the filter as a JSON
+   tree, limits as maximums, one error handler. Clients freeze it, and
+   changing it later is a client migration.
+6. Alembic from the first migration, which is the schema itself. Free at
+   the start and painful once `create_all` has run anywhere.
+
+Before churn, not before the first byte: the reconciler role executing
+durable deletions and `reclaim`, the tombstone sweep, `catch_up`. None
+writes anything into records, and a deployment with few deletions can
+run with them recorded as jobs until it lands. "No implicit creation"
+is not a task in a new server; there is no path to remove.
+
+At any time: the full constructor-derived loader (a first loader need
+only build the same objects), the concurrency scope check, generated
+schema and clients, the SQLite stores on shared tables, MCP. Internal or
+reversible.
+
+The first deployment's minimum is therefore narrower than this
+document: the tenant table and jobs, the event store, episodic memory
+over the shipped segment store and one registry-backed vector store, the
+property conventions, the v1 API for tenants, events and search, and
+Alembic. Everything else is additive, and the risk to guard against is a
+partial implementation that starts writing records before one of the
+six items above is in place.
+
 ## Relation to open issues
 
 - #1574: this document is the target for every row.
