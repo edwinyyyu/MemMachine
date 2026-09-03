@@ -117,10 +117,8 @@ Named so the redesign can be checked against it.
 - Component with per-tenant resources: the event store and each memory
   subsystem. Both register with the tenant service the same way.
 - Key: a UUID a store takes as the identity of a partition or
-  collection. The event store's key for a tenant is the tenant id. A
-  memory subsystem mints the keys of its derived resources, one per
-  generation, and records them in its own per-tenant row. Keys are
-  never reused; a store does not detect reuse.
+  collection. It is the tenant id, in every store. Keys are never
+  reused; a store does not detect reuse.
 - Provider: a process-wide client declared in configuration and shared
   by every tenant: a database, an embedder, a language model, a
   reranker.
@@ -131,7 +129,7 @@ Named so the redesign can be checked against it.
   row, one section per component, applied to the component by a job.
 - Job: a row describing one action for one component on one tenant.
   `ensure` and `delete` are the tenant service's; a component may
-  define others (`catch_up`, `rebuild`).
+  define others (`catch_up`).
 - Reconciler: the role that claims and executes jobs. A process runs it
   when configured to; a deployment runs as many as it needs.
 - Instance: a component's per-tenant object inside one process, holding
@@ -200,10 +198,9 @@ Who knows what:
 
 - Tenant service: the tenant table, the job table, the registrations.
 - Event store: its tables, keyed by tenant id.
-- Memory subsystem: its derived stores, its own per-tenant table (keys of
-  the current generation, watermark, applied configuration), the
-  providers it was given, its instance cache, and the event store as a
-  reader.
+- Memory subsystem: its derived stores, its own per-tenant table
+  (watermark, applied configuration), the providers it was given, its
+  instance cache, and the event store as a reader.
 - Ingest service: the event store and the list of subsystems.
 - Stores: their backend and their keys.
 - Routers: the tenant service, the ingest service, the event store, the
@@ -328,8 +325,8 @@ Reconciler role:
   backoff. The transaction that marks an `ensure` or `delete` job done
   checks the tenant's remaining jobs of that action and applies the
   state transition if none remain.
-- Enqueue: a component inserts its own jobs (`catch_up`, `rebuild`)
-  through the tenant service's `enqueue(tenant_id, component, action,
+- Enqueue: a component inserts its own jobs (`catch_up`) through the
+  tenant service's `enqueue(tenant_id, component, action,
   payload)`; the tenant service records them without reading the
   payload.
 - Maintenance: each component's `maintain` hook runs on a slow schedule
@@ -358,10 +355,8 @@ at startup:
     verify the immutable options if present, apply the mutable ones,
     record the section in the component's per-tenant row.
   - `delete`: the first call makes the tenant unreachable in every one
-    of the component's stores and marks its per-tenant row `deleting`;
-    each call reclaims a bounded amount; `DONE` when nothing remains,
-    at which point the row is removed. The row outlives the first call
-    because it holds the keys reclamation needs.
+    of the component's stores and removes its per-tenant row; each call
+    reclaims a bounded amount; `DONE` when nothing remains.
   - `maintain` (no tenant): what the component's stores need done on a
     schedule.
   - Any further action the component defines.
@@ -423,7 +418,8 @@ Ingest, `POST /v1/tenants/{id}/events`, in the ingest service:
 
 Delete events, `POST /v1/tenants/{id}/events/delete`: `forget` on each
 subsystem, then `delete_events` on the event store. A crash between the
-two leaves an event whose derived data is gone; a rebuild recreates it.
+two leaves an event whose derived data is gone; the caller's retry of
+the delete finishes it.
 
 ## Episodic memory
 
@@ -433,15 +429,17 @@ events into segments and derivative embeddings and answering searches.
 Derived stores:
 
 - Segment store: segments and their derivative links, as shipped in
-  #1548. Rebuildable from the event store.
-- Vector store: derivative embeddings, an index. Rebuildable from the
-  event store.
+  #1548.
+- Vector store: derivative embeddings, an index.
 
-Per-tenant row (the subsystem's own table): tenant id, current segment
-partition key, current vector collection key, watermark (the last event
-position processed), applied configuration and its version, state
-(`live`, `rebuilding`, `deleting`). The keys are minted by the subsystem
-(uuid4), one pair per generation.
+Both are keyed by the tenant id. There is no rebuild of derived data: a
+full reprocessing costs what an ingestion costs, so it is one, into a
+new tenant. What the event store gives the subsystem is repair of
+partial processing (`catch_up`) and processing of history for a
+subsystem enabled on an existing tenant, whose watermark starts at zero.
+
+Per-tenant row (the subsystem's own table): tenant id, watermark (the
+last event position processed), applied configuration and its version.
 
 Identifiers: segment and derivative ids are minted (uuid4). Idempotency
 is per event, not per derived row: `process` for an event first forgets
@@ -460,18 +458,11 @@ Operations, in the order the stores are touched:
   request, the full events from the event store.
 - `forget`: look up segments and derivatives; delete vector records;
   delete segments.
-- `rebuild` (job): mint a new pair of keys, create the partition and the
-  collection, process from position zero into them, and when the new
-  generation has reached the live watermark, swap the keys in the
-  per-tenant row under its row lock (ingests for the tenant wait on
-  that lock for the swap), then delete the old keys through the stores'
-  ordinary delete and reclaim. Re-embedding after a change of embedder
-  is a rebuild.
 
 Tenant configuration section `episodic_memory`, with mutability:
 
-- `embedder: Ref[Embedder]`: immutable through `PATCH`; changing it is a
-  `rebuild` with the new embedder in its payload.
+- `embedder: Ref[Embedder]`: immutable; a different embedder is a new
+  tenant and a new ingestion.
 - `reranker: Ref[Reranker] | None`: mutable.
 - `segmenter`, `deriver`: their options; mutable, applying to events
   processed after the change.
@@ -484,13 +475,12 @@ needs one.
 
 Hooks:
 
-- `ensure`: if the per-tenant row is absent, mint keys, create the
-  partition and the collection (exists is success), insert the row;
-  otherwise verify immutable options and apply mutable ones.
-- `delete`: first call, mark the row `deleting` and logically delete
-  the current keys in both stores (and any older generation the row
-  still lists); every call, `reclaim` on each; `DONE` when all report
-  done, then remove the row.
+- `ensure`: create the partition and the collection under the tenant
+  id (exists is success); insert the per-tenant row if absent, else
+  verify immutable options and apply mutable ones.
+- `delete`: first call, logically delete the tenant id in both stores
+  and remove the row; every call, `reclaim` on each; `DONE` when both
+  report done.
 - `maintain`: the segment store's `purge_deleted_partitions` as a safety
   net for queue entries no job covers; the vector store's tombstone
   sweep.
@@ -500,8 +490,7 @@ Hooks:
 Every store takes a UUID key and nothing else. The string key contract
 (charset, 32 bytes, validators, hashing in `partition_key_for_session`)
 is retired, and so is the segment store's incarnation: with keys never
-reused, the registry row keyed by the caller's UUID is the whole fence,
-and replacement is the subsystem's, by a new key.
+reused, the registry row keyed by the caller's UUID is the whole fence.
 
 ### The fence every store implements
 
@@ -803,8 +792,7 @@ Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 | Method and path | Effect | Status |
 | --- | --- | --- |
 | `POST .../search` | body `query`, `limit`, `filter`, `expand_context`, `include_events` | 200 with scored hits |
-| `GET ...` | watermark, lag behind the event store, generation, state | 200 |
-| `POST .../rebuild` | body: optional new `embedder` | 202 with the job |
+| `GET ...` | watermark and lag behind the event store | 200 |
 
 Event body: `id` (optional UUID), `timestamp` (optional; server time if
 absent), `producer` (optional string), `blocks` (list of `{type: text,
