@@ -132,8 +132,6 @@ Named so the redesign can be checked against it.
   define others (`catch_up`).
 - Reconciler: the role that claims and executes jobs. A process runs it
   when configured to; a deployment runs as many as it needs.
-- Instance: a component's per-tenant object inside one process, holding
-  that tenant's store handles. A cache entry, never visible to callers.
 
 ## Principles
 
@@ -142,9 +140,12 @@ Named so the redesign can be checked against it.
    deletes tenants and records jobs, and is the only reader of the
    tenant table. Components serve data operations and own their
    per-tenant state, learning of tenants through their hooks.
-2. A data operation names its tenant by id in the request. The API has
-   no handle. Inside a process, per-tenant instances are bounded cache
-   entries that any process can open from the databases.
+2. A data operation names its tenant by id in the request, and every
+   store operation names its key. There are no handles at the API and
+   none in the stores: nothing is opened or closed per tenant, and a
+   process holds no per-tenant state. A store may keep a private
+   per-key cache for a backend that needs one (the usearch store's
+   loaded index files), bounded by the store and invisible above it.
 3. The tenant service knows a component only through its registration: a
    name, a tenant configuration model to validate against, and hooks
    (`ensure`, `delete`, `maintain`, and any job kinds the component
@@ -199,8 +200,8 @@ Who knows what:
 - Tenant service: the tenant table, the job table, the registrations.
 - Event store: its tables, keyed by tenant id.
 - Memory subsystem: its derived stores, its own per-tenant table
-  (watermark, applied configuration), the providers it was given, its
-  instance cache, and the event store as a reader.
+  (watermark, applied configuration), the providers it was given, and
+  the event store as a reader.
 - Ingest service: the event store and the list of subsystems.
 - Stores: their backend and their keys.
 - Routers: the tenant service, the ingest service, the event store, the
@@ -367,22 +368,18 @@ and its queries.
 
 Data operations:
 
-- A component keeps instances in a process-local LRU (size and idle TTL
-  configurable, defaults 1000 and 60 s). Opening an instance reads the
-  component's own per-tenant row (absent: the tenant is unknown to this
-  component), resolves the section's provider references against the
-  providers the component holds, and opens store handles on the keys the
-  row names. Two indexed reads, and where a backend has a per-tenant
-  client object, that object, built from the row and the shared client
-  (see "Vector store"). At millions of tenants the LRU bounds what a
-  process holds and any process opens any tenant.
-- An instance older than the TTL is reopened on its next use. That is
-  how a configuration update reaches every process: within one TTL, with
-  no coordination.
-- After open, store fences reject every operation on a deleted key. A
-  stale-handle error from any store evicts the instance and surfaces as
-  one error type.
-- On an unknown tenant or a stale-handle error, the router asks the
+- Every request reads the component's own per-tenant row (absent: the
+  tenant is unknown to this component), resolves the section's provider
+  references against the providers the component holds (a lookup in the
+  injected set), and calls its stores with the tenant id. One indexed
+  read; no per-tenant object survives the request. A configuration
+  update therefore takes effect on the next request, on every process,
+  with no coordination.
+- Every store operation is fenced by its own registry row, and the same
+  row read supplies what the operation needs to address the tenant (the
+  codec configuration, the container, the collection UUID). A deleted
+  key raises one error type.
+- On an unknown tenant or a deleted-key error, the router asks the
   tenant service for the tenant's state and answers 404 (no row) or 409
   (`provisioning` or `deleting`). No component reads the tenant table.
 
@@ -397,12 +394,13 @@ tenant id, with the fence under "Store contracts".
   makes ingest idempotent per event id. `position` is assigned at
   insert from one sequence, so within a key positions are strictly
   increasing in commit order; it is what subsystems process by.
-- `create_partition(key)`, `open_partition(key)`, `delete_partition(key)`
-  (logical, O(1), idempotent), `reclaim_partition(key) -> DONE | MORE`,
+- `create_partition(key)`, `delete_partition(key)` (logical, O(1),
+  idempotent), `reclaim_partition(key) -> DONE | MORE`,
   `purge_deleted_partitions()` for library users.
-- Handle: `add_events(events) -> (stored, skipped)`, `get_events(ids)`,
-  `list_events(filter, cursor)`, `read_after(position, limit)`,
-  `delete_events(ids)`.
+- Data operations, each taking the key: `add_events(key, events) ->
+  (stored, skipped)`, `get_events(key, ids)`, `list_events(key, filter,
+  cursor)`, `read_after(key, position, limit)`, `delete_events(key,
+  ids)`.
 
 Ingest, `POST /v1/tenants/{id}/events`, in the ingest service:
 
@@ -495,10 +493,12 @@ reused, the registry row keyed by the caller's UUID is the whole fence.
 ### The fence every store implements
 
 A store keeps one registry row per key in a SQL database it is given,
-and every operation on the key goes through that row:
+and every operation on the key goes through that row. The row also
+holds whatever the store needs to address the key on its backend, so the
+fence read is the lookup and no handle is opened:
 
-- Write: the write's transaction executes `SELECT 1 FROM <registry>
-  WHERE key = ? FOR SHARE`. No row: raise the stale-handle error. The
+- Write: the write's transaction executes `SELECT ... FROM <registry>
+  WHERE key = ? FOR SHARE`. No row: raise the deleted-key error. The
   shared row lock is held until the transaction ends; the write's own
   statements run inside it (SQL stores), or the remote write runs while
   it is open and is acknowledged as applied before it commits (vector
@@ -546,6 +546,9 @@ As shipped in #1548, with these changes:
 
 - Key type `UUID`; the `incarnation` column of every table becomes the
   key, and the purge queue is keyed by the key.
+- The partition handle goes: every data operation takes the key, and
+  the registry read that fences it returns the codec configuration.
+  Codec objects are cached process-wide by configuration, not per key.
 - `reclaim_partition(key) -> DONE | MORE`: reclaims this key's dead rows,
   bounded per call; `DONE` when no garbage remains under the key. On
   SQLite the DELETE waits on the write lock up to the driver's busy
@@ -578,13 +581,15 @@ reject keys.
 - `create_collection(key, container)`: one ledger insert; on the SQLite
   stores, followed by the collection's table, created after the ledger
   row and inside the `ensure` job.
-- `open_collection(key)`: read the ledger row; `live` required. A handle
-  is obtainable no other way, so no write creates a collection.
-- Handle write: the fence's write step, with the remote upsert
-  acknowledged as applied (Qdrant `wait=True`; Milvus with strong
-  consistency) before the transaction commits.
-- Handle read: query, then verify the ledger row is `live`; raise stale
-  otherwise.
+- Write (`upsert(key, records)`, `delete(key, ids)`): the fence's write
+  step, whose row read returns the container (and, per backend, the
+  collection UUID or tenant name) the operation addresses; the remote
+  write is acknowledged as applied (Qdrant `wait=True`; Milvus with
+  strong consistency) before the transaction commits. No row: the
+  deleted-key error, and no write creates a collection.
+- Read (`query(key, ...)`, `get(key, ids)`): read the row for the
+  address, query, then verify the row is still `live`; raise the
+  deleted-key error otherwise.
 - `delete_collection(key)`: the fence's delete step, setting `dropping`.
   O(1), idempotent.
 - `reclaim_collection(key) -> DONE | MORE`: delete records under the key
@@ -611,38 +616,39 @@ That write lands under a key whose row is still in the ledger, in
 it. No path compares timestamps, and no key is forgotten while a record
 under it could exist.
 
-Backends at the tier that scales to the stated tenant counts. "Per-tenant
-object" is what the instance holds beyond the shared client; none
-requires a server-side object to stay open across processes.
+Backends at the tier that scales to the stated tenant counts. "Addressed
+by" is what an operation needs beyond the shared client, all of it held
+in the ledger row or equal to the key; no backend requires an object
+opened per tenant and kept across operations.
 
-| Backend | Tenant inside the container | Per-tenant object | Rejects a write to a dead tenant | Lists tenants | Reclaim |
+| Backend | Tenant inside the container | Addressed by | Rejects a write to a dead tenant | Lists tenants | Reclaim |
 | --- | --- | --- | --- | --- | --- |
-| Qdrant | payload value (#1564) | none | no | no (`facet` is approximate) | filter delete |
-| Milvus | partition-key value | none; the container is loaded once | no | no | filter delete |
-| pgvector | column value | none | yes, in-statement (ledger in the same database) | yes | keyed delete |
-| Pinecone | namespace, a call parameter; created implicitly on first upsert | none | no | yes | delete all in the namespace, O(1) |
-| S3 Vectors | filterable metadata value (indexes per bucket are capped, so not one per tenant) | none | no | no | no delete by filter: filtered query, delete returned keys, repeat |
-| Weaviate | native tenant, one shard each, activity tiers | `with_tenant` wrapper, built client-side | yes (tenant not found) | yes | remove tenant, O(1) |
-| Chroma | collection per tenant (Chroma's own write-up warns that metadata filtering "can become slow" as users and documents grow) | `Collection` handle: a client-side object holding the collection's UUID; `get_collection` is one round trip resolving name to UUID, and every data operation addresses the UUID | yes (unknown collection id) | yes (`list_collections`, paged) | `delete_collection`, O(1) |
+| Qdrant | payload value (#1564) | container name; the key as the payload filter | no | no (`facet` is approximate) | filter delete |
+| Milvus | partition-key value | container name, loaded once; the key as the partition-key value | no | no | filter delete |
+| pgvector | column value | table name; the key as the column value | yes, in-statement (ledger in the same database) | yes | keyed delete |
+| Pinecone | namespace, a call parameter; created implicitly on first upsert | index host; the key as `namespace` | no | yes | delete all in the namespace, O(1) |
+| S3 Vectors | filterable metadata value (indexes per bucket are capped, so not one per tenant) | bucket and index names; the key as the metadata filter | no | no | no delete by filter: filtered query, delete returned keys, repeat |
+| Weaviate | native tenant, one shard each, activity tiers | collection name; the key as the tenant name (the client's `with_tenant` wrapper is built per call, no request) | yes (tenant not found) | yes | remove tenant, O(1) |
+| Chroma | collection per tenant (Chroma's own write-up warns that metadata filtering "can become slow" as users and documents grow) | the collection's UUID, recorded in the ledger row at creation; operations go to the HTTP API by that UUID | yes (unknown collection id) | yes (`list_collections`, paged) | `delete_collection`, O(1) |
 | SQLite stores | table per collection | table name | yes (dropped table) | yes | drop table |
 
 Pinecone's implicit namespace creation and any backend's inability to
 reject are covered the same way: the ledger row exists before the first
-record, and reclaim deletes by the tenant's value. Chroma is the one
-backend whose per-tenant object needs a server call: `get_collection`
-resolves the name to the collection's UUID, after which the object is a
-struct the client addresses operations by. That is cheap enough to make
-and discard per request, and the instance cache makes it once per open
-instead; storing the UUID in the ledger row at creation and calling the
-REST API by id removes the call altogether, at the price of not using
-the Python client's public constructor. The per-collection cost on a
+record, and reclaim deletes by the tenant's value. Chroma's Python
+client only offers a `Collection` object obtained by `get_collection`,
+one round trip resolving a name to the collection's UUID, after which
+every operation addresses the UUID (`chromadb/api/fastapi.py`). The
+store records that UUID in the ledger row at creation and calls the
+HTTP API by it, so no operation makes the lookup and no object is
+held. Where a client library only offers per-tenant objects, the store
+uses the backend's HTTP API directly, as here, or builds the object per
+call where that is free, as for Weaviate. The per-collection cost on a
 single Chroma node (an index each) and the collection count Chroma Cloud
 supports are not verified here and are checked before an implementation,
-as are the limits quoted for S3 Vectors from its preview
-documentation.
+as are the limits quoted for S3 Vectors from its preview documentation.
 
-Reads through a stale handle raise on the post-query verification, so
-no dead tenant's records reach a caller.
+A read on a deleted key raises on the post-query verification, so no
+dead tenant's records reach a caller.
 
 ## Configuration
 
@@ -763,11 +769,12 @@ at construction.
 dependency order the references give. Startup fails on the first
 component that cannot be built, naming the component and the cause,
 before the socket is bound. Shutdown runs in reverse: routers stop
-accepting, a reconciler finishes its current job, components close
-their instances, stores and providers close.
+accepting, a reconciler finishes its current job, stores and providers
+close.
 
-Instances and store handles are the only objects created after startup,
-on demand, bounded by the LRU.
+Nothing per tenant is created after startup: a request reads rows and
+calls stores with the tenant id, and a process holds no per-tenant
+state beyond a store's private cache where a backend needs one.
 
 ## Server API
 
@@ -906,10 +913,11 @@ through its API and an ingest through the new one.
 ## Relation to open issues
 
 - #1574: this document is the target for every row.
-- #1548: kept; UUID keys replace incarnations and `reclaim_partition`
-  is added.
-- #1571: the router's 404/409 mapping and instance eviction under
-  "Component contract".
+- #1548: kept; UUID keys replace incarnations, `reclaim_partition` is
+  added, and the partition handle gives way to key-parameterized
+  operations.
+- #1571: the router's 404/409 mapping under "Component contract"; with
+  no handles there is nothing to evict.
 - #1575, #1576, #1577: resolved by construction: declared components, no
   implicit creation, durable jobs with retry.
 - #1572, #1573, #1564, #1565, #1537, #1563: the vector store contract
