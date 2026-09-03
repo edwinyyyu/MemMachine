@@ -7,6 +7,7 @@ document covers the server. Companion:
 `design/segment_store_shared_tables.md` (the segment store as shipped in
 #1548). Tracking: #1574. Line references are to `speedkick` at 7752e4cb,
 paths under `packages/server/src/memmachine_server` unless given in full.
+Settings are named, never given numeric defaults: none has been measured.
 
 ## Scope
 
@@ -24,29 +25,32 @@ NebulaGraph), the retrieval agent. The MCP surface gets one note.
 Requirements that shape everything below:
 
 - Horizontal scaling without sharding, at cluster scope: any process on
-  any machine serves any tenant, no process owns a tenant, nothing is
+  any host serves any tenant, no process owns a tenant, nothing is
   coordinated in process memory. Twenty thousand tenants now; millions
   at the next levels of scale.
 - Every component declares its concurrency scope, the widest deployment
   boundary within which concurrent instances may manage the same
-  resources (`process`, `machine`, `cluster`). A deployment declares
-  the scope it runs at, and startup refuses any component narrower than
-  that. The SQLite stores declare `process` or `machine`;
-  within their scope they obey every contract, and nothing about scale
-  is asked of them.
+  resources (`process`, `host`, `cluster`). A deployment declares the
+  scope it runs at, and startup refuses any component narrower than
+  that. The SQLite stores declare `process` or `host`; within their
+  scope they obey every contract, and nothing about scale is asked of
+  them.
 - DDL that is not tenant-specific runs only in a dedicated setup step
   that serves no requests and cannot race. Tenant-specific DDL is the
   only DDL allowed anywhere else, and it is avoided where it would be
-  expensive at cluster scope.
+  expensive at cluster scope. No store in this design creates a table
+  per tenant.
 - Garbage that is never collected is unacceptable. Wasted writes are
   acceptable.
 - Rejection of operations on a deleted tenant is structural, by database
-  locks and rows, never by comparing clocks.
+  locks and rows, never by comparing clocks. Time is used for
+  scheduling, never for deciding whether an effect is valid.
 - One client per provider per process, shared by every tenant.
 - The tenant layer neither routes data operations nor knows the stores
   or the options a component takes.
-- Configuration is derived from the code that consumes it, not written
-  beside it.
+- Resources are plain classes, wireable by hand, unaware of any
+  configuration or injection system. Configuration is derived from
+  their constructors, not written beside them.
 - No component of the current server is carried over unless named under
   "What is reused".
 
@@ -108,8 +112,10 @@ Named so the redesign can be checked against it.
   "space" and "namespace" because it says isolation and lifecycle and
   nothing about what the application puts inside.
 - Tenant name: the application's label. Any string up to 1024 bytes,
-  unique among tenants that are not deleting, renamable.
-- Tenant id: a UUID minted at creation, permanent, never reused.
+  unique among tenants that are not deleting or deleted, renamable.
+- Tenant id: a UUID minted at creation, permanent, never reused. The
+  tenant row outlives the tenant as a tombstone, which is what makes
+  "never reused" enforced rather than hoped.
 - Event: what a caller ingests: an id, a timestamp, a producer, one or
   more content blocks, properties. Events are the caller's data; the
   event store records them and memory subsystems process them.
@@ -123,14 +129,16 @@ Named so the redesign can be checked against it.
 - Component with per-tenant resources: the event store and each memory
   subsystem. Both register with the tenant service the same way.
 - Key: a UUID a store takes as the identity of a partition or
-  collection. It is the tenant id, in every store. Keys are never
-  reused; a store does not detect reuse.
-- Provider: a process-wide client declared in configuration and shared
-  by every tenant: a database, an embedder, a language model, a
-  reranker.
-- Template: a named block of per-component options in configuration,
-  copied into a tenant's configuration at creation. Nothing is built
-  from a template.
+  collection. It is the tenant id, in every store.
+- Resource: any object the server builds from configuration: a database
+  engine, a provider client, a store, a component, the tenant service.
+  A plain class with a typed constructor.
+- Provider: a resource that is a process-wide model or backend client
+  shared by every tenant: an embedder, a language model, a reranker, a
+  database engine, a vector backend client.
+- Template: a named block of per-component tenant options in
+  configuration, copied into a tenant's configuration at creation.
+  Nothing is built from a template.
 - Tenant configuration: the resolved options recorded on the tenant
   row, one section per component, applied to the component by a job.
 - Job: a row describing one action for one component on one tenant.
@@ -138,11 +146,13 @@ Named so the redesign can be checked against it.
   define others (`catch_up`).
 - Reconciler: the role that claims and executes jobs. A process runs it
   when configured to; a deployment runs as many as it needs.
-- Concurrency scope: `process` < `machine` < `cluster`, the widest
+- Concurrency scope: `process` < `host` < `cluster`, the widest
   deployment boundary within which concurrent instances of a component
-  may safely manage the same resources. Computed from a component's
-  params at construction; a composition's scope is the minimum of its
-  parts'. Declared and validated at startup, never enforced at runtime.
+  may safely manage the same resources. Computed from a resource's
+  constructor arguments at construction; a composition's scope is the
+  minimum of its parts'. Declared and validated at startup, never
+  enforced at runtime. "Host" is one operating system instance, which
+  is what a file lock reaches; "node" is avoided as overloaded.
 
 ## Principles
 
@@ -155,58 +165,56 @@ Named so the redesign can be checked against it.
    store operation names its key. There are no handles at the API and
    none in the stores: nothing is opened or closed per tenant, and a
    process holds no per-tenant state. A store may keep a private
-   per-key cache for a backend that needs one (the usearch store's
-   loaded index files), bounded by the store and invisible above it.
+   per-key cache for a backend that needs one, bounded by the store and
+   invisible above it.
 3. The tenant service knows a component only through its registration: a
    name, a tenant configuration model to validate against, and hooks
-   (`ensure`, `delete`, `maintain`, and any job kinds the component
-   defines). It never sees a store or an option.
+   (`ensure`, `delete`, `reclaim`, `maintain`, and any job kinds the
+   component defines). It never sees a store or an option.
 4. Stores take a UUID key and nothing else, and fence on that key.
 5. Every store rejects operations on a deleted key by itself and
    structurally: a registry row in SQL keyed by the caller's UUID that
    writes lock in share mode, deletes lock exclusively, and reads verify.
-   Nothing is rejected by comparing clocks.
+   Locks, not leases: a lock is released by the database when its
+   holder's session ends, and nothing compares clocks.
 6. Lifecycle steps are idempotent. There is no transaction across
    stores, so a step interrupted midway is completed by repeating it,
    and whatever a failed creation left behind is removed by the same
    path as a deletion.
-7. Deletion records jobs and returns. Reclamation is the reconciler's,
-   finished when every component reports done, observable throughout.
-8. Configuration is the components' own parameter models, rendered as
-   one document. Everything process-wide is built from it at startup,
-   in dependency order, by constructor injection of resolved objects.
-   Nothing is looked up lazily, nothing is mutated at runtime, a bad
-   document fails startup.
+7. Every lifecycle change is accepted, recorded as jobs, and reported
+   on; none is refused for a failure the reconciler will retry. A caller
+   polls or waits; it is never told "try again later".
+8. Resources are plain classes with typed constructors. Configuration
+   is the set of constructor arguments, rendered as one document; the
+   loader reflects on constructors and builds the object graph in
+   dependency order. Nothing is looked up lazily, nothing is mutated at
+   runtime, a bad document fails startup, and a resource can be wired
+   by hand without the loader.
 9. Schema that is not tenant-specific is versioned migrations applied
    by an operator's command that serves nothing and races with nothing;
    serving and reconciler processes verify it and never run it.
-   Tenant-specific DDL is the only DDL a job may run, and components
-   declaring `cluster` scope avoid it by holding tenants as rows or
-   values.
+   Tenant-specific DDL is the only DDL a job may run, and no store in
+   this design runs any.
 
 ## Architecture
 
 Every process runs the same binary and builds the same objects from the
 configuration document, in this order:
 
-1. The document, parsed into the components' parameter models and
-   validated, references included.
-2. Providers: one engine per database, one client per embedder, language
-   model and reranker.
+1. The document, parsed into constructor arguments and validated,
+   references included.
+2. Resources, in the dependency order the references give: database
+   engines and backend clients, then embedders, language models and
+   rerankers, then stores, then the event store and each memory
+   subsystem (each registering with the tenant service), then the
+   ingest service, then the tenant service.
 3. Schema verification: every component's version table is at head, or
    startup fails (see "Schema management").
-4. Stores, each constructed with its resolved database engine or client.
-5. The event store, then each memory subsystem, each constructed with
-   its stores and with the providers the document lists for it. Each
-   registers with the tenant service.
-6. The ingest service, constructed with the event store and the ordered
-   list of memory subsystems the document declares.
-7. The tenant service over the tenant and job tables.
-8. The scope check: the minimum over every component's concurrency
-   scope must reach `server.concurrency_scope`, or startup fails naming
-   the narrowest component.
-9. Roles, from `server.roles`: `api` binds the HTTP routers; `reconciler`
-   starts the job loop. A single-node deployment runs both in one
+4. The scope check: the minimum over every resource's concurrency scope
+   must reach `server.concurrency_scope`, or startup fails naming the
+   narrowest resource.
+5. Roles, from `server.roles`: `api` binds the HTTP routers; `reconciler`
+   starts the job loop. A single-host deployment runs both in one
    process; a cluster runs many `api` processes and as many `reconciler`
    processes as its job volume needs, one at least.
 
@@ -215,8 +223,8 @@ Who knows what:
 - Tenant service: the tenant table, the job table, the registrations.
 - Event store: its tables, keyed by tenant id.
 - Memory subsystem: its derived stores, its own per-tenant table
-  (watermark, applied configuration), the providers it was given, and
-  the event store as a reader.
+  (watermark, applied configuration and its version), the providers it
+  was given, and the event store as a reader.
 - Ingest service: the event store and the list of subsystems.
 - Stores: their backend and their keys.
 - Routers: the tenant service, the ingest service, the event store, the
@@ -224,16 +232,17 @@ Who knows what:
 
 Dependency direction: the registration interface is defined by the
 tenant package; component packages import it and nothing else from the
-tenant package. The tenant package imports no component.
+tenant package. The tenant package imports no component. No resource
+imports the loader.
 
 Horizontal scaling, at `cluster` scope: all shared state is in the
 databases and the vector backend; per-process state is caches any
 process can rebuild; concurrent creates are arbitrated by a unique
-index, concurrent jobs by row claims, concurrent data operations and
-deletes by store fences. A `machine` deployment is several processes on
+index, concurrent jobs by row locks, concurrent data operations and
+deletes by store fences. A `host` deployment is several processes on
 one host sharing SQLite files; a `process` deployment is one process.
 The contracts are the same at every scope; the scope says only which
-components may share resources with how many others.
+resources may share state with how many others.
 
 ## Tenant registry
 
@@ -243,16 +252,15 @@ on them. Only the tenant service reads or writes them.
 `tenants`:
 
 - `id UUID PK`.
-- `name TEXT NULL`, unique index. NULL while deleting: the name is
-  released when deletion starts, so a new tenant can take it at once and
-  gets a new id.
+- `name TEXT NULL`, unique index. NULL from the moment deletion starts,
+  so a new tenant can take the name at once and gets a new id.
 - `former_name TEXT NULL`: the name at deletion time, for operators.
-- `state`: `provisioning`, `active`, `deleting`.
+- `state`: `provisioning`, `active`, `deleting`, `deleted`.
 - `configuration JSON`: one object per component name. The record of
   what was requested; each component holds its own applied copy.
 - `configuration_version INTEGER`: incremented by every configuration
   update.
-- `created_at`, `updated_at`.
+- `created_at`, `updated_at`, `deleted_at`, `swept_at`.
 
 `tenant_jobs`:
 
@@ -260,8 +268,20 @@ on them. Only the tenant service reads or writes them.
   on `(tenant_id, component, action)`.
 - `state`: `pending`, `done`.
 - `configuration_version`: for `ensure`, the version the job applies.
-- `attempts`, `last_error`, `next_run_at`, `lease_until`, `created_at`,
-  `updated_at`.
+- `attempts`, `last_error`, `next_run_at`, `created_at`, `updated_at`.
+
+A `deleted` row is a tombstone: id, former name, `deleted_at`,
+`swept_at`, nothing else. It is what enforces "never reused": minting
+is an insert on the primary key, so a duplicate id, whether from a
+collision, a replayed id, or a registry restored from a backup the
+stores were not restored to, fails at the tenant service before any
+store is touched. It is also what drives the periodic re-sweep under
+"Tenant lifecycle". Tombstones are kept; `memmachine tenants
+prune-tombstones` is an operator's trade of the reuse detector and the
+re-sweep for space, gated on every component having reported `DONE` for
+the tenant and a later re-sweep having found nothing, and it reports how
+many rows are prunable and how many are not, so the trade is made
+against a number.
 
 Rename is an update of `name`. No store key contains the name, which is
 why names can be arbitrary strings while store keys are the 32 hex
@@ -277,85 +297,111 @@ Create, `POST /v1/tenants`:
    component name or an invalid option is 422.
 2. Insert the tenant row as `provisioning` and one `ensure` job per
    registered component, in one transaction. A duplicate name fails on
-   the unique index: 409, with the existing tenant's id and state in the
-   body. With `if_exists: "return"` the existing tenant is returned
-   instead, with 200, without comparing configuration.
-3. Run this tenant's jobs inline in the request, through the claim path
-   the reconciler uses; an `api` process does this whether or not it
-   runs the reconciler role. The transaction that marks the last job
-   done also sets the row `active`. Return 201 with the tenant.
-4. If a job raises, return 503 with the tenant in `provisioning`. A
-   reconciler retries the job; the tenant becomes `active` without
-   further requests, which `GET` shows.
+   the unique index: 409, with the existing tenant's record in the body,
+   so the caller that lost the race has what it needs without a second
+   request. There is no get-or-create flag; that body is what it would
+   have returned.
+3. Respond 202 with the tenant in `provisioning`. With `?wait=` the
+   request instead blocks until the tenant is `active` or the wait
+   elapses, and responds 201 or 202 accordingly. While waiting, the
+   `api` process executes this tenant's jobs itself, through the same
+   claim as a reconciler, so a single-process deployment completes the
+   create inside the request; a failed step is left for a reconciler,
+   never surfaced as an error to the creator.
+4. `GET /v1/tenants/{id}` shows the state and each job's attempts and
+   last error. The tenant becomes `active` when the last `ensure` job's
+   transaction marks it done.
 
 Delete, `DELETE /v1/tenants/{id}`:
 
 1. One transaction: `state = deleting`, `former_name = name`,
-   `name = NULL`, and one `delete` job per registered component. Allowed
-   from `provisioning` and `active`; a repeat while `deleting` returns
-   the same 202.
-2. Return 202 with the tenant in `deleting`. A reconciler in the same
-   process is woken; every other reconciler sees the jobs at its next
-   poll.
-3. A reconciler executes the delete jobs. A component's first delete
+   `name = NULL`, `deleted_at = now()`, and one `delete` job per
+   registered component. Allowed from `provisioning` and `active`; a
+   repeat while `deleting` responds the same 202.
+2. Respond 202 with the tenant in `deleting`; `?wait=` as for create. A
+   reconciler in the same process is woken; every other reconciler sees
+   the jobs at its next poll.
+3. A reconciler executes the delete jobs. A component's first `delete`
    call makes the tenant unreachable in every one of its stores; each
    call reclaims a bounded amount; the job is done when the component
    reports nothing remains.
 4. When every delete job is done, one transaction removes the job rows
-   and the tenant row. `GET` then returns 404.
+   and sets the tenant row `deleted`. `GET` then returns 404, and the
+   row stays as the tombstone.
+
+Re-sweep: a `maintain` duty of the tenant service, run by reconcilers,
+takes `deleted` rows oldest `swept_at` first, bounded per call, and
+calls every registered component's `reclaim(tenant_id)`, then stamps
+`swept_at`. This is what collects the one write that can land after
+reclamation (see "Vector store"); components whose stores cannot hold
+such a write return `DONE` at once.
 
 Configuration update, `PATCH /v1/tenants/{id}` with `configuration`:
-each component validates its section's change against its model, in
-which every option is mutable or immutable; an immutable option in the
-patch is 422. One transaction writes the document, increments
-`configuration_version`, and inserts (or resets) an `ensure` job per
-changed component carrying the new version. The job runs inline in the
-request as in create; on failure it is left for a reconciler and the
-response is 503 with the tenant unchanged from the components' view.
+
+- The tenant stays `active` throughout. Each component validates its
+  section's change against its model, in which every option is mutable
+  or immutable. An option is immutable exactly when changing it would
+  require touching existing data (the embedder; anything that reshapes
+  stored rows); mutable options apply to events processed after the
+  change or to reads (a reranker, search defaults, segmenter options).
+  An immutable option in the patch is 422, and there is no "expensive
+  but allowed" class.
+- One transaction writes the document, increments
+  `configuration_version`, and inserts (or resets) an `ensure` job per
+  changed component carrying the new version. Respond 202; `?wait=`
+  blocks until every such job is done.
+- How it reaches the server processes: the `ensure` job calls the
+  component's hook with the new section, and the hook writes it, with
+  its version, into the component's own per-tenant row. Every request
+  reads that row, so the next request on any process uses the new
+  options. No process is notified; the row is the channel. `GET` shows
+  the requested version and, per component, the applied version.
 
 Rename, `PATCH /v1/tenants/{id}` with `name`: one update; 409 on a
 duplicate.
 
-States: `provisioning -> active -> deleting -> row removed`, and
+States: `provisioning -> active -> deleting -> deleted`, and
 `provisioning -> deleting`. There is no failed state. A job that raises
-is rescheduled with exponential backoff (1 s doubling to 5 min) and keeps
+is rescheduled with exponential backoff (`reconciler.backoff`) and keeps
 `attempts` and `last_error` on its row for as long as it takes. An
 operator fixes the cause and the next attempt succeeds. A tenant in
-`provisioning` or `deleting` past a threshold is logged with its jobs'
-last errors, and logged again each time the age doubles.
+`provisioning` or `deleting` past `reconciler.stuck_after` is logged
+with its jobs' last errors, and logged again each time the age doubles.
 
 Reconciler role:
 
 - One loop per process that has the role. It polls every
-  `tenant_registry.reconciler.poll_interval` (default 5 s) and when
-  woken locally.
-- Claim: one `UPDATE ... SET lease_until = now + lease` over the rows
-  selected by `state = 'pending' AND next_run_at <= now AND (lease_until
-  IS NULL OR lease_until < now) ORDER BY next_run_at LIMIT n FOR UPDATE
-  SKIP LOCKED`, returning the claimed rows. On SQLite the same statement
+  `reconciler.poll_interval` and when woken locally.
+- Claim: `SELECT ... FROM tenant_jobs WHERE state = 'pending' AND
+  next_run_at <= now() ORDER BY next_run_at LIMIT n FOR UPDATE SKIP
+  LOCKED`, and the row lock is held for the duration of the step: the
+  hook runs, and the same transaction marks the outcome and commits. A
+  crashed process's lock is released by the database and the job is
+  claimable at once. There is no lease and no clock comparison; the one
+  `now()` is the database's and decides only when a backed-off job is
+  due, never whether an effect is valid. On SQLite the same statement
   without `SKIP LOCKED` under `BEGIN IMMEDIATE`; concurrent reconcilers
-  serialize there. A crashed process's claim expires with its lease
-  (default 60 s) and the job is claimable again. Hooks are idempotent,
-  so a job executed twice, or by two processes across a lease expiry, is
-  harmless; the lease governs liveness of the loop, never correctness.
+  serialize there.
 - Execute: the component's hook for the job's action, with the payload
   (for `ensure`, the tenant's configuration section at the job's
   version). `DONE` marks the job done; `MORE` reschedules it at
-  `now + reclaim_interval` (default 1 s); an exception reschedules with
+  `now() + reconciler.reclaim_interval`; an exception reschedules with
   backoff. The transaction that marks an `ensure` or `delete` job done
   checks the tenant's remaining jobs of that action and applies the
-  state transition if none remain.
+  state transition if none remain. Hooks are idempotent, so a step
+  repeated after a crash is harmless.
 - Enqueue: a component inserts its own jobs (`catch_up`) through the
-  tenant service's `enqueue(tenant_id, component, action,
-  payload)`; the tenant service records them without reading the
-  payload.
-- Maintenance: each component's `maintain` hook runs on a slow schedule
-  (default every 10 min), bounded per call, from reconciler processes
-  only, in every one of them without exclusion. A hook claims what it
-  works on where duplicated work would cost, and is idempotent
+  tenant service's `enqueue(tenant_id, component, action, payload)`;
+  the tenant service records them without reading the payload.
+- Maintenance: each component's `maintain` hook and the tenant service's
+  re-sweep run on `reconciler.maintenance_interval`, bounded per call,
+  from reconciler processes only, in every one of them without
+  exclusion. A duty claims what it works on with `FOR UPDATE SKIP
+  LOCKED` where duplicated work would cost, and is idempotent
   everywhere, so two processes at once waste at most effort.
-- Bounded per pass: at most `n` jobs, each hook bounded by its own
-  budget.
+- Cost: a reconciler holds one database connection per job it is
+  executing, for the step's duration; steps are bounded per call by
+  their hooks, and `reconciler.jobs_per_pass` bounds the connections.
 
 ## Component contract
 
@@ -367,18 +413,21 @@ at startup:
   `/episodic-memory`).
 - `tenant_configuration`: a Pydantic model for its section, every field
   mutable or immutable, with defaults. Provider references in it are
-  typed (`Ref[Embedder]`) and validated against the providers the
-  component was constructed with. The tenant service calls
-  `validate(section)` and `validate_update(old, new)` and never reads a
-  field.
+  ids that the component validates against the providers it was
+  constructed with. The tenant service calls `validate(section)` and
+  `validate_update(old, new)` and never reads a field.
 - Hooks, each `(tenant_id, payload) -> DONE | MORE`, idempotent, bounded
   per call, allowed to raise (the reconciler retries):
   - `ensure`: create the component's resources for the tenant if absent,
     verify the immutable options if present, apply the mutable ones,
-    record the section in the component's per-tenant row.
+    record the section and its version in the component's per-tenant
+    row.
   - `delete`: the first call makes the tenant unreachable in every one
     of the component's stores and removes its per-tenant row; each call
     reclaims a bounded amount; `DONE` when nothing remains.
+  - `reclaim`: reclaim anything under the tenant id in every one of the
+    component's stores, bounded; `DONE` when nothing is found. Called by
+    the re-sweep after `delete` has reported `DONE`.
   - `maintain` (no tenant): what the component's stores need done on a
     schedule.
   - Any further action the component defines.
@@ -391,18 +440,17 @@ Data operations:
 
 - Every request reads the component's own per-tenant row (absent: the
   tenant is unknown to this component), resolves the section's provider
-  references against the providers the component holds (a lookup in the
-  injected set), and calls its stores with the tenant id. One indexed
-  read; no per-tenant object survives the request. A configuration
-  update therefore takes effect on the next request, on every process,
-  with no coordination.
+  ids against the providers the component holds (a lookup in the
+  mapping it was constructed with), and calls its stores with the tenant
+  id. One indexed read; no per-tenant object survives the request.
 - Every store operation is fenced by its own registry row, and the same
   row read supplies what the operation needs to address the tenant (the
-  codec configuration, the container, the collection UUID). A deleted
-  key raises one error type.
-- On an unknown tenant or a deleted-key error, the router asks the
-  tenant service for the tenant's state and answers 404 (no row) or 409
-  (`provisioning` or `deleting`). No component reads the tenant table.
+  codec configuration, the container, the collection UUID). A key that
+  is not live raises one error type.
+- On an unknown tenant or a not-live-key error, the router asks the
+  tenant service for the tenant's state and answers 404 (no row, or
+  `deleted`) or 409 (`provisioning` or `deleting`). No component reads
+  the tenant table.
 
 ## Event store
 
@@ -481,31 +529,31 @@ Operations, in the order the stores are touched:
 
 Tenant configuration section `episodic_memory`, with mutability:
 
-- `embedder: Ref[Embedder]`: immutable; a different embedder is a new
+- `embedder` (provider id): immutable; a different embedder is a new
   tenant and a new ingestion.
-- `reranker: Ref[Reranker] | None`: mutable.
+- `reranker` (provider id or null): mutable.
 - `segmenter`, `deriver`: their options; mutable, applying to events
   processed after the change.
 - `search`: default `limit`, `expand_context`, score threshold; mutable.
 
 Episodic memory uses no language model today (both segmenters and both
 derivers are deterministic; the embedder is the only model call). The
-section gains a `language_model: Ref[LanguageModel]` when a deriver
-needs one.
+section gains a `language_model` id when a deriver needs one.
 
 Hooks:
 
 - `ensure`: create the partition and the collection under the tenant
   id; an existing `live` row is this component's own earlier attempt
-  and is success, a row in any other state is a reused key and raises
-  (see "Create is strict"); insert the per-tenant row if absent, else
-  verify immutable options and apply mutable ones.
+  and is success, a `creating` row is resumed, a `dropping` row is a
+  reused key and raises (see "Create is strict"); insert the per-tenant
+  row if absent, else verify immutable options and apply mutable ones.
 - `delete`: first call, logically delete the tenant id in both stores
-  and remove the row; every call, `reclaim` on each; `DONE` when both
+  and remove the row; every call, reclaim on each; `DONE` when both
   report done.
+- `reclaim`: reclaim under the tenant id in both stores; `DONE` when
+  neither finds anything.
 - `maintain`: the segment store's `purge_deleted_partitions` as a safety
-  net for queue entries no job covers; the vector store's tombstone
-  sweep.
+  net for queue entries no job covers.
 
 ## Store contracts
 
@@ -522,19 +570,19 @@ holds whatever the store needs to address the key on its backend, so the
 fence read is the lookup and no handle is opened:
 
 - Write: the write's transaction executes `SELECT ... FROM <registry>
-  WHERE key = ? FOR SHARE`. No row: raise the deleted-key error. The
-  shared row lock is held until the transaction ends; the write's own
-  statements run inside it (SQL stores), or the remote write runs while
-  it is open and is acknowledged as applied before it commits (vector
-  stores).
+  WHERE key = ? FOR SHARE`. No row, or a row not `live`: raise the
+  not-live error. The shared row lock is held until the transaction
+  ends; the write's own statements run inside it (SQL stores), or the
+  remote write runs while it is open and is acknowledged as applied
+  before it commits (vector stores).
 - Delete (logical): one transaction executes `... FOR UPDATE` on the
   row, which waits for every shared lock to be released, then removes
   or marks the row. After it commits no write can take the shared lock,
   so no write under the key can start, and every write that started has
   finished.
 - Read: the read carries `EXISTS (SELECT 1 FROM <registry> WHERE key =
-  ?)` in its statement where the data is in the same database, and
-  verifies the row after the read where it is not. A read that
+  ? AND live)` in its statement where the data is in the same database,
+  and verifies the row after the read where it is not. A read that
   completes and then finds the row gone raises. A read is answered only
   if the key was live after the read finished.
 - Locks are released by the database when the transaction ends: commit,
@@ -552,82 +600,95 @@ fence read is the lookup and no handle is opened:
   whose data lives outside that SQLite file (a remote vector backend
   with a SQLite ledger) the write lock is held for the duration of the
   remote write, serializing every writer on that file; such a pairing
-  has `machine` scope and is documented as slow, and PostgreSQL is the
+  has `host` scope and is documented as slow, and PostgreSQL is the
   ledger at `cluster` scope. The file lock is what gives a SQLite-backed
-  store `machine` scope: it reaches every process on the host and no
+  store `host` scope: it reaches every process on the host and no
   further.
 
 Cost, so a deployment can be sized for it: a write holds one pooled
 connection, idle in an open transaction, for the duration of the remote
-write, milliseconds on Qdrant and Milvus, so the pool bounds the vector
-writes a process can have in flight. `pool_size` is sized for that plus
-the process's other SQL work, or the ledger is given a pool of its own.
-`idle_in_transaction_session_timeout` on that pool has to exceed the
-longest remote write, the opposite of the low value one would otherwise
-choose. A read costs one indexed row read after the query.
+write, so the pool bounds the vector writes a process can have in
+flight. The pool is sized for that plus the process's other SQL work, or
+the ledger is given a pool of its own. `idle_in_transaction_session_timeout`
+on that pool has to exceed the longest remote write, the opposite of the
+low value one would otherwise choose. A read costs one indexed row read
+after the query.
+
+Locks, not leases. A lease is a row saying "holder H owns this until
+T"; the holder is expected to finish or renew before T, and others take
+over after it. Three things follow, none of which this design wants.
+The holder cannot know it still holds the lease when it acts without
+comparing a clock, and between that comparison and the act the lease
+can expire and be taken over, so a late write is prevented only if the
+resource itself rejects a stale holder, which needs a fencing token
+checked by the backend, which the vector backends cannot do. The clock
+compared must be the database's, never the process's, so every check is
+a round trip anyway. And a lease is a row write per acquire, renew and
+release, with no queue: after expiry whoever asks first wins, so
+starvation needs its own mitigation. A database row lock has none of
+this: it is held in the lock manager's memory, it is released the
+instant the holder's session ends, waiters are queued, and the database
+does the rejecting. A lease is the right tool only where a takeover
+must be delayed rather than immediate after the holder's death, which
+nothing here needs. The one lease this design had, on reconciler jobs,
+is now a held row lock. The lease once considered for vector writes was
+not a mutual-exclusion lease at all: every writer held a shared,
+time-limited validation, no delete waited for it, and reclamation was
+delayed past the longest validation instead; the `FOR SHARE` /
+`FOR UPDATE` pair is that same shared-versus-exclusive shape with the
+database enforcing it and no clock.
 
 Nothing above reads a clock. The segment store ships this fence
 (`design/segment_store_shared_tables.md`); the event store and the
 vector store adopt it.
 
+Scope declarations, computed from constructor arguments:
+
+| Resource | Scope |
+| --- | --- |
+| Tenant registry, event store, segment store | `cluster` on PostgreSQL; `host` on a SQLite file; `process` on in-memory SQLite |
+| Vector store | the minimum of its backend's and its ledger's: networked Qdrant, Milvus, Pinecone, S3 Vectors, Weaviate, Chroma are `cluster`; local-mode Qdrant and Milvus are `process`; sqlite-vec is `host` (ledger and data in one file, under the file lock); the usearch store is `process` (index state in process memory) |
+| Reconciler, ingest service, routers | any; they hold no shared state of their own |
+
 ### Create is strict
 
 `create_partition(key)` and `create_collection(key, container)` insert
 the registry row and raise `KeyExistsError` if any row exists under the
-key, in any state. They are not idempotent, on purpose: the primary key
-is the one place a violated never-reuse invariant can be detected, and
-an idempotent create would turn a reused key into a successful create
-that inherits whatever records were never reclaimed under it. There is
-no open-or-create at the store: a store cannot tell a retry of its
-caller's own create from a foreign key, and only the caller can.
+key, in any state. They are not idempotent, on purpose: a store cannot
+tell a retry of its caller's own create from a create under a key
+someone else chose, and only the caller can, so there is no
+open-or-create at the store.
 
 Idempotency lives in the component's `ensure`, which knows the key's
-provenance: the tenant service inserted the tenant row with this id before
-any job ran, so a `live` row under the key can only be this component's own
-earlier attempt, and `ensure` treats it as success; a `creating` row is an
-interrupted attempt of its own, and `ensure` resumes it. A row in `dropping`
-or `dropped` means the key had a previous life, and `ensure` raises
-`KeyReusedError`; the job records it and an operator resolves it, since no
-retry can. A restored backup of the tenant registry that is not paired with
-the stores' state at the same point is the realistic way to get there, and
-this is what catches it.
+provenance: the tenant service minted the id on the tenant table's
+primary key before any job ran, so a `live` row under the key can only
+be this component's own earlier attempt, and `ensure` treats it as
+success; a `creating` row is an interrupted attempt of its own, and
+`ensure` resumes it; a `dropping` row means the key had a previous life,
+which the tenant service's tombstone makes impossible for the server and
+which a library user reusing keys can cause, and `ensure` raises
+`KeyReusedError` for an operator.
 
 What every store operation does with a key whose row is present but
-not `live` (the vector ledger's `creating`, `dropping` and `dropped`; a
-SQL store's row while its purge is pending), and with no row at all.
-Only `ensure` proceeds on `creating`, as above:
+not `live` (`creating` and `dropping`; a SQL store's row while its purge
+is pending), and with no row at all. Only `ensure` proceeds on
+`creating`, as above:
 
 | Operation | present, not live | no row |
 | --- | --- | --- |
 | create | `KeyExistsError` | creates |
-| write | deleted-key error | deleted-key error |
-| read | deleted-key error | deleted-key error |
+| write | not-live error | not-live error |
+| read | not-live error | not-live error |
 | logical delete | returns; idempotent | returns; idempotent |
-| reclaim | proceeds; `dropping` becomes `dropped` once nothing remains, `dropped` is swept once more | `DONE` |
-
-A SQL store's purge is exact and fenced, so after it nothing can remain
-under the key and its row can go; a reused key there creates cleanly,
-and the vector ledger's tombstone is what still detects the reuse.
-
-Scope declarations, computed from params:
-
-| Component | Scope |
-| --- | --- |
-| Tenant registry, event store, segment store | `cluster` on PostgreSQL; `machine` on a SQLite file; `process` on in-memory SQLite |
-| Vector store | the minimum of its backend's and its ledger's: networked Qdrant, Milvus, Pinecone, S3 Vectors, Weaviate, Chroma are `cluster`; local-mode Qdrant and Milvus are `process`; sqlite-vec is `machine` (its bookkeeping is the ledger, in the same file); the usearch store is `process` (index state in process memory) |
-| Reconciler, ingest service, routers | any; they hold no shared state of their own |
-
-### Event store
-
-Above. Its rows are keyed by the tenant id directly, its registry row is
-the fence, and its purge queue is keyed by the key.
+| reclaim | proceeds; the row goes when nothing remains | deletes by key in every container; `DONE` when nothing is found |
 
 ### Segment store
 
 As shipped in #1548, with these changes:
 
 - Key type `UUID`; the `incarnation` column of every table becomes the
-  key, and the purge queue is keyed by the key.
+  key, and the purge queue is keyed by the key. `open_or_create_partition`
+  goes.
 - The partition handle goes: every data operation takes the key, and
   the registry read that fences it returns the codec configuration.
   Codec objects are cached process-wide by configuration, not per key.
@@ -647,8 +708,7 @@ reject keys.
 
 `vector_collections`: `key UUID PK`, `container`, `address` (what the
 backend needs beyond the container, such as Chroma's collection UUID),
-`state` (`creating`, `live`, `dropping`, `dropped`), `created_at`,
-`updated_at`.
+`state` (`creating`, `live`, `dropping`), `created_at`, `updated_at`.
 
 - Native containers are deployment configuration: one per embedder
   provider per vector store, created by the schema command, never by a
@@ -656,63 +716,41 @@ backend needs beyond the container, such as Chroma's collection UUID),
   indexed properties are the store's, one schema for every container
   (#1573, #1572). A container is retired by the schema command when
   the configuration no longer declares its embedder and no ledger row
-  references it in any state; `memmachine schema status` shows, per
-  container, the ledger rows referencing it by state, which is how an
-  operator sees an old embedder's container drain. Until then it stays
-  and serves the tenants pinned to it. Inside a container a tenant is a
-  value or a native tenant object, per the table below. The two SQLite
-  stores keep a
-  table (and, for the usearch store, an index file) per collection:
-  `sqlite_vec_vector_store.py:4` records that partition keys were
-  avoided because a future sqlite-vec ANN index may not support them.
-  Within their `process` and `machine` scopes a table per tenant costs
-  nothing that matters, and what is asked of them is the contracts.
+  references it; `memmachine schema status` shows, per container, the
+  ledger rows referencing it by state, which is how an operator sees an
+  old embedder's container drain. Until then it stays and serves the
+  tenants pinned to it. Inside a container a tenant is a value or a
+  native tenant object, per the table below.
 - `create_collection(key, container)`: strict (see "Create is strict").
   Where the tenant is a value inside the container, one ledger insert
   straight to `live`. Where the tenant is a native object (a Chroma
-  collection, a Weaviate tenant, a SQLite table), the row is inserted
-  as `creating`, the object is created, and the row is set `live` with
-  its address; a crash between the two leaves `creating`, which
-  `ensure` resumes by creating the object if absent and setting `live`.
-  Telling "already exists" from other failures is per backend; on
-  Chroma it is by message, since its duplicate-create error is untyped
-  (`InternalError` 500 locally, `ChromaError` 400 over HTTP, never the
+  collection, a Weaviate tenant), the row is inserted as `creating`,
+  the object is created, and the row is set `live` with its address; a
+  crash between the two leaves `creating`, which `ensure` resumes by
+  creating the object if absent and setting `live`. Telling "already
+  exists" from other failures is per backend; on Chroma it is by
+  message, since its duplicate-create error is untyped (`InternalError`
+  500 locally, `ChromaError` 400 over HTTP, never the
   `UniqueConstraintError` the module exports; chromadb 1.5.9).
 - Write (`upsert(key, records)`, `delete(key, ids)`): the fence's write
-  step, whose row read returns the container (and, per backend, the
-  collection UUID or tenant name) the operation addresses; the remote
-  write is acknowledged as applied (Qdrant `wait=True`; Milvus with
-  strong consistency) before the transaction commits. No row: the
-  deleted-key error, and no write creates a collection.
+  step, whose row read returns the container and address the operation
+  uses; the remote write is acknowledged as applied (Qdrant
+  `wait=True`; Milvus with strong consistency) before the transaction
+  commits. No live row: the not-live error, and no write creates a
+  collection.
 - Read (`query(key, ...)`, `get(key, ids)`): read the row for the
   address, query, then verify the row is still `live`; raise the
-  deleted-key error otherwise.
+  not-live error otherwise.
 - `delete_collection(key)`: the fence's delete step, setting `dropping`.
   O(1), idempotent.
-- `reclaim_collection(key) -> DONE | MORE`: delete records under the key
-  in bounded steps, by the backend's means in the table below; `MORE`
-  while records remain; when nothing remains, set `dropped` and return
-  `DONE`. The row stays.
-- Tombstone sweep, from `maintain`: re-run the reclaim step for
-  `dropped` rows at a bounded rate (default 10 keys per call), oldest
-  `updated_at` first, and stamp `updated_at`. With a million dead keys
-  and one call a minute that is one pass in ten weeks, at a background
-  rate no serving path notices. The sweep claims its rows with `FOR
-  UPDATE SKIP LOCKED`, so concurrent reconciler processes take different
-  rows; correctness never depends on exclusion between them. Where the
-  backend can list tenants, `maintain` also compares that list with the
-  ledger and reclaims what the ledger does not know; that comparison is
-  idempotent and duplicated across processes at worst.
-- Tombstones are kept by default: they are what makes a reused key
-  detectable and a late write collectable, at one row per dead key.
-  `memmachine tenants prune-tombstones` is an operator's trade of that
-  for space. It removes only rows whose last sweep after `dropped` found
-  nothing, and its help text says what pruning gives up: a key presented
-  again after pruning creates, and inherits any record that landed
-  after that last sweep. `memmachine schema status` and the prune
-  command's dry run report how many tombstones are prunable and how many
-  still await a clean sweep, so the trade is made against a number, not
-  an age.
+- `reclaim_collection(key) -> DONE | MORE`: with a `dropping` row,
+  delete records under the key in bounded steps by the backend's means
+  in the table below, `MORE` while records remain, and remove the row
+  when nothing remains. With no row, delete by key in every container
+  the store has, which is how the tenant service's re-sweep reaches a
+  record that landed after the row went; `DONE` when nothing is found.
+  Containers are few (one per embedder), so a no-row reclaim is a
+  bounded number of filter deletes that mostly find nothing.
 
 Why nothing escapes. Every record carries a key that a ledger row
 recorded before the record could exist. For a live writer the fence
@@ -720,10 +758,21 @@ orders its write before the delete, and after the delete no write can
 start. The only write that can land after `dropping` comes from a
 writer whose database session ended while its vector request was in
 flight, so the lock was released before the backend applied the write.
-That write lands under a key whose row is still in the ledger, in
-`dropping` or `dropped`, and the reclaim or the tombstone sweep deletes
-it. No path compares timestamps, and no key is forgotten while a record
-under it could exist.
+If it lands before reclaim finishes, reclaim deletes it. If it lands
+after, the tenant service's tombstone brings the re-sweep back to the
+key, and the store's no-row reclaim deletes it. No path compares
+timestamps, and no key is forgotten while a record under it could
+exist, because the tenant tombstone is kept. Alternatives considered:
+accepting bounded leakage (rejected: garbage that is never collected
+is unacceptable); delaying reclamation past the longest possible write
+(rejected: a clock comparison); a fencing token checked by the backend
+(unavailable where the tenant is a payload value). Keeping tombstones
+in the stores instead of the tenant service was rejected because a SQL
+store's purge is exact and needs none, so the stores would disagree
+about a reused key: a duplicate id would be accepted by the SQL stores
+and refused by the vector store, mid-`ensure`, after rows were created.
+Held by the tenant service, one tombstone refuses the id before any
+store is touched.
 
 Backends at the tier that scales to the stated tenant counts. "Addressed
 by" is what an operation needs beyond the shared client, all of it held
@@ -739,7 +788,8 @@ opened per tenant and kept across operations.
 | S3 Vectors | filterable metadata value (10,000 indexes per bucket, so not one per tenant) | bucket and index names; the key as the metadata filter (`$eq`; filters are evaluated during the search) | no | no | no delete by filter: filtered query (top-K up to 10,000), `DeleteVectors` by key (500 per call), repeat |
 | Weaviate | native tenant, one shard each, activity tiers | collection name; the key as the tenant name (the client's `with_tenant` wrapper is built per call, no request) | yes (tenant not found) | yes | remove tenant, O(1) |
 | Chroma | collection per tenant (Chroma's own write-up warns that metadata filtering "can become slow" as users and documents grow) | the collection's UUID, recorded in the ledger row at creation; operations go to the HTTP API by that UUID | yes: operations route by the UUID, and a stale one raises `NotFoundError` instead of reaching a replacement (chromadb 1.5.9) | yes (`list_collections`, paged) | `delete_collection`, O(1) |
-| SQLite stores | table per collection | table name | yes (dropped table) | yes | drop table |
+| sqlite-vec | partition-key value in one `vec0` table per container | table name; the key as the partition key | yes, in-statement (ledger in the same file) | yes | keyed delete |
+| usearch store | rows in a shared table; one index file per tenant | table name; the key as the column value; the index file path | yes, in-statement (ledger in the same file) | yes | keyed delete; unlink the file |
 
 Pinecone's implicit namespace creation and any backend's inability to
 reject are covered the same way: the ledger row exists before the first
@@ -760,99 +810,131 @@ metadata values must be scalars, which the only thing stored on a
 collection, its container reference, is. The per-collection cost on a
 single Chroma node (an index each) and the collection count Chroma
 Cloud supports remain unverified and are checked before an
-implementation.
-S3 Vectors' limits are from its documentation as of this writing:
-filterable metadata is 2 KB per vector, and timestamps must be stored
-as numbers to be range-filtered, since comparisons apply to numbers
-only.
+implementation. S3 Vectors' limits are from its documentation as of
+this writing: filterable metadata is 2 KB per vector, and timestamps
+must be stored as numbers to be range-filtered, since comparisons apply
+to numbers only.
+
+The SQLite stores. Both are rewritten away from a table per collection,
+like the segment store: the sqlite-vec store keeps one `vec0` table per
+container with the tenant key as its partition key (verified on the
+pinned 0.1.9), the usearch store keeps records in one shared table and
+one index file per tenant (a file it owns, not schema; index state
+lives in process memory, which is why it stays at `process` scope), and
+both keep their ledger in the same file, so their fence is in-statement
+and the sqlite-vec store reaches `host` scope. The O(1) drop that a
+table per collection gave becomes a keyed delete run by the reclaim
+job, as in the segment store; unreachability is immediate through the
+ledger either way. `sqlite_vec_vector_store.py:4` records that
+partition keys were avoided in case a future sqlite-vec ANN index does
+not support them; if that comes to pass, the store stays brute-force,
+which is what it is today and what its scope is for.
 
 A read on a deleted key raises on the post-query verification, so no
 dead tenant's records reach a caller.
 
 ## Configuration
 
-The configuration is the components' parameter models. Each component
-class (a database engine, an embedder, a store, the event store, a
-memory subsystem, the tenant service, the server) declares a Pydantic
-`Params` model; the document is a tree of those models, one section per
-component family, and the loader builds objects by calling each class
-with its validated params. There is no second set of configuration
-classes, no mapping code from document to constructor, and no key that
-is not a field.
+Resources are plain classes with typed constructors. Configuration is
+their constructor arguments and nothing else, so a resource can be
+built by hand, in a script with no configuration at all, or by a
+different configuration system, and never learns which. The loader is
+the only code that reflects.
 
-- `kind` selects the class within a family (`embedders: {kind: openai}`
-  resolves to `OpenAIEmbedder.Params`). Each family has one table from
-  kind to class, in code.
-- A dependency is a typed reference field, `Ref[Database]`,
-  `Ref[Embedder]`, holding the name of an entry in that family's
-  section. The loader validates every reference, orders construction by
-  them, and passes the constructed object to the constructor. A
-  component receives its dependencies, never a catalog to look them up
-  in.
-- Where a component offers tenants a choice among providers, its params
-  list them (`embedders: [openai-large, local-gemma]`, a
-  `list[Ref[Embedder]]`); the loader passes exactly those objects, and
-  a tenant configuration naming another embedder is rejected at
-  creation. The list is a constructor argument holding a closed, typed
-  set that the document declares, which is what distinguishes it from a
-  locator: nothing is looked up after startup, and nothing outside the
-  list is reachable.
-- `memmachine config schema` prints the JSON Schema of the whole
-  document from the models; `memmachine config example` prints a
-  documented example. Documentation is generated, not maintained.
+- A resource's constructor takes its dependencies as parameters
+  annotated with resource types (`engine: AsyncEngine`, `embedder:
+  Embedder`, `embedders: Mapping[str, Embedder]`) and its own options as
+  one Pydantic `Params` parameter of scalar fields. Nothing in the
+  class refers to ids, references, or the loader.
+- The document is one flat map, `resources`, from id to
+  `{kind: ..., <constructor arguments>}`. Ids are unique across all
+  resources, so a database and an embedder cannot share one. `kind`
+  selects a class from a table of kind to class, in code; a library
+  user registers a class under a kind in that table, which is the one
+  registration point. A dependency argument holds the id of another
+  resource; a `Mapping[str, T]` argument holds a list of ids; `Params`
+  fields are inline.
+- The loader validates each entry against the constructor: every
+  argument named exists, every dependency id names a resource whose
+  class satisfies the annotated type, and the `Params` fields validate.
+  It orders construction by dependencies (a topological sort, cycles an
+  error), calls each class with the built objects, and passes exactly
+  what the constructor declares. Types are checked at the injection
+  point, so a wrong id fails at startup with the argument named.
+- Third-party clients are resources through factory kinds whose
+  `Params` mirror the client's own options: a `postgres` kind produces a
+  SQLAlchemy `AsyncEngine` from `url` and pool settings, a `qdrant`
+  kind produces an `AsyncQdrantClient` from `url` and credentials. That
+  is what `databases` entries of the earlier draft were; they are
+  resources like any other.
+- Where a component offers tenants a choice among providers, its
+  constructor takes `Mapping[str, Embedder]` and the entry lists ids;
+  the loader passes exactly those objects keyed by id, and a tenant
+  configuration naming another id is rejected by the component's own
+  validation. The mapping is a constructor argument holding a closed,
+  typed set the document declares; nothing is looked up after startup.
+- `memmachine config schema` prints the JSON Schema of the document from
+  the kind table and the constructors; `memmachine config example`
+  prints a documented example. Documentation is generated, not
+  maintained.
 - Keys are case-sensitive. Secrets are written as `${ENV_VAR}` and
   resolved at load. A validation failure, an unknown key, or a reference
-  to an undeclared name fails startup; nothing is auto-disabled.
+  to an undeclared id fails startup; nothing is auto-disabled.
 - There is no runtime configuration API. Changing the document is a
   restart, which a scaled deployment does as a rolling replacement.
 
-Example, each key a field of the named class's params:
+Relation to the earlier `resource_initializer.py` proposal (an
+edwinyyyu/MemMachine commit, e134c531): the topological build order and
+the table from type to builder are kept. Its three problems are solved
+by reflection: dependencies come from constructor annotations, not a
+`get_dependency_ids` written per builder; the build is the constructor
+itself, not a `build` written per builder; and ids are checked against
+annotated types at the injection point rather than passed as strings.
+Dynamic registration is the kind table.
+
+Example, each key a constructor argument of the named class:
 
 ```yaml
-databases:
+resources:
   main:
     kind: postgres
     url: ${MEMMACHINE_DATABASE_URL}
-    pool_size: 20
   vectors:
     kind: qdrant
     url: http://qdrant:6333
-
-embedders:
   openai-large:
-    kind: openai
+    kind: openai_embedder
     model: text-embedding-3-large
     dimensions: 1024
     api_key: ${OPENAI_API_KEY}
-
-rerankers:
   bm25:
-    kind: bm25
-
-tenant_registry:
-  database: main
-  reconciler:
-    poll_interval: 5s
-    lease: 60s
-
-event_store:
-  kind: sqlalchemy
-  database: main
-
-episodic_memory:
-  segment_store:
-    kind: sqlalchemy
-    database: main
-  vector_store:
-    kind: qdrant
+    kind: bm25_reranker
+  events:
+    kind: sqlalchemy_event_store
+    engine: main
+  segments:
+    kind: sqlalchemy_segment_store
+    engine: main
+  vector-store:
+    kind: qdrant_vector_store
     client: vectors
-    ledger_database: main
+    ledger_engine: main
     indexed_properties: [producer, kind]
-  embedders: [openai-large]
-  rerankers: [bm25]
-
-ingest:
-  subsystems: [episodic_memory]
+  episodic_memory:
+    kind: episodic_memory
+    event_store: events
+    segment_store: segments
+    vector_store: vector-store
+    embedders: [openai-large]
+    rerankers: [bm25]
+  ingest:
+    kind: ingest_service
+    event_store: events
+    subsystems: [episodic_memory]
+  tenants:
+    kind: tenant_service
+    engine: main
+    components: [events, episodic_memory]
 
 tenant_templates:            # data: copied into new tenants, never built
   default:
@@ -867,30 +949,30 @@ server:
   bind: 0.0.0.0:8080
   concurrency_scope: cluster
   roles: [api, reconciler]
-  request_timeout: 60s
+  tenant_service: tenants
+  ingest_service: ingest
 ```
 
 Tenant templates are validated at startup against each component's
-tenant configuration model, including their provider references against
-the component's lists, and nothing is built from them. A template edit
+tenant configuration model, including their provider ids against the
+component's mapping, and nothing is built from them. A template edit
 changes future tenants only; existing tenants keep their recorded
 configuration, which an operator changes with `PATCH`.
 
-Provider names are stable identities. A provider's model or dimensions
-are not changed under a name; a new model is a new name. Removing a name
-from a component's list fails startup while any tenant of that component
-references it, which the component checks from its own per-tenant table
-at construction.
+Provider ids are stable identities. A provider's model or dimensions
+are not changed under an id; a new model is a new id. Removing an id
+from a component's mapping fails startup while any tenant of that
+component references it, which the component checks from its own
+per-tenant table at construction.
 
 ## Startup and wiring
 
-`memmachine serve --config PATH` builds the objects in the order under
-"Architecture", each by constructor from already-built objects, in the
-dependency order the references give. Startup fails on the first
-component that cannot be built, naming the component and the cause,
+`memmachine serve --config PATH` builds the resources in the order the
+references give, each by constructor from already-built objects, then
+verifies schema and scope, then starts the roles. Startup fails on the
+first resource that cannot be built, naming the resource and the cause,
 before the socket is bound. Shutdown runs in reverse: routers stop
-accepting, a reconciler finishes its current job, stores and providers
-close.
+accepting, a reconciler finishes its current job, resources close.
 
 Nothing per tenant is created after startup: a request reads rows and
 calls stores with the tenant id, and a process holds no per-tenant
@@ -899,18 +981,19 @@ state beyond a store's private cache where a backend needs one.
 ## Server API
 
 Prefix `/v1`. Tenant ids in paths are UUIDs; names are looked up
-explicitly. Bodies are JSON.
+explicitly. Bodies are JSON. `?wait=` on the three lifecycle requests
+blocks until the change has applied or the wait elapses.
 
 Tenants:
 
 | Method and path | Effect | Status |
 | --- | --- | --- |
-| `POST /v1/tenants` | create; body `name`, `template`, `configuration`, `if_exists` | 201; 200 with `if_exists: return`; 409 duplicate; 422; 503 provisioning stalled |
+| `POST /v1/tenants` | create; body `name`, `template`, `configuration` | 202 provisioning, or 201 with `wait` once active; 409 with the existing tenant; 422 |
 | `GET /v1/tenants?name=` | look up by name | 200; 404 |
 | `GET /v1/tenants?prefix=&cursor=` | list, paged | 200 |
-| `GET /v1/tenants/{id}` | record, state, jobs with attempts and last error | 200; 404 |
-| `PATCH /v1/tenants/{id}` | rename and/or configuration update | 200; 409; 422; 503 |
-| `DELETE /v1/tenants/{id}` | start deletion | 202; 404 |
+| `GET /v1/tenants/{id}` | record, state, requested and applied configuration versions, jobs with attempts and last error | 200; 404 |
+| `PATCH /v1/tenants/{id}` | rename and/or configuration update | 202, or 200 with `wait` once applied; 409; 422 |
+| `DELETE /v1/tenants/{id}` | start deletion | 202, or 204 with `wait` once deleted; 404 |
 
 Events, under `/v1/tenants/{id}`:
 
@@ -957,14 +1040,10 @@ Two kinds of schema:
    and data tables, each component's per-tenant table, the vector
    ledger, and the native containers of the vector backends. Static,
    versioned, migrated by an operator's command.
-2. Per-tenant resources. Tenant-specific DDL is the only DDL allowed
-   outside `memmachine schema upgrade`: a job's `ensure` or `reclaim`
-   step may create or drop a tenant's own table, after the registry row
-   that records the key. It is avoided where it would be expensive at
-   `cluster` scope, so every store declaring `cluster` holds tenants as
-   rows or values. The two SQLite vector stores create a table per
-   collection, which is fine within `process` and `machine` scope, where
-   the file lock serializes it.
+2. Per-tenant resources: rows, in every store. Tenant-specific DDL is
+   the only DDL allowed outside `memmachine schema upgrade`, and no
+   store in this design uses it; the usearch store's index file per
+   tenant is a file, not schema.
 
 Component schema:
 
@@ -986,7 +1065,8 @@ Component schema:
 - `memmachine serve` verifies at startup that every component's version
   table is at the head its code carries and fails otherwise, naming the
   component and both versions. `memmachine schema status --config PATH`
-  prints the same comparison.
+  prints the same comparison, the per-container ledger counts, and the
+  tombstone counts.
 - Rolling deployments: a migration must keep the previous release's
   code working (expand and contract: add before the code that reads,
   remove after the code that writes is gone), because during a rollout
@@ -999,21 +1079,22 @@ Reused, with the change named:
 
 - `episodic_memory/event_memory/`: `EventMemory` renamed to episodic
   memory, the segmenters, the derivers, the data types, and the segment
-  store (UUID keys in place of incarnations, `reclaim_partition`).
+  store (UUID keys in place of incarnations, `reclaim_partition`, no
+  handle).
 - `common/vector_store/`: the four implementations, with the registry
   replaced by the ledger and its fence, the `config` parameter removed
-  from `create_collection`, and containers provisioned by the schema
-  command.
+  from `create_collection`, containers provisioned by the schema
+  command, and the two SQLite stores on shared tables.
 - `common/embedder/`, `common/language_model/`, `common/reranker/`,
-  each class gaining its `Params` model in place of the separate
-  configuration model.
+  each class gaining a typed constructor and a `Params` model in place
+  of the separate configuration model.
 - `common/filter/`, `common/metrics_factory/`, `common/payload_codec/`.
 - `enable_sqlite_foreign_keys` and the engine construction in
-  `common/resource_manager/database_manager.py`, as the SQLite and
-  PostgreSQL database components.
+  `common/resource_manager/database_manager.py`, as the `sqlite` and
+  `postgres` factory kinds.
 
 New: the event store, the ingest service, the tenant service and
-reconciler, the configuration loader, the schema command, the routers.
+reconciler, the loader, the schema command, the routers.
 
 Removed: `main/memmachine.py`; `episodic_memory/episodic_memory.py`,
 `episodic_memory_manager.py`, `instance_lru_cache.py`,
@@ -1041,24 +1122,24 @@ through its API and an ingest through the new one.
   is acceptable. The two prove different things at the same signature.
   #1530's names are reused by design and successive lives are separated
   by incarnations, so its create raising means "this exists"; here keys
-  are never reused, so a row under a key in any state is evidence of a
-  violated invariant, which is why kept tombstones are load-bearing
-  here and not there.
+  are never reused, the tenant service's tombstone enforces it, and a
+  row under a key in a store is evidence of an interrupted attempt or
+  a library caller's reuse.
+- #1531: the reference for the concurrency scope idea. The levels,
+  the declarations and the deployment-side check above are this
+  design's own; they differ from #1531 where the ledger changes what a
+  store can promise (Qdrant, Milvus and sqlite-vec widen).
 - #1571: the router's 404/409 mapping under "Component contract"; with
   no handles there is nothing to evict.
 - #1575, #1576, #1577: resolved by construction: declared components, no
   implicit creation, durable jobs with retry.
 - #1572, #1573, #1564, #1565, #1537, #1563: the vector store contract
   above: containers from configuration, the ledger as fence, tenants as
-  values, single-use keys, reclamation plus tombstone sweep. In-flight
-  registry PRs are measured against that section.
+  values, single-use keys, reclamation plus the tenant service's
+  re-sweep. In-flight registry PRs are measured against that section.
 - #1570: "Schema management".
-- #1531: the reference for the concurrency scope idea. The levels,
-  the declarations and the deployment-side check above are this
-  design's own; they differ from #1531 where the ledger changes what a
-  store can promise (Qdrant, Milvus and sqlite-vec widen).
-- #1542: SQLite pragmas become fields of the SQLite database component's
-  params (`busy_timeout`, `journal_mode`); the reconciler's retry covers
+- #1542: SQLite pragmas become `Params` fields of the `sqlite` factory
+  kind (`busy_timeout`, `journal_mode`); the reconciler's retry covers
   the busy-timeout raise.
 
 ## Open questions
@@ -1071,5 +1152,6 @@ through its API and an ingest through the new one.
   others).
 - The library composition surface: the constructors a user calls to get
   the event store, episodic memory and the tenant service without the
-  HTTP layer.
+  HTTP layer, which the constructor-argument model above makes the
+  same call the loader makes.
 - Retention: deleting events by age or by producer, as a job kind.
