@@ -582,16 +582,15 @@ no open-or-create at the store: a store cannot tell a retry of its
 caller's own create from a foreign key, and only the caller can.
 
 Idempotency lives in the component's `ensure`, which knows the key's
-provenance: the tenant service inserted the tenant row with this id
-before any job ran, so a `live` row under the key can only be this
-component's own earlier attempt, and `ensure` treats it as success; a
-`creating` row is an interrupted attempt of its own, and `ensure`
-resumes it. A row in `dropping` or `dropped` means the key had a
-previous life, and `ensure` raises `KeyReusedError`; the job records it
-and an operator resolves it, since no retry can. A restored backup of the
-tenant registry that is not paired with the stores' state at the same point is
-the realistic
-way to get there, and this is what catches it.
+provenance: the tenant service inserted the tenant row with this id before
+any job ran, so a `live` row under the key can only be this component's own
+earlier attempt, and `ensure` treats it as success; a `creating` row is an
+interrupted attempt of its own, and `ensure` resumes it. A row in `dropping`
+or `dropped` means the key had a previous life, and `ensure` raises
+`KeyReusedError`; the job records it and an operator resolves it, since no
+retry can. A restored backup of the tenant registry that is not paired with
+the stores' state at the same point is the realistic way to get there, and
+this is what catches it.
 
 What every store operation does with a key whose row is present but
 not `live` (the vector ledger's `creating`, `dropping` and `dropped`; a
