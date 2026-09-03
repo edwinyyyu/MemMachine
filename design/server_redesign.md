@@ -521,7 +521,8 @@ Operations, in the order the stores are touched:
   partial derived data behind the watermark; `catch_up` reprocesses it.
 - `catch_up` (job): `read_after(watermark)` in batches, `process`,
   until the event store has nothing newer.
-- Search: embed the query; vector query (verified against the ledger
+- Search: embed the query; split the filter and choose the plan under
+  "Properties and filtering"; vector query (verified against the ledger
   after the query, inside the vector store); segment contexts; on
   request, the full events from the event store.
 - `forget`: look up segments and derivatives; delete vector records;
@@ -534,7 +535,7 @@ Tenant configuration section `episodic_memory`, with mutability:
 - `reranker` (provider id or null): mutable.
 - `segmenter`, `deriver`: their options; mutable, applying to events
   processed after the change.
-- `search`: default `limit`, `expand_context`, score threshold; mutable.
+- `search`: default `limit`, `expand_context`, minimum score; mutable.
 
 Episodic memory uses no language model today (both segmenters and both
 derivers are deterministic; the embedder is the only model call). The
@@ -554,6 +555,103 @@ Hooks:
   neither finds anything.
 - `maintain`: the segment store's `purge_deleted_partitions` as a safety
   net for queue entries no job covers.
+
+## Properties and filtering
+
+Two tiers of fields, one mechanism underneath. The reference is the
+`default` branch of edwinyyyu/MemMachine (commits 27b3279b, 822ccb6b,
+2d5dc2b5), adjusted where noted.
+
+System fields. Defined by the server, first-class in the API, typed: for
+an event, `id`, `timestamp` and `producer`. Search takes them as named
+parameters, `since` and `before` (inclusive and exclusive, so ranges
+meet without overlap) and `producers` (a list). They are never spelled
+inside the user filter, so no caller and no model decides between
+`timestamp` and some prefixed form of it. Underneath, each system field
+is stored as a reserved property key, `memmachine_<system>_<field>`,
+built by one function that validates the key against the stores' naming
+contract at import time; the prefix is the distribution name, so its
+uniqueness is the package registry's. Stores therefore index and filter
+system fields with the same machinery as user properties, and a caller
+key beginning with the prefix is rejected on the way in.
+
+User properties. `properties` on an event: keys `[a-z0-9_]`, bounded by
+the stores' naming contract, not reserved; values scalar only: string
+(bounded by `properties.max_string_bytes`), integer, float, boolean,
+datetime; no lists, no nesting, no nulls (absence is the only way a
+field holds nothing); at most `properties.max_keys` keys per event.
+Scalar-only is what every backend accepts (Chroma rejects nested values;
+S3 Vectors caps filterable metadata at 2 KB per vector). Long text is
+content, not a property: it goes in a block. Metadata that is not meant
+to be filtered goes in `payload`, an opaque JSON document on the event,
+bounded by `payload.max_bytes`, stored in the event store only, returned
+with the event, never propagated to derived data and never filterable.
+`payload` is a proposal (see "Open questions"); without it, the answer to
+"where does unfilterable metadata go" is "in the caller's own store,
+keyed by event id".
+
+Propagation. Properties are set at ingest and are immutable; changing an
+event's properties is a delete and a re-ingest. The event store holds
+them. Segments and derivatives carry a verbatim copy of their event's
+properties; that is a clause of the segmenter and deriver contracts,
+because filtering in the segment store depends on it. Vector records
+carry only the declared subset, below.
+
+Declared, not dynamic, indexes. The deployment declares, per vector
+store, which user property keys are indexed inside its containers and
+with which types (`indexed_properties`), one schema for every container
+of that store, created by the schema command (#1573, #1535). Nothing
+creates a filter index at runtime, per tenant, or from a request; the
+current per-collection `indexed_properties_schema` goes. System fields
+are always declared. A user property that is not declared is still
+filterable, through the segment store, where a deployment adds an
+expression index online (`CREATE INDEX CONCURRENTLY` on PostgreSQL)
+without touching the vector store or any co-tenant.
+
+Filter representation. A filter is a tree, constructed, never parsed:
+the closed union from the reference, `Equals`, `NotEquals`, `Ordering`
+over numbers and datetimes only (ordering strings depends on how a
+store encodes them; ordering booleans is meaningless), `In` over a
+homogeneous list, `IsMissing`, n-ary `And` and `Or`, `Not`, compiled by
+each store with an exhaustive `match`, so a node a store does not handle
+is a type error rather than a query-time one. At the API and in MCP a
+filter is a JSON object validated by the schema generated from that
+union, for example
+`{"and": [{"eq": {"field": "kind", "value": "note"}},
+{"gte": {"field": "score", "value": 3}}]}`. There is no string language,
+nothing to learn beyond the schema, and nothing that parses successfully
+into a different filter than intended; an MCP tool exposes the schema as
+its parameter, which a model fills more reliably than a grammar. A field
+in a filter must be a legal user key; system fields have their own
+parameters. Semantics: a predicate matches only a record holding a value
+of the compared type; `NotEquals` keeps records holding a differing
+comparable value, and `Not(Equals)` also keeps records holding none.
+
+Routing. Where a predicate is evaluated depends on what the backend can
+do and on how selective the predicate is; the caller never chooses.
+
+- Declared keys, system fields included, are evaluated inside the vector
+  search on every backend that filters during the search (Qdrant,
+  Milvus, Weaviate, S3 Vectors, sqlite-vec, pgvector), which is what
+  keeps a filtered search returning enough results instead of filtering
+  away the ones it found.
+- Undeclared keys never reach the vector store. Episodic memory splits
+  the filter: the declared part goes to the vector query; the rest is
+  resolved in the segment store by a bounded probe
+  (`filter.selective_limit`). If the matching segments fit under it,
+  their derivative ids become an allowlist the vector store scores
+  directly (`get_cosine_similarity`, or the backend's id-restricted
+  search). If not, the vector query runs with the declared part alone,
+  over-fetches with bounded widening up to `filter.max_overfetch`, and
+  the segment store drops the seeds that do not match. At the cap the
+  search returns what survived, which can be fewer than `limit`.
+- A backend that cannot filter during the search (the usearch engine)
+  is handed an allowlist by its store, computed the same way over the
+  store's own records table.
+
+Limits are maximums. Every count a caller passes is a maximum: `limit`
+on search is the most hits returned, and a filtered search may return
+fewer. Nothing is called "top k", which promises exactly k.
 
 ## Store contracts
 
@@ -738,9 +836,13 @@ backend needs beyond the container, such as Chroma's collection UUID),
   `wait=True`; Milvus with strong consistency) before the transaction
   commits. No live row: the not-live error, and no write creates a
   collection.
-- Read (`query(key, ...)`, `get(key, ids)`): read the row for the
+- Read (`query(key, vectors, limit, filter, allowed_ids)`,
+  `get_cosine_similarity(key, vector, ids)`): read the row for the
   address, query, then verify the row is still `live`; raise the
-  not-live error otherwise.
+  not-live error otherwise. `filter` names declared keys only and is
+  evaluated during the search where the backend can; `allowed_ids`
+  restricts the search to given records; queries return record ids and
+  scores, never properties.
 - `delete_collection(key)`: the fence's delete step, setting `dropping`.
   O(1), idempotent.
 - `reclaim_collection(key) -> DONE | MORE`: with a `dropping` row,
@@ -944,7 +1046,9 @@ resources:
     kind: qdrant_vector_store
     client: vectors
     ledger_engine: main
-    indexed_properties: [producer, kind]
+    indexed_properties:      # declared once per store; system fields are implicit
+      kind: string
+      score: integer
   episodic_memory:
     kind: episodic_memory
     event_store: events
@@ -1033,12 +1137,13 @@ Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 
 | Method and path | Effect | Status |
 | --- | --- | --- |
-| `POST .../search` | body `query`, `limit`, `filter`, `expand_context`, `include_events` | 200 with scored hits |
+| `POST .../search` | body `query`, `limit`, `since`, `before`, `producers`, `filter` (JSON tree), `expand_context`, `include_events` | 200 with up to `limit` scored hits |
 | `GET ...` | watermark and lag behind the event store | 200 |
 
 Event body: `id` (optional UUID), `timestamp` (optional; server time if
 absent), `producer` (optional string), `blocks` (list of `{type: text,
-text}`), `properties` (string keys, scalar values; what `filter` sees).
+text}`), `properties` (scalar values under legal keys; what `filter`
+sees), `payload` (opaque JSON, not filterable; proposed).
 Search hit: `score`, `segments` (each with `event_id`, `index`,
 `timestamp`, `producer`, `text`, `properties`) and, with
 `include_events`, the events.
@@ -1162,6 +1267,8 @@ through its API and an ingest through the new one.
   above: containers from configuration, the ledger as fence, tenants as
   values, single-use keys, reclamation plus the tenant service's
   re-sweep. In-flight registry PRs are measured against that section.
+- #1535: one declared, typed `indexed_properties` schema per vector
+  store, in configuration, under "Properties and filtering".
 - #1570: "Schema management".
 - #1542: SQLite pragmas become `Params` fields of the `sqlite` factory
   kind (`busy_timeout`, `journal_mode`); the reconciler's retry covers
@@ -1175,6 +1282,9 @@ through its API and an ingest through the new one.
   (proposed, with `catch_up` as the repair) or always through a queue.
 - Event size limits, and block types beyond text (the data types admit
   others).
+- `payload`: whether an opaque, unfilterable, event-store-only document
+  belongs on the event, or whether unfilterable metadata is the caller's
+  to keep.
 - The library composition surface: the constructors a user calls to get
   the event store, episodic memory and the tenant service without the
   HTTP layer, which the constructor-argument model above makes the
