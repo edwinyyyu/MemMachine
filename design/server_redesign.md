@@ -351,7 +351,9 @@ Reconciler role:
   payload.
 - Maintenance: each component's `maintain` hook runs on a slow schedule
   (default every 10 min), bounded per call, from reconciler processes
-  only.
+  only, in every one of them without exclusion. A hook claims what it
+  works on where duplicated work would cost, and is idempotent
+  everywhere, so two processes at once waste at most effort.
 - Bounded per pass: at most `n` jobs, each hook bounded by its own
   budget.
 
@@ -413,9 +415,10 @@ tenant id, with the fence under "Store contracts".
   makes ingest idempotent per event id. `position` is assigned at
   insert from one sequence, so within a key positions are strictly
   increasing in commit order; it is what subsystems process by.
-- `create_partition(key)`, `delete_partition(key)` (logical, O(1),
-  idempotent), `reclaim_partition(key) -> DONE | MORE`,
-  `purge_deleted_partitions()` for library users.
+- `create_partition(key)` (strict; see "Create is strict"),
+  `delete_partition(key)` (logical, O(1), idempotent),
+  `reclaim_partition(key) -> DONE | MORE`, `purge_deleted_partitions()`
+  for library users.
 - Data operations, each taking the key: `add_events(key, events) ->
   (stored, skipped)`, `get_events(key, ids)`, `list_events(key, filter,
   cursor)`, `read_after(key, position, limit)`, `delete_events(key,
@@ -493,7 +496,9 @@ needs one.
 Hooks:
 
 - `ensure`: create the partition and the collection under the tenant
-  id (exists is success); insert the per-tenant row if absent, else
+  id; an existing `live` row is this component's own earlier attempt
+  and is success, a row in any other state is a reused key and raises
+  (see "Create is strict"); insert the per-tenant row if absent, else
   verify immutable options and apply mutable ones.
 - `delete`: first call, logically delete the tenant id in both stores
   and remove the row; every call, `reclaim` on each; `DONE` when both
@@ -552,9 +557,55 @@ fence read is the lookup and no handle is opened:
   store `machine` scope: it reaches every process on the host and no
   further.
 
+Cost, so a deployment can be sized for it: a write holds one pooled
+connection, idle in an open transaction, for the duration of the remote
+write, milliseconds on Qdrant and Milvus, so the pool bounds the vector
+writes a process can have in flight. `pool_size` is sized for that plus
+the process's other SQL work, or the ledger is given a pool of its own.
+`idle_in_transaction_session_timeout` on that pool has to exceed the
+longest remote write, the opposite of the low value one would otherwise
+choose. A read costs one indexed row read after the query.
+
 Nothing above reads a clock. The segment store ships this fence
 (`design/segment_store_shared_tables.md`); the event store and the
 vector store adopt it.
+
+### Create is strict
+
+`create_partition(key)` and `create_collection(key, container)` insert
+the registry row and raise `KeyExistsError` if any row exists under the
+key, in any state. They are not idempotent, on purpose: the primary key
+is the one place a violated never-reuse invariant can be detected, and
+an idempotent create would turn a reused key into a successful create
+that inherits whatever records were never reclaimed under it. There is
+no open-or-create at the store: a store cannot tell a retry of its
+caller's own create from a foreign key, and only the caller can.
+
+Idempotency lives in the component's `ensure`, which knows the key's
+provenance: the tenant service inserted the tenant row with this id
+before any job ran, so a `live` row under the key can only be this
+component's own earlier attempt, and `ensure` treats it as success. A
+row in any other state means the key had a previous life, and `ensure`
+raises `KeyReusedError`; the job records it and an operator resolves
+it, since no retry can. A restored backup of the tenant registry that
+is not paired with the stores' state at the same point is the realistic
+way to get there, and this is what catches it.
+
+What every store operation does with a key whose row is present but
+not `live` (the vector ledger's `dropping` and `dropped`; a SQL store's
+row while its purge is pending), and with no row at all:
+
+| Operation | present, not live | no row |
+| --- | --- | --- |
+| create | `KeyExistsError` | creates |
+| write | deleted-key error | deleted-key error |
+| read | deleted-key error | deleted-key error |
+| logical delete | returns; idempotent | returns; idempotent |
+| reclaim | proceeds; `dropping` becomes `dropped` once nothing remains, `dropped` is swept once more | `DONE` |
+
+A SQL store's purge is exact and fenced, so after it nothing can remain
+under the key and its row can go; a reused key there creates cleanly,
+and the vector ledger's tombstone is what still detects the reuse.
 
 Scope declarations, computed from params:
 
@@ -599,16 +650,23 @@ reject keys.
   provider per vector store, created by the schema command, never by a
   request. A container's dimensions and metric are the embedder's; its
   indexed properties are the store's, one schema for every container
-  (#1573, #1572). Inside a container a tenant is a value or a native
-  tenant object, per the table below. The two SQLite stores keep a
+  (#1573, #1572). A container is retired by the schema command when
+  the configuration no longer declares its embedder and no ledger row
+  references it in any state; `memmachine schema status` shows, per
+  container, the ledger rows referencing it by state, which is how an
+  operator sees an old embedder's container drain. Until then it stays
+  and serves the tenants pinned to it. Inside a container a tenant is a
+  value or a native tenant object, per the table below. The two SQLite
+  stores keep a
   table (and, for the usearch store, an index file) per collection:
   `sqlite_vec_vector_store.py:4` records that partition keys were
   avoided because a future sqlite-vec ANN index may not support them.
   Within their `process` and `machine` scopes a table per tenant costs
   nothing that matters, and what is asked of them is the contracts.
-- `create_collection(key, container)`: one ledger insert; on the SQLite
-  stores, followed by the collection's table, created after the ledger
-  row and inside the `ensure` job.
+- `create_collection(key, container)`: one ledger insert, strict (see
+  "Create is strict"); on the SQLite stores, followed by the
+  collection's table, created after the ledger row and inside the
+  `ensure` job.
 - Write (`upsert(key, records)`, `delete(key, ids)`): the fence's write
   step, whose row read returns the container (and, per backend, the
   collection UUID or tenant name) the operation addresses; the remote
@@ -628,10 +686,19 @@ reject keys.
   `dropped` rows at a bounded rate (default 10 keys per call), oldest
   `updated_at` first, and stamp `updated_at`. With a million dead keys
   and one call a minute that is one pass in ten weeks, at a background
-  rate no serving path notices. `memmachine tenants prune-tombstones
-  --older-than` removes rows an operator no longer wants swept. Where
-  the backend can list tenants, `maintain` also compares that list with
-  the ledger and reclaims what the ledger does not know.
+  rate no serving path notices. The sweep claims its rows with `FOR
+  UPDATE SKIP LOCKED`, so concurrent reconciler processes take different
+  rows; correctness never depends on exclusion between them. Where the
+  backend can list tenants, `maintain` also compares that list with the
+  ledger and reclaims what the ledger does not know; that comparison is
+  idempotent and duplicated across processes at worst.
+- Tombstones are kept by default: they are what makes a reused key
+  detectable and a late write collectable, at one row per dead key.
+  `memmachine tenants prune-tombstones` is an operator's trade of that
+  for space. It removes only rows whose last sweep after `dropped` found
+  nothing, and its help text says what pruning gives up: a key presented
+  again after pruning creates, and inherits any record that landed
+  after that last sweep.
 
 Why nothing escapes. Every record carries a key that a ledger row
 recorded before the record could exist. For a live writer the fence
@@ -946,8 +1013,12 @@ through its API and an ingest through the new one.
 
 - #1574: this document is the target for every row.
 - #1548: kept; UUID keys replace incarnations, `reclaim_partition` is
-  added, and the partition handle gives way to key-parameterized
-  operations.
+  added, the partition handle gives way to key-parameterized
+  operations, and `open_or_create_partition` goes.
+- #1530: agrees. The store ABCs keep only the strict create; the
+  idempotent form is the component's `ensure`, for the reason under
+  "Create is strict": only the caller knows why an existing row is
+  acceptable.
 - #1571: the router's 404/409 mapping under "Component contract"; with
   no handles there is nothing to evict.
 - #1575, #1576, #1577: resolved by construction: declared components, no
