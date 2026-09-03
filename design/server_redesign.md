@@ -1036,10 +1036,14 @@ through its API and an ingest through the new one.
 - #1548: kept; UUID keys replace incarnations, `reclaim_partition` is
   added, the partition handle gives way to key-parameterized
   operations, and `open_or_create_partition` goes.
-- #1530: agrees. The store ABCs keep only the strict create; the
-  idempotent form is the component's `ensure`, for the reason under
-  "Create is strict": only the caller knows why an existing row is
-  acceptable.
+- #1530: agrees on the outcome, the store ABCs keeping only the strict
+  create, and on the reason: only the caller knows why an existing row
+  is acceptable. The two prove different things at the same signature.
+  #1530's names are reused by design and successive lives are separated
+  by incarnations, so its create raising means "this exists"; here keys
+  are never reused, so a row under a key in any state is evidence of a
+  violated invariant, which is why kept tombstones are load-bearing
+  here and not there.
 - #1571: the router's 404/409 mapping under "Component contract"; with
   no handles there is nothing to evict.
 - #1575, #1576, #1577: resolved by construction: declared components, no
