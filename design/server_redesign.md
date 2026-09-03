@@ -817,8 +817,15 @@ is pending), and with no row at all. Only `ensure` proceeds on
 As shipped in #1548, with these changes:
 
 - Key type `UUID`; the `incarnation` column of every table becomes the
-  key, and the purge queue is keyed by the key. `open_or_create_partition`
-  goes.
+  key, the purge queue is keyed by the key, and the store mints nothing.
+  The incarnation existed to keep a new life under a reused string key
+  apart from the previous life's rows still awaiting purge; a key that
+  is never reused is the life, and the strict create refuses a key whose
+  purge is pending, so lives cannot mix. What it would leave behind is
+  permanent from the first row written: a second identity per tenant, a
+  mint per create, and a mapping consulted on every operation, for a
+  capability (in-place replacement) the design rejects.
+  `open_or_create_partition` goes.
 - The partition handle goes: every data operation takes the key, and
   the registry read that fences it returns the codec configuration.
   Codec objects are cached process-wide by configuration, not per key.
