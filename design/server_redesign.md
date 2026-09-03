@@ -627,7 +627,7 @@ opened per tenant and kept across operations.
 | Milvus | partition-key value | container name, loaded once; the key as the partition-key value | no | no | filter delete |
 | pgvector | column value | table name; the key as the column value | yes, in-statement (ledger in the same database) | yes | keyed delete |
 | Pinecone | namespace, a call parameter; created implicitly on first upsert | index host; the key as `namespace` | no | yes | delete all in the namespace, O(1) |
-| S3 Vectors | filterable metadata value (indexes per bucket are capped, so not one per tenant) | bucket and index names; the key as the metadata filter | no | no | no delete by filter: filtered query, delete returned keys, repeat |
+| S3 Vectors | filterable metadata value (10,000 indexes per bucket, so not one per tenant) | bucket and index names; the key as the metadata filter (`$eq`; filters are evaluated during the search) | no | no | no delete by filter: filtered query (top-K up to 10,000), `DeleteVectors` by key (500 per call), repeat |
 | Weaviate | native tenant, one shard each, activity tiers | collection name; the key as the tenant name (the client's `with_tenant` wrapper is built per call, no request) | yes (tenant not found) | yes | remove tenant, O(1) |
 | Chroma | collection per tenant (Chroma's own write-up warns that metadata filtering "can become slow" as users and documents grow) | the collection's UUID, recorded in the ledger row at creation; operations go to the HTTP API by that UUID | yes (unknown collection id) | yes (`list_collections`, paged) | `delete_collection`, O(1) |
 | SQLite stores | table per collection | table name | yes (dropped table) | yes | drop table |
@@ -644,8 +644,11 @@ held. Where a client library only offers per-tenant objects, the store
 uses the backend's HTTP API directly, as here, or builds the object per
 call where that is free, as for Weaviate. The per-collection cost on a
 single Chroma node (an index each) and the collection count Chroma Cloud
-supports are not verified here and are checked before an implementation,
-as are the limits quoted for S3 Vectors from its preview documentation.
+supports are not verified here and are checked before an implementation.
+S3 Vectors' limits are from its documentation as of this writing:
+filterable metadata is 2 KB per vector, and timestamps must be stored
+as numbers to be range-filtered, since comparisons apply to numbers
+only.
 
 A read on a deleted key raises on the post-query verification, so no
 dead tenant's records reach a caller.
