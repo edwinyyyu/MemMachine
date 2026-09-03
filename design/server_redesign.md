@@ -23,15 +23,21 @@ NebulaGraph), the retrieval agent. The MCP surface gets one note.
 
 Requirements that shape everything below:
 
-- Horizontal scaling without sharding: any process serves any tenant, no
-  process owns a tenant, nothing is coordinated in process memory.
-  Twenty thousand tenants now; millions at the next levels of scale.
+- Horizontal scaling without sharding, at cluster scope: any process on
+  any machine serves any tenant, no process owns a tenant, nothing is
+  coordinated in process memory. Twenty thousand tenants now; millions
+  at the next levels of scale.
+- Every component declares its concurrency scope, the widest deployment
+  boundary within which concurrent instances may manage the same
+  resources (`process`, `machine`, `cluster`; #1531). A deployment
+  declares the scope it runs at, and startup refuses any component
+  narrower than that. The SQLite stores declare `process` or `machine`;
+  within their scope they obey every contract, and nothing about scale
+  is asked of them.
 - DDL that is not tenant-specific runs only in a dedicated setup step
   that serves no requests and cannot race. Tenant-specific DDL is the
   only DDL allowed anywhere else, and it is avoided where it would be
-  expensive in a large deployment. The SQLite stores are not for large
-  deployments: they are fine as long as they work and obey the
-  contracts.
+  expensive at cluster scope.
 - Garbage that is never collected is unacceptable. Wasted writes are
   acceptable.
 - Rejection of operations on a deleted tenant is structural, by database
@@ -132,6 +138,11 @@ Named so the redesign can be checked against it.
   define others (`catch_up`).
 - Reconciler: the role that claims and executes jobs. A process runs it
   when configured to; a deployment runs as many as it needs.
+- Concurrency scope: `process` < `machine` < `cluster`, the widest
+  deployment boundary within which concurrent instances of a component
+  may safely manage the same resources. Computed from a component's
+  params at construction; a composition's scope is the minimum of its
+  parts'. Declared and validated at startup, never enforced at runtime.
 
 ## Principles
 
@@ -190,7 +201,10 @@ configuration document, in this order:
 6. The ingest service, constructed with the event store and the ordered
    list of memory subsystems the document declares.
 7. The tenant service over the tenant and job tables.
-8. Roles, from `server.roles`: `api` binds the HTTP routers; `reconciler`
+8. The scope check: the minimum over every component's concurrency
+   scope must reach `server.concurrency_scope`, or startup fails naming
+   the narrowest component.
+9. Roles, from `server.roles`: `api` binds the HTTP routers; `reconciler`
    starts the job loop. A single-node deployment runs both in one
    process; a cluster runs many `api` processes and as many `reconciler`
    processes as its job volume needs, one at least.
@@ -211,10 +225,14 @@ Dependency direction: the registration interface is defined by the
 tenant package; component packages import it and nothing else from the
 tenant package. The tenant package imports no component.
 
-Horizontal scaling: all shared state is in the databases and the vector
-backend; per-process state is caches any process can rebuild; concurrent
-creates are arbitrated by a unique index, concurrent jobs by row claims,
-concurrent data operations and deletes by store fences.
+Horizontal scaling, at `cluster` scope: all shared state is in the
+databases and the vector backend; per-process state is caches any
+process can rebuild; concurrent creates are arbitrated by a unique
+index, concurrent jobs by row claims, concurrent data operations and
+deletes by store fences. A `machine` deployment is several processes on
+one host sharing SQLite files; a `process` deployment is one process.
+The contracts are the same at every scope; the scope says only which
+components may share resources with how many others.
 
 ## Tenant registry
 
@@ -528,12 +546,22 @@ fence read is the lookup and no handle is opened:
   whose data lives outside that SQLite file (a remote vector backend
   with a SQLite ledger) the write lock is held for the duration of the
   remote write, serializing every writer on that file; such a pairing
-  is supported and documented as slow, and PostgreSQL is the ledger for
-  anything larger.
+  has `machine` scope and is documented as slow, and PostgreSQL is the
+  ledger at `cluster` scope. The file lock is what gives a SQLite-backed
+  store `machine` scope: it reaches every process on the host and no
+  further.
 
 Nothing above reads a clock. The segment store ships this fence
 (`design/segment_store_shared_tables.md`); the event store and the
 vector store adopt it.
+
+Scope declarations, computed from params:
+
+| Component | Scope |
+| --- | --- |
+| Tenant registry, event store, segment store | `cluster` on PostgreSQL; `machine` on a SQLite file; `process` on in-memory SQLite |
+| Vector store | the minimum of its backend's and its ledger's: networked Qdrant, Milvus, Pinecone, S3 Vectors, Weaviate, Chroma are `cluster`; local-mode Qdrant and Milvus are `process`; sqlite-vec is `machine` (its bookkeeping is the ledger, in the same file); the usearch store is `process` (index state in process memory) |
+| Reconciler, ingest service, routers | any; they hold no shared state of their own |
 
 ### Event store
 
@@ -575,9 +603,8 @@ reject keys.
   table (and, for the usearch store, an index file) per collection:
   `sqlite_vec_vector_store.py:4` records that partition keys were
   avoided because a future sqlite-vec ANN index may not support them.
-  Both stores are single-process by contract and not for large
-  deployments, so a table per tenant costs nothing that matters there;
-  what is asked of them is the contracts, not scale.
+  Within their `process` and `machine` scopes a table per tenant costs
+  nothing that matters, and what is asked of them is the contracts.
 - `create_collection(key, container)`: one ledger insert; on the SQLite
   stores, followed by the collection's table, created after the ledger
   row and inside the `ensure` job.
@@ -749,6 +776,7 @@ tenant_templates:            # data: copied into new tenants, never built
 
 server:
   bind: 0.0.0.0:8080
+  concurrency_scope: cluster
   roles: [api, reconciler]
   request_timeout: 60s
 ```
@@ -843,11 +871,11 @@ Two kinds of schema:
 2. Per-tenant resources. Tenant-specific DDL is the only DDL allowed
    outside `memmachine schema upgrade`: a job's `ensure` or `reclaim`
    step may create or drop a tenant's own table, after the registry row
-   that records the key. It is avoided where it would be expensive in a
-   large deployment, so every store a large deployment uses holds
-   tenants as rows or values. The two SQLite vector stores create a
-   table per collection, which is fine at their scale, in the one
-   process that owns the file.
+   that records the key. It is avoided where it would be expensive at
+   `cluster` scope, so every store declaring `cluster` holds tenants as
+   rows or values. The two SQLite vector stores create a table per
+   collection, which is fine within `process` and `machine` scope, where
+   the file lock serializes it.
 
 Component schema:
 
@@ -928,6 +956,10 @@ through its API and an ingest through the new one.
   values, single-use keys, reclamation plus tombstone sweep. In-flight
   registry PRs are measured against that section.
 - #1570: "Schema management".
+- #1531: `ConcurrencyScope` is adopted as is, with declarations
+  recomputed for the ledger: Qdrant and Milvus widen from `process` to
+  the ledger's scope, and the sqlite-vec store from `process` to
+  `machine`. The deployment-side check is added here.
 - #1542: SQLite pragmas become fields of the SQLite database component's
   params (`busy_timeout`, `journal_mode`); the reconciler's retry covers
   the busy-timeout raise.
