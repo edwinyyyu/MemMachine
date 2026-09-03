@@ -588,8 +588,9 @@ component's own earlier attempt, and `ensure` treats it as success; a
 `creating` row is an interrupted attempt of its own, and `ensure`
 resumes it. A row in `dropping` or `dropped` means the key had a
 previous life, and `ensure` raises `KeyReusedError`; the job records it
-and an operator resolves it, since no retry can. A restored backup of the tenant registry that
-is not paired with the stores' state at the same point is the realistic
+and an operator resolves it, since no retry can. A restored backup of the
+tenant registry that is not paired with the stores' state at the same point is
+the realistic
 way to get there, and this is what catches it.
 
 What every store operation does with a key whose row is present but
