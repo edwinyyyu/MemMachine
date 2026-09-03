@@ -584,16 +584,18 @@ caller's own create from a foreign key, and only the caller can.
 Idempotency lives in the component's `ensure`, which knows the key's
 provenance: the tenant service inserted the tenant row with this id
 before any job ran, so a `live` row under the key can only be this
-component's own earlier attempt, and `ensure` treats it as success. A
-row in any other state means the key had a previous life, and `ensure`
-raises `KeyReusedError`; the job records it and an operator resolves
-it, since no retry can. A restored backup of the tenant registry that
+component's own earlier attempt, and `ensure` treats it as success; a
+`creating` row is an interrupted attempt of its own, and `ensure`
+resumes it. A row in `dropping` or `dropped` means the key had a
+previous life, and `ensure` raises `KeyReusedError`; the job records it
+and an operator resolves it, since no retry can. A restored backup of the tenant registry that
 is not paired with the stores' state at the same point is the realistic
 way to get there, and this is what catches it.
 
 What every store operation does with a key whose row is present but
-not `live` (the vector ledger's `dropping` and `dropped`; a SQL store's
-row while its purge is pending), and with no row at all:
+not `live` (the vector ledger's `creating`, `dropping` and `dropped`; a
+SQL store's row while its purge is pending), and with no row at all.
+Only `ensure` proceeds on `creating`, as above:
 
 | Operation | present, not live | no row |
 | --- | --- | --- |
@@ -643,8 +645,10 @@ in a SQL database given to the store. The ledger is the fence, and it is
 what makes every record reclaimable on a backend that cannot list or
 reject keys.
 
-`vector_collections`: `key UUID PK`, `container`, `state` (`live`,
-`dropping`, `dropped`), `created_at`, `updated_at`.
+`vector_collections`: `key UUID PK`, `container`, `address` (what the
+backend needs beyond the container, such as Chroma's collection UUID),
+`state` (`creating`, `live`, `dropping`, `dropped`), `created_at`,
+`updated_at`.
 
 - Native containers are deployment configuration: one per embedder
   provider per vector store, created by the schema command, never by a
@@ -663,10 +667,17 @@ reject keys.
   avoided because a future sqlite-vec ANN index may not support them.
   Within their `process` and `machine` scopes a table per tenant costs
   nothing that matters, and what is asked of them is the contracts.
-- `create_collection(key, container)`: one ledger insert, strict (see
-  "Create is strict"); on the SQLite stores, followed by the
-  collection's table, created after the ledger row and inside the
-  `ensure` job.
+- `create_collection(key, container)`: strict (see "Create is strict").
+  Where the tenant is a value inside the container, one ledger insert
+  straight to `live`. Where the tenant is a native object (a Chroma
+  collection, a Weaviate tenant, a SQLite table), the row is inserted
+  as `creating`, the object is created, and the row is set `live` with
+  its address; a crash between the two leaves `creating`, which
+  `ensure` resumes by creating the object if absent and setting `live`.
+  Telling "already exists" from other failures is per backend; on
+  Chroma it is by message, since its duplicate-create error is untyped
+  (`InternalError` 500 locally, `ChromaError` 400 over HTTP, never the
+  `UniqueConstraintError` the module exports; chromadb 1.5.9).
 - Write (`upsert(key, records)`, `delete(key, ids)`): the fence's write
   step, whose row read returns the container (and, per backend, the
   collection UUID or tenant name) the operation addresses; the remote
@@ -698,7 +709,10 @@ reject keys.
   for space. It removes only rows whose last sweep after `dropped` found
   nothing, and its help text says what pruning gives up: a key presented
   again after pruning creates, and inherits any record that landed
-  after that last sweep.
+  after that last sweep. `memmachine schema status` and the prune
+  command's dry run report how many tombstones are prunable and how many
+  still await a clean sweep, so the trade is made against a number, not
+  an age.
 
 Why nothing escapes. Every record carries a key that a ledger row
 recorded before the record could exist. For a live writer the fence
@@ -724,7 +738,7 @@ opened per tenant and kept across operations.
 | Pinecone | namespace, a call parameter; created implicitly on first upsert | index host; the key as `namespace` | no | yes | delete all in the namespace, O(1) |
 | S3 Vectors | filterable metadata value (10,000 indexes per bucket, so not one per tenant) | bucket and index names; the key as the metadata filter (`$eq`; filters are evaluated during the search) | no | no | no delete by filter: filtered query (top-K up to 10,000), `DeleteVectors` by key (500 per call), repeat |
 | Weaviate | native tenant, one shard each, activity tiers | collection name; the key as the tenant name (the client's `with_tenant` wrapper is built per call, no request) | yes (tenant not found) | yes | remove tenant, O(1) |
-| Chroma | collection per tenant (Chroma's own write-up warns that metadata filtering "can become slow" as users and documents grow) | the collection's UUID, recorded in the ledger row at creation; operations go to the HTTP API by that UUID | yes (unknown collection id) | yes (`list_collections`, paged) | `delete_collection`, O(1) |
+| Chroma | collection per tenant (Chroma's own write-up warns that metadata filtering "can become slow" as users and documents grow) | the collection's UUID, recorded in the ledger row at creation; operations go to the HTTP API by that UUID | yes: operations route by the UUID, and a stale one raises `NotFoundError` instead of reaching a replacement (chromadb 1.5.9) | yes (`list_collections`, paged) | `delete_collection`, O(1) |
 | SQLite stores | table per collection | table name | yes (dropped table) | yes | drop table |
 
 Pinecone's implicit namespace creation and any backend's inability to
@@ -737,9 +751,16 @@ store records that UUID in the ledger row at creation and calls the
 HTTP API by it, so no operation makes the lookup and no object is
 held. Where a client library only offers per-tenant objects, the store
 uses the backend's HTTP API directly, as here, or builds the object per
-call where that is free, as for Weaviate. The per-collection cost on a
-single Chroma node (an index each) and the collection count Chroma Cloud
-supports are not verified here and are checked before an implementation.
+call where that is free, as for Weaviate. Verified against chromadb
+1.5.9 (comment on #1579): a stale UUID raises `NotFoundError` rather
+than writing into a replacement, so the UUID is the fence on this
+backend; eight clients racing `create_collection` on one name produce
+one winner every round, the constraint living in the persisted sysdb;
+metadata values must be scalars, which the only thing stored on a
+collection, its container reference, is. The per-collection cost on a
+single Chroma node (an index each) and the collection count Chroma
+Cloud supports remain unverified and are checked before an
+implementation.
 S3 Vectors' limits are from its documentation as of this writing:
 filterable metadata is 2 KB per vector, and timestamps must be stored
 as numbers to be range-filtered, since comparisons apply to numbers
