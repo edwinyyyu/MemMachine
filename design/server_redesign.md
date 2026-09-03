@@ -180,8 +180,9 @@ Named so the redesign can be checked against it.
 9. Schema that is not tenant-specific is versioned migrations applied
    by an operator's command that serves nothing and races with nothing;
    serving and reconciler processes verify it and never run it.
-   Tenant-specific DDL is the only DDL a job may run, and the backends
-   of large deployments avoid it by holding tenants as rows or values.
+   Tenant-specific DDL is the only DDL a job may run, and components
+   declaring `cluster` scope avoid it by holding tenants as rows or
+   values.
 
 ## Architecture
 
