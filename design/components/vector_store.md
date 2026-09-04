@@ -36,46 +36,41 @@ class QueryResult(BaseModel):
 
 ## API
 
-Two ABCs, so a caller of data operations cannot reach lifecycle
-operations and a lifecycle caller cannot reach data. One implementation
-class provides both through two views, the manager and
-`manager.store`; the composition hands both to `EpisodicMemoryManager`,
-whose hooks use the manager and whose requests build, from
-`manager.store`, the `VectorCollection` handle each `EpisodicMemory`
-receives.
+Two ABCs: the store, the resource and the only place a key is named
+(container provisioning, lifecycle, and constructing handles); and the
+collection, the stateless handle every data consumer holds, bound to
+one key and one container, no method on it taking either. Each backend
+implements both, as the current code does with `VectorStoreCollection`,
+minus the open and close and the stale state. `EpisodicMemoryManager`
+holds the store: its hooks call lifecycle, and each request builds the
+`VectorCollection` an `EpisodicMemory` receives.
 
 ```python
-class VectorStoreManager(ABC):
+class VectorStore(ABC):                   # the resource: lifecycle, and handles
     async def provision_containers(self) -> None          # schema command only
     async def create_collection(self, key: UUID, container: str) -> None
     async def delete_collection(self, key: UUID) -> None
     async def purge_collection(self, key: UUID) -> Progress
+    def collection(self, key: UUID, container: str) -> VectorCollection
+        # stateless handle, no I/O
     @property
     def concurrency_scope(self) -> ConcurrencyScope
 
-class VectorStore(ABC):
-    def collection(self, key: UUID, container: str) -> VectorCollection
-        # stateless handle, no I/O
-    async def upsert(self, key: UUID, container: str,
-                     records: Iterable[Record]) -> None
-    async def delete(self, key: UUID, container: str,
-                     uuids: Iterable[UUID]) -> None
-    async def query(self, key: UUID, container: str,
-                    vectors: Iterable[Sequence[float]], *,
+class VectorCollection(ABC):              # data, bound to one key and container
+    @property
+    def key(self) -> UUID
+    @property
+    def container(self) -> str
+    async def upsert(self, records: Iterable[Record]) -> None
+    async def delete(self, uuids: Iterable[UUID]) -> None
+    async def query(self, vectors: Iterable[Sequence[float]], *,
                     limit: int, min_score: float | None,
                     filter: FilterExpr | None,
                     allowed_uuids: Iterable[UUID] | None) -> list[QueryResult]
-    async def get_cosine_similarity(self, key: UUID, container: str,
-                                    vector: Sequence[float],
+    async def get_cosine_similarity(self, vector: Sequence[float],
                                     uuids: Iterable[UUID]) -> dict[UUID, float]
     @property
     def supported_filter_nodes(self) -> frozenset[type]
-
-class VectorCollection:                   # final; one class for every backend
-    key: UUID
-    container: str
-    # every VectorStore data operation without `key` and `container`,
-    # delegating to the store with the bound pair
 ```
 
 Scores are cosine similarity everywhere; there is no `SimilarityMetric`
@@ -119,10 +114,10 @@ Semantics:
   none do and return `DONE`. With no row, delete by key in every
   container the store has; `DONE` when nothing is found. `purge` on
   a `live` row raises; the tenant service never calls it on one.
-- `container` on every data operation: the fence's registry read
-  raises `KeyNotLiveError` when the row names another container, so a
-  handle built for the wrong container cannot write. `collection(key,
-  container)` builds the `VectorCollection` handle without I/O;
+- `collection(key, container)`: builds the handle without I/O. Every
+  operation through it reads the registry row and raises
+  `KeyNotLiveError` when the row is not `live` or names another
+  container, so a handle built for the wrong container cannot write.
   `EpisodicMemoryManager` builds one per request for the tenant's key
   and its embedder's container and hands it to `EpisodicMemory`.
 
@@ -152,11 +147,12 @@ the usearch store `process`.
   `milvus_vector_store.py:477`, the `_CollectionRow` tables in both
   SQLite stores) for the key registry, or, for pgvector and the SQLite
   stores, a table beside the data.
-- `VectorStoreCollection` (`vector_store.py:22`) and `open_collection`,
-  `open_or_create_collection`, `close_collection` (`:205`, `:235`,
-  `:254`) go; operations take the key and the container, and
-  `VectorCollection`, a stateless handle built by `collection(key,
-  container)`, replaces the opened one. `VectorStoreCollectionConfig`
+- `VectorStoreCollection` (`vector_store.py:22`) becomes
+  `VectorCollection`: the same data operations, bound to the key and
+  the container at construction, stateless; `open_collection`,
+  `open_or_create_collection` and `close_collection` (`:205`, `:235`,
+  `:254`) go and `collection(key, container)`, which does no I/O,
+  replaces them. `VectorStoreCollectionConfig`
   and the `config` parameter of `create_collection` (`:175`) go
   (#1573); the container's shape comes from `containers` settings.
 - Keys are `UUID`; `validate_identifier` (`utils.py:31`) applies to

@@ -14,8 +14,8 @@ component.
 ```python
 EpisodicMemoryManager(
     event_store: EventStore,
-    segment_store: SegmentStoreManager, segment_data: SegmentStore,
-    vector_store: VectorStoreManager, vector_data: VectorStore,
+    segment_store: SegmentStore,           # lifecycle, and partition handles
+    vector_store: VectorStore,             # lifecycle, and collection handles
     embedders: Mapping[str, Embedder],     # resources, all the deployment built
     rerankers: Mapping[str, Reranker],
     engine: AsyncEngine,                   # its per-tenant table
@@ -83,19 +83,18 @@ Toward the routers:
     async def status(self, tenant_id: UUID) -> SubsystemStatus   # watermark, head, lag
 ```
 
-Each reads the per-tenant row (absent: `TenantNotFoundError`, which the
-router turns into 404 or 409 by asking the tenant service), builds the
-tenant's `EpisodicMemory` in one constructor call from
-`segment_data.partition(tenant_id)`, `vector_data.collection(tenant_id,
-e)`, `embedders[e]` and the segmenter and deriver objects for the row's
-options, taken from the cache, and makes one call.
-`search` fills each request parameter the request omits from the row's
-defaults, resolves `request.reranker` or the default to an object
-(`InvalidTenantConfigError` for an id not offered), and calls
-`query`. `replay` calls `encode` with the events of a batch's `added`
-entries and `forget` with the uuids of its `deleted` entries, and
-advances the watermark in the same transaction as the batch's last
-segment write where the engines are shared, and after it otherwise.
+Each reads the per-tenant row (absent: `TenantNotFoundError`, which the router
+turns into 404 or 409 by asking the tenant service), builds the tenant's
+`EpisodicMemory` in one constructor call from
+`segment_store.partition(tenant_id)`, `vector_store.collection(tenant_id, e)`,
+`embedders[e]` and the segmenter and deriver objects for the row's options,
+taken from the cache, and makes one call. `search` fills each request parameter
+the request omits from the row's defaults, resolves `request.reranker` or the
+default to an object (`InvalidTenantConfigError` for an id not offered), and
+calls `query`. `replay` calls `encode` with the events of a batch's `added`
+entries and `forget` with the uuids of its `deleted` entries, and advances the
+watermark in the same transaction as the batch's last segment write where the
+engines are shared, and after it otherwise.
 
 ## Cache
 

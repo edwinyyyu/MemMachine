@@ -26,53 +26,53 @@ UUID`, foreign key to the segment row with cascade. `segment_store_gc`:
 
 ## API, after the changes
 
-Two ABCs behind one implementation, exposed as the manager and
-`manager.store`, so data callers cannot reach lifecycle and lifecycle
-callers cannot reach data. `SegmentPartition` is the handle a consumer
-receives: the store's data operations bound to one key, stateless
-(`server_redesign.md`, "Vocabulary"), built by `partition(key)` without
-I/O and fenced per operation exactly as a call with the key is.
+Two ABCs: the store, the resource and the only place a key is named
+(lifecycle, and constructing handles); and the partition, the stateless
+handle every data consumer holds (`server_redesign.md`, "Vocabulary").
+No method on the partition takes a key, so a consumer cannot name a
+wrong one, and it cannot reach lifecycle. Each backend implements both,
+as the current code does with `SegmentStorePartition`, minus the
+incarnation, the open and close, and the stale state. `partition(key)`
+does no I/O and checks nothing; every operation through the handle
+fences on the registry row exactly as the current code does.
 
 ```python
-class SegmentStoreManager(ABC):
+class SegmentStore(ABC):                  # the resource: lifecycle, and handles
     async def create_partition(self, key: UUID, config: SegmentPartitionConfig) -> None
     async def delete_partition(self, key: UUID) -> None
     async def purge_partition(self, key: UUID) -> Progress
     async def purge_deleted_partitions(self) -> bool     # library use only
+    def partition(self, key: UUID) -> SegmentPartition   # stateless handle, no I/O
     @property
     def concurrency_scope(self) -> ConcurrencyScope
 
-class SegmentStore(ABC):
-    def partition(self, key: UUID) -> SegmentPartition   # stateless handle, no I/O
-    async def add_segments(self, key: UUID,
+class SegmentPartition(ABC):              # data, bound to one key; no method takes a key
+    @property
+    def key(self) -> UUID
+    async def add_segments(self,
                            segments_to_derivative_uuids: Mapping[Segment, Iterable[UUID]]) -> None
-    async def get_segment_contexts(self, key: UUID, seed_segment_uuids: Iterable[UUID], *,
+    async def get_segment_contexts(self, seed_segment_uuids: Iterable[UUID], *,
                                    max_backward_segments: int, max_forward_segments: int,
                                    since: datetime | None, before: datetime | None,
                                    source_ids: Iterable[str] | None,
                                    block_kinds: Iterable[str] | None,
                                    property_filter: FilterExpr | None) -> dict[UUID, list[Segment]]
-    async def get_neighbours(self, key: UUID, anchor: UUID, *,
+    async def get_neighbours(self, anchor: UUID, *,
                              before: int, after: int,
                              session_ids: Iterable[str] | None,
                              source_ids: Iterable[str] | None,
                              block_kinds: Iterable[str] | None) -> list[Segment]
-    async def get_segment_uuids_by_event_uuids(self, key: UUID,
+    async def get_segment_uuids_by_event_uuids(self,
                                                event_uuids: Iterable[UUID]) -> dict[UUID, list[UUID]]
-    async def get_derivative_uuids_by_segment_uuids(self, key: UUID,
+    async def get_derivative_uuids_by_segment_uuids(self,
                                                     segment_uuids: Iterable[UUID]) -> dict[UUID, list[UUID]]
-    async def find_segments(self, key: UUID, *,
+    async def find_segments(self, *,
                             since: datetime | None, before: datetime | None,
                             session_ids: Iterable[str] | None,
                             source_ids: Iterable[str] | None,
                             block_kinds: Iterable[str] | None,
                             property_filter: FilterExpr, limit: int) -> list[UUID]
-    async def delete_segments(self, key: UUID, segment_uuids: Iterable[UUID]) -> None
-
-class SegmentPartition:                   # final; one class for every backend
-    key: UUID
-    # every SegmentStore data operation without `key`, delegating to the
-    # store with the bound key
+    async def delete_segments(self, segment_uuids: Iterable[UUID]) -> None
 ```
 
 `get_neighbours` serves expansion (`episodic_memory.md`): the segments
@@ -95,13 +95,15 @@ from the last segment returned.
   unique incarnation goes, the purge queue is keyed by the key, the
   physical-key helper in `utils.py` goes, and the store mints nothing.
   Rationale in `server_redesign.md`, "Segment store".
-- `SegmentStorePartition` (`segment_store.py:20`), bound to an
-  incarnation and opened, closed and stale, and `open_partition`,
-  `open_or_create_partition`, `close_partition` (`:176`, `:191`, `:220`)
-  go; every data operation takes the key and the registry read that
-  fences it returns the codec configuration; codec objects are cached
-  process-wide by configuration. `partition(key)` and
-  `SegmentPartition`, the stateless handle, are added.
+- `SegmentStorePartition` (`segment_store.py:20`) becomes
+  `SegmentPartition`: the same data operations, none taking a key,
+  bound to the key at construction and stateless (no incarnation,
+  nothing opened or closed, no stale state). `open_partition`,
+  `open_or_create_partition` and `close_partition` (`:176`, `:191`,
+  `:220`) go and `partition(key)`, which does no I/O, replaces them.
+  The registry read that fences each operation returns the codec
+  configuration; codec objects are cached process-wide by
+  configuration.
 - `create_partition` stays strict and also raises on a key whose purge
   is pending (a queue entry under the key).
 - `purge_partition(key) -> Progress` is added: this key's dead rows,
@@ -123,7 +125,9 @@ from the last segment returned.
   one block as a plain column, since the encoded block cannot be
   filtered (`blocks.md`).
 - `get_neighbours` is added for expansion, over the ordering index.
-- The ABC splits into `SegmentStoreManager` and `SegmentStore`.
+- The two ABCs stay two, `SegmentStore` and `SegmentPartition`, with
+  the line between them redrawn: the store names keys, the partition
+  never does.
 - Errors: `SegmentStorePartitionHandleStaleError` becomes
   `KeyNotLiveError`; `SegmentStorePartitionAlreadyExistsError` becomes
   `KeyExistsError`; `SegmentStoreAttemptsExhaustedError` becomes

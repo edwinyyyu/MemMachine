@@ -42,16 +42,18 @@ Conventions shared by every specification:
   (`InstanceOf[Embedder]` beside scalar fields) mixes the two, which is
   what this rule removes. No numeric default is given here, since none
   has been measured.
-- Every store has two ABCs, `<Store>Manager` for lifecycle and
-  `<Store>` for data, behind one implementation exposed as `manager`
-  and `manager.store`. A data caller cannot reach a lifecycle operation
-  and a lifecycle caller cannot reach data; the composition hands each
-  caller the view it needs.
-- A consumer of data holds a stateless handle, the store's operations
-  bound to one key: `SegmentPartition`, `VectorCollection`. One final
-  class per store, beside the ABC, constructed by the store without
-  I/O; it holds the key and the store, so nothing in it goes stale, and
-  a consumer holding it cannot name another key.
+- Every store has two ABCs: the store (`EventStore`, `SegmentStore`,
+  `VectorStore`), the resource and the only place a key is named, for
+  lifecycle and for constructing handles; and the handle
+  (`EventPartition`, `SegmentPartition`, `VectorCollection`), the data
+  surface, bound to one key at construction, with no method taking a
+  key. A data consumer holds the handle only, so it cannot reach
+  lifecycle and cannot name a wrong key; the store is held by the
+  component that owns lifecycle. Each backend implements both.
+- A handle is stateless: constructed by the store without I/O, holding
+  the key and the store's shared resources, fenced by the registry row
+  on every operation; nothing in it goes stale, and there is nothing to
+  open, close or evict.
 - Nothing per tenant is opened, closed or held: an operation takes the
   key, reads what it needs, and returns; a handle is a binding of the
   key, not a thing opened.

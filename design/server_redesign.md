@@ -211,9 +211,10 @@ Named so the redesign can be checked against it.
   raises `KeyNotLiveError` on its next operation, from that fence and
   not from anything it remembers. What it buys is routing that cannot
   be wrong past the point it was built: a consumer holding a handle
-  cannot name another key. `SegmentPartition` and `VectorCollection`
-  are the two. The incarnation-bound handles of the current stores,
-  opened, closed and stale, are not these.
+  cannot name another key. `EventPartition`, `SegmentPartition` and
+  `VectorCollection` are the three, each an ABC a backend implements
+  beside its store. The incarnation-bound handles of the current
+  stores, opened, closed and stale, are not these.
 - Resource: any object the composition builds: a database engine, a
   provider client, a store, a component, the tenant service. A plain
   class or factory with a typed signature.
@@ -268,10 +269,13 @@ Named so the redesign can be checked against it.
    hooks behind the four job kinds (`provision`, `delete`, `purge`,
    `replay`). It never sees a store or an option.
 4. Stores take a UUID key and nothing else, and fence on that key. Each
-   store is two ABCs behind one implementation: `<Store>Manager` for
-   lifecycle and `<Store>` for data, the latter reached only through
-   `manager.store`, so a data caller cannot reach a lifecycle operation
-   and a lifecycle caller cannot reach data.
+   store is two ABCs: the store, the resource and the only place a key
+   is named, for lifecycle and for constructing handles; and the
+   handle, the data surface, bound to one key at construction, with no
+   method taking a key. A data consumer holds the handle only, so it
+   cannot reach a lifecycle operation and cannot name a wrong key; a
+   wrong key is unrepresentable past the handle's construction rather
+   than checked on every call.
 5. Every store rejects operations on a deleted key by itself, from a
    registry row keyed by the caller's UUID: in the same statement where
    the data is in the same SQL database, and by a check after the
@@ -635,10 +639,10 @@ tenant id, with the fence under "Store contracts".
   `delete_partition(key)` (logical, O(1), idempotent),
   `purge_partition(key) -> DONE | MORE`, `purge_deleted_partitions()`
   for library users without a tenant service.
-- Data operations, each taking the key: `add_events(key, events) ->
-  (stored, skipped)`, `delete_events(key, ids)`, `get_events(key,
-  ids)`, `list_events(key, filter, since, before, cursor, limit)`,
-  `read_log(key, after, limit)`, `head(key)`.
+- Data operations, on the handle `event_store.partition(key)` and none
+  taking a key: `add_events(events) -> (stored, skipped)`,
+  `delete_events(ids)`, `get_events(ids)`, `list_events(filter, since,
+  before, cursor, limit)`, `read_log(after, limit)`, `head()`.
 
 Ingest, `POST /v1/tenants/{id}/events`, in the ingest service:
 
@@ -1154,11 +1158,12 @@ As shipped in #1548, with these changes:
   mint per create, and a mapping consulted on every operation, for a
   capability (in-place replacement) the design rejects.
   `open_or_create_partition` goes.
-- The incarnation-bound partition handle, opened and closed, goes; the
-  store's data operations take the key, and `SegmentPartition`, a
-  stateless handle holding the key and the store, is what a consumer
-  receives. The registry read that fences each operation returns the
-  codec configuration; codec objects are cached process-wide by
+- The incarnation-bound partition handle, opened and closed, becomes
+  `SegmentPartition`, a stateless handle bound to the key at
+  construction: the data operations live on it and none takes a key,
+  and `partition(key)` on the store builds it without I/O. The
+  registry read that fences each operation returns the codec
+  configuration; codec objects are cached process-wide by
   configuration, not per key.
 - `purge_partition(key) -> DONE | MORE`: purges this key's dead rows,
   bounded per call; `DONE` when no garbage remains under the key. On

@@ -92,28 +92,36 @@ DateTime(timezone=True)` not null `func.now()`, index
 
 ## API
 
-Two ABCs behind one implementation, the manager and `manager.store`.
+Two ABCs, as for every store: the store, the only place a key is named
+(lifecycle, and constructing handles), and the partition, the stateless
+handle bound to one key that every data caller holds, with no method
+taking a key. The ingest service builds the partition for the tenant in
+the request path and `EpisodicMemoryManager.replay` for the tenant of
+its job, each at the one point the key is read.
 
 ```python
-class EventStoreManager(ABC):
+class EventStore(ABC):                    # the resource: lifecycle, and handles
     async def create_partition(self, key: UUID, config: EventPartitionConfig) -> None
     async def delete_partition(self, key: UUID) -> None
     async def purge_partition(self, key: UUID) -> Progress
     async def purge_deleted_partitions(self) -> bool       # library use only
     async def compact_log(self, key: UUID, below: int) -> Progress
+    def partition(self, key: UUID) -> EventPartition       # stateless handle, no I/O
     @property
     def concurrency_scope(self) -> ConcurrencyScope
 
-class EventStore(ABC):
-    async def add_events(self, key: UUID, events: Iterable[Event]) -> AddResult
-    async def delete_events(self, key: UUID, uuids: Iterable[UUID]) -> None
-    async def get_events(self, key: UUID, uuids: Iterable[UUID]) -> list[StoredEvent]
-    async def list_events(self, key: UUID, filter: FilterExpr | None,
+class EventPartition(ABC):                # data, bound to one key; no method takes a key
+    @property
+    def key(self) -> UUID
+    async def add_events(self, events: Iterable[Event]) -> AddResult
+    async def delete_events(self, uuids: Iterable[UUID]) -> None
+    async def get_events(self, uuids: Iterable[UUID]) -> list[StoredEvent]
+    async def list_events(self, filter: FilterExpr | None,
                           since: datetime | None, before: datetime | None,
                           cursor: Cursor | None, limit: int) -> Page[StoredEvent]
-    async def read_log(self, key: UUID, after: int, limit: int) -> list[LogEntry]
-    async def read_events_after(self, key: UUID, after: int, limit: int) -> list[StoredEvent]
-    async def head(self, key: UUID) -> int                 # last position
+    async def read_log(self, after: int, limit: int) -> list[LogEntry]
+    async def read_events_after(self, after: int, limit: int) -> list[StoredEvent]
+    async def head(self) -> int                            # last position
 ```
 
 - `create_partition`: strict; `KeyExistsError` on any row under the key,
