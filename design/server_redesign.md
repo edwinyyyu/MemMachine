@@ -151,7 +151,7 @@ Named so the redesign can be checked against it.
 - Tenant configuration: the resolved options recorded on the tenant
   row, one section per component, applied to the component by a job.
 - Job: a row describing one action for one component on one tenant.
-  `ensure` and `delete` are the tenant service's; a component may
+  `provision` and `delete` are the tenant service's; a component may
   define others (`catch_up`).
 - Reconciler: the role that claims and executes jobs and runs the
   tombstone sweep. A process runs it when configured to; a deployment
@@ -179,7 +179,7 @@ Named so the redesign can be checked against it.
    invisible above it.
 3. The tenant service knows a component only through its registration: a
    name, a tenant configuration model to validate against, and hooks
-   (`ensure`, `delete`, `reclaim`, and any job kinds the component
+   (`provision`, `delete`, `reclaim`, and any job kinds the component
    defines). It never sees a store or an option.
 4. Stores take a UUID key and nothing else, and fence on that key.
 5. Every store rejects operations on a deleted key by itself, from a
@@ -278,7 +278,7 @@ on them. Only the tenant service reads or writes them.
 - `id PK`, `tenant_id`, `component`, `action`, `payload JSON`; unique
   on `(tenant_id, component, action)`.
 - `state`: `pending`, `done`.
-- `configuration_version`: for `ensure`, the version the job applies.
+- `configuration_version`: for `provision`, the version the job applies.
 - `attempts`, `last_error`, `next_run_at`, `created_at`, `updated_at`.
 
 A `deleted` row is a tombstone: id, former name, `deleted_at`,
@@ -307,7 +307,7 @@ Create, `POST /v1/tenants`:
    overlaid with the request's per-component overrides, each section
    validated by its component's tenant configuration model. An unknown
    component name or an invalid option is 422.
-2. Insert the tenant row as `provisioning` and one `ensure` job per
+2. Insert the tenant row as `provisioning` and one `provision` job per
    registered component, in one transaction. A duplicate name fails on
    the unique index: 409 `tenant_exists`, and nothing else. A caller
    that wants the existing tenant looks it up by name; an error response
@@ -321,7 +321,7 @@ Create, `POST /v1/tenants`:
    create inside the request; a failed step is left for a reconciler,
    never surfaced as an error to the creator.
 4. `GET /v1/tenants/{id}` shows the state and each job's attempts and
-   last error. The tenant becomes `active` when the last `ensure` job's
+   last error. The tenant becomes `active` when the last `provision` job's
    transaction marks it done.
 
 Delete, `DELETE /v1/tenants/{id}`:
@@ -362,10 +362,10 @@ Configuration update, `PATCH /v1/tenants/{id}` with `configuration`:
   An immutable option in the patch is 422, and there is no "expensive
   but allowed" class.
 - One transaction writes the document, increments
-  `configuration_version`, and inserts (or resets) an `ensure` job per
+  `configuration_version`, and inserts (or resets) an `provision` job per
   changed component carrying the new version. Respond 202; `?wait=`
   blocks until every such job is done.
-- How it reaches the server processes: the `ensure` job calls the
+- How it reaches the server processes: the `provision` job calls the
   component's hook with the new section, and the hook writes it, with
   its version, into the component's own per-tenant row. Every request
   reads that row, so the next request on any process uses the new
@@ -398,11 +398,11 @@ Reconciler role:
   without `SKIP LOCKED` under `BEGIN IMMEDIATE`; concurrent reconcilers
   serialize there.
 - Execute: the component's hook for the job's action, with the payload
-  (for `ensure`, the tenant's configuration section at the job's
+  (for `provision`, the tenant's configuration section at the job's
   version; for `delete`, the `delete` then `reclaim` pair above).
   `DONE` marks the job done; `MORE` reschedules it at
   `now() + reconciler.reclaim_interval`; an exception reschedules with
-  backoff. The transaction that marks an `ensure` or `delete` job done
+  backoff. The transaction that marks an `provision` or `delete` job done
   checks the tenant's remaining jobs of that action and applies the
   state transition if none remain. Hooks are idempotent, so a step
   repeated after a crash is harmless.
@@ -428,7 +428,7 @@ at startup:
   `validate_update(old, new)` and never reads a field.
 - Hooks, each idempotent, bounded per call, allowed to raise (the
   reconciler retries):
-  - `ensure(tenant_id, section) -> None`: create the component's
+  - `provision(tenant_id, section) -> None`: create the component's
     resources for the tenant if absent, verify the immutable options if
     present, apply the mutable ones, record the section and its version
     in the component's per-tenant row.
@@ -539,37 +539,55 @@ Operations, in the order the stores are touched:
 - `forget`: look up segments and derivatives; delete vector records;
   delete segments.
 
-Objects per configuration, options per request. `EventMemory` keeps
-its shape: one embedder, one segmenter, one deriver, constructed with
-them, its operations taking the key. The episodic memory service, the
-component that registers with the tenant service and serves the routes,
-holds the providers the deployment offers and builds one `EventMemory`
-per distinct structural configuration: the embedder id and the
-segmenter and deriver options. It caches those objects by
-configuration, not by tenant, so the cache is bounded by the
-configurations in use, and each object is a few references to shared
-resources, built in microseconds. An object for embedder `e` is built
-with `embedders[e]` and `vector_store.for_container(e)`, the
-container-scoped view of rule 4 above, so a dispatch error raises
-instead of writing another model's vectors into a container; the
-embedder and its container are bound in one constructor call. On a
-request the service reads the tenant's applied configuration from its
-per-tenant row, takes the object for it, and calls it with the tenant
-id.
+Objects per configuration, options per request. `EpisodicMemory` (the
+current `EventMemory`) keeps its shape: one embedder, one segmenter,
+one deriver, constructed with them, its operations taking the key and,
+for `query`, the reranker as an object. It is a configured object,
+never built by the composition. The resource is
+`EpisodicMemoryManager`, the name repurposed: constructed with the
+event store, the segment store, the vector store, and the embedders and
+rerankers the composition built, as mappings from id to object. It
+registers with the tenant service, owns the per-tenant table and a
+cache of `EpisodicMemory` objects keyed by structural configuration
+(embedder id, segmenter and deriver options), and serves the routes.
+The object for embedder `e` is built with `embedders[e]` and
+`vector_store.for_container(e)`, the container-scoped view of rule 4,
+so a dispatch error raises instead of writing another model's vectors
+into a container; the embedder and its container are bound in one
+constructor call. On a request the manager reads the tenant's applied
+configuration from its per-tenant row, takes the object for it, fills
+each per-request option the request left out with the tenant's default,
+resolves a reranker id to the object, and makes one call.
+
+That is all the manager does: dispatch, defaults, validation. It holds
+no search or ingest logic, translates no models, and has one method per
+operation with the same types as `EpisodicMemory`. Reranking stays
+inside `EpisodicMemory.query`, because it is part of computing the
+result (an over-fetch scored and cut to `limit`), and moving it up
+would split the search across two classes to save a parameter. One
+layer that changes only scope, a tenant id to an object and ids to
+objects, is the least a per-tenant configuration can need, and it is
+not the layering this document removes, which was four layers each
+translating models and branching on backends.
+
+In the settings a deployment declares which embedders and rerankers
+exist; the standard composition builds them and hands all of them to
+the manager. Products never appear in settings. A deployment that
+wants a memory type to offer a subset names the ids in that manager's
+settings.
 
 Options that a request may vary are not bound into objects at all; they
 are arguments of the call. The reranker, `limit`, `expand_context`, the
-minimum score and `include_events` are parameters of `query`, and
-`EventMemory.query` takes the reranker as an object per call. The
+minimum score and `include_events` are parameters of `query`. The
 tenant's section supplies their defaults; a request may override any
 of them, the reranker within the ids the deployment offers, validated
-by the service. Nothing that ingest does varies per request. The
-division is by what changes stored data: an option that decides where
-or how records are written is structural and bound; an option that
-only shapes an answer is per call.
+by the manager. Nothing that ingest does varies per request. The
+division is rule 5's: an option that decides where or how records are
+written is structural and bound; an option that only shapes an answer
+is per call.
 
 A tenant naming an id the deployment did not build is rejected at
-creation and at `PATCH` by the service's own validation. Changing the
+creation and at `PATCH` by the manager's own validation. Changing the
 embedder is not a `PATCH`, because its container holds the data;
 changing the segmenter or deriver options applies to later events;
 changing the reranker or a search default takes effect on the next
@@ -592,7 +610,7 @@ section gains a `language_model` id when a deriver needs one.
 
 Hooks:
 
-- `ensure`: create the partition and the collection under the tenant
+- `provision`: create the partition and the collection under the tenant
   id; an existing `live` row is this component's own earlier attempt
   and is success, a `creating` row is resumed, a `dropping` row is a
   reused key and raises (see "Create is strict"); insert the per-tenant
@@ -853,19 +871,19 @@ tell a retry of its caller's own create from a create under a key
 someone else chose, and only the caller can, so there is no
 open-or-create at the store.
 
-Idempotency lives in the component's `ensure`, which knows the key's
+Idempotency lives in the component's `provision`, which knows the key's
 provenance: the tenant service minted the id on the tenant table's
 primary key before any job ran, so a `live` row under the key can only
-be this component's own earlier attempt, and `ensure` treats it as
+be this component's own earlier attempt, and `provision` treats it as
 success; a `creating` row is an interrupted attempt of its own, and
-`ensure` resumes it; a `dropping` row means the key had a previous life,
+`provision` resumes it; a `dropping` row means the key had a previous life,
 which the tenant service's tombstone makes impossible for the server and
-which a library user reusing keys can cause, and `ensure` raises
+which a library user reusing keys can cause, and `provision` raises
 `KeyReusedError` for an operator.
 
 What every store operation does with a key whose row is present but
 not `live` (`creating` and `dropping`; a SQL store's row while its purge
-is pending), and with no row at all. Only `ensure` proceeds on
+is pending), and with no row at all. Only `provision` proceeds on
 `creating`, as above:
 
 | Operation | present, not live | no row |
@@ -923,7 +941,7 @@ backend that cannot list or reject keys.
   straight to `live`. Where the tenant is a native object (a Chroma
   collection, a Weaviate tenant), the row is inserted as `creating`,
   the object is created, and the row is set `live` with its address; a
-  crash between the two leaves `creating`, which `ensure` resumes by
+  crash between the two leaves `creating`, which `provision` resumes by
   creating the object if absent and setting `live`. Telling "already
   exists" from other failures is per backend; on Chroma it is by
   message, since its duplicate-create error is untyped (`InternalError`
@@ -1036,7 +1054,7 @@ Four rules, then the mechanics.
 1. Fixed topology, pluggable slots. The standard server is a fixed graph
    of roles: database engines, the key registry, the event store, the
    segment store, the vector store, embedders, rerankers, language
-   models, the episodic memory service, the ingest service, the tenant
+   models, the episodic memory manager, the ingest service, the tenant
    service, the routers. Each role is an ABC. The graph never varies
    between deployments; what fills each slot does. This is the shape of
    every server that supports many backends from one image (a database
@@ -1069,6 +1087,29 @@ Four rules, then the mechanics.
    cannot touch another store's rows, and an object built for one
    embedder cannot write into another embedder's container. The rule
    applies wherever a shared resource serves several holders.
+5. Three scopes, three kinds of object, told apart by identity. A
+   resource is built by the composition, has identity and a lifecycle,
+   and holds connections or bounds the deployment: stores, the key
+   registry, the providers that exist. A configured object is built by
+   a factory from resources and a tenant's structural configuration, is
+   interchangeable with any other built from the same configuration, is
+   cached by configuration and never by tenant, and has no lifecycle:
+   an `EpisodicMemory` bound to an embedder, a container-scoped view. A
+   call argument belongs to one request. Factories are resources and
+   their products are not; a factory is the resource that stands in for
+   a family of configured objects, which is the metrics factory's model
+   already. An option is classified by the same line: per server if it
+   holds identity or bounds the deployment; per tenant and structural
+   if it decides where or how records are written; per tenant and a
+   default if it only shapes answers but a caller wants one setting for
+   all its calls; per request if it may vary per call. The separation
+   is enforced by signature, not by convention: a structural option is
+   a constructor parameter of the configured object and a parameter of
+   no operation; a per-request option is a parameter of the operation
+   and of no constructor; a tenant default is a field of the tenant
+   configuration model whose name is an operation parameter, checked at
+   import time, and the manager fills it into the call. An option
+   cannot exist in two places, so it cannot silently change scope.
 
 Kinds. Each slot family has one table from kind name to callable, a
 class or a factory, and the slot's settings type is a discriminated
@@ -1117,7 +1158,7 @@ def compose(s: ServerSettings) -> Server:
     vector_store = VECTOR_STORES[s.vector_store.kind](
         registry.scoped("vector-store"), s.vector_store
     )
-    episodic = EpisodicMemoryService(
+    episodic = EpisodicMemoryManager(
         events, segments, vector_store, embedders, rerankers,
         s.episodic_memory,
     )
