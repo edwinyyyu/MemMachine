@@ -28,7 +28,7 @@ class Server:
 
 One exception handler maps the `MemMachineError` hierarchy:
 `TenantNotFoundError` 404, `TenantNotActiveError` 409,
-`TenantExistsError` 409, `InvalidTenantConfigurationError`,
+`TenantExistsError` 409, `InvalidTenantConfigError`,
 `InvalidPropertyKeyError`, `InvalidPropertyValueError`,
 `UndeclaredPropertyKeyError` 422, `ProviderUnavailableError` 503,
 anything else 500 `internal` with the traceback logged and never

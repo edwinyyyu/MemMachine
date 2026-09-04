@@ -10,7 +10,7 @@ writer of the tenant tables.
 - `engine: AsyncEngine`, the tenant database.
 - `components: Sequence[TenantComponent]`, the registrations (below).
 - `templates: Mapping[str, TenantTemplate]`, validated at construction
-  against every component's `tenant_configuration` model.
+  against every component's `tenant_config` model.
 - `settings: TenantServiceSettings`: `reconciler.poll_interval`,
   `reconciler.jobs_per_pass`, `reconciler.step_duration`,
   `reconciler.purge_interval`,
@@ -22,7 +22,7 @@ writer of the tenant tables.
 ```python
 class TenantComponent(ABC):
     name: str
-    tenant_configuration: type[BaseModel]   # fields marked mutable or immutable
+    tenant_config: type[BaseModel]   # fields marked mutable or immutable
 
     @abstractmethod
     async def provision(self, tenant_id: UUID, section: BaseModel) -> None: ...
@@ -49,7 +49,7 @@ class TenantComponent(ABC):
   component's stores hold under the key; `DONE` when nothing is found.
   One batch per call; the sweep job loops. Never called on a live key
   (see "Serialization").
-- `validate_update(old, new)`: raise `InvalidTenantConfigurationError`
+- `validate_update(old, new)`: raise `InvalidTenantConfigError`
   if `new` changes an immutable field.
 - `replay(tenant_id) -> Progress`: process a bounded amount of what
   the event store's log holds for this tenant beyond the component's
@@ -75,8 +75,8 @@ Types per the mapping in `README.md`.
 | `name` | `Text` | null; unique index `tenants__name` (partial on PostgreSQL, `WHERE name IS NOT NULL`; SQLite treats NULLs as distinct) |
 | `former_name` | `Text` | null |
 | `state` | `String(16)` | not null; check in (`provisioning`, `active`, `deleting`, `deleted`) |
-| `configuration` | `JSON` (`JSONB` on PostgreSQL) | not null |
-| `configuration_version` | `Integer` | not null, default 1 |
+| `config` | `JSON` (`JSONB` on PostgreSQL) | not null |
+| `config_version` | `Integer` | not null, default 1 |
 | `created_at`, `updated_at` | `DateTime(timezone=True)` | not null, `func.now()` |
 | `deleted_at`, `swept_at` | `DateTime(timezone=True)` | null |
 
@@ -168,7 +168,7 @@ class TenantService:
     async def list(self, prefix: str | None, cursor: Cursor | None,
                    limit: int) -> Page[Tenant]
     async def rename(self, tenant_id: UUID, name: str) -> Tenant
-    async def update_configuration(self, tenant_id: UUID,
+    async def update_config(self, tenant_id: UUID,
                                    overrides: Mapping[str, Mapping]) -> Tenant
     async def delete(self, tenant_id: UUID) -> Tenant
     async def wait(self, tenant_id: UUID, until: TenantState,
@@ -190,12 +190,12 @@ Semantics:
 
 - `create`: resolve the template overlaid with overrides, validate each
   section with its component's model (unknown component or invalid
-  option: `InvalidTenantConfigurationError`), insert the row as
+  option: `InvalidTenantConfigError`), insert the row as
   `provisioning` and one `provision` job per component in one
   transaction; a duplicate name raises `TenantExistsError`, nothing
   more. Then `reconcile_tenant` inline, so a single process finishes the
   create in the request; a failing step is left pending.
-- `update_configuration`: validate with `validate_update` per changed
+- `update_config`: validate with `validate_update` per changed
   section; one transaction writes the configuration, increments the version,
   inserts or resets a `provision` job per changed component with the
   version in its arguments; the tenant stays `active`.

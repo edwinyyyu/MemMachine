@@ -27,7 +27,7 @@ Conventions shared by every specification:
 - Errors are one hierarchy under `MemMachineError`, named for the
   condition, never for a driver: `KeyExistsError`, `KeyNotLiveError`,
   `KeyReusedError`, `TenantNotFoundError`, `TenantNotActiveError`,
-  `TenantExistsError`, `InvalidTenantConfigurationError`,
+  `TenantExistsError`, `InvalidTenantConfigError`,
   `UndeclaredPropertyKeyError`, `ProviderUnavailableError`,
   `AttemptsExhaustedError`. The HTTP layer maps the hierarchy once.
 - Every method that is a hook or a bounded step is idempotent: calling
@@ -79,19 +79,24 @@ comes from and where it lives:
 | Word | What it names | Type or field |
 | --- | --- | --- |
 | settings | deployment-level values from the environment and the settings file; one Pydantic model per resource class, nested into `ServerSettings`; read at startup, never mutated | `<Resource>Settings`, `settings: ...`, `memmachine serve --settings PATH`, `memmachine settings schema` |
-| tenant configuration | per-tenant values recorded on the tenant row, one section per component, validated by the component's model; each field is an option, mutable or immutable | `<Component>TenantConfiguration`, `tenants.configuration`, `configuration_version` |
+| tenant configuration | per-tenant values recorded on the tenant row, one section per component, validated by the component's model; each field is an option, mutable or immutable | `<Component>TenantConfig`, `tenants.config`, `config_version` |
 | template | a named tenant configuration in the settings, copied at create | `tenant_templates` |
-| overrides | the sections a create or update request supplies on top of a template or the recorded configuration | request field `configuration` |
+| overrides | the sections a create or update request supplies on top of a template or the recorded configuration | request field `config` |
 | defaults | the options of a tenant configuration that fill request parameters a request omits | `SearchDefaults` |
-| partition or collection configuration | per-key values a store records in its registry row at create (codec configuration, container) | `<Store>PartitionConfiguration`, column `configuration` |
+| partition or collection configuration | per-key values a store records in its registry row at create (codec configuration, container) | `<Store>PartitionConfig`, column `config` |
 | request parameters | fields of a request model; a request may set any of them | `SearchRequest`, `ExpandRequest` |
 | parameters and arguments | a parameter is in a signature, an argument is the value passed; a resource's constructor takes its dependencies and one settings model as parameters | |
 | job arguments | what a job's hook is called with, recorded on the job row | `tenant_jobs.arguments` |
 
-Not used as identifiers in new code: `config`, `conf`, `params`,
-`args`, `payload` (except in "payload codec", the existing component
-that encodes blocks and context), `options` other than for the fields
-of a tenant configuration section.
+In identifiers the short forms are Python's conventions and the only
+ones used: `Settings` for deployment values, as `pydantic_settings`
+names them, and `Config` for tenant and per-key configuration, as
+`logging.config`, `configparser` and Pydantic's `ConfigDict` do; the
+prose says "configuration" as a word. Not used as identifiers in new
+code: `conf`, `cfg`, `configuration`, `params`, `args`, `payload`
+(except in "payload codec", the existing component that encodes blocks
+and context), `options` other than for the fields of a tenant config
+section.
 
 ## Contracts are ABCs
 

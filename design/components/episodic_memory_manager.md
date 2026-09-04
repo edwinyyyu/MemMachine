@@ -30,7 +30,7 @@ restrict the offered ids to a subset of the mappings.
 ## Tenant configuration model
 
 ```python
-class EpisodicMemoryTenantConfiguration(BaseModel):
+class EpisodicMemoryTenantConfig(BaseModel):
     embedder: str                       # immutable; an offered id
     segmenter: SegmenterOptions         # mutable; later events
     deriver: DeriverOptions             # mutable; later events
@@ -51,8 +51,8 @@ structural key of a configuration is `(embedder, segmenter, deriver)`.
 | --- | --- | --- |
 | `tenant_id` | `Uuid` | primary key |
 | `watermark` | `BigInteger` | not null, default 0; the last log position processed |
-| `configuration` | `JSON` (`JSONB` on PostgreSQL) | not null |
-| `configuration_version` | `Integer` | not null |
+| `config` | `JSON` (`JSONB` on PostgreSQL) | not null |
+| `config_version` | `Integer` | not null |
 | `updated_at` | `DateTime(timezone=True)` | not null, `func.now()` |
 
 No other index: every access is by primary key. The watermark is
@@ -89,7 +89,7 @@ it on a miss with `embedders[e]`, `vector_data.for_container(e)` and
 segmenter and deriver objects from the options, and makes one call.
 `search` fills each request parameter the request omits from the row's
 defaults, resolves `request.reranker` or the default to an object
-(`InvalidTenantConfigurationError` for an id not offered), and calls
+(`InvalidTenantConfigError` for an id not offered), and calls
 `query`. `replay` calls `encode` with the events of a batch's `added`
 entries and `forget` with the uuids of its `deleted` entries, and
 advances the watermark in the same transaction as the batch's last

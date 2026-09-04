@@ -158,8 +158,9 @@ Named so the redesign can be checked against it.
 - Naming of values: settings (deployment), tenant configuration (per
   tenant, options), templates, overrides, defaults, request parameters,
   job arguments, partition configuration (per key). One word per kind,
-  defined in `design/components/README.md`; `config`, `params`, `args`
-  and `payload` are not identifiers in new code.
+  defined in `design/components/README.md`; in identifiers `Settings`
+  and `Config`, Python's conventions, and never `conf`, `params`,
+  `args` or `payload`.
 - Job: a row describing one action for one component on one tenant.
   Four kinds, all defined and scheduled by the tenant service:
   `provision`, `delete` (the unlink, one call) and `sweep` (purging,
@@ -285,9 +286,9 @@ on them. Only the tenant service reads or writes them.
   so a new tenant can take the name at once and gets a new id.
 - `former_name TEXT NULL`: the name at deletion time, for operators.
 - `state`: `provisioning`, `active`, `deleting`, `deleted`.
-- `configuration JSON`: one object per component name. The record of
+- `config JSON`: one object per component name. The record of
   what was requested; each component holds its own applied copy.
-- `configuration_version INTEGER`: incremented by every configuration
+- `config_version INTEGER`: incremented by every configuration
   update.
 - `created_at`, `updated_at`, `deleted_at`, `swept_at`.
 
@@ -401,7 +402,7 @@ Configuration update, `PATCH /v1/tenants/{id}` with `configuration`:
   An immutable option in the patch is 422, and there is no "expensive
   but allowed" class.
 - One transaction writes the configuration, increments
-  `configuration_version`, and inserts (or resets) an `provision` job per
+  `config_version`, and inserts (or resets) an `provision` job per
   changed component carrying the new version. Respond 202; `?wait=`
   blocks until every such job is done.
 - How it reaches the server processes: the `provision` job calls the
@@ -490,7 +491,7 @@ at startup:
 - `name`: its section in tenant configuration and, for a memory
   subsystem, its path segment in the API (`episodic_memory`,
   `/episodic-memory`).
-- `tenant_configuration`: a Pydantic model for its section, every field
+- `tenant_config`: a Pydantic model for its section, every field
   mutable or immutable, with defaults. Provider references in it are
   ids that the component validates against the providers it was
   constructed with. The tenant service calls `validate(section)` and
