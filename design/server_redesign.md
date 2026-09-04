@@ -45,8 +45,12 @@ Requirements that shape everything below:
 - Rejection of operations on a deleted tenant is structural: a store
   reads its registry row in the same statement as the data operation
   where both are in one SQL database, and after the operation
-  everywhere else. Nothing compares clocks, and no lock is held across
-  remote I/O.
+  everywhere else. No rejection compares clocks, and no lock is held
+  across remote I/O. A clock is compared in one place, on the database
+  side, to release a tombstone after a clean sweep, with a margin
+  orders of magnitude above any write's timeout; every remote client
+  is constructed with a request timeout, and the composition refuses
+  one without.
 - One client per provider per process, shared by every tenant.
 - The tenant layer neither routes data operations nor knows the stores
   or the options a component takes.
@@ -120,8 +124,9 @@ Named so the redesign can be checked against it.
 - Tenant name: the application's label. Any string up to 1024 bytes,
   unique among tenants that are not deleting or deleted, renamable.
 - Tenant id: a UUID minted at creation, permanent, never reused. The
-  tenant row outlives the tenant as a tombstone, which is what makes
-  "never reused" enforced rather than hoped.
+  tenant row outlives the tenant as a tombstone for as long as anything
+  could remain under the id, which is what makes "never reused"
+  enforced rather than hoped while it matters.
 - Event: what a caller ingests: an id, a timestamp, a producer, one or
   more content blocks, properties. Events are the caller's data; the
   event store records them and memory subsystems process them.
@@ -288,12 +293,21 @@ from a collision, a replayed id, or a registry restored from a backup
 the stores were not restored to, fails at the tenant service before any
 store is touched. And it drives the tombstone sweep under "Tenant
 lifecycle", which is what collects a record a crashed operation left
-under the key after reclamation had finished. Tombstones are kept;
-`memmachine tenants prune-tombstones` is an operator's trade of both
-jobs for space, gated on every component having reported `DONE` for
-the tenant and a later sweep having found nothing, and it reports how
-many rows are prunable and how many are not, so the trade is made
-against a number.
+under the key after reclamation had finished. A tombstone is not kept
+forever: the sweep removes it on the first pass in which every
+component's `reclaim` found nothing under the id and `deleted_at` is
+older than `tombstones.retention` on the database clock, a retention of
+the order of a day. What that assumes is that no write is in flight
+longer than the retention: every remote client has a request timeout,
+so a stale write, which is always issued before the delete commits
+(the row read before a write is a check), lands within that timeout
+plus whatever the backend and the network can queue, minutes at the
+outside, and the retention exceeds it by orders of magnitude. After the
+prune, a reused id (a `uuid4` collision, or a registry restored from a
+backup) creates cleanly and inherits nothing, since the stores hold
+nothing under it. The case this leaves open, a write delayed longer
+than the retention, is accepted as less likely than the failures the
+design does not defend against either.
 
 Rename is an update of `name`. No store key contains the name, which is
 why names can be arbitrary strings while store keys are the 32 hex
@@ -346,10 +360,12 @@ Tombstone sweep: a duty of the tenant service, run by reconciler
 processes on `reconciler.sweep_interval`, in every one of them without
 exclusion. It claims `deleted` rows with `FOR UPDATE SKIP LOCKED`,
 oldest `swept_at` first, bounded per call, calls every registered
-component's `reclaim(tenant_id)`, and stamps `swept_at`. This is what
-collects the one write that can land after reclamation (see "How a
-store fences"); components whose stores cannot hold such a write return
-`DONE` at once. It is the only scheduled duty in the system.
+component's `reclaim(tenant_id)`, and stamps `swept_at`; when every
+component found nothing and the row is past `tombstones.retention` on
+the database clock, it removes the row. This is what collects the one
+write that can land after reclamation (see "How a store fences");
+components whose stores cannot hold such a write return `DONE` at once.
+It is the only scheduled duty in the system.
 
 Configuration update, `PATCH /v1/tenants/{id}` with `configuration`:
 
@@ -876,10 +892,11 @@ provenance: the tenant service minted the id on the tenant table's
 primary key before any job ran, so a `live` row under the key can only
 be this component's own earlier attempt, and `provision` treats it as
 success; a `creating` row is an interrupted attempt of its own, and
-`provision` resumes it; a `dropping` row means the key had a previous life,
-which the tenant service's tombstone makes impossible for the server and
-which a library user reusing keys can cause, and `provision` raises
-`KeyReusedError` for an operator.
+`provision` resumes it; a `dropping` row means the key had a previous
+life, which the tenant service's tombstone makes impossible for the
+server while anything remains under the key and which a library user
+reusing keys can cause, and `provision` raises `KeyReusedError` for an
+operator.
 
 What every store operation does with a key whose row is present but
 not `live` (`creating` and `dropping`; a SQL store's row while its purge
@@ -976,9 +993,10 @@ existed before the record could, because a write reads the row first
 and no write creates a row. A completed write is checked after it lands
 and raises if the key died meanwhile. A write whose check never ran
 lies under a key that is `dropping`, reclaimed by the delete job, or
-gone, reclaimed by the tombstone sweep through the no-row path. No path
-compares timestamps, and no key is forgotten while a record under it
-could exist, because the tenant tombstone is kept.
+gone, reclaimed by the tombstone sweep through the no-row path. No
+rejection compares timestamps, and no key is forgotten while a record
+under it could exist: the tombstone outlives the last possible stale
+write by the retention margin under "Tenant registry".
 
 Backends at the tier that scales to the stated tenant counts. "Addressed
 by" is what an operation needs beyond the shared client, all of it held
@@ -1338,7 +1356,8 @@ Component schema:
   table is at the head its code carries and fails otherwise, naming the
   component and both versions. `memmachine schema status --config PATH`
   prints the same comparison, the per-container registry counts, and
-  the tombstone counts.
+  the tombstone count by state (awaiting a clean sweep, within
+  retention).
 - Rolling deployments: a migration must keep the previous release's
   code working (expand and contract: add before the code that reads,
   remove after the code that writes is gone), because during a rollout
