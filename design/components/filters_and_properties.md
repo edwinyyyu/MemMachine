@@ -32,7 +32,9 @@ def validate_property_value(value: object,
 ## Filter expression tree
 
 ```python
-type FilterExpr = Equals | NotEquals | Ordering | In | IsMissing | And | Or | Not
+type FilterExpr = (
+    Equals | NotEquals | Ordering | In | IsMissing | And | Or | Not
+)
 
 Equals(field: str, value: PropertyValue)
 NotEquals(field: str, value: PropertyValue)
