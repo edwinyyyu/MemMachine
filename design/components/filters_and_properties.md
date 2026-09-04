@@ -38,7 +38,8 @@ Equals(field: str, value: PropertyValue)
 NotEquals(field: str, value: PropertyValue)
 Ordering(field: str, op: Literal[">", "<", ">=", "<="],
          value: int | float | datetime)
-In(field: str, values: tuple[int, ...] | tuple[str, ...])
+In(field: str,
+   values: tuple[int, ...] | tuple[str, ...])
     # homogeneous, non-empty
 IsMissing(field: str)
 And(operands: tuple[FilterExpr, ...])       # at least one
