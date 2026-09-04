@@ -502,7 +502,9 @@ at startup:
     the component's stores hold under the tenant id; `DONE` when
     nothing is found. Called by a `sweep` job, for as long as
     the tombstone exists.
-  - Any further action the component defines.
+  - `replay(tenant_id) -> DONE | MORE`: process a bounded amount of the
+    tenant's log beyond the component's watermark; the component's
+    only processing path (see "Episodic memory").
 
 A memory subsystem additionally exposes to the ingest service and the
 routers: `encode(tenant_id, events)`, `forget(tenant_id, event_ids)`,
