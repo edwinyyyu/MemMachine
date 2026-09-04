@@ -221,14 +221,14 @@ Semantics:
   calls nothing. A delete request waits for a running step, then
   cancels pending `provision` jobs. No `provision` hook runs after a
   `delete` hook; `reclaim` never sees a live key.
-- Execute: `provision` calls the hook with the section at the payload's
-  version and marks done; `delete` calls `delete` then `reclaim`, `DONE`
-  marking the job done and `MORE` recording `last_outcome = more` and
-`last_run_at`; `catch_up` calls the hook the same way. An exception records
-`error`, `last_error`, `last_run_at` and `attempts + 1`; eligibility follows at
-the next claim. The transaction that marks the last `provision` job done sets
-`active`; the one that marks the last `delete` job done removes the job rows
-and sets `deleted`.
+- Execute: `provision` calls the hook with the section at the payload's version
+  and marks done; `delete` calls `delete` then `reclaim`, `DONE` marking the
+  job done and `MORE` recording `last_outcome = more` and `last_run_at`;
+  `catch_up` calls the hook the same way. An exception records `error`,
+  `last_error`, `last_run_at` and `attempts + 1`; eligibility follows at the
+  next claim. The transaction that marks the last `provision` job done sets
+  `active`; the one that marks the last `delete` job done removes the job rows
+  and sets `deleted`.
 - Tombstone sweep, every `sweep_interval`, in every reconciler process
   without exclusion: claim `deleted` rows with `FOR UPDATE SKIP LOCKED`,
   oldest `swept_at` first, bounded per call; call every component's
