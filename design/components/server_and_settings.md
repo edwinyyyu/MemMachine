@@ -54,6 +54,18 @@ YAML or TOML file of the same shape; `memmachine config schema` and
   `RerankerSettings`, `LanguageModelSettings`.
 - Every client settings model has a required `request_timeout`.
 
+## Adding a service type
+
+A provider family is an ABC (`Embedder`, `Reranker`, `LanguageModel`,
+`Database` engines), a settings union over its kinds, a kind table, and
+an entry-point group `memmachine.<family>`. Adding a family is adding
+those four and a slot in the standard composition; adding a kind to a
+family is registering one callable and one settings model. Language
+models stay in the design as a family with the current
+`common/language_model/` implementations behind it, wired to nothing
+until a component takes one; the family exists so that wiring one later
+is a constructor parameter, not a redesign.
+
 ## Composition
 
 `compose(settings: ServerSettings) -> Server` in

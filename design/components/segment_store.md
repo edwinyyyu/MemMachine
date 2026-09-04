@@ -24,12 +24,12 @@ UUID`, foreign key to the segment row with cascade. `segment_store_gc`:
 
 ## API, after the changes
 
-Two ABCs behind one implementation, exposed as `store.lifecycle` and
-`store.data`, so data callers cannot reach lifecycle and lifecycle
+Two ABCs behind one implementation, exposed as the manager and
+`manager.store`, so data callers cannot reach lifecycle and lifecycle
 callers cannot reach data.
 
 ```python
-class SegmentStoreLifecycle(ABC):
+class SegmentStoreManager(ABC):
     async def create_partition(self, key: UUID, config: SegmentStorePartitionConfig) -> None
     async def delete_partition(self, key: UUID) -> None
     async def reclaim_partition(self, key: UUID) -> Progress
@@ -37,7 +37,7 @@ class SegmentStoreLifecycle(ABC):
     @property
     def concurrency_scope(self) -> ConcurrencyScope
 
-class SegmentStoreData(ABC):
+class SegmentStore(ABC):
     async def add_segments(self, key: UUID,
                            segments_to_derivative_uuids: Mapping[Segment, Iterable[UUID]]) -> None
     async def get_segment_contexts(self, key: UUID, seed_segment_uuids: Iterable[UUID], *,
@@ -92,7 +92,7 @@ from the last segment returned.
   `filters_and_properties.md`: segments matching a property filter, up
   to `limit + 1`, so the caller can tell "selective" from "broad".
 - `get_neighbours` is added for expansion, over the ordering index.
-- The ABC splits into `SegmentStoreLifecycle` and `SegmentStoreData`.
+- The ABC splits into `SegmentStoreManager` and `SegmentStore`.
 - Errors: `SegmentStorePartitionHandleStaleError` becomes
   `KeyNotLiveError`; `SegmentStorePartitionAlreadyExistsError` becomes
   `KeyExistsError`; `SegmentStoreAttemptsExhaustedError` becomes

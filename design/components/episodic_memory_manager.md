@@ -12,9 +12,9 @@ component.
 
 ```python
 EpisodicMemoryManager(
-    event_store: EventStoreData,
-    segment_store: SegmentStoreLifecycle, segment_data: SegmentStoreData,
-    vector_store: VectorStoreLifecycle, vector_data: VectorStoreData,
+    event_store: EventStore,
+    segment_store: SegmentStoreManager, segment_data: SegmentStore,
+    vector_store: VectorStoreManager, vector_data: VectorStore,
     embedders: Mapping[str, Embedder],     # resources, all the deployment built
     rerankers: Mapping[str, Reranker],
     engine: AsyncEngine,                   # its per-tenant table
@@ -72,15 +72,14 @@ Toward the tenant service (the `TenantComponent` protocol):
 - `reclaim(tenant_id)`: `reclaim_partition` and `reclaim_collection`;
   `DONE` when both are.
 - `validate_update`: `embedder` changed raises.
-- `catch_up`: below.
+- `replay`: below.
 
-Toward the ingest service and the routers:
+Toward the routers:
 
 ```python
-    async def process(self, tenant_id: UUID, events: Sequence[StoredEvent]) -> ProcessingStatus
-    async def forget(self, tenant_id: UUID, event_uuids: Iterable[UUID]) -> None
     async def search(self, tenant_id: UUID, request: SearchRequest) -> SearchResponse
-    async def status(self, tenant_id: UUID) -> SubsystemStatus   # watermark, lag
+    async def expand(self, tenant_id: UUID, request: ExpandRequest) -> Expansion
+    async def status(self, tenant_id: UUID) -> SubsystemStatus   # watermark, head, lag
 ```
 
 Each reads the per-tenant row (absent: `TenantNotFoundError`, which the
@@ -91,23 +90,17 @@ segmenter and deriver objects from the options, and makes one call.
 `search` fills each per-request field the request omits from the row's
 defaults, resolves `request.reranker` or the default to an object
 (`InvalidTenantConfigurationError` for an id not offered), and calls
-`query`. `process` advances the watermark to the last position in the
-same transaction as its last segment write where the engines are the
-same, and after it otherwise; on an exception it enqueues `catch_up`
-and reports `deferred`.
+`query`. `replay` calls `process` with a batch of log entries and
+advances the watermark in the same transaction as the batch's last
+segment write where the engines are shared, and after it otherwise.
 
-`catch_up(tenant_id, payload) -> Progress`, the subsystem's repair.
-The watermark is the log position this tenant has been processed up
-to. A request-path failure enqueues the job with the lowest position it
-failed at. The job reads the log from the lower of that and the
-watermark, one batch at a time; for each entry it processes the event
-of an `added` entry (skipping one whose event is gone) or forgets the
-uuid of a `deleted` entry; it advances the watermark past the batch and
-returns `MORE` until the log has nothing newer. Every acknowledged
-addition and deletion therefore reaches this subsystem at least once,
-without the client retrying.
+Toward the routers:
 
-## Cache
+```python
+    async def search(self, tenant_id: UUID, request: SearchRequest) -> SearchResponse
+    async def expand(self, tenant_id: UUID, request: ExpandRequest) -> Expansion
+    async def status(self, tenant_id: UUID) -> SubsystemStatus   # watermark, head, lag
+```## Cache
 
 Keyed by structural configuration, never by tenant; bounded by
 `settings.cache_size`; an entry is a few references, rebuilt in
@@ -129,28 +122,27 @@ facades (`episodic_memory/episodic_memory.py:94`,
 
 ## Data-path races
 
-The watermark and `catch_up` are the parts that need a rule. Two
-processes may ingest into one tenant at once, positions come from one
-sequence, and a batch may fail after a later batch succeeded.
+The watermark and the `replay` job are the parts that need a rule. Two
+processes may ingest into one tenant at once, positions are assigned
+under the key's exclusive lock, and the job is one consumer per
+(tenant, subsystem).
 
 - Watermark semantics: every position at or below the watermark has
-  been processed at least once, except positions named by a pending
-  `catch_up` job. The watermark only moves forward: it is written with
-  `SET watermark = GREATEST(watermark, ?)`.
-- On a `process` failure the manager enqueues `catch_up` with
-  `from_position` = the lowest position of the failed batch; if a
-  `catch_up` job is already pending, the row is reset to the lower of
-  the two. The handler processes from `from_position` to the head,
-  idempotently per event, and returns `MORE` while newer events exist.
+  been processed at least once. The watermark only moves forward: it
+  is written with `SET watermark = GREATEST(watermark, ?)`.
+- A `replay` step that fails leaves the watermark, records the error on
+  the job, and the next attempt resumes from the watermark; processing
+  is idempotent per event (forget first), so a re-run leaves one copy.
 - Read-your-writes: an acknowledged ingest is durable in the event
-  store; it is visible to search after the vector backend has indexed
-  it, which is the backend's consistency, not this design's.
+  store; it is visible to search after the job has processed it and
+  the vector backend has indexed it, which `?wait=` and the status
+  endpoint expose.
 
 | First | Concurrent | Outcome |
 | --- | --- | --- |
 | ingest batch A (positions 1..10) | ingest batch B (11..20) on another process | the event store serializes the two under the key's exclusive lock, so positions are contiguous and commit-ordered; each batch is processed by its own process; the watermark ends at 20 by `GREATEST` whatever the processing order |
-| batch A fails after batch B advanced the watermark to 20 | | `catch_up(from_position=1)` reprocesses 1..20 idempotently; nothing is skipped |
-| ingest of event uuid U | ingest of U on another process | unique `(key, uuid)`: one stores, the other reports U skipped; only the storing process processes it |
-| delete of event U | `process` that already read U | the delete appends a `deleted` log entry after U's `added` entry; a derived write that lands after the request path's `forget` is removed when the `deleted` entry is replayed, by `catch_up` or by the next request path that reaches it; nothing depends on the client retrying |
-| search | ingest | the search sees what the backends have indexed; no guarantee about the batch in flight |
-| `process` | `catch_up` on the same tenant | serialized by the tenant row lock for the step; `process` in a request does not take that lock, so the two may both write an event's derived rows; `process` is idempotent per event (forget first), so the later write leaves one copy |
+| replay step fails mid-batch | | the watermark stays; the next attempt resumes from it and reprocesses the batch idempotently; nothing is skipped |
+| ingest of event uuid U | ingest of U on another process | unique `(key, uuid)`: one stores, the other reports U skipped; the log holds one `added` entry |
+| delete of event U | replay processing U's `added` entry | the delete appends a `deleted` entry after the `added` one; the single consumer replays them in order, so the derived rows are written and then forgotten; nothing depends on the client retrying |
+| search | ingest | the search sees what the replay has processed and the backends have indexed; `?wait=` on the ingest is how a client sequences the two |
+| replay, subsystem A | replay, subsystem B, same tenant | independent job rows; they run in parallel and touch different derived stores |

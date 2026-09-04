@@ -84,10 +84,10 @@ DateTime(timezone=True)` not null `func.now()`, index
 
 ## API
 
-Two ABCs behind one implementation, `store.lifecycle` and `store.data`.
+Two ABCs behind one implementation, the manager and `manager.store`.
 
 ```python
-class EventStoreLifecycle(ABC):
+class EventStoreManager(ABC):
     async def create_partition(self, key: UUID, config: EventPartitionConfig) -> None
     async def delete_partition(self, key: UUID) -> None
     async def reclaim_partition(self, key: UUID) -> Progress
@@ -96,7 +96,7 @@ class EventStoreLifecycle(ABC):
     @property
     def concurrency_scope(self) -> ConcurrencyScope
 
-class EventStoreData(ABC):
+class EventStore(ABC):
     async def add_events(self, key: UUID, events: Iterable[Event]) -> AddResult
     async def delete_events(self, key: UUID, uuids: Iterable[UUID]) -> None
     async def get_events(self, key: UUID, uuids: Iterable[UUID]) -> list[StoredEvent]
@@ -155,7 +155,7 @@ exclusively rather than a sequence.
 A subsystem replays the log from its watermark, so every addition and
 deletion a client was acknowledged for reaches every subsystem at least
 once without the client retrying: the request path's immediate
-processing is a latency optimization and `catch_up` is the guarantee.
+processing is a latency optimization and `replay` is the guarantee.
 The log is the per-tenant data queue; an entry and its event are one
 transaction, which a broker could not join without an outbox on top.
 

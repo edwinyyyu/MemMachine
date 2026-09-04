@@ -157,8 +157,9 @@ Named so the redesign can be checked against it.
   row, one section per component, applied to the component by a job.
 - Job: a row describing one action for one component on one tenant.
   Three kinds, all defined and scheduled by the tenant service:
-  `provision`, `delete`, `catch_up`. A component enqueues `catch_up`
-  for itself and cannot define a kind.
+  `provision` and `delete` for the tenant's lifecycle, `replay` for a
+  subsystem's processing of the tenant's log. A component cannot define
+  a kind.
 - Reconciler: the role that claims and executes jobs and runs the
   tombstone sweep. A process runs it when configured to; a deployment
   runs as many as it needs.
@@ -186,12 +187,13 @@ Named so the redesign can be checked against it.
 3. The tenant service knows a component only through its registration: a
    name, a tenant configuration model to validate against, and the
    hooks for the three job kinds and reclamation (`provision`,
-   `delete`, `reclaim`, `catch_up`). It never sees a store or an
+   `delete`, `reclaim`, `replay`). It never sees a store or an
    option.
 4. Stores take a UUID key and nothing else, and fence on that key. Each
-   store is two ABCs behind one implementation, lifecycle and data, so
-   a data caller cannot reach a lifecycle operation and a lifecycle
-   caller cannot reach data.
+   store is two ABCs behind one implementation: `<Store>Manager` for
+   lifecycle and `<Store>` for data, the latter reached only through
+   `manager.store`, so a data caller cannot reach a lifecycle operation
+   and a lifecycle caller cannot reach data.
 5. Every store rejects operations on a deleted key by itself, from a
    registry row keyed by the caller's UUID: in the same statement where
    the data is in the same SQL database, and by a check after the
@@ -437,7 +439,7 @@ Reconciler role:
   checks the tenant's remaining jobs of that action and applies the
   state transition if none remain. Hooks are idempotent, so a step
   repeated after a crash is harmless.
-- Enqueue: a component inserts its own jobs (`catch_up`) through the
+- Enqueue: a component inserts its own jobs (`replay`) through the
   tenant service's `enqueue(tenant_id, component, action, payload)`;
   the tenant service records them without reading the payload.
 - Serialization per tenant. Every lifecycle transition and every job
@@ -447,7 +449,7 @@ Reconciler role:
   the job row, locks the tenant row too and holds both for the step.
   Transitions and steps for one tenant are therefore totally ordered.
   A step re-reads the tenant's state under the lock before calling a
-  hook: a `provision` or `catch_up` step on a tenant that is `deleting`
+  hook: a `provision` or `replay` step on a tenant that is `deleting`
   marks itself done without calling anything. A delete request that
   finds a `provision` step running waits for it to finish, then, in its
   own transaction, marks every remaining pending `provision` job done
@@ -460,11 +462,10 @@ Reconciler role:
   `GET` does, are not blocked by it. Every concurrent pair on one
   tenant and its outcome is tabulated in
   `design/components/tenant_service.md`; the data-path pairs (two
-  ingests, a failed batch behind a later one, a delete racing a
-  process, a search racing an ingest) in
-  `design/components/episodic_memory_manager.md`, where the watermark
-  is defined to move only forward and `catch_up` to carry the lowest
-  failed position.
+  ingests, a failed replay step, a delete racing a replay, a search
+  racing an ingest) in `design/components/episodic_memory_manager.md`,
+  where the watermark is defined to move only forward and a `replay`
+  step to resume from it.
 - Cost: a reconciler holds one database connection per job it is
   executing, for the step's duration; steps are bounded per call by
   their hooks, and `reconciler.jobs_per_pass` bounds the connections.
@@ -535,8 +536,9 @@ tenant id, with the fence under "Store contracts".
   commit-ordered within the key. The log is what subsystems replay,
   from one watermark each, so every addition and deletion a client was
   acknowledged for reaches every subsystem at least once without the
-  client retrying; the request path's immediate processing is a latency
-  optimization and `catch_up` is the guarantee. The log is the
+  client retrying; processing is only ever a replay of the log by a
+  `replay` job, executed inline in the request where a deployment wants
+  the latency and by a reconciler otherwise. The log is the
   per-tenant data queue and the job table is the control queue; neither
   is a message broker, because each pairs with a row in one transaction
   that a broker could not join. Schema in
@@ -552,21 +554,24 @@ tenant id, with the fence under "Store contracts".
 
 Ingest, `POST /v1/tenants/{id}/events`, in the ingest service:
 
-1. `add_events` on the event store; ids already present are skipped and
+1. `add_events` on the event store, one transaction: the events and
+   their `added` log entries; ids already present are skipped and
    reported.
-2. For each memory subsystem in the configured order, `process` with the
-   stored events. Each subsystem advances its per-tenant watermark to
-   the last position it processed.
-3. Respond 200 with stored ids, skipped ids, and per-subsystem
-   processing status: `done`, or `deferred` if the subsystem raised, in
-   which case it has enqueued a `catch_up` job for the tenant and will
-   process the events from its watermark.
+2. In the same transaction, reset every subsystem's `replay` job for the
+   tenant to pending, so the log is processed by whichever reconciler
+   claims it next. Where the process has the reconciler role, or
+   `ingest.inline` is set, execute those jobs now through the same
+   claim, so a single-process deployment processes inside the request.
+3. Respond 202 with stored ids, skipped ids and the batch's last
+   position; `?wait=` blocks until every subsystem's watermark has
+   reached it and then responds 200. The client is acknowledged when the
+   events are durable; processing is observable, never assumed.
 
 Delete events, `POST /v1/tenants/{id}/events/delete`: `delete_events`
 on the event store, which removes the rows and appends `deleted` log
-entries, then `forget` on each subsystem. A subsystem that fails is
-reported `deferred` and applies the deletion from the log by
-`catch_up`; nothing depends on the caller retrying.
+entries, and resets the `replay` jobs the same way; 202, `?wait=` as
+above. Subsystems apply the deletion by replaying the log; nothing
+depends on the caller retrying.
 
 ## Episodic memory
 
@@ -582,7 +587,7 @@ Derived stores:
 Both are keyed by the tenant id. There is no rebuild of derived data: a
 full reprocessing costs what an ingestion costs, so it is one, into a
 new tenant. What the event store gives the subsystem is repair of
-partial processing (`catch_up`) and processing of history for a
+partial processing (`replay`) and processing of history for a
 subsystem enabled on an existing tenant, whose watermark starts at zero.
 
 Per-tenant row (the subsystem's own table): tenant id, watermark (the
@@ -591,21 +596,27 @@ last event position processed), applied configuration and its version.
 Identifiers: segment and derivative ids are minted (uuid4). Idempotency
 is per event, not per derived row: `process` for an event first forgets
 that event's derived rows, so repeating it after a crash, or from a
-`catch_up`, leaves one copy.
+`replay`, leaves one copy.
 
 Operations, in the order the stores are touched:
 
-- `process`: segment, derive, embed; write segments; upsert derivatives;
-  advance the watermark. A crash between stores leaves an event with
-  partial derived data behind the watermark; `catch_up` reprocesses it.
-- `catch_up` (job): the subsystem's repair. Its per-tenant watermark
-  is the log position it has processed up to; a request-path failure
-  enqueues `catch_up` carrying the lowest position it failed at; the
-  job reads the log from the lower of the two, processes each `added`
-  entry and forgets each `deleted` one, advances the watermark, and
-  returns `MORE` until the log has nothing newer. Positions exist for
-  this: they make "what has this subsystem processed" one integer per
-  tenant, "what is left" a range, and the lag a subtraction.
+- `process`: for each log entry in order, an `added` entry is
+  segmented, derived, embedded and written (segments, then vectors) and
+  a `deleted` entry is forgotten; then the watermark advances past the
+  batch. A crash mid-batch leaves partial derived data behind the
+  watermark, which the next replay reprocesses (forget first, so one
+  copy).
+- `replay` (job): the subsystem's only processing path. One job per
+  (tenant, subsystem), reset to pending by every ingest and deletion,
+  claimed by a reconciler that holds only the job's own row lock, so a
+  tenant's subsystems process in parallel while each is a single
+  consumer and therefore processes in commit order. It reads the log
+  after the watermark, processes the batch as above, and returns `MORE`
+  until the log has nothing newer. There is no separate repair: a
+  failure records an error on the job and the next attempt resumes from
+  the watermark. Positions exist for this: they make "what has this
+  subsystem processed" one integer per tenant, "what is left" a range,
+  and the lag a subtraction.
 - Search: embed the query; split the filter and choose the plan under
   "Properties and filtering"; vector query (checked against the store's
   registry row after the query, inside the vector store); segment
@@ -1364,10 +1375,10 @@ Events, under `/v1/tenants/{id}`:
 
 | Method and path | Effect | Status |
 | --- | --- | --- |
-| `POST .../events` | ingest a batch | 200 with stored ids, skipped ids, per-subsystem status; 404; 409; 422 |
+| `POST .../events` | ingest a batch | 202 with stored ids, skipped ids and the last position, or 200 with `wait` once every subsystem has processed it; 404; 409; 422 |
 | `GET .../events/{event_id}` | one event | 200; 404 |
 | `GET .../events?filter=&cursor=` | list events | 200 |
-| `POST .../events/delete` | body `ids` | 200 |
+| `POST .../events/delete` | body `ids` | 202, or 200 with `wait` |
 
 Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 
@@ -1537,7 +1548,7 @@ In the first deployment, because the first records freeze it:
    the start and painful once `create_all` has run anywhere.
 
 Before churn, not before the first byte: the reconciler role executing
-durable deletions and `reclaim`, the tombstone sweep, `catch_up`. None
+durable deletions and `reclaim`, the tombstone sweep, `replay`. None
 writes anything into records, and a deployment with few deletions can
 run with them recorded as jobs until it lands. "No implicit creation"
 is not a task in a new server; there is no path to remove.
@@ -1605,9 +1616,6 @@ is corrected to it.
 
 - Hierarchy: flat tenants with prefix listing, proposed, or a parent
   column with cascading delete as jobs.
-- Whether ingest also processes subsystems in the request (proposed,
-  for latency) or only by replaying the log; correctness is the log's
-  either way.
 - Event size limits, and block types beyond text (the data types admit
   others).
 - Readable metadata as a `json` block type, or a designed field.

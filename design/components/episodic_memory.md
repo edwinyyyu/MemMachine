@@ -11,8 +11,8 @@ configuration.
 
 ```python
 EpisodicMemory(
-    segment_store: SegmentStoreData,
-    vector_store: VectorStoreData,      # the view for this embedder's container
+    segment_store: SegmentStore,
+    vector_store: VectorStore,      # the view for this embedder's container
     segmenter: Segmenter,
     deriver: Deriver,
     embedder: Embedder,
@@ -78,7 +78,7 @@ class EpisodicMemory:
   whole events; `producers` restricts the walk. Returns the segments in
   order with the anchor marked, and a cursor at each end so a caller
   walks further by repeating the call from the last segment. Backed by
-  `SegmentStoreData.get_neighbours` over the ordering index; no vector
+  `SegmentStore.get_neighbours` over the ordering index; no vector
   search and no embedding, so it is one indexed read.
 
 ## Changes required
@@ -104,4 +104,12 @@ class EpisodicMemory:
 - Ingest order is unchanged (segments, then vectors).
 - `expand` is added, with `get_neighbours` on the segment store.
 - Scores are cosine similarity; `SimilarityMetric` goes from the
-  embedder and the vector store (reference branch, commit 6ab12098).
+  embedder, the vector store and the engines, as on the reference
+  branch (commit 6ab12098): the embedder exposes `model_id` and
+  `dimensions` only, every container and engine is configured for
+  cosine, `higher_is_better` and the metric-dependent scoring branches
+  in `event_memory.py` go, and the threshold is `min_score` on cosine
+  similarity.
+- `Embedder.ingest_embed` and `search_embed` take `list[str]`, not
+  `list[Any]` (reference branch, commit ae1d616a); the only inputs are
+  derivative texts and the query.

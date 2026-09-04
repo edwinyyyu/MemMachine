@@ -32,7 +32,7 @@ class TenantComponent(ABC):
     @abstractmethod
     def validate_update(self, old: BaseModel, new: BaseModel) -> None: ...
     @abstractmethod
-    async def catch_up(self, tenant_id: UUID, payload: CatchUpPayload) -> Progress: ...
+    async def replay(self, tenant_id: UUID) -> Progress: ...
 ```
 
 - `provision(tenant_id, section)`: idempotent by provenance. Create the
@@ -50,14 +50,14 @@ class TenantComponent(ABC):
   Never called on a live key (see "Serialization").
 - `validate_update(old, new)`: raise `InvalidTenantConfigurationError`
   if `new` changes an immutable field.
-- `catch_up(tenant_id, payload) -> Progress`: process what the event
-  store's log holds for this tenant that the component has not
-  processed; the payload names the positions a request-path attempt
-  failed at. The tenant service defines the kind and its semantics;
-  the component implements the hook. There are no component-defined
-  job kinds: every kind is defined, scheduled and given its semantics
-  by the tenant service, so two components cannot mean different
-  things by one name.
+- `replay(tenant_id) -> Progress`: process a bounded amount of what
+  the event store's log holds for this tenant beyond the component's
+  watermark; `DONE` when the watermark is at the head. The component's
+  only processing path. The tenant service defines the kind and its
+  semantics; the component implements the hook. There are no
+  component-defined job kinds: every kind is defined, scheduled and
+  given its semantics by the tenant service, so two components cannot
+  mean different things by one name.
 
 The tenant service imports nothing from a component; a component
 imports this protocol and nothing else from the tenant package.
@@ -91,7 +91,7 @@ prefix listing.
 | `id` | `BigInteger` (autoincrement; `Integer` on SQLite) | primary key |
 | `tenant_id` | `Uuid` | not null; foreign key to `tenants.id` (no cascade: rows are removed by the transition that sets `deleted`) |
 | `component` | `String(64)` | not null |
-| `action` | `String(32)` | not null; check in (`provision`, `delete`, `catch_up`) |
+| `action` | `String(32)` | not null; check in (`provision`, `delete`, `replay`) |
 | `payload` | `JSON` (`JSONB` on PostgreSQL) | not null |
 | `state` | `String(16)` | not null; check in (`pending`, `done`) |
 | `attempts` | `Integer` | not null, default 0 |
@@ -122,17 +122,17 @@ Three, all defined by the tenant service, which is the only thing that
 defines, schedules and gives semantics to a kind. Two are control-plane:
 `provision`, which creates or updates a component's resources for a
 tenant, and `delete`, which unlinks and reclaims them. One is
-data-plane: `catch_up`, which has a component process what the event
-store's log holds for a tenant that it has not processed
-(`episodic_memory_manager.md`). A component enqueues `catch_up` for
-itself through `enqueue`; it cannot invent a kind.
+data-plane: `replay`, one row per (tenant, component), created by
+`provision`, reset to pending by every ingest and deletion, and the
+component's only processing path (`episodic_memory_manager.md`). A
+component cannot invent a kind.
 
 What guarantees that a client's write is executed fully at least once
-is not a job but the event store's log: every addition and deletion a
-client was acknowledged for is an entry a subsystem replays from its
-watermark, and `catch_up` is the job that resumes replay after a
-failure. A client's read has nothing to guarantee. Lifecycle requests
-are guaranteed by their jobs.
+is the event store's log and the `replay` job together: every addition
+and deletion a client was acknowledged for is an entry, and the job
+replays entries from the component's watermark until none remain,
+resuming from the watermark after any failure. A client's read has
+nothing to guarantee. Lifecycle requests are guaranteed by their jobs.
 
 ## Queueing
 
@@ -170,8 +170,8 @@ class TenantService:
     async def delete(self, tenant_id: UUID) -> Tenant
     async def wait(self, tenant_id: UUID, until: TenantState,
                    timeout: timedelta) -> Tenant
-    async def enqueue_catch_up(self, tenant_id: UUID, component: str,
-                               payload: Mapping) -> None
+    async def reset_replay(self, tenant_id: UUID) -> None
+    async def replay_position(self, tenant_id: UUID) -> Mapping[str, int]
     async def state_of(self, tenant_id: UUID) -> TenantState | None
     async def run_reconciler(self) -> None      # the role's loop
     async def reconcile_tenant(self, tenant_id: UUID) -> None
@@ -211,12 +211,17 @@ Semantics:
   COALESCE(last_run_at, created_at) LIMIT n FOR UPDATE SKIP LOCKED`,
   where `:delay` is a `CASE` over `last_outcome` and `attempts` bound
   from the settings (`reclaim_interval` after `more`; `backoff` raised
-  to `attempts` after `error`); then `SELECT ... FROM tenants WHERE id =
-  ? FOR UPDATE`; both held for the step. On SQLite, `BEGIN IMMEDIATE`
-  and no `SKIP LOCKED`.
-- Serialization: every lifecycle transition and every step holds the
-  tenant row's lock, so transitions and steps for one tenant are totally
-  ordered. A step re-reads the state under the lock: a `provision` or
+  to `attempts` after `error`). A `provision` or `delete` step then
+  also takes `SELECT ... FROM tenants WHERE id = ? FOR UPDATE`; a
+  `replay` step holds only its own job row, so a tenant's subsystems
+  replay in parallel while each is one consumer. Locks are held for the
+  step. On SQLite, `BEGIN IMMEDIATE` and no `SKIP LOCKED`.
+- Serialization: every lifecycle transition and every lifecycle step
+  holds the tenant row's lock, so transitions and lifecycle steps for
+  one tenant are totally ordered; a `replay` step holds its job row
+  only, and a delete request's cancellation of that row waits for a
+  running step, which orders the two. A step re-reads the state under the lock:
+  a `provision` or
   component-defined step on a `deleting` tenant marks itself done and
   calls nothing. A delete request waits for a running step, then
   cancels pending `provision` jobs. No `provision` hook runs after a
@@ -224,11 +229,18 @@ Semantics:
 - Execute: `provision` calls the hook with the section at the payload's version
   and marks done; `delete` calls `delete` then `reclaim`, `DONE` marking the
   job done and `MORE` recording `last_outcome = more` and `last_run_at`;
-  `catch_up` calls the hook the same way. An exception records `error`,
+  `replay` calls the hook the same way, and its row is never removed
+  while the tenant lives: `DONE` sets it `done` until the next reset.
+  An exception records `error`,
   `last_error`, `last_run_at` and `attempts + 1`; eligibility follows at the
   next claim. The transaction that marks the last `provision` job done sets
   `active`; the one that marks the last `delete` job done removes the job rows
   and sets `deleted`.
+- Reset: the ingest service sets a tenant's `replay` jobs to `pending`
+  through `reset_replay(tenant_id)`, in the ingest's own transaction
+  where the engines are shared and after its commit otherwise. A
+  running `replay` step keeps running; the reset only sets `pending`,
+  so the row is claimable again when the step ends.
 - Tombstone sweep, every `sweep_interval`, in every reconciler process
   without exclusion: claim `deleted` rows with `FOR UPDATE SKIP LOCKED`,
   oldest `swept_at` first, bounded per call; call every component's
@@ -272,8 +284,8 @@ means the tenant row's lock orders the two and the second re-reads state.
 | claim | claim, other reconciler | `FOR UPDATE SKIP LOCKED`: a job has one executor; on SQLite the file lock serializes |
 | delete step | tombstone sweep | never overlap: a row is `deleted` only after every `delete` job is done |
 | tombstone sweep | tombstone sweep, other reconciler | `SKIP LOCKED` on tombstone rows; a row has one sweeper per pass |
-| `catch_up` step | delete request | serialized; a `catch_up` step on `deleting` marks itself done |
-| `catch_up` step | tenant still `provisioning` | rescheduled with backoff; `catch_up` runs only on `active` |
+| `replay` step | delete request | serialized; a `replay` step on `deleting` marks itself done |
+| `replay` step | tenant still `provisioning` | rescheduled with backoff; `replay` runs only on `active` |
 | data operation | delete commit | store fences: in-statement for SQL stores, check-after for the rest; the operation raises `KeyNotLiveError`, the router answers 409 while the row exists and 404 after; a remote write already sent is reclaimed by the delete job or the sweep |
 | data operation | tenant `provisioning` | the component's per-tenant row is written at the end of `provision`, so the operation finds no row and the router answers 409 `tenant_not_active` |
 | data operation | configuration update | the operation uses the row it read at its start; the next request uses the new configuration |

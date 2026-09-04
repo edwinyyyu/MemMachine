@@ -37,8 +37,8 @@ Conventions shared by every specification:
   what this rule removes. No numeric default is given here, since none
   has been measured.
 - Every store has two ABCs, `<Store>Lifecycle` and `<Store>Data`,
-  behind one implementation exposed as `store.lifecycle` and
-  `store.data`. A data caller cannot reach a lifecycle operation and a
+  behind one implementation exposed as `manager` and
+  `manager.store`. A data caller cannot reach a lifecycle operation and a
   lifecycle caller cannot reach data; the composition hands each caller
   the view it needs.
 - Nothing per tenant is opened, closed or held: an operation takes the
@@ -99,3 +99,13 @@ Constraints are declared in metadata (primary keys, unique constraints,
 check constraints, foreign keys with `ON DELETE CASCADE`), so Alembic
 autogenerate sees them. Indexes are named `<table>__<columns>`.
 Timestamps stamped by the database use `func.now()`.
+
+## Code conventions
+
+New code follows the reference branch's rules, and old code is brought
+to them where the change is mechanical: every overriding method is
+marked `@override` and carries no docstring (the contract is on the
+ABC); `D102`, `D213` and `RET504` are enforced; lint ignores are pruned
+to load-bearing rules with a stated rationale; directly imported
+dependencies are declared explicitly and unused ones removed. Nothing
+here changes behaviour.

@@ -38,13 +38,13 @@ class QueryResult(BaseModel):
 
 Two ABCs, so a caller of data operations cannot reach lifecycle
 operations and a lifecycle caller cannot reach data. One implementation
-class provides both through two views, `store.lifecycle` and
-`store.data`; the composition hands the lifecycle view to
+class provides both through two views, the manager and
+`manager.store`; the composition hands the lifecycle view to
 `EpisodicMemoryManager`'s hooks and the data view, scoped to a
 container, to each `EpisodicMemory`.
 
 ```python
-class VectorStoreLifecycle(ABC):
+class VectorStoreManager(ABC):
     async def provision_containers(self) -> None          # schema command only
     async def create_collection(self, key: UUID, container: str) -> None
     async def delete_collection(self, key: UUID) -> None
@@ -52,8 +52,8 @@ class VectorStoreLifecycle(ABC):
     @property
     def concurrency_scope(self) -> ConcurrencyScope
 
-class VectorStoreData(ABC):
-    def for_container(self, container: str) -> VectorStoreData   # scoped view
+class VectorStore(ABC):
+    def for_container(self, container: str) -> VectorStore   # scoped view
     async def upsert(self, key: UUID, records: Iterable[Record]) -> None
     async def delete(self, key: UUID, uuids: Iterable[UUID]) -> None
     async def query(self, key: UUID, vectors: Iterable[Sequence[float]], *,
@@ -67,10 +67,9 @@ class VectorStoreData(ABC):
 ```
 
 Scores are cosine similarity everywhere; there is no `SimilarityMetric`
-(reference branch, commit 6ab12098): every container is created with
-the cosine metric, every embedder is used as is, and a backend that
-only offers dot product or Euclidean distance normalizes vectors on
-write and converts on read inside the store.
+(reference branch, commit 6ab12098): every container and every engine
+is configured for cosine, the embedder exposes no metric, and `query`
+takes `min_score` as a cosine similarity.
 
 Semantics:
 
@@ -210,9 +209,14 @@ the records table maps record uuids to rowids for `delete` and
 `get_cosine_similarity`. The registry row is `vector_store_pt` in the
 same file.
 
-usearch, one shared records table and one index file per key:
+Engine-backed store (usearch, hnswlib, or turbovec engines, as the
+reference branch's `VectorSearchEngine` family), one shared records
+table and one index file per key:
 `vec_<container>_rec` with `key`, `uuid`, `rowid` as above plus the
 declared columns for post-filtering; the index file at
 `<settings.index_dir>/<container>/<key hex>.usearch`, loaded into
 process memory on first use and written back on change, which is why
-the store is `process`-scoped.
+the store is `process`-scoped. Two fixes from the reference branch are
+folded in: an index file is published atomically (written beside, then
+renamed over; commit 397a55cb), and engine row ids are reused after
+deletion by default (commit cafc20c7).

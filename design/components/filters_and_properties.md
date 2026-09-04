@@ -66,6 +66,22 @@ Not(operand: FilterExpr)
   conjunction naming declared keys only, and the rest; a disjunction or
   negation mixing the two is treated as undeclared as a whole.
 
+## Why `IsMissing`, and not `IsNull`
+
+Property values are never null: a key is present with a scalar or it is
+absent. `IsNull` on the current branch tested a JSON null that nothing
+writes; `IsMissing` tests absence, which is the one state a key can be
+in besides holding a value, and it exists because optional user
+properties are ordinary: an event ingested before a caller started
+setting `kind` has no `kind`. Without it there is no way to ask for
+those events, and `Not` cannot be a true complement: `Not(Equals(x))`
+would have to either include or exclude records lacking the key, and
+either choice makes `Not` and `NotEquals` disagree or makes `Not` not
+the complement of what it negates. With it, `NotEquals` stays the
+type-safe "holds a differing value" and `Not` is the complement. It is
+supported everywhere through routing: a backend without an existence
+operator evaluates it in the segment store.
+
 ## Provider support
 
 Whether each node can be evaluated by the backend during its search.
