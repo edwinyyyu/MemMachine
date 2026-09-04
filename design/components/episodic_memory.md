@@ -107,9 +107,10 @@ class EpisodicMemory:
   filterable identity, and `Context` (`:64`) stays as the rendering
   channel with `AuthorContext(author: str)` as its first member and
   `None` for no context. `Segment` and `Derivative` carry both.
-  Rendering (`string_from_segment_context`) prints the context's name,
-  substituting `FormatOptions.names[source_id]` when the caller gives
-  one, and the source id beside it when `FormatOptions.show_source_id`.
+  Rendering (`string_from_segment_context`) prints the context's name
+  as recorded; a caller that wants current names or ids shown renders
+  from the returned `source_id` and context itself. `FormatOptions`
+  stays dates, times, locale and timezone.
   `produced_for` and the producer roles of the old episode model are not
   carried over and nothing replaces them.
 - `expand` is added, with `get_neighbours` on the segment store.

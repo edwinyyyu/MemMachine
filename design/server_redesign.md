@@ -147,11 +147,14 @@ Named so the redesign can be checked against it.
   share a field. `producer`, `produced_for` and the roles of the old
   episode model are not carried over, and nothing replaces them.
 - Names at render time: the recorded name is what was true when the
-  event happened, and what was embedded. A caller that knows a source's
-  current name passes `FormatOptions.names`, a mapping from source id
-  to display name, and the renderer uses it; `FormatOptions.show_source_id`
-  prints the id beside the name so a reader can tell two names are one
-  entity. The application holds that directory; the server keeps none.
+  event happened, and what was embedded. Every hit and every expansion
+  returns the segment's `source_id` and its context as data, so an
+  application that knows a source's current name, or wants the id shown
+  beside it so a reader can tell two names are one entity, renders that
+  itself. The server's text rendering (`string_from_segment_context`)
+  is a convenience that prints what was recorded, formatted by
+  `FormatOptions`, which stays what it is: dates, times, locale,
+  timezone. The application holds the directory; the server keeps none.
 - Event store: the component that records a tenant's events, in the
   order they were ingested. The system of record.
 - Memory subsystem: a component that processes a tenant's events into
