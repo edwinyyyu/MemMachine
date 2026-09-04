@@ -114,6 +114,85 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
                 result[seed_uuid] = context
         return result
 
+    async def get_neighbor_segments(
+        self,
+        seed_segment_uuids: Iterable[UUID],
+        *,
+        max_backward_segments: int = 0,
+        max_forward_segments: int = 0,
+        property_filter: FilterExpr | None = None,
+    ) -> dict[UUID, list[Segment]]:
+        normalized_filter = (
+            map_filter_fields(property_filter, self._normalize_segment_field)
+            if property_filter is not None
+            else None
+        )
+        result: dict[UUID, list[Segment]] = {}
+        for seed_uuid in seed_segment_uuids:
+            if seed_uuid not in self.segments:
+                continue
+            pos = self.segment_order.index(seed_uuid)
+            start = max(0, pos - max_backward_segments)
+            end = min(len(self.segment_order), pos + max_forward_segments + 1)
+            context = [
+                self.segments[uid]
+                for uid in self.segment_order[start:end]
+                if uid != seed_uuid
+                and uid in self.segments
+                and (
+                    normalized_filter is None
+                    or evaluate_filter(normalized_filter, self.segments[uid].properties)
+                )
+            ]
+            if context:
+                result[seed_uuid] = context
+        return result
+
+    async def get_neighbor_events(
+        self,
+        seed_segment_uuids: Iterable[UUID],
+        *,
+        max_backward_events: int = 0,
+        max_forward_events: int = 0,
+        property_filter: FilterExpr | None = None,
+    ) -> dict[UUID, list[Segment]]:
+        normalized_filter = (
+            map_filter_fields(property_filter, self._normalize_segment_field)
+            if property_filter is not None
+            else None
+        )
+        result: dict[UUID, list[Segment]] = {}
+        for seed_uuid in seed_segment_uuids:
+            if seed_uuid not in self.segments:
+                continue
+            events: list[UUID] = []
+            for uid in self.segment_order:
+                segment = self.segments.get(uid)
+                if segment is not None and segment.event_uuid not in events:
+                    events.append(segment.event_uuid)
+            seed_event = self.segments[seed_uuid].event_uuid
+            centre = events.index(seed_event)
+            wanted = set(
+                events[
+                    max(centre - max_backward_events, 0) : centre
+                    + max_forward_events
+                    + 1
+                ]
+            ) - {seed_event}
+            context = [
+                self.segments[uid]
+                for uid in self.segment_order
+                if uid in self.segments
+                and self.segments[uid].event_uuid in wanted
+                and (
+                    normalized_filter is None
+                    or evaluate_filter(normalized_filter, self.segments[uid].properties)
+                )
+            ]
+            if context:
+                result[seed_uuid] = context
+        return result
+
     @staticmethod
     def _normalize_segment_field(field: str) -> str:
         """Translate canonical filter field names to raw segment property keys.
@@ -255,5 +334,27 @@ def event_memory_with_sentences(
             segmenter=TextSegmenter(),
             deriver=SentenceTextDeriver(),
             embedder=fake_embedder,
+        )
+    )
+
+
+@pytest.fixture
+def event_memory_with_eviction(
+    fake_vector_store_collection,
+    fake_segment_store_partition,
+    fake_embedder,
+):
+    # FakeEmbedder maps every text onto direction [1, -1], so all derivatives
+    # are cosine-similar (1.0): any batch forms a single eviction cluster.
+    return EventMemory(
+        EventMemoryParams(
+            segment_store_partition=fake_segment_store_partition,
+            vector_store_collection=fake_vector_store_collection,
+            segmenter=TextSegmenter(),
+            deriver=WholeTextDeriver(),
+            embedder=fake_embedder,
+            eviction_similarity_threshold=0.5,
+            eviction_target_size=5,
+            serialize_encode=True,
         )
     )

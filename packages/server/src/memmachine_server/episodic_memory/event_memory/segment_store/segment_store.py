@@ -77,6 +77,86 @@ class SegmentStorePartition(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_neighbor_segments(
+        self,
+        seed_segment_uuids: Iterable[UUID],
+        *,
+        max_backward_segments: int = 0,
+        max_forward_segments: int = 0,
+        property_filter: FilterExpr | None = None,
+    ) -> dict[UUID, list[Segment]]:
+        """
+        Get the segments AROUND each seed segment, never the seed itself.
+
+        The counterpart to ``get_segment_contexts`` for a caller that already holds
+        the seed. There, the filter says which segments are valid results and the
+        seed is one of them, so a seed that fails it has no context to return. Here
+        the seed is an address: it is located whether or not it passes, the filter
+        says only which surrounding segments are wanted, and the seed is excluded
+        from the result unconditionally rather than sometimes appearing in it.
+
+        Other segments of the seed's own event are ordinary neighbours -- only the
+        seed segment itself is withheld.
+
+        Args:
+            seed_segment_uuids (Iterable[UUID]):
+                The UUIDs of the segments to gather neighbours around.
+            max_backward_segments (int):
+                The maximum number of segments to include before each seed (default: 0).
+            max_forward_segments (int):
+                The maximum number of segments to include after each seed (default: 0).
+            property_filter (FilterExpr | None):
+                An optional filter over the NEIGHBOURS (default: None). It is not
+                applied to the seed, which is an address rather than a result.
+
+        Returns:
+            dict[UUID, list[Segment]]:
+                A mapping from each seed segment UUID to its neighbouring segments.
+                A seed with no neighbours to show is absent from the mapping.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_neighbor_events(
+        self,
+        seed_segment_uuids: Iterable[UUID],
+        *,
+        max_backward_events: int = 0,
+        max_forward_events: int = 0,
+        property_filter: FilterExpr | None = None,
+    ) -> dict[UUID, list[Segment]]:
+        """
+        Get the segments of the whole events around each seed, never the seed's own.
+
+        ``get_neighbor_segments`` measured in the other unit. A segment is a chunk
+        of one event, so a segment-bounded window can begin and end mid-event --
+        right for a flat budget, since every call then costs about the same. This
+        one counts whole events, for when the question is "so many turns either
+        side" and the length of what is in the way should not decide how far the
+        window reaches.
+
+        The seed's ENTIRE event is excluded, not merely the seed segment: in this
+        unit the seed's event is the anchor the neighbours are counted from.
+
+        Args:
+            seed_segment_uuids (Iterable[UUID]):
+                The UUIDs of the segments to gather neighbouring events around.
+            max_backward_events (int):
+                The maximum number of whole events to include before the seed's own
+                event (default: 0).
+            max_forward_events (int):
+                The maximum number of whole events to include after it (default: 0).
+            property_filter (FilterExpr | None):
+                An optional filter over the neighbouring events (default: None).
+
+        Returns:
+            dict[UUID, list[Segment]]:
+                A mapping from each seed segment UUID to the segments of its
+                neighbouring events, in timeline order.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def get_segment_uuids_by_event_uuids(
         self,
         event_uuids: Iterable[UUID],
