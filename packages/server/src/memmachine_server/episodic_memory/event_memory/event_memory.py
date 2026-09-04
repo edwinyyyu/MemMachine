@@ -762,14 +762,37 @@ class EventMemory:
         return await self._reranker.score(query, context_strings)
 
     @staticmethod
+    def _immediately_follows(previous: Segment, segment: Segment) -> bool:
+        """Whether ``segment`` is the very next piece of the same event as ``previous``.
+
+        Two pieces are adjacent either within a block (the next chunk of it) or
+        across blocks (the first chunk of the next one). Anything else means
+        something between them is not being shown. A block's chunk count is not
+        known here, so the end of one block is recognised by the next block
+        starting at its own beginning rather than by counting up to it.
+        """
+        if segment.index == previous.index:
+            return segment.offset == previous.offset + 1
+        if segment.index == previous.index + 1:
+            return segment.offset == 0
+        return False
+
+    @staticmethod
     def string_from_segment_context(
         segment_context: Iterable[Segment],
         *,
         format_options: FormatOptions | None = None,
     ) -> str:
-        """Format segment context as a string."""
+        """Format segment context as a string.
+
+        A run of segments from one event is written under a single header. Where
+        the run is not contiguous, `format_options.gap_marker` records the hole.
+        """
         if format_options is None:
             format_options = FormatOptions(time_style="short")
+
+        def entry_line(text: str) -> str:
+            return json.dumps(text, ensure_ascii=False) + "\n"
 
         context_string = ""
         last_segment: Segment | None = None
@@ -777,20 +800,44 @@ class EventMemory:
         first = True
 
         for segment in segment_context:
-            is_continuation = (
+            same_event = (
                 last_segment is not None
                 and segment.event_uuid == last_segment.event_uuid
-                and segment.index == last_segment.index
+            )
+            # Same event, but a piece between these two is absent. Without a mark the
+            # remaining pieces read as one continuous statement, which is worse than
+            # showing less: it invents a claim nobody made.
+            #
+            # A segment is addressed by (index, offset) — which block of the event,
+            # and which chunk of that block — so both halves have to be checked.
+            # Comparing only the block index missed the commoner hole by far: chunks
+            # of ONE block share an index, and dropping a middle chunk concatenated
+            # the survivors into a seamless sentence nobody wrote.
+            is_gapped = same_event and not EventMemory._immediately_follows(
+                last_segment, segment
+            )
+            is_continuation = (
+                same_event and segment.index == last_segment.index and not is_gapped
             )
 
             if not is_continuation:
-                if not first:
+                if is_gapped and format_options.gap_marker:
+                    # Closes the run so far and marks the hole, then keeps writing
+                    # under the SAME header — the gap is inside one event, so a new
+                    # header would misrepresent it as two.
                     context_string += (
-                        json.dumps(accumulated_text, ensure_ascii=False) + "\n"
+                        entry_line(accumulated_text).rstrip("\n")
+                        + f" {format_options.gap_marker} "
                     )
-                first = False
-                accumulated_text = ""
-                context_string += EventMemory._segment_header(segment, format_options)
+                    accumulated_text = ""
+                else:
+                    if not first:
+                        context_string += entry_line(accumulated_text)
+                    first = False
+                    accumulated_text = ""
+                    context_string += EventMemory._segment_header(
+                        segment, format_options
+                    )
 
             text = EventMemory._extract_text(segment.block)
             if text is not None:
@@ -801,7 +848,7 @@ class EventMemory:
             last_segment = segment
 
         if not first:
-            context_string += json.dumps(accumulated_text, ensure_ascii=False) + "\n"
+            context_string += entry_line(accumulated_text)
 
         return context_string.strip()
 
