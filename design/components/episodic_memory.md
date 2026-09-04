@@ -35,13 +35,13 @@ class EpisodicMemory:
                     min_score: float | None,
                     reranker: Reranker | None,
                     since: datetime | None, before: datetime | None,
-                    producers: Iterable[str] | None,
+                    authors: Iterable[str] | None,
                     filter: FilterExpr | None,
                     format_options: FormatOptions | None = None) -> QueryResult
     async def expand(self, key: UUID, anchor: UUID, *,
                      before: int, after: int,
                      unit: Literal["segments", "events"],
-                     producers: Iterable[str] | None) -> Expansion
+                     authors: Iterable[str] | None) -> Expansion
     @staticmethod
     def string_from_segment_context(segment_context: Iterable[Segment], *,
                                     format_options: FormatOptions | None = None) -> str
@@ -62,7 +62,7 @@ class EpisodicMemory:
   undeclared part is selective by `find_segments` up to
   `filter.selective_limit`, score the matching segments' derivatives
   with `get_cosine_similarity`; otherwise `vector_store.query` with the
-  declared part, `since`, `before` and `producers` as filter predicates
+  declared part, `since`, `before` and `authors` as filter predicates
   on reserved keys, over-fetching up to `filter.max_overfetch` and
   dropping seeds the segment store rejects; then `get_segment_contexts`
   with `expand_context` split as today (`event_memory.py:450`); score
@@ -75,7 +75,7 @@ class EpisodicMemory:
   `memory_expand` walks a conversation around a memory. The anchor is a
   segment uuid (from a search hit) or an event uuid (its first
   segment). `unit` counts what `before` and `after` mean: segments, or
-  whole events; `producers` restricts the walk. Returns the segments in
+  whole events; `authors` restricts the walk. Returns the segments in
   order with the anchor marked, and a cursor at each end so a caller
   walks further by repeating the call from the last segment. Backed by
   `SegmentStore.get_neighbours` over the ordering index; no vector
@@ -92,7 +92,7 @@ class EpisodicMemory:
 - `encode_events` (`:200`) becomes `encode`, idempotent per event by
   forgetting first; `forget_events` (`:680`) becomes `forget`.
 - `query` (`:353`): `vector_search_limit` becomes `limit` with
-  maximum semantics; `since`, `before`, `producers` are added as typed
+  maximum semantics; `since`, `before`, `authors` are added as typed
   parameters; the reserved-key mapping `_to_vector_record_property`
   (`:340`) and the `m.` user prefix go, replaced by
   `filters_and_properties.md`'s reserved namespace; the plan split is
@@ -102,6 +102,13 @@ class EpisodicMemory:
   `expected_vector_store_collection_schema` (`:118`) goes, since the
   store's schema is settings.
 - Ingest order is unchanged (segments, then vectors).
+- `Context`, `ProducerContext` and `NullContext` (`data_types.py:49`,
+  `:56`, `:64`) go; `Event.author: Author | None` replaces them, and
+  `Segment` and `Derivative` carry `author` in place of `context`.
+  Rendering (`string_from_segment_context`) prints the author's name,
+  or its id when there is no name. `produced_for` and the producer
+  roles of the old episode model are not carried over and nothing
+  replaces them.
 - `expand` is added, with `get_neighbours` on the segment store.
 - Scores are cosine similarity; `SimilarityMetric` goes from the
   embedder, the vector store and the engines, as on the reference

@@ -127,9 +127,18 @@ Named so the redesign can be checked against it.
   tenant row outlives the tenant as a tombstone for as long as anything
   could remain under the id, which is what makes "never reused"
   enforced rather than hoped while it matters.
-- Event: what a caller ingests: an id, a timestamp, a producer, one or
-  more content blocks, properties. Events are the caller's data; the
-  event store records them and memory subsystems process them.
+- Event: what a caller ingests: an id, a timestamp, an optional author,
+  one or more content blocks, properties. Events are the caller's data;
+  the event store records them and memory subsystems process them.
+- Author: the entity responsible for an event's content, human, agent
+  or tool: `{id, name}`, where `id` is a bounded string the application
+  owns and filters by, and `name` is a display string recorded as it
+  was at the event and never filtered. A field of the event beside
+  `timestamp`, optional, so filtering by author is uniform over every
+  event and "no author" is one state. The current `Context` union
+  (`ProducerContext`, `NullContext`) goes with it, as do `producer`,
+  `produced_for` and the roles of the old episode model, which nothing
+  replaces.
 - Event store: the component that records a tenant's events, in the
   order they were ingested. The system of record.
 - Memory subsystem: a component that processes a tenant's events into
@@ -541,8 +550,8 @@ The system of record. Shared tables in a SQL database, keyed by the
 tenant id, with the fence under "Store contracts".
 
 - Registry row per key.
-- `events`: key, event id, timestamp, context, properties, blocks
-  (codec-encoded). Unique on `(key, event id)`, which is what makes
+- `events`: key, event id, timestamp, author id and name, properties,
+  blocks (codec-encoded). Unique on `(key, event id)`, which is what makes
   ingest idempotent per event id.
 - A log per key of additions and deletions, each entry a position, a
   kind and the event id. Positions are assigned under the key's
@@ -733,9 +742,11 @@ Two tiers of fields, one mechanism underneath. The reference is the
 2d5dc2b5), adjusted where noted.
 
 System fields. Defined by the server, first-class in the API, typed: for
-an event, `id`, `timestamp` and `producer`. Search takes them as named
+an event, `id`, `timestamp` and `author`. Search takes them as named
 parameters, `since` and `before` (inclusive and exclusive, so ranges
-meet without overlap) and `producers` (a list). They are never spelled
+meet without overlap) and `authors` (a list of author ids; the
+author's name is display data and is never filtered). They are never
+spelled
 inside the user filter, so no caller and no model decides between
 `timestamp` and some prefixed form of it. Underneath, each system field
 is stored as a reserved property key, `memmachine_<system>_<field>`,
@@ -1398,16 +1409,16 @@ Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 
 | Method and path | Effect | Status |
 | --- | --- | --- |
-| `POST .../search` | body `query`, `limit`, `since`, `before`, `producers`, `filter` (JSON tree), `expand_context`, `include_events`, `reranker` (an offered id; the tenant's default if absent) | 200 with up to `limit` scored hits |
-| `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after`, `unit` (`segments` or `events`), `producers` | 200 with the ordered neighbourhood and cursors |
+| `POST .../search` | body `query`, `limit`, `since`, `before`, `authors`, `filter` (JSON tree), `expand_context`, `include_events`, `reranker` (an offered id; the tenant's default if absent) | 200 with up to `limit` scored hits |
+| `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after`, `unit` (`segments` or `events`), `authors` | 200 with the ordered neighbourhood and cursors |
 | `GET ...` | watermark and lag behind the event store | 200 |
 
 Event body: `id` (optional UUID), `timestamp` (optional; server time if
-absent), `producer` (optional string), `blocks` (list of `{type: text,
+absent), `author` (optional, `{id, name}`), `blocks` (list of `{type: text,
 text}`), `properties` (scalar values under legal keys; what `filter`
 sees).
 Search hit: `score`, `segments` (each with `event_id`, `index`,
-`timestamp`, `producer`, `text`, `properties`) and, with
+`timestamp`, `author`, `text`, `properties`) and, with
 `include_events`, the events.
 
 Errors: one handler for the domain error hierarchy maps to a status and
@@ -1633,4 +1644,4 @@ is corrected to it.
 - Event size limits, and block types beyond text (the data types admit
   others).
 - Readable metadata as a `json` block type, or a designed field.
-- Retention: deleting events by age or by producer, as a job kind.
+- Retention: deleting events by age or by author, as a job kind.

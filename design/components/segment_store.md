@@ -17,7 +17,8 @@ store. This file lists what changes; everything not listed stays.
 `segment_store_pt`: `key UUID PK`, `config JSON`,
 `created_at`. `segment_store_sg`: `key UUID`, `uuid UUID`, `event_uuid
 UUID`, `index`, `offset`, `timestamp`, `timestamp_timezone_offset`,
-`context BLOB`, `block BLOB`, `properties JSON`; primary key `(key,
+`author_id TEXT`, `author_name TEXT`, `block BLOB`, `properties JSON`;
+primary key `(key,
 uuid)`. `segment_store_dv_ln`: `key UUID`, `uuid UUID`, `segment_uuid
 UUID`, foreign key to the segment row with cascade. `segment_store_gc`:
 `key UUID PK`, `enqueued_at`.
@@ -46,7 +47,7 @@ class SegmentStore(ABC):
                                    property_filter: FilterExpr | None) -> dict[UUID, list[Segment]]
     async def get_neighbours(self, key: UUID, anchor: UUID, *,
                              before: int, after: int,
-                             producers: Iterable[str] | None) -> list[Segment]
+                             authors: Iterable[str] | None) -> list[Segment]
     async def get_segment_uuids_by_event_uuids(self, key: UUID,
                                                event_uuids: Iterable[UUID]) -> dict[UUID, list[UUID]]
     async def get_derivative_uuids_by_segment_uuids(self, key: UUID,
@@ -59,7 +60,7 @@ class SegmentStore(ABC):
 `get_neighbours` serves expansion (`episodic_memory.md`): the segments
 ordered by `(timestamp, event_uuid, index, offset)` within the key, the
 `before` segments preceding the anchor and the `after` following it,
-optionally restricted to producers; the anchor itself is included. The
+optionally restricted to authors, by id; the anchor itself is included. The
 order is total and stable, so a caller can walk by repeating the call
 from the last segment returned.
 
@@ -102,8 +103,8 @@ from the last segment returned.
   transaction, the logical delete takes it `FOR UPDATE`, reads carry
   the liveness predicate; on SQLite `BEGIN IMMEDIATE`.
 - Segmenter and deriver contracts gain a clause: a segment carries a
-  verbatim copy of its event's properties, and a derivative of its
-  segment's.
+  verbatim copy of its event's properties and author, and a derivative
+  of its segment's. The `context` column goes with the `Context` union.
 
 ## Schema, after the changes
 
@@ -126,14 +127,16 @@ from the last segment returned.
 | `offset` | `Integer` | not null |
 | `timestamp` | `DateTime(timezone=True)` | not null, UTC |
 | `timestamp_timezone_offset` | `Integer` | not null, minutes |
-| `context` | `LargeBinary` | not null, codec-encoded |
+| `author_id` | `Text` | null; copied from the event |
+| `author_name` | `Text` | null; copied from the event, for rendering |
 | `block` | `LargeBinary` | not null, codec-encoded |
 | `properties` | `JSON` (`JSONB` on PostgreSQL) | not null |
 
-Indexes: `segment_store_sg__key_event (key, event_uuid, index, offset)`
-for lookup by event; `segment_store_sg__key_order (key, timestamp,
-event_uuid, index, offset)` for context windows, expansion and `since`
-and `before`, which is the one total order the store exposes; a GIN index on
+Indexes: `segment_store_sg__key_event (key, event_uuid, index, offset)` for
+lookup by event; `segment_store_sg__key_author (key, author_id)` for `authors`
+on context windows and expansion; `segment_store_sg__key_order (key, timestamp,
+event_uuid, index, offset)` for context windows, expansion and `since` and
+`before`, which is the one total order the store exposes; a GIN index on
 `properties` on PostgreSQL, added by a deployment as its undeclared-key filters
 need.
 
