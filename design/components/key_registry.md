@@ -24,7 +24,7 @@ rows. A store receives only a view scoped to its own name.
 | `created_at`, `updated_at` | timestamps | |
 
 Primary key `(scope, key)`. A row exists before any record can carry the
-key, and goes when the store's reclaim finds nothing under it.
+key, and goes when the store's purge finds nothing under it.
 
 ## API of the scoped view
 
@@ -52,7 +52,7 @@ class KeyRegistry(Protocol):
   raises `KeyNotLiveError`; the address tells the store where to go.
 - After the remote operation: `get(key)` again; not `live` raises
   `KeyNotLiveError`. A write already sent is then garbage under a
-  `dropping` key, reclaimed by the store's `reclaim`.
+  `dropping` key, purged by the store's `purge`.
 - Logical delete: `set_state(key, DROPPING)`; waits for nothing.
 - No lock is held across the remote operation, and no clock is read.
 

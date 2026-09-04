@@ -66,7 +66,7 @@ here.
 
 No foreign key from `event_store_lg` or `event_store_ev` to the
 registry row: the logical delete removes the row in O(1) and the purge
-reclaims by key. No foreign key between the log and the events: an
+purges by key. No foreign key between the log and the events: an
 `added` entry outlives its event once the event is deleted, by design.
 
 Compaction. Log entries below every subsystem's watermark are not
@@ -90,7 +90,7 @@ Two ABCs behind one implementation, the manager and `manager.store`.
 class EventStoreManager(ABC):
     async def create_partition(self, key: UUID, config: EventPartitionConfig) -> None
     async def delete_partition(self, key: UUID) -> None
-    async def reclaim_partition(self, key: UUID) -> Progress
+    async def purge_partition(self, key: UUID) -> Progress
     async def purge_deleted_partitions(self) -> bool       # library use only
     async def compact_log(self, key: UUID, below: int) -> Progress
     @property
@@ -112,7 +112,7 @@ class EventStore(ABC):
   including a purge queue entry.
 - `delete_partition`: one transaction: lock the row `FOR UPDATE`, enqueue
   the key, remove the row. O(1), idempotent.
-- `reclaim_partition`: delete a bounded number of the key's rows across
+- `purge_partition`: delete a bounded number of the key's rows across
   the three data tables; remove the queue entry when none remain;
   `DONE` then.
 - `add_events`: one transaction that locks the registry row `FOR

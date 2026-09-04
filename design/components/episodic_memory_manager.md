@@ -69,7 +69,7 @@ Toward the tenant service (the `TenantComponent` protocol):
   insert or update the per-tenant row with the section and version.
 - `delete(tenant_id)`: `segment_store.delete_partition`,
   `vector_store.delete_collection`, remove the per-tenant row.
-- `reclaim(tenant_id)`: `reclaim_partition` and `reclaim_collection`;
+- `purge(tenant_id)`: `purge_partition` and `purge_collection`;
   `DONE` when both are.
 - `validate_update`: `embedder` changed raises.
 - `replay`: below.

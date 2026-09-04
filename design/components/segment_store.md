@@ -32,7 +32,7 @@ callers cannot reach data.
 class SegmentStoreManager(ABC):
     async def create_partition(self, key: UUID, config: SegmentStorePartitionConfig) -> None
     async def delete_partition(self, key: UUID) -> None
-    async def reclaim_partition(self, key: UUID) -> Progress
+    async def purge_partition(self, key: UUID) -> Progress
     async def purge_deleted_partitions(self) -> bool     # library use only
     @property
     def concurrency_scope(self) -> ConcurrencyScope
@@ -81,7 +81,7 @@ from the last segment returned.
   process-wide by configuration.
 - `create_partition` stays strict and also raises on a key whose purge
   is pending (a queue entry under the key).
-- `reclaim_partition(key) -> Progress` is added: this key's dead rows,
+- `purge_partition(key) -> Progress` is added: this key's dead rows,
   bounded by `purge_max_segments`; `DONE` when none remain. It is what
   the delete job and the tombstone sweep call; `purge_deleted_partitions`
   stays for library users and the server does not run it.

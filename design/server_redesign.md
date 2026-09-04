@@ -186,8 +186,8 @@ Named so the redesign can be checked against it.
    invisible above it.
 3. The tenant service knows a component only through its registration: a
    name, a tenant configuration model to validate against, and the
-   hooks for the three job kinds and reclamation (`provision`,
-   `delete`, `reclaim`, `replay`). It never sees a store or an
+   hooks for the three job kinds and purging (`provision`,
+   `delete`, `purge`, `replay`). It never sees a store or an
    option.
 4. Stores take a UUID key and nothing else, and fence on that key. Each
    store is two ABCs behind one implementation: `<Store>Manager` for
@@ -198,7 +198,7 @@ Named so the redesign can be checked against it.
    registry row keyed by the caller's UUID: in the same statement where
    the data is in the same SQL database, and by a check after the
    operation everywhere else. A crashed operation can leave a record
-   under a dead key; reclamation and the tenant service's tombstone
+   under a dead key; purging and the tenant service's tombstone
    sweep collect it. No clock is compared, and no lock spans remote I/O.
 6. Lifecycle steps are idempotent. There is no transaction across
    stores, so a step interrupted midway is completed by repeating it,
@@ -307,9 +307,9 @@ from a collision, a replayed id, or a registry restored from a backup
 the stores were not restored to, fails at the tenant service before any
 store is touched. And it drives the tombstone sweep under "Tenant
 lifecycle", which is what collects a record a crashed operation left
-under the key after reclamation had finished. A tombstone is not kept
+under the key after purging had finished. A tombstone is not kept
 forever: the sweep removes it on the first pass in which every
-component's `reclaim` found nothing under the id and `deleted_at` is
+component's `purge` found nothing under the id and `deleted_at` is
 older than `tombstones.retention` on the database clock, a retention of
 the order of a day. What that assumes is that no write is in flight
 longer than the retention: every remote client has a request timeout,
@@ -363,9 +363,9 @@ Delete, `DELETE /v1/tenants/{id}`:
    the jobs at its next poll.
 3. A reconciler executes the delete jobs. Each step calls the
    component's `delete`, which makes the tenant unreachable in every one
-   of its stores, then its `reclaim`, which removes a bounded amount;
+   of its stores, then its `purge`, which removes a bounded amount;
    both are idempotent, so repeating the pair per step is harmless. The
-   job is done when `reclaim` reports nothing remains.
+   job is done when `purge` reports nothing remains.
 4. When every delete job is done, one transaction removes the job rows
    and sets the tenant row `deleted`. `GET` then returns 404, and the
    row stays as the tombstone.
@@ -374,10 +374,10 @@ Tombstone sweep: a duty of the tenant service, run by reconciler
 processes on `reconciler.sweep_interval`, in every one of them without
 exclusion. It claims `deleted` rows with `FOR UPDATE SKIP LOCKED`,
 oldest `swept_at` first, bounded per call, calls every registered
-component's `reclaim(tenant_id)`, and stamps `swept_at`; when every
+component's `purge(tenant_id)`, and stamps `swept_at`; when every
 component found nothing and the row is past `tombstones.retention` on
 the database clock, it removes the row. This is what collects the one
-write that can land after reclamation (see "How a store fences");
+write that can land after purging (see "How a store fences");
 components whose stores cannot hold such a write return `DONE` at once.
 It is the only scheduled duty in the system.
 
@@ -421,7 +421,7 @@ Reconciler role:
   `COALESCE(last_run_at, created_at)`, `LIMIT n FOR UPDATE SKIP LOCKED`.
   Eligible means `last_run_at IS NULL`, or `last_run_at + delay <=
   now()` with `delay` computed in the statement from the settings:
-  `reconciler.reclaim_interval` after a `more` outcome,
+  `reconciler.purge_interval` after a `more` outcome,
   `reconciler.backoff` raised to `attempts` after an error. The row lock
   is held for the duration of the step: the hook runs, and the same
   transaction records the outcome and commits. A crashed process's lock
@@ -432,7 +432,7 @@ Reconciler role:
   concurrent reconcilers serialize there.
 - Execute: the component's hook for the job's action, with the payload
   (for `provision`, the tenant's configuration section at the job's
-  version; for `delete`, the `delete` then `reclaim` pair above).
+  version; for `delete`, the `delete` then `purge` pair above).
   `DONE` marks the job done; `MORE` records `last_outcome = more` and
   `last_run_at`; an exception records `error`, the message, and
   `attempts + 1`. The transaction that marks a `provision` or `delete` job done
@@ -455,7 +455,7 @@ Reconciler role:
   own transaction, marks every remaining pending `provision` job done
   and inserts the `delete` jobs. So no `provision` hook runs after a
   `delete` hook for the same tenant, and no component ever sees
-  `reclaim` on a live key, which is why `reclaim` on a live key is an
+  `purge` on a live key, which is why `purge` on a live key is an
   error rather than a case. On SQLite the file's write lock serializes
   the same way. The cost is one row lock per step, held for a bounded
   step, on a row nothing else locks; plain reads of the tenant row, as
@@ -492,8 +492,8 @@ at startup:
   - `delete(tenant_id) -> None`: make the tenant unreachable in every
     one of the component's stores (each store's logical delete, a row
     flip) and remove the component's per-tenant row. Fast; no
-    reclamation.
-  - `reclaim(tenant_id) -> DONE | MORE`: remove a bounded amount of what
+    purging.
+  - `purge(tenant_id) -> DONE | MORE`: remove a bounded amount of what
     the component's stores hold under the tenant id; `DONE` when
     nothing is found. Called by the delete job after `delete`, and by
     the tombstone sweep for as long as the tombstone exists.
@@ -545,7 +545,7 @@ tenant id, with the fence under "Store contracts".
   `design/components/event_store.md`.
 - `create_partition(key)` (strict; see "Create is strict"),
   `delete_partition(key)` (logical, O(1), idempotent),
-  `reclaim_partition(key) -> DONE | MORE`, `purge_deleted_partitions()`
+  `purge_partition(key) -> DONE | MORE`, `purge_deleted_partitions()`
   for library users without a tenant service.
 - Data operations, each taking the key: `add_events(key, events) ->
   (stored, skipped)`, `delete_events(key, ids)`, `get_events(key,
@@ -709,7 +709,7 @@ Hooks:
   row if absent, else verify immutable options and apply mutable ones.
 - `delete`: `delete_partition` on the segment store,
   `delete_collection` on the vector store, remove the per-tenant row.
-- `reclaim`: `reclaim_partition` and `reclaim_collection`; `DONE` when
+- `purge`: `purge_partition` and `purge_collection`; `DONE` when
   both report done.
 
 ## Properties and filtering
@@ -885,8 +885,8 @@ never returns a dead key's records.
 
 What this does not guarantee, and what handles it. An operation that
 crashes between its remote write and its check leaves a record under a
-key that may be dead. The delete job's `reclaim` removes it, and if it
-landed after that reclaim's last pass, the tombstone sweep does. That is
+key that may be dead. The delete job's `purge` removes it, and if it
+landed after that purge's last pass, the tombstone sweep does. That is
 the one residual, and it is inherent: the registry row and the backend
 write are not one atomic action, so any ordering leaves a window in
 which the check's outcome and the write's landing are separated by an
@@ -896,12 +896,12 @@ tenant, or by making the tenant a native object whose drop fails later
 writes (Weaviate tenants, Chroma collections, SQLite tables, Qdrant
 shard keys, the last rejected for scale). Everywhere a metadata database
 is paired with a non-transactional store the answer is the same as here:
-a soft-delete marker, asynchronous reclamation, and periodic
+a soft-delete marker, asynchronous purging, and periodic
 reconciliation of orphans.
 
 Why no lock across the remote write. A share lock held across the write
 makes the delete wait for in-flight writers, so that for live writers no
-write lands after the delete commits and reclaim's first pass is
+write lands after the delete commits and purge's first pass is
 complete. It costs a pooled connection held idle across every remote
 write, a delete that waits, and settings that couple pool size to write
 concurrency and the idle-in-transaction timeout to the longest remote
@@ -932,7 +932,7 @@ a purge delayed past its expiry; the check after the write is that
 validation with the clock removed.
 
 Alternatives rejected for the remote stores: accepting bounded leakage
-(garbage that is never collected is unacceptable); delaying reclamation
+(garbage that is never collected is unacceptable); delaying purging
 past the longest possible write (a clock comparison); per-tenant native
 structures on every backend (#1564: they do not reach the tenant
 counts required).
@@ -993,10 +993,10 @@ is pending), and with no row at all. Only `provision` proceeds on
 | Operation | present, not live | no row |
 | --- | --- | --- |
 | create | `KeyExistsError` | creates |
-| write | not-live error; a remote write already sent is garbage until reclaimed | not-live error |
+| write | not-live error; a remote write already sent is garbage until purged | not-live error |
 | read | not-live error | not-live error |
 | logical delete | returns; idempotent | returns; idempotent |
-| reclaim | proceeds; the row goes when nothing remains | deletes by key in every container; `DONE` when nothing is found |
+| purge | proceeds; the row goes when nothing remains | deletes by key in every container; `DONE` when nothing is found |
 
 ### Segment store
 
@@ -1015,7 +1015,7 @@ As shipped in #1548, with these changes:
 - The partition handle goes: every data operation takes the key, and
   the registry read that fences it returns the codec configuration.
   Codec objects are cached process-wide by configuration, not per key.
-- `reclaim_partition(key) -> DONE | MORE`: reclaims this key's dead rows,
+- `purge_partition(key) -> DONE | MORE`: purges this key's dead rows,
   bounded per call; `DONE` when no garbage remains under the key. On
   SQLite the DELETE waits on the write lock up to the driver's busy
   timeout and raises past it; the reconciler retries.
@@ -1026,7 +1026,7 @@ As shipped in #1548, with these changes:
 
 The collection registry leaves the vector backend and becomes the
 store's rows in the key registry, which is the record of every key that
-ever carried a record and what makes every record reclaimable on a
+ever carried a record and what makes every record purgeable on a
 backend that cannot list or reject keys.
 
 - Native containers are deployment configuration: one per embedder
@@ -1066,21 +1066,21 @@ backend that cannot list or reject keys.
   record ids and scores, never properties.
 - `delete_collection(key)`: set `dropping`. O(1), idempotent, waits for
   nothing.
-- `reclaim_collection(key) -> DONE | MORE`: with a `dropping` row,
+- `purge_collection(key) -> DONE | MORE`: with a `dropping` row,
   delete records under the key in bounded steps by the backend's means
   in the table below, `MORE` while records remain, and remove the row
   when nothing remains. With no row, delete by key in every container
   the store has, which is how the tenant service's tombstone sweep
   reaches a record that landed after the row went; `DONE` when nothing
-  is found. Containers are few (one per embedder), so a no-row reclaim
+  is found. Containers are few (one per embedder), so a no-row purge
   is a bounded number of filter deletes that mostly find nothing.
 
 Why nothing escapes. Every record carries a key whose registry row
 existed before the record could, because a write reads the row first
 and no write creates a row. A completed write is checked after it lands
 and raises if the key died meanwhile. A write whose check never ran
-lies under a key that is `dropping`, reclaimed by the delete job, or
-gone, reclaimed by the tombstone sweep through the no-row path. No
+lies under a key that is `dropping`, purged by the delete job, or
+gone, purged by the tombstone sweep through the no-row path. No
 rejection compares timestamps, and no key is forgotten while a record
 under it could exist: the tombstone outlives the last possible stale
 write by the retention margin under "Tenant registry".
@@ -1090,7 +1090,7 @@ by" is what an operation needs beyond the shared client, all of it held
 in the registry row or equal to the key; no backend requires an object
 opened per tenant and kept across operations.
 
-| Backend | Tenant inside the container | Addressed by | Rejects a write to a dead tenant | Lists tenants | Reclaim |
+| Backend | Tenant inside the container | Addressed by | Rejects a write to a dead tenant | Lists tenants | Purge |
 | --- | --- | --- | --- | --- | --- |
 | Qdrant | payload value (#1564) | container name; the key as the payload filter | no | no (`facet` is approximate) | filter delete |
 | Milvus | partition-key value | container name, loaded once; the key as the partition-key value | no | no | filter delete |
@@ -1104,7 +1104,7 @@ opened per tenant and kept across operations.
 
 Pinecone's implicit namespace creation and any backend's inability to
 reject are covered the same way: the registry row exists before the
-first record, and reclaim deletes by the tenant's value. Chroma's Python
+first record, and purge deletes by the tenant's value. Chroma's Python
 client only offers a `Collection` object obtained by `get_collection`,
 one round trip resolving a name to the collection's UUID, after which
 every operation addresses the UUID (`chromadb/api/fastapi.py`). The
@@ -1134,7 +1134,7 @@ it owns, not schema; index state lives in process memory, which is why
 it stays at `process` scope), and both keep their registry in the same
 file, so their fence is in-statement and the sqlite-vec store reaches
 `host` scope. The O(1) drop that a table per collection gave becomes a
-keyed delete run by the reclaim job, as in the segment store;
+keyed delete run by the purge job, as in the segment store;
 unreachability is immediate through the registry either way. A `vec0`
 partition key is not a filter over a shared scan: vec0 stores each
 partition value's vectors in chunks of its own, and a KNN constrained on
@@ -1458,7 +1458,7 @@ Reused, with the change named:
 
 - `episodic_memory/event_memory/`: `EventMemory` renamed to episodic
   memory, the segmenters, the derivers, the data types, and the segment
-  store (UUID keys in place of incarnations, `reclaim_partition`, no
+  store (UUID keys in place of incarnations, `purge_partition`, no
   handle).
 - `common/vector_store/`: the four implementations, with the registry
   replaced by rows in the key registry checked after each operation,
@@ -1504,7 +1504,7 @@ is re-embedded. This is why the tenant id is the physical key in every
 store rather than a registry-minted identity behind it: the one thing
 such an indirection would buy, adopting data keyed some other way, is
 not needed, and it would cost a mint per create, a second identity per
-store, and a mapping row that outlives reclamation.
+store, and a mapping row that outlives purging.
 
 ## What must be built first
 
@@ -1539,8 +1539,8 @@ In the first deployment, because the first records freeze it:
    backends cannot rewrite a payload key in place.
 4. A registry row for every vector key, with strict create and the check
    after each operation. The row is what makes a key's garbage
-   addressable at all; reclamation and the tombstone sweep can follow,
-   but a key that was never registered can never be reclaimed.
+   addressable at all; purging and the tombstone sweep can follow,
+   but a key that was never registered can never be purged.
 5. The public surface: the v1 API, the event shape, the filter as a JSON
    tree, limits as maximums, one error handler. Clients freeze it, and
    changing it later is a client migration.
@@ -1548,7 +1548,7 @@ In the first deployment, because the first records freeze it:
    the start and painful once `create_all` has run anywhere.
 
 Before churn, not before the first byte: the reconciler role executing
-durable deletions and `reclaim`, the tombstone sweep, `replay`. None
+durable deletions and `purge`, the tombstone sweep, `replay`. None
 writes anything into records, and a deployment with few deletions can
 run with them recorded as jobs until it lands. "No implicit creation"
 is not a task in a new server; there is no path to remove.
@@ -1581,7 +1581,7 @@ is corrected to it.
 ## Relation to open issues
 
 - #1574: this document is the target for every row.
-- #1548: kept; UUID keys replace incarnations, `reclaim_partition` is
+- #1548: kept; UUID keys replace incarnations, `purge_partition` is
   added, the partition handle gives way to key-parameterized
   operations, and `open_or_create_partition` goes.
 - #1530: agrees on the outcome, the store ABCs keeping only the strict
@@ -1603,7 +1603,7 @@ is corrected to it.
 - #1572, #1573, #1564, #1565, #1537, #1563: the vector store contract
   above: containers from configuration, the key registry as the record
   of every key, checks after each operation, tenants as values,
-  single-use keys, reclamation plus the tenant service's tombstone
+  single-use keys, purging plus the tenant service's tombstone
   sweep. In-flight registry PRs are measured against that section.
 - #1535: one declared, typed `indexed_properties` schema per vector
   store, in configuration, under "Properties and filtering".

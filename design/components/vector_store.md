@@ -48,7 +48,7 @@ class VectorStoreManager(ABC):
     async def provision_containers(self) -> None          # schema command only
     async def create_collection(self, key: UUID, container: str) -> None
     async def delete_collection(self, key: UUID) -> None
-    async def reclaim_collection(self, key: UUID) -> Progress
+    async def purge_collection(self, key: UUID) -> Progress
     @property
     def concurrency_scope(self) -> ConcurrencyScope
 
@@ -100,12 +100,12 @@ Semantics:
 - `get_cosine_similarity`: score given records against a vector,
   fenced the same way; the allowlist plan's scoring step.
 - `delete_collection`: `set_state(key, DROPPING)`; O(1); idempotent.
-- `reclaim_collection`: with a `dropping` row, delete records under the
+- `purge_collection`: with a `dropping` row, delete records under the
   key in bounded steps (filter delete; a filtered-query loop and keyed
   delete on S3 Vectors; `delete_collection` on Chroma; remove the
   tenant on Weaviate); `MORE` while records remain; remove the row when
   none do and return `DONE`. With no row, delete by key in every
-  container the store has; `DONE` when nothing is found. `reclaim` on
+  container the store has; `DONE` when nothing is found. `purge` on
   a `live` row raises; the tenant service never calls it on one.
 - `for_container(container)`: a data view that raises `KeyNotLiveError` for
   any key whose registry row names another container, on every
@@ -114,7 +114,7 @@ Semantics:
 
 ## Backends
 
-| Backend | Tenant inside the container | Address | Rejects a dead key itself | Reclaim |
+| Backend | Tenant inside the container | Address | Rejects a dead key itself | Purge |
 | --- | --- | --- | --- | --- |
 | Qdrant | payload value | container | no | filter delete |
 | Milvus | partition-key value | container, loaded once | no | filter delete |
@@ -154,7 +154,7 @@ the usearch store `process`.
   `get_cosine_similarity` is added (reference branch, commit 2d5dc2b5).
 - Undeclared property keys are rejected on write and query.
 - Post-operation registry checks replace the absent fence (#1537,
-  #1563); `reclaim_collection` and container retirement are added
+  #1563); `purge_collection` and container retirement are added
   (#1565).
 - The sqlite-vec store: one `vec0` table per container with the key as
   partition key, `chunk_size` a setting, instead of a table per
