@@ -254,6 +254,10 @@ class EventMemory:
             format_options (FormatOptions | None):
                 Options for formatting.
                 (default: None).
+            query_vector (Sequence[float] | None):
+                Optional precomputed query embedding; when given, it is
+                used for the vector search instead of embedding ``query``
+                (default: None).
 
         Raises:
             ValueError:
@@ -560,6 +564,7 @@ class EventMemory:
         expand_context: int = 0,
         property_filter: FilterExpr | None = None,
         format_options: FormatOptions | None = None,
+        query_vector: Sequence[float] | None = None,
     ) -> QueryResult:
         """
         Query event memory for segments relevant to the query.
@@ -582,6 +587,10 @@ class EventMemory:
             format_options (FormatOptions | None):
                 Options for formatting.
                 (default: None).
+            query_vector (Sequence[float] | None):
+                Optional precomputed query embedding; when given, it is
+                used for the vector search instead of embedding ``query``
+                (default: None).
 
         Returns:
             QueryResult:
@@ -595,6 +604,7 @@ class EventMemory:
                 expand_context=expand_context,
                 property_filter=property_filter,
                 format_options=format_options,
+                query_vector=query_vector,
             )
 
     async def _query(
@@ -605,13 +615,14 @@ class EventMemory:
         expand_context: int,
         property_filter: FilterExpr | None,
         format_options: FormatOptions | None,
+        query_vector: Sequence[float] | None = None,
     ) -> QueryResult:
         t_start = time.monotonic()
         query_embedding = (
-            await self._embedder.search_embed(
-                [query],
-            )
-        )[0]
+            query_vector
+            if query_vector is not None
+            else (await self._embedder.search_embed([query]))[0]
+        )
         t_embedding = time.monotonic()
 
         # Translate filter fields for vector store.
