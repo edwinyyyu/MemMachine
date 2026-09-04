@@ -1442,9 +1442,9 @@ Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 
 Event body: `id` (optional UUID), `timestamp` (optional; server time if
 absent), `source_id` (optional string), `context` (an object of parts keyed by
-kind, for example `{"author": {"name": "Alice"}}`), `blocks` (list of `{type: text,
-text}`), `properties` (scalar values under legal keys; what `filter`
-sees).
+kind, for example `{"author": {"name": "Alice"}}`), `blocks` (list of
+`{type: text, text}`), `properties` (scalar values under legal keys;
+what `filter` sees).
 Search hit: `score`, `segments` (each with `event_id`, `index`,
 `timestamp`, `source_id`, `context`, `text`, `properties`) and, with
 `include_events`, the events.
