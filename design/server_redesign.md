@@ -391,7 +391,7 @@ completed with `purge` finding nothing on their first batch, and
 clock, the pass removes the row and its sweep rows. It is the only
 scheduled duty in the system.
 
-Configuration update, `PATCH /v1/tenants/{id}` with `configuration`:
+Configuration update, `PATCH /v1/tenants/{id}` with `config`:
 
 - The tenant stays `active` throughout. Each component validates its
   section's change against its model, in which every option is mutable
