@@ -3,8 +3,9 @@
 New component; the name is repurposed from the current
 `episodic_memory/episodic_memory_manager.py`, which is not carried over.
 The resource that stands in for a family of `EpisodicMemory` objects:
-builds one per structural configuration, dispatches requests to the
-right one, fills per-request defaults, validates tenant configuration,
+builds one per request, bound to the tenant's handles and
+configuration, dispatches the request to it, fills per-request
+defaults, validates tenant configuration,
 and registers with the tenant service as the `episodic_memory`
 component.
 
@@ -83,10 +84,11 @@ Toward the routers:
 ```
 
 Each reads the per-tenant row (absent: `TenantNotFoundError`, which the
-router turns into 404 or 409 by asking the tenant service), takes the
-`EpisodicMemory` for the row's structural key from the cache, building
-it on a miss with `embedders[e]`, `vector_data.for_container(e)` and
-segmenter and deriver objects from the options, and makes one call.
+router turns into 404 or 409 by asking the tenant service), builds the
+tenant's `EpisodicMemory` in one constructor call from
+`segment_data.partition(tenant_id)`, `vector_data.collection(tenant_id,
+e)`, `embedders[e]` and the segmenter and deriver objects for the row's
+options, taken from the cache, and makes one call.
 `search` fills each request parameter the request omits from the row's
 defaults, resolves `request.reranker` or the default to an object
 (`InvalidTenantConfigError` for an id not offered), and calls
@@ -95,17 +97,12 @@ entries and `forget` with the uuids of its `deleted` entries, and
 advances the watermark in the same transaction as the batch's last
 segment write where the engines are shared, and after it otherwise.
 
-Toward the routers:
+## Cache
 
-```python
-    async def search(self, tenant_id: UUID, request: SearchRequest) -> SearchResponse
-    async def expand(self, tenant_id: UUID, request: ExpandRequest) -> Expansion
-    async def status(self, tenant_id: UUID) -> SubsystemStatus   # watermark, head, lag
-```## Cache
-
-Keyed by structural configuration, never by tenant; bounded by
-`settings.cache_size`; an entry is a few references, rebuilt in
-microseconds on a miss.
+Segmenter and deriver objects, keyed by their options, never by tenant;
+bounded by `settings.cache_size`. `EpisodicMemory` objects and handles
+are not cached: each is a few references, built per request and
+discarded, so nothing bound to a tenant outlives the request.
 
 ## What it does not do
 

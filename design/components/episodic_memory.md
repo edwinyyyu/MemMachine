@@ -2,17 +2,18 @@
 
 Existing component, `episodic_memory/event_memory/event_memory.py`,
 `EventMemory`, renamed. Processes events into segments and derivative
-embeddings and answers searches. A configured object: built by
-`EpisodicMemoryManager` per structural configuration, never by the
-composition, interchangeable with any other built from the same
-configuration.
+embeddings and answers searches. A configured object bound to one
+tenant: built by `EpisodicMemoryManager` per request from the tenant's
+handles and configuration, never by the composition, never cached,
+interchangeable with any other built the same way; a library user
+builds one directly.
 
 ## Constructed with
 
 ```python
 EpisodicMemory(
-    segment_store: SegmentStore,
-    vector_store: VectorStore,      # the view for this embedder's container
+    partition: SegmentPartition,    # handle: this tenant's segments
+    collection: VectorCollection,   # handle: this tenant's records in its embedder's container
     segmenter: Segmenter,
     deriver: Deriver,
     embedder: Embedder,
@@ -20,17 +21,21 @@ EpisodicMemory(
 )
 ```
 
-One embedder, one segmenter, one deriver. No reranker: it is a per-call
-argument. No store handles: operations take the key.
+One tenant, one embedder, one segmenter, one deriver. No reranker: it
+is a per-call argument. No operation names a key: the two handles are
+stateless bindings of the stores to the tenant's key
+(`server_redesign.md`, "Vocabulary"), so past construction nothing can
+route to another tenant, and a handle to a deleted tenant raises
+`KeyNotLiveError` from the store's fence.
 
 ## API
 
 ```python
 class EpisodicMemory:
-    async def encode(self, key: UUID, events: Iterable[StoredEvent], *,
+    async def encode(self, events: Iterable[StoredEvent], *,
                       format_options: FormatOptions | None = None) -> None
-    async def forget(self, key: UUID, event_uuids: Iterable[UUID]) -> None
-    async def query(self, key: UUID, query: str, *,
+    async def forget(self, event_uuids: Iterable[UUID]) -> None
+    async def query(self, query: str, *,
                     limit: int, expand_context: int,
                     min_score: float | None,
                     reranker: Reranker | None,
@@ -40,7 +45,7 @@ class EpisodicMemory:
                     block_kinds: Iterable[str] | None,
                     filter: FilterExpr | None,
                     format_options: FormatOptions | None = None) -> QueryResult
-    async def expand(self, key: UUID, anchor: UUID, *,
+    async def expand(self, anchor: UUID, *,
                      before: int, after: int,
                      unit: Literal["segments", "events"],
                      session_ids: Iterable[str] | None,
@@ -65,7 +70,7 @@ class EpisodicMemory:
   (`filters_and_properties.md`); choose the plan: if the undeclared part is
   selective by `find_segments` up to `filter.selective_limit`, score the
   matching segments' derivatives with `get_cosine_similarity`; otherwise
-  `vector_store.query` with the declared part, `since`, `before`,
+  `collection.query` with the declared part, `since`, `before`,
   `session_ids`, `source_ids` and `block_kinds` as filter predicates on
   reserved keys, over-fetching up to `filter.max_overfetch` and dropping seeds
   the segment store rejects; then `get_segment_contexts` with `expand_context`
@@ -84,7 +89,7 @@ class EpisodicMemory:
   segments in
   order with the anchor marked, and a cursor at each end so a caller
   walks further by repeating the call from the last segment. Backed by
-  `SegmentStore.get_neighbours` over the ordering index; no vector
+  `SegmentPartition.get_neighbours` over the ordering index; no vector
   search and no embedding, so it is one indexed read.
 
 ## Context
@@ -107,7 +112,8 @@ segment is one block, so its kind is a system field filtered by
 - Rename `EventMemory` to `EpisodicMemory`; `EventMemoryParams`
   (`event_memory.py:52`) to constructor parameters.
 - `segment_store_partition` and `vector_store_collection` (`:76`, `:80`)
-  become the stores; every operation takes `key: UUID`.
+  stay as dependencies and become the stateless handles
+  `SegmentPartition` and `VectorCollection`; no operation takes a key.
 - `reranker` leaves the constructor (`:96`) and becomes a `query`
   argument.
 - `encode_events` (`:200`) becomes `encode`, idempotent per event by

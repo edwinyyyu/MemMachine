@@ -39,9 +39,10 @@ class QueryResult(BaseModel):
 Two ABCs, so a caller of data operations cannot reach lifecycle
 operations and a lifecycle caller cannot reach data. One implementation
 class provides both through two views, the manager and
-`manager.store`; the composition hands the lifecycle view to
-`EpisodicMemoryManager`'s hooks and the data view, scoped to a
-container, to each `EpisodicMemory`.
+`manager.store`; the composition hands both to `EpisodicMemoryManager`,
+whose hooks use the manager and whose requests build, from
+`manager.store`, the `VectorCollection` handle each `EpisodicMemory`
+receives.
 
 ```python
 class VectorStoreManager(ABC):
@@ -53,17 +54,28 @@ class VectorStoreManager(ABC):
     def concurrency_scope(self) -> ConcurrencyScope
 
 class VectorStore(ABC):
-    def for_container(self, container: str) -> VectorStore   # scoped view
-    async def upsert(self, key: UUID, records: Iterable[Record]) -> None
-    async def delete(self, key: UUID, uuids: Iterable[UUID]) -> None
-    async def query(self, key: UUID, vectors: Iterable[Sequence[float]], *,
+    def collection(self, key: UUID, container: str) -> VectorCollection
+        # stateless handle, no I/O
+    async def upsert(self, key: UUID, container: str,
+                     records: Iterable[Record]) -> None
+    async def delete(self, key: UUID, container: str,
+                     uuids: Iterable[UUID]) -> None
+    async def query(self, key: UUID, container: str,
+                    vectors: Iterable[Sequence[float]], *,
                     limit: int, min_score: float | None,
                     filter: FilterExpr | None,
                     allowed_uuids: Iterable[UUID] | None) -> list[QueryResult]
-    async def get_cosine_similarity(self, key: UUID, vector: Sequence[float],
+    async def get_cosine_similarity(self, key: UUID, container: str,
+                                    vector: Sequence[float],
                                     uuids: Iterable[UUID]) -> dict[UUID, float]
     @property
     def supported_filter_nodes(self) -> frozenset[type]
+
+class VectorCollection:                   # final; one class for every backend
+    key: UUID
+    container: str
+    # every VectorStore data operation without `key` and `container`,
+    # delegating to the store with the bound pair
 ```
 
 Scores are cosine similarity everywhere; there is no `SimilarityMetric`
@@ -107,10 +119,12 @@ Semantics:
   none do and return `DONE`. With no row, delete by key in every
   container the store has; `DONE` when nothing is found. `purge` on
   a `live` row raises; the tenant service never calls it on one.
-- `for_container(container)`: a data view that raises `KeyNotLiveError` for
-  any key whose registry row names another container, on every
-  operation, and delegates otherwise. `EpisodicMemoryManager` builds
-  each `EpisodicMemory` with the view for its embedder's container.
+- `container` on every data operation: the fence's registry read
+  raises `KeyNotLiveError` when the row names another container, so a
+  handle built for the wrong container cannot write. `collection(key,
+  container)` builds the `VectorCollection` handle without I/O;
+  `EpisodicMemoryManager` builds one per request for the tenant's key
+  and its embedder's container and hands it to `EpisodicMemory`.
 
 ## Backends
 
@@ -140,7 +154,9 @@ the usearch store `process`.
   stores, a table beside the data.
 - `VectorStoreCollection` (`vector_store.py:22`) and `open_collection`,
   `open_or_create_collection`, `close_collection` (`:205`, `:235`,
-  `:254`) go; operations take the key. `VectorStoreCollectionConfig`
+  `:254`) go; operations take the key and the container, and
+  `VectorCollection`, a stateless handle built by `collection(key,
+  container)`, replaces the opened one. `VectorStoreCollectionConfig`
   and the `config` parameter of `create_collection` (`:175`) go
   (#1573); the container's shape comes from `containers` settings.
 - Keys are `UUID`; `validate_identifier` (`utils.py:31`) applies to

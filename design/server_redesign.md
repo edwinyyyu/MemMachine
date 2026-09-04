@@ -201,6 +201,19 @@ Named so the redesign can be checked against it.
 - Key registry: the one shared implementation of per-key bookkeeping for
   stores whose data is not in a SQL database, injected into each such
   store as a view scoped to that store.
+- Handle: a store's data operations bound to one key (and, for the
+  vector store, one container), held by a consumer in place of the
+  store. Stateless: it holds the key and the store and nothing else, so
+  constructing one does no I/O and checks nothing, there is nothing to
+  open, close or evict, and nothing in it goes stale. Every operation
+  through it is fenced by the store on the registry row as if the key
+  had been passed, so a handle to a key deleted after it was built
+  raises `KeyNotLiveError` on its next operation, from that fence and
+  not from anything it remembers. What it buys is routing that cannot
+  be wrong past the point it was built: a consumer holding a handle
+  cannot name another key. `SegmentPartition` and `VectorCollection`
+  are the two. The incarnation-bound handles of the current stores,
+  opened, closed and stale, are not these.
 - Resource: any object the composition builds: a database engine, a
   provider client, a store, a component, the tenant service. A plain
   class or factory with a typed signature.
@@ -242,10 +255,13 @@ Named so the redesign can be checked against it.
    tenant table. Components serve data operations and own their
    per-tenant state, learning of tenants through their hooks.
 2. A data operation names its tenant by id in the request, and every
-   store operation names its key. There are no handles at the API and
-   none in the stores: nothing is opened or closed per tenant, and a
-   process holds no per-tenant state. A store may keep a private
-   per-key cache for a backend that needs one, bounded by the store and
+   store operation names its key. Inside the server a consumer of a
+   store's data holds a stateless handle, the store's operations bound
+   to one key: constructing it does no I/O, nothing is opened or closed
+   per tenant, a process holds no per-tenant state, and every operation
+   through it is fenced by the store as if the key had been passed.
+   There are no handles at the API. A store may keep a private per-key
+   cache for a backend that needs one, bounded by the store and
    invisible above it.
 3. The tenant service knows a component only through its registration: a
    name, a tenant configuration model to validate against, and the
@@ -703,25 +719,27 @@ Operations, in the order the stores are touched:
 - `forget`: look up segments and derivatives; delete vector records;
   delete segments.
 
-Objects per configuration, options per request. `EpisodicMemory` (the
-current `EventMemory`) keeps its shape: one embedder, one segmenter,
-one deriver, constructed with them, its operations taking the key and,
-for `query`, the reranker as an object. It is a configured object,
-never built by the composition. The resource is
+Objects per tenant and request, options per request. `EpisodicMemory`
+(the current `EventMemory`) keeps its shape: one segment partition
+handle, one vector collection handle, one embedder, one segmenter, one
+deriver, constructed with them, no operation naming a key and `query`
+taking the reranker as an object. It is a configured object bound to
+one tenant, never built by the composition and never cached: a handful
+of references, built per request and discarded. The resource is
 `EpisodicMemoryManager`, the name repurposed: constructed with the
 event store, the segment store, the vector store, and the embedders and
 rerankers the composition built, as mappings from id to object. It
 registers with the tenant service, owns the per-tenant table and a
-cache of `EpisodicMemory` objects keyed by structural configuration
-(embedder id, segmenter and deriver options), and serves the routes.
-The object for embedder `e` is built with `embedders[e]` and
-`vector_store.for_container(e)`, the container-scoped view of rule 4,
-so a dispatch error raises instead of writing another model's vectors
-into a container; the embedder and its container are bound in one
-constructor call. On a request the manager reads the tenant's applied
-configuration from its per-tenant row, takes the object for it, fills
-each per-request option the request left out with the tenant's default,
-resolves a reranker id to the object, and makes one call.
+cache of segmenter and deriver objects keyed by their options, and
+serves the routes. On a request the manager reads the tenant's applied
+configuration from its per-tenant row and builds the object in one
+constructor call from `segment_store.partition(key)`,
+`vector_store.collection(key, e)` and `embedders[e]`, the handles of
+rule 4, so past that call nothing can name another tenant, and a
+dispatch error raises at the store's fence instead of writing another
+model's vectors into a container; then it fills each per-request option
+the request left out with the tenant's default, resolves a reranker id
+to the object, and makes one call.
 
 That is all the manager does: dispatch, defaults, validation. It holds
 no search or ingest logic, translates no models, and has one method per
@@ -1136,9 +1154,12 @@ As shipped in #1548, with these changes:
   mint per create, and a mapping consulted on every operation, for a
   capability (in-place replacement) the design rejects.
   `open_or_create_partition` goes.
-- The partition handle goes: every data operation takes the key, and
-  the registry read that fences it returns the codec configuration.
-  Codec objects are cached process-wide by configuration, not per key.
+- The incarnation-bound partition handle, opened and closed, goes; the
+  store's data operations take the key, and `SegmentPartition`, a
+  stateless handle holding the key and the store, is what a consumer
+  receives. The registry read that fences each operation returns the
+  codec configuration; codec objects are cached process-wide by
+  configuration, not per key.
 - `purge_partition(key) -> DONE | MORE`: purges this key's dead rows,
   bounded per call; `DONE` when no garbage remains under the key. On
   SQLite the DELETE waits on the write lock up to the driver's busy
@@ -1311,34 +1332,36 @@ Four rules, then the mechanics.
 4. Scoped views. A dependency that could be misused across a boundary
    is scoped before it is injected, so the misuse is unrepresentable
    rather than checked: the key registry is handed to a store as a view
-   over that store's rows only; the vector store is handed to an
-   episodic memory object as a view over one container only. A store
-   cannot touch another store's rows, and an object built for one
-   embedder cannot write into another embedder's container. The rule
-   applies wherever a shared resource serves several holders.
-5. Three scopes, three kinds of object, told apart by identity. A
-   resource is built by the composition, has identity and a lifecycle,
-   and holds connections or bounds the deployment: stores, the key
-   registry, the providers that exist. A configured object is built by
-   a factory from resources and a tenant's structural configuration, is
-   interchangeable with any other built from the same configuration, is
-   cached by configuration and never by tenant, and has no lifecycle:
-   an `EpisodicMemory` bound to an embedder, a container-scoped view. A
-   call argument belongs to one request. Factories are resources and
-   their products are not; a factory is the resource that stands in for
-   a family of configured objects, which is the metrics factory's model
-   already. An option is classified by the same line: per server if it
-   holds identity or bounds the deployment; per tenant and structural
-   if it decides where or how records are written; per tenant and a
-   default if it only shapes answers but a caller wants one setting for
-   all its calls; per request if it may vary per call. The separation
-   is enforced by signature, not by convention: a structural option is
-   a constructor parameter of the configured object and a parameter of
-   no operation; a per-request option is a parameter of the operation
-   and of no constructor; a tenant default is a field of the tenant
-   configuration model whose name is an operation parameter, checked at
-   import time, and the manager fills it into the call. An option
-   cannot exist in two places, so it cannot silently change scope.
+   over that store's rows only; the segment store and the vector store
+   are handed to an episodic memory object as stateless handles bound
+   to one key, and to one container. A store cannot touch another
+   store's rows, an object built for one tenant cannot name another,
+   and an object built for one embedder cannot write into another
+   embedder's container. The rule applies wherever a shared resource
+   serves several holders.
+5. Three scopes, three kinds of object, told apart by identity. A resource is
+   built by the composition, has identity and a lifecycle, and holds
+   connections or bounds the deployment: stores, the key registry, the
+   providers that exist. A configured object is built by a factory from
+   resources and a tenant's structural configuration, is interchangeable with
+   any other built from the same configuration, is cached by configuration when
+   building it costs something and never by tenant, and has no lifecycle: a
+   segmenter built from its options, a handle, an `EpisodicMemory` bound to a
+   tenant's handles and embedder. A call argument belongs to one request.
+   Factories are resources and their products are not; a factory is the
+   resource that stands in for a family of configured objects, which is the
+   metrics factory's model already. An option is classified by the same line:
+   per server if it holds identity or bounds the deployment; per tenant and
+   structural if it decides where or how records are written; per tenant and a
+   default if it only shapes answers but a caller wants one setting for all its
+   calls; per request if it may vary per call. The separation is enforced by
+   signature, not by convention: a structural option is a constructor parameter
+   of the configured object and a parameter of no operation; a per-request
+   option is a parameter of the operation and of no constructor; a tenant
+   default is a field of the tenant configuration model whose name is an
+   operation parameter, checked at import time, and the manager fills it into
+   the call. An option cannot exist in two places, so it cannot silently change
+   scope.
 
 Kinds. Each slot family has one table from kind name to callable, a
 class or a factory, and the slot's settings type is a discriminated
@@ -1585,8 +1608,8 @@ Reused, with the change named:
 
 - `episodic_memory/event_memory/`: `EventMemory` renamed to episodic
   memory, the segmenters, the derivers, the data types, and the segment
-  store (UUID keys in place of incarnations, `purge_partition`, no
-  handle).
+  store (UUID keys in place of incarnations, `purge_partition`, a
+  stateless handle in place of the incarnation-bound one).
 - `common/vector_store/`: the four implementations, with the registry
   replaced by rows in the key registry checked after each operation,
   the `config` parameter removed from `create_collection`, containers
@@ -1709,8 +1732,9 @@ is corrected to it.
 
 - #1574: this document is the target for every row.
 - #1548: kept; UUID keys replace incarnations, `purge_partition` is
-  added, the partition handle gives way to key-parameterized
-  operations, and `open_or_create_partition` goes.
+  added, the incarnation-bound partition handle gives way to key-taking
+  operations behind a stateless handle, and `open_or_create_partition`
+  goes.
 - #1530: agrees on the outcome, the store ABCs keeping only the strict
   create, and on the reason: only the caller knows why an existing row
   is acceptable. The two prove different things at the same signature.
@@ -1723,8 +1747,9 @@ is corrected to it.
   the declarations and the deployment-side check above are this
   design's own; they differ from #1531 where the key registry changes
   what a store can promise (Qdrant, Milvus and sqlite-vec widen).
-- #1571: the router's 404/409 mapping under "Component contract"; with
-  no handles there is nothing to evict.
+- #1571: the router's 404/409 mapping under "Component contract";
+  handles are stateless and built per request, so there is nothing to
+  evict.
 - #1575, #1576, #1577: resolved by construction: declared components, no
   implicit creation, durable jobs with retry.
 - #1572, #1573, #1564, #1565, #1537, #1563: the vector store contract
