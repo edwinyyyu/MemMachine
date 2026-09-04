@@ -156,12 +156,12 @@ Named so the redesign can be checked against it.
 - Tenant configuration: the resolved options recorded on the tenant
   row, one section per component, applied to the component by a job.
 - Job: a row describing one action for one component on one tenant.
-  Three kinds, all defined and scheduled by the tenant service:
-  `provision` and `delete` for the tenant's lifecycle, `replay` for a
-  subsystem's processing of the tenant's log. A component cannot define
-  a kind.
+  Four kinds, all defined and scheduled by the tenant service:
+  `provision`, `delete` (the unlink, one call) and `sweep` (purging,
+  batch by batch) for the tenant's lifecycle, `replay` for a subsystem's
+  processing of the tenant's log. A component cannot define a kind.
 - Reconciler: the role that claims and executes jobs and runs the
-  tombstone sweep. A process runs it when configured to; a deployment
+  tombstone pass. A process runs it when configured to; a deployment
   runs as many as it needs.
 - Concurrency scope: `process` < `host` < `cluster`, the widest
   deployment boundary within which concurrent instances of a component
@@ -186,9 +186,8 @@ Named so the redesign can be checked against it.
    invisible above it.
 3. The tenant service knows a component only through its registration: a
    name, a tenant configuration model to validate against, and the
-   hooks for the three job kinds and purging (`provision`,
-   `delete`, `purge`, `replay`). It never sees a store or an
-   option.
+   hooks behind the four job kinds (`provision`, `delete`, `purge`,
+   `replay`). It never sees a store or an option.
 4. Stores take a UUID key and nothing else, and fence on that key. Each
    store is two ABCs behind one implementation: `<Store>Manager` for
    lifecycle and `<Store>` for data, the latter reached only through
@@ -236,7 +235,7 @@ configuration document, in this order:
    must reach `server.concurrency_scope`, or startup fails naming the
    narrowest resource.
 5. Roles, from `server.roles`: `api` binds the HTTP routers; `reconciler`
-   starts the job loop and the tombstone sweep. A single-host
+   starts the job loop and the tombstone pass. A single-host
    deployment runs both in one process; a cluster runs many `api`
    processes and as many `reconciler` processes as its job volume
    needs, one at least.
@@ -305,7 +304,7 @@ A `deleted` row is a tombstone: id, former name, `deleted_at`,
 minting is an insert on the primary key, so a duplicate id, whether
 from a collision, a replayed id, or a registry restored from a backup
 the stores were not restored to, fails at the tenant service before any
-store is touched. And it drives the tombstone sweep under "Tenant
+store is touched. And it drives the tombstone pass under "Tenant
 lifecycle", which is what collects a record a crashed operation left
 under the key after purging had finished. A tombstone is not kept
 forever: the sweep removes it on the first pass in which every
@@ -361,25 +360,30 @@ Delete, `DELETE /v1/tenants/{id}`:
 2. Respond 202 with the tenant in `deleting`; `?wait=` as for create. A
    reconciler in the same process is woken; every other reconciler sees
    the jobs at its next poll.
-3. A reconciler executes the delete jobs. Each step calls the
+3. A reconciler executes the `delete` jobs: one call to each
    component's `delete`, which makes the tenant unreachable in every one
-   of its stores, then its `purge`, which removes a bounded amount;
-   both are idempotent, so repeating the pair per step is harmless. The
-   job is done when `purge` reports nothing remains.
-4. When every delete job is done, one transaction removes the job rows
-   and sets the tenant row `deleted`. `GET` then returns 404, and the
-   row stays as the tombstone.
+   of its stores. Seconds, not minutes; nothing is purged yet.
+4. When every `delete` job is done, one transaction sets the tenant row
+   `deleted`, inserts one `sweep` job per component, and removes the
+   other job rows. `GET` then returns 404; the row stays as the
+   tombstone, and the sweeps purge in the background.
+5. A `sweep` job's step calls `purge`, one bounded batch, repeatedly
+   until it reports nothing remains or the step's time budget
+   (`reconciler.step_duration`) is spent; it is done when nothing
+   remains. `purge` is idempotent, so a repeated batch is harmless.
 
-Tombstone sweep: a duty of the tenant service, run by reconciler
+Tombstone pass: a duty of the tenant service, run by reconciler
 processes on `reconciler.sweep_interval`, in every one of them without
 exclusion. It claims `deleted` rows with `FOR UPDATE SKIP LOCKED`,
-oldest `swept_at` first, bounded per call, calls every registered
-component's `purge(tenant_id)`, and stamps `swept_at`; when every
-component found nothing and the row is past `tombstones.retention` on
-the database clock, it removes the row. This is what collects the one
-write that can land after purging (see "How a store fences");
-components whose stores cannot hold such a write return `DONE` at once.
-It is the only scheduled duty in the system.
+oldest `swept_at` first, bounded per call, resets each one's `sweep`
+jobs to pending, and stamps `swept_at`; the sweeps then run as jobs.
+This is what collects the one write that can land after purging (see
+"How a store fences"); components whose stores cannot hold such a write
+return `DONE` on the first batch. When a tombstone's sweeps have all
+completed with `purge` finding nothing on their first batch, and
+`deleted_at` is older than `tombstones.retention` on the database
+clock, the pass removes the row and its sweep rows. It is the only
+scheduled duty in the system.
 
 Configuration update, `PATCH /v1/tenants/{id}` with `configuration`:
 
@@ -432,9 +436,10 @@ Reconciler role:
   concurrent reconcilers serialize there.
 - Execute: the component's hook for the job's action, with the payload
   (for `provision`, the tenant's configuration section at the job's
-  version; for `delete`, the `delete` then `purge` pair above).
-  `DONE` marks the job done; `MORE` records `last_outcome = more` and
-  `last_run_at`; an exception records `error`, the message, and
+  version; for `delete`, the one unlink call; for `sweep`, `purge`
+  until `DONE` or the time budget; for `replay`, the log). `DONE` marks
+  the job done; a spent budget or `MORE` records `last_outcome = more`
+  and `last_run_at`; an exception records `error`, the message, and
   `attempts + 1`. The transaction that marks a `provision` or `delete` job done
   checks the tenant's remaining jobs of that action and applies the
   state transition if none remain. Hooks are idempotent, so a step
@@ -495,8 +500,8 @@ at startup:
     purging.
   - `purge(tenant_id) -> DONE | MORE`: remove a bounded amount of what
     the component's stores hold under the tenant id; `DONE` when
-    nothing is found. Called by the delete job after `delete`, and by
-    the tombstone sweep for as long as the tombstone exists.
+    nothing is found. Called by a `sweep` job, for as long as
+    the tombstone exists.
   - Any further action the component defines.
 
 A memory subsystem additionally exposes to the ingest service and the
@@ -885,8 +890,8 @@ never returns a dead key's records.
 
 What this does not guarantee, and what handles it. An operation that
 crashes between its remote write and its check leaves a record under a
-key that may be dead. The delete job's `purge` removes it, and if it
-landed after that purge's last pass, the tombstone sweep does. That is
+key that may be dead. The sweep's `purge` removes it, and if it
+landed after that purge's last pass, the tombstone pass does. That is
 the one residual, and it is inherent: the registry row and the backend
 write are not one atomic action, so any ordering leaves a window in
 which the check's outcome and the write's landing are separated by an
@@ -1070,7 +1075,7 @@ backend that cannot list or reject keys.
   delete records under the key in bounded steps by the backend's means
   in the table below, `MORE` while records remain, and remove the row
   when nothing remains. With no row, delete by key in every container
-  the store has, which is how the tenant service's tombstone sweep
+  the store has, which is how the tenant service's tombstone pass
   reaches a record that landed after the row went; `DONE` when nothing
   is found. Containers are few (one per embedder), so a no-row purge
   is a bounded number of filter deletes that mostly find nothing.
@@ -1079,8 +1084,8 @@ Why nothing escapes. Every record carries a key whose registry row
 existed before the record could, because a write reads the row first
 and no write creates a row. A completed write is checked after it lands
 and raises if the key died meanwhile. A write whose check never ran
-lies under a key that is `dropping`, purged by the delete job, or
-gone, purged by the tombstone sweep through the no-row path. No
+lies under a key that is `dropping`, purged by the sweep, or gone,
+purged again by a sweep the tombstone pass reset, through the no-row path. No
 rejection compares timestamps, and no key is forgotten while a record
 under it could exist: the tombstone outlives the last possible stale
 write by the retention margin under "Tenant registry".
@@ -1539,7 +1544,7 @@ In the first deployment, because the first records freeze it:
    backends cannot rewrite a payload key in place.
 4. A registry row for every vector key, with strict create and the check
    after each operation. The row is what makes a key's garbage
-   addressable at all; purging and the tombstone sweep can follow,
+   addressable at all; purging and the tombstone pass can follow,
    but a key that was never registered can never be purged.
 5. The public surface: the v1 API, the event shape, the filter as a JSON
    tree, limits as maximums, one error handler. Clients freeze it, and
@@ -1548,7 +1553,7 @@ In the first deployment, because the first records freeze it:
    the start and painful once `create_all` has run anywhere.
 
 Before churn, not before the first byte: the reconciler role executing
-durable deletions and `purge`, the tombstone sweep, `replay`. None
+durable deletions, sweeps and replays, and the tombstone pass. None
 writes anything into records, and a deployment with few deletions can
 run with them recorded as jobs until it lands. "No implicit creation"
 is not a task in a new server; there is no path to remove.

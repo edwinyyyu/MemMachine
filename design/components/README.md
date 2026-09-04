@@ -18,6 +18,12 @@ Conventions shared by every specification:
   every bounded, repeatable step. `MORE` means "call again"; `DONE`
   means "nothing remains". A step may raise instead, and its caller
   retries.
+- Vocabulary of removal: `delete` is the logical unlink, O(1); `purge`
+  is one bounded batch of physical removal, returning `Progress`; a
+  sweep is a run that calls `purge` until `DONE` or until a step's time
+  budget (`reconciler.step_duration`) is spent. A `sweep` job sweeps
+  one tenant for one component; the tombstone pass resets the sweeps of
+  deleted tenants so late garbage is purged too.
 - Errors are one hierarchy under `MemMachineError`, named for the
   condition, never for a driver: `KeyExistsError`, `KeyNotLiveError`,
   `KeyReusedError`, `TenantNotFoundError`, `TenantNotActiveError`,
@@ -47,7 +53,7 @@ Conventions shared by every specification:
 Files:
 
 - `tenant_service.md`: the tenant registry, jobs, the reconciler role,
-  the tombstone sweep, the component registration protocol.
+  the tombstone pass, the component registration protocol.
 - `key_registry.md`: per-key bookkeeping for stores whose data is not
   in SQL, and the scoped view a store receives.
 - `event_store.md`: the system of record for events.

@@ -1,7 +1,7 @@
 # Tenant service
 
 New component. Control plane: creates, renames, configures and deletes
-tenants; records jobs; runs the reconciler role and the tombstone sweep;
+tenants; records jobs; runs the reconciler role and the tombstone pass;
 knows components only through their registrations. The only reader and
 writer of the tenant tables.
 
@@ -12,7 +12,8 @@ writer of the tenant tables.
 - `templates: Mapping[str, TenantTemplate]`, validated at construction
   against every component's `tenant_configuration` model.
 - `settings: TenantServiceSettings`: `reconciler.poll_interval`,
-  `reconciler.jobs_per_pass`, `reconciler.purge_interval`,
+  `reconciler.jobs_per_pass`, `reconciler.step_duration`,
+  `reconciler.purge_interval`,
   `reconciler.backoff`, `reconciler.stuck_after`,
   `reconciler.sweep_interval`, `tombstones.retention`.
 
@@ -44,10 +45,10 @@ class TenantComponent(ABC):
 - `delete(tenant_id)`: idempotent; make the tenant unreachable in every
   one of the component's stores (each store's logical delete) and
   remove its per-tenant row. Fast; no purging.
-- `purge(tenant_id) -> Progress`: remove a bounded amount of what the
+- `purge(tenant_id) -> Progress`: remove one bounded batch of what the
   component's stores hold under the key; `DONE` when nothing is found.
-  Called by the delete job after `delete`, and by the tombstone sweep.
-  Never called on a live key (see "Serialization").
+  One batch per call; the sweep job loops. Never called on a live key
+  (see "Serialization").
 - `validate_update(old, new)`: raise `InvalidTenantConfigurationError`
   if `new` changes an immutable field.
 - `replay(tenant_id) -> Progress`: process a bounded amount of what
@@ -91,7 +92,7 @@ prefix listing.
 | `id` | `BigInteger` (autoincrement; `Integer` on SQLite) | primary key |
 | `tenant_id` | `Uuid` | not null; foreign key to `tenants.id` (no cascade: rows are removed by the transition that sets `deleted`) |
 | `component` | `String(64)` | not null |
-| `action` | `String(32)` | not null; check in (`provision`, `delete`, `replay`) |
+| `action` | `String(32)` | not null; check in (`provision`, `delete`, `sweep`, `replay`) |
 | `payload` | `JSON` (`JSONB` on PostgreSQL) | not null |
 | `state` | `String(16)` | not null; check in (`pending`, `done`) |
 | `attempts` | `Integer` | not null, default 0 |
@@ -118,10 +119,12 @@ delete request's cancellation of pending jobs.
 
 ## Job kinds
 
-Three, all defined by the tenant service, which is the only thing that
-defines, schedules and gives semantics to a kind. Two are control-plane:
-`provision`, which creates or updates a component's resources for a
-tenant, and `delete`, which unlinks and purges them. One is
+Four, all defined by the tenant service, which is the only thing that
+defines, schedules and gives semantics to a kind. Three are
+control-plane: `provision`, which creates or updates a component's
+resources for a tenant; `delete`, which unlinks them, one call, done in
+seconds; and `sweep`, which purges them batch by batch until nothing
+remains, and again whenever the tombstone pass resets it. One is
 data-plane: `replay`, one row per (tenant, component), created by
 `provision`, reset to pending by every ingest and deletion, and the
 component's only processing path (`episodic_memory_manager.md`). A
@@ -226,27 +229,33 @@ Semantics:
   calls nothing. A delete request waits for a running step, then
   cancels pending `provision` jobs. No `provision` hook runs after a
   `delete` hook; `purge` never sees a live key.
-- Execute: `provision` calls the hook with the section at the payload's version
-  and marks done; `delete` calls `delete` then `purge`, `DONE` marking the
-  job done and `MORE` recording `last_outcome = more` and `last_run_at`;
-  `replay` calls the hook the same way, and its row is never removed
-  while the tenant lives: `DONE` sets it `done` until the next reset.
-  An exception records `error`,
+- Execute: `provision` calls the hook with the section at the payload's
+  version and marks done. `delete` calls `delete` once and marks done.
+  `sweep` calls `purge` repeatedly until it returns `DONE`, which marks
+  the job done, or until the step has run for
+  `reconciler.step_duration`, which records `last_outcome = more` and
+  `last_run_at`. `replay` calls the hook the same way, and its row is
+  never removed while the tenant lives: `DONE` sets it `done` until the
+  next reset. An exception records `error`,
   `last_error`, `last_run_at` and `attempts + 1`; eligibility follows at the
   next claim. The transaction that marks the last `provision` job done sets
-  `active`; the one that marks the last `delete` job done removes the job rows
-  and sets `deleted`.
+  `active`; the one that marks the last `delete` job done sets
+  `deleted`, inserts one `sweep` job per component, and removes the
+  `provision`, `delete` and `replay` rows; the `sweep` rows stay until
+  the tombstone is pruned.
 - Reset: the ingest service sets a tenant's `replay` jobs to `pending`
   through `reset_replay(tenant_id)`, in the ingest's own transaction
   where the engines are shared and after its commit otherwise. A
   running `replay` step keeps running; the reset only sets `pending`,
   so the row is claimable again when the step ends.
-- Tombstone sweep, every `sweep_interval`, in every reconciler process
+- Tombstone pass, every `sweep_interval`, in every reconciler process
   without exclusion: claim `deleted` rows with `FOR UPDATE SKIP LOCKED`,
-  oldest `swept_at` first, bounded per call; call every component's
-  `purge`; stamp `swept_at`; when every component returned `DONE` and
-  `deleted_at < now() - tombstones.retention` on the database clock,
-  delete the row. The retention assumes every remote client has a
+  oldest `swept_at` first, bounded per call; reset each one's `sweep`
+  jobs to `pending` and stamp `swept_at`. The sweeps then run as jobs.
+  When a tombstone's `sweep` jobs have all completed with `purge`
+  finding nothing on their first batch, and `deleted_at < now() -
+  tombstones.retention` on the database clock, the pass deletes the
+  row and its job rows. The retention assumes every remote client has a
   request timeout; the composition refuses one without.
 - Cost: one connection per executing job, bounded by `jobs_per_pass`.
 
@@ -272,9 +281,9 @@ means the tenant row's lock orders the two and the second re-reads state.
 | --- | --- | --- |
 | create, name N | create, name N | unique index: the second raises `TenantExistsError`; no store touched |
 | create (id from a restored registry or a library caller) | any | primary key: `TenantExistsError`; no store touched |
-| provision step running | delete request | delete waits for the step (tenant row lock), then marks pending `provision` jobs done and inserts `delete` jobs; later `provision` steps see `deleting` and mark themselves done; created resources are purged by the delete jobs |
+| provision step running | delete request | delete waits for the step (tenant row lock), then marks pending `provision` jobs done and inserts `delete` jobs; later `provision` steps see `deleting` and mark themselves done; created resources are purged by the sweeps |
 | delete request | delete request | serialized; the second finds `deleting`, inserts nothing, responds the same 202 |
-| provision step | delete step, same tenant | cannot overlap: serialized, and the delete request already cancelled pending `provision` jobs; no `provision` hook runs after a `delete` hook |
+| provision step | delete or sweep step, same tenant | cannot overlap: serialized, and the delete request already cancelled pending `provision` jobs; no `provision` hook runs after a `delete` hook, and no `sweep` exists before `deleted` |
 | configuration update | delete request | serialized; update after delete raises `TenantNotActiveError`; update before delete leaves a `provision` job that sees `deleting` and marks itself done |
 | configuration update | configuration update | serialized; both versions recorded in order; the `provision` job row is reset to the later version (a running step finishes first, then the reset lands); applied version is the latest |
 | rename | create with that name | unique index; the loser raises `TenantExistsError` |
@@ -282,11 +291,11 @@ means the tenant row's lock orders the two and the second re-reads state.
 | any step | reconciler crash mid-step | the database releases the job and tenant row locks; the job stays `pending` and is claimable at once; hooks are idempotent; a half-done `provision` resumes from `creating` rows |
 | create request executing steps inline | api process crash | same as above; a reconciler finishes; the caller's `?wait=` fails and it polls |
 | claim | claim, other reconciler | `FOR UPDATE SKIP LOCKED`: a job has one executor; on SQLite the file lock serializes |
-| delete step | tombstone sweep | never overlap: a row is `deleted` only after every `delete` job is done |
-| tombstone sweep | tombstone sweep, other reconciler | `SKIP LOCKED` on tombstone rows; a row has one sweeper per pass |
+| sweep job | tombstone pass | the pass only resets a `sweep` row to pending; a running sweep finishes its step first, since the reset waits for the row lock |
+| tombstone pass | tombstone pass, other reconciler | `SKIP LOCKED` on tombstone rows; a row is reset by one pass at a time; sweep jobs are claimed like any job |
 | `replay` step | delete request | serialized; a `replay` step on `deleting` marks itself done |
 | `replay` step | tenant still `provisioning` | rescheduled with backoff; `replay` runs only on `active` |
-| data operation | delete commit | store fences: in-statement for SQL stores, check-after for the rest; the operation raises `KeyNotLiveError`, the router answers 409 while the row exists and 404 after; a remote write already sent is purged by the delete job or the sweep |
+| data operation | delete commit | store fences: in-statement for SQL stores, check-after for the rest; the operation raises `KeyNotLiveError`, the router answers 409 while the row exists and 404 after; a remote write already sent is purged by the sweep or the sweep |
 | data operation | tenant `provisioning` | the component's per-tenant row is written at the end of `provision`, so the operation finds no row and the router answers 409 `tenant_not_active` |
 | data operation | configuration update | the operation uses the row it read at its start; the next request uses the new configuration |
 | `schema upgrade` | `serve` starting | `serve` verifies and fails if not at head; a deployment orders upgrade before serve; during a rollout, expand/contract keeps both releases valid |

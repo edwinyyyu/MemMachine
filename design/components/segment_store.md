@@ -83,7 +83,7 @@ from the last segment returned.
   is pending (a queue entry under the key).
 - `purge_partition(key) -> Progress` is added: this key's dead rows,
   bounded by `purge_max_segments`; `DONE` when none remain. It is what
-  the delete job and the tombstone sweep call; `purge_deleted_partitions`
+  the `sweep` job calls; `purge_deleted_partitions`
   stays for library users and the server does not run it.
 - `get_segment_contexts` gains `since` and `before` on the real
   `timestamp` column, as on the reference branch (commit 27b3279b), and
