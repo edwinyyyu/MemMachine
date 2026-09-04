@@ -96,14 +96,16 @@ same transaction as its last segment write where the engines are the
 same, and after it otherwise; on an exception it enqueues `catch_up`
 and reports `deferred`.
 
-`catch_up(tenant_id, payload) -> Progress`: replay the event store's
-log from `min(payload.from_position, watermark)`: `read_log(key,
-after, batch)`, then for each entry `process` the event of an `added`
-entry that still has one, or `forget` the uuid of a `deleted` entry;
-advance the watermark past the batch; `MORE` while `head(key)` is past
-the watermark. Both kinds of entry are handled, so a deletion a client
-was acknowledged for is applied to derived data at least once without
-the client retrying.
+`catch_up(tenant_id, payload) -> Progress`, the subsystem's repair.
+The watermark is the log position this tenant has been processed up
+to. A request-path failure enqueues the job with the lowest position it
+failed at. The job reads the log from the lower of that and the
+watermark, one batch at a time; for each entry it processes the event
+of an `added` entry (skipping one whose event is gone) or forgets the
+uuid of a `deleted` entry; it advances the watermark past the batch and
+returns `MORE` until the log has nothing newer. Every acknowledged
+addition and deletion therefore reaches this subsystem at least once,
+without the client retrying.
 
 ## Cache
 

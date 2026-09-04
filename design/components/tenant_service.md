@@ -90,13 +90,24 @@ prefix listing.
 | `payload` | `JSON` (`JSONB` on PostgreSQL) | not null |
 | `state` | `String(16)` | not null; check in (`pending`, `done`) |
 | `attempts` | `Integer` | not null, default 0 |
+| `last_outcome` | `String(8)` | null; check in (`more`, `error`) |
 | `last_error` | `Text` | null |
-| `next_run_at` | `DateTime(timezone=True)` | not null, `func.now()` |
+| `last_run_at` | `DateTime(timezone=True)` | null |
 | `created_at`, `updated_at` | `DateTime(timezone=True)` | not null, `func.now()` |
 
+The row records what happened, never what should happen next: when a
+job is eligible is computed at claim time from `last_run_at`,
+`last_outcome` and `attempts` with the reconciler's settings, so a
+change of `reclaim_interval` or `backoff` applies to every pending job
+at once and rewrites no row, and an operator's retry is `attempts = 0`.
+A `next_run_at` column would be a prescription written by one version
+of the policy and honoured by another.
+
 Constraints and indexes: unique `tenant_jobs__tenant_component_action
-(tenant_id, component, action)`; `tenant_jobs__pending (next_run_at)`
-partial on PostgreSQL `WHERE state = 'pending'`, the claim's scan;
+(tenant_id, component, action)`; `tenant_jobs__pending (last_run_at)`
+partial on PostgreSQL `WHERE state = 'pending'`, the claim's scan
+(pending rows are few, so eligibility is evaluated per row, not
+indexed);
 `tenant_jobs__tenant (tenant_id)` for a tenant's job listing and the
 delete request's cancellation of pending jobs.
 
@@ -120,8 +131,9 @@ are guaranteed by their jobs.
 
 ## Queueing
 
-The job table is a queue: `pending` rows ordered by `next_run_at`,
-claimed under `FOR UPDATE SKIP LOCKED`, and serialized per tenant by
+The job table is a queue: `pending` rows ordered by last run, or by
+creation for a job never run, claimed under `FOR UPDATE SKIP LOCKED`,
+and serialized per tenant by
 the tenant row's lock. There is no per-tenant FIFO beyond that; the
 only ordering a tenant's jobs need, `provision` before `delete`, is the
 state machine's. The event store's log is the per-tenant data queue,
@@ -190,9 +202,13 @@ Semantics:
 ## Reconciler role
 
 - Claim: `SELECT ... FROM tenant_jobs WHERE state = 'pending' AND
-  next_run_at <= now() ORDER BY next_run_at LIMIT n FOR UPDATE SKIP
-  LOCKED`, then `SELECT ... FROM tenants WHERE id = ? FOR UPDATE`, both
-  held for the step. On SQLite, `BEGIN IMMEDIATE` and no `SKIP LOCKED`.
+  (last_run_at IS NULL OR last_run_at + :delay <= now()) ORDER BY
+  COALESCE(last_run_at, created_at) LIMIT n FOR UPDATE SKIP LOCKED`,
+  where `:delay` is a `CASE` over `last_outcome` and `attempts` bound
+  from the settings (`reclaim_interval` after `more`; `backoff` raised
+  to `attempts` after `error`); then `SELECT ... FROM tenants WHERE id =
+  ? FOR UPDATE`; both held for the step. On SQLite, `BEGIN IMMEDIATE`
+  and no `SKIP LOCKED`.
 - Serialization: every lifecycle transition and every step holds the
   tenant row's lock, so transitions and steps for one tenant are totally
   ordered. A step re-reads the state under the lock: a `provision` or
@@ -202,10 +218,11 @@ Semantics:
   `delete` hook; `reclaim` never sees a live key.
 - Execute: `provision` calls the hook with the section at the payload's
   version and marks done; `delete` calls `delete` then `reclaim`, `DONE`
-  marking the job done and `MORE` rescheduling at `now() +
-  reclaim_interval`; a component-defined kind calls its handler the
-  same way. An exception reschedules with backoff and records
-  `attempts` and `last_error`. The transaction that marks the last
+  marking the job done and `MORE` recording `last_outcome = more` and
+  `last_run_at`; a component-defined kind calls its handler the same
+  way. An exception records `error`, `last_error`, `last_run_at` and
+  `attempts + 1`; eligibility follows at the next claim. The
+  transaction that marks the last
   `provision` job done sets `active`; the one that marks the last
   `delete` job done removes the job rows and sets `deleted`.
 - Tombstone sweep, every `sweep_interval`, in every reconciler process

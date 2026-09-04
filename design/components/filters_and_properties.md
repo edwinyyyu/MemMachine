@@ -66,6 +66,42 @@ Not(operand: FilterExpr)
   conjunction naming declared keys only, and the rest; a disjunction or
   negation mixing the two is treated as undeclared as a whole.
 
+## Provider support
+
+Whether each node can be evaluated by the backend during its search.
+Every backend evaluates `Equals`, `Ordering` on numbers and datetimes,
+and `And`; the rest varies. A store declares the set as
+`supported_filter_nodes`, and the subsystem routes any other predicate
+to the segment store, where SQL evaluates the whole tree.
+
+| Backend | `NotEquals` | `In` | `IsMissing` | `Or` | `Not` | Note |
+| --- | --- | --- | --- | --- | --- | --- |
+| Qdrant | yes | yes (`match any`) | yes (`is_empty`) | yes (`should`) | yes (`must_not`, nested filters) | |
+| Milvus | yes | yes | yes (`exists` on dynamic fields) | yes | yes | |
+| pgvector, and every SQL store | yes | yes | yes | yes | yes | SQL |
+| Pinecone | yes (`$ne`) | yes | yes (`$exists`) | yes | by rewrite | no `$not`: negation is pushed to the leaves |
+| S3 Vectors | yes (`$ne`) | yes | yes (`$exists`) | yes | by rewrite | no `$not`; ordering on numbers only, datetimes stored as numbers |
+| Weaviate | yes (`NotEqual`) | yes (`ContainsAny`) | yes (`IsNull`) | yes | by rewrite | no `Not` operator |
+| Chroma | no | yes (`$in`, `$nin`) | no | yes | no | `where` has no `$ne`, `$not` or `$exists` |
+| sqlite-vec | yes (`!=`) | no | no | no | no | KNN metadata constraints are comparisons joined by `AND` only |
+| usearch store | post-filtered by the store over its records table | | | | | |
+
+Two normalizations let a store compile what the table marks "by
+rewrite": `Not` is pushed to the leaves by De Morgan
+(`Not(And) -> Or(Not...)`, `Not(Equals) -> NotEquals` where the
+backend's inequality excludes missing keys, else `Or(NotEquals,
+IsMissing)`, `Not(Ordering) -> Or(inverse Ordering, IsMissing)`,
+`Not(In) -> not-in`, `Not(IsMissing) -> exists`); and `NotEquals`
+compiles to `ne AND exists` on a backend whose `$ne` matches records
+lacking the key. A node a backend cannot reach after normalization is
+outside its `supported_filter_nodes`.
+
+The language does not diverge between SQL and vector stores: the tree
+is one, and only the place of evaluation differs. A richer language for
+the segment store alone was considered and rejected for that reason;
+whatever SQL could add (pattern matching, arithmetic) would be a second
+filter language for callers to learn and for MCP to describe.
+
 ## JSON form
 
 At the API and in MCP a filter is a JSON object validated by the schema

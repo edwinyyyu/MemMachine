@@ -54,6 +54,9 @@ class VectorStore(ABC):
                                     uuids: Iterable[UUID]) -> dict[UUID, float]
 
     @property
+    def supported_filter_nodes(self) -> frozenset[type]
+
+    @property
     def concurrency_scope(self) -> ConcurrencyScope
 ```
 
@@ -75,10 +78,14 @@ Semantics:
   consistency); read the row again and raise `KeyNotLiveError` if it is
   no longer `live`.
 - `query`: `filter` names declared keys only and raises
-  `UndeclaredPropertyKeyError` otherwise; evaluated during the search
-  where the backend can. `allowed_uuids` restricts the search to those
-  records. Read the row, query, read the row again. Returns at most
-  `limit` matches per vector, fewer when the filter admits fewer.
+  `UndeclaredPropertyKeyError` otherwise, and uses only nodes in
+  `supported_filter_nodes`, raising `UnsupportedFilterError` otherwise;
+  evaluated during the search. `allowed_uuids` restricts the search to
+  those records. Read the row, query, read the row again. Returns at
+  most `limit` matches per vector, fewer when the filter admits fewer.
+- `supported_filter_nodes`: the node classes the backend evaluates
+  during a search, per the table in `filters_and_properties.md`; the
+  subsystem routes any other predicate to the segment store.
 - `get_cosine_similarity`: score given records against a vector,
   fenced the same way; the allowlist plan's scoring step.
 - `delete_collection`: `set_state(key, DROPPING)`; O(1); idempotent.

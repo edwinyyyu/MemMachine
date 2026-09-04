@@ -286,7 +286,12 @@ on them. Only the tenant service reads or writes them.
   on `(tenant_id, component, action)`.
 - `state`: `pending`, `done`.
 - `configuration_version`: for `provision`, the version the job applies.
-- `attempts`, `last_error`, `next_run_at`, `created_at`, `updated_at`.
+- `attempts`, `last_outcome` (`more` or `error`), `last_error`,
+  `last_run_at`, `created_at`, `updated_at`. The row records what
+  happened; when a job is next eligible is computed at claim time from
+  those columns and the reconciler's settings, so a change of schedule
+  applies to every pending job at once and rewrites no row, and an
+  operator's retry is `attempts = 0`.
 
 A `deleted` row is a tombstone: id, former name, `deleted_at`,
 `swept_at`, nothing else. It does two jobs. It enforces "never reused":
@@ -405,22 +410,25 @@ Reconciler role:
 
 - One loop per process that has the role. It polls every
   `reconciler.poll_interval` and when woken locally.
-- Claim: `SELECT ... FROM tenant_jobs WHERE state = 'pending' AND
-  next_run_at <= now() ORDER BY next_run_at LIMIT n FOR UPDATE SKIP
-  LOCKED`, and the row lock is held for the duration of the step: the
-  hook runs, and the same transaction marks the outcome and commits. A
-  crashed process's lock is released by the database and the job is
-  claimable at once. There is no lease and no clock comparison; the one
-  `now()` is the database's and decides only when a backed-off job is
-  due, never whether an effect is valid. On SQLite the same statement
-  without `SKIP LOCKED` under `BEGIN IMMEDIATE`; concurrent reconcilers
-  serialize there.
+- Claim: the `pending` rows that are eligible now, oldest first by
+  `COALESCE(last_run_at, created_at)`, `LIMIT n FOR UPDATE SKIP LOCKED`.
+  Eligible means `last_run_at IS NULL`, or `last_run_at + delay <=
+  now()` with `delay` computed in the statement from the settings:
+  `reconciler.reclaim_interval` after a `more` outcome,
+  `reconciler.backoff` raised to `attempts` after an error. The row lock
+  is held for the duration of the step: the hook runs, and the same
+  transaction records the outcome and commits. A crashed process's lock
+  is released by the database and the job is claimable at once. There
+  is no lease; the one `now()` is the database's and decides only when
+  a job is eligible, never whether an effect is valid. On SQLite the
+  same statement without `SKIP LOCKED` under `BEGIN IMMEDIATE`;
+  concurrent reconcilers serialize there.
 - Execute: the component's hook for the job's action, with the payload
   (for `provision`, the tenant's configuration section at the job's
   version; for `delete`, the `delete` then `reclaim` pair above).
-  `DONE` marks the job done; `MORE` reschedules it at
-  `now() + reconciler.reclaim_interval`; an exception reschedules with
-  backoff. The transaction that marks an `provision` or `delete` job done
+  `DONE` marks the job done; `MORE` records `last_outcome = more` and
+  `last_run_at`; an exception records `error`, the message, and
+  `attempts + 1`. The transaction that marks a `provision` or `delete` job done
   checks the tenant's remaining jobs of that action and applies the
   state transition if none remain. Hooks are idempotent, so a step
   repeated after a crash is harmless.
@@ -585,10 +593,14 @@ Operations, in the order the stores are touched:
 - `process`: segment, derive, embed; write segments; upsert derivatives;
   advance the watermark. A crash between stores leaves an event with
   partial derived data behind the watermark; `catch_up` reprocesses it.
-- `catch_up` (job): replay the log from the lower of the watermark and
-  the failed position the job carries, `process` for `added` entries
-  and `forget` for `deleted` ones, until the log has nothing newer. The
-  watermark moves only forward.
+- `catch_up` (job): the subsystem's repair. Its per-tenant watermark
+  is the log position it has processed up to; a request-path failure
+  enqueues `catch_up` carrying the lowest position it failed at; the
+  job reads the log from the lower of the two, processes each `added`
+  entry and forgets each `deleted` one, advances the watermark, and
+  returns `MORE` until the log has nothing newer. Positions exist for
+  this: they make "what has this subsystem processed" one integer per
+  tenant, "what is left" a range, and the lag a subtraction.
 - Search: embed the query; split the filter and choose the plan under
   "Properties and filtering"; vector query (checked against the store's
   registry row after the query, inside the vector store); segment
@@ -782,8 +794,19 @@ do and on how selective the predicate is; the caller never chooses.
   Milvus, Weaviate, S3 Vectors, sqlite-vec, pgvector), which is what
   keeps a filtered search returning enough results instead of filtering
   away the ones it found.
-- Undeclared keys never reach the vector store. Episodic memory splits
-  the filter: the declared part goes to the vector query; the rest is
+- A store also declares the filter nodes it can evaluate during the
+  search (`supported_filter_nodes`). Every backend evaluates equality,
+  ordering on numbers and datetimes, membership and conjunction; some
+  cannot evaluate a negation, a disjunction or a missing-key test
+  (Chroma's `where` has no `$not`, `$ne` or `$exists`; sqlite-vec's KNN
+  takes comparisons joined by `AND` only). A predicate a store cannot
+  evaluate is routed exactly like an undeclared key: to the segment
+  store, where SQL evaluates the whole language. One language, two
+  places of evaluation; nothing diverges between SQL and vector
+  filters. The table is in `design/components/filters_and_properties.md`.
+- Undeclared keys, and predicates the store cannot evaluate, never
+  reach the vector store. Episodic memory splits the filter: the part
+  the store evaluates goes to the vector query; the rest is
   resolved in the segment store by a bounded probe
   (`filter.selective_limit`). If the matching segments fit under it,
   their derivative ids become an allowlist the vector store scores

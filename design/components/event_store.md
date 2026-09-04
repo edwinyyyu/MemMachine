@@ -117,16 +117,27 @@ class EventStore(ABC):
 - Reads carry `EXISTS (registry row)`; a read on a dead key raises
   `KeyNotLiveError`.
 
+## What positions are for
+
+A position is the log's order within a tenant, contiguous and
+commit-ordered. It exists so that a subsystem's progress is one integer
+per tenant (the watermark), so that "what is left to process" is a
+range the subsystem reads from that integer, so that lag is a
+subtraction (`head` minus watermark, the status endpoint), and so that
+an event's addition is always replayed before its deletion. Positions
+are internal: events are addressed by uuid everywhere else, and a
+position is never a request parameter. Commit order is what makes
+"read after p" exact, and it is why `add_events` takes the key's row
+exclusively rather than a sequence.
+
 ## Why a log
 
-A subsystem keeps one watermark over the log and replays from it, so
-every addition and every deletion a client was acknowledged for is
-processed by every subsystem at least once, without the client
-retrying: the request path's synchronous `process` is a latency
-optimization, and `catch_up` is the guarantee. The log is the per-tenant
-data queue; it needs no message broker, because an entry and the event
-it describes are one transaction, and a broker could not offer that
-without an outbox on top.
+A subsystem replays the log from its watermark, so every addition and
+deletion a client was acknowledged for reaches every subsystem at least
+once without the client retrying: the request path's immediate
+processing is a latency optimization and `catch_up` is the guarantee.
+The log is the per-tenant data queue; an entry and its event are one
+transaction, which a broker could not join without an outbox on top.
 
 ## Concurrency scope
 
