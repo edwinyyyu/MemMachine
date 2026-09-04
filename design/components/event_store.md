@@ -48,6 +48,7 @@ class LogEntry(BaseModel):
 | `uuid` | `Uuid` | primary key part |
 | `position` | `BigInteger` | not null; unique `(key, position)`; the position of the event's `added` entry |
 | `timestamp` | `DateTime(timezone=True)` | not null, UTC |
+| `session_id` | `Text` | null |
 | `source_id` | `Text` | null |
 | `context` | `LargeBinary` | null, codec-encoded |
 | `properties` | `JSON` (`JSONB` on PostgreSQL) | not null |
@@ -55,7 +56,8 @@ class LogEntry(BaseModel):
 | `ingested_at` | `DateTime(timezone=True)` | not null, `func.now()` |
 
 Indexes: `event_store_ev__key_timestamp (key, timestamp)` for `list_events` by
-time; `event_store_ev__key_source (key, source_id)`; a GIN index on
+time; `event_store_ev__key_session (key, session_id, timestamp)`;
+`event_store_ev__key_source (key, source_id)`; a GIN index on
 `properties` on PostgreSQL, added by a deployment as it needs, since undeclared
 keys are filtered here.
 

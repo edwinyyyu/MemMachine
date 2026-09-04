@@ -131,6 +131,16 @@ Named so the redesign can be checked against it.
   id, an optional context, one or more content blocks, properties.
   Events are the caller's data; the event store records them and memory
   subsystems process them.
+- Session id: the stream an event belongs to, a conversation or an
+  interaction the application delimits, a bounded string it owns,
+  optional; events with the same session id form one ordered stream.
+  A system field beside `timestamp`, indexed, filtered by
+  `session_ids`, and the field the server's own semantics depend on:
+  the one total order is within a session, so expansion and context
+  windows never cross from one conversation into another that happens
+  to be interleaved in time. Events with no session id form the
+  tenant's ungrouped stream. Inside a tenant "session" means exactly a
+  conversation, which is why the tenant is not called one.
 - Source id: the stable identifier of the entity responsible for an
   event's content, human, agent, tool or import, a bounded string the
   application owns. A system field beside `timestamp`, indexed and
@@ -674,8 +684,8 @@ Operations, in the order the stores are touched:
   contexts; on request, the full events from the event store. Scores
   are cosine similarity throughout; there is no similarity metric
   option.
-- Expand: the neighbourhood of a segment or event in the tenant's one
-  total order, `before` and `after` counted in segments or events, the
+- Expand: the neighbourhood of a segment or event in its session's
+  one total order, `before` and `after` counted in segments or events, the
   way claude-memory walks a conversation around a memory; one indexed
   read on the segment store, no embedding. Specified in
   `design/components/episodic_memory.md`.
@@ -769,10 +779,12 @@ Two tiers of fields, one mechanism underneath. The reference is the
 2d5dc2b5), adjusted where noted.
 
 System fields. Defined by the server, first-class in the API, typed: for
-an event, `id`, `timestamp` and `source_id`. Search takes them as
+an event, `id`, `timestamp`, `session_id` and `source_id`. Search
+takes them as
 named
 parameters, `since` and `before` (inclusive and exclusive, so ranges
-meet without overlap) and `source_ids` (a list; a source's rendered
+meet without overlap), `session_ids` and `source_ids` (lists; a
+source's rendered
 name lives in the context and is never filtered). They are never
 spelled
 inside the user filter, so no caller and no model decides between
@@ -783,6 +795,19 @@ contract at import time; the prefix is the distribution name, so its
 uniqueness is the package registry's. Stores therefore index and filter
 system fields with the same machinery as user properties, and a caller
 key beginning with the prefix is rejected on the way in.
+
+Which fields are system fields is decided by one criterion: the server
+gives the field semantics beyond filtering. `timestamp` orders,
+bounds and scores; `session_id` bounds the total order that expansion
+and context windows walk; `source_id` is kept for universality and its
+tie to the `author` part. Nothing else qualifies, and nothing else
+needs to: a deployment that filters often on a channel, a workspace, a
+user or a kind declares it in the vector store's `indexed_properties`
+and gets the same during-search filtering, typed, without a core
+change, and a property it does not declare is still filterable through
+the segment store. That is the answer to "too few" and "too many"
+alike: the system set is closed by the criterion, and the efficient
+set is open to each deployment.
 
 User properties. `properties` on an event: keys `[a-z0-9_]`, bounded by
 the stores' naming contract, not reserved; values scalar only: string
@@ -1437,17 +1462,19 @@ Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 
 | Method and path | Effect | Status |
 | --- | --- | --- |
-| `POST .../search` | body `query`, `limit`, `since`, `before`, `source_ids`, `filter` (JSON tree), `expand_context`, `include_events`, `reranker` (an offered id; the tenant's default if absent) | 200 with up to `limit` scored hits |
-| `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after`, `unit` (`segments` or `events`), `source_ids` | 200 with the ordered neighbourhood and cursors |
+| `POST .../search` | body `query`, `limit`, `since`, `before`, `session_ids`, `source_ids`, `filter` (JSON tree), `expand_context`, `include_events`, `reranker` (an offered id; the tenant's default if absent) | 200 with up to `limit` scored hits |
+| `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after`, `unit` (`segments` or `events`), `source_ids` | 200 with the ordered neighbourhood, within the anchor's session, and cursors |
 | `GET ...` | watermark and lag behind the event store | 200 |
 
 Event body: `id` (optional UUID), `timestamp` (optional; server time if
-absent), `source_id` (optional string), `context` (an object of parts keyed by
+absent), `session_id` (optional string), `source_id` (optional string),
+`context` (an object of parts keyed by
 kind, for example `{"author": {"name": "Alice"}}`), `blocks` (list of
 `{type: text, text}`), `properties` (scalar values under legal keys;
 what `filter` sees).
 Search hit: `score`, `segments` (each with `event_id`, `index`,
-`timestamp`, `source_id`, `context`, `text`, `properties`) and, with
+`timestamp`, `session_id`, `source_id`, `context`, `text`,
+`properties`) and, with
 `include_events`, the events.
 
 Errors: one handler for the domain error hierarchy maps to a status and

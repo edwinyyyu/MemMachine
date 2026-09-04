@@ -35,12 +35,14 @@ class EpisodicMemory:
                     min_score: float | None,
                     reranker: Reranker | None,
                     since: datetime | None, before: datetime | None,
+                    session_ids: Iterable[str] | None,
                     source_ids: Iterable[str] | None,
                     filter: FilterExpr | None,
                     format_options: FormatOptions | None = None) -> QueryResult
     async def expand(self, key: UUID, anchor: UUID, *,
                      before: int, after: int,
                      unit: Literal["segments", "events"],
+                     session_ids: Iterable[str] | None,
                      source_ids: Iterable[str] | None) -> Expansion
     @staticmethod
     def string_from_segment_context(segment_context: Iterable[Segment], *,
@@ -62,7 +64,8 @@ class EpisodicMemory:
   undeclared part is selective by `find_segments` up to
   `filter.selective_limit`, score the matching segments' derivatives
   with `get_cosine_similarity`; otherwise `vector_store.query` with the
-  declared part, `since`, `before` and `source_ids` as filter predicates
+  declared part, `since`, `before`, `session_ids` and `source_ids` as
+  filter predicates
   on reserved keys, over-fetching up to `filter.max_overfetch` and
   dropping seeds the segment store rejects; then `get_segment_contexts`
   with `expand_context` split as today (`event_memory.py:450`); score
@@ -70,12 +73,14 @@ class EpisodicMemory:
   `reranker.score`; return at most `limit` contexts, fewer when the
   filter admits fewer.
 
-- `expand`: the neighbourhood of an anchor, in the tenant's one total
-  order (`timestamp`, then event, index, offset), as claude-memory's
+- `expand`: the neighbourhood of an anchor, in its session's one total
+  order within the anchor's session (`session_id`, `timestamp`, then
+  event, index, offset), as claude-memory's
   `memory_expand` walks a conversation around a memory. The anchor is a
   segment uuid (from a search hit) or an event uuid (its first
   segment). `unit` counts what `before` and `after` mean: segments, or
-  whole events; `source_ids` restricts the walk. Returns the segments in
+  whole events; the walk stays in the anchor's session, and
+  `source_ids` restricts it further. Returns the segments in
   order with the anchor marked, and a cursor at each end so a caller
   walks further by repeating the call from the last segment. Backed by
   `SegmentStore.get_neighbours` over the ordering index; no vector
@@ -99,7 +104,8 @@ temporal scorer reads `TimeRanges`.
 - `encode_events` (`:200`) becomes `encode`, idempotent per event by
   forgetting first; `forget_events` (`:680`) becomes `forget`.
 - `query` (`:353`): `vector_search_limit` becomes `limit` with
-  maximum semantics; `since`, `before`, `source_ids` are added as typed
+  maximum semantics; `since`, `before`, `session_ids`, `source_ids` are
+  added as typed
   parameters; the reserved-key mapping `_to_vector_record_property`
   (`:340`) and the `m.` user prefix go, replaced by
   `filters_and_properties.md`'s reserved namespace; the plan split is

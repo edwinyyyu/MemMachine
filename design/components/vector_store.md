@@ -175,6 +175,7 @@ pgvector, one table per container, created by `provision_containers`:
 | `uuid` | `Uuid` | primary key part |
 | `vector` | `VECTOR(<dimensions>)` (the `pgvector` SQLAlchemy type) | not null |
 | `memmachine_event_timestamp` | `DateTime(timezone=True)` | not null |
+| `memmachine_event_session` | `Text` | null |
 | `memmachine_event_source` | `Text` | null |
 | `memmachine_event_uuid` | `Uuid` | not null |
 | `memmachine_segment_uuid` | `Uuid` | not null |
@@ -195,6 +196,7 @@ CREATE VIRTUAL TABLE vec_<container> USING vec0(
     key TEXT PARTITION KEY,          -- 32 hex characters
     vector FLOAT[<dimensions>] distance_metric=cosine,
     memmachine_event_timestamp INTEGER,      -- metadata column, epoch seconds
+    memmachine_event_session TEXT,
     memmachine_event_source TEXT,
     <declared user key> <TEXT|INTEGER|FLOAT|BOOLEAN>, ...
     chunk_size=<settings.chunk_size>

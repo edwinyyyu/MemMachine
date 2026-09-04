@@ -21,7 +21,8 @@ def validate_property_value(value: object,
 - `PropertyValue = bool | int | float | str | datetime`; no lists, no
   nesting, no `None`.
 - System fields are stored under reserved keys:
-  `memmachine_event_timestamp`, `memmachine_event_source` (the source
+  `memmachine_event_timestamp`, `memmachine_event_session`,
+  `memmachine_event_source` (the source
   id; a rendered name is never stored in a vector record),
   `memmachine_event_uuid`, `memmachine_segment_uuid`.
 - A caller key beginning with the prefix, or outside `[a-z0-9_]`, or
@@ -57,7 +58,8 @@ Not(operand: FilterExpr)
   ordered.
 - A field in a tree must pass `validate_caller_property_key`; system
   fields are never named in a tree. They are typed parameters of the
-  operation (`since`, `before`, `source_ids`) that the subsystem turns
+  operation (`since`, `before`, `session_ids`, `source_ids`) that the
+  subsystem turns
   into predicates on reserved keys itself.
 - Each store compiles the tree with an exhaustive `match`
   (`compile_sql_filter` for JSON properties in SQL; each vector
