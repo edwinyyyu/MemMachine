@@ -1378,7 +1378,7 @@ Tenants:
 
 | Method and path | Effect | Status |
 | --- | --- | --- |
-| `POST /v1/tenants` | create; body `name`, `template`, `configuration` | 202 provisioning, or 201 with `wait` once active; 409 `tenant_exists`; 422 |
+| `POST /v1/tenants` | create; body `name`, `template`, `config` | 202 provisioning, or 201 with `wait` once active; 409 `tenant_exists`; 422 |
 | `GET /v1/tenants?name=` | look up by name | 200; 404 |
 | `GET /v1/tenants?prefix=&cursor=` | list, paged | 200 |
 | `GET /v1/tenants/{id}` | record, state, requested and applied configuration versions, jobs with attempts and last error | 200; 404 |

@@ -32,7 +32,7 @@ class LogEntry(BaseModel):
 | column | type | constraint |
 | --- | --- | --- |
 | `key` | `Uuid` | primary key |
-| `configuration` | `JSON` | not null |
+| `config` | `JSON` | not null |
 | `next_position` | `BigInteger` | not null, default 1 |
 | `created_at` | `DateTime(timezone=True)` | not null, `func.now()` |
 
