@@ -814,8 +814,9 @@ A store never receives the registry itself. Its constructor takes a
 `create(key, address)` (strict), `get(key)`, `set_state(key, state)`,
 `remove(key)`, each constrained to the view's scope in the statement it
 issues, so a store structurally cannot read or change another store's
-rows. The composition produces the view, `registry.scoped("vector-store")`,
-and the registry refuses a second claim on a scope at startup. A SQL-backed store does not use it:
+rows. The composition produces the view, by
+`registry.scoped("vector-store")`, and the registry refuses a second
+claim on a scope at startup. A SQL-backed store does not use it:
 its registry table sits beside its data, where the fence can be in the
 statement.
 
