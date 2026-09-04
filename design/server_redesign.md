@@ -51,8 +51,8 @@ Requirements that shape everything below:
 - The tenant layer neither routes data operations nor knows the stores
   or the options a component takes.
 - Resources are plain classes, wireable by hand, unaware of any
-  configuration or injection system. Configuration is derived from
-  their constructors, not written beside them.
+  configuration or injection system. Composition is Python; settings
+  are data.
 - No component of the current server is carried over unless named under
   "What is reused".
 
@@ -139,15 +139,15 @@ Named so the redesign can be checked against it.
 - Key registry: the one shared implementation of per-key bookkeeping for
   stores whose data is not in a SQL database, injected into each such
   store as a view scoped to that store.
-- Resource: any object the server builds from configuration: a database
-  engine, a provider client, a store, a component, the tenant service.
-  A plain class or factory with a typed signature.
+- Resource: any object the composition builds: a database engine, a
+  provider client, a store, a component, the tenant service. A plain
+  class or factory with a typed signature.
 - Provider: a resource that is a process-wide model or backend client
   shared by every tenant: an embedder, a language model, a reranker, a
   database engine, a vector backend client.
-- Template: a named block of per-component tenant options in
-  configuration, copied into a tenant's configuration at creation.
-  Nothing is built from a template.
+- Template: a named block of per-component tenant options in the
+  settings, copied into a tenant's configuration at creation. Nothing
+  is built from a template.
 - Tenant configuration: the resolved options recorded on the tenant
   row, one section per component, applied to the component by a job.
 - Job: a row describing one action for one component on one tenant.
@@ -195,12 +195,12 @@ Named so the redesign can be checked against it.
 7. Every lifecycle change is accepted, recorded as jobs, and reported
    on; none is refused for a failure the reconciler will retry. A caller
    polls or waits; it is never told "try again later".
-8. Resources are plain classes with typed constructors. Configuration
-   is the set of constructor arguments, rendered as one document; the
-   loader reflects on constructors and builds the object graph in
-   dependency order. Nothing is looked up lazily, nothing is mutated at
-   runtime, a bad document fails startup, and a resource can be wired
-   by hand without the loader.
+8. Composition is Python: one function constructs every resource by
+   calling constructors with the objects they depend on, in evaluation
+   order, checked by the type checker. Settings are data: the scalar
+   values a deployment sets, validated at startup, never mutated at
+   runtime; a bad setting fails startup. A library user calls the same
+   constructors.
 9. Schema that is not tenant-specific is versioned migrations applied
    by an operator's command that serves nothing and races with nothing;
    serving and reconciler processes verify it and never run it.
@@ -212,13 +212,12 @@ Named so the redesign can be checked against it.
 Every process runs the same binary and builds the same objects from the
 configuration document, in this order:
 
-1. The document, parsed into constructor arguments and validated,
-   references included.
-2. Resources, in the dependency order the references give: database
-   engines and backend clients, then embedders, language models and
-   rerankers, then the key registry and stores, then the event store and
-   each memory subsystem (each registering with the tenant service),
-   then the ingest service, then the tenant service.
+1. Settings, read from the environment and an optional file, validated.
+2. The composition, constructing every resource in evaluation order:
+   database engines and backend clients, then embedders, language
+   models and rerankers, then the key registry and stores, then the
+   event store and each memory subsystem (each registering with the
+   tenant service), then the ingest service, then the tenant service.
 3. Schema verification: every component's version table is at head, or
    startup fails (see "Schema management").
 4. The scope check: the minimum over every resource's concurrency scope
@@ -245,7 +244,7 @@ Who knows what:
 Dependency direction: the registration interface is defined by the
 tenant package; component packages import it and nothing else from the
 tenant package. The tenant package imports no component. No resource
-imports the loader.
+imports the composition.
 
 Horizontal scaling, at `cluster` scope: all shared state is in the
 databases and the vector backend; per-process state is caches any
@@ -539,6 +538,21 @@ Operations, in the order the stores are touched:
 - `forget`: look up segments and derivatives; delete vector records;
   delete segments.
 
+Provider routing. Episodic memory is constructed with the embedders and
+rerankers a deployment offers, as mappings from id to object, and a
+tenant's section names one of each. On every operation the subsystem
+reads its per-tenant row and takes the ids from it: `process` embeds
+derivatives with that embedder and upserts under the tenant key, whose
+registry row names the container `ensure` chose for that embedder; a
+search embeds the query with the same embedder, queries the same
+container, and reranks with the tenant's reranker. The vector store is
+configured with one container per embedder id, so the id is the
+container name and no further mapping exists. A tenant naming an id the
+subsystem was not constructed with is rejected at creation and at
+`PATCH` by the subsystem's own validation. Changing the reranker is a
+mutable option; changing the embedder is not, because its container
+holds the data.
+
 Tenant configuration section `episodic_memory`, with mutability:
 
 - `embedder` (provider id): immutable; a different embedder is a new
@@ -590,21 +604,26 @@ datetime; no lists, no nesting, no nulls (absence is the only way a
 field holds nothing); at most `properties.max_keys` keys per event.
 Scalar-only is what every backend accepts (Chroma rejects nested values;
 S3 Vectors caps filterable metadata at 2 KB per vector). Long text is
-content, not a property: it goes in a block. Structured metadata that is
-meant to be read rather than filtered is a block too, of its own type:
-`{"type": "json", "data": {...}}`, bounded by `blocks.max_bytes`. It
-rides the content path with a per-type policy: codec-encoded and stored
-with the event, reconstructed with it, emitted by the passthrough
-segmenter as one segment and never split by the text segmenter,
-returned by context expansion, given no derivatives by the deriver by
-default (a tenant option embeds it as text), and never filterable. A
-separate opaque `payload` field was considered and dropped: readable
-structured data belongs with the content, and small machine data (an
+content, not a property: it goes in a block. Small machine data (an
 external id, a source URL) is a property, which every hit returns and
-which stays filterable through the segment store; nothing was left for
-a third channel. The cost is discoverability, which the API schema and
-example carry, and that such a block occupies a segment in an expanded
-context, which is right for data meant to be read.
+which stays filterable through the segment store. There is no separate
+opaque metadata field.
+
+Readable metadata, a suggestion. Structured metadata that is meant to
+be read rather than filtered could be a block of its own type,
+`{"type": "json", "data": {...}}`, bounded by `blocks.max_bytes`. For:
+it rides the content path the event already has, codec-encoded and
+stored with the event, reconstructed with it, and given a per-type
+policy by the segmenter and deriver, so it is never filterable, gets no
+derivatives by default (a tenant option embeds it as text), and is
+returned by context expansion or not as its type decides. Whether it
+occupies a segment is that policy's choice: a type whose processing
+produces no segment stays with the event, is returned with it, and
+never enters an expanded context. Against: it is less obvious to a
+user than a named field, which the API schema and example would have to
+carry; and it invites overuse of a flexible pattern, where every new
+need becomes a block type rather than a designed field. Proposed, not
+decided; see "Open questions".
 
 Propagation. Properties are set at ingest and are immutable; changing an
 event's properties is a delete and a re-ingest. The event store holds
@@ -795,9 +814,8 @@ A store never receives the registry itself. Its constructor takes a
 `create(key, address)` (strict), `get(key)`, `set_state(key, state)`,
 `remove(key)`, each constrained to the view's scope in the statement it
 issues, so a store structurally cannot read or change another store's
-rows. The view is produced in configuration by a `scoped_key_registry`
-factory naming the registry and the scope, and the registry refuses a
-second claim on a scope at startup. A SQL-backed store does not use it:
+rows. The composition produces the view, `registry.scoped("vector-store")`,
+and the registry refuses a second claim on a scope at startup. A SQL-backed store does not use it:
 its registry table sits beside its data, where the fence can be in the
 statement.
 
@@ -986,135 +1004,103 @@ in case a future sqlite-vec ANN index does not support them; if that
 comes to pass, the store stays brute-force, which is what it is today
 and what its scope is for.
 
-## Configuration
+## Composition and settings
 
-Resources are plain classes with typed constructors. Configuration is
-their constructor arguments and nothing else, so a resource can be
-built by hand, in a script with no configuration at all, or by a
-different configuration system, and never learns which. The loader is
-the only code that reflects.
+Composition is Python. Settings are data. Each does what it is good at,
+and the loader of the earlier draft, which reflected on constructors to
+rebuild a Python object graph from YAML, is gone.
 
-- A kind names a callable: a class, or a factory function, ours or a
-  third party's, registered by the implementation that provides it.
-  Its parameters are what the loader reflects. Dependencies are
-  parameters annotated with resource types (`engine: AsyncEngine`,
-  `embedder: Embedder`, `embedders: Mapping[str, Embedder]`,
-  `registry: KeyRegistry`); options are scalar parameters, grouped into
-  a Pydantic `Params` parameter where that reads better and left as
-  plain keyword parameters where it does not. A third-party constructor
-  with typed keyword parameters is registered as it is
-  (`AsyncQdrantClient`); one whose signature is `**kwargs` or untyped
-  gets a factory function of a few lines with explicit typed
-  parameters, and no `Params` model. Nothing in a resource refers to
-  ids, references, or the loader.
-- The document is one flat map, `resources`, from id to
-  `{kind: ..., <constructor arguments>}`. Ids are unique across all
-  resources, so a database and an embedder cannot share one. Each
-  family has one table from kind to callable, in code; a library user
-  registers a callable under a kind in that table, which is the one
-  registration point. A dependency argument holds the id of another
-  resource; a `Mapping[str, T]` argument holds a list of ids; scalar
-  arguments are inline.
-- The loader validates each entry against the callable's signature
-  (`inspect.signature` with `typing.get_type_hints`): every argument
-  named exists, scalar arguments validate against their annotations,
-  and every dependency id names a built resource that satisfies the
-  annotated type. It orders construction by dependencies (a topological
-  sort, cycles an error) and calls each callable with exactly what it
-  declares. The dependency check is a runtime instance check of the
-  resolved object against the annotation, which Pydantic performs from
-  the signature (`validate_call` with arbitrary types allowed):
-  `isinstance` for classes and abstract base classes, method presence
-  for runtime-checkable protocols, element-wise for `Mapping[str, T]`
-  and unions. It catches a wrong id or a wrongly typed resource at
-  startup with the argument named; it does not prove more than
-  `isinstance` can, and hand wiring is checked by the type checker
-  like any other call, since a resource is called the same way with or
-  without the loader.
-- Third-party clients are resources like any other: a `postgres` kind
-  is a factory function producing a SQLAlchemy `AsyncEngine` from `url`
-  and the pool settings it names, since `create_async_engine` takes
-  `**kwargs`; a `qdrant` kind is `AsyncQdrantClient` itself. That is
-  what the `databases` entries of the earlier draft were.
-- Where a component offers tenants a choice among providers, its
-  constructor takes `Mapping[str, Embedder]` and the entry lists ids;
-  the loader passes exactly those objects keyed by id, and a tenant
-  configuration naming another id is rejected by the component's own
-  validation. The mapping is a constructor argument holding a closed,
-  typed set the document declares; nothing is looked up after startup.
-- `memmachine config schema` prints the JSON Schema of the document from
-  the kind tables and the signatures; `memmachine config example`
-  prints a documented example. Documentation is generated, not
-  maintained.
-- Keys are case-sensitive. Secrets are written as `${ENV_VAR}` and
-  resolved at load. A validation failure, an unknown key, or a reference
-  to an undeclared id fails startup; nothing is auto-disabled.
-- There is no runtime configuration API. Changing the document is a
-  restart, which a scaled deployment does as a rolling replacement.
+- Composition: a Python module with one function, `compose(settings) ->
+  Server`, that constructs every resource by calling constructors and
+  factories with the objects they depend on and the settings they need.
+  Wiring order is evaluation order; a wrong argument is a type error the
+  type checker reports before anything runs; a library user's own
+  embedder is a class they instantiate, with nothing to register. The
+  server ships one composition, the standard server, which
+  `memmachine serve` runs; `memmachine serve --compose
+  my_package.wiring:compose` runs another. A deployment that needs a
+  different graph writes Python, which is what the loader would have
+  been reconstructing from YAML.
+- Settings: the scalar values a deployment sets without changing the
+  graph: URLs, credentials, pool sizes, pragmas, bind address, roles,
+  scope, reconciler intervals, property and filter bounds, and the
+  tenant templates. One Pydantic settings model per resource class
+  (`PostgresSettings`, `QdrantSettings`, `EpisodicMemorySettings`) and
+  one for the standard composition that nests them, read from
+  environment variables and an optional YAML or TOML file of the same
+  shape, validated at startup, with a JSON Schema and a documented
+  example generated from the model. Secrets are environment variables.
+  A settings file carries no resource identifiers and no wiring; it
+  cannot express a graph.
+- Why not YAML for wiring. The earlier document was Python written in
+  YAML, with a kind table, id resolution, topological ordering and
+  runtime instance checks to turn it back into Python, all to avoid a
+  file the type checker and the interpreter already handle. The usual
+  reasons for a separate wiring file do not apply: nothing is reloaded,
+  and arbitrary code execution is not a new exposure, since the
+  composition runs as the server's own code at the trust of the image.
+  What YAML is good at, values templated by Helm or set from a
+  ConfigMap and the environment, is exactly what settings are.
+- Why not Python for settings. Values change per environment without a
+  code change, are templated by deployment tooling, and must be
+  validated and documented as data. A URL in a Python file is a URL
+  that needs a code review to change.
+- The one place the standard composition is data-driven: which
+  providers exist. A deployment declares its embedders, language models
+  and rerankers as named settings entries with a `kind`, and the
+  standard composition instantiates one object per entry from a small
+  table of kind to class for each provider family. That table is the
+  standard composition's, not a general mechanism; a custom composition
+  instantiates whatever it likes.
 
-Relation to the earlier `resource_initializer.py` proposal (an
-edwinyyyu/MemMachine commit, e134c531): the topological build order and
-the table from type to builder are kept. Its three problems are solved
-by reflection: dependencies come from constructor annotations, not a
-`get_dependency_ids` written per builder; the build is the constructor
-itself, not a `build` written per builder; and ids are checked against
-annotated types at the injection point rather than passed as strings.
-Dynamic registration is the kind table.
+The standard composition, sketched:
 
-Example, each key a constructor argument of the named callable:
+```python
+def compose(s: ServerSettings) -> Server:
+    main = postgres_engine(s.databases.main)
+    vectors = AsyncQdrantClient(**s.vectors.client_arguments())
+    embedders = {name: build_embedder(e) for name, e in s.embedders.items()}
+    rerankers = {name: build_reranker(r) for name, r in s.rerankers.items()}
+    registry = SqlKeyRegistry(main)
+    events = SqlAlchemyEventStore(main, s.event_store)
+    segments = SqlAlchemySegmentStore(main, s.segment_store)
+    vector_store = QdrantVectorStore(
+        vectors, registry.scoped("vector-store"), s.vector_store
+    )
+    episodic = EpisodicMemory(
+        events, segments, vector_store, embedders, rerankers,
+        s.episodic_memory,
+    )
+    tenants = TenantService(
+        main, components=[events, episodic], templates=s.tenant_templates
+    )
+    return Server(
+        tenants, IngestService(events, [episodic]), [episodic], s.server
+    )
+```
+
+The settings a deployment writes, each key a field of a settings model:
 
 ```yaml
-resources:
+databases:
   main:
-    kind: postgres
     url: ${MEMMACHINE_DATABASE_URL}
-  vectors:
-    kind: qdrant
-    url: http://qdrant:6333
+vectors:
+  url: http://qdrant:6333
+embedders:
   openai-large:
-    kind: openai_embedder
+    kind: openai
     model: text-embedding-3-large
     dimensions: 1024
     api_key: ${OPENAI_API_KEY}
+rerankers:
   bm25:
-    kind: bm25_reranker
-  key-registry:
-    kind: sql_key_registry
-    engine: main
-  events:
-    kind: sqlalchemy_event_store
-    engine: main
-  segments:
-    kind: sqlalchemy_segment_store
-    engine: main
-  vector-store-registry:
-    kind: scoped_key_registry
-    registry: key-registry
-    scope: vector-store
-  vector-store:
-    kind: qdrant_vector_store
-    client: vectors
-    registry: vector-store-registry
-    indexed_properties:      # once per store; system fields implicit
-      kind: string
-      score: integer
-  episodic_memory:
-    kind: episodic_memory
-    event_store: events
-    segment_store: segments
-    vector_store: vector-store
-    embedders: [openai-large]
-    rerankers: [bm25]
-  ingest:
-    kind: ingest_service
-    event_store: events
-    subsystems: [episodic_memory]
-  tenants:
-    kind: tenant_service
-    engine: main
-    components: [events, episodic_memory]
-
-tenant_templates:            # data: copied into new tenants, never built
+    kind: bm25
+vector_store:
+  indexed_properties:      # once per store; system fields implicit
+    kind: string
+    score: integer
+tenant_templates:          # data: copied into new tenants, never built
   default:
     episodic_memory:
       embedder: openai-large
@@ -1122,35 +1108,40 @@ tenant_templates:            # data: copied into new tenants, never built
       search:
         limit: 10
         expand_context: 4
-
 server:
   bind: 0.0.0.0:8080
   concurrency_scope: cluster
   roles: [api, reconciler]
-  tenant_service: tenants
-  ingest_service: ingest
 ```
 
 Tenant templates are validated at startup against each component's
 tenant configuration model, including their provider ids against the
-component's mapping, and nothing is built from them. A template edit
-changes future tenants only; existing tenants keep their recorded
-configuration, which an operator changes with `PATCH`.
+mapping the component was constructed with, and nothing is built from
+them. A template edit changes future tenants only; existing tenants
+keep their recorded configuration, which an operator changes with
+`PATCH`.
 
 Provider ids are stable identities. A provider's model or dimensions
 are not changed under an id; a new model is a new id. Removing an id
-from a component's mapping fails startup while any tenant of that
-component references it, which the component checks from its own
-per-tenant table at construction.
+from the settings fails startup while any tenant of that component
+references it, which the component checks from its own per-tenant table
+at construction.
+
+The earlier `resource_initializer.py` proposal (edwinyyyu/MemMachine,
+e134c531) is superseded rather than improved: its three problems,
+custom logic per builder, no dynamic registration, and stringly typed
+dependencies, dissolve when there is no builder layer, because the
+constructor is the builder, a class is available by being imported, and
+a dependency is a typed parameter.
 
 ## Startup and wiring
 
-`memmachine serve --config PATH` builds the resources in the order the
-references give, each by constructor from already-built objects, then
-verifies schema and scope, then starts the roles. Startup fails on the
-first resource that cannot be built, naming the resource and the cause,
-before the socket is bound. Shutdown runs in reverse: routers stop
-accepting, a reconciler finishes its current job, resources close.
+`memmachine serve [--compose MODULE:FUNCTION]` reads the settings, runs
+the composition, verifies schema and scope, then starts the roles.
+Startup fails on the first constructor that raises, naming the resource
+and the cause, before the socket is bound. Shutdown runs in reverse:
+routers stop accepting, a reconciler finishes its current job,
+resources close.
 
 Nothing per tenant is created after startup: a request reads rows and
 calls stores with the tenant id, and a process holds no per-tenant
@@ -1191,8 +1182,8 @@ Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 
 Event body: `id` (optional UUID), `timestamp` (optional; server time if
 absent), `producer` (optional string), `blocks` (list of `{type: text,
-text}` or `{type: json, data}`), `properties` (scalar values under
-legal keys; what `filter` sees).
+text}`), `properties` (scalar values under legal keys; what `filter`
+sees).
 Search hit: `score`, `segments` (each with `event_id`, `index`,
 `timestamp`, `producer`, `text`, `properties`) and, with
 `include_events`, the events.
@@ -1268,15 +1259,16 @@ Reused, with the change named:
 - `common/filter/`: the filter expression tree, as the closed union on
   the reference branch; the string parser goes.
 - `common/embedder/`, `common/language_model/`, `common/reranker/`,
-  each class gaining a typed constructor and, where it reads better, a
-  `Params` model in place of the separate configuration model.
+  each class taking its settings model in its constructor in place of
+  the separate configuration model.
 - `common/metrics_factory/`, `common/payload_codec/`.
 - `enable_sqlite_foreign_keys` and the engine construction in
   `common/resource_manager/database_manager.py`, as the `sqlite` and
   `postgres` factory kinds.
 
 New: the event store, the key registry, the ingest service, the tenant
-service and reconciler, the loader, the schema command, the routers.
+service and reconciler, the standard composition and the settings
+models, the schema command, the routers.
 
 Removed: `main/memmachine.py`; `episodic_memory/episodic_memory.py`,
 `episodic_memory_manager.py`, `instance_lru_cache.py`,
@@ -1352,10 +1344,9 @@ writes anything into records, and a deployment with few deletions can
 run with them recorded as jobs until it lands. "No implicit creation"
 is not a task in a new server; there is no path to remove.
 
-At any time: the full constructor-derived loader (a first loader need
-only build the same objects), the concurrency scope check, generated
-schema and clients, the SQLite stores on shared tables, MCP. Internal or
-reversible.
+At any time: the generated settings schema and example, the
+concurrency scope check, generated clients, the SQLite stores on shared
+tables, MCP. Internal or reversible.
 
 The first deployment's minimum is therefore narrower than this
 document: the tenant table and jobs, the event store, episodic memory
@@ -1395,9 +1386,9 @@ six items above is in place.
 - #1535: one declared, typed `indexed_properties` schema per vector
   store, in configuration, under "Properties and filtering".
 - #1570: "Schema management".
-- #1542: SQLite pragmas become `Params` fields of the `sqlite` factory
-  kind (`busy_timeout`, `journal_mode`); the reconciler's retry covers
-  the busy-timeout raise.
+- #1542: SQLite pragmas become fields of the SQLite engine's settings
+  (`busy_timeout`, `journal_mode`); the reconciler's retry covers the
+  busy-timeout raise.
 
 ## Open questions
 
@@ -1407,8 +1398,5 @@ six items above is in place.
   (proposed, with `catch_up` as the repair) or always through a queue.
 - Event size limits, and block types beyond text (the data types admit
   others).
-- The library composition surface: the constructors a user calls to get
-  the event store, episodic memory and the tenant service without the
-  HTTP layer, which the constructor-argument model above makes the
-  same call the loader makes.
+- Readable metadata as a `json` block type, or a designed field.
 - Retention: deleting events by age or by producer, as a job kind.
