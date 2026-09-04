@@ -85,3 +85,54 @@ class SegmentStore(ABC):
 - Segmenter and deriver contracts gain a clause: a segment carries a
   verbatim copy of its event's properties, and a derivative of its
   segment's.
+
+## Schema, after the changes
+
+`segment_store_pt`, the registry row (the fence):
+
+| column | type | constraint |
+| --- | --- | --- |
+| `key` | `Uuid` | primary key |
+| `payload_codec_config` | `JSON` (`JSONB` on PostgreSQL) | not null |
+| `created_at` | `DateTime(timezone=True)` | not null, `func.now()` |
+
+`segment_store_sg`, the segments:
+
+| column | type | constraint |
+| --- | --- | --- |
+| `key` | `Uuid` | primary key part |
+| `uuid` | `Uuid` | primary key part |
+| `event_uuid` | `Uuid` | not null |
+| `index` | `Integer` | not null |
+| `offset` | `Integer` | not null |
+| `timestamp` | `DateTime(timezone=True)` | not null, UTC |
+| `timestamp_timezone_offset` | `Integer` | not null, minutes |
+| `context` | `LargeBinary` | not null, codec-encoded |
+| `block` | `LargeBinary` | not null, codec-encoded |
+| `properties` | `JSON` (`JSONB` on PostgreSQL) | not null |
+
+Indexes: `segment_store_sg__key_event (key, event_uuid, index, offset)`
+for lookup by event and for context windows;
+`segment_store_sg__key_timestamp (key, timestamp)` for `since` and
+`before`; a GIN index on `properties` on PostgreSQL, added by a
+deployment as its undeclared-key filters need.
+
+`segment_store_dv_ln`, the derivative links:
+
+| column | type | constraint |
+| --- | --- | --- |
+| `key` | `Uuid` | primary key part |
+| `uuid` | `Uuid` | primary key part, the derivative uuid |
+| `segment_uuid` | `Uuid` | not null; foreign key `(key, segment_uuid)` to `segment_store_sg (key, uuid)` `ON DELETE CASCADE` |
+
+Index: `segment_store_dv_ln__key_segment (key, segment_uuid)`, which the
+cascade and `get_derivative_uuids_by_segment_uuids` use.
+
+`segment_store_gc`, the purge queue: `key Uuid` primary key,
+`enqueued_at DateTime(timezone=True)` not null `func.now()`, index
+`segment_store_gc__enqueued_at`.
+
+No foreign key from the data tables to the registry row, so the logical
+delete is O(1); the link table's cascade from segments is kept, and an
+engine that does not enforce it leaves link rows the purge removes with
+a warning, as today.

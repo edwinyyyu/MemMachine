@@ -1,21 +1,22 @@
 # Ingest service
 
-New component. The write path: records events in the event store, then
-hands them to each memory subsystem in the configured order.
+New component. The write path: records additions and deletions in the
+event store, whose log is what memory subsystems replay, then hands
+them to each subsystem in the configured order for immediate
+processing.
 
 ## Constructed with
 
 `IngestService(event_store: EventStore,
-subsystems: Sequence[MemorySubsystem])`,
-where `MemorySubsystem` is the protocol `EpisodicMemoryManager`
-satisfies: `name`, `process`, `forget`.
+subsystems: Sequence[MemorySubsystem])`, where `MemorySubsystem` is the
+ABC `EpisodicMemoryManager` implements: `name`, `process`, `forget`.
 
 ## API
 
 ```python
 class IngestService:
     async def ingest(self, tenant_id: UUID, events: Sequence[Event]) -> IngestResult
-    async def delete_events(self, tenant_id: UUID, event_uuids: Iterable[UUID]) -> None
+    async def delete_events(self, tenant_id: UUID, uuids: Iterable[UUID]) -> DeleteResult
 
 class IngestResult(BaseModel):
     stored: list[UUID]
@@ -23,27 +24,20 @@ class IngestResult(BaseModel):
     processing: dict[str, Literal["done", "deferred"]]   # per subsystem
 ```
 
-- `ingest`: `event_store.add_events(key, events)`; for each subsystem in
-  order, `process(tenant_id, stored)`; a subsystem that raises is
-  reported `deferred` and has enqueued its own `catch_up`. A tenant the
-  event store does not know raises `KeyNotLiveError`, which the router
-  maps by asking the tenant service.
-- `delete_events`: `event_store.delete_events` first, then `forget` on
-  every subsystem, so a `catch_up` that starts after the first step
-  cannot read the event again. A `process` that read the event before
-  its deletion may still write derived rows after the forget; where the
-  event store and the segment store share a database (the default) the
-  segment write's transaction carries `EXISTS (event row)` and writes
-  nothing for a deleted event, and where they do not, the window is
-  closed by repeating the delete, which always re-runs `forget`. A
-  crash between the two steps leaves derived rows for a deleted event;
-  the caller's retry removes them.
-
-## Open item
-
-Whether processing runs in the request or always through a queue is the
-main document's open question; this component is written for the
-former.
+- `ingest`: `event_store.add_events(key, events)`, which is durable and
+  writes the `added` log entries; then, for each subsystem in order,
+  `process(tenant_id, stored)`. A subsystem that raises is reported
+  `deferred` and has enqueued its own `catch_up`, which replays the
+  log; the client's acknowledgment therefore means "recorded and
+  processed at least once, eventually", and "processed now" where
+  `done` is reported.
+- `delete_events`: `event_store.delete_events(key, uuids)`, which
+  removes the event rows and writes `deleted` log entries; then
+  `forget` on each subsystem. A subsystem that raises is reported
+  `deferred` the same way, and its `catch_up` applies the deletion from
+  the log. No outcome depends on the client retrying.
+- An unknown tenant raises `KeyNotLiveError` from the event store,
+  which the router maps by asking the tenant service.
 
 ## Changes to existing code
 

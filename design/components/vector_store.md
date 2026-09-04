@@ -144,3 +144,56 @@ the usearch store `process`.
   shared records table plus one index file per key, its `SQLiteVectorStore`
   per-collection tables (`sqlite_vector_store.py:1061`) go.
 - Every client is constructed with `request_timeout`.
+
+## Schema of the SQL-backed stores
+
+pgvector, one table per container, created by `provision_containers`:
+
+`vec_<container>`:
+
+| column | type | constraint |
+| --- | --- | --- |
+| `key` | `Uuid` | primary key part |
+| `uuid` | `Uuid` | primary key part |
+| `vector` | `VECTOR(<dimensions>)` (the `pgvector` SQLAlchemy type) | not null |
+| `memmachine_event_timestamp` | `DateTime(timezone=True)` | not null |
+| `memmachine_event_producer` | `Text` | null |
+| `memmachine_event_uuid` | `Uuid` | not null |
+| `memmachine_segment_uuid` | `Uuid` | not null |
+| one column per declared user key | by declared type: `Text`, `BigInteger`, `Float`, `Boolean`, `DateTime(timezone=True)` | null |
+
+Indexes: `vec_<container>__vector`, HNSW with `vector_cosine_ops`;
+`vec_<container>__key_timestamp (key, memmachine_event_timestamp)`;
+`vec_<container>__key_<field>` for each declared user key. Filtered
+search is `WHERE key = ? AND ...` with pgvector's iterative index
+scans, and the registry row for this store is `vector_store_pt` beside
+the table, keyed by `key`, so the fence is in-statement.
+
+sqlite-vec, one `vec0` virtual table per container plus a records
+table:
+
+```sql
+CREATE VIRTUAL TABLE vec_<container> USING vec0(
+    key TEXT PARTITION KEY,          -- 32 hex characters
+    vector FLOAT[<dimensions>] distance_metric=cosine,
+    memmachine_event_timestamp INTEGER,      -- metadata column, epoch seconds
+    memmachine_event_producer TEXT,
+    <declared user key> <TEXT|INTEGER|FLOAT|BOOLEAN>, ...
+    chunk_size=<settings.chunk_size>
+);
+```
+
+`vec_<container>_rec`: `key Uuid` and `uuid Uuid` primary key,
+`rowid BigInteger` not null unique (the vec0 rowid), and
+`memmachine_event_uuid Uuid`, `memmachine_segment_uuid Uuid` not null.
+The vec0 table's metadata columns carry every declared filterable key;
+the records table maps record uuids to rowids for `delete` and
+`get_cosine_similarity`. The registry row is `vector_store_pt` in the
+same file.
+
+usearch, one shared records table and one index file per key:
+`vec_<container>_rec` with `key`, `uuid`, `rowid` as above plus the
+declared columns for post-filtering; the index file at
+`<settings.index_dir>/<container>/<key hex>.usearch`, loaded into
+process memory on first use and written back on change, which is why
+the store is `process`-scoped.

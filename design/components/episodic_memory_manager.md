@@ -43,11 +43,21 @@ parameters (`limit`, `expand_context`, `min_score`, `include_events`),
 checked at import time against `EpisodicMemory.query`'s signature. The
 structural key of a configuration is `(embedder, segmenter, deriver)`.
 
-## Storage
+## Schema
 
-`episodic_memory_tenants`: `tenant_id UUID PK`, `watermark BIGINT` (last
-event position processed), `configuration JSON`, `configuration_version
-INTEGER`, `updated_at`.
+`episodic_memory_tenants`:
+
+| column | type | constraint |
+| --- | --- | --- |
+| `tenant_id` | `Uuid` | primary key |
+| `watermark` | `BigInteger` | not null, default 0; the last log position processed |
+| `configuration` | `JSON` (`JSONB` on PostgreSQL) | not null |
+| `configuration_version` | `Integer` | not null |
+| `updated_at` | `DateTime(timezone=True)` | not null, `func.now()` |
+
+No other index: every access is by primary key. The watermark is
+written with `SET watermark = GREATEST(watermark, ?)` (`MAX` on
+SQLite), so it moves only forward.
 
 ## API
 
@@ -86,9 +96,14 @@ same transaction as its last segment write where the engines are the
 same, and after it otherwise; on an exception it enqueues `catch_up`
 and reports `deferred`.
 
-`catch_up(tenant_id, payload) -> Progress`: `event_store.read_after(key,
-watermark, batch)`, `process`, advance; `MORE` while the event store has
-newer events.
+`catch_up(tenant_id, payload) -> Progress`: replay the event store's
+log from `min(payload.from_position, watermark)`: `read_log(key,
+after, batch)`, then for each entry `process` the event of an `added`
+entry that still has one, or `forget` the uuid of a `deleted` entry;
+advance the watermark past the batch; `MORE` while `head(key)` is past
+the watermark. Both kinds of entry are handled, so a deletion a client
+was acknowledged for is applied to derived data at least once without
+the client retrying.
 
 ## Cache
 
@@ -131,9 +146,9 @@ sequence, and a batch may fail after a later batch succeeded.
 
 | First | Concurrent | Outcome |
 | --- | --- | --- |
-| ingest batch A (positions 1..10) | ingest batch B (11..20) on another process | positions from one sequence; each batch processed by its own process; watermark ends at 20 by `GREATEST` whatever the commit order |
+| ingest batch A (positions 1..10) | ingest batch B (11..20) on another process | the event store serializes the two under the key's exclusive lock, so positions are contiguous and commit-ordered; each batch is processed by its own process; the watermark ends at 20 by `GREATEST` whatever the processing order |
 | batch A fails after batch B advanced the watermark to 20 | | `catch_up(from_position=1)` reprocesses 1..20 idempotently; nothing is skipped |
 | ingest of event uuid U | ingest of U on another process | unique `(key, uuid)`: one stores, the other reports U skipped; only the storing process processes it |
-| delete of event U | `process` that already read U | see `ingest_service.md`: the event row goes first, then `forget`; a derived write that lands after the forget is removed by the existence check in the segment write's transaction where the stores share a database, and by a repeated delete otherwise |
+| delete of event U | `process` that already read U | the delete appends a `deleted` log entry after U's `added` entry; a derived write that lands after the request path's `forget` is removed when the `deleted` entry is replayed, by `catch_up` or by the next request path that reaches it; nothing depends on the client retrying |
 | search | ingest | the search sees what the backends have indexed; no guarantee about the batch in flight |
 | `process` | `catch_up` on the same tenant | serialized by the tenant row lock for the step; `process` in a request does not take that lock, so the two may both write an event's derived rows; `process` is idempotent per event (forget first), so the later write leaves one copy |

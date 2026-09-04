@@ -71,3 +71,27 @@ the `{namespace}__registry` collection on Qdrant
 (`milvus_vector_store.py:477`), and the `vector_store_sqlite_vec_cl` and
 `vector_store_sqlite_cl` tables in the SQLite stores. Nothing is carried
 over.
+
+## Schema
+
+`key_registry`:
+
+| column | type | constraint |
+| --- | --- | --- |
+| `scope` | `String(64)` | primary key part; check matches `[a-z0-9_-]+` |
+| `key` | `Uuid` | primary key part |
+| `state` | `String(16)` | not null; check in (`creating`, `live`, `dropping`) |
+| `address` | `JSON` (`JSONB` on PostgreSQL) | not null |
+| `created_at` | `DateTime(timezone=True)` | not null, `func.now()` |
+| `updated_at` | `DateTime(timezone=True)` | not null, `func.now()`, updated on every write |
+
+Indexes: `key_registry__scope_state (scope, state)` for the sweep's
+"rows in `dropping`" and for `count_by_address`, which additionally
+reads `address ->> 'container'` (a JSONB expression index on
+PostgreSQL where a deployment has many keys per store). The primary key
+serves every per-key read.
+
+## Contract
+
+`KeyRegistry` is an ABC; `SqlKeyRegistry.scoped(scope)` returns its one
+implementation, `ScopedKeyRegistry`, and no other class implements it.

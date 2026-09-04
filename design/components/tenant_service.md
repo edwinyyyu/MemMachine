@@ -19,15 +19,20 @@ writer of the tenant tables.
 ## Component registration protocol
 
 ```python
-class TenantComponent(Protocol):
+class TenantComponent(ABC):
     name: str
     tenant_configuration: type[BaseModel]   # fields marked mutable or immutable
 
+    @abstractmethod
     async def provision(self, tenant_id: UUID, section: BaseModel) -> None: ...
+    @abstractmethod
     async def delete(self, tenant_id: UUID) -> None: ...
+    @abstractmethod
     async def reclaim(self, tenant_id: UUID) -> Progress: ...
+    @abstractmethod
     def validate_update(self, old: BaseModel, new: BaseModel) -> None: ...
-    def job_kinds(self) -> Mapping[str, JobHandler]: ...   # component-defined
+    def job_kinds(self) -> Mapping[str, JobHandler]:       # component-defined
+        return {}
 ```
 
 - `provision(tenant_id, section)`: idempotent by provenance. Create the
@@ -52,33 +57,85 @@ class TenantComponent(Protocol):
 The tenant service imports nothing from a component; a component
 imports this protocol and nothing else from the tenant package.
 
-## Storage
+## Schema
+
+Types per the mapping in `README.md`.
 
 `tenants`:
 
-| column | type | note |
+| column | type | constraint |
 | --- | --- | --- |
-| `id` | `UUID PK` | minted `uuid4` at create; never reused |
-| `name` | `TEXT NULL`, unique | NULL from the moment deletion starts |
-| `former_name` | `TEXT NULL` | the name at deletion, for operators |
-| `state` | enum | `provisioning`, `active`, `deleting`, `deleted` |
-| `configuration` | `JSON` | one object per component name; the record of what was requested |
-| `configuration_version` | `INTEGER` | incremented by every update |
-| `created_at`, `updated_at`, `deleted_at`, `swept_at` | timestamps | database clock |
+| `id` | `Uuid` | primary key; minted `uuid4` at create; never reused |
+| `name` | `Text` | null; unique index `tenants__name` (partial on PostgreSQL, `WHERE name IS NOT NULL`; SQLite treats NULLs as distinct) |
+| `former_name` | `Text` | null |
+| `state` | `String(16)` | not null; check in (`provisioning`, `active`, `deleting`, `deleted`) |
+| `configuration` | `JSON` (`JSONB` on PostgreSQL) | not null |
+| `configuration_version` | `Integer` | not null, default 1 |
+| `created_at`, `updated_at` | `DateTime(timezone=True)` | not null, `func.now()` |
+| `deleted_at`, `swept_at` | `DateTime(timezone=True)` | null |
+
+Indexes: `tenants__name` above; `tenants__state_swept_at (state,
+swept_at)` for the sweep's "oldest `swept_at` first among `deleted`";
+`tenants__name_prefix`, a `text_pattern_ops` index on PostgreSQL for
+prefix listing.
 
 `tenant_jobs`:
 
-| column | type | note |
+| column | type | constraint |
 | --- | --- | --- |
-| `id` | `PK` | |
-| `tenant_id` | `UUID` | |
-| `component` | `TEXT` | registration name |
-| `action` | `TEXT` | `provision`, `delete`, or a component-defined kind |
-| `payload` | `JSON` | for `provision`, the configuration version |
-| `state` | enum | `pending`, `done` |
-| `attempts`, `last_error`, `next_run_at`, `created_at`, `updated_at` | | |
+| `id` | `BigInteger` (autoincrement; `Integer` on SQLite) | primary key |
+| `tenant_id` | `Uuid` | not null; foreign key to `tenants.id` (no cascade: rows are removed by the transition that sets `deleted`) |
+| `component` | `String(64)` | not null |
+| `action` | `String(32)` | not null |
+| `payload` | `JSON` (`JSONB` on PostgreSQL) | not null |
+| `state` | `String(16)` | not null; check in (`pending`, `done`) |
+| `attempts` | `Integer` | not null, default 0 |
+| `last_error` | `Text` | null |
+| `next_run_at` | `DateTime(timezone=True)` | not null, `func.now()` |
+| `created_at`, `updated_at` | `DateTime(timezone=True)` | not null, `func.now()` |
 
-Unique on `(tenant_id, component, action)`.
+Constraints and indexes: unique `tenant_jobs__tenant_component_action
+(tenant_id, component, action)`; `tenant_jobs__pending (next_run_at)`
+partial on PostgreSQL `WHERE state = 'pending'`, the claim's scan;
+`tenant_jobs__tenant (tenant_id)` for a tenant's job listing and the
+delete request's cancellation of pending jobs.
+
+## Job kinds
+
+Two are the tenant service's and are control-plane: `provision`, which
+creates or updates a component's resources for a tenant, and `delete`,
+which unlinks and reclaims them. The third kind in this design,
+`catch_up`, is a component's own and is data-plane: it replays the
+event store's log from the component's watermark
+(`episodic_memory_manager.md`). A component may define others through
+`job_kinds()`; the tenant service records and executes them without
+reading their payloads.
+
+What guarantees that a client's write is executed fully at least once
+is not a job but the event store's log: every addition and deletion a
+client was acknowledged for is an entry a subsystem replays from its
+watermark, and `catch_up` is the job that resumes replay after a
+failure. A client's read has nothing to guarantee. Lifecycle requests
+are guaranteed by their jobs.
+
+## Queueing
+
+The job table is a queue: `pending` rows ordered by `next_run_at`,
+claimed under `FOR UPDATE SKIP LOCKED`, and serialized per tenant by
+the tenant row's lock. There is no per-tenant FIFO beyond that; the
+only ordering a tenant's jobs need, `provision` before `delete`, is the
+state machine's. The event store's log is the per-tenant data queue,
+with one watermark per subsystem.
+
+Neither is a message broker, on purpose. A lifecycle transition and its
+jobs are one transaction with the tenant row, and a log entry and the
+event it describes are one transaction with the event row; a broker
+cannot join a transaction, so it would need an outbox table anyway, at
+which point the table is the queue. Volumes are lifecycle events and
+repairs, not the request rate. A broker becomes worth having only if
+ingest is made asynchronous for every request and fanned out to
+consumers outside this process, which the main document leaves open
+and this design does not need.
 
 ## API
 

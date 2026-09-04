@@ -52,3 +52,38 @@ Files:
   keys and values, and the reserved namespace.
 - `server_and_settings.md`: the `Server` object, roles, routers, error
   mapping, and the settings models.
+
+## Contracts are ABCs
+
+Every contract a component implements is an abstract base class, never
+a `Protocol`: abstract methods are enforced when an object is
+instantiated, not only when a type checker runs; `isinstance` holds,
+which the composition's scope check and Pydantic's `InstanceOf` rely
+on; `@override` is checked against a real base; and shared behaviour
+(a formatting helper, a default) has a home. A third-party
+implementation imports the base class, which it does anyway to register
+a kind. A `Protocol` is used only to describe the shape of an object we
+do not define, of which the design has none.
+
+## SQL type mapping
+
+Every SQL-backed component's schema below uses these SQLAlchemy types,
+with the dialect mappings the schema command emits:
+
+| SQLAlchemy | PostgreSQL | SQLite | Note |
+| --- | --- | --- | --- |
+| `Uuid(native_uuid=True)` | `UUID` | `CHAR(32)`, hex | keys and identifiers |
+| `Integer` | `INTEGER` | `INTEGER` | small counters; SQLite integer primary keys alias rowid |
+| `BigInteger().with_variant(Integer, "sqlite")` | `BIGINT` | `INTEGER` | positions, autoincrement ids |
+| `Text` | `TEXT` | `TEXT` | names, opaque strings |
+| `String(n)` + `CheckConstraint` | `VARCHAR(n)` | `VARCHAR(n)` | enumerations, never a native enum type, so a migration adds a value without an `ALTER TYPE` |
+| `DateTime(timezone=True)` | `TIMESTAMP WITH TIME ZONE` | `DATETIME` as ISO text, offset discarded | values are normalized to UTC before persisting |
+| `JSON().with_variant(JSONB, "postgresql")` | `JSONB` | `JSON` (text) | properties, configuration, addresses |
+| `LargeBinary` | `BYTEA` | `BLOB` | codec-encoded payloads |
+| `Boolean` | `BOOLEAN` | `INTEGER` 0/1 with check | |
+| `Float` | `DOUBLE PRECISION` | `REAL` | |
+
+Constraints are declared in metadata (primary keys, unique constraints,
+check constraints, foreign keys with `ON DELETE CASCADE`), so Alembic
+autogenerate sees them. Indexes are named `<table>__<columns>`.
+Timestamps stamped by the database use `func.now()`.

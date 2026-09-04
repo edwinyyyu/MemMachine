@@ -249,7 +249,9 @@ Who knows what:
 Dependency direction: the registration interface is defined by the
 tenant package; component packages import it and nothing else from the
 tenant package. The tenant package imports no component. No resource
-imports the composition.
+imports the composition. Every contract is an abstract base class, for
+the reasons in `design/components/README.md`; a `Protocol` describes
+only an object this code does not define, of which there is none.
 
 Horizontal scaling, at `cluster` scope: all shared state is in the
 databases and the vector backend; per-process state is caches any
@@ -510,19 +512,30 @@ The system of record. Shared tables in a SQL database, keyed by the
 tenant id, with the fence under "Store contracts".
 
 - Registry row per key.
-- `events`: key, event id, position, timestamp, context, properties,
-  blocks (codec-encoded). Unique on `(key, event id)`, which
-  is what makes ingest idempotent per event id. `position` is assigned
-  at insert from one sequence, so within a key positions are strictly
-  increasing in commit order; it is what subsystems process by.
+- `events`: key, event id, timestamp, context, properties, blocks
+  (codec-encoded). Unique on `(key, event id)`, which is what makes
+  ingest idempotent per event id.
+- A log per key of additions and deletions, each entry a position, a
+  kind and the event id. Positions are assigned under the key's
+  registry row locked `FOR UPDATE`, so ingests to one tenant serialize
+  inside that one short transaction and positions are contiguous and
+  commit-ordered within the key. The log is what subsystems replay,
+  from one watermark each, so every addition and deletion a client was
+  acknowledged for reaches every subsystem at least once without the
+  client retrying; the request path's immediate processing is a latency
+  optimization and `catch_up` is the guarantee. The log is the
+  per-tenant data queue and the job table is the control queue; neither
+  is a message broker, because each pairs with a row in one transaction
+  that a broker could not join. Schema in
+  `design/components/event_store.md`.
 - `create_partition(key)` (strict; see "Create is strict"),
   `delete_partition(key)` (logical, O(1), idempotent),
   `reclaim_partition(key) -> DONE | MORE`, `purge_deleted_partitions()`
   for library users without a tenant service.
 - Data operations, each taking the key: `add_events(key, events) ->
-  (stored, skipped)`, `get_events(key, ids)`, `list_events(key, filter,
-  cursor)`, `read_after(key, position, limit)`, `delete_events(key,
-  ids)`.
+  (stored, skipped)`, `delete_events(key, ids)`, `get_events(key,
+  ids)`, `list_events(key, filter, since, before, cursor, limit)`,
+  `read_log(key, after, limit)`, `head(key)`.
 
 Ingest, `POST /v1/tenants/{id}/events`, in the ingest service:
 
@@ -536,10 +549,11 @@ Ingest, `POST /v1/tenants/{id}/events`, in the ingest service:
    which case it has enqueued a `catch_up` job for the tenant and will
    process the events from its watermark.
 
-Delete events, `POST /v1/tenants/{id}/events/delete`: `forget` on each
-subsystem, then `delete_events` on the event store. A crash between the
-two leaves an event whose derived data is gone; the caller's retry of
-the delete finishes it.
+Delete events, `POST /v1/tenants/{id}/events/delete`: `delete_events`
+on the event store, which removes the rows and appends `deleted` log
+entries, then `forget` on each subsystem. A subsystem that fails is
+reported `deferred` and applies the deletion from the log by
+`catch_up`; nothing depends on the caller retrying.
 
 ## Episodic memory
 
@@ -571,8 +585,10 @@ Operations, in the order the stores are touched:
 - `process`: segment, derive, embed; write segments; upsert derivatives;
   advance the watermark. A crash between stores leaves an event with
   partial derived data behind the watermark; `catch_up` reprocesses it.
-- `catch_up` (job): `read_after(watermark)` in batches, `process`,
-  until the event store has nothing newer.
+- `catch_up` (job): replay the log from the lower of the watermark and
+  the failed position the job carries, `process` for `added` entries
+  and `forget` for `deleted` ones, until the log has nothing newer. The
+  watermark moves only forward.
 - Search: embed the query; split the filter and choose the plan under
   "Properties and filtering"; vector query (checked against the store's
   registry row after the query, inside the vector store); segment
@@ -1553,8 +1569,9 @@ is corrected to it.
 
 - Hierarchy: flat tenants with prefix listing, proposed, or a parent
   column with cascading delete as jobs.
-- Whether ingest processes subsystems synchronously in the request
-  (proposed, with `catch_up` as the repair) or always through a queue.
+- Whether ingest also processes subsystems in the request (proposed,
+  for latency) or only by replaying the log; correctness is the log's
+  either way.
 - Event size limits, and block types beyond text (the data types admit
   others).
 - Readable metadata as a `json` block type, or a designed field.
