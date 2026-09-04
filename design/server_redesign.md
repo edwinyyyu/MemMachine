@@ -470,7 +470,7 @@ tenant id, with the fence under "Store contracts".
 
 - Registry row per key.
 - `events`: key, event id, position, timestamp, context, properties,
-  payload, blocks (codec-encoded). Unique on `(key, event id)`, which
+  blocks (codec-encoded). Unique on `(key, event id)`, which
   is what makes ingest idempotent per event id. `position` is assigned
   at insert from one sequence, so within a key positions are strictly
   increasing in commit order; it is what subsystems process by.
@@ -590,13 +590,21 @@ datetime; no lists, no nesting, no nulls (absence is the only way a
 field holds nothing); at most `properties.max_keys` keys per event.
 Scalar-only is what every backend accepts (Chroma rejects nested values;
 S3 Vectors caps filterable metadata at 2 KB per vector). Long text is
-content, not a property: it goes in a block. Metadata that is not meant
-to be filtered goes in `payload`, an opaque JSON document on the event,
-bounded by `payload.max_bytes`, stored in the event store only, returned
-with the event, never propagated to derived data and never filterable.
-`payload` is a proposal (see "Open questions"); without it, the answer to
-"where does unfilterable metadata go" is "in the caller's own store,
-keyed by event id".
+content, not a property: it goes in a block. Structured metadata that is
+meant to be read rather than filtered is a block too, of its own type:
+`{"type": "json", "data": {...}}`, bounded by `blocks.max_bytes`. It
+rides the content path with a per-type policy: codec-encoded and stored
+with the event, reconstructed with it, emitted by the passthrough
+segmenter as one segment and never split by the text segmenter,
+returned by context expansion, given no derivatives by the deriver by
+default (a tenant option embeds it as text), and never filterable. A
+separate opaque `payload` field was considered and dropped: readable
+structured data belongs with the content, and small machine data (an
+external id, a source URL) is a property, which every hit returns and
+which stays filterable through the segment store; nothing was left for
+a third channel. The cost is discoverability, which the API schema and
+example carry, and that such a block occupies a segment in an expanded
+context, which is right for data meant to be read.
 
 Propagation. Properties are set at ingest and are immutable; changing an
 event's properties is a delete and a re-ingest. The event store holds
@@ -615,6 +623,19 @@ are always declared. A user property that is not declared is still
 filterable, through the segment store, where a deployment adds an
 expression index online (`CREATE INDEX CONCURRENTLY` on PostgreSQL)
 without touching the vector store or any co-tenant.
+
+The vector store rejects every key it has not been declared, on both
+paths: a record carrying an undeclared property key is an error on
+`upsert`, and a filter naming one is an error on `query`. An undeclared
+key therefore does not exist in the vector store, rather than being
+stored write-only or scanned for; an unindexed filter is unrepresentable
+at the store instead of a silent full scan; and the split between
+declared and undeclared predicates is the subsystem's job before the
+call, never something a store guesses at. This is the rule the
+reference branch arrived at, for the same reasons: a vector store's
+properties have one purpose, being filtered on, since queries return
+ids and scores and never properties, so an unfilterable property there
+is data nothing gives back.
 
 Filter representation. A filter is a tree, constructed, never parsed:
 the closed union from the reference, `Equals`, `NotEquals`, `Ordering`
@@ -865,18 +886,19 @@ backend that cannot list or reject keys.
   message, since its duplicate-create error is untyped (`InternalError`
   500 locally, `ChromaError` 400 over HTTP, never the
   `UniqueConstraintError` the module exports; chromadb 1.5.9).
-- Write (`upsert(key, records)`, `delete(key, ids)`): read the row for
-  the container and address; perform the remote write, acknowledged as
-  applied; read the row again and raise the not-live error if the key
-  is not live. No row before the write: the not-live error, and no
-  write creates a collection.
+- Write (`upsert(key, records)`, `delete(key, ids)`): a record carrying
+  an undeclared property key is rejected before anything is sent. Read
+  the row for the container and address; perform the remote write,
+  acknowledged as applied; read the row again and raise the not-live
+  error if the key is not live. No row before the write: the not-live
+  error, and no write creates a collection.
 - Read (`query(key, vectors, limit, filter, allowed_ids)`,
   `get_cosine_similarity(key, vector, ids)`): read the row for the
   address, query, read the row again, raise the not-live error if the
-  key is not live. `filter` names declared keys only and is evaluated
-  during the search where the backend can; `allowed_ids` restricts the
-  search to given records; queries return record ids and scores, never
-  properties.
+  key is not live. `filter` names declared keys only and raises on any
+  other; it is evaluated during the search where the backend can.
+  `allowed_ids` restricts the search to given records; queries return
+  record ids and scores, never properties.
 - `delete_collection(key)`: set `dropping`. O(1), idempotent, waits for
   nothing.
 - `reclaim_collection(key) -> DONE | MORE`: with a `dropping` row,
@@ -1169,8 +1191,8 @@ Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 
 Event body: `id` (optional UUID), `timestamp` (optional; server time if
 absent), `producer` (optional string), `blocks` (list of `{type: text,
-text}`), `properties` (scalar values under legal keys; what `filter`
-sees), `payload` (opaque JSON, not filterable; proposed).
+text}` or `{type: json, data}`), `properties` (scalar values under
+legal keys; what `filter` sees).
 Search hit: `score`, `segments` (each with `event_id`, `index`,
 `timestamp`, `producer`, `text`, `properties`) and, with
 `include_events`, the events.
@@ -1385,9 +1407,6 @@ six items above is in place.
   (proposed, with `catch_up` as the repair) or always through a queue.
 - Event size limits, and block types beyond text (the data types admit
   others).
-- `payload`: whether an opaque, unfilterable, event-store-only document
-  belongs on the event, or whether unfilterable metadata is the caller's
-  to keep.
 - The library composition surface: the constructors a user calls to get
   the event store, episodic memory and the tenant service without the
   HTTP layer, which the constructor-argument model above makes the
