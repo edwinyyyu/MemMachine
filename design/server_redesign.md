@@ -500,7 +500,7 @@ at startup:
   - Any further action the component defines.
 
 A memory subsystem additionally exposes to the ingest service and the
-routers: `process(tenant_id, events)`, `forget(tenant_id, event_ids)`,
+routers: `encode(tenant_id, events)`, `forget(tenant_id, event_ids)`,
 and its queries.
 
 Data operations:
@@ -594,13 +594,13 @@ Per-tenant row (the subsystem's own table): tenant id, watermark (the
 last event position processed), applied configuration and its version.
 
 Identifiers: segment and derivative ids are minted (uuid4). Idempotency
-is per event, not per derived row: `process` for an event first forgets
+is per event, not per derived row: `encode` for an event first forgets
 that event's derived rows, so repeating it after a crash, or from a
 `replay`, leaves one copy.
 
 Operations, in the order the stores are touched:
 
-- `process`: for each log entry in order, an `added` entry is
+- `encode` and `forget`: for each log entry in order, an `added` entry is
   segmented, derived, embedded and written (segments, then vectors) and
   a `deleted` entry is forgotten; then the watermark advances past the
   batch. A crash mid-batch leaves partial derived data behind the

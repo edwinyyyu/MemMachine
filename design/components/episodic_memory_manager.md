@@ -90,7 +90,8 @@ segmenter and deriver objects from the options, and makes one call.
 `search` fills each per-request field the request omits from the row's
 defaults, resolves `request.reranker` or the default to an object
 (`InvalidTenantConfigurationError` for an id not offered), and calls
-`query`. `replay` calls `process` with a batch of log entries and
+`query`. `replay` calls `encode` with the events of a batch's `added`
+entries and `forget` with the uuids of its `deleted` entries, and
 advances the watermark in the same transaction as the batch's last
 segment write where the engines are shared, and after it otherwise.
 

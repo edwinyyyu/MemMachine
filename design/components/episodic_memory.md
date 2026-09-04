@@ -27,7 +27,7 @@ argument. No store handles: operations take the key.
 
 ```python
 class EpisodicMemory:
-    async def process(self, key: UUID, events: Iterable[StoredEvent], *,
+    async def encode(self, key: UUID, events: Iterable[StoredEvent], *,
                       format_options: FormatOptions | None = None) -> None
     async def forget(self, key: UUID, event_uuids: Iterable[UUID]) -> None
     async def query(self, key: UUID, query: str, *,
@@ -50,7 +50,7 @@ class EpisodicMemory:
                                      format_options: FormatOptions | None = None) -> str
 ```
 
-- `process`: for each event, first `forget` its derived rows (so a
+- `encode`: for each event, first `forget` its derived rows (so a
   repeat leaves one copy), then segment, derive, embed; write segments
   to the segment store; upsert derivatives to the vector store with the
   declared properties (system fields under reserved keys, plus the
@@ -89,7 +89,7 @@ class EpisodicMemory:
   become the stores; every operation takes `key: UUID`.
 - `reranker` leaves the constructor (`:96`) and becomes a `query`
   argument.
-- `encode_events` (`:200`) becomes `process`, idempotent per event by
+- `encode_events` (`:200`) becomes `encode`, idempotent per event by
   forgetting first; `forget_events` (`:680`) becomes `forget`.
 - `query` (`:353`): `vector_search_limit` becomes `limit` with
   maximum semantics; `since`, `before`, `producers` are added as typed
