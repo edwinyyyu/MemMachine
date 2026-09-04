@@ -138,10 +138,11 @@ from the last segment returned.
 
 Indexes: `segment_store_sg__key_event (key, event_uuid, index, offset)` for
 lookup by event; `segment_store_sg__key_source (key, source_id)` for
-`source_ids` on context windows and expansion; `segment_store_sg__key_order (key, session_id, timestamp, event_uuid, index, offset)` for context windows, expansion and
-`since` and `before`, which is the one total order the store exposes; a GIN
-index on `properties` on PostgreSQL, added by a deployment as its
-undeclared-key filters need.
+`source_ids` on context windows and expansion; `segment_store_sg__key_order
+(key, session_id, timestamp, event_uuid, index, offset)` for context windows,
+expansion and `since` and `before`, which is the one total order the store
+exposes; a GIN index on `properties` on PostgreSQL, added by a deployment as
+its undeclared-key filters need.
 
 `segment_store_dv_ln`, the derivative links:
 
