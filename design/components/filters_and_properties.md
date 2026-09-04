@@ -82,7 +82,7 @@ to the segment store, where SQL evaluates the whole tree.
 | Pinecone | yes (`$ne`) | yes | yes (`$exists`) | yes | by rewrite | no `$not`: negation is pushed to the leaves |
 | S3 Vectors | yes (`$ne`) | yes | yes (`$exists`) | yes | by rewrite | no `$not`; ordering on numbers only, datetimes stored as numbers |
 | Weaviate | yes (`NotEqual`) | yes (`ContainsAny`) | yes (`IsNull`) | yes | by rewrite | no `Not` operator |
-| Chroma | no | yes (`$in`, `$nin`) | no | yes | no | `where` has no `$ne`, `$not` or `$exists` |
+| Chroma | yes (`$ne`) | yes (`$in`, `$nin`) | no | yes | partial | `where` has `$ne` but no `$not` or `$exists` (`chromadb/api/types.py`), so `Not` rewrites only over `Equals` and `In` leaves; a negated ordering or `IsMissing` is routed to the segment store |
 | sqlite-vec | yes (`!=`) | no | no | no | no | KNN metadata constraints are comparisons joined by `AND` only |
 | usearch store | post-filtered by the store over its records table | | | | | |
 

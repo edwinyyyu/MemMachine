@@ -12,9 +12,9 @@ component.
 
 ```python
 EpisodicMemoryManager(
-    event_store: EventStore,
-    segment_store: SegmentStore,
-    vector_store: VectorStore,
+    event_store: EventStoreData,
+    segment_store: SegmentStoreLifecycle, segment_data: SegmentStoreData,
+    vector_store: VectorStoreLifecycle, vector_data: VectorStoreData,
     embedders: Mapping[str, Embedder],     # resources, all the deployment built
     rerankers: Mapping[str, Reranker],
     engine: AsyncEngine,                   # its per-tenant table
@@ -72,7 +72,7 @@ Toward the tenant service (the `TenantComponent` protocol):
 - `reclaim(tenant_id)`: `reclaim_partition` and `reclaim_collection`;
   `DONE` when both are.
 - `validate_update`: `embedder` changed raises.
-- `job_kinds()`: `catch_up`.
+- `catch_up`: below.
 
 Toward the ingest service and the routers:
 
@@ -86,7 +86,7 @@ Toward the ingest service and the routers:
 Each reads the per-tenant row (absent: `TenantNotFoundError`, which the
 router turns into 404 or 409 by asking the tenant service), takes the
 `EpisodicMemory` for the row's structural key from the cache, building
-it on a miss with `embedders[e]`, `vector_store.for_container(e)` and
+it on a miss with `embedders[e]`, `vector_data.for_container(e)` and
 segmenter and deriver objects from the options, and makes one call.
 `search` fills each per-request field the request omits from the row's
 defaults, resolves `request.reranker` or the default to an object

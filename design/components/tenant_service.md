@@ -31,8 +31,8 @@ class TenantComponent(ABC):
     async def reclaim(self, tenant_id: UUID) -> Progress: ...
     @abstractmethod
     def validate_update(self, old: BaseModel, new: BaseModel) -> None: ...
-    def job_kinds(self) -> Mapping[str, JobHandler]:       # component-defined
-        return {}
+    @abstractmethod
+    async def catch_up(self, tenant_id: UUID, payload: CatchUpPayload) -> Progress: ...
 ```
 
 - `provision(tenant_id, section)`: idempotent by provenance. Create the
@@ -50,9 +50,14 @@ class TenantComponent(ABC):
   Never called on a live key (see "Serialization").
 - `validate_update(old, new)`: raise `InvalidTenantConfigurationError`
   if `new` changes an immutable field.
-- `job_kinds()`: component-defined actions the reconciler executes,
-  each `JobHandler = Callable[[UUID, dict], Awaitable[Progress]]`;
-  `catch_up` for episodic memory.
+- `catch_up(tenant_id, payload) -> Progress`: process what the event
+  store's log holds for this tenant that the component has not
+  processed; the payload names the positions a request-path attempt
+  failed at. The tenant service defines the kind and its semantics;
+  the component implements the hook. There are no component-defined
+  job kinds: every kind is defined, scheduled and given its semantics
+  by the tenant service, so two components cannot mean different
+  things by one name.
 
 The tenant service imports nothing from a component; a component
 imports this protocol and nothing else from the tenant package.
@@ -86,7 +91,7 @@ prefix listing.
 | `id` | `BigInteger` (autoincrement; `Integer` on SQLite) | primary key |
 | `tenant_id` | `Uuid` | not null; foreign key to `tenants.id` (no cascade: rows are removed by the transition that sets `deleted`) |
 | `component` | `String(64)` | not null |
-| `action` | `String(32)` | not null |
+| `action` | `String(32)` | not null; check in (`provision`, `delete`, `catch_up`) |
 | `payload` | `JSON` (`JSONB` on PostgreSQL) | not null |
 | `state` | `String(16)` | not null; check in (`pending`, `done`) |
 | `attempts` | `Integer` | not null, default 0 |
@@ -113,14 +118,14 @@ delete request's cancellation of pending jobs.
 
 ## Job kinds
 
-Two are the tenant service's and are control-plane: `provision`, which
-creates or updates a component's resources for a tenant, and `delete`,
-which unlinks and reclaims them. The third kind in this design,
-`catch_up`, is a component's own and is data-plane: it replays the
-event store's log from the component's watermark
-(`episodic_memory_manager.md`). A component may define others through
-`job_kinds()`; the tenant service records and executes them without
-reading their payloads.
+Three, all defined by the tenant service, which is the only thing that
+defines, schedules and gives semantics to a kind. Two are control-plane:
+`provision`, which creates or updates a component's resources for a
+tenant, and `delete`, which unlinks and reclaims them. One is
+data-plane: `catch_up`, which has a component process what the event
+store's log holds for a tenant that it has not processed
+(`episodic_memory_manager.md`). A component enqueues `catch_up` for
+itself through `enqueue`; it cannot invent a kind.
 
 What guarantees that a client's write is executed fully at least once
 is not a job but the event store's log: every addition and deletion a
@@ -165,8 +170,8 @@ class TenantService:
     async def delete(self, tenant_id: UUID) -> Tenant
     async def wait(self, tenant_id: UUID, until: TenantState,
                    timeout: timedelta) -> Tenant
-    async def enqueue(self, tenant_id: UUID, component: str,
-                      action: str, payload: Mapping) -> None
+    async def enqueue_catch_up(self, tenant_id: UUID, component: str,
+                               payload: Mapping) -> None
     async def state_of(self, tenant_id: UUID) -> TenantState | None
     async def run_reconciler(self) -> None      # the role's loop
     async def reconcile_tenant(self, tenant_id: UUID) -> None
@@ -219,12 +224,11 @@ Semantics:
 - Execute: `provision` calls the hook with the section at the payload's
   version and marks done; `delete` calls `delete` then `reclaim`, `DONE`
   marking the job done and `MORE` recording `last_outcome = more` and
-  `last_run_at`; a component-defined kind calls its handler the same
-  way. An exception records `error`, `last_error`, `last_run_at` and
-  `attempts + 1`; eligibility follows at the next claim. The
-  transaction that marks the last
-  `provision` job done sets `active`; the one that marks the last
-  `delete` job done removes the job rows and sets `deleted`.
+`last_run_at`; `catch_up` calls the hook the same way. An exception records
+`error`, `last_error`, `last_run_at` and `attempts + 1`; eligibility follows at
+the next claim. The transaction that marks the last `provision` job done sets
+`active`; the one that marks the last `delete` job done removes the job rows
+and sets `deleted`.
 - Tombstone sweep, every `sweep_interval`, in every reconciler process
   without exclusion: claim `deleted` rows with `FOR UPDATE SKIP LOCKED`,
   oldest `swept_at` first, bounded per call; call every component's

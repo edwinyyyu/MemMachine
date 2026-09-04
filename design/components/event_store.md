@@ -18,7 +18,8 @@ blocks and context).
 
 ```python
 class LogEntry(BaseModel):
-    position: int                  # contiguous and commit-ordered within a key
+    position: int                  # contiguous and commit-ordered within a key;
+                                   # an added event carries the same position
     kind: Literal["added", "deleted"]
     uuid: UUID
     event: Event | None            # the content for "added", unless deleted since
@@ -41,6 +42,7 @@ class LogEntry(BaseModel):
 | --- | --- | --- |
 | `key` | `Uuid` | primary key part |
 | `uuid` | `Uuid` | primary key part |
+| `position` | `BigInteger` | not null; unique `(key, position)`; the position of the event's `added` entry |
 | `timestamp` | `DateTime(timezone=True)` | not null, UTC |
 | `context` | `LargeBinary` | not null, codec-encoded |
 | `properties` | `JSON` (`JSONB` on PostgreSQL) | not null |
@@ -67,26 +69,42 @@ registry row: the logical delete removes the row in O(1) and the purge
 reclaims by key. No foreign key between the log and the events: an
 `added` entry outlives its event once the event is deleted, by design.
 
+Compaction. Log entries below every subsystem's watermark are not
+needed for replay, and `compact_log(key, below)` removes them in
+bounded steps; the manager of a subsystem enabled on an existing tenant
+bootstraps from `read_events_after(key, 0, ...)`, the events in
+position order, not from the log, which is why the event row carries
+its position. `deleted` entries below every watermark are always
+removable; `added` entries are too, since the events table is the
+bootstrap source.
+
 `event_store_gc`, the purge queue: `key Uuid` primary key, `enqueued_at
 DateTime(timezone=True)` not null `func.now()`, index
 `event_store_gc__enqueued_at`.
 
 ## API
 
+Two ABCs behind one implementation, `store.lifecycle` and `store.data`.
+
 ```python
-class EventStore(ABC):
+class EventStoreLifecycle(ABC):
     async def create_partition(self, key: UUID, config: EventPartitionConfig) -> None
     async def delete_partition(self, key: UUID) -> None
     async def reclaim_partition(self, key: UUID) -> Progress
     async def purge_deleted_partitions(self) -> bool       # library use only
+    async def compact_log(self, key: UUID, below: int) -> Progress
+    @property
+    def concurrency_scope(self) -> ConcurrencyScope
 
+class EventStoreData(ABC):
     async def add_events(self, key: UUID, events: Iterable[Event]) -> AddResult
     async def delete_events(self, key: UUID, uuids: Iterable[UUID]) -> None
-    async def get_events(self, key: UUID, uuids: Iterable[UUID]) -> list[Event]
+    async def get_events(self, key: UUID, uuids: Iterable[UUID]) -> list[StoredEvent]
     async def list_events(self, key: UUID, filter: FilterExpr | None,
                           since: datetime | None, before: datetime | None,
-                          cursor: Cursor | None, limit: int) -> Page[Event]
+                          cursor: Cursor | None, limit: int) -> Page[StoredEvent]
     async def read_log(self, key: UUID, after: int, limit: int) -> list[LogEntry]
+    async def read_events_after(self, key: UUID, after: int, limit: int) -> list[StoredEvent]
     async def head(self, key: UUID) -> int                 # last position
 ```
 
@@ -111,6 +129,8 @@ class EventStore(ABC):
 - `delete_events`: the same lock; remove the event rows; append one
   `deleted` log entry per uuid that existed. Idempotent: a uuid with no
   row appends nothing.
+- `read_events_after`: events with `position > after`, ascending; the
+  bootstrap and history source for a subsystem.
 - `read_log`: entries with `position > after`, ascending, at most
   `limit`; an `added` entry carries the event unless it has since been
   deleted, in which case `event` is `None` and a subsystem skips it.

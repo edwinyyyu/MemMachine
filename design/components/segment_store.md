@@ -24,19 +24,29 @@ UUID`, foreign key to the segment row with cascade. `segment_store_gc`:
 
 ## API, after the changes
 
+Two ABCs behind one implementation, exposed as `store.lifecycle` and
+`store.data`, so data callers cannot reach lifecycle and lifecycle
+callers cannot reach data.
+
 ```python
-class SegmentStore(ABC):
+class SegmentStoreLifecycle(ABC):
     async def create_partition(self, key: UUID, config: SegmentStorePartitionConfig) -> None
     async def delete_partition(self, key: UUID) -> None
     async def reclaim_partition(self, key: UUID) -> Progress
     async def purge_deleted_partitions(self) -> bool     # library use only
+    @property
+    def concurrency_scope(self) -> ConcurrencyScope
 
+class SegmentStoreData(ABC):
     async def add_segments(self, key: UUID,
                            segments_to_derivative_uuids: Mapping[Segment, Iterable[UUID]]) -> None
     async def get_segment_contexts(self, key: UUID, seed_segment_uuids: Iterable[UUID], *,
                                    max_backward_segments: int, max_forward_segments: int,
                                    since: datetime | None, before: datetime | None,
                                    property_filter: FilterExpr | None) -> dict[UUID, list[Segment]]
+    async def get_neighbours(self, key: UUID, anchor: UUID, *,
+                             before: int, after: int,
+                             producers: Iterable[str] | None) -> list[Segment]
     async def get_segment_uuids_by_event_uuids(self, key: UUID,
                                                event_uuids: Iterable[UUID]) -> dict[UUID, list[UUID]]
     async def get_derivative_uuids_by_segment_uuids(self, key: UUID,
@@ -45,6 +55,13 @@ class SegmentStore(ABC):
                             limit: int) -> list[UUID]
     async def delete_segments(self, key: UUID, segment_uuids: Iterable[UUID]) -> None
 ```
+
+`get_neighbours` serves expansion (`episodic_memory.md`): the segments
+ordered by `(timestamp, event_uuid, index, offset)` within the key, the
+`before` segments preceding the anchor and the `after` following it,
+optionally restricted to producers; the anchor itself is included. The
+order is total and stable, so a caller can walk by repeating the call
+from the last segment returned.
 
 ## Changes required
 
@@ -74,6 +91,8 @@ class SegmentStore(ABC):
 - `find_segments` is added for the selectivity probe under
   `filters_and_properties.md`: segments matching a property filter, up
   to `limit + 1`, so the caller can tell "selective" from "broad".
+- `get_neighbours` is added for expansion, over the ordering index.
+- The ABC splits into `SegmentStoreLifecycle` and `SegmentStoreData`.
 - Errors: `SegmentStorePartitionHandleStaleError` becomes
   `KeyNotLiveError`; `SegmentStorePartitionAlreadyExistsError` becomes
   `KeyExistsError`; `SegmentStoreAttemptsExhaustedError` becomes
@@ -112,10 +131,11 @@ class SegmentStore(ABC):
 | `properties` | `JSON` (`JSONB` on PostgreSQL) | not null |
 
 Indexes: `segment_store_sg__key_event (key, event_uuid, index, offset)`
-for lookup by event and for context windows;
-`segment_store_sg__key_timestamp (key, timestamp)` for `since` and
-`before`; a GIN index on `properties` on PostgreSQL, added by a
-deployment as its undeclared-key filters need.
+for lookup by event; `segment_store_sg__key_order (key, timestamp,
+event_uuid, index, offset)` for context windows, expansion and `since`
+and `before`, which is the one total order the store exposes; a GIN index on
+`properties` on PostgreSQL, added by a deployment as its undeclared-key filters
+need.
 
 `segment_store_dv_ln`, the derivative links:
 

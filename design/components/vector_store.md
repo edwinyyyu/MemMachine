@@ -12,8 +12,8 @@ Queries return ids and scores, never properties.
   `AsyncQdrantClient`, a Milvus client, an engine for pgvector and the
   SQLite stores, for which the registry is a table beside the data).
 - Settings: `containers: Mapping[str, ContainerSettings]`, one per
-  embedder id, each with `dimensions`, `metric` (cosine) and any
-  backend-specific option; `indexed_properties: Mapping[str,
+  embedder id, each with `dimensions` and any backend-specific option
+  (the metric is cosine, always); `indexed_properties: Mapping[str,
   PropertyType]`, one schema for every container of the store, plus
   the system fields, which are always declared; `request_timeout`,
   required.
@@ -36,14 +36,24 @@ class QueryResult(BaseModel):
 
 ## API
 
+Two ABCs, so a caller of data operations cannot reach lifecycle
+operations and a lifecycle caller cannot reach data. One implementation
+class provides both through two views, `store.lifecycle` and
+`store.data`; the composition hands the lifecycle view to
+`EpisodicMemoryManager`'s hooks and the data view, scoped to a
+container, to each `EpisodicMemory`.
+
 ```python
-class VectorStore(ABC):
+class VectorStoreLifecycle(ABC):
     async def provision_containers(self) -> None          # schema command only
     async def create_collection(self, key: UUID, container: str) -> None
     async def delete_collection(self, key: UUID) -> None
     async def reclaim_collection(self, key: UUID) -> Progress
-    def for_container(self, container: str) -> VectorStore   # scoped view
+    @property
+    def concurrency_scope(self) -> ConcurrencyScope
 
+class VectorStoreData(ABC):
+    def for_container(self, container: str) -> VectorStoreData   # scoped view
     async def upsert(self, key: UUID, records: Iterable[Record]) -> None
     async def delete(self, key: UUID, uuids: Iterable[UUID]) -> None
     async def query(self, key: UUID, vectors: Iterable[Sequence[float]], *,
@@ -52,13 +62,15 @@ class VectorStore(ABC):
                     allowed_uuids: Iterable[UUID] | None) -> list[QueryResult]
     async def get_cosine_similarity(self, key: UUID, vector: Sequence[float],
                                     uuids: Iterable[UUID]) -> dict[UUID, float]
-
     @property
     def supported_filter_nodes(self) -> frozenset[type]
-
-    @property
-    def concurrency_scope(self) -> ConcurrencyScope
 ```
+
+Scores are cosine similarity everywhere; there is no `SimilarityMetric`
+(reference branch, commit 6ab12098): every container is created with
+the cosine metric, every embedder is used as is, and a backend that
+only offers dot product or Euclidean distance normalizes vectors on
+write and converts on read inside the store.
 
 Semantics:
 
@@ -96,7 +108,7 @@ Semantics:
   none do and return `DONE`. With no row, delete by key in every
   container the store has; `DONE` when nothing is found. `reclaim` on
   a `live` row raises; the tenant service never calls it on one.
-- `for_container(container)`: a view that raises `KeyNotLiveError` for
+- `for_container(container)`: a data view that raises `KeyNotLiveError` for
   any key whose registry row names another container, on every
   operation, and delegates otherwise. `EpisodicMemoryManager` builds
   each `EpisodicMemory` with the view for its embedder's container.

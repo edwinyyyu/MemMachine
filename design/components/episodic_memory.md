@@ -11,8 +11,8 @@ configuration.
 
 ```python
 EpisodicMemory(
-    segment_store: SegmentStore,
-    vector_store: VectorStore,          # the view for this embedder's container
+    segment_store: SegmentStoreData,
+    vector_store: VectorStoreData,      # the view for this embedder's container
     segmenter: Segmenter,
     deriver: Deriver,
     embedder: Embedder,
@@ -38,6 +38,10 @@ class EpisodicMemory:
                     producers: Iterable[str] | None,
                     filter: FilterExpr | None,
                     format_options: FormatOptions | None = None) -> QueryResult
+    async def expand(self, key: UUID, anchor: UUID, *,
+                     before: int, after: int,
+                     unit: Literal["segments", "events"],
+                     producers: Iterable[str] | None) -> Expansion
     @staticmethod
     def string_from_segment_context(segment_context: Iterable[Segment], *,
                                     format_options: FormatOptions | None = None) -> str
@@ -66,6 +70,17 @@ class EpisodicMemory:
   `reranker.score`; return at most `limit` contexts, fewer when the
   filter admits fewer.
 
+- `expand`: the neighbourhood of an anchor, in the tenant's one total
+  order (`timestamp`, then event, index, offset), as claude-memory's
+  `memory_expand` walks a conversation around a memory. The anchor is a
+  segment uuid (from a search hit) or an event uuid (its first
+  segment). `unit` counts what `before` and `after` mean: segments, or
+  whole events; `producers` restricts the walk. Returns the segments in
+  order with the anchor marked, and a cursor at each end so a caller
+  walks further by repeating the call from the last segment. Backed by
+  `SegmentStoreData.get_neighbours` over the ordering index; no vector
+  search and no embedding, so it is one indexed read.
+
 ## Changes required
 
 - Rename `EventMemory` to `EpisodicMemory`; `EventMemoryParams`
@@ -87,3 +102,6 @@ class EpisodicMemory:
   `expected_vector_store_collection_schema` (`:118`) goes, since the
   store's schema is settings.
 - Ingest order is unchanged (segments, then vectors).
+- `expand` is added, with `get_neighbours` on the segment store.
+- Scores are cosine similarity; `SimilarityMetric` goes from the
+  embedder and the vector store (reference branch, commit 6ab12098).

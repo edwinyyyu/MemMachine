@@ -26,9 +26,21 @@ Conventions shared by every specification:
   `AttemptsExhaustedError`. The HTTP layer maps the hierarchy once.
 - Every method that is a hook or a bounded step is idempotent: calling
   it again after any partial outcome completes it.
-- Settings are Pydantic models, one per component, named `<Component>
-  Settings`; no numeric default is given here, since none has been
-  measured.
+- A resource's constructor takes its dependencies as typed parameters
+  (engines, clients, stores, other resources) and its settings as one
+  Pydantic model, `<Component>Settings`. The line between them is
+  serializability: a settings model holds everything that can arrive
+  from configuration or a request (scalars, names, bounds, options)
+  and is validated by Pydantic; a dependency is a live object that
+  never appears in a document. The current `EventMemoryParams`
+  (`InstanceOf[Embedder]` beside scalar fields) mixes the two, which is
+  what this rule removes. No numeric default is given here, since none
+  has been measured.
+- Every store has two ABCs, `<Store>Lifecycle` and `<Store>Data`,
+  behind one implementation exposed as `store.lifecycle` and
+  `store.data`. A data caller cannot reach a lifecycle operation and a
+  lifecycle caller cannot reach data; the composition hands each caller
+  the view it needs.
 - Nothing per tenant is opened, closed or held: an operation takes the
   key, reads what it needs, and returns.
 

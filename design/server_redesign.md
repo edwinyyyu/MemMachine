@@ -156,8 +156,9 @@ Named so the redesign can be checked against it.
 - Tenant configuration: the resolved options recorded on the tenant
   row, one section per component, applied to the component by a job.
 - Job: a row describing one action for one component on one tenant.
-  `provision` and `delete` are the tenant service's; a component may
-  define others (`catch_up`).
+  Three kinds, all defined and scheduled by the tenant service:
+  `provision`, `delete`, `catch_up`. A component enqueues `catch_up`
+  for itself and cannot define a kind.
 - Reconciler: the role that claims and executes jobs and runs the
   tombstone sweep. A process runs it when configured to; a deployment
   runs as many as it needs.
@@ -183,10 +184,14 @@ Named so the redesign can be checked against it.
    per-key cache for a backend that needs one, bounded by the store and
    invisible above it.
 3. The tenant service knows a component only through its registration: a
-   name, a tenant configuration model to validate against, and hooks
-   (`provision`, `delete`, `reclaim`, and any job kinds the component
-   defines). It never sees a store or an option.
-4. Stores take a UUID key and nothing else, and fence on that key.
+   name, a tenant configuration model to validate against, and the
+   hooks for the three job kinds and reclamation (`provision`,
+   `delete`, `reclaim`, `catch_up`). It never sees a store or an
+   option.
+4. Stores take a UUID key and nothing else, and fence on that key. Each
+   store is two ABCs behind one implementation, lifecycle and data, so
+   a data caller cannot reach a lifecycle operation and a lifecycle
+   caller cannot reach data.
 5. Every store rejects operations on a deleted key by itself, from a
    registry row keyed by the caller's UUID: in the same statement where
    the data is in the same SQL database, and by a check after the
@@ -604,7 +609,14 @@ Operations, in the order the stores are touched:
 - Search: embed the query; split the filter and choose the plan under
   "Properties and filtering"; vector query (checked against the store's
   registry row after the query, inside the vector store); segment
-  contexts; on request, the full events from the event store.
+  contexts; on request, the full events from the event store. Scores
+  are cosine similarity throughout; there is no similarity metric
+  option.
+- Expand: the neighbourhood of a segment or event in the tenant's one
+  total order, `before` and `after` counted in segments or events, the
+  way claude-memory walks a conversation around a memory; one indexed
+  read on the segment store, no embedding. Specified in
+  `design/components/episodic_memory.md`.
 - `forget`: look up segments and derivatives; delete vector records;
   delete segments.
 
@@ -1362,6 +1374,7 @@ Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 | Method and path | Effect | Status |
 | --- | --- | --- |
 | `POST .../search` | body `query`, `limit`, `since`, `before`, `producers`, `filter` (JSON tree), `expand_context`, `include_events`, `reranker` (an offered id; the tenant's default if absent) | 200 with up to `limit` scored hits |
+| `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after`, `unit` (`segments` or `events`), `producers` | 200 with the ordered neighbourhood and cursors |
 | `GET ...` | watermark and lag behind the event store | 200 |
 
 Event body: `id` (optional UUID), `timestamp` (optional; server time if
