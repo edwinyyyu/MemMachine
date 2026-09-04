@@ -425,6 +425,31 @@ Reconciler role:
 - Enqueue: a component inserts its own jobs (`catch_up`) through the
   tenant service's `enqueue(tenant_id, component, action, payload)`;
   the tenant service records them without reading the payload.
+- Serialization per tenant. Every lifecycle transition and every job
+  step holds the tenant row's lock for its transaction: a request's
+  transaction takes `SELECT ... FOR UPDATE` on the tenant row before it
+  changes state or inserts jobs, and a reconciler's claim, after locking
+  the job row, locks the tenant row too and holds both for the step.
+  Transitions and steps for one tenant are therefore totally ordered.
+  A step re-reads the tenant's state under the lock before calling a
+  hook: a `provision` or `catch_up` step on a tenant that is `deleting`
+  marks itself done without calling anything. A delete request that
+  finds a `provision` step running waits for it to finish, then, in its
+  own transaction, marks every remaining pending `provision` job done
+  and inserts the `delete` jobs. So no `provision` hook runs after a
+  `delete` hook for the same tenant, and no component ever sees
+  `reclaim` on a live key, which is why `reclaim` on a live key is an
+  error rather than a case. On SQLite the file's write lock serializes
+  the same way. The cost is one row lock per step, held for a bounded
+  step, on a row nothing else locks; plain reads of the tenant row, as
+  `GET` does, are not blocked by it. Every concurrent pair on one
+  tenant and its outcome is tabulated in
+  `design/components/tenant_service.md`; the data-path pairs (two
+  ingests, a failed batch behind a later one, a delete racing a
+  process, a search racing an ingest) in
+  `design/components/episodic_memory_manager.md`, where the watermark
+  is defined to move only forward and `catch_up` to carry the lowest
+  failed position.
 - Cost: a reconciler holds one database connection per job it is
   executing, for the step's duration; steps are bounded per call by
   their hooks, and `reconciler.jobs_per_pass` bounds the connections.
@@ -1476,6 +1501,19 @@ property conventions, the v1 API for tenants, events and search, and
 Alembic. Everything else is additive, and the risk to guard against is a
 partial implementation that starts writing records before one of the
 six items above is in place.
+
+## Component specifications
+
+One specification per component, under `design/components/`, each with
+its API, storage, fencing, settings, and the changes it requires of an
+existing component: `README.md` (conventions), `tenant_service.md`
+(registry, jobs, reconciler, sweep), `key_registry.md`,
+`event_store.md`, `segment_store.md`, `vector_store.md`,
+`episodic_memory.md`, `episodic_memory_manager.md`,
+`ingest_service.md`, `filters_and_properties.md`,
+`server_and_settings.md`. Where a specification and this document
+disagree, the specification is the newer statement and this document
+is corrected to it.
 
 ## Relation to open issues
 
