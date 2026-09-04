@@ -43,10 +43,12 @@ class UnknownPart(ContextPart):              # never registered; see below
     kind_name: str
     data: dict[str, JsonValue]
 
-type Context = Mapping[str, ContextPart]     # part kind -> the one part of that kind
+type Context = Mapping[str, ContextPart]
+    # part kind -> the one part of that kind
 
 def get_part[P: ContextPart](context: Context, part: type[P]) -> P | None
-def with_part(context: Context, part: ContextPart) -> Context      # replaces the kind
+def with_part(context: Context, part: ContextPart) -> Context
+    # replaces the part of that kind
 def without_part(context: Context, part: type[ContextPart]) -> Context
 ```
 
