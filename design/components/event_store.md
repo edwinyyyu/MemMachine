@@ -13,12 +13,13 @@ blocks and context).
 
 ## Types
 
-`Event` and `Block` from `event_memory/data_types.py` (`Event.uuid:
-UUID`), with `Event.source_id: str | None` added beside `timestamp`,
-bounded by the property naming contract's length, and `Event.context:
-Context`, a mapping from part kind to one registered part (see
-`context.md`); never `None`, the empty mapping being no context. On
-the read side:
+`Event` from `event_memory/data_types.py` (`Event.uuid: UUID`), with
+`Event.session_id: str | None` and `Event.source_id: str | None` added
+beside `timestamp`, each bounded by the property naming contract's
+length; `Event.blocks`, a list of the registered block kinds (see
+`blocks.md`); and `Event.context: Context`, a mapping from part kind to
+one registered part (see `context.md`), never `None`, the empty mapping
+being no context. On the read side:
 
 ```python
 class LogEntry(BaseModel):

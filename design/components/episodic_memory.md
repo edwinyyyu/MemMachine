@@ -37,13 +37,15 @@ class EpisodicMemory:
                     since: datetime | None, before: datetime | None,
                     session_ids: Iterable[str] | None,
                     source_ids: Iterable[str] | None,
+                    block_kinds: Iterable[str] | None,
                     filter: FilterExpr | None,
                     format_options: FormatOptions | None = None) -> QueryResult
     async def expand(self, key: UUID, anchor: UUID, *,
                      before: int, after: int,
                      unit: Literal["segments", "events"],
                      session_ids: Iterable[str] | None,
-                     source_ids: Iterable[str] | None) -> Expansion
+                     source_ids: Iterable[str] | None,
+                     block_kinds: Iterable[str] | None) -> Expansion
     @staticmethod
     def string_from_segment_context(segment_context: Iterable[Segment], *,
                                     format_options: FormatOptions | None = None) -> str
@@ -59,19 +61,17 @@ class EpisodicMemory:
   declared user keys). Segment and derivative uuids are `uuid4`.
 - `forget`: look up segments by event uuids and derivatives by segment
   uuids; delete vector records; delete segments.
-- `query`: embed the query; split `filter` into the declared part and
-  the rest (`filters_and_properties.md`); choose the plan: if the
-  undeclared part is selective by `find_segments` up to
-  `filter.selective_limit`, score the matching segments' derivatives
-  with `get_cosine_similarity`; otherwise `vector_store.query` with the
-  declared part, `since`, `before`, `session_ids` and `source_ids` as
-  filter predicates
-  on reserved keys, over-fetching up to `filter.max_overfetch` and
-  dropping seeds the segment store rejects; then `get_segment_contexts`
-  with `expand_context` split as today (`event_memory.py:450`); score
-  by embedding similarity or, with `reranker`, by
-  `reranker.score`; return at most `limit` contexts, fewer when the
-  filter admits fewer.
+- `query`: embed the query; split `filter` into the declared part and the rest
+  (`filters_and_properties.md`); choose the plan: if the undeclared part is
+  selective by `find_segments` up to `filter.selective_limit`, score the
+  matching segments' derivatives with `get_cosine_similarity`; otherwise
+  `vector_store.query` with the declared part, `since`, `before`,
+  `session_ids`, `source_ids` and `block_kinds` as filter predicates on
+  reserved keys, over-fetching up to `filter.max_overfetch` and dropping seeds
+  the segment store rejects; then `get_segment_contexts` with `expand_context`
+  split as today (`event_memory.py:450`); score by embedding similarity or,
+  with `reranker`, by `reranker.score`; return at most `limit` contexts, fewer
+  when the filter admits fewer.
 
 - `expand`: the neighbourhood of an anchor, in its session's one total
   order within the anchor's session (`session_id`, `timestamp`, then
@@ -80,7 +80,8 @@ class EpisodicMemory:
   segment uuid (from a search hit) or an event uuid (its first
   segment). `unit` counts what `before` and `after` mean: segments, or
   whole events; the walk stays in the anchor's session, and
-  `source_ids` restricts it further. Returns the segments in
+  `source_ids` and `block_kinds` restrict it further. Returns the
+  segments in
   order with the anchor marked, and a cursor at each end so a caller
   walks further by repeating the call from the last segment. Backed by
   `SegmentStore.get_neighbours` over the ordering index; no vector
@@ -93,6 +94,14 @@ part, never `None`, composed by `with_part`, read by `get_part`, never
 filtered. `EpisodicMemory` reads `Author` to render and format, and the
 temporal scorer reads `TimeRanges`.
 
+## Blocks
+
+Specified in `blocks.md`: a registered family of kinds, `text` built
+in; the segmenter and deriver dispatch on the kind and pass a kind
+they do not handle through as one segment with no derivatives; a
+segment is one block, so its kind is a system field filtered by
+`block_kinds`; rendering calls `block.render`.
+
 ## Changes required
 
 - Rename `EventMemory` to `EpisodicMemory`; `EventMemoryParams`
@@ -104,9 +113,9 @@ temporal scorer reads `TimeRanges`.
 - `encode_events` (`:200`) becomes `encode`, idempotent per event by
   forgetting first; `forget_events` (`:680`) becomes `forget`.
 - `query` (`:353`): `vector_search_limit` becomes `limit` with
-  maximum semantics; `since`, `before`, `session_ids`, `source_ids` are
-  added as typed
-  parameters; the reserved-key mapping `_to_vector_record_property`
+  maximum semantics; `since`, `before`, `session_ids`, `source_ids`
+  and `block_kinds` are added as typed parameters; the reserved-key
+  mapping `_to_vector_record_property`
   (`:340`) and the `m.` user prefix go, replaced by
   `filters_and_properties.md`'s reserved namespace; the plan split is
   added.

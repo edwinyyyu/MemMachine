@@ -5,7 +5,10 @@ data attached to an event's content and carried to its segments, read
 by the steps that process content (segmenters, derivers, scorers) and
 by rendering. It replaces the closed `Context` union of
 `event_memory/data_types.py` and the ordered `CompositeContext` of
-#1436.
+#1436. It exists so that data a step reads has a home that is not a
+property, because a property invites an index and the redesign
+prohibits creating indexes dynamically (`server_redesign.md`,
+"Properties and filtering").
 
 ## What is wanted from it
 
@@ -107,7 +110,8 @@ it depth-first (want 4).
 
 Rendering assembles a segment's text for a reader from the segment's
 own fields and its parts: the timestamp, formatted by `FormatOptions`;
-then each part's contribution; then the block's text. A kind
+then each part's contribution; then the block's own rendering,
+`block.render(options)` (`blocks.md`). A kind
 contributes by implementing `render(self, options: FormatOptions) ->
 str | None`; `Author` renders its name, `TimeRanges` renders nothing.
 Placement is the renderer's, by a fixed order of kinds it knows, so

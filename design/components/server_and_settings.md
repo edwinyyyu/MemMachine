@@ -66,9 +66,10 @@ models stay in the design as a family with the current
 until a component takes one; the family exists so that wiring one later
 is a constructor parameter, not a redesign.
 
-Context part kinds are a family of the same shape (a Pydantic model per
-kind, a kind table, the `memmachine.context_parts` entry-point group),
-without a slot in the composition, since parts are data, not resources.
+Context part kinds and block kinds are families of the same shape (a
+Pydantic model per kind, a kind table, the `memmachine.context_parts`
+and `memmachine.block_kinds` entry-point groups), without a slot in the
+composition, since parts and blocks are data, not resources.
 
 ## Composition
 

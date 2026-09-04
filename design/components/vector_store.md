@@ -177,6 +177,7 @@ pgvector, one table per container, created by `provision_containers`:
 | `memmachine_event_timestamp` | `DateTime(timezone=True)` | not null |
 | `memmachine_event_session` | `Text` | null |
 | `memmachine_event_source` | `Text` | null |
+| `memmachine_block_kind` | `Text` | not null |
 | `memmachine_event_uuid` | `Uuid` | not null |
 | `memmachine_segment_uuid` | `Uuid` | not null |
 | one column per declared user key | by declared type: `Text`, `BigInteger`, `Float`, `Boolean`, `DateTime(timezone=True)` | null |
@@ -198,6 +199,7 @@ CREATE VIRTUAL TABLE vec_<container> USING vec0(
     memmachine_event_timestamp INTEGER,      -- metadata column, epoch seconds
     memmachine_event_session TEXT,
     memmachine_event_source TEXT,
+    memmachine_block_kind TEXT,
     <declared user key> <TEXT|INTEGER|FLOAT|BOOLEAN>, ...
     chunk_size=<settings.chunk_size>
 );

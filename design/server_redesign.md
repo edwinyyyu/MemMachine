@@ -112,7 +112,12 @@ Named so the redesign can be checked against it.
 - Filtering. A string query language with its own grammar
   (`common/filter/filter_parser.py`), user keys mangled behind an `m.`
   prefix, system fields homogeneous with user metadata, and a
-  per-collection indexed-properties schema (#1573, #1535).
+  per-collection indexed-properties schema (#1573, #1535) through which
+  a caller creates filter indexes dynamically, which makes the
+  deployment too difficult to maintain and its performance
+  unpredictable. That is why `Event` and `Context` are reshaped below:
+  a caller must have a place for every kind of data that does not
+  create an index.
 
 ## Vocabulary
 
@@ -131,6 +136,12 @@ Named so the redesign can be checked against it.
   id, an optional context, one or more content blocks, properties.
   Events are the caller's data; the event store records them and memory
   subsystems process them.
+- Block: one unit of an event's content, of a registered kind; `text`
+  is the first kind, and a library user registers others. A segment is
+  exactly one block, so a block's kind is a system field of the
+  segment, filtered by `block_kinds` on episodic-memory search and
+  expansion, and of nothing else. Specified in
+  `design/components/blocks.md`.
 - Session id: the stream an event belongs to, a conversation or an
   interaction the application delimits, a bounded string it owns,
   optional; events with the same session id form one ordered stream.
@@ -774,40 +785,72 @@ Hooks:
 
 ## Properties and filtering
 
+Why `Event` and `Context` are reshaped: to prohibit dynamic index creation.
+Today a caller's metadata schema creates filter indexes per collection. That
+makes the deployment too difficult to maintain, since a deployment holding many
+dynamically created resources with potentially unstable ids becomes an
+undiagnosable mess, and makes performance unpredictable, since a query's cost
+depends on which indexes a collection happens to have. The redesign gives every
+kind of data a place that is not an index: what the server itself needs indexed
+is a system field; what a deployment wants indexed is declared once, per store,
+at setup; what is read but never filtered is a context part or a block; and the
+rest is a property, filterable through the segment store without an index.
+Nothing a caller sends creates an index.
+
 Two tiers of fields, one mechanism underneath. The reference is the
 `default` branch of edwinyyyu/MemMachine (commits 27b3279b, 822ccb6b,
 2d5dc2b5), adjusted where noted.
 
 System fields. Defined by the server, first-class in the API, typed: for
-an event, `id`, `timestamp`, `session_id` and `source_id`. Search
-takes them as
-named
-parameters, `since` and `before` (inclusive and exclusive, so ranges
-meet without overlap), `session_ids` and `source_ids` (lists; a
-source's rendered
-name lives in the context and is never filtered). They are never
-spelled
-inside the user filter, so no caller and no model decides between
-`timestamp` and some prefixed form of it. Underneath, each system field
-is stored as a reserved property key, `memmachine_<system>_<field>`,
-built by one function that validates the key against the stores' naming
-contract at import time; the prefix is the distribution name, so its
-uniqueness is the package registry's. Stores therefore index and filter
-system fields with the same machinery as user properties, and a caller
-key beginning with the prefix is rejected on the way in.
+an event, `id`, `timestamp`, `session_id` and `source_id`; for a
+segment, its event's fields and the `kind` of its one block. Search
+takes them as named parameters, `since` and `before` (inclusive and
+exclusive, so ranges meet without overlap), `session_ids`, `source_ids`
+and `block_kinds` (lists; a source's rendered name lives in the context
+and is never filtered). They are never spelled inside the user filter,
+so no caller and no model decides between `timestamp` and some prefixed
+form of it. Underneath, each system field is stored as a reserved
+property key, `memmachine_<system>_<field>`, built by one function that
+validates the key against the stores' naming contract at import time;
+the prefix is the distribution name, so its uniqueness is the package
+registry's. Stores therefore index and filter system fields with the
+same machinery as user properties, and a caller key beginning with the
+prefix is rejected on the way in.
 
 Which fields are system fields is decided by one criterion: the server
 gives the field semantics beyond filtering. `timestamp` orders,
 bounds and scores; `session_id` bounds the total order that expansion
 and context windows walk; `source_id` is kept for universality and its
-tie to the `author` part. Nothing else qualifies, and nothing else
-needs to: a deployment that filters often on a channel, a workspace, a
-user or a kind declares it in the vector store's `indexed_properties`
-and gets the same during-search filtering, typed, without a core
-change, and a property it does not declare is still filterable through
-the segment store. That is the answer to "too few" and "too many"
-alike: the system set is closed by the criterion, and the efficient
-set is open to each deployment.
+tie to the `author` part; a block's `kind` selects its processing and
+its rendering, and is a field of the segment, never of the event. The
+other candidates fail the criterion, and each maps onto one of these
+or onto a property:
+
+- A channel is a session: a stream the application delimits, named
+  after the channel.
+- A workspace is a set of sessions. It is parallel to the session, not
+  orthogonal to it as the source is, so it is not a field of its own: a
+  workspace filter is `session_ids` over the workspace's sessions, and
+  which sessions a workspace holds, and whether two workspaces may
+  share one, is the application's business logic, not the server's.
+- A user is a source, a session, a workspace or a tenant, depending on
+  the application; the server has no semantics for it.
+- A block kind is a field of the segment, since a segment is one
+  block, and never of the event, which has several blocks of several
+  kinds: episodic-memory search and expansion filter by `block_kinds`;
+  event listing does not.
+- Importance, language and their like are features attached to content,
+  not structure the ingested content has, and there are arbitrarily
+  many of them. They are user properties; a deployment that filters on
+  one declares it.
+
+Nothing else needs to be a system field: a deployment that filters
+often on a property declares it in the vector store's
+`indexed_properties` and gets the same during-search filtering, typed,
+without a core change, and a property it does not declare is still
+filterable through the segment store. That is the answer to "too few"
+and "too many" alike: the system set is closed by the criterion, and
+the efficient set is open to each deployment.
 
 User properties. `properties` on an event: keys `[a-z0-9_]`, bounded by
 the stores' naming contract, not reserved; values scalar only: string
@@ -823,18 +866,18 @@ opaque metadata field.
 
 Readable metadata, a suggestion. Structured metadata that is meant to
 be read rather than filtered could be a block of its own type,
-`{"type": "json", "data": {...}}`, bounded by `blocks.max_bytes`. For:
+`{"kind": "json", "data": {...}}`, bounded by `blocks.max_bytes`. For:
 it rides the content path the event already has, codec-encoded and
-stored with the event, reconstructed with it, and given a per-type
+stored with the event, reconstructed with it, and given a per-kind
 policy by the segmenter and deriver, so it is never filterable, gets no
 derivatives by default (a tenant option embeds it as text), and is
-returned by context expansion or not as its type decides. Whether it
-occupies a segment is that policy's choice: a type whose processing
+returned by context expansion or not as its kind decides. Whether it
+occupies a segment is that policy's choice: a kind whose processing
 produces no segment stays with the event, is returned with it, and
 never enters an expanded context. Against: it is less obvious to a
 user than a named field, which the API schema and example would have to
 carry; and it invites overuse of a flexible pattern, where every new
-need becomes a block type rather than a designed field. Proposed, not
+need becomes a block kind rather than a designed field. Proposed, not
 decided; see "Open questions".
 
 Propagation. Properties are set at ingest and are immutable; changing an
@@ -1462,20 +1505,20 @@ Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 
 | Method and path | Effect | Status |
 | --- | --- | --- |
-| `POST .../search` | body `query`, `limit`, `since`, `before`, `session_ids`, `source_ids`, `filter` (JSON tree), `expand_context`, `include_events`, `reranker` (an offered id; the tenant's default if absent) | 200 with up to `limit` scored hits |
-| `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after`, `unit` (`segments` or `events`), `source_ids` | 200 with the ordered neighbourhood, within the anchor's session, and cursors |
+| `POST .../search` | body `query`, `limit`, `since`, `before`, `session_ids`, `source_ids`, `block_kinds`, `filter` (JSON tree), `expand_context`, `include_events`, `reranker` (an offered id; the tenant's default if absent) | 200 with up to `limit` scored hits |
+| `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after`, `unit` (`segments` or `events`), `source_ids`, `block_kinds` | 200 with the ordered neighbourhood, within the anchor's session, and cursors |
 | `GET ...` | watermark and lag behind the event store | 200 |
 
 Event body: `id` (optional UUID), `timestamp` (optional; server time if
 absent), `session_id` (optional string), `source_id` (optional string),
 `context` (an object of parts keyed by
 kind, for example `{"author": {"name": "Alice"}}`), `blocks` (list of
-`{type: text, text}`), `properties` (scalar values under legal keys;
-what `filter` sees).
+blocks, each `{kind, ...}` of a registered kind; `{kind: text, text}`
+is built in), `properties` (scalar values under legal keys; what
+`filter` sees).
 Search hit: `score`, `segments` (each with `event_id`, `index`,
-`timestamp`, `session_id`, `source_id`, `context`, `text`,
-`properties`) and, with
-`include_events`, the events.
+`timestamp`, `session_id`, `source_id`, `context`, `block`,
+`properties`) and, with `include_events`, the events.
 
 Errors: one handler for the domain error hierarchy maps to a status and
 a body `{error: {code, message}}` with a closed set of codes:
@@ -1654,7 +1697,7 @@ existing component: `README.md` (conventions), `tenant_service.md`
 (registry, jobs, reconciler, sweep), `key_registry.md`,
 `event_store.md`, `segment_store.md`, `vector_store.md`,
 `episodic_memory.md`, `episodic_memory_manager.md`, `context.md`,
-`ingest_service.md`, `filters_and_properties.md`,
+`blocks.md`, `ingest_service.md`, `filters_and_properties.md`,
 `server_and_settings.md`. Where a specification and this document
 disagree, the specification is the newer statement and this document
 is corrected to it.
@@ -1697,7 +1740,6 @@ is corrected to it.
 
 - Hierarchy: flat tenants with prefix listing, proposed, or a parent
   column with cascading delete as jobs.
-- Event size limits, and block types beyond text (the data types admit
-  others).
-- Readable metadata as a `json` block type, or a designed field.
+- Event size limits.
+- Readable metadata as a `json` block kind, or a designed field.
 - Retention: deleting events by age or by source, as a job kind.
