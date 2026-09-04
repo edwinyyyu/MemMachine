@@ -83,39 +83,10 @@ class EpisodicMemory:
 
 ## Context
 
-```python
-class ContextPart(BaseModel):            # registered under a kind
-    kind: ClassVar[str]
-
-class Author(ContextPart):               # kind "author"
-    name: str
-
-class TimeRanges(ContextPart):           # kind "time_ranges"; from #1436
-    time_ranges: list[TimeRange]
-
-Context = Mapping[str, ContextPart]      # at most one part per kind
-
-def get_part[P: ContextPart](context: Context, part: type[P]) -> P | None
-def with_part(context: Context, part: ContextPart) -> Context   # merge
-```
-
-- Kinds register in a table like store kinds do, by import for
-  built-ins and through the `memmachine.context_parts` entry-point
-  group for a library user's own; the API validates an incoming
-  `context` object against the registered kinds and rejects an unknown
-  one, and the codec round-trips a part unchanged.
-- Composition is `with_part`: a segmenter that extracts time ranges
-  merges a `TimeRanges` part into the segment's context, and whatever
-  the event carried stays. There is no order and no nesting, so no step
-  depends on which part came first, which was the fault line in #1436's
-  `CompositeContext`.
-- Reading is `get_part(context, Author)`: the renderer reads `Author`,
-  a temporal scorer reads `TimeRanges`, and each ignores the rest. A
-  part is never filtered on; what needs filtering is a property or a
-  system field.
-- Rendering (`string_from_segment_context`) prints the `Author` part's
-  `name` when present and nothing otherwise; a source with no good name
-  is one with a `source_id` and no `author` part.
+Specified in `context.md`: a mapping from part kind to one registered
+part, never `None`, composed by `with_part`, read by `get_part`, never
+filtered. `EpisodicMemory` reads `Author` to render and format, and the
+temporal scorer reads `TimeRanges`.
 
 ## Changes required
 

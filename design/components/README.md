@@ -64,6 +64,8 @@ Files:
 - `episodic_memory.md`: `EpisodicMemory`, the current `EventMemory`.
 - `episodic_memory_manager.md`: the resource that builds and dispatches
   to `EpisodicMemory` objects and registers with the tenant service.
+- `context.md`: the typed, non-filterable parts attached to content,
+  their registration, composition, propagation and rendering.
 - `ingest_service.md`: the write path from the API to the event store
   and the subsystems.
 - `filters_and_properties.md`: the filter expression tree, property

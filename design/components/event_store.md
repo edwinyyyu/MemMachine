@@ -17,7 +17,7 @@ blocks and context).
 UUID`), with `Event.source_id: str | None` added beside `timestamp`,
 bounded by the property naming contract's length, and `Event.context:
 Context`, a mapping from part kind to one registered part (see
-`episodic_memory.md`, "Context"); no context is the empty mapping. On
+`context.md`); never `None`, the empty mapping being no context. On
 the read side:
 
 ```python

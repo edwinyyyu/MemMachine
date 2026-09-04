@@ -141,7 +141,8 @@ Named so the redesign can be checked against it.
   context is a mapping from part kind to one part, each part a Pydantic
   model registered under its kind, so parts compose by merging and any
   step reads the one it needs by kind (`context.get(Author)`) without
-  an order to agree on. No context is the empty mapping; a source with
+  an order to agree on. `Event.context` is never `None`: no context is
+  the empty mapping; a source with
   no good name to render has a `source_id` and no `author` part, and a
   name is a part's field rather than a property of the source, so
   several sources may share a name and one source may carry different
@@ -1625,7 +1626,7 @@ its API, storage, fencing, settings, and the changes it requires of an
 existing component: `README.md` (conventions), `tenant_service.md`
 (registry, jobs, reconciler, sweep), `key_registry.md`,
 `event_store.md`, `segment_store.md`, `vector_store.md`,
-`episodic_memory.md`, `episodic_memory_manager.md`,
+`episodic_memory.md`, `episodic_memory_manager.md`, `context.md`,
 `ingest_service.md`, `filters_and_properties.md`,
 `server_and_settings.md`. Where a specification and this document
 disagree, the specification is the newer statement and this document
