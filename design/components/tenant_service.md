@@ -93,7 +93,7 @@ prefix listing.
 | `tenant_id` | `Uuid` | not null; foreign key to `tenants.id` (no cascade: rows are removed by the transition that sets `deleted`) |
 | `component` | `String(64)` | not null |
 | `action` | `String(32)` | not null; check in (`provision`, `delete`, `sweep`, `replay`) |
-| `payload` | `JSON` (`JSONB` on PostgreSQL) | not null |
+| `arguments` | `JSON` (`JSONB` on PostgreSQL) | not null |
 | `state` | `String(16)` | not null; check in (`pending`, `done`) |
 | `attempts` | `Integer` | not null, default 0 |
 | `last_outcome` | `String(8)` | null; check in (`more`, `error`) |
@@ -196,9 +196,9 @@ Semantics:
   more. Then `reconcile_tenant` inline, so a single process finishes the
   create in the request; a failing step is left pending.
 - `update_configuration`: validate with `validate_update` per changed
-  section; one transaction writes the document, increments the version,
+  section; one transaction writes the configuration, increments the version,
   inserts or resets a `provision` job per changed component with the
-  version in its payload; the tenant stays `active`.
+  version in its arguments; the tenant stays `active`.
 - `delete`: one transaction, under the tenant row's lock: `state =
   deleting`, `former_name = name`, `name = NULL`, `deleted_at = now()`;
   mark every pending `provision` and component-defined job done; insert
@@ -229,7 +229,7 @@ Semantics:
   calls nothing. A delete request waits for a running step, then
   cancels pending `provision` jobs. No `provision` hook runs after a
   `delete` hook; `purge` never sees a live key.
-- Execute: `provision` calls the hook with the section at the payload's
+- Execute: `provision` calls the hook with the section at the arguments'
   version and marks done. `delete` calls `delete` once and marks done.
   `sweep` calls `purge` repeatedly until it returns `DONE`, which marks
   the job done, or until the step has run for

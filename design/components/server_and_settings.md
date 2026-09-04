@@ -40,8 +40,8 @@ resolved by `tenants.state_of(id)`: no row or `deleted` is 404, else
 
 One model per resource class, nested into `ServerSettings` for the
 standard composition; read from environment variables and an optional
-YAML or TOML file of the same shape; `memmachine config schema` and
-`memmachine config example` are generated from them.
+YAML or TOML file of the same shape; `memmachine settings schema` and
+`memmachine settings example` are generated from them.
 
 - `ServerSettings`: `bind`, `roles`, `concurrency_scope`,
   `request_timeout`, `databases`, `vector_store`, `embedders`,

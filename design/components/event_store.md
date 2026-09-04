@@ -32,7 +32,7 @@ class LogEntry(BaseModel):
 | column | type | constraint |
 | --- | --- | --- |
 | `key` | `Uuid` | primary key |
-| `codec_config` | `JSON` | not null |
+| `configuration` | `JSON` | not null |
 | `next_position` | `BigInteger` | not null, default 1 |
 | `created_at` | `DateTime(timezone=True)` | not null, `func.now()` |
 
@@ -88,7 +88,7 @@ Two ABCs behind one implementation, the manager and `manager.store`.
 
 ```python
 class EventStoreManager(ABC):
-    async def create_partition(self, key: UUID, config: EventPartitionConfig) -> None
+    async def create_partition(self, key: UUID, configuration: EventPartitionConfiguration) -> None
     async def delete_partition(self, key: UUID) -> None
     async def purge_partition(self, key: UUID) -> Progress
     async def purge_deleted_partitions(self) -> bool       # library use only

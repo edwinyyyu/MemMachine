@@ -155,6 +155,11 @@ Named so the redesign can be checked against it.
   is built from a template.
 - Tenant configuration: the resolved options recorded on the tenant
   row, one section per component, applied to the component by a job.
+- Naming of values: settings (deployment), tenant configuration (per
+  tenant, options), templates, overrides, defaults, request parameters,
+  job arguments, partition configuration (per key). One word per kind,
+  defined in `design/components/README.md`; `config`, `params`, `args`
+  and `payload` are not identifiers in new code.
 - Job: a row describing one action for one component on one tenant.
   Four kinds, all defined and scheduled by the tenant service:
   `provision`, `delete` (the unlink, one call) and `sweep` (purging,
@@ -221,7 +226,7 @@ Named so the redesign can be checked against it.
 ## Architecture
 
 Every process runs the same binary and builds the same objects from the
-configuration document, in this order:
+settings, in this order:
 
 1. Settings, read from the environment and an optional file, validated.
 2. The composition, constructing every resource in evaluation order:
@@ -288,10 +293,10 @@ on them. Only the tenant service reads or writes them.
 
 `tenant_jobs`:
 
-- `id PK`, `tenant_id`, `component`, `action`, `payload JSON`; unique
+- `id PK`, `tenant_id`, `component`, `action`, `arguments JSON`; unique
   on `(tenant_id, component, action)`.
 - `state`: `pending`, `done`.
-- `configuration_version`: for `provision`, the version the job applies.
+- `arguments`: for `provision`, the configuration version the job applies.
 - `attempts`, `last_outcome` (`more` or `error`), `last_error`,
   `last_run_at`, `created_at`, `updated_at`. The row records what
   happened; when a job is next eligible is computed at claim time from
@@ -395,7 +400,7 @@ Configuration update, `PATCH /v1/tenants/{id}` with `configuration`:
   change or to reads (a reranker, search defaults, segmenter options).
   An immutable option in the patch is 422, and there is no "expensive
   but allowed" class.
-- One transaction writes the document, increments
+- One transaction writes the configuration, increments
   `configuration_version`, and inserts (or resets) an `provision` job per
   changed component carrying the new version. Respond 202; `?wait=`
   blocks until every such job is done.
@@ -434,7 +439,7 @@ Reconciler role:
   a job is eligible, never whether an effect is valid. On SQLite the
   same statement without `SKIP LOCKED` under `BEGIN IMMEDIATE`;
   concurrent reconcilers serialize there.
-- Execute: the component's hook for the job's action, with the payload
+- Execute: the component's hook for the job's action, with the job's arguments
   (for `provision`, the tenant's configuration section at the job's
   version; for `delete`, the one unlink call; for `sweep`, `purge`
   until `DONE` or the time budget; for `replay`, the log). `DONE` marks
@@ -444,9 +449,11 @@ Reconciler role:
   checks the tenant's remaining jobs of that action and applies the
   state transition if none remain. Hooks are idempotent, so a step
   repeated after a crash is harmless.
-- Enqueue: a component inserts its own jobs (`replay`) through the
-  tenant service's `enqueue(tenant_id, component, action, payload)`;
-  the tenant service records them without reading the payload.
+- Reset: the ingest service sets a tenant's `replay` jobs to pending
+  through the tenant service's `reset_replay(tenant_id)`, in the
+  ingest's own transaction where the engines are shared and after its
+  commit otherwise; a running `replay` step keeps running and the row is
+  claimable again when it ends.
 - Serialization per tenant. Every lifecycle transition and every job
   step holds the tenant row's lock for its transaction: a request's
   transaction takes `SELECT ... FOR UPDATE` on the tenant row before it
@@ -675,15 +682,14 @@ the manager. Products never appear in settings. A deployment that
 wants a memory type to offer a subset names the ids in that manager's
 settings.
 
-Options that a request may vary are not bound into objects at all; they
-are arguments of the call. The reranker, `limit`, `expand_context`, the
-minimum score and `include_events` are parameters of `query`. The
-tenant's section supplies their defaults; a request may override any
-of them, the reranker within the ids the deployment offers, validated
-by the manager. Nothing that ingest does varies per request. The
-division is rule 5's: an option that decides where or how records are
-written is structural and bound; an option that only shapes an answer
-is per call.
+What a request may vary is not bound into objects at all; it is a request
+parameter, passed as an argument of the call. The reranker, `limit`,
+`expand_context`, the minimum score and `include_events` are parameters of
+`query`. The tenant's section supplies their defaults; a request may override
+any of them, the reranker within the ids the deployment offers, validated by
+the manager. Nothing that ingest does varies per request. The division is rule
+5's: an option that decides where or how records are written is structural and
+bound; what only shapes an answer is a request parameter.
 
 A tenant naming an id the deployment did not build is rejected at
 creation and at `PATCH` by the manager's own validation. Changing the
@@ -1438,9 +1444,9 @@ Component schema:
   Migrations are written from Alembic autogenerate diffs against the
   component's metadata; the metadata is never applied with
   `create_all`.
-- Each vector store owns `provision_containers(config)`, which
+- Each vector store owns `provision_containers()`, which
   idempotently creates the containers its configuration declares.
-- `memmachine schema upgrade --config PATH` is the only thing that runs
+- `memmachine schema upgrade --settings PATH` is the only thing that runs
   component DDL: per configured database, under
   `pg_advisory_xact_lock` on PostgreSQL or `BEGIN IMMEDIATE` on SQLite,
   it upgrades every component assigned to that database to head, then
@@ -1449,7 +1455,7 @@ Component schema:
   init container, or a shell before `serve`.
 - `memmachine serve` verifies at startup that every component's version
   table is at the head its code carries and fails otherwise, naming the
-  component and both versions. `memmachine schema status --config PATH`
+  component and both versions. `memmachine schema status --settings PATH`
   prints the same comparison, the per-container registry counts, and
   the tombstone count by state (awaiting a clean sweep, within
   retention).

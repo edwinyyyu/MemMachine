@@ -14,7 +14,7 @@ store. This file lists what changes; everything not listed stays.
 
 ## Storage, after the changes
 
-`segment_store_pt`: `key UUID PK`, `payload_codec_config JSON`,
+`segment_store_pt`: `key UUID PK`, `configuration JSON`,
 `created_at`. `segment_store_sg`: `key UUID`, `uuid UUID`, `event_uuid
 UUID`, `index`, `offset`, `timestamp`, `timestamp_timezone_offset`,
 `context BLOB`, `block BLOB`, `properties JSON`; primary key `(key,
@@ -30,7 +30,7 @@ callers cannot reach data.
 
 ```python
 class SegmentStoreManager(ABC):
-    async def create_partition(self, key: UUID, config: SegmentStorePartitionConfig) -> None
+    async def create_partition(self, key: UUID, configuration: SegmentPartitionConfiguration) -> None
     async def delete_partition(self, key: UUID) -> None
     async def purge_partition(self, key: UUID) -> Progress
     async def purge_deleted_partitions(self) -> bool     # library use only
@@ -96,7 +96,7 @@ from the last segment returned.
 - Errors: `SegmentStorePartitionHandleStaleError` becomes
   `KeyNotLiveError`; `SegmentStorePartitionAlreadyExistsError` becomes
   `KeyExistsError`; `SegmentStoreAttemptsExhaustedError` becomes
-  `AttemptsExhaustedError`; `SegmentStorePartitionConfigMismatchError`
+  `AttemptsExhaustedError`; `SegmentPartitionConfigurationMismatchError`
   goes with open-or-create.
 - Fencing is unchanged: writes `FOR SHARE` the registry row for the
   transaction, the logical delete takes it `FOR UPDATE`, reads carry
@@ -112,7 +112,7 @@ from the last segment returned.
 | column | type | constraint |
 | --- | --- | --- |
 | `key` | `Uuid` | primary key |
-| `payload_codec_config` | `JSON` (`JSONB` on PostgreSQL) | not null |
+| `configuration` | `JSON` (`JSONB` on PostgreSQL) | not null |
 | `created_at` | `DateTime(timezone=True)` | not null, `func.now()` |
 
 `segment_store_sg`, the segments:

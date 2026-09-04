@@ -87,7 +87,7 @@ router turns into 404 or 409 by asking the tenant service), takes the
 `EpisodicMemory` for the row's structural key from the cache, building
 it on a miss with `embedders[e]`, `vector_data.for_container(e)` and
 segmenter and deriver objects from the options, and makes one call.
-`search` fills each per-request field the request omits from the row's
+`search` fills each request parameter the request omits from the row's
 defaults, resolves `request.reranker` or the default to an object
 (`InvalidTenantConfigurationError` for an id not offered), and calls
 `query`. `replay` calls `encode` with the events of a batch's `added`
