@@ -1038,3 +1038,74 @@ class TestIngestFormatOptions:
 
         (segment,) = partition.segments.values()
         assert segment.block == TextBlock(text="hello world")
+
+
+# ===================================================================
+# eviction
+# ===================================================================
+
+
+async def _stored_minutes(collection) -> list[int]:
+    """Minute-offsets (from _T0) of every derivative currently in the store."""
+    [result] = await collection.query(
+        query_vectors=[[1.0, -1.0]],
+        limit=1000,
+        return_vector=False,
+        return_properties=True,
+    )
+    minutes: list[int] = []
+    for match in result.matches:
+        timestamp = _record_properties(match.record)["_timestamp"]
+        assert isinstance(timestamp, datetime.datetime)
+        minutes.append(int((timestamp - _T0).total_seconds() // 60))
+    return sorted(minutes)
+
+
+class TestEviction:
+    """Eviction = semantic compaction: cap a similarity cluster at
+    ``eviction_target_size`` by dropping its temporally middle members.
+
+    The FakeEmbedder maps every text onto direction [1, -1] (cosine 1.0), so
+    each batch below forms a single cluster regardless of the text.
+    """
+
+    @_async
+    async def test_disabled_by_default_keeps_all(
+        self, event_memory, fake_vector_store_collection
+    ):
+        events = [_make_event(f"msg {i}", timestamp=_ts(i)) for i in range(20)]
+        await event_memory.encode_events(events)
+        assert len(await _stored_minutes(fake_vector_store_collection)) == 20
+
+    @_async
+    async def test_cluster_below_target_keeps_all(
+        self, event_memory_with_eviction, fake_vector_store_collection
+    ):
+        events = [_make_event(f"msg {i}", timestamp=_ts(i)) for i in range(5)]
+        await event_memory_with_eviction.encode_events(events)
+        assert await _stored_minutes(fake_vector_store_collection) == [0, 1, 2, 3, 4]
+
+    @_async
+    async def test_intra_batch_caps_and_keeps_temporal_extremes(
+        self, event_memory_with_eviction, fake_vector_store_collection
+    ):
+        events = [_make_event(f"msg {i}", timestamp=_ts(i)) for i in range(20)]
+        await event_memory_with_eviction.encode_events(events)
+        # target=5 -> keep 2 earliest + 3 latest, evict the middle.
+        assert await _stored_minutes(fake_vector_store_collection) == [0, 1, 17, 18, 19]
+
+    @_async
+    async def test_cross_batch_evicts_already_stored_records(
+        self, event_memory_with_eviction, fake_vector_store_collection
+    ):
+        await event_memory_with_eviction.encode_events(
+            [_make_event(f"a{i}", timestamp=_ts(i)) for i in range(5)]
+        )
+        assert await _stored_minutes(fake_vector_store_collection) == [0, 1, 2, 3, 4]
+
+        # A second batch grows the cluster past target: stored records from the
+        # temporal middle are deleted (exercises the DB-delete path).
+        await event_memory_with_eviction.encode_events(
+            [_make_event(f"b{i}", timestamp=_ts(5 + i)) for i in range(5)]
+        )
+        assert await _stored_minutes(fake_vector_store_collection) == [0, 1, 7, 8, 9]
