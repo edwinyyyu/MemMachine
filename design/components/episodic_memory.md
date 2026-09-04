@@ -81,6 +81,42 @@ class EpisodicMemory:
   `SegmentStore.get_neighbours` over the ordering index; no vector
   search and no embedding, so it is one indexed read.
 
+## Context
+
+```python
+class ContextPart(BaseModel):            # registered under a kind
+    kind: ClassVar[str]
+
+class Author(ContextPart):               # kind "author"
+    name: str
+
+class TimeRanges(ContextPart):           # kind "time_ranges"; from #1436
+    time_ranges: list[TimeRange]
+
+Context = Mapping[str, ContextPart]      # at most one part per kind
+
+def get_part[P: ContextPart](context: Context, part: type[P]) -> P | None
+def with_part(context: Context, part: ContextPart) -> Context   # merge
+```
+
+- Kinds register in a table like store kinds do, by import for
+  built-ins and through the `memmachine.context_parts` entry-point
+  group for a library user's own; the API validates an incoming
+  `context` object against the registered kinds and rejects an unknown
+  one, and the codec round-trips a part unchanged.
+- Composition is `with_part`: a segmenter that extracts time ranges
+  merges a `TimeRanges` part into the segment's context, and whatever
+  the event carried stays. There is no order and no nesting, so no step
+  depends on which part came first, which was the fault line in #1436's
+  `CompositeContext`.
+- Reading is `get_part(context, Author)`: the renderer reads `Author`,
+  a temporal scorer reads `TimeRanges`, and each ignores the rest. A
+  part is never filtered on; what needs filtering is a property or a
+  system field.
+- Rendering (`string_from_segment_context`) prints the `Author` part's
+  `name` when present and nothing otherwise; a source with no good name
+  is one with a `source_id` and no `author` part.
+
 ## Changes required
 
 - Rename `EventMemory` to `EpisodicMemory`; `EventMemoryParams`
@@ -102,15 +138,15 @@ class EpisodicMemory:
   `expected_vector_store_collection_schema` (`:118`) goes, since the
   store's schema is settings.
 - Ingest order is unchanged (segments, then vectors).
-- `ProducerContext` and `NullContext` (`data_types.py:49`, `:56`) go;
-  `Event.source_id: str | None` is added beside `timestamp` as the
-  filterable identity, and `Context` (`:64`) stays as the rendering
-  channel with `AuthorContext(author: str)` as its first member and
-  `None` for no context. `Segment` and `Derivative` carry both.
-  Rendering (`string_from_segment_context`) prints the context's name
-  as recorded; a caller that wants current names or ids shown renders
-  from the returned `source_id` and context itself. `FormatOptions`
-  stays dates, times, locale and timezone.
+- `ProducerContext` and `NullContext` (`data_types.py:49`, `:56`) and
+  the `Context` discriminated union (`:64`) go; `Event.source_id: str |
+  None` is added beside `timestamp` as the filterable identity, and
+  `Event.context` becomes the keyed mapping of registered parts above,
+  with `Author` and `TimeRanges` as the first kinds. `Segment` and
+  `Derivative` carry both. Rendering prints the recorded name; a caller
+  that wants current names or ids shown renders from the returned
+  `source_id` and context itself. `FormatOptions` stays dates, times,
+  locale and timezone.
   `produced_for` and the producer roles of the old episode model are not
   carried over and nothing replaces them.
 - `expand` is added, with `get_neighbours` on the segment store.

@@ -13,11 +13,11 @@ blocks and context).
 
 ## Types
 
-`Event`, `Block` and `Context` from `event_memory/data_types.py`
-(`Event.uuid: UUID`), with `Event.source_id: str | None` added beside
-`timestamp`, bounded by the property naming contract's length, and
-`Context` reduced to its rendering role: a typed union whose first
-member is `AuthorContext(author: str)`; `context: Context | None`. On
+`Event` and `Block` from `event_memory/data_types.py` (`Event.uuid:
+UUID`), with `Event.source_id: str | None` added beside `timestamp`,
+bounded by the property naming contract's length, and `Event.context:
+Context`, a mapping from part kind to one registered part (see
+`episodic_memory.md`, "Context"); no context is the empty mapping. On
 the read side:
 
 ```python

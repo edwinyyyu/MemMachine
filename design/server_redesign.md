@@ -136,16 +136,26 @@ Named so the redesign can be checked against it.
   application owns. A system field beside `timestamp`, indexed and
   filtered by `source_ids`, so filtering is uniform over every event and
   "no source" is one state. Never rendered unless asked for.
-- Context: what is rendered with an event's content besides its
-  timestamp: an extensible typed union, codec-encoded, never filtered,
-  stored with the event and copied to its segments, each type declaring
-  how it renders. The first type is `AuthorContext(author)`, the
-  readable name of the source as it was at the event; a tool's name, a
-  document's title, a thread, a language or an "in reply to" are
-  further types when a use needs them. Rendering is what `Context` is
-  for, and filtering is what system fields are for; the two never
-  share a field. `producer`, `produced_for` and the roles of the old
-  episode model are not carried over, and nothing replaces them.
+- Context: the typed parts attached to an event's content for the
+  steps that process it and for rendering, never for filtering. A
+  context is a mapping from part kind to one part, each part a Pydantic
+  model registered under its kind, so parts compose by merging and any
+  step reads the one it needs by kind (`context.get(Author)`) without
+  an order to agree on. No context is the empty mapping; a source with
+  no good name to render has a `source_id` and no `author` part, and a
+  name is a part's field rather than a property of the source, so
+  several sources may share a name and one source may carry different
+  names over time. The first kinds: `author` (`name`, the readable name
+  as it was at the event) and `time_ranges` (the temporal signal of
+  #1436, read by scoring, never rendered). A library user registers a
+  kind the way a store kind is registered, and its part is stored,
+  round-tripped and handed to that user's segmenter, deriver or scorer
+  unchanged. Codec-encoded, stored with the event and copied to its
+  segments. This replaces #1436's `CompositeContext`, an ordered list
+  of a closed union: keyed parts need no ordering convention, no
+  nesting, no depth-first search, and no edit to a core union to add
+  one. `producer`, `produced_for` and the roles of the old episode
+  model are not carried over, and nothing replaces them.
 - Names at render time: the recorded name is what was true when the
   event happened, and what was embedded. Every hit and every expansion
   returns the segment's `source_id` and its context as data, so an
@@ -1431,8 +1441,8 @@ Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 | `GET ...` | watermark and lag behind the event store | 200 |
 
 Event body: `id` (optional UUID), `timestamp` (optional; server time if
-absent), `source_id` (optional string), `context` (optional typed object, for
-example `{type: author, author: "Alice"}`), `blocks` (list of `{type: text,
+absent), `source_id` (optional string), `context` (an object of parts keyed by
+kind, for example `{"author": {"name": "Alice"}}`), `blocks` (list of `{type: text,
 text}`), `properties` (scalar values under legal keys; what `filter`
 sees).
 Search hit: `score`, `segments` (each with `event_id`, `index`,
