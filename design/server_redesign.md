@@ -789,13 +789,16 @@ Why `Event` and `Context` are reshaped: to prohibit dynamic index creation.
 Today a caller's metadata schema creates filter indexes per collection. That
 makes the deployment too difficult to maintain, since a deployment holding many
 dynamically created resources with potentially unstable ids becomes an
-undiagnosable mess, and makes performance unpredictable, since a query's cost
-depends on which indexes a collection happens to have. The redesign gives every
-kind of data a place that is not an index: what the server itself needs indexed
-is a system field; what a deployment wants indexed is declared once, per store,
-at setup; what is read but never filtered is a context part or a block; and the
-rest is a property, filterable through the segment store without an index.
-Nothing a caller sends creates an index.
+undiagnosable mess, and an index created from a request has no owner, no
+migration and no place in the schema command's chain, so nothing upgrades or
+retires it; and it makes performance unpredictable, since a query's cost
+depends on which indexes a collection happens to have and on whether the
+backend builds one online. The redesign gives every kind of data a place that
+is not an index: what the server itself needs indexed is a system field; what a
+deployment wants indexed is declared once, per store, at setup; what is read
+but never filtered is a context part or a block; and the rest is a property,
+filterable through the segment store without an index. Nothing a caller sends
+creates an index.
 
 Two tiers of fields, one mechanism underneath. The reference is the
 `default` branch of edwinyyyu/MemMachine (commits 27b3279b, 822ccb6b,
