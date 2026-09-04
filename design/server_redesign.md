@@ -449,10 +449,11 @@ and its queries.
 Data operations:
 
 - Every request reads the component's own per-tenant row (absent: the
-  tenant is unknown to this component), resolves the section's provider
-  ids against the providers the component holds (a lookup in the
-  mapping it was constructed with), and calls its stores with the tenant
-  id. One indexed read; no per-tenant object survives the request.
+  tenant is unknown to this component), takes the object built for that
+  tenant's structural configuration from a cache keyed by configuration
+  (see "Episodic memory"), and calls it with the tenant id and the
+  request's per-call options. One indexed read; no per-tenant object
+  exists.
 - Every store operation is fenced by the store's own registry row, which
   also supplies what the operation needs to address the tenant (the
   codec configuration, the container, the collection UUID). A key that
@@ -538,29 +539,52 @@ Operations, in the order the stores are touched:
 - `forget`: look up segments and derivatives; delete vector records;
   delete segments.
 
-Provider routing. Episodic memory is constructed with the embedders and
-rerankers a deployment offers, as mappings from id to object, and a
-tenant's section names one of each. On every operation the subsystem
-reads its per-tenant row and takes the ids from it: `process` embeds
-derivatives with that embedder and upserts under the tenant key, whose
-registry row names the container `ensure` chose for that embedder; a
-search embeds the query with the same embedder, queries the same
-container, and reranks with the tenant's reranker. The vector store is
-configured with one container per embedder id, so the id is the
-container name and no further mapping exists. A tenant naming an id the
-subsystem was not constructed with is rejected at creation and at
-`PATCH` by the subsystem's own validation. Changing the reranker is a
-mutable option; changing the embedder is not, because its container
-holds the data.
+Objects per configuration, options per request. `EventMemory` keeps
+its shape: one embedder, one segmenter, one deriver, constructed with
+them, its operations taking the key. The episodic memory service, the
+component that registers with the tenant service and serves the routes,
+holds the providers the deployment offers and builds one `EventMemory`
+per distinct structural configuration: the embedder id and the
+segmenter and deriver options. It caches those objects by
+configuration, not by tenant, so the cache is bounded by the
+configurations in use, and each object is a few references to shared
+resources, built in microseconds. An object for embedder `e` is built
+with `embedders[e]` and `vector_store.for_container(e)`, the
+container-scoped view of rule 4 above, so a dispatch error raises
+instead of writing another model's vectors into a container; the
+embedder and its container are bound in one constructor call. On a
+request the service reads the tenant's applied configuration from its
+per-tenant row, takes the object for it, and calls it with the tenant
+id.
+
+Options that a request may vary are not bound into objects at all; they
+are arguments of the call. The reranker, `limit`, `expand_context`, the
+minimum score and `include_events` are parameters of `query`, and
+`EventMemory.query` takes the reranker as an object per call. The
+tenant's section supplies their defaults; a request may override any
+of them, the reranker within the ids the deployment offers, validated
+by the service. Nothing that ingest does varies per request. The
+division is by what changes stored data: an option that decides where
+or how records are written is structural and bound; an option that
+only shapes an answer is per call.
+
+A tenant naming an id the deployment did not build is rejected at
+creation and at `PATCH` by the service's own validation. Changing the
+embedder is not a `PATCH`, because its container holds the data;
+changing the segmenter or deriver options applies to later events;
+changing the reranker or a search default takes effect on the next
+request.
 
 Tenant configuration section `episodic_memory`, with mutability:
 
 - `embedder` (provider id): immutable; a different embedder is a new
   tenant and a new ingestion.
-- `reranker` (provider id or null): mutable.
+- `reranker` (provider id or null): mutable; the default for a search,
+  overridable per request.
 - `segmenter`, `deriver`: their options; mutable, applying to events
   processed after the change.
-- `search`: default `limit`, `expand_context`, minimum score; mutable.
+- `search`: default `limit`, `expand_context`, minimum score; mutable;
+  each overridable per request.
 
 Episodic memory uses no language model today (both segmenters and both
 derivers are deterministic; the embedder is the only model call). The
@@ -1007,68 +1031,93 @@ and what its scope is for.
 
 ## Composition and settings
 
-Composition is Python. Settings are data. Each does what it is good at,
-and the loader of the earlier draft, which reflected on constructors to
-rebuild a Python object graph from YAML, is gone.
+Four rules, then the mechanics.
 
-- Composition: a Python module with one function, `compose(settings) ->
-  Server`, that constructs every resource by calling constructors and
-  factories with the objects they depend on and the settings they need.
-  Wiring order is evaluation order; a wrong argument is a type error the
-  type checker reports before anything runs; a library user's own
-  embedder is a class they instantiate, with nothing to register. The
-  server ships one composition, the standard server, which
-  `memmachine serve` runs; `memmachine serve --compose
-  my_package.wiring:compose` runs another. A deployment that needs a
-  different graph writes Python, which is what the loader would have
-  been reconstructing from YAML.
-- Settings: the scalar values a deployment sets without changing the
-  graph: URLs, credentials, pool sizes, pragmas, bind address, roles,
-  scope, reconciler intervals, property and filter bounds, and the
-  tenant templates. One Pydantic settings model per resource class
-  (`PostgresSettings`, `QdrantSettings`, `EpisodicMemorySettings`) and
-  one for the standard composition that nests them, read from
-  environment variables and an optional YAML or TOML file of the same
-  shape, validated at startup, with a JSON Schema and a documented
-  example generated from the model. Secrets are environment variables.
-  A settings file carries no resource identifiers and no wiring; it
-  cannot express a graph.
-- Why not YAML for wiring. The earlier document was Python written in
-  YAML, with a kind table, id resolution, topological ordering and
-  runtime instance checks to turn it back into Python, all to avoid a
-  file the type checker and the interpreter already handle. The usual
-  reasons for a separate wiring file do not apply: nothing is reloaded,
-  and arbitrary code execution is not a new exposure, since the
-  composition runs as the server's own code at the trust of the image.
-  What YAML is good at, values templated by Helm or set from a
-  ConfigMap and the environment, is exactly what settings are.
-- Why not Python for settings. Values change per environment without a
-  code change, are templated by deployment tooling, and must be
-  validated and documented as data. A URL in a Python file is a URL
-  that needs a code review to change.
-- The one place the standard composition is data-driven: which
-  providers exist. A deployment declares its embedders, language models
-  and rerankers as named settings entries with a `kind`, and the
-  standard composition instantiates one object per entry from a small
-  table of kind to class for each provider family. That table is the
-  standard composition's, not a general mechanism; a custom composition
-  instantiates whatever it likes.
+1. Fixed topology, pluggable slots. The standard server is a fixed graph
+   of roles: database engines, the key registry, the event store, the
+   segment store, the vector store, embedders, rerankers, language
+   models, the episodic memory service, the ingest service, the tenant
+   service, the routers. Each role is an ABC. The graph never varies
+   between deployments; what fills each slot does. This is the shape of
+   every server that supports many backends from one image (a database
+   `ENGINE` setting, SQLAlchemy dialects, the OpenTelemetry Collector's
+   receivers and exporters, an AI gateway's model list).
+2. Composition is Python. One function, `compose(settings) -> Server`,
+   constructs every resource by calling constructors and factories with
+   the objects they depend on. Wiring order is evaluation order; a wrong
+   argument is a type error the type checker reports before anything
+   runs; a library user's own class needs nothing but an import. The
+   server ships the standard composition, which `memmachine serve`
+   runs; `memmachine serve --compose my_package.wiring:compose` runs
+   another. A deployment that needs a different graph writes Python,
+   which is what a wiring file would have been describing anyway.
+3. Settings are data. Everything a deployment sets without changing the
+   graph: which kind fills each slot and that kind's own values (URLs,
+   credentials, pool sizes, pragmas, model names, dimensions), plus
+   bind address, roles, scope, reconciler intervals, property and
+   filter bounds, and the tenant templates. Read from environment
+   variables and an optional YAML or TOML file of the same shape,
+   validated at startup against Pydantic settings models, with a JSON
+   Schema and a documented example generated from them. Secrets are
+   environment variables. A settings file carries no wiring; it cannot
+   express a graph.
+4. Scoped views. A dependency that could be misused across a boundary
+   is scoped before it is injected, so the misuse is unrepresentable
+   rather than checked: the key registry is handed to a store as a view
+   over that store's rows only; the vector store is handed to an
+   episodic memory object as a view over one container only. A store
+   cannot touch another store's rows, and an object built for one
+   embedder cannot write into another embedder's container. The rule
+   applies wherever a shared resource serves several holders.
+
+Kinds. Each slot family has one table from kind name to callable, a
+class or a factory, and the slot's settings type is a discriminated
+union over the registered kinds, keyed by `kind`, so validation and
+schema generation cover plugins. Built-in kinds register by being
+imported; out-of-tree kinds register through `importlib.metadata`
+entry points, one group per family (`memmachine.engines`,
+`memmachine.vector_stores`, `memmachine.embedders`, ...), which is
+Python's standard plugin mechanism and keeps the core ignorant of
+backends it did not ship. Heavy client libraries are optional extras
+imported inside the kind's factory, so a deployment that never selects
+Milvus never imports it; one image carries every built-in kind.
+
+Why not YAML for wiring. A wiring document is Python written in YAML,
+with a loader to turn it back: a registry of ids, reference resolution,
+topological ordering and runtime type checks, all to avoid a file the
+type checker and the interpreter already handle. The usual reasons for a
+separate wiring file do not apply here: nothing is reloaded, and
+arbitrary code execution is not a new exposure, since the composition
+runs as the server's own code at the trust of the image. What YAML is
+good at, values templated by Helm or set from a ConfigMap and the
+environment, is exactly what settings are.
+
+Why not Python for settings. Values change per environment without a
+code change, are templated by deployment tooling, and must be validated
+and documented as data. A URL in a Python file is a URL that needs a
+code review to change.
+
+Where the standard composition is data-driven: at every slot, through
+the kind tables, and in how many providers exist, since embedders,
+rerankers and language models are named settings entries and the
+composition instantiates one object per entry. The standard composition
+decides the graph; settings decide what fills it and how many of each
+provider there are.
 
 The standard composition, sketched:
 
 ```python
 def compose(s: ServerSettings) -> Server:
-    main = postgres_engine(s.databases.main)
-    vectors = AsyncQdrantClient(**s.vectors.client_arguments())
-    embedders = {name: build_embedder(e) for name, e in s.embedders.items()}
-    rerankers = {name: build_reranker(r) for name, r in s.rerankers.items()}
+    main = ENGINES[s.databases.main.kind](s.databases.main)
+    embedders = {name: EMBEDDERS[e.kind](e) for name, e in s.embedders.items()}
+    rerankers = {name: RERANKERS[r.kind](r) for name, r in s.rerankers.items()}
     registry = SqlKeyRegistry(main)
     events = SqlAlchemyEventStore(main, s.event_store)
     segments = SqlAlchemySegmentStore(main, s.segment_store)
-    vector_store = QdrantVectorStore(
-        vectors, registry.scoped("vector-store"), s.vector_store
+    vector_store = VECTOR_STORES[s.vector_store.kind](
+        registry.scoped("vector-store"), s.vector_store
     )
-    episodic = EpisodicMemory(
+    episodic = EpisodicMemoryService(
         events, segments, vector_store, embedders, rerankers,
         s.episodic_memory,
     )
@@ -1085,9 +1134,14 @@ The settings a deployment writes, each key a field of a settings model:
 ```yaml
 databases:
   main:
+    kind: postgres
     url: ${MEMMACHINE_DATABASE_URL}
-vectors:
+vector_store:
+  kind: qdrant
   url: http://qdrant:6333
+  indexed_properties:      # once per store; system fields implicit
+    kind: string
+    score: integer
 embedders:
   openai-large:
     kind: openai
@@ -1097,10 +1151,6 @@ embedders:
 rerankers:
   bm25:
     kind: bm25
-vector_store:
-  indexed_properties:      # once per store; system fields implicit
-    kind: string
-    score: integer
 tenant_templates:          # data: copied into new tenants, never built
   default:
     episodic_memory:
@@ -1117,16 +1167,26 @@ server:
 
 Tenant templates are validated at startup against each component's
 tenant configuration model, including their provider ids against the
-mapping the component was constructed with, and nothing is built from
-them. A template edit changes future tenants only; existing tenants
-keep their recorded configuration, which an operator changes with
-`PATCH`.
+providers the composition built, and nothing is built from them. A
+template edit changes future tenants only; existing tenants keep their
+recorded configuration, which an operator changes with `PATCH`.
 
 Provider ids are stable identities. A provider's model or dimensions
 are not changed under an id; a new model is a new id. Removing an id
 from the settings fails startup while any tenant of that component
 references it, which the component checks from its own per-tenant table
 at construction.
+
+Routing stores. A slot may be filled by an implementation that routes
+over several children of the same ABC, placing each key on one child
+and recording the choice in its own key registry row's address; every
+later operation reads that row, as the fence already does, and
+dispatches. No new key is passed anywhere: the tenant id is the key,
+and placement is server-side state. That is how tenants are placed
+across several vector clusters once one is full, and how a tenant moves
+between backends; it does not conflict with "no sharding", which is
+about process ownership, not data placement. Not in the first
+deployment; a custom composition wires it when needed.
 
 The earlier `resource_initializer.py` proposal (edwinyyyu/MemMachine,
 e134c531) is superseded rather than improved: its three problems,
@@ -1178,7 +1238,7 @@ Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 
 | Method and path | Effect | Status |
 | --- | --- | --- |
-| `POST .../search` | body `query`, `limit`, `since`, `before`, `producers`, `filter` (JSON tree), `expand_context`, `include_events` | 200 with up to `limit` scored hits |
+| `POST .../search` | body `query`, `limit`, `since`, `before`, `producers`, `filter` (JSON tree), `expand_context`, `include_events`, `reranker` (an offered id; the tenant's default if absent) | 200 with up to `limit` scored hits |
 | `GET ...` | watermark and lag behind the event store | 200 |
 
 Event body: `id` (optional UUID), `timestamp` (optional; server time if
