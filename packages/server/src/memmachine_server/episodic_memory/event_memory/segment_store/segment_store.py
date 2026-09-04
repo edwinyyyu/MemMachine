@@ -6,6 +6,7 @@ Defines an interface for adding, retrieving, and deleting segments of events.
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
+from datetime import datetime
 from uuid import UUID
 
 from memmachine_server.common.filter.filter_parser import FilterExpr
@@ -13,6 +14,7 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     Segment,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.data_types import (
+    EventHeader,
     SegmentStorePartitionConfig,
 )
 
@@ -189,6 +191,116 @@ class SegmentStorePartition(ABC):
         Returns:
             dict[UUID, list[UUID]]:
                 A mapping from each segment UUID to the UUIDs of its associated derivatives.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_segment_uuids_by_prefix(
+        self,
+        uuid_prefix: str,
+        *,
+        limit: int,
+    ) -> list[UUID]:
+        """
+        Get the stored segment UUIDs whose hexadecimal form starts with a prefix.
+
+        Segment UUIDs are the store's public addresses, and an address a person
+        or a model has to read or retype is abbreviated in practice. Resolving an
+        abbreviation is a store question -- only the store knows which UUIDs
+        exist -- so it is answered here rather than by a caller guessing.
+
+        Args:
+            uuid_prefix (str):
+                A hexadecimal prefix, without dashes. An empty prefix matches
+                every segment.
+            limit (int):
+                The maximum number of matches to return. A caller reporting an
+                ambiguous abbreviation should ask for one more than it intends
+                to show, so it can tell a truncated list from a complete one.
+
+        Returns:
+            list[UUID]:
+                The matching segment UUIDs, in ascending UUID order.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_adjacent_segment_uuids(
+        self,
+        segment_uuids: Iterable[UUID],
+    ) -> dict[UUID, tuple[UUID | None, UUID | None]]:
+        """
+        Get each UUID's nearest stored neighbours in ascending UUID order.
+
+        The counterpart to `find_segment_uuids_by_prefix`: it says how short an
+        abbreviation of a UUID can be while still naming only that segment.
+        Whatever prefix separates a UUID from the two UUIDs adjacent to it
+        separates it from every stored UUID, because anything sharing more
+        would have sorted between them -- so two index lookups answer a
+        question that otherwise means scanning the partition.
+
+        The UUIDs need not themselves be stored: an absent one still has
+        neighbours, which is what makes this usable before a segment is
+        written.
+
+        Args:
+            segment_uuids (Iterable[UUID]):
+                The UUIDs to find neighbours for.
+
+        Returns:
+            dict[UUID, tuple[UUID | None, UUID | None]]:
+                A mapping from each requested UUID to the greatest stored UUID
+                below it and the least stored UUID above it. Either is None
+                when nothing is stored on that side.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_event_headers(
+        self,
+        *,
+        property_filter: FilterExpr | None = None,
+        start: tuple[datetime, UUID] | None = None,
+        end: tuple[datetime, UUID] | None = None,
+        limit: int | None = None,
+        descending: bool = False,
+    ) -> list[EventHeader]:
+        """
+        List events on the timeline by their position and size, without content.
+
+        Reading a conversation's shape -- which turns it has, where the work
+        happened, how long each event is -- is a question about the timeline
+        rather than about text, and answering it by fetching segments means
+        decoding every block only to discard it. An event's whole content can
+        be thousands of segments, so the cost is not marginal.
+
+        Bounds are (timestamp, event_uuid) pairs naming an event, matching the
+        order segments are stored in, and both are INCLUSIVE. `descending`
+        reverses the walk, so a bounded `limit` takes the events nearest `end`
+        rather than nearest `start`; the returned list is in timeline order
+        either way.
+
+        Args:
+            property_filter (FilterExpr | None):
+                An optional filter over segments. An event is listed when any
+                of its segments matches, and its counts then describe only the
+                matching segments (default: None).
+            start (tuple[datetime, UUID] | None):
+                Earliest event to include, inclusive. None starts at the
+                beginning of the timeline (default: None).
+            end (tuple[datetime, UUID] | None):
+                Latest event to include, inclusive. None runs to the end of the
+                timeline (default: None).
+            limit (int | None):
+                The maximum number of events to return. None returns every
+                event in range (default: None).
+            descending (bool):
+                Walk from `end` towards `start`, so a `limit` keeps the latest
+                events rather than the earliest (default: False).
+
+        Returns:
+            list[EventHeader]:
+                The matching events in timeline order.
         """
         raise NotImplementedError
 
