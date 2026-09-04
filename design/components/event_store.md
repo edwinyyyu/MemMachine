@@ -13,11 +13,12 @@ blocks and context).
 
 ## Types
 
-`Event` and `Block` from `event_memory/data_types.py` (`Event.uuid:
-UUID`), with `Event.author: Author | None` in place of the `Context`
-union: `Author(id: str, name: str | None)`, `id` bounded by the
-property naming contract's length and filterable, `name` display-only.
-On the read side:
+`Event`, `Block` and `Context` from `event_memory/data_types.py`
+(`Event.uuid: UUID`), with `Event.source_id: str | None` added beside
+`timestamp`, bounded by the property naming contract's length, and
+`Context` reduced to its rendering role: a typed union whose first
+member is `AuthorContext(author: str)`; `context: Context | None`. On
+the read side:
 
 ```python
 class LogEntry(BaseModel):
@@ -47,14 +48,14 @@ class LogEntry(BaseModel):
 | `uuid` | `Uuid` | primary key part |
 | `position` | `BigInteger` | not null; unique `(key, position)`; the position of the event's `added` entry |
 | `timestamp` | `DateTime(timezone=True)` | not null, UTC |
-| `author_id` | `Text` | null |
-| `author_name` | `Text` | null |
+| `source_id` | `Text` | null |
+| `context` | `LargeBinary` | null, codec-encoded |
 | `properties` | `JSON` (`JSONB` on PostgreSQL) | not null |
 | `blocks` | `LargeBinary` | not null, codec-encoded |
 | `ingested_at` | `DateTime(timezone=True)` | not null, `func.now()` |
 
 Indexes: `event_store_ev__key_timestamp (key, timestamp)` for `list_events` by
-time; `event_store_ev__key_author (key, author_id)`; a GIN index on
+time; `event_store_ev__key_source (key, source_id)`; a GIN index on
 `properties` on PostgreSQL, added by a deployment as it needs, since undeclared
 keys are filtered here.
 
