@@ -8,7 +8,6 @@ import pytest_asyncio
 from neo4j import AsyncGraphDatabase
 from testcontainers.neo4j import Neo4jContainer
 
-from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
     And as FilterAnd,
 )
@@ -163,10 +162,7 @@ async def test_add_nodes(neo4j_driver, vector_graph_store):
                 "none_value": None,
             },
             embeddings={
-                "embedding_name": (
-                    [0.1, 0.2, 0.3],
-                    SimilarityMetric.COSINE,
-                ),
+                "embedding_name": [0.1, 0.2, 0.3],
             },
         ),
     ]
@@ -200,10 +196,7 @@ async def test_add_edges(neo4j_driver, vector_graph_store):
                 "none_value": None,
             },
             embeddings={
-                "embedding_name": (
-                    [0.1, 0.2, 0.3],
-                    SimilarityMetric.COSINE,
-                ),
+                "embedding_name": [0.1, 0.2, 0.3],
             },
         ),
     ]
@@ -243,10 +236,7 @@ async def test_add_edges(neo4j_driver, vector_graph_store):
             target_uid=node3_uid,
             properties={"description": "Node1 to Node3"},
             embeddings={
-                "embedding_name": (
-                    [0.4, 0.5, 0.6],
-                    SimilarityMetric.DOT,
-                ),
+                "embedding_name": [0.4, 0.5, 0.6],
             },
         ),
     ]
@@ -292,14 +282,8 @@ async def test_search_similar_nodes(vector_graph_store, vector_graph_store_ann):
                 "name": "Node1",
             },
             embeddings={
-                "embedding1": (
-                    [1000.0, 0.0],
-                    SimilarityMetric.COSINE,
-                ),
-                "embedding2": (
-                    [1000.0, 0.0],
-                    SimilarityMetric.EUCLIDEAN,
-                ),
+                "embedding1": [1000.0, 0.0],
+                "embedding2": [1000.0, 0.0],
             },
         ),
         Node(
@@ -309,14 +293,8 @@ async def test_search_similar_nodes(vector_graph_store, vector_graph_store_ann):
                 "include?": "yes",
             },
             embeddings={
-                "embedding1": (
-                    [10.0, 10.0],
-                    SimilarityMetric.COSINE,
-                ),
-                "embedding2": (
-                    [10.0, 10.0],
-                    SimilarityMetric.EUCLIDEAN,
-                ),
+                "embedding1": [10.0, 10.0],
+                "embedding2": [10.0, 10.0],
             },
         ),
         Node(
@@ -326,14 +304,8 @@ async def test_search_similar_nodes(vector_graph_store, vector_graph_store_ann):
                 "include?": "no",
             },
             embeddings={
-                "embedding1": (
-                    [-100.0, 0.0],
-                    SimilarityMetric.COSINE,
-                ),
-                "embedding2": (
-                    [-100.0, 0.0],
-                    SimilarityMetric.EUCLIDEAN,
-                ),
+                "embedding1": [-100.0, 0.0],
+                "embedding2": [-100.0, 0.0],
             },
         ),
         Node(
@@ -343,14 +315,8 @@ async def test_search_similar_nodes(vector_graph_store, vector_graph_store_ann):
                 "include?": "no",
             },
             embeddings={
-                "embedding1": (
-                    [-100.0, -1.0],
-                    SimilarityMetric.COSINE,
-                ),
-                "embedding2": (
-                    [-100.0, -1.0],
-                    SimilarityMetric.EUCLIDEAN,
-                ),
+                "embedding1": [-100.0, -1.0],
+                "embedding2": [-100.0, -1.0],
             },
         ),
         Node(
@@ -360,14 +326,8 @@ async def test_search_similar_nodes(vector_graph_store, vector_graph_store_ann):
                 "include?": "no",
             },
             embeddings={
-                "embedding1": (
-                    [-100.0, -2.0],
-                    SimilarityMetric.COSINE,
-                ),
-                "embedding2": (
-                    [-100.0, -2.0],
-                    SimilarityMetric.EUCLIDEAN,
-                ),
+                "embedding1": [-100.0, -2.0],
+                "embedding2": [-100.0, -2.0],
             },
         ),
         Node(
@@ -377,14 +337,8 @@ async def test_search_similar_nodes(vector_graph_store, vector_graph_store_ann):
                 "include?": "no",
             },
             embeddings={
-                "embedding1": (
-                    [-100.0, -3.0],
-                    SimilarityMetric.COSINE,
-                ),
-                "embedding2": (
-                    [-100.0, -3.0],
-                    SimilarityMetric.EUCLIDEAN,
-                ),
+                "embedding1": [-100.0, -3.0],
+                "embedding2": [-100.0, -3.0],
             },
         ),
     ]
@@ -395,7 +349,6 @@ async def test_search_similar_nodes(vector_graph_store, vector_graph_store_ann):
         collection="Entity",
         query_embedding=[1.0, 0.0],
         embedding_name="embedding1",
-        similarity_metric=SimilarityMetric.COSINE,
         limit=5,
     )
     assert 0 < len(results) <= 5
@@ -404,7 +357,6 @@ async def test_search_similar_nodes(vector_graph_store, vector_graph_store_ann):
         collection="Entity",
         query_embedding=[1.0, 0.0],
         embedding_name="embedding1",
-        similarity_metric=SimilarityMetric.COSINE,
         limit=5,
     )
     assert len(results) == 5
@@ -414,7 +366,6 @@ async def test_search_similar_nodes(vector_graph_store, vector_graph_store_ann):
         collection="Entity",
         query_embedding=[1.0, 0.0],
         embedding_name="embedding1",
-        similarity_metric=SimilarityMetric.COSINE,
         limit=5,
         property_filter=FilterComparison(
             field="include?",
@@ -429,7 +380,6 @@ async def test_search_similar_nodes(vector_graph_store, vector_graph_store_ann):
         collection="Entity",
         query_embedding=[1.0, 0.0],
         embedding_name="embedding1",
-        similarity_metric=SimilarityMetric.COSINE,
         limit=5,
         property_filter=FilterOr(
             left=FilterComparison(
@@ -449,7 +399,6 @@ async def test_search_similar_nodes(vector_graph_store, vector_graph_store_ann):
         collection="Entity",
         query_embedding=[1.0, 0.0],
         embedding_name="embedding2",
-        similarity_metric=SimilarityMetric.EUCLIDEAN,
         limit=5,
     )
     assert len(results) == 5
@@ -459,7 +408,6 @@ async def test_search_similar_nodes(vector_graph_store, vector_graph_store_ann):
         collection="Entity",
         query_embedding=[1.0, 0.0],
         embedding_name="embedding2",
-        similarity_metric=SimilarityMetric.EUCLIDEAN,
         limit=5,
         property_filter=FilterComparison(
             field="include?",
@@ -474,7 +422,6 @@ async def test_search_similar_nodes(vector_graph_store, vector_graph_store_ann):
         collection="Entity",
         query_embedding=[1.0, 0.0],
         embedding_name="embedding1",
-        similarity_metric=SimilarityMetric.COSINE,
         limit=5,
     )
     assert 0 < len(results) <= 5
@@ -483,7 +430,6 @@ async def test_search_similar_nodes(vector_graph_store, vector_graph_store_ann):
         collection="Entity",
         query_embedding=[1.0, 0.0],
         embedding_name="embedding2",
-        similarity_metric=SimilarityMetric.EUCLIDEAN,
         limit=5,
     )
     assert 0 < len(results) <= 5
@@ -1635,60 +1581,51 @@ async def test__create_vector_index_if_not_exists(
                 Neo4jVectorGraphStore._sanitize_name(collection_or_relation_name),
                 Neo4jVectorGraphStore._sanitize_name(property_name),
                 dimensions=dimensions,
-                similarity_metric=similarity_metric,
             ),
             vector_graph_store_indexing._create_vector_index_if_not_exists(
                 EntityType.NODE,
                 Neo4jVectorGraphStore._sanitize_name(collection_or_relation_name),
                 Neo4jVectorGraphStore._sanitize_name(other_property_name),
                 dimensions=dimensions,
-                similarity_metric=similarity_metric,
             ),
             vector_graph_store_indexing._create_vector_index_if_not_exists(
                 EntityType.NODE,
                 Neo4jVectorGraphStore._sanitize_name(other_collection_or_relation_name),
                 Neo4jVectorGraphStore._sanitize_name(property_name),
                 dimensions=dimensions,
-                similarity_metric=similarity_metric,
             ),
             vector_graph_store_indexing._create_vector_index_if_not_exists(
                 EntityType.NODE,
                 Neo4jVectorGraphStore._sanitize_name(other_collection_or_relation_name),
                 Neo4jVectorGraphStore._sanitize_name(other_property_name),
                 dimensions=dimensions,
-                similarity_metric=similarity_metric,
             ),
             vector_graph_store_indexing._create_vector_index_if_not_exists(
                 EntityType.EDGE,
                 Neo4jVectorGraphStore._sanitize_name(collection_or_relation_name),
                 Neo4jVectorGraphStore._sanitize_name(property_name),
                 dimensions=dimensions,
-                similarity_metric=similarity_metric,
             ),
             vector_graph_store_indexing._create_vector_index_if_not_exists(
                 EntityType.EDGE,
                 Neo4jVectorGraphStore._sanitize_name(collection_or_relation_name),
                 Neo4jVectorGraphStore._sanitize_name(other_property_name),
                 dimensions=dimensions,
-                similarity_metric=similarity_metric,
             ),
             vector_graph_store_indexing._create_vector_index_if_not_exists(
                 EntityType.EDGE,
                 Neo4jVectorGraphStore._sanitize_name(other_collection_or_relation_name),
                 Neo4jVectorGraphStore._sanitize_name(property_name),
                 dimensions=dimensions,
-                similarity_metric=similarity_metric,
             ),
             vector_graph_store_indexing._create_vector_index_if_not_exists(
                 EntityType.EDGE,
                 Neo4jVectorGraphStore._sanitize_name(other_collection_or_relation_name),
                 Neo4jVectorGraphStore._sanitize_name(other_property_name),
                 dimensions=dimensions,
-                similarity_metric=similarity_metric,
             ),
         ]
         for dimensions in [1, 10]
-        for similarity_metric in [SimilarityMetric.COSINE, SimilarityMetric.EUCLIDEAN]
         for _ in range(2000)
     ]
 
@@ -1805,10 +1742,7 @@ async def test__nodes_from_neo4j_nodes(neo4j_driver, vector_graph_store):
             uid=str(uuid4()),
             properties={"name": "Node3", "time": datetime.now(tz=UTC)},
             embeddings={
-                "embedding_name": (
-                    [0.1, 0.2, 0.3],
-                    SimilarityMetric.COSINE,
-                ),
+                "embedding_name": [0.1, 0.2, 0.3],
             },
         ),
     ]

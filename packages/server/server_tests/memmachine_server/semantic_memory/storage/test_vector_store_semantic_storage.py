@@ -5,7 +5,6 @@ from datetime import UTC, datetime, timedelta, timezone
 import numpy as np
 import pytest
 
-from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.filter.filter_parser import parse_filter
 from memmachine_server.common.vector_store import VectorStoreCollectionConfig
 from memmachine_server.semantic_memory.storage.storage_base import SemanticStorage
@@ -23,7 +22,6 @@ def vector_collection() -> InMemoryVectorStoreCollection:
     return InMemoryVectorStoreCollection(
         VectorStoreCollectionConfig(
             vector_dimensions=2,
-            similarity_metric=SimilarityMetric.COSINE,
             indexed_properties_schema={
                 "set_id": str,
                 "category": str,

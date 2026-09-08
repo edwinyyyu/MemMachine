@@ -442,7 +442,7 @@ class EventMemory:
                 )
             )
             if segment_uuid not in seed_embedding_scores:
-                seed_embedding_scores[segment_uuid] = match.score
+                seed_embedding_scores[segment_uuid] = match.cosine_similarity
 
         seed_segment_uuids = list(seed_embedding_scores)
 
@@ -485,13 +485,6 @@ class EventMemory:
             )
         t_scoring = time.monotonic()
 
-        # Reranker scores are always higher-is-better.
-        # Embedding scores depend on the similarity metric.
-        higher_is_better = (
-            self._reranker is not None
-            or self._vector_store_collection.config.similarity_metric.higher_is_better
-        )
-
         # Return scored contexts ordered by score.
         scored_segment_contexts = [
             ScoredSegmentContext(
@@ -505,7 +498,7 @@ class EventMemory:
                     strict=True,
                 ),
                 key=lambda triple: triple[0],
-                reverse=higher_is_better,
+                reverse=True,
             )
         ]
 

@@ -14,7 +14,7 @@ pymilvus = pytest.importorskip("pymilvus")
 DataType = pymilvus.DataType
 MilvusClient = pymilvus.MilvusClient
 
-from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
@@ -97,7 +97,6 @@ async def collection(store):
         name=NAME,
         config=VectorStoreCollectionConfig(
             vector_dimensions=VECTOR_DIM,
-            similarity_metric=SimilarityMetric.COSINE,
             indexed_properties_schema={
                 "name": str,
                 "age": int,
@@ -183,7 +182,6 @@ class TestCollectionLifecycle:
         schema: dict[str, type[PropertyValue]] = {"name": str}
         config = VectorStoreCollectionConfig(
             vector_dimensions=VECTOR_DIM,
-            similarity_metric=SimilarityMetric.COSINE,
             indexed_properties_schema=schema,
         )
         await store.create_collection(namespace=NAMESPACE, name="coll_a", config=config)
@@ -220,18 +218,6 @@ class TestCollectionLifecycle:
         assert fields["properties"]["type"] == DataType.JSON
 
         await store.delete_collection(namespace=NAMESPACE, name="schema")
-
-    @pytest.mark.asyncio
-    async def test_unsupported_metric_raises(self, store):
-        with pytest.raises(ValueError, match="Milvus only supports"):
-            await store.create_collection(
-                namespace=NAMESPACE,
-                name="bad_metric",
-                config=VectorStoreCollectionConfig(
-                    vector_dimensions=VECTOR_DIM,
-                    similarity_metric=SimilarityMetric.MANHATTAN,
-                ),
-            )
 
 
 class TestUpsertAndQuery:
@@ -278,9 +264,13 @@ class TestUpsertAndQuery:
         assert matches[0].record.uuid == r1.uuid
         assert matches[1].record.uuid == r3.uuid
         assert matches[2].record.uuid == r2.uuid
-        assert matches[0].score >= matches[1].score >= matches[2].score
-        assert matches[0].score == pytest.approx(1.0)
-        assert matches[2].score == pytest.approx(0.0)
+        assert (
+            matches[0].cosine_similarity
+            >= matches[1].cosine_similarity
+            >= matches[2].cosine_similarity
+        )
+        assert matches[0].cosine_similarity == pytest.approx(1.0)
+        assert matches[2].cosine_similarity == pytest.approx(0.0)
 
     @pytest.mark.asyncio
     async def test_query_with_similarity_threshold(self, collection):
@@ -292,7 +282,7 @@ class TestUpsertAndQuery:
         await collection.upsert(records=[r1, r2])
 
         query_results = await collection.query(
-            query_vectors=[v1], limit=10, score_threshold=0.9
+            query_vectors=[v1], limit=10, min_cosine_similarity=0.9
         )
         matches = query_results[0].matches
         assert len(matches) == 1
@@ -378,7 +368,7 @@ class TestUpsertAndQuery:
 
         # The old vector is still the indexed one.
         results = await collection.query(query_vectors=[old_vector], limit=1)
-        assert results[0].matches[0].score == pytest.approx(1.0, abs=0.01)
+        assert results[0].matches[0].cosine_similarity == pytest.approx(1.0, abs=0.01)
 
 
 class TestFilters:
@@ -525,7 +515,7 @@ class TestSetPropertiesAndDelete:
         # The vector is untouched, so the record still answers its own query.
         results = await collection.query(query_vectors=[v1], limit=1)
         assert results[0].matches[0].record.uuid == r1.uuid
-        assert results[0].matches[0].score == pytest.approx(1.0, abs=0.01)
+        assert results[0].matches[0].cosine_similarity == pytest.approx(1.0, abs=0.01)
 
     @pytest.mark.asyncio
     async def test_set_properties_ignores_uuids_the_collection_does_not_hold(

@@ -8,7 +8,6 @@ from typing import ClassVar, override
 import numpy as np
 from turbovec import IdMapIndex
 
-from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.rw_locks import AsyncRWLock
 
 from .vector_search_engine import SearchMatch, SearchResult, VectorSearchEngine
@@ -25,10 +24,6 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
     one would, and any embedding width the other engines accept works here too.
     """
 
-    _SUPPORTED_METRICS: ClassVar[frozenset[SimilarityMetric]] = frozenset(
-        {SimilarityMetric.COSINE, SimilarityMetric.DOT}
-    )
-
     _VALID_BIT_WIDTHS: ClassVar[frozenset[int]] = frozenset({2, 3, 4})
     _DEFAULT_BIT_WIDTH: ClassVar[int] = 4
 
@@ -38,24 +33,15 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
         self,
         *,
         num_dimensions: int,
-        similarity_metric: SimilarityMetric,
         bit_width: int = _DEFAULT_BIT_WIDTH,
     ) -> None:
         """Initialize."""
-        if similarity_metric not in self._SUPPORTED_METRICS:
-            supported = ", ".join(metric.value for metric in self._SUPPORTED_METRICS)
-            raise NotImplementedError(
-                f"turbovec does not support {similarity_metric.value!r} "
-                f"(inner-product index only). Supported: {supported}"
-            )
-
         if bit_width not in self._VALID_BIT_WIDTHS:
             raise ValueError(
                 f"turbovec bit_width must be one of "
                 f"{sorted(self._VALID_BIT_WIDTHS)}, got {bit_width}"
             )
 
-        self._similarity_metric = similarity_metric
         self._num_dimensions = num_dimensions
         self._padded_dimensions = math.ceil(num_dimensions / 8) * 8
         self._index = IdMapIndex(dim=self._padded_dimensions, bit_width=bit_width)
@@ -136,16 +122,20 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
             int_key = int(key)
             if allowed_keys is not None and int_key not in allowed_keys:
                 continue
-            matches.append(SearchMatch(key=int_key, score=self._to_score(score)))
+            matches.append(
+                SearchMatch(
+                    key=int_key,
+                    cosine_similarity=self._to_cosine_similarity(score),
+                )
+            )
             if len(matches) >= limit:
                 break
         return matches
 
-    def _to_score(self, score: float) -> float:
-        value = float(score)
-        if self._similarity_metric is SimilarityMetric.COSINE:
-            return min(1.0, max(-1.0, value))
-        return value
+    @staticmethod
+    def _to_cosine_similarity(inner_product: float) -> float:
+        """Clamp a quantized inner product onto the cosine range."""
+        return min(1.0, max(-1.0, float(inner_product)))
 
     def _prepare_vectors(self, vectors: Sequence[Sequence[float]]) -> np.ndarray:
         array = np.zeros((len(vectors), self._padded_dimensions), dtype=np.float32)
@@ -155,11 +145,28 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
             raise ValueError(
                 f"vectors must have {self._num_dimensions} dimensions"
             ) from error
-        if self._similarity_metric is SimilarityMetric.COSINE:
-            norms = np.linalg.norm(array, axis=1, keepdims=True)
-            norms[norms == 0.0] = 1.0
-            array = array / norms
-        return array
+        norms = np.linalg.norm(array, axis=1, keepdims=True)
+        norms[norms == 0.0] = 1.0
+        return array / norms
+
+    @override
+    async def get_cosine_similarities(
+        self,
+        query_vector: Sequence[float],
+        keys: Iterable[int],
+    ) -> dict[int, float]:
+        # turbovec has no keyed vector access, so this leans on the filtered
+        # search instead. That search only stops early once it already holds
+        # `limit` matches, so asking for `limit = len(keys)` returns every key
+        # present -- at the cost of widening the fetch until it finds them.
+        key_set = {int(key) for key in keys}
+        if not key_set:
+            return {}
+        async with self._lock.read_lock():
+            [result] = await asyncio.to_thread(
+                self._sync_search, [query_vector], len(key_set), key_set
+            )
+        return {match.key: match.cosine_similarity for match in result.matches}
 
     @override
     async def remove(self, keys: Iterable[int]) -> None:

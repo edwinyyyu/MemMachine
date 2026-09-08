@@ -1,28 +1,24 @@
 """USearch HNSW implementation of VectorSearchEngine."""
 
 import asyncio
-import math
 from collections.abc import Container, Iterable, Mapping, Sequence
 from typing import ClassVar, override
 
 import numpy as np
+import numpy.typing as npt
 from usearch.index import Index, MetricKind
 
-from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.rw_locks import AsyncRWLock
 
 from .index_persistence import atomic_index_write, clear_stale_index_temp
+from .scoring import cosine_similarities
 from .vector_search_engine import SearchMatch, SearchResult, VectorSearchEngine
 
 
 class USearchVectorSearchEngine(VectorSearchEngine):
     """Vector search engine backed by USearch HNSW."""
 
-    _METRIC_MAP: ClassVar[dict[SimilarityMetric, MetricKind]] = {
-        SimilarityMetric.COSINE: MetricKind.Cos,
-        SimilarityMetric.EUCLIDEAN: MetricKind.L2sq,
-        SimilarityMetric.DOT: MetricKind.IP,
-    }
+    _METRIC_KIND: ClassVar[MetricKind] = MetricKind.Cos
 
     _DEFAULT_M: ClassVar[int] = 16
     _DEFAULT_EF_CONSTRUCTION: ClassVar[int] = 128
@@ -34,42 +30,26 @@ class USearchVectorSearchEngine(VectorSearchEngine):
         self,
         *,
         num_dimensions: int,
-        similarity_metric: SimilarityMetric,
         m: int = _DEFAULT_M,
         ef_construction: int = _DEFAULT_EF_CONSTRUCTION,
         ef_search: int = _DEFAULT_EF_SEARCH,
     ) -> None:
         """Initialize."""
-        usearch_metric = self._METRIC_MAP.get(similarity_metric)
-        if usearch_metric is None:
-            supported = ", ".join(
-                similarity_metric.value for similarity_metric in self._METRIC_MAP
-            )
-            raise ValueError(
-                f"USearch does not support {similarity_metric.value!r}. Supported: {supported}"
-            )
-
         self._index = Index(
             ndim=num_dimensions,
-            metric=usearch_metric,
+            metric=self._METRIC_KIND,
             dtype="f32",
             connectivity=m,
             expansion_add=ef_construction,
             expansion_search=ef_search,
         )
-        self._similarity_metric = similarity_metric
 
         self._lock = AsyncRWLock()
 
-    def _distance_to_score(self, distance: float) -> float:
-        """Convert a USearch distance to a pure metric score."""
-        match self._similarity_metric:
-            case SimilarityMetric.COSINE | SimilarityMetric.DOT:
-                return 1.0 - distance
-            case SimilarityMetric.EUCLIDEAN:
-                return math.sqrt(max(0.0, distance))
-            case _:
-                raise NotImplementedError(self._similarity_metric)
+    @staticmethod
+    def _distance_to_cosine_similarity(distance: float) -> float:
+        """Convert a USearch cosine distance to a cosine similarity."""
+        return 1.0 - distance
 
     @override
     async def add(self, vectors: Mapping[int, Sequence[float]]) -> None:
@@ -140,7 +120,9 @@ class USearchVectorSearchEngine(VectorSearchEngine):
                     matches.append(
                         SearchMatch(
                             key=int_key,
-                            score=self._distance_to_score(float(dist)),
+                            cosine_similarity=self._distance_to_cosine_similarity(
+                                float(dist)
+                            ),
                         )
                     )
                     if len(matches) >= limit:
@@ -155,6 +137,49 @@ class USearchVectorSearchEngine(VectorSearchEngine):
             overfetch_factor *= USearchVectorSearchEngine._OVERFETCH_BASE
 
         return [r if r is not None else SearchResult(matches=[]) for r in final_results]
+
+    @override
+    async def get_cosine_similarities(
+        self,
+        query_vector: Sequence[float],
+        keys: Iterable[int],
+    ) -> dict[int, float]:
+        async with self._lock.read_lock():
+            present_keys, matrix = await asyncio.to_thread(
+                self._sync_gather_vectors, keys
+            )
+        if not present_keys:
+            return {}
+        similarities = cosine_similarities(query_vector, matrix)
+        return {
+            key: float(similarity)
+            for key, similarity in zip(present_keys, similarities, strict=True)
+        }
+
+    def _sync_gather_vectors(
+        self, keys: Iterable[int]
+    ) -> tuple[list[int], npt.NDArray[np.float32]]:
+        """Gather stored vectors by key as a float32 matrix; missing keys drop."""
+        keys = list(dict.fromkeys(int(key) for key in keys))
+        empty = np.empty((0, self._index.ndim), dtype=np.float32)
+        if not keys:
+            return [], empty
+
+        gathered = self._index.get(np.array(keys, dtype=np.int64))
+        if gathered is None:
+            return [], empty
+        if isinstance(gathered, np.ndarray):
+            return keys, np.asarray(gathered, dtype=np.float32).reshape(len(keys), -1)
+
+        present_keys: list[int] = []
+        rows: list[np.ndarray] = []
+        for key, row in zip(keys, gathered, strict=True):
+            if row is not None:
+                present_keys.append(key)
+                rows.append(np.asarray(row, dtype=np.float32))
+        if not present_keys:
+            return [], empty
+        return present_keys, np.vstack(rows)
 
     @override
     async def remove(self, keys: Iterable[int]) -> None:

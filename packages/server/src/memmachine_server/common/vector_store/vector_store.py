@@ -67,7 +67,7 @@ class VectorStoreCollection(ABC):
         *,
         query_vectors: Iterable[Sequence[float]],
         limit: int,
-        score_threshold: float | None = None,
+        min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
         return_properties: bool = True,
     ) -> list[QueryResult]:
@@ -79,8 +79,9 @@ class VectorStoreCollection(ABC):
                 The vectors to compare against.
             limit (int):
                 Maximum number of matching records to return per query vector.
-            score_threshold (float | None):
-                Score threshold to consider a match
+            min_cosine_similarity (float | None):
+                If provided, only return matches whose cosine similarity
+                is greater than or equal to this value
                 (default: None).
             property_filter (FilterExpr | None):
                 Filter expression tree.
@@ -94,6 +95,33 @@ class VectorStoreCollection(ABC):
             list[QueryResult]:
                 Results for each query vector,
                 ordered as in the input iterable.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_cosine_similarity(
+        self,
+        *,
+        query_vector: Sequence[float],
+        record_uuids: Iterable[UUID],
+    ) -> dict[UUID, float]:
+        """
+        Get cosine similarities between a query vector and records' vectors.
+
+        Similarities may be computed from quantized stored vectors,
+        so they may not be faithful to similarities computed
+        with a fresh embedding.
+
+        Args:
+            query_vector (Sequence[float]):
+                The vector to compare against.
+            record_uuids (Iterable[UUID]):
+                UUIDs of the records to compare.
+
+        Returns:
+            dict[UUID, float]:
+                Mapping of record UUID to cosine similarity in [-1, 1].
+                UUIDs without a stored record are omitted.
         """
         raise NotImplementedError
 

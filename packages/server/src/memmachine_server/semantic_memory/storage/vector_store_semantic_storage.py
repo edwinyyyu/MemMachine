@@ -671,7 +671,7 @@ class VectorStoreSemanticStorage(SemanticStorage):
         [query_result] = await self._vector_collection.query(
             query_vectors=[vector_search_opts.query_embedding.tolist()],
             limit=limit,
-            score_threshold=vector_search_opts.min_distance,
+            min_cosine_similarity=vector_search_opts.min_distance,
             return_properties=True,
         )
         ordered_ids = [

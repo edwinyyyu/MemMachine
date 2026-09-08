@@ -2,28 +2,24 @@
 
 import asyncio
 import contextlib
-import math
 from collections.abc import Callable, Container, Iterable, Mapping, Sequence
 from typing import ClassVar, override
 
 import hnswlib  # ty: ignore[unresolved-import]  # C extension, no py.typed
 import numpy as np
+import numpy.typing as npt
 
-from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.rw_locks import AsyncRWLock
 
 from .index_persistence import atomic_index_write, clear_stale_index_temp
+from .scoring import cosine_similarities
 from .vector_search_engine import SearchMatch, SearchResult, VectorSearchEngine
 
 
 class HnswlibVectorSearchEngine(VectorSearchEngine):
     """Vector search engine backed by hnswlib HNSW."""
 
-    _SPACE_MAP: ClassVar[dict[SimilarityMetric, str]] = {
-        SimilarityMetric.COSINE: "cosine",
-        SimilarityMetric.EUCLIDEAN: "l2",
-        SimilarityMetric.DOT: "ip",
-    }
+    _SPACE: ClassVar[str] = "cosine"
 
     _DEFAULT_M: ClassVar[int] = 16
     _DEFAULT_EF_CONSTRUCTION: ClassVar[int] = 128
@@ -36,7 +32,6 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
         self,
         *,
         num_dimensions: int,
-        similarity_metric: SimilarityMetric,
         m: int = _DEFAULT_M,
         ef_construction: int = _DEFAULT_EF_CONSTRUCTION,
         ef_search: int = _DEFAULT_EF_SEARCH,
@@ -54,23 +49,13 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
         see https://github.com/nmslib/hnswlib/blob/v0.8.0/hnswlib/hnswalg.h#L981-L987.
         Set to False if you'd rather pay memory growth than the per-replacement updatePoint cost.
         """
-        hnswlib_space = self._SPACE_MAP.get(similarity_metric)
-        if hnswlib_space is None:
-            supported = ", ".join(
-                similarity_metric.value for similarity_metric in self._SPACE_MAP
-            )
-            raise ValueError(
-                f"hnswlib does not support {similarity_metric.value!r}. Supported: {supported}"
-            )
-
         self._num_dimensions = num_dimensions
-        self._similarity_metric = similarity_metric
 
-        self._space = hnswlib_space
+        self._space = self._SPACE
         self._ef_search = ef_search
         self._allow_replace_deleted = allow_replace_deleted
 
-        self._index = hnswlib.Index(space=hnswlib_space, dim=num_dimensions)
+        self._index = hnswlib.Index(space=self._SPACE, dim=num_dimensions)
         self._index.init_index(
             max_elements=initial_capacity,
             ef_construction=ef_construction,
@@ -89,15 +74,10 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
 
         self._lock = AsyncRWLock()
 
-    def _distance_to_score(self, distance: float) -> float:
-        """Convert an hnswlib distance to a pure metric score."""
-        match self._similarity_metric:
-            case SimilarityMetric.COSINE | SimilarityMetric.DOT:
-                return 1.0 - distance
-            case SimilarityMetric.EUCLIDEAN:
-                return math.sqrt(max(0.0, distance))
-            case _:
-                raise NotImplementedError(self._similarity_metric)
+    @staticmethod
+    def _distance_to_cosine_similarity(distance: float) -> float:
+        """Convert an hnswlib cosine distance to a cosine similarity."""
+        return 1.0 - distance
 
     def _ensure_capacity(self, needed: int) -> None:
         """Grow the index if there isn't room for `needed` more elements."""
@@ -252,7 +232,10 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
         results: list[SearchResult] = []
         for labels, distances in zip(all_labels, all_distances, strict=True):
             matches = [
-                SearchMatch(key=int(label), score=self._distance_to_score(float(dist)))
+                SearchMatch(
+                    key=int(label),
+                    cosine_similarity=self._distance_to_cosine_similarity(float(dist)),
+                )
                 for label, dist in zip(labels, distances, strict=True)
                 if int(label) >= 0
             ]
@@ -282,6 +265,54 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
                 high = mid - 1
 
         return best
+
+    @override
+    async def get_cosine_similarities(
+        self,
+        query_vector: Sequence[float],
+        keys: Iterable[int],
+    ) -> dict[int, float]:
+        async with self._lock.read_lock():
+            present_keys, matrix = await asyncio.to_thread(
+                self._sync_gather_vectors, keys
+            )
+        if not present_keys:
+            return {}
+        similarities = cosine_similarities(query_vector, matrix)
+        return {
+            key: float(similarity)
+            for key, similarity in zip(present_keys, similarities, strict=True)
+        }
+
+    def _sync_gather_vectors(
+        self, keys: Iterable[int]
+    ) -> tuple[list[int], npt.NDArray[np.float32]]:
+        """Gather stored vectors by key as a float32 matrix; missing keys drop."""
+        keys = list(dict.fromkeys(int(key) for key in keys))
+        empty = np.empty((0, self._num_dimensions), dtype=np.float32)
+        if not keys:
+            return [], empty
+
+        try:
+            return keys, np.asarray(
+                self._index.get_items(keys, return_type="numpy"), dtype=np.float32
+            )
+        except RuntimeError:
+            # Fallback: a missing key was requested. Fetch one by one.
+            present_keys: list[int] = []
+            rows: list[np.ndarray] = []
+            for key in keys:
+                with contextlib.suppress(RuntimeError):
+                    rows.append(
+                        np.asarray(
+                            self._index.get_items([key], return_type="numpy"),
+                            dtype=np.float32,
+                        )[0]
+                    )
+                    present_keys.append(key)
+            if not present_keys:
+                return [], empty
+            return present_keys, np.vstack(rows)
 
     @override
     async def remove(self, keys: Iterable[int]) -> None:

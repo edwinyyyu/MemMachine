@@ -11,16 +11,13 @@ class SearchMatch:
     A single search match.
 
     Attributes:
-        score (float):
-            The meaning depends on the collection's `SimilarityMetric`:
-            - *cosine*: cosine similarity in [-1, 1].
-            - *dot*: raw dot product [0, inf).
-            - *euclidean*: Euclidean distance [0, inf).
-            - *manhattan*: Manhattan distance [0, inf).
+        cosine_similarity (float):
+            Cosine similarity between the query vector and the matched
+            vector, in [-1, 1]. Higher is a better match.
         key (int): Engine key for the matched vector.
     """
 
-    score: float
+    cosine_similarity: float
     key: int
 
 
@@ -90,6 +87,35 @@ class VectorSearchEngine(ABC):
             list[SearchResult]:
                 Results for each query vector,
                 ordered as in the input iterable.
+        """
+
+    @abstractmethod
+    async def get_cosine_similarities(
+        self,
+        query_vector: Sequence[float],
+        keys: Iterable[int],
+    ) -> dict[int, float]:
+        """
+        Get cosine similarities between a query vector and vectors by key.
+
+        Every key the engine can score is returned; keys it cannot score
+        are omitted. Engines with keyed vector access answer this more
+        cheaply than a search.
+
+        Similarities may be computed from quantized stored vectors,
+        so they may not be faithful to similarities computed
+        with a fresh embedding.
+
+        Args:
+            query_vector (Sequence[float]):
+                The vector to compare against.
+            keys (Iterable[int]):
+                Keys of vectors to compare.
+
+        Returns:
+            dict[int, float]:
+                Mapping of key to cosine similarity in [-1, 1]
+                for keys that exist. Missing keys are omitted.
         """
 
     @abstractmethod

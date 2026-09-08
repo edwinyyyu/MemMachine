@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, InstanceOf
 from pymilvus import DataType, MilvusClient
 from pymilvus.exceptions import MilvusException
 
-from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.filter.filter_parser import (
     And as FilterAnd,
 )
@@ -41,7 +41,7 @@ from memmachine_server.common.properties_json import (
     decode_properties,
     encode_properties,
 )
-from memmachine_server.common.utils import compute_similarity, ensure_tz_aware
+from memmachine_server.common.utils import compute_cosine_similarity, ensure_tz_aware
 
 from .data_types import (
     QueryMatch,
@@ -136,18 +136,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         return f"{field} {operator} {_literal(comparison.value)}"
 
     @staticmethod
-    def _passes_threshold(
-        score: float,
-        threshold: float | None,
-        similarity_metric: SimilarityMetric,
-    ) -> bool:
-        if threshold is None:
-            return True
-        if similarity_metric.higher_is_better:
-            return score >= threshold
-        return score <= threshold
-
-    @staticmethod
     def _primary_id(partition_key: str, record_uuid: UUID) -> str:
         """Build a native primary key unique within a shared native collection."""
         return f"{partition_key}:{record_uuid}"
@@ -222,18 +210,16 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         return fields
 
     @staticmethod
-    def _score_from_entity_vector(
+    def _cosine_similarity_from_entity_vector(
         query_vector: Sequence[float],
         entity: Mapping[str, Any],
-        similarity_metric: SimilarityMetric,
     ) -> float:
         raw_vector = entity.get(_VECTOR_FIELD)
         if raw_vector is None:
             raise ValueError("Milvus search result did not include the vector field")
-        return compute_similarity(
+        return compute_cosine_similarity(
             list(query_vector),
             [list(cast(Sequence[float], raw_vector))],
-            similarity_metric,
         )[0]
 
     def _partition_filter(self) -> str:
@@ -267,7 +253,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         *,
         query_vectors: Iterable[Sequence[float]],
         limit: int,
-        score_threshold: float | None = None,
+        min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
         return_properties: bool = True,
     ) -> list[QueryResult]:
@@ -308,19 +294,19 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 matches: list[QueryMatch] = []
                 for raw_match in raw_matches:
                     entity = cast(Mapping[str, Any], raw_match["entity"])
-                    score = self._score_from_entity_vector(
+                    cosine_similarity = self._cosine_similarity_from_entity_vector(
                         query_vector,
                         entity,
-                        self._config.similarity_metric,
                     )
-                    if not self._passes_threshold(
-                        score, score_threshold, self._config.similarity_metric
+                    if (
+                        min_cosine_similarity is not None
+                        and cosine_similarity < min_cosine_similarity
                     ):
                         continue
 
                     matches.append(
                         QueryMatch(
-                            score=score,
+                            cosine_similarity=cosine_similarity,
                             record=self._parse_record(
                                 entity,
                                 return_properties=return_properties,
@@ -328,13 +314,43 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                         )
                     )
 
-                matches.sort(
-                    key=lambda match: match.score,
-                    reverse=self._config.similarity_metric.higher_is_better,
-                )
+                matches.sort(key=lambda match: match.cosine_similarity, reverse=True)
                 results.append(QueryResult(matches=matches))
 
             return results
+
+    @override
+    async def get_cosine_similarity(
+        self,
+        *,
+        query_vector: Sequence[float],
+        record_uuids: Iterable[UUID],
+    ) -> dict[UUID, float]:
+        """Get cosine similarities between a query vector and records' vectors."""
+        async with self._tracker("get_cosine_similarity"):
+            uuid_list = list(record_uuids)
+            if not uuid_list:
+                return {}
+
+            primary_ids = [
+                self._primary_id(self._partition_key, uuid) for uuid in uuid_list
+            ]
+            raw_records = await asyncio.to_thread(
+                self._client.get,
+                collection_name=self._collection_name,
+                ids=primary_ids,
+                output_fields=[_RECORD_UUID_FIELD, _VECTOR_FIELD],
+            )
+
+            query_vector = list(query_vector)
+            return {
+                UUID(str(entity[_RECORD_UUID_FIELD])): (
+                    self._cosine_similarity_from_entity_vector(query_vector, entity)
+                )
+                for entity in (
+                    cast(Mapping[str, Any], raw_record) for raw_record in raw_records
+                )
+            }
 
     @override
     async def set_properties(
@@ -439,15 +455,10 @@ class MilvusVectorStoreParams(BaseModel):
 class MilvusVectorStore(VectorStore):
     """Asynchronous Milvus-based implementation of VectorStore."""
 
-    _SIMILARITY_METRIC_TO_MILVUS_METRIC: ClassVar[dict[SimilarityMetric, str]] = {
-        SimilarityMetric.COSINE: "COSINE",
-        SimilarityMetric.DOT: "IP",
-        SimilarityMetric.EUCLIDEAN: "L2",
-    }
+    _MILVUS_METRIC_TYPE: ClassVar[str] = "COSINE"
 
     _REGISTRY_SUFFIX: ClassVar[str] = "__registry"
     _REGISTRY_VECTOR_DIMENSIONS: ClassVar[str] = "vector_dimensions"
-    _REGISTRY_SIMILARITY_METRIC: ClassVar[str] = "similarity_metric"
     _REGISTRY_INDEXED_PROPERTIES_SCHEMA: ClassVar[str] = "indexed_properties_schema"
     _REGISTRY_CONFIG: ClassVar[str] = "config"
 
@@ -482,21 +493,6 @@ class MilvusVectorStore(VectorStore):
         """Build a deterministic native collection name from namespace and config."""
         digest = hashlib.sha256(config.model_dump_json().encode()).hexdigest()
         return f"memmachine_{namespace}__{digest}"
-
-    @staticmethod
-    def _validate_metric(similarity_metric: SimilarityMetric) -> None:
-        if (
-            similarity_metric
-            not in MilvusVectorStore._SIMILARITY_METRIC_TO_MILVUS_METRIC
-        ):
-            supported = ", ".join(
-                metric.value
-                for metric in MilvusVectorStore._SIMILARITY_METRIC_TO_MILVUS_METRIC
-            )
-            raise ValueError(
-                f"Milvus only supports {supported} similarity metrics, "
-                f"got {similarity_metric.value!r}"
-            )
 
     def __init__(self, params: MilvusVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
@@ -622,7 +618,6 @@ class MilvusVectorStore(VectorStore):
         """Parse a VectorStoreCollectionConfig from a registry entry."""
         return VectorStoreCollectionConfig(
             vector_dimensions=entry[MilvusVectorStore._REGISTRY_VECTOR_DIMENSIONS],
-            similarity_metric=entry[MilvusVectorStore._REGISTRY_SIMILARITY_METRIC],
             indexed_properties_schema=entry[
                 MilvusVectorStore._REGISTRY_INDEXED_PROPERTIES_SCHEMA
             ],
@@ -646,7 +641,6 @@ class MilvusVectorStore(VectorStore):
         self, namespace: str, config: VectorStoreCollectionConfig
     ) -> None:
         """Idempotently create the native Milvus collection."""
-        self._validate_metric(config.similarity_metric)
         native_collection_name = MilvusVectorStore._build_native_collection_name(
             namespace, config
         )
@@ -689,9 +683,7 @@ class MilvusVectorStore(VectorStore):
             index_params.add_index(
                 field_name=_VECTOR_FIELD,
                 index_type="AUTOINDEX",
-                metric_type=self._SIMILARITY_METRIC_TO_MILVUS_METRIC[
-                    config.similarity_metric
-                ],
+                metric_type=self._MILVUS_METRIC_TYPE,
             )
 
             self._client.create_collection(
@@ -721,7 +713,6 @@ class MilvusVectorStore(VectorStore):
                     _VECTOR_FIELD: [0.0] * _REGISTRY_VECTOR_DIMENSION,
                     self._REGISTRY_CONFIG: {
                         self._REGISTRY_VECTOR_DIMENSIONS: config.vector_dimensions,
-                        self._REGISTRY_SIMILARITY_METRIC: config.similarity_metric.value,
                         self._REGISTRY_INDEXED_PROPERTIES_SCHEMA: config.model_dump(
                             mode="json"
                         )["indexed_properties_schema"],
@@ -747,7 +738,6 @@ class MilvusVectorStore(VectorStore):
             raise ValueError(
                 f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
             )
-        self._validate_metric(config.similarity_metric)
         async with (
             self._client_name_locks[(namespace, name)],
             self._tracker("create_collection"),
@@ -775,7 +765,6 @@ class MilvusVectorStore(VectorStore):
             raise ValueError(
                 f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
             )
-        self._validate_metric(config.similarity_metric)
         async with (
             self._client_name_locks[(namespace, name)],
             self._tracker("open_or_create_collection"),
