@@ -355,18 +355,6 @@ class TestSearchFiltered:
         assert [m.key for m in result.matches] == [target]
 
 
-# -- get_vectors --
-
-
-class TestGetVectors:
-    @pytest.mark.asyncio
-    async def test_get_vectors_raises(self):
-        engine = _make_engine()
-        await engine.add({1: _normalize(_one_hot(0))})
-        with pytest.raises(NotImplementedError, match="cannot be retrieved"):
-            await engine.get_vectors([1])
-
-
 # -- Persistence --
 
 

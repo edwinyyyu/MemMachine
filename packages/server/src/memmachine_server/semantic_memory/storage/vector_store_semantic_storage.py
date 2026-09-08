@@ -294,22 +294,49 @@ class VectorStoreSemanticStorage(SemanticStorage):
         if row is None:
             raise ResourceNotFoundError(f"Feature ID not found: {feature_id}")
 
-        if values or embedding is not None:
-            existing_record = await self._get_existing_vector_record(feature_id)
-            await self._upsert_vector_record(
-                feature_id=feature_id,
-                set_id=row.set_id,
-                category_name=row.semantic_category_id,
-                feature=row.feature,
-                value=row.value,
-                tag=row.tag_id,
-                embedding=(
-                    embedding
-                    if embedding is not None
-                    else np.array(existing_record.vector, dtype=float)
-                ),
-                metadata=row.json_metadata,
+        if embedding is not None or values:
+            await self._refresh_vector_record(
+                feature_id=feature_id, row=row, embedding=embedding
             )
+
+    async def _refresh_vector_record(
+        self,
+        *,
+        feature_id: FeatureIdT,
+        row: VectorSemanticFeature,
+        embedding: InstanceOf[np.ndarray] | None,
+    ) -> None:
+        """Bring a feature's vector record back in line with its relational row."""
+        if embedding is None:
+            # The embedding is a function of `value` alone, so a caller that did
+            # not pass one changed nothing the embedding depends on; only the
+            # properties mirroring the relational row need to catch up, and the
+            # stored vector stays where it is rather than being read back out.
+            await self._vector_collection.set_properties(
+                record_properties={
+                    feature_vector_uuid(feature_id): self._vector_properties(
+                        feature_id=feature_id,
+                        set_id=row.set_id,
+                        category_name=row.semantic_category_id,
+                        feature=row.feature,
+                        value=row.value,
+                        tag=row.tag_id,
+                        metadata=row.json_metadata,
+                    )
+                }
+            )
+            return
+
+        await self._upsert_vector_record(
+            feature_id=feature_id,
+            set_id=row.set_id,
+            category_name=row.semantic_category_id,
+            feature=row.feature,
+            value=row.value,
+            tag=row.tag_id,
+            embedding=embedding,
+            metadata=row.json_metadata,
+        )
 
     async def get_feature(
         self,
@@ -620,31 +647,6 @@ class VectorStoreSemanticStorage(SemanticStorage):
             ]
         )
 
-    async def _get_existing_vector_record(self, feature_id: FeatureIdT) -> Record:
-        """Read back a feature's stored embedding.
-
-        A vector store publishes its index atomically but not durably (see
-        `common.vector_store.sqlite_vector_store`), so a power failure can
-        leave a record the store still knows about but whose vector the index
-        no longer holds. The two cases are reported apart because the caller
-        can act on them differently: a missing embedding is repaired by
-        passing a fresh one to `update_feature`, while a missing record is
-        not.
-        """
-        records = await self._vector_collection.get(
-            record_uuids=[feature_vector_uuid(feature_id)],
-            return_vector=True,
-            return_properties=False,
-        )
-        if not records:
-            raise ResourceNotFoundError(f"Vector record not found: {feature_id}")
-        if records[0].vector is None:
-            raise ResourceNotFoundError(
-                f"Vector record {feature_id} has no stored embedding; "
-                "pass an embedding to update this feature"
-            )
-        return records[0]
-
     async def _delete_vector_records(self, feature_ids: Sequence[FeatureIdT]) -> None:
         if not feature_ids:
             return
@@ -670,7 +672,6 @@ class VectorStoreSemanticStorage(SemanticStorage):
             query_vectors=[vector_search_opts.query_embedding.tolist()],
             limit=limit,
             score_threshold=vector_search_opts.min_distance,
-            return_vector=False,
             return_properties=True,
         )
         ordered_ids = [

@@ -5,9 +5,10 @@ Defines the interface for adding, querying, and deleting records.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from uuid import UUID
 
+from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
 )
@@ -68,7 +69,6 @@ class VectorStoreCollection(ABC):
         limit: int,
         score_threshold: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
         return_properties: bool = True,
     ) -> list[QueryResult]:
         """
@@ -86,9 +86,6 @@ class VectorStoreCollection(ABC):
                 Filter expression tree.
                 If None or empty, no property filtering is applied
                 (default: None).
-            return_vector (bool):
-                Whether to include the vector in the returned records
-                (default: False).
             return_properties (bool):
                 Whether to include the properties in the returned records
                 (default: True).
@@ -101,30 +98,25 @@ class VectorStoreCollection(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get(
+    async def set_properties(
         self,
         *,
-        record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
+        record_properties: Mapping[UUID, Mapping[str, PropertyValue]],
+    ) -> None:
         """
-        Get records from the collection by their UUIDs.
+        Replace the properties of records already in the collection.
+
+        Each record keeps the vector it was stored with, so a caller that is
+        only correcting a record's properties does not have to hold the vector
+        to write it back. UUIDs the collection does not hold are ignored, the
+        way `delete` ignores them: whether a backend can tell a missing record
+        from one it just wrote varies, so the contract does not promise to.
 
         Args:
-            record_uuids (Iterable[UUID]):
-                Iterable of UUIDs of the records to retrieve.
-            return_vector (bool):
-                Whether to include the vector in the returned records
-                (default: False).
-            return_properties (bool):
-                Whether to include the properties in the returned records
-                (default: True).
-
-        Returns:
-            list[Record]:
-                Iterable of records with the specified UUIDs,
-                ordered as in the input iterable.
+            record_properties (Mapping[UUID, Mapping[str, PropertyValue]]):
+                Mapping of record UUID to the properties that replace whatever
+                that record currently holds. Properties not in the indexed
+                properties schema are allowed.
         """
         raise NotImplementedError
 

@@ -43,6 +43,7 @@ from sqlalchemy import (
     String,
     Table,
     Uuid,
+    bindparam,
     create_engine,
     delete,
     event,
@@ -402,7 +403,6 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         limit: int,
         score_threshold: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
         return_properties: bool = True,
     ) -> list[QueryResult]:
         query_vectors = list(query_vectors)
@@ -429,7 +429,6 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
             matches = await self._build_matches(
                 row_id_to_score={m.key: m.score for m in search_result.matches},
                 score_threshold=score_threshold,
-                return_vector=return_vector,
                 return_properties=return_properties,
             )
             results.append(QueryResult(matches=matches))
@@ -458,7 +457,6 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         self,
         row_id_to_score: Mapping[int, float],
         score_threshold: float | None,
-        return_vector: bool,
         return_properties: bool,
     ) -> list[QueryMatch]:
         matched_row_ids = list(row_id_to_score.keys())
@@ -473,10 +471,6 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
 
         async with self._create_session() as session:
             matched_rows = (await session.execute(fetch_records)).all()
-
-        vector_map: dict[int, list[float]] = {}
-        if return_vector:
-            vector_map = await self._search_engine.get_vectors(matched_row_ids)
 
         higher_is_better = self._config.similarity_metric.higher_is_better
         matches: list[QueryMatch] = []
@@ -494,12 +488,10 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
             if return_properties:
                 properties = decode_properties(row.properties)
 
-            vector: list[float] | None = vector_map.get(row.row_id)
-
             matches.append(
                 QueryMatch(
                     score=score,
-                    record=Record(uuid=row.uuid, vector=vector, properties=properties),
+                    record=Record(uuid=row.uuid, properties=properties),
                 )
             )
 
@@ -510,55 +502,30 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         return matches
 
     @override
-    async def get(
+    async def set_properties(
         self,
         *,
-        record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
-        record_uuids = list(record_uuids)
-        if not record_uuids:
-            return []
+        record_properties: Mapping[UUID, Mapping[str, PropertyValue]],
+    ) -> None:
+        # Properties live in the records table and vectors live in the search
+        # engine, so replacing properties never touches the engine: no pending
+        # operation, no index save, nothing for a crash to lose.
+        if not record_properties:
+            return
 
-        selected_columns = [self._records_table.c.uuid, self._records_table.c.row_id]
-        if return_properties:
-            selected_columns.append(self._records_table.c.properties)
-
-        async with self._create_session() as session:
-            fetched_rows = (
-                await session.execute(
-                    select(*selected_columns).where(
-                        self._records_table.c.uuid.in_(record_uuids),
-                    )
-                )
-            ).all()
-
-        row_id_to_vector: dict[int, list[float]] = {}
-        if return_vector:
-            row_id_to_vector = await self._search_engine.get_vectors(
-                [row.row_id for row in fetched_rows]
+        async with self._create_session() as session, session.begin():
+            await session.execute(
+                update(self._records_table).where(
+                    self._records_table.c.uuid == bindparam("target_uuid")
+                ),
+                [
+                    {
+                        "target_uuid": record_uuid,
+                        "properties": encode_properties(dict(properties)),
+                    }
+                    for record_uuid, properties in record_properties.items()
+                ],
             )
-
-        record_map: dict[UUID, Record] = {}
-        for row in fetched_rows:
-            record_uuid = row.uuid
-
-            properties: dict[str, PropertyValue] | None = None
-            if return_properties:
-                properties = decode_properties(row.properties)
-
-            vector: list[float] | None = row_id_to_vector.get(row.row_id)
-
-            record_map[record_uuid] = Record(
-                uuid=record_uuid, vector=vector, properties=properties
-            )
-
-        return [
-            record_map[record_uuid]
-            for record_uuid in record_uuids
-            if record_uuid in record_map
-        ]
 
     @override
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:

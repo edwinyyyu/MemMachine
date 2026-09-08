@@ -6,7 +6,6 @@ Partition keys are avoided in favor of per-collection tables,
 since sqlite-vec ANN indexes may not support them.
 """
 
-import struct
 from collections.abc import Iterable, Mapping, Sequence
 from typing import ClassVar, override
 from uuid import UUID
@@ -22,10 +21,12 @@ from sqlalchemy import (
     String,
     Table,
     Uuid,
+    bindparam,
     delete,
     event,
     select,
     text,
+    update,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine.interfaces import DBAPIConnection
@@ -99,11 +100,6 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
     @staticmethod
     def _serialize_vector(vector: Sequence[float]) -> bytes:
         return sqlite_vec.serialize_float32(list(vector))
-
-    @staticmethod
-    def _deserialize_vector(data: bytes) -> list[float]:
-        count = len(data) // 4
-        return list(struct.unpack(f"={count}f", data))
 
     @staticmethod
     def _distance_to_score(
@@ -200,7 +196,6 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         limit: int,
         score_threshold: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
         return_properties: bool = True,
     ) -> list[QueryResult]:
         query_vectors = list(query_vectors)
@@ -239,7 +234,6 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
                     rowid_to_distance=rowid_to_distance,
                     score_threshold=score_threshold,
                     property_filter=property_filter,
-                    return_vector=return_vector,
                     return_properties=return_properties,
                 )
                 results.append(QueryResult(matches=matches))
@@ -252,7 +246,6 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         rowid_to_distance: Mapping[int, float],
         score_threshold: float | None,
         property_filter: FilterExpr | None,
-        return_vector: bool,
         return_properties: bool,
     ) -> list[QueryMatch]:
         matched_rowids = list(rowid_to_distance.keys())
@@ -277,12 +270,6 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
 
         matched_rows = (await session.execute(fetch_records)).all()
 
-        rowid_to_vector: dict[int, list[float]] = {}
-        if return_vector:
-            rowid_to_vector = await self._fetch_vectors(
-                session, [row.rowid for row in matched_rows]
-            )
-
         matches: list[QueryMatch] = []
         for row in matched_rows:
             distance = rowid_to_distance.get(row.rowid)
@@ -301,14 +288,10 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
             if return_properties:
                 properties = decode_properties(row.properties)
 
-            vector: list[float] | None = None
-            if return_vector:
-                vector = rowid_to_vector.get(row.rowid)
-
             matches.append(
                 QueryMatch(
                     score=score,
-                    record=Record(uuid=row.uuid, vector=vector, properties=properties),
+                    record=Record(uuid=row.uuid, properties=properties),
                 )
             )
 
@@ -318,75 +301,30 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         )
         return matches
 
-    async def _fetch_vectors(
-        self, session: AsyncSession, rowids: Iterable[int]
-    ) -> dict[int, list[float]]:
-        rowids = list(rowids)
-        if not rowids:
-            return {}
-
-        placeholders = ", ".join(f":r{i}" for i in range(len(rowids)))
-        vector_rows = (
-            await session.execute(
-                text(
-                    f"SELECT rowid, vector FROM [{self._vector_table_name}] "
-                    f"WHERE rowid IN ({placeholders})"
-                ),
-                {f"r{i}": rowid for i, rowid in enumerate(rowids)},
-            )
-        ).all()
-        return {row.rowid: self._deserialize_vector(row.vector) for row in vector_rows}
-
     @override
-    async def get(
+    async def set_properties(
         self,
         *,
-        record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
-        record_uuids = list(record_uuids)
-        if not record_uuids:
-            return []
+        record_properties: Mapping[UUID, Mapping[str, PropertyValue]],
+    ) -> None:
+        # Properties live in the records table and vectors live in the sqlite-vec
+        # virtual table, so replacing properties never reads a vector back.
+        if not record_properties:
+            return
 
-        selected_columns = [self._records_table.c.uuid, self._records_table.c.rowid]
-        if return_properties:
-            selected_columns.append(self._records_table.c.properties)
-
-        async with self._create_session() as session:
-            fetched_rows = (
-                await session.execute(
-                    select(*selected_columns).where(
-                        self._records_table.c.uuid.in_(record_uuids),
-                    )
-                )
-            ).all()
-
-            rowid_to_vector: dict[int, list[float]] = {}
-            if return_vector:
-                rowid_to_vector = await self._fetch_vectors(
-                    session, [row.rowid for row in fetched_rows]
-                )
-
-        record_map: dict[UUID, Record] = {}
-        for row in fetched_rows:
-            record_uuid = row.uuid
-
-            properties: dict[str, PropertyValue] | None = None
-            if return_properties:
-                properties = decode_properties(row.properties)
-
-            vector: list[float] | None = rowid_to_vector.get(row.rowid)
-
-            record_map[record_uuid] = Record(
-                uuid=record_uuid, vector=vector, properties=properties
+        async with self._create_session() as session, session.begin():
+            await session.execute(
+                update(self._records_table).where(
+                    self._records_table.c.uuid == bindparam("target_uuid")
+                ),
+                [
+                    {
+                        "target_uuid": record_uuid,
+                        "properties": encode_properties(dict(properties)),
+                    }
+                    for record_uuid, properties in record_properties.items()
+                ],
             )
-
-        return [
-            record_map[record_uuid]
-            for record_uuid in record_uuids
-            if record_uuid in record_map
-        ]
 
     @override
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:

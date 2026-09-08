@@ -162,13 +162,6 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
         return array
 
     @override
-    async def get_vectors(self, keys: Iterable[int]) -> dict[int, list[float]]:
-        raise NotImplementedError(
-            "turbovec stores only TurboQuant-compressed vectors; "
-            "the original vectors cannot be retrieved"
-        )
-
-    @override
     async def remove(self, keys: Iterable[int]) -> None:
         async with self._lock.write_lock():
             await asyncio.to_thread(self._sync_remove, keys)

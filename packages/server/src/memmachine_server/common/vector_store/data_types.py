@@ -117,7 +117,8 @@ class Record(BaseModel):
         vector (list[float] | None):
             Vector for similarity search.
             `None` is not allowed on input.
-            `None` on output means the vector was not requested (`return_vector=False`)
+            Always `None` on output: a collection stores vectors to search
+            them, and does not read them back out
             (default: None).
         properties (dict[str, PropertyValue] | None):
             Property key-value pairs.

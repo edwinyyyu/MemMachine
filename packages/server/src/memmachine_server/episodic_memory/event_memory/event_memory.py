@@ -424,7 +424,6 @@ class EventMemory:
             query_vectors=[query_embedding],
             limit=vector_search_limit,
             property_filter=collection_filter,
-            return_vector=False,
             return_properties=True,
         )
         t_vector_query = time.monotonic()
