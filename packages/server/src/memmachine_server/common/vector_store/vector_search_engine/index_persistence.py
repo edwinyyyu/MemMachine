@@ -1,46 +1,19 @@
 """
 Atomic on-disk index publication, shared by vector search engines.
 
-Each engine owns its index file layout, so the atomic-swap logic lives here
-(shared by the engines) rather than in the vector store: the index save
-location and the number of files written differ across engine implementations.
+The index is written to a sibling temp file, flushed, and swapped into place
+with ``os.replace``. Because the flush completes before the rename is issued,
+a crash leaves either the previous index or the new one -- never the new name
+over incomplete bytes, which is the case that matters: the vector store treats
+a saved-but-unloadable index as a hard error, while an index that reverts is
+only missing vectors until they are upserted again.
 
-What a save guarantees
-----------------------
-
-A reader never observes a partially written index at the target path. The index
-is written to a sibling temp file and swapped into place with ``Path.replace``
-(``os.replace``), which is atomic on POSIX and Windows when source and
-destination share a filesystem (guaranteed here, since the temp file is a
-sibling of the target). A save that is interrupted (crash, exception) therefore
-leaves the previous index untouched rather than corrupting it, which matters
-because the vector store treats a saved-but-unloadable index as a hard error
-rather than silently rebuilding it empty.
-
-What it does not
-----------------
-
-The publication is atomic, not durable. A rename changes a *directory entry*,
-and a directory entry cannot be flushed portably: POSIX needs an fsync on a
-directory file descriptor, which network and FUSE filesystems may refuse, and
-Windows has no equivalent at all. SQLite's own VFS is the precedent -- it
-threads a directory-sync flag through every commit-relevant directory
-operation, honors it in ``unixDelete``, and declares it
-``/* Not used on win32 */`` in ``winDelete``.
-
-So a power failure can roll a save back to the previously published index even
-though ``save`` returned, while the SQLite side -- including the
-pending-operation trim that ran behind that save -- stays committed. What that
-leaves is records whose vectors are missing from the index: they still resolve
-by uuid, but they cannot be found by search until they are re-upserted.
-
-That is the direction this store tolerates, and it is a deliberate trade. A
-stronger guarantee needs a commit protocol that never uses a directory
-operation as its commit point (two index slots plus a generation record, or an
-equivalent), which every engine would then have to implement and maintain. The
-failure it buys out is bounded -- search recall for at most the records applied
-since the last checkpoint, repaired by re-ingesting them -- so the machinery
-costs more than it saves.
+The rename itself is not made durable -- that needs an fsync on a directory
+fd, which POSIX offers unevenly and Windows not at all -- so a power failure
+can still roll a save back to the previously published index after ``save``
+returned, while the SQLite side stays committed. Records applied since the
+last checkpoint then resolve by uuid but cannot be found by search. That is
+the direction this store tolerates; #1588 records why.
 """
 
 import contextlib
@@ -85,7 +58,7 @@ def atomic_index_write(path: str) -> Iterator[str]:
     leaving any existing index at `path` intact.
 
     The swap is atomic, not durable: after a power failure the index at `path`
-    may be the previous one. See the module docstring for what that costs.
+    may be the previous one.
 
     Args:
         path (str):
@@ -109,17 +82,16 @@ def atomic_index_write(path: str) -> Iterator[str]:
 
 def _flush_to_disk(path: str) -> None:
     """
-    Best-effort fsync so the temp file's bytes are durable before the swap.
+    Fsync the temp file so its bytes are on disk before the swap.
 
-    Guards against a crash where the rename is durable but the data behind it
-    is not, which is the direction that costs: a published index that will not
-    parse is a hard error, while a publication that reverts is only missing
-    vectors. Failures are ignored -- this narrows a window rather than closing
-    one, since the swap itself is not durable either.
+    This is what rules out publishing the new name over incomplete bytes: the
+    data is durable before the rename is issued, and a durable write does not
+    un-happen. A failed fsync therefore fails the save -- the caller discards
+    the temp and the previously published index stands -- because a failure
+    here is exactly the evidence that the bytes are not safe to publish.
     """
-    with contextlib.suppress(OSError):
-        fd = os.open(path, os.O_RDWR)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+    fd = os.open(path, os.O_RDWR)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)

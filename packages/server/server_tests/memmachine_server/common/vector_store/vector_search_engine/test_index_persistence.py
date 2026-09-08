@@ -1,5 +1,6 @@
 """Tests for the shared atomic index persistence helpers."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -95,3 +96,24 @@ class TestClearStaleIndexTemp:
         clear_stale_index_temp(str(path))
 
         assert path.read_text() == "GOOD"
+
+
+class TestFlushFailsTheSave:
+    def test_failed_fsync_leaves_the_previous_index(self, tmp_path: Path, monkeypatch):
+        """An fsync that fails must not publish; it is evidence the bytes are bad."""
+        target = tmp_path / "index.idx"
+        target.write_bytes(b"old")
+
+        def failing_fsync(fd: int) -> None:
+            raise OSError(5, "Input/output error")
+
+        monkeypatch.setattr(os, "fsync", failing_fsync)
+
+        with (
+            pytest.raises(OSError, match="Input/output error"),
+            atomic_index_write(str(target)) as temp,
+        ):
+            Path(temp).write_bytes(b"new")
+
+        assert target.read_bytes() == b"old"
+        assert not Path(f"{target}.tmp").exists()
