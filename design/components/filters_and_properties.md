@@ -27,10 +27,11 @@ def validate_property_value(value: object,
   `memmachine_block_kind` (the segment's one block's kind),
   `memmachine_event_uuid`, `memmachine_segment_uuid`.
 - A caller key beginning with the prefix, or outside `[a-z0-9_]`, or
-  longer than the stores' naming contract, is rejected at ingest with
-  `InvalidPropertyKeyError`; a string value longer than
-  `properties.max_string_bytes`, or more than `properties.max_keys`
-  keys, with `InvalidPropertyValueError`.
+  longer than 32 bytes (the identifier bound every backend accepts,
+  `PROPERTY_KEY_MAX_BYTES`), is rejected at ingest with
+  `InvalidEventError`, as is a string value longer than
+  `properties.max_string_bytes` or more than `properties.max_keys`
+  keys; the event store's `add_events` is the one enforcement point.
 
 ## Filter expression tree
 
@@ -57,11 +58,12 @@ Not(operand: FilterExpr)
   comparable value, `Not(Equals)` also keeps records holding none;
   `In` over an empty tuple is invalid; strings and booleans cannot be
   ordered.
-- A field in a tree must pass `validate_caller_property_key`; system
-  fields are never named in a tree. They are typed parameters of the
-  operation (`since`, `before`, `session_ids`, `source_ids`,
-  `block_kinds`) that the subsystem turns into predicates on reserved
-  keys itself.
+- A field in a caller's tree must pass `validate_caller_property_key`;
+  a caller never names a system field in a tree. System fields are
+  typed parameters of the operation (`since`, `before`, `session_ids`,
+  `source_ids`, `block_kinds`) that the subsystem turns into predicates
+  on reserved keys itself, in a tree of its own that it conjoins with
+  the caller's before calling a store.
 - Each store compiles the tree with an exhaustive `match`
   (`compile_sql_filter` for JSON properties in SQL; each vector
   backend's own), so a node a store does not handle is a type error.
@@ -77,7 +79,7 @@ absent. `IsNull` on the current branch tested a JSON null that nothing
 writes; `IsMissing` tests absence, which is the one state a key can be
 in besides holding a value, and it exists because optional user
 properties are ordinary: an event ingested before a caller started
-setting `kind` has no `kind`. Without it there is no way to ask for
+setting `category` has no `category`. Without it there is no way to ask for
 those events, and `Not` cannot be a true complement: `Not(Equals(x))`
 would have to either include or exclude records lacking the key, and
 either choice makes `Not` and `NotEquals` disagree or makes `Not` not
@@ -126,7 +128,7 @@ filter language for callers to learn and for MCP to describe.
 
 At the API and in MCP a filter is a JSON object validated by the schema
 generated from the union, discriminated by the operator key:
-`{"and": [{"eq": {"field": "kind", "value": "note"}},
+`{"and": [{"eq": {"field": "category", "value": "note"}},
 {"gte": {"field": "score", "value": 3}}]}`. `filter_from_json(obj) ->
 FilterExpr` is the only conversion, and it validates, never parses.
 

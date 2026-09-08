@@ -45,12 +45,13 @@ Requirements that shape everything below:
 - Rejection of operations on a deleted tenant is structural: a store
   reads its registry row in the same statement as the data operation
   where both are in one SQL database, and after the operation
-  everywhere else. No rejection compares clocks, and no lock is held
-  across remote I/O. A clock is compared in one place, on the database
-  side, to release a tombstone after a clean sweep, with a margin
-  orders of magnitude above any write's timeout; every remote client
-  is constructed with a request timeout, and the composition refuses
-  one without.
+  everywhere else. No rejection compares clocks, and no store holds a
+  lock across remote I/O. A clock is compared in two places, both on
+  the database side and neither about whether an effect is valid: to
+  release a tombstone after a clean sweep and a retention orders of
+  magnitude above any write's timeout, and to take over a job whose
+  reconciler has stopped reporting; every remote client is constructed
+  with a request timeout, and the composition refuses one without.
 - One client per provider per process, shared by every tenant.
 - The tenant layer neither routes data operations nor knows the stores
   or the options a component takes.
@@ -132,8 +133,9 @@ Named so the redesign can be checked against it.
   tenant row outlives the tenant as a tombstone for as long as anything
   could remain under the id, which is what makes "never reused"
   enforced rather than hoped while it matters.
-- Event: what a caller ingests: an id, a timestamp, an optional source
-  id, an optional context, one or more content blocks, properties.
+- Event: what a caller ingests: an id, a timestamp with its offset, an
+  optional session id, an optional source id, an optional context, one
+  or more content blocks, properties.
   Events are the caller's data; the event store records them and memory
   subsystems process them.
 - Block: one unit of an event's content, of a registered kind; `text`
@@ -161,7 +163,7 @@ Named so the redesign can be checked against it.
   steps that process it and for rendering, never for filtering. A
   context is a mapping from part kind to one part, each part a Pydantic
   model registered under its kind, so parts compose by merging and any
-  step reads the one it needs by kind (`context.get(Author)`) without
+  step reads the one it needs by kind (`get_part(context, Author)`) without
   an order to agree on. `Event.context` is never `None`: no context is
   the empty mapping; a source with
   no good name to render has a `source_id` and no `author` part, and a
@@ -178,15 +180,15 @@ Named so the redesign can be checked against it.
   nesting, no depth-first search, and no edit to a core union to add
   one. `producer`, `produced_for` and the roles of the old episode
   model are not carried over, and nothing replaces them.
-- Names at render time: the recorded name is what was true when the
-  event happened, and what was embedded. Every hit and every expansion
-  returns the segment's `source_id` and its context as data, so an
-  application that knows a source's current name, or wants the id shown
-  beside it so a reader can tell two names are one entity, renders that
-  itself. The server's text rendering (`string_from_segment_context`)
-  is a convenience that prints what was recorded, formatted by
-  `FormatOptions`, which stays what it is: dates, times, locale,
-  timezone. The application holds the directory; the server keeps none.
+- Names at render time: the recorded name is what was true when the event
+  happened, and what was embedded. Every hit and every expansion returns the
+  segment's `source_id` and its context as data, so an application that knows a
+  source's current name, or wants the id shown beside it so a reader can tell
+  two names are one entity, renders that itself. The server's text rendering
+  (`EpisodicMemory.render`, the `text` of a hit) is a convenience that prints
+  what was recorded, formatted by `FormatOptions`, which stays what it is:
+  dates, times, locale, timezone. The application holds the directory; the
+  server keeps none.
 - Event store: the component that records a tenant's events, in the
   order they were ingested. The system of record.
 - Memory subsystem: a component that processes a tenant's events into
@@ -221,11 +223,12 @@ Named so the redesign can be checked against it.
 - Provider: a resource that is a process-wide model or backend client
   shared by every tenant: an embedder, a language model, a reranker, a
   database engine, a vector backend client.
-- Template: a named block of per-component tenant options in the
-  settings, copied into a tenant's configuration at creation. Nothing
-  is built from a template.
-- Tenant configuration: the resolved options recorded on the tenant
-  row, one section per component, applied to the component by a job.
+- Template: a named set of component sections in the settings; a
+  create request that names one enables those components on the new
+  tenant with those sections. Nothing is built from a template.
+- Tenant configuration: the resolved options recorded on a tenant's
+  component rows, one section per enabled component, applied to the
+  component by a job.
 - Naming of values: settings (deployment), tenant configuration (per
   tenant, options), templates, overrides, defaults, request parameters,
   job arguments, partition configuration (per key). One word per kind,
@@ -239,7 +242,8 @@ Named so the redesign can be checked against it.
   processing of the tenant's log. A component cannot define a kind.
 - Reconciler: the role that claims and executes jobs and runs the
   tombstone pass. A process runs it when configured to; a deployment
-  runs as many as it needs.
+  runs as many as it needs. A claim is a state transition on the job
+  row, never a lock held across the step.
 - Concurrency scope: `process` < `host` < `cluster`, the widest
   deployment boundary within which concurrent instances of a component
   may safely manage the same resources. Computed from a resource's
@@ -266,8 +270,8 @@ Named so the redesign can be checked against it.
    invisible above it.
 3. The tenant service knows a component only through its registration: a
    name, a tenant configuration model to validate against, and the
-   hooks behind the four job kinds (`provision`, `delete`, `purge`,
-   `replay`). It never sees a store or an option.
+   hooks behind the four job kinds (`provision`, `delete`, `purge` for
+   `sweep`, `replay`). It never sees a store or an option.
 4. Stores take a UUID key and nothing else, and fence on that key. Each
    store is two ABCs: the store, the resource and the only place a key
    is named, for lifecycle and for constructing handles; and the
@@ -281,7 +285,8 @@ Named so the redesign can be checked against it.
    the data is in the same SQL database, and by a check after the
    operation everywhere else. A crashed operation can leave a record
    under a dead key; purging and the tenant service's tombstone
-   sweep collect it. No clock is compared, and no lock spans remote I/O.
+   pass collect it. No clock is compared, and no store holds a lock
+   across remote I/O.
 6. Lifecycle steps are idempotent. There is no transaction across
    stores, so a step interrupted midway is completed by repeating it,
    and whatever a failed creation left behind is removed by the same
@@ -310,8 +315,8 @@ settings, in this order:
 2. The composition, constructing every resource in evaluation order:
    database engines and backend clients, then embedders, language
    models and rerankers, then the key registry and stores, then the
-   event store and each memory subsystem (each registering with the
-   tenant service), then the ingest service, then the tenant service.
+   event store and each memory subsystem, then the tenant service,
+   which takes them as its registrations, then the ingest service.
 3. Schema verification: every component's version table is at head, or
    startup fails (see "Schema management").
 4. The scope check: the minimum over every resource's concurrency scope
@@ -325,12 +330,12 @@ settings, in this order:
 
 Who knows what:
 
-- Tenant service: the tenant table, the job table, the registrations.
+- Tenant service: the tenant tables, the job table, the registrations.
 - Event store: its tables, keyed by tenant id.
 - Memory subsystem: its derived stores, its own per-tenant table
   (watermark, applied configuration and its version), the providers it
   was given, and the event store as a reader.
-- Ingest service: the event store and the list of subsystems.
+- Ingest service: the event store and the tenant service.
 - Stores: their backend, their keys, and their own registry rows.
 - Routers: the tenant service, the ingest service, the event store, the
   subsystems.
@@ -342,68 +347,75 @@ imports the composition. Every contract is an abstract base class, for
 the reasons in `design/components/README.md`; a `Protocol` describes
 only an object this code does not define, of which there is none.
 
-Horizontal scaling, at `cluster` scope: all shared state is in the
-databases and the vector backend; per-process state is caches any
-process can rebuild; concurrent creates are arbitrated by a unique
-index, concurrent jobs by row locks, concurrent data operations and
-deletes by store fences. A `host` deployment is several processes on
-one host sharing SQLite files; a `process` deployment is one process.
-The contracts are the same at every scope; the scope says only which
-resources may share state with how many others.
+Horizontal scaling, at `cluster` scope: all shared state is in the databases
+and the vector backend; per-process state is caches any process can rebuild;
+concurrent creates are arbitrated by a unique index, concurrent jobs by an
+atomic claim on the job row, concurrent data operations and deletes by store
+fences. A `host` deployment is several processes on one host sharing SQLite
+files; a `process` deployment is one process. The contracts are the same at
+every scope; the scope says only which resources may share state with how many
+others.
 
 ## Tenant registry
 
-Two tables in the tenant database. Every transition is one transaction
-on them. Only the tenant service reads or writes them.
+Three tables in the tenant database. Every transition is one transaction
+on them. Only the tenant service reads or writes them. Specified with
+types, constraints and indexes in `design/components/tenant_service.md`.
 
-`tenants`:
+`tenants`: `id UUID PK`; `name TEXT NULL`, unique index, NULL from the
+moment deletion starts so a new tenant can take the name at once under
+a new id; `state` in `active`, `deleting`, `deleted`; `created_at`,
+`updated_at`, `deleted_at`. A tenant is a name, an id and a state, and
+holds nothing by itself. A `deleted` row is the tenant's tombstone: id
+and `deleted_at`, nothing else, so no personal data outlives the tenant
+in the registry.
 
-- `id UUID PK`.
-- `name TEXT NULL`, unique index. NULL from the moment deletion starts,
-  so a new tenant can take the name at once and gets a new id.
-- `former_name TEXT NULL`: the name at deletion time, for operators.
-- `state`: `provisioning`, `active`, `deleting`, `deleted`.
-- `config JSON`: one object per component name. The record of
-  what was requested; each component holds its own applied copy.
-- `config_version INTEGER`: incremented by every configuration
-  update.
-- `created_at`, `updated_at`, `deleted_at`, `swept_at`.
+`tenant_components`: one row per component enabled on a tenant, keyed
+by `(tenant_id, component)`, with its own `state` in `provisioning`,
+`active`, `deleting`, `deleted`, the requested section as `config` and
+its `config_version`, `deleted_at` and `clean_at`. A component's
+resources for a tenant are enabled, configured and disabled on their
+own, each with its own jobs; the tenant and its components are as
+separate as an account and the services used under it. A `deleted`
+component row is that component's tombstone, and the tenant row stays
+until every component row under it is gone, which is what keeps the id
+reserved while anything could remain under it.
 
-`tenant_jobs`:
+`tenant_jobs`: `id PK`, `tenant_id`, `component`, `action` in
+`provision`, `delete`, `sweep`, `replay`, `arguments JSON`, unique on
+`(tenant_id, component, action)`, cascading from the component row;
+`state` in `pending`, `running`, `done`; `attempts`, `last_outcome`
+(`more`, `error`, `clean`, `purged`), `last_error`, `last_run_at`,
+`claimed_at`. The row records what happened; when a job is next
+eligible is computed at claim time from those columns and the
+reconciler's settings, so a change of schedule applies to every pending
+job at once and rewrites no row, and an operator's retry is
+`attempts = 0`.
 
-- `id PK`, `tenant_id`, `component`, `action`, `arguments JSON`; unique
-  on `(tenant_id, component, action)`.
-- `state`: `pending`, `done`.
-- `arguments`: for `provision`, the configuration version the job applies.
-- `attempts`, `last_outcome` (`more` or `error`), `last_error`,
-  `last_run_at`, `created_at`, `updated_at`. The row records what
-  happened; when a job is next eligible is computed at claim time from
-  those columns and the reconciler's settings, so a change of schedule
-  applies to every pending job at once and rewrites no row, and an
-  operator's retry is `attempts = 0`.
-
-A `deleted` row is a tombstone: id, former name, `deleted_at`,
-`swept_at`, nothing else. It does two jobs. It enforces "never reused":
-minting is an insert on the primary key, so a duplicate id, whether
-from a collision, a replayed id, or a registry restored from a backup
-the stores were not restored to, fails at the tenant service before any
-store is touched. And it drives the tombstone pass under "Tenant
-lifecycle", which is what collects a record a crashed operation left
-under the key after purging had finished. A tombstone is not kept
-forever: the sweep removes it on the first pass in which every
-component's `purge` found nothing under the id and `deleted_at` is
-older than `tombstones.retention` on the database clock, a retention of
-the order of a day. What that assumes is that no write is in flight
-longer than the retention: every remote client has a request timeout,
-so a stale write, which is always issued before the delete commits
-(the row read before a write is a check), lands within that timeout
-plus whatever the backend and the network can queue, minutes at the
-outside, and the retention exceeds it by orders of magnitude. After the
-prune, a reused id (a `uuid4` collision, or a registry restored from a
-backup) creates cleanly and inherits nothing, since the stores hold
-nothing under it. The case this leaves open, a write delayed longer
-than the retention, is accepted as less likely than the failures the
-design does not defend against either.
+Why the tombstones. Minting a tenant id is an insert on the primary key,
+so a duplicate id, whether from a collision, a replayed id, or a
+registry restored from a backup the stores were not restored to, fails
+at the tenant service before any store is touched, for as long as the
+tenant row exists. And a component tombstone drives the tombstone pass
+under "Tenant lifecycle", which is what collects a record a crashed
+operation left under the key after purging had finished. Neither is
+kept forever: a component tombstone is removed after a sweep round has
+found nothing, a retention of at least a day (`tombstones.retention`,
+database clock) has passed since that clean round, and a verification
+round after the retention has found nothing again; the tenant row goes
+when its last component tombstone does. What the retention assumes is
+that no write is in flight longer than it: a stale write is one whose
+registry read preceded the delete's commit, and the request it belongs
+to is issued at most a process stall after that read and lands within
+the client's request timeout plus whatever the backend and the network
+can queue, minutes at the outside; every remote client is constructed
+with a request timeout, the composition refuses one without, and the
+retention exceeds the sum by orders of magnitude. After the prune, a
+reused id (a `uuid4` collision, or a registry restored from a backup)
+creates cleanly and inherits nothing, since the stores hold nothing
+under it. The case this leaves open, a write delayed longer than the
+retention, is accepted as less likely than the failures the design does
+not defend against either.
 
 Rename is an update of `name`. No store key contains the name, which is
 why names can be arbitrary strings while store keys are the 32 hex
@@ -411,159 +423,188 @@ characters every backend accepts.
 
 ## Tenant lifecycle
 
-Create, `POST /v1/tenants`:
+Create, `POST /v1/tenants` with `name`, an optional `template` and
+per-component `config` overrides:
 
-1. Resolve the configuration: the named template (default `default`),
-   overlaid with the request's per-component overrides, each section
-   validated by its component's tenant configuration model. An unknown
-   component name or an invalid option is 422.
-2. Insert the tenant row as `provisioning` and one `provision` job per
-   registered component, in one transaction. A duplicate name fails on
-   the unique index: 409 `tenant_exists`, and nothing else. A caller
-   that wants the existing tenant looks it up by name; an error response
-   does not carry another tenant's record, and there is no get-or-create
-   flag.
-3. Respond 202 with the tenant in `provisioning`. With `?wait=` the
-   request instead blocks until the tenant is `active` or the wait
-   elapses, and responds 201 or 202 accordingly. While waiting, the
-   `api` process executes this tenant's jobs itself, through the same
-   claim as a reconciler, so a single-process deployment completes the
-   create inside the request; a failed step is left for a reconciler,
-   never surfaced as an error to the creator.
-4. `GET /v1/tenants/{id}` shows the state and each job's attempts and
-   last error. The tenant becomes `active` when the last `provision` job's
-   transaction marks it done.
+1. Insert the tenant row as `active`, the event store's component row
+   as `provisioning` with its `provision` job, and, when a template is
+   named, one component row and `provision` job per section of the
+   template overlaid with the overrides, each validated by its
+   component's tenant configuration model; one transaction. An unknown
+   component name or an invalid option is 422. A duplicate name fails
+   on the unique index: 409 `tenant_exists`, and nothing else. A caller
+   that wants the existing tenant looks it up by name; an error
+   response does not carry another tenant's record, and there is no
+   get-or-create flag.
+2. Respond 201 with the tenant and its component rows. The `api`
+   process then executes this tenant's jobs itself, through the same
+   claim as a reconciler, after the transaction has committed, so a
+   single-process deployment completes the create inside the request;
+   a failed step is left for a reconciler, never surfaced as an error
+   to the creator. With `?wait=` the response is delayed until the
+   tenant has no `provision` job pending or running, or the wait
+   elapses.
+3. `GET /v1/tenants/{id}` shows the tenant, each component row's state,
+   requested section and version, and each job's attempts and last
+   error. A component's section is applied when its `provision` job is
+   done.
 
-Delete, `DELETE /v1/tenants/{id}`:
+Enable a component, `PUT /v1/tenants/{id}/components/{name}` with
+`config`: the tenant must be `active`; insert the component row as
+`provisioning` with its `provision` job and execute it inline as for
+create; 201, 202 with `?wait=` while it is still provisioning, 409
+`component_exists` if the row exists. The event store is enabled at
+creation and cannot be enabled or disabled by request.
 
-1. One transaction: `state = deleting`, `former_name = name`,
-   `name = NULL`, `deleted_at = now()`, and one `delete` job per
-   registered component. Allowed from `provisioning` and `active`; a
-   repeat while `deleting` responds the same 202.
-2. Respond 202 with the tenant in `deleting`; `?wait=` as for create. A
-   reconciler in the same process is woken; every other reconciler sees
-   the jobs at its next poll.
-3. A reconciler executes the `delete` jobs: one call to each
-   component's `delete`, which makes the tenant unreachable in every one
-   of its stores. Seconds, not minutes; nothing is purged yet.
-4. When every `delete` job is done, one transaction sets the tenant row
-   `deleted`, inserts one `sweep` job per component, and removes the
-   other job rows. `GET` then returns 404; the row stays as the
-   tombstone, and the sweeps purge in the background.
-5. A `sweep` job's step calls `purge`, one bounded batch, repeatedly
-   until it reports nothing remains or the step's time budget
+Update a component's configuration, the same `PUT` on an existing row:
+the row must be `provisioning` or `active`. The component validates the
+change against its model, in which every option is mutable or
+immutable. An option is immutable exactly when changing it would
+require touching existing data (the embedder; anything that reshapes
+stored rows); mutable options apply to events processed after the
+change or to reads (a reranker, search defaults, segmenter options). An
+immutable option in the request is 422, and there is no "expensive but
+allowed" class. One transaction writes the section, increments its
+version, and inserts or resets the `provision` job with the section and
+version in its arguments; the row's state is unchanged. Respond 202;
+`?wait=` blocks until the job is done. How it reaches the server
+processes: the `provision` step calls the component's hook with the
+section in the job, and the hook writes it, with its version, into the
+component's own per-tenant row. Every request reads that row, so the
+next request on any process uses the new options. No process is
+notified; the row is the channel.
+
+Disable a component, `DELETE /v1/tenants/{id}/components/{name}`: the
+row must be `provisioning` or `active`; set it `deleting` with
+`deleted_at`, insert its `delete` job; 202, `?wait=` blocks until the
+row is `deleted`; a repeat while `deleting` responds the same 202.
+
+Delete a tenant, `DELETE /v1/tenants/{id}`:
+
+1. One transaction: `state = deleting`, `name = NULL`, `deleted_at =
+   now()`, and every component row that is `provisioning` or `active`
+   set `deleting` with a `delete` job. Allowed from `active`; a repeat
+   while `deleting` responds the same 202.
+2. Respond 202 with the tenant in `deleting`; `?wait=` blocks until it
+   is `deleted`. A reconciler in the same process is woken; every other
+   reconciler sees the jobs at its next poll.
+3. A reconciler executes each `delete` job: one call to the
+   component's `delete`, which makes the tenant unreachable in every
+   one of the component's stores. Seconds, not minutes; nothing is
+   purged yet.
+4. The transaction that marks a component's `delete` job done sets its
+   row `deleted`, inserts its `sweep` job, removes its `provision` and
+   `replay` rows, and, when no component row of the tenant is outside
+   `deleted`, sets the tenant `deleted`. `GET` then returns 404; the
+   rows stay as tombstones, and the sweeps purge in the background.
+5. A `sweep` job's step calls `delete` once more, idempotent and O(1),
+   and then `purge`, one bounded batch at a time, until it reports
+   nothing remains or the step's time budget
    (`reconciler.step_duration`) is spent; it is done when nothing
    remains. `purge` is idempotent, so a repeated batch is harmless.
 
 Tombstone pass: a duty of the tenant service, run by reconciler
-processes on `reconciler.sweep_interval`, in every one of them without
-exclusion. It claims `deleted` rows with `FOR UPDATE SKIP LOCKED`,
-oldest `swept_at` first, bounded per call, resets each one's `sweep`
-jobs to pending, and stamps `swept_at`; the sweeps then run as jobs.
+processes every `reconciler.tombstone_interval`, in every one of them
+without exclusion, claiming rows so that each is handled by one pass at
+a time, bounded per call. For each `deleted` component row whose sweep
+is done, by the round's outcome and the row's `clean_at`:
+
+- No `clean_at` yet: a round that purged something is followed by
+  another; a round that found nothing on its first batch stamps
+  `clean_at`.
+- `clean_at` set, retention not yet elapsed: nothing.
+- `clean_at` set, retention elapsed: a verification round runs; if it
+  finds nothing the component row and its job rows are removed; if it
+  finds something, `clean_at` is cleared and the rounds start over.
+
+A `deleting` tenant whose component rows are all `deleted` becomes
+`deleted`, and a `deleted` tenant with no component rows is removed.
 This is what collects the one write that can land after purging (see
 "How a store fences"); components whose stores cannot hold such a write
-return `DONE` on the first batch. When a tombstone's sweeps have all
-completed with `purge` finding nothing on their first batch, and
-`deleted_at` is older than `tombstones.retention` on the database
-clock, the pass removes the row and its sweep rows. It is the only
-scheduled duty in the system.
-
-Configuration update, `PATCH /v1/tenants/{id}` with `config`:
-
-- The tenant stays `active` throughout. Each component validates its
-  section's change against its model, in which every option is mutable
-  or immutable. An option is immutable exactly when changing it would
-  require touching existing data (the embedder; anything that reshapes
-  stored rows); mutable options apply to events processed after the
-  change or to reads (a reranker, search defaults, segmenter options).
-  An immutable option in the patch is 422, and there is no "expensive
-  but allowed" class.
-- One transaction writes the configuration, increments
-  `config_version`, and inserts (or resets) an `provision` job per
-  changed component carrying the new version. Respond 202; `?wait=`
-  blocks until every such job is done.
-- How it reaches the server processes: the `provision` job calls the
-  component's hook with the new section, and the hook writes it, with
-  its version, into the component's own per-tenant row. Every request
-  reads that row, so the next request on any process uses the new
-  options. No process is notified; the row is the channel. `GET` shows
-  the requested version and, per component, the applied version.
+have clean rounds from the first. It is the only scheduled duty in the
+system.
 
 Rename, `PATCH /v1/tenants/{id}` with `name`: one update; 409 on a
-duplicate.
+duplicate; 409 `tenant_not_active` unless the tenant is `active`.
 
-States: `provisioning -> active -> deleting -> deleted`, and
-`provisioning -> deleting`. There is no failed state. A job that raises
-is rescheduled with exponential backoff (`reconciler.backoff`) and keeps
-`attempts` and `last_error` on its row for as long as it takes. An
-operator fixes the cause and the next attempt succeeds. A tenant in
-`provisioning` or `deleting` past `reconciler.stuck_after` is logged
-with its jobs' last errors, and logged again each time the age doubles.
+States. A tenant is `active -> deleting -> deleted`. A component row is
+`provisioning -> active -> deleting -> deleted` and `provisioning ->
+deleting`. There is no failed state. A job that raises is rescheduled
+with exponential backoff (`reconciler.backoff`, capped by
+`reconciler.max_backoff`) and keeps `attempts` and `last_error` on its
+row for as long as it takes; a step that completes resets `attempts`.
+An operator fixes the cause and the next attempt succeeds. A component
+row in `provisioning` or `deleting` past `reconciler.stuck_after` is
+logged with its jobs' last errors, and logged again each time the age
+doubles.
 
 Reconciler role:
 
 - One loop per process that has the role. It polls every
-  `reconciler.poll_interval` and when woken locally.
-- Claim: the `pending` rows that are eligible now, oldest first by
-  `COALESCE(last_run_at, created_at)`, `LIMIT n FOR UPDATE SKIP LOCKED`.
-  Eligible means `last_run_at IS NULL`, or `last_run_at + delay <=
-  now()` with `delay` computed in the statement from the settings:
-  `reconciler.purge_interval` after a `more` outcome,
-  `reconciler.backoff` raised to `attempts` after an error. The row lock
-  is held for the duration of the step: the hook runs, and the same
-  transaction records the outcome and commits. A crashed process's lock
-  is released by the database and the job is claimable at once. There
-  is no lease; the one `now()` is the database's and decides only when
-  a job is eligible, never whether an effect is valid. On SQLite the
-  same statement without `SKIP LOCKED` under `BEGIN IMMEDIATE`;
-  concurrent reconcilers serialize there.
-- Execute: the component's hook for the job's action, with the job's arguments
-  (for `provision`, the tenant's configuration section at the job's
-  version; for `delete`, the one unlink call; for `sweep`, `purge`
-  until `DONE` or the time budget; for `replay`, the log). `DONE` marks
-  the job done; a spent budget or `MORE` records `last_outcome = more`
-  and `last_run_at`; an exception records `error`, the message, and
-  `attempts + 1`. The transaction that marks a `provision` or `delete` job done
-  checks the tenant's remaining jobs of that action and applies the
-  state transition if none remain. Hooks are idempotent, so a step
-  repeated after a crash is harmless.
-- Reset: the ingest service sets a tenant's `replay` jobs to pending
-  through the tenant service's `reset_replay(tenant_id)`, in the
-  ingest's own transaction where the engines are shared and after its
-  commit otherwise; a running `replay` step keeps running and the row is
-  claimable again when it ends.
-- Serialization per tenant. Every lifecycle transition and every job
-  step holds the tenant row's lock for its transaction: a request's
-  transaction takes `SELECT ... FOR UPDATE` on the tenant row before it
-  changes state or inserts jobs, and a reconciler's claim, after locking
-  the job row, locks the tenant row too and holds both for the step.
-  Transitions and steps for one tenant are therefore totally ordered.
-  A step re-reads the tenant's state under the lock before calling a
-  hook: a `provision` or `replay` step on a tenant that is `deleting`
-  marks itself done without calling anything. A delete request that
-  finds a `provision` step running waits for it to finish, then, in its
-  own transaction, marks every remaining pending `provision` job done
-  and inserts the `delete` jobs. So no `provision` hook runs after a
-  `delete` hook for the same tenant, and no component ever sees
-  `purge` on a live key, which is why `purge` on a live key is an
-  error rather than a case. On SQLite the file's write lock serializes
-  the same way. The cost is one row lock per step, held for a bounded
-  step, on a row nothing else locks; plain reads of the tenant row, as
-  `GET` does, are not blocked by it. Every concurrent pair on one
-  tenant and its outcome is tabulated in
+  `reconciler.poll_interval` and when woken locally, and runs up to
+  `reconciler.concurrency` steps at once, each on its own connection.
+- Claims are state transitions, not held locks. A claim is one
+  statement that sets the oldest eligible `pending` row `running` with
+  `claimed_at = now()`; it is atomic on both dialects (`FOR UPDATE SKIP
+  LOCKED` in the subselect on PostgreSQL, the statement's own write
+  lock on SQLite). Eligibility is computed in the statement from the
+  settings: after an error, `backoff` doubled per attempt up to
+  `max_backoff`; after a `more` outcome, `sweep_pause` for a `sweep`
+  and nothing for a `replay`, which has more log and continues at
+  once. The hook then runs with no database lock held, on any row, for
+  up to `step_duration`; completion is a second statement that records
+  the outcome only if the row is still this claim's.
+- Liveness is the one thing time decides: a `running` row whose
+  `claimed_at` is older than `reconciler.reclaim_after` is claimable
+  again, which is how a crashed or hung reconciler's job is taken over.
+  A step that was slow rather than dead then runs twice, and because
+  every hook is idempotent and every store fences, the second run
+  wastes writes and changes nothing. No clock decides whether an
+  effect is valid.
+- Execute: the step re-reads the component row and calls nothing when
+  the row's state has moved past the step (a `provision` on a row that
+  is `deleting`, a `replay` on a row that is not `active`); otherwise
+  the hook, with the job's arguments (for `provision`, the section and
+  version the job carries; for `delete`, the one unlink call; for
+  `sweep`, `delete` then `purge` until `DONE` or the time budget; for
+  `replay`, the log). `DONE` marks the job done and resets `attempts`;
+  a spent budget records `more`; an exception records `error` and the
+  message. The transaction that marks a `provision` job done sets the
+  component row `active` and inserts the `replay` row for a memory
+  subsystem; the one that marks a `delete` job done sets the row
+  `deleted`, inserts the `sweep` job and, when the tenant is `deleting`
+  and every component row is `deleted`, sets the tenant `deleted`.
+- Reset: the ingest service sets a tenant's `replay` jobs to pending,
+  with `attempts` and the last outcome cleared so they are eligible at
+  once, through the tenant service's `reset_replay(tenant_id)`, after
+  its own transaction commits (in that transaction where the engines
+  are shared); a running `replay` step keeps running and the row is
+  claimable again when it ends. The reset updates rows that exist and
+  inserts none.
+- Ordering without locks. A request that disables a component while a
+  `provision` step is running cannot wait for it, so the two may
+  overlap: the provision hook may create a resource after the `delete`
+  hook has unlinked the rest. Three things make that harmless: the
+  strict create raises on a `dropping` registry row, so most late
+  creates fail at the store; the `sweep` step calls `delete` before it
+  purges, so a resource that was created anyway is unlinked and then
+  removed; and a later `provision` step re-reads the row, finds
+  `deleting`, and marks itself done. `purge` on a live key is still an
+  error rather than a case, because the sweep step's own `delete` call
+  is what guarantees it never sees one. Every concurrent pair on one
+  tenant or component row and its outcome is tabulated in
   `design/components/tenant_service.md`; the data-path pairs (two
   ingests, a failed replay step, a delete racing a replay, a search
   racing an ingest) in `design/components/episodic_memory_manager.md`,
   where the watermark is defined to move only forward and a `replay`
   step to resume from it.
-- Cost: a reconciler holds one database connection per job it is
-  executing, for the step's duration; steps are bounded per call by
-  their hooks, and `reconciler.jobs_per_pass` bounds the connections.
+- Cost: one connection per running step, at most `concurrency` per
+  reconciler process, and none held across a hook.
 
 ## Component contract
 
-A component with per-tenant resources registers with the tenant service
-at startup:
+A component with per-tenant resources is passed to the tenant service
+at construction as a registration:
 
 - `name`: its section in tenant configuration and, for a memory
   subsystem, its path segment in the API (`episodic_memory`,
@@ -571,8 +612,9 @@ at startup:
 - `tenant_config`: a Pydantic model for its section, every field
   mutable or immutable, with defaults. Provider references in it are
   ids that the component validates against the providers it was
-  constructed with. The tenant service calls `validate(section)` and
-  `validate_update(old, new)` and never reads a field.
+  constructed with. The tenant service validates a section against the
+  model and calls `validate_update(old, new)` on a change, and never
+  reads a field.
 - Hooks, each idempotent, bounded per call, allowed to raise (the
   reconciler retries):
   - `provision(tenant_id, section) -> None`: create the component's
@@ -585,32 +627,33 @@ at startup:
     purging.
   - `purge(tenant_id) -> DONE | MORE`: remove a bounded amount of what
     the component's stores hold under the tenant id; `DONE` when
-    nothing is found. Called by a `sweep` job, for as long as
-    the tombstone exists.
-  - `replay(tenant_id) -> DONE | MORE`: process a bounded amount of the
-    tenant's log beyond the component's watermark; the component's
-    only processing path (see "Episodic memory").
+    nothing is found. Called by a `sweep` job, after that job's own
+    `delete` call, for as long as the tombstone exists.
+- A memory subsystem additionally implements `replay(tenant_id) ->
+  DONE | MORE`, processing a bounded amount of the tenant's log beyond
+  its watermark, its only processing path (see "Episodic memory"), and
+  `watermark(tenant_id) -> int`, which `?wait=` on ingest polls.
 
-A memory subsystem additionally exposes to the ingest service and the
-routers: `encode(tenant_id, events)`, `forget(tenant_id, event_ids)`,
-and its queries.
+The event store is a component with an empty section: its resources
+are its partition, enabled on every tenant at creation and retired
+with the tenant.
 
 Data operations:
 
 - Every request reads the component's own per-tenant row (absent: the
-  tenant is unknown to this component), takes the object built for that
-  tenant's structural configuration from a cache keyed by configuration
-  (see "Episodic memory"), and calls it with the tenant id and the
-  request's per-call options. One indexed read; no per-tenant object
-  exists.
+  tenant is unknown to this component) and builds the object for that
+  tenant from the row and the stores' handles (see "Episodic memory").
+  One indexed read; nothing per tenant is opened or held.
 - Every store operation is fenced by the store's own registry row, which
   also supplies what the operation needs to address the tenant (the
   codec configuration, the container, the collection UUID). A key that
   is not live raises one error type.
 - On an unknown tenant or a not-live-key error, the router asks the
-  tenant service for the tenant's state and answers 404 (no row, or
-  `deleted`) or 409 (`provisioning` or `deleting`). No component reads
-  the tenant table.
+  tenant service for the tenant's and the component row's state and
+  answers 404 `tenant_not_found` (no tenant row, or `deleted`), 409
+  `tenant_not_active` (`deleting`), 404 `component_not_enabled` (no
+  component row, or `deleted`) or 409 `component_not_active`
+  (`provisioning` or `deleting`). No component reads the tenant tables.
 
 ## Event store
 
@@ -618,9 +661,11 @@ The system of record. Shared tables in a SQL database, keyed by the
 tenant id, with the fence under "Store contracts".
 
 - Registry row per key.
-- `events`: key, event id, timestamp, source id, context and blocks
-  (codec-encoded), properties. Unique on `(key, event id)`, which is what makes
-  ingest idempotent per event id.
+- `events`: key, event id, position, timestamp with its offset, session
+  id, source id, context and blocks (codec-encoded), properties. Unique
+  on `(key, event id)`, which is what makes ingest idempotent per event
+  id for a caller that supplies ids; a retry of a request that let the
+  server mint them stores the events again.
 - A log per key of additions and deletions, each entry a position, a
   kind and the event id. Positions are assigned under the key's
   registry row locked `FOR UPDATE`, so ingests to one tenant serialize
@@ -640,24 +685,31 @@ tenant id, with the fence under "Store contracts".
   `purge_partition(key) -> DONE | MORE`, `purge_deleted_partitions()`
   for library users without a tenant service.
 - Data operations, on the handle `event_store.partition(key)` and none
-  taking a key: `add_events(events) -> (stored, skipped)`,
-  `delete_events(ids)`, `get_events(ids)`, `list_events(filter, since,
-  before, cursor, limit)`, `read_log(after, limit)`, `head()`.
+  taking a key: `add_events(events) -> IngestResult` (stored ids,
+  skipped ids, the head position), `delete_events(ids)`,
+  `get_events(ids)`, `list_events(filter, since, before, after, limit)`
+  in position order with the last position as the cursor,
+  `read_log(after, limit)`, `read_events_after(after, limit)`,
+  `head()`.
 
 Ingest, `POST /v1/tenants/{id}/events`, in the ingest service:
 
 1. `add_events` on the event store, one transaction: the events and
    their `added` log entries; ids already present are skipped and
    reported.
-2. In the same transaction, reset every subsystem's `replay` job for the
-   tenant to pending, so the log is processed by whichever reconciler
-   claims it next. Where the process has the reconciler role, or
-   `ingest.inline` is set, execute those jobs now through the same
-   claim, so a single-process deployment processes inside the request.
-3. Respond 202 with stored ids, skipped ids and the batch's last
-   position; `?wait=` blocks until every subsystem's watermark has
-   reached it and then responds 200. The client is acknowledged when the
-   events are durable; processing is observable, never assumed.
+2. Reset every memory subsystem's `replay` job for the tenant to
+   pending, in the same transaction where the engines are shared and
+   after its commit otherwise, so the log is processed by whichever
+   reconciler claims it next. Where the process has the reconciler
+   role, or `ingest.inline` is set, execute those jobs now through the
+   same claim, after the commit, so a single-process deployment
+   processes inside the request.
+3. Respond 202 with stored ids, skipped ids and the head position;
+   `?wait=` blocks until every subsystem's watermark has reached it and
+   then responds 200, or 202 with the watermarks so far when the wait
+   elapses. The client is acknowledged after the events are durable
+   and the replay jobs are pending; processing is observable, never
+   assumed.
 
 Delete events, `POST /v1/tenants/{id}/events/delete`: `delete_events`
 on the event store, which removes the rows and appends `deleted` log
@@ -694,17 +746,21 @@ Operations, in the order the stores are touched:
 
 - `encode` and `forget`: for each log entry in order, an `added` entry is
   segmented, derived, embedded and written (segments, then vectors) and
-  a `deleted` entry is forgotten; then the watermark advances past the
-  batch. A crash mid-batch leaves partial derived data behind the
-  watermark, which the next replay reprocesses (forget first, so one
-  copy).
+  a `deleted` entry is forgotten; then, after both stores hold the
+  batch, the watermark advances past it. A crash mid-batch leaves
+  partial derived data above the watermark, which the next replay
+  reprocesses (forget first, so one copy). A batch recorded as
+  processed is processed in full.
 - `replay` (job): the subsystem's only processing path. One job per
-  (tenant, subsystem), reset to pending by every ingest and deletion,
-  claimed by a reconciler that holds only the job's own row lock, so a
+  memory subsystem enabled on a tenant, reset to pending by every
+  ingest and deletion, claimed by one reconciler at a time, so a
   tenant's subsystems process in parallel while each is a single
   consumer and therefore processes in commit order. It reads the log
   after the watermark, processes the batch as above, and returns `MORE`
-  until the log has nothing newer. There is no separate repair: a
+  until the log has nothing newer; a subsystem whose watermark is below
+  the log's oldest entry, because it was enabled on a tenant with
+  history or the log was compacted, reads the events table in position
+  order until it reaches the log. There is no separate repair: a
   failure records an error on the job and the next attempt resumes from
   the watermark. Positions exist for this: they make "what has this
   subsystem processed" one integer per tenant, "what is left" a range,
@@ -712,9 +768,13 @@ Operations, in the order the stores are touched:
 - Search: embed the query; split the filter and choose the plan under
   "Properties and filtering"; vector query (checked against the store's
   registry row after the query, inside the vector store); segment
-  contexts; on request, the full events from the event store. Scores
-  are cosine similarity throughout; there is no similarity metric
-  option.
+  contexts. Hits are returned in descending score, each a window with
+  the matched segment marked; events are not returned, a caller that
+  wants one fetches it by id. Scores are cosine similarity throughout;
+  there is no similarity metric option. Reranking is a second stage
+  the manager runs over the rendered windows, with its own candidate
+  count and threshold, so over-fetching is one limit set above
+  another.
 - Expand: the neighbourhood of a segment or event in its session's
   one total order, `before` and `after` counted in segments or events, the
   way claude-memory walks a conversation around a memory; one indexed
@@ -726,35 +786,39 @@ Operations, in the order the stores are touched:
 Objects per tenant and request, options per request. `EpisodicMemory`
 (the current `EventMemory`) keeps its shape: one segment partition
 handle, one vector collection handle, one embedder, one segmenter, one
-deriver, constructed with them, no operation naming a key and `query`
-taking the reranker as an object. It is a configured object bound to
-one tenant, never built by the composition and never cached: a handful
-of references, built per request and discarded. The resource is
+deriver, the formatting the deriver embeds with, constructed with them,
+no operation naming a key. It is a configured object bound to one
+tenant, never built by the composition and never cached: a handful of
+references, built per request and discarded. The resource is
 `EpisodicMemoryManager`, the name repurposed: constructed with the
 event store, the segment store, the vector store, and the embedders and
-rerankers the composition built, as mappings from id to object. It
-registers with the tenant service, owns the per-tenant table and a
+rerankers the composition built, as mappings from id to object. It is
+registered with the tenant service, owns the per-tenant table and a
 cache of segmenter and deriver objects keyed by their options, and
 serves the routes. On a request the manager reads the tenant's applied
 configuration from its per-tenant row and builds the object in one
 constructor call from `segment_store.partition(key)`,
-`vector_store.collection(key, e)` and `embedders[e]`, the handles of
-rule 4, so past that call nothing can name another tenant, and a
-dispatch error raises at the store's fence instead of writing another
-model's vectors into a container; then it fills each per-request option
-the request left out with the tenant's default, resolves a reranker id
-to the object, and makes one call.
+`vector_store.collection(key, e)`, `embedders[e]`, the row's format,
+and the cached segmenter and deriver for the row's options, the
+handles being those of composition rule 4, so past that call nothing
+can name another tenant, and a dispatch error raises at the store's
+fence instead of writing another model's vectors into a container;
+then it fills each search option the request left out with the
+tenant's default and runs the stages.
 
-That is all the manager does: dispatch, defaults, validation. It holds
-no search or ingest logic, translates no models, and has one method per
-operation with the same types as `EpisodicMemory`. Reranking stays
-inside `EpisodicMemory.query`, because it is part of computing the
-result (an over-fetch scored and cut to `limit`), and moving it up
-would split the search across two classes to save a parameter. One
-layer that changes only scope, a tenant id to an object and ids to
-objects, is the least a per-tenant configuration can need, and it is
-not the layering this document removes, which was four layers each
-translating models and branching on backends.
+That is all the manager does: dispatch, defaults, validation, and the
+stages. The vector stage is `EpisodicMemory.query`, which knows one
+limit and one threshold, cosine similarity; the reranking stage, when
+the request or the tenant asks for one, takes the vector stage's hits,
+renders each window, scores the renderings with the named reranker,
+applies the reranker's own threshold and cuts to the final limit.
+Two stages with one limit and one threshold each are plainer than one
+method with two of each, and the manager is the natural place for the
+stage that needs the rerankers, which are providers the memory object
+never sees. One layer that changes only scope, a tenant id to an object
+and ids to objects, is the least a per-tenant configuration can need,
+and it is not the layering this document removes, which was four layers
+each translating models and branching on backends.
 
 In the settings a deployment declares which embedders and rerankers
 exist; the standard composition builds them and hands all of them to
@@ -762,14 +826,18 @@ the manager. Products never appear in settings. A deployment that
 wants a memory type to offer a subset names the ids in that manager's
 settings.
 
-What a request may vary is not bound into objects at all; it is a request
-parameter, passed as an argument of the call. The reranker, `limit`,
-`expand_context`, the minimum score and `include_events` are parameters of
-`query`. The tenant's section supplies their defaults; a request may override
-any of them, the reranker within the ids the deployment offers, validated by
-the manager. Nothing that ingest does varies per request. The division is rule
-5's: an option that decides where or how records are written is structural and
-bound; what only shapes an answer is a request parameter.
+What a request may vary is not bound into objects at all; it is a
+request parameter, passed as an argument of the call: `limit`,
+`min_similarity`, `expand_context`, the reranking stage (reranker,
+candidates, its threshold) and the rendering format. One model,
+`SearchOptions`, is the tenant's `search` section with every field set
+and the request's overrides with every field optional, so there is no
+second list to keep in step. Nothing that ingest does varies per
+request: the format the deriver embeds with is a tenant option, since
+a tenant's derivatives must be formatted one way. The division is
+composition rule 5's: an option that decides where or how records are
+written is structural and bound; what only shapes an answer is a
+request parameter.
 
 A tenant naming an id the deployment did not build is rejected at
 creation and at `PATCH` by the manager's own validation. Changing the
@@ -782,16 +850,17 @@ Tenant configuration section `episodic_memory`, with mutability:
 
 - `embedder` (provider id): immutable; a different embedder is a new
   tenant and a new ingestion.
-- `reranker` (provider id or null): mutable; the default for a search,
-  overridable per request.
-- `segmenter`, `deriver`: their options; mutable, applying to events
-  processed after the change.
-- `search`: default `limit`, `expand_context`, minimum score; mutable;
-  each overridable per request.
+- `segmenter`, `deriver`, `format`: their options; mutable, applying
+  to events processed after the change.
+- `search`: default `limit`, `min_similarity`, `expand_context` and
+  `rerank` (reranker id, candidates, threshold, or none); mutable; each
+  overridable per request, the reranker within the ids the deployment
+  offers.
 
-Episodic memory uses no language model today (both segmenters and both
-derivers are deterministic; the embedder is the only model call). The
-section gains a `language_model` id when a deriver needs one.
+Episodic memory uses no language model today (the two segmenters and
+the one deriver are deterministic; the embedder is the only model
+call). The section gains a `language_model` id when a deriver needs
+one.
 
 Hooks:
 
@@ -799,11 +868,14 @@ Hooks:
   id; an existing `live` row is this component's own earlier attempt
   and is success, a `creating` row is resumed, a `dropping` row is a
   reused key and raises (see "Create is strict"); insert the per-tenant
-  row if absent, else verify immutable options and apply mutable ones.
+  row if absent, else verify immutable options and write the section
+  and its version, never the watermark.
 - `delete`: `delete_partition` on the segment store,
   `delete_collection` on the vector store, remove the per-tenant row.
 - `purge`: `purge_partition` and `purge_collection`; `DONE` when
   both report done.
+- `replay` and `watermark`: as above; a `replay` step that finds no
+  per-tenant row returns `DONE`.
 
 ## Properties and filtering
 
@@ -877,8 +949,9 @@ filterable through the segment store. That is the answer to "too few"
 and "too many" alike: the system set is closed by the criterion, and
 the efficient set is open to each deployment.
 
-User properties. `properties` on an event: keys `[a-z0-9_]`, bounded by
-the stores' naming contract, not reserved; values scalar only: string
+User properties. `properties` on an event: keys `[a-z0-9_]`, at most 32
+bytes (the identifier bound every backend accepts), not reserved;
+values scalar only: string
 (bounded by `properties.max_string_bytes`), integer, float, boolean,
 datetime; no lists, no nesting, no nulls (absence is the only way a
 field holds nothing); at most `properties.max_keys` keys per event.
@@ -919,9 +992,10 @@ of that store, created by the schema command (#1573, #1535). Nothing
 creates a filter index at runtime, per tenant, or from a request; the
 current per-collection `indexed_properties_schema` goes. System fields
 are always declared. A user property that is not declared is still
-filterable, through the segment store, where a deployment adds an
-expression index online (`CREATE INDEX CONCURRENTLY` on PostgreSQL)
-without touching the vector store or any co-tenant.
+filterable, through the segment store, where a deployment names in its
+settings the keys it wants expression indexes on, and the schema
+command creates them, without touching the vector store or any
+co-tenant.
 
 The vector store rejects every key it has not been declared, on both
 paths: a record carrying an undeclared property key is an error on
@@ -945,7 +1019,7 @@ each store with an exhaustive `match`, so a node a store does not handle
 is a type error rather than a query-time one. At the API and in MCP a
 filter is a JSON object validated by the schema generated from that
 union, for example
-`{"and": [{"eq": {"field": "kind", "value": "note"}},
+`{"and": [{"eq": {"field": "category", "value": "note"}},
 {"gte": {"field": "score", "value": 3}}]}`. There is no string language,
 nothing to learn beyond the schema, and nothing that parses successfully
 into a different filter than intended; an MCP tool exposes the schema as
@@ -960,15 +1034,16 @@ do and on how selective the predicate is; the caller never chooses.
 
 - Declared keys, system fields included, are evaluated inside the vector
   search on every backend that filters during the search (Qdrant,
-  Milvus, Weaviate, S3 Vectors, sqlite-vec, pgvector), which is what
-  keeps a filtered search returning enough results instead of filtering
-  away the ones it found.
+  Milvus, pgvector, Pinecone, S3 Vectors, Weaviate, Chroma,
+  sqlite-vec), which is what keeps a filtered search returning enough
+  results instead of filtering away the ones it found.
 - A store also declares the filter nodes it can evaluate during the
   search (`supported_filter_nodes`). Every backend evaluates equality,
-  ordering on numbers and datetimes, membership and conjunction; some
-  cannot evaluate a negation, a disjunction or a missing-key test
-  (Chroma's `where` has no `$not`, `$ne` or `$exists`; sqlite-vec's KNN
-  takes comparisons joined by `AND` only). A predicate a store cannot
+  ordering on numbers and datetimes, and conjunction; some cannot
+  evaluate a negation, a disjunction, a membership or a missing-key
+  test (Chroma's `where` has `$ne` but no `$not` or `$exists`;
+  sqlite-vec's KNN takes comparisons joined by `AND` only). A predicate
+  a store cannot
   evaluate is routed exactly like an undeclared key: to the segment
   store, where SQL evaluates the whole language. One language, two
   places of evaluation; nothing diverges between SQL and vector
@@ -978,19 +1053,22 @@ do and on how selective the predicate is; the caller never chooses.
   the store evaluates goes to the vector query; the rest is
   resolved in the segment store by a bounded probe
   (`filter.selective_limit`). If the matching segments fit under it,
-  their derivative ids become an allowlist the vector store scores
-  directly (`get_cosine_similarity`, or the backend's id-restricted
-  search). If not, the vector query runs with the declared part alone,
-  over-fetches with bounded widening up to `filter.max_overfetch`, and
-  the segment store drops the seeds that do not match. At the cap the
-  search returns what survived, which can be fewer than `limit`.
+  their derivative ids are scored directly by `get_cosine_similarity`,
+  a bounded read of those records, and the subsystem applies the
+  threshold and the limit to the scores itself. If not, the vector
+  query runs with the declared part alone, over-fetches with bounded
+  widening up to `filter.max_overfetch`, and the segment store drops
+  the seeds that do not match. At the cap the search returns what
+  survived, which can be fewer than `limit`.
 - A backend that cannot filter during the search (the usearch engine)
   is handed an allowlist by its store, computed the same way over the
   store's own records table.
 
 Limits are maximums. Every count a caller passes is a maximum: `limit`
 on search is the most hits returned, and a filtered search may return
-fewer. Nothing is called "top k", which promises exactly k.
+fewer. Nothing is called "top k", which promises exactly k. Order is
+the operation's: a search returns hits in descending score, and an
+expansion returns segments in the store's one total order.
 
 ## Store contracts
 
@@ -1003,21 +1081,27 @@ reused, the registry row keyed by the caller's UUID is the whole fence.
 
 A store keeps one registry row per key: a store whose data is in a SQL
 database keeps it in a table beside the data; every other store keeps it
-in the key registry (below). The row holds liveness, the store's phase
-for the key, and whatever the store needs to address the key on its
-backend, so the fence read is also the lookup and nothing is opened per
-tenant.
+in the key registry (below). The row has the same shape and states
+either way, `creating`, `live`, `dropping`, so every store behaves the
+same outwardly and the SQL stores depend on no second component. The
+row holds liveness, the store's phase for the key, and whatever the
+store needs to address the key on its backend, so the fence read is
+also the lookup and nothing is opened per tenant.
 
 Stores whose data is in a SQL database (the event store, the segment
 store, pgvector, the SQLite stores): the data statement carries the
 liveness predicate, `EXISTS (SELECT 1 FROM <registry> WHERE key = ? AND
-live)`; a write's transaction takes the row `FOR SHARE` and the logical
-delete takes it `FOR UPDATE`, as shipped in #1548. Those locks are in
-the same database as the data, with no remote I/O inside the
-transaction, so they cost nothing and give exactness: after the delete
-commits, no row can be written under the key. On SQLite, `BEGIN
-IMMEDIATE` takes the file's write lock and the check runs inside it;
-the delete waits up to `busy_timeout` and raises past it.
+state = 'live')`; a write's transaction pins the row for its duration
+and the logical delete takes it exclusively, as shipped in #1548 (`FOR
+SHARE` and `FOR UPDATE` on PostgreSQL; on SQLite, where the driver
+defers `BEGIN` and a shared engine cannot be put under `BEGIN
+IMMEDIATE`, the pin is a self-checking `UPDATE` of the registry row,
+which takes the file's write lock for the statement and fails when
+the row is no longer live). Those locks are in the same database as
+the data, with no remote I/O inside the transaction, so they cost
+nothing and give exactness: after the delete commits, no row can be
+written under the key. The logical delete sets the row `dropping`, and
+the purge removes the data in batches and the row last.
 
 Stores whose data is elsewhere (the vector stores on Qdrant, Milvus,
 Pinecone, S3 Vectors, Weaviate, Chroma): read the row for the address;
@@ -1069,13 +1153,17 @@ backend cooperation just described as unavailable. The clock compared
 must be the database's, never the process's, so every check is a round
 trip anyway; acquire, renew and release are row writes; and there is no
 queue, so after expiry whoever asks first wins. Where this design needs
-exclusion, the reconciler's job claim and the SQL stores' pins, it uses
-a database row lock: held in the lock manager's memory, released the
-instant the holder's session ends, waiters queued, the database doing
-the rejecting. The lease once considered for vector writes was not a
-mutual-exclusion lease at all but a shared, time-limited validation with
-a purge delayed past its expiry; the check after the write is that
-validation with the clock removed.
+exclusion inside one database, the SQL stores' pins, it uses a database
+row lock: held in the lock manager's memory, released the instant the
+holder's session ends, waiters queued, the database doing the
+rejecting. The reconciler's job claim is not exclusion of that kind: it
+is a state transition on the job row, with a liveness bound after which
+a stalled claim is taken over, and it can afford that because no
+effect's validity depends on the claim being exclusive, every hook
+being idempotent and every store fencing. The lease once considered for
+vector writes was not a mutual-exclusion lease at all but a shared,
+time-limited validation with a purge delayed past its expiry; the check
+after the write is that validation with the clock removed.
 
 Alternatives rejected for the remote stores: accepting bounded leakage
 (garbage that is never collected is unacceptable); delaying purging
@@ -1132,9 +1220,9 @@ reusing keys can cause, and `provision` raises `KeyReusedError` for an
 operator.
 
 What every store operation does with a key whose row is present but
-not `live` (`creating` and `dropping`; a SQL store's row while its purge
-is pending), and with no row at all. Only `provision` proceeds on
-`creating`, as above:
+not `live` (`creating` and `dropping`, in the key registry or in a SQL
+store's own registry table), and with no row at all. Only `provision`
+proceeds on `creating`, as above:
 
 | Operation | present, not live | no row |
 | --- | --- | --- |
@@ -1142,14 +1230,15 @@ is pending), and with no row at all. Only `provision` proceeds on
 | write | not-live error; a remote write already sent is garbage until purged | not-live error |
 | read | not-live error | not-live error |
 | logical delete | returns; idempotent | returns; idempotent |
-| purge | proceeds; the row goes when nothing remains | deletes by key in every container; `DONE` when nothing is found |
+| purge | proceeds on `dropping`, and the row goes when nothing remains; raises on `live` | deletes by key in every container; `DONE` when nothing is found |
 
 ### Segment store
 
 As shipped in #1548, with these changes:
 
 - Key type `UUID`; the `incarnation` column of every table becomes the
-  key, the purge queue is keyed by the key, and the store mints nothing.
+  key, the registry row gains a `state` and the purge queue table goes
+  (a `dropping` row is the queue), and the store mints nothing.
   The incarnation existed to keep a new life under a reused string key
   apart from the previous life's rows still awaiting purge; a key that
   is never reused is the life, and the strict create refuses a key whose
@@ -1165,55 +1254,60 @@ As shipped in #1548, with these changes:
   registry read that fences each operation returns the codec
   configuration; codec objects are cached process-wide by
   configuration, not per key.
-- `purge_partition(key) -> DONE | MORE`: purges this key's dead rows,
-  bounded per call; `DONE` when no garbage remains under the key. On
-  SQLite the DELETE waits on the write lock up to the driver's busy
-  timeout and raises past it; the reconciler retries.
+- `purge_partition(key) -> DONE | MORE`: purges this key's rows,
+  bounded per call, while the row is `dropping`; `DONE` when nothing
+  remains and the row is gone; raises on a `live` row. On SQLite the
+  DELETE waits on the write lock up to the driver's busy timeout and
+  raises past it; the reconciler retries.
 - `purge_deleted_partitions()`: kept for library users without a tenant
   service; the server does not run it.
 
 ### Vector store
 
 The collection registry leaves the vector backend and becomes the
-store's rows in the key registry, which is the record of every key that
-ever carried a record and what makes every record purgeable on a
-backend that cannot list or reject keys.
+store's rows in the key registry, or, for pgvector and the SQLite
+stores, a row of the same shape beside the data; that is the record of
+every key that ever carried a record and what makes every record
+purgeable on a backend that cannot list or reject keys.
 
-- Native containers are deployment configuration: one per embedder
-  provider per vector store, created by the schema command, never by a
-  request. A container's dimensions and metric are the embedder's; its
-  indexed properties are the store's, one schema for every container
-  (#1573, #1572). A container is retired by the schema command when
-  the configuration no longer declares its embedder and no registry row
-  references it; `memmachine schema status` shows, per container, the
-  registry rows referencing it by state, which is how an operator sees
-  an old embedder's container drain. Until then it stays and serves the
-  tenants pinned to it. Inside a container a tenant is a value or a
-  native tenant object, per the table below.
+- Native containers are not declared: one per embedder provider the composition
+  built, per vector store, named by the embedder id, created by the schema
+  command, never by a request. A container's dimensions and metric are the
+  embedder's, so dimensions are declared once, on the embedder; its indexed
+  properties are the store's, one schema for every container (#1573, #1572);
+  backend-specific options per container are an optional settings map. A
+  container is retired by the schema command when the configuration no longer
+  declares its embedder and no registry row references it; `memmachine schema
+  status` shows, per container, the registry rows referencing it by state,
+  which is how an operator sees an old embedder's container drain. Until then
+  it stays and serves the tenants pinned to it. Inside a container a tenant is
+  a value or a native tenant object, per the table below.
 - `create_collection(key, container)`: strict (see "Create is strict").
   Where the tenant is a value inside the container, one registry insert
   straight to `live`. Where the tenant is a native object (a Chroma
-  collection, a Weaviate tenant), the row is inserted as `creating`,
-  the object is created, and the row is set `live` with its address; a
-  crash between the two leaves `creating`, which `provision` resumes by
-  creating the object if absent and setting `live`. Telling "already
+  collection, a Weaviate tenant), the object is named by the key's 32
+  hex characters under the container, the row is inserted as
+  `creating`, the object is created, and the row is set `live` with
+  its address; a crash between the two leaves `creating`, which
+  `provision` resumes by finding or creating the object by that name
+  and setting `live`. Telling "already
   exists" from other failures is per backend; on Chroma it is by
   message, since its duplicate-create error is untyped (`InternalError`
   500 locally, `ChromaError` 400 over HTTP, never the
   `UniqueConstraintError` the module exports; chromadb 1.5.9).
-- Write (`upsert(key, records)`, `delete(key, ids)`): a record carrying
-  an undeclared property key is rejected before anything is sent. Read
-  the row for the container and address; perform the remote write,
-  acknowledged as applied; read the row again and raise the not-live
-  error if the key is not live. No row before the write: the not-live
-  error, and no write creates a collection.
-- Read (`query(key, vectors, limit, filter, allowed_ids)`,
-  `get_cosine_similarity(key, vector, ids)`): read the row for the
-  address, query, read the row again, raise the not-live error if the
-  key is not live. `filter` names declared keys only and raises on any
-  other; it is evaluated during the search where the backend can.
-  `allowed_ids` restricts the search to given records; queries return
-  record ids and scores, never properties.
+- Write, on the handle `vector_store.collection(key, container)`
+  (`upsert(records)`, `delete(uuids)`): a record carrying an undeclared
+  property key is rejected before anything is sent. Read the row for
+  the container and address; perform the remote write, acknowledged as
+  applied; read the row again and raise the not-live error if the key
+  is not live. No row before the write: the not-live error, and no
+  write creates a collection.
+- Read, on the handle (`query(vectors, limit, min_similarity,
+  filter)`, `get_cosine_similarity(vector, uuids)`): read the row for
+  the address, query, read the row again, raise the not-live error if
+  the key is not live. `filter` names declared keys only and raises on
+  any other; it is evaluated during the search where the backend can.
+  Queries return record ids and scores, never properties.
 - `delete_collection(key)`: set `dropping`. O(1), idempotent, waits for
   nothing.
 - `purge_collection(key) -> DONE | MORE`: with a `dropping` row,
@@ -1222,8 +1316,10 @@ backend that cannot list or reject keys.
   when nothing remains. With no row, delete by key in every container
   the store has, which is how the tenant service's tombstone pass
   reaches a record that landed after the row went; `DONE` when nothing
-  is found. Containers are few (one per embedder), so a no-row purge
-  is a bounded number of filter deletes that mostly find nothing.
+  is found. Raises on a `live` row; the sweep step's own `delete` call
+  precedes every purge. Containers are few (one per embedder), so a
+  no-row purge is a bounded number of filter deletes that mostly find
+  nothing.
 
 Why nothing escapes. Every record carries a key whose registry row
 existed before the record could, because a write reads the row first
@@ -1304,7 +1400,7 @@ and what its scope is for.
 
 ## Composition and settings
 
-Four rules, then the mechanics.
+Five rules, then the mechanics.
 
 1. Fixed topology, pluggable slots. The standard server is a fixed graph
    of roles: database engines, the key registry, the event store, the
@@ -1407,24 +1503,26 @@ The standard composition, sketched:
 ```python
 def compose(s: ServerSettings) -> Server:
     main = ENGINES[s.databases.main.kind](s.databases.main)
+    metrics = MetricsFactory(s.metrics)
     embedders = {name: EMBEDDERS[e.kind](e) for name, e in s.embedders.items()}
     rerankers = {name: RERANKERS[r.kind](r) for name, r in s.rerankers.items()}
     registry = SqlKeyRegistry(main)
     events = SqlAlchemyEventStore(main, s.event_store)
-    segments = SqlAlchemySegmentStore(main, s.segment_store)
+    segments = SQLAlchemySegmentStore(main, s.segment_store)
     vector_store = VECTOR_STORES[s.vector_store.kind](
-        registry.scoped("vector-store"), s.vector_store
-    )
+        s.vector_store, embedders=embedders,
+        registry=registry.scoped("vector-store"), engine=main,
+    )   # a kind takes the registry or the engine, whichever holds its rows
     episodic = EpisodicMemoryManager(
         events, segments, vector_store, embedders, rerankers,
-        s.episodic_memory,
+        main, s.episodic_memory, metrics,
     )
     tenants = TenantService(
-        main, components=[events, episodic], templates=s.tenant_templates
+        main, components=[events, episodic], templates=s.tenant_templates,
+        settings=s.tenants,
     )
-    return Server(
-        tenants, IngestService(events, [episodic]), [episodic], s.server
-    )
+    ingest = IngestService(events, tenants, s.ingest)
+    return Server(tenants, ingest, events, episodic, s)
 ```
 
 The settings a deployment writes, each key a field of a settings model:
@@ -1437,9 +1535,12 @@ databases:
 vector_store:
   kind: qdrant
   url: http://qdrant:6333
+  request_timeout: 10s
   indexed_properties:      # once per store; system fields implicit
-    kind: string
+    category: string
     score: integer
+segment_store:
+  property_indexes: [category]   # expression indexes the schema command creates
 embedders:
   openai-large:
     kind: openai
@@ -1449,18 +1550,19 @@ embedders:
 rerankers:
   bm25:
     kind: bm25
-tenant_templates:          # data: copied into new tenants, never built
+tenant_templates:          # data: the sections a create enables at once
   default:
     episodic_memory:
       embedder: openai-large
-      reranker: bm25
       search:
         limit: 10
         expand_context: 4
-server:
-  bind: 0.0.0.0:8080
-  concurrency_scope: cluster
-  roles: [api, reconciler]
+        rerank:
+          reranker: bm25
+          candidates: 40
+bind: 0.0.0.0:8080
+concurrency_scope: cluster
+roles: [api, reconciler]
 ```
 
 Tenant templates are validated at startup against each component's
@@ -1473,7 +1575,10 @@ Provider ids are stable identities. A provider's model or dimensions
 are not changed under an id; a new model is a new id. Removing an id
 from the settings fails startup while any tenant of that component
 references it, which the component checks from its own per-tenant table
-at construction.
+when the server starts, before a role runs; removing a component from
+the composition fails startup the same way while any tenant has a
+component row for it, since only a running component can delete or
+sweep its resources.
 
 Routing stores. A slot may be filled by an implementation that routes
 over several children of the same ABC, placing each key on one child
@@ -1509,51 +1614,60 @@ state beyond a store's private cache where a backend needs one.
 ## Server API
 
 Prefix `/v1`. Tenant ids in paths are UUIDs; names are looked up
-explicitly. Bodies are JSON. `?wait=` on the three lifecycle requests
-blocks until the change has applied or the wait elapses.
+explicitly. Bodies are JSON. `?wait=<seconds>` on a lifecycle request
+delays the response until the request's jobs are done or the wait
+elapses, and on ingest and event deletion until every subsystem has
+processed the batch; the status tells which.
 
-Tenants:
+Tenants and their components:
 
 | Method and path | Effect | Status |
 | --- | --- | --- |
-| `POST /v1/tenants` | create; body `name`, `template`, `config` | 202 provisioning, or 201 with `wait` once active; 409 `tenant_exists`; 422 |
+| `POST /v1/tenants` | create; body `name`, optional `template`, per-component `config` overrides | 201 with the tenant and its component rows, their jobs run inline; with `wait`, once no `provision` job is pending; 409 `tenant_exists`; 422 |
 | `GET /v1/tenants?name=` | look up by name | 200; 404 |
-| `GET /v1/tenants?prefix=&cursor=` | list, paged | 200 |
-| `GET /v1/tenants/{id}` | record, state, requested and applied configuration versions, jobs with attempts and last error | 200; 404 |
-| `PATCH /v1/tenants/{id}` | rename and/or configuration update | 202, or 200 with `wait` once applied; 409; 422 |
+| `GET /v1/tenants?prefix=&after=&limit=` | list by name, `after` the last name returned | 200 |
+| `GET /v1/tenants/{id}` | the tenant, each component row's state, requested section and version, and jobs with attempts and last error | 200; 404 |
+| `PATCH /v1/tenants/{id}` | rename; body `name` | 200; 404; 409 `tenant_exists` or `tenant_not_active` |
 | `DELETE /v1/tenants/{id}` | start deletion | 202, or 204 with `wait` once deleted; 404 |
+| `PUT /v1/tenants/{id}/components/{name}` | enable the component with `config`, or update its configuration | 201 enabled and provisioned inline, 202 while provisioning or applying, 200 with `wait` once applied; 404; 409 `tenant_not_active` or `component_not_active`; 422 |
+| `DELETE /v1/tenants/{id}/components/{name}` | disable the component | 202, or 204 with `wait` once deleted; 404; 409 |
 
 Events, under `/v1/tenants/{id}`:
 
 | Method and path | Effect | Status |
 | --- | --- | --- |
-| `POST .../events` | ingest a batch | 202 with stored ids, skipped ids and the last position, or 200 with `wait` once every subsystem has processed it; 404; 409; 422 |
+| `POST .../events` | ingest a batch | 202 with stored ids, skipped ids and the head position, or with `wait` 200 once every subsystem has processed it and 202 with the watermarks so far otherwise; 404; 409; 422 |
 | `GET .../events/{event_id}` | one event | 200; 404 |
-| `GET .../events?filter=&cursor=` | list events | 200 |
-| `POST .../events/delete` | body `ids` | 202, or 200 with `wait` |
+| `GET .../events?filter=&since=&before=&after=&limit=` | list in ingestion order; `filter` a JSON tree, URL-encoded; `after` the last position returned | 200 |
+| `POST .../events/delete` | body `ids` | 202 with the head position, or 200 with `wait` |
 
 Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 
 | Method and path | Effect | Status |
 | --- | --- | --- |
-| `POST .../search` | body `query`, `limit`, `since`, `before`, `session_ids`, `source_ids`, `block_kinds`, `filter` (JSON tree), `expand_context`, `include_events`, `reranker` (an offered id; the tenant's default if absent) | 200 with up to `limit` scored hits |
-| `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after`, `unit` (`segments` or `events`), `source_ids`, `block_kinds` | 200 with the ordered neighbourhood, within the anchor's session, and cursors |
-| `GET ...` | watermark and lag behind the event store | 200 |
+| `POST .../search` | body `query`; the search options, each optional with the tenant's default: `limit`, `min_similarity`, `expand_context`, `rerank` (`reranker`, `candidates`, `min_score`, or `null` for none); the system filters `since`, `before`, `session_ids`, `source_ids`, `block_kinds`; `filter` (JSON tree); `format` (dates, times, locale, timezone for `text`) | 200 with up to `limit` hits in descending score |
+| `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after`, `unit` (`segments` or `events`), `source_ids`, `block_kinds`, `format` | 200 with the segments in order, within the anchor's session, and `text` |
+| `GET ...` | `watermark` and `head`, the lag being their difference | 200 |
 
-Event body: `id` (optional UUID), `timestamp` (optional; server time if
-absent), `session_id` (optional string), `source_id` (optional string),
-`context` (an object of parts keyed by
-kind, for example `{"author": {"name": "Alice"}}`), `blocks` (list of
-blocks, each `{kind, ...}` of a registered kind; `{kind: text, text}`
-is built in), `properties` (scalar values under legal keys; what
-`filter` sees).
-Search hit: `score`, `segments` (each with `event_id`, `index`,
-`timestamp`, `session_id`, `source_id`, `context`, `block`,
-`properties`) and, with `include_events`, the events.
+Event body: `id` (optional UUID; a caller that retries a request
+supplies ids, since a retry without them stores the events again),
+`timestamp` (optional, with offset; server time if absent),
+`session_id` (optional string), `source_id` (optional string),
+`context` (an object of parts keyed by kind, for example `{"author":
+{"name": "Alice"}}`), `blocks` (list of blocks, each `{kind, ...}` of a
+registered kind; `{kind: text, text}` is built in), `properties`
+(scalar values under legal keys; what `filter` sees). An event is
+returned as it was ingested, plus `position`.
+Search hit: `score`, `seed` (the index in `segments` of the matched
+segment), `segments` (each with `uuid`, `event_id`, `position`,
+`index`, `offset`, `timestamp` with offset, `session_id`, `source_id`,
+`context`, `block`, `properties`), `text` (the window rendered with
+`format`). An expansion returns the same segment shape and `text`.
 
 Errors: one handler for the domain error hierarchy maps to a status and
 a body `{error: {code, message}}` with a closed set of codes:
 `tenant_not_found`, `tenant_not_active`, `tenant_exists`,
+`component_not_enabled`, `component_not_active`, `component_exists`,
 `invalid_request`, `provider_unavailable`, `internal`. No traceback
 leaves the process. Everything unmapped is 500 `internal` with the
 traceback logged. Every request is answered; no path drops the
@@ -1584,28 +1698,43 @@ Component schema:
   code and its own version table (`schema_version_<component>`), so a
   library user composing some components migrates only those.
   Migrations are written from Alembic autogenerate diffs against the
-  component's metadata; the metadata is never applied with
-  `create_all`.
+  component's metadata, with the environment's `include_object`
+  limited to the component's own table prefix so the diff never sees
+  another component's tables in the shared database; the metadata is
+  never applied with `create_all`.
 - Each vector store owns `provision_containers()`, which
-  idempotently creates the containers its configuration declares.
+  idempotently creates one container per embedder the composition
+  built.
 - `memmachine schema upgrade --settings PATH` is the only thing that runs
-  component DDL: per configured database, under
-  `pg_advisory_xact_lock` on PostgreSQL or `BEGIN IMMEDIATE` on SQLite,
-  it upgrades every component assigned to that database to head, then
-  provisions containers. Initial setup is an upgrade from an empty
-  database; there is no separate path. It runs from a deploy job, an
-  init container, or a shell before `serve`.
-- `memmachine serve` verifies at startup that every component's version
-  table is at the head its code carries and fails otherwise, naming the
-  component and both versions. `memmachine schema status --settings PATH`
-  prints the same comparison, the per-container registry counts, and
-  the tombstone count by state (awaiting a clean sweep, within
-  retention).
+  component DDL. It runs the composition to learn which components use
+  which database, then per database, under `pg_advisory_xact_lock` on
+  PostgreSQL or the file's write lock on SQLite, upgrades each
+  component assigned to it to head in registration order; then, outside
+  that transaction, creates the property expression indexes the
+  settings name (`CREATE INDEX CONCURRENTLY IF NOT EXISTS` on
+  PostgreSQL, which cannot run inside a transaction, plain `CREATE
+  INDEX IF NOT EXISTS` on SQLite) and provisions containers. Initial
+  setup is an upgrade from an empty database; there is no separate
+  path. It runs from a deploy job, an init container, or a shell
+  before `serve`.
+- `memmachine serve` verifies at startup that no component's version
+  table is behind the head its code carries: a version the code knows
+  and that is not its head is behind, and startup fails naming the
+  component and both versions; the head passes; a version the code
+  does not know is a later release's, is allowed with a log line, and
+  is what a rollout produces (below). `memmachine schema status
+  --settings PATH` prints the same comparison, the per-container
+  registry counts, and the component tombstone count by stage (rounds
+  in progress, clean and within retention, awaiting verification).
 - Rolling deployments: a migration must keep the previous release's
   code working (expand and contract: add before the code that reads,
   remove after the code that writes is gone), because during a rollout
-  processes of both releases run against one schema. A migration that
-  cannot is a release note that requires a stop.
+  processes of both releases run against one schema, and a process of
+  the previous release may restart after the migration. A migration
+  that cannot is a release note that requires a stop.
+- `memmachine events compact --settings PATH` compacts each live
+  tenant's log below the minimum of its subsystems' watermarks, bounded
+  per tenant per run (`design/components/event_store.md`).
 
 ## What is reused and what is removed
 
@@ -1644,22 +1773,6 @@ Removed: `main/memmachine.py`; `episodic_memory/episodic_memory.py`,
 `common/filter/filter_parser.py`; `server/api_v2/` including the config
 router and the traceback-carrying error model; `semantic_memory/`;
 `retrieval_agent/`; `installation/`; `memmachine_common/api/spec.py`.
-
-Migration from the current server, should a cutover happen with data in
-place, moves no segment row and no vector record. The current server's
-store key is already the first 32 hex characters of the SHA-256 of the
-session string (`partition_key_for_session`), which parses as a UUID,
-and the same value names the vector collection; a legacy tenant's id is
-set to that value, and every store finds its data under it. New tenants
-mint `uuid4`; the two coexist in one column, and the collision math is
-unaffected. What remains proportional to records is the backfill of a
-tenant's events from `episodestore` into the event store with
-positions, a per-tenant job bounded per pass like every other. Nothing
-is re-embedded. This is why the tenant id is the physical key in every
-store rather than a registry-minted identity behind it: the one thing
-such an indirection would buy, adopting data keyed some other way, is
-not needed, and it would cost a mint per create, a second identity per
-store, and a mapping row that outlives purging.
 
 ## What must be built first
 
@@ -1736,9 +1849,10 @@ is corrected to it.
 ## Relation to open issues
 
 - #1574: this document is the target for every row.
-- #1548: kept; UUID keys replace incarnations, `purge_partition` is
-  added, the incarnation-bound partition handle gives way to key-taking
-  operations behind a stateless handle, and `open_or_create_partition`
+- #1548: kept; UUID keys replace incarnations, the registry row gains
+  a state and the purge queue table goes, `purge_partition` is added,
+  the incarnation-bound partition handle gives way to a stateless
+  handle whose operations take no key, and `open_or_create_partition`
   goes.
 - #1530: agrees on the outcome, the store ABCs keeping only the strict
   create, and on the reason: only the caller knows why an existing row
@@ -1761,7 +1875,7 @@ is corrected to it.
   above: containers from configuration, the key registry as the record
   of every key, checks after each operation, tenants as values,
   single-use keys, purging plus the tenant service's tombstone
-  sweep. In-flight registry PRs are measured against that section.
+  pass. In-flight registry PRs are measured against that section.
 - #1535: one declared, typed `indexed_properties` schema per vector
   store, in configuration, under "Properties and filtering".
 - #1570: "Schema management".
@@ -1772,7 +1886,19 @@ is corrected to it.
 ## Open questions
 
 - Hierarchy: flat tenants with prefix listing, proposed, or a parent
-  column with cascading delete as jobs.
-- Event size limits.
+  column with cascading delete as jobs. If semantic memory returns, an
+  org-level share across tenants is a real requirement the flat model
+  cannot express.
+- Event size limits: the values of `blocks.max_bytes`,
+  `context.max_bytes` and the property bounds, which are settings
+  without measured defaults.
 - Readable metadata as a `json` block kind, or a designed field.
-- Retention: deleting events by age or by source, as a job kind.
+- Retention: deleting events by age, by source or by session, as a job
+  kind.
+- Which vector backends the first release implements beyond the four
+  existing ones and pgvector; the six remote backends are surveyed for
+  the contract only.
+- Selecting the ungrouped stream (events with no session id) in a
+  search; `session_ids` cannot name it.
+- Log compaction as a scheduled duty rather than an operator command,
+  if uncompacted logs ever matter.

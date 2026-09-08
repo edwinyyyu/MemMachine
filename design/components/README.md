@@ -15,9 +15,10 @@ Conventions shared by every specification:
 - A key is a tenant id. Stores take it and nothing else, fence on it,
   and never mint an identity of their own.
 - `Progress` is an enum with two members, `DONE` and `MORE`, returned by
-  every bounded, repeatable step. `MORE` means "call again"; `DONE`
-  means "nothing remains". A step may raise instead, and its caller
-  retries.
+  every bounded, repeatable step except the stores' shipped
+  `purge_deleted_partitions`, which keeps its `bool`. `MORE` means
+  "call again"; `DONE` means "nothing remains". A step may raise
+  instead, and its caller retries.
 - Vocabulary of removal: `delete` is the logical unlink, O(1); `purge`
   is one bounded batch of physical removal, returning `Progress`; a
   sweep is a run that calls `purge` until `DONE` or until a step's time
@@ -26,10 +27,15 @@ Conventions shared by every specification:
   deleted tenants so late garbage is purged too.
 - Errors are one hierarchy under `MemMachineError`, named for the
   condition, never for a driver: `KeyExistsError`, `KeyNotLiveError`,
-  `KeyReusedError`, `TenantNotFoundError`, `TenantNotActiveError`,
-  `TenantExistsError`, `InvalidTenantConfigError`,
-  `UndeclaredPropertyKeyError`, `ProviderUnavailableError`,
-  `AttemptsExhaustedError`. The HTTP layer maps the hierarchy once.
+  `KeyLiveError`, `KeyReusedError`, `TenantNotFoundError`,
+  `TenantNotActiveError`, `TenantExistsError`,
+  `ComponentNotEnabledError`, `ComponentNotActiveError`,
+  `ComponentExistsError`, `InvalidTenantConfigError`,
+  `InvalidEventError` (a bad property key or value, block, context,
+  session or source id, with the field named),
+  `UndeclaredPropertyKeyError`, `UnsupportedFilterError`,
+  `ProviderUnavailableError`, `AttemptsExhaustedError`. The HTTP layer
+  maps the hierarchy once (`server_and_settings.md`).
 - Every method that is a hook or a bounded step is idempotent: calling
   it again after any partial outcome completes it.
 - A resource's constructor takes its dependencies as typed parameters
@@ -54,14 +60,24 @@ Conventions shared by every specification:
   the key and the store's shared resources, fenced by the registry row
   on every operation; nothing in it goes stale, and there is nothing to
   open, close or evict.
-- Nothing per tenant is opened, closed or held: an operation takes the
-  key, reads what it needs, and returns; a handle is a binding of the
-  key, not a thing opened.
+- Nothing per tenant is opened, closed or held: a handle is a binding
+  of the key, not a thing opened, and every operation reads what it
+  needs and returns.
+- Types are few and each answers one need: `StoredEvent` (an event
+  with its position), `IngestResult` (what ingest returns), `LogEntry`,
+  `SearchHit` (a scored window with its matched segment), `Tenant` with
+  `TenantState` and `ComponentState`, `SearchOptions` and
+  `RerankOptions` (one model for a tenant's defaults and a request's
+  overrides), and the API request models `SearchRequest` and
+  `ExpandRequest`. Listings return plain lists and take the last
+  item's position or name as the cursor; no cursor or page type
+  exists.
 
 Files:
 
-- `tenant_service.md`: the tenant registry, jobs, the reconciler role,
-  the tombstone pass, the component registration protocol.
+- `tenant_service.md`: the tenant registry, component enablement,
+  jobs, the reconciler role, the tombstone pass, the component
+  registration.
 - `key_registry.md`: per-key bookkeeping for stores whose data is not
   in SQL, and the scoped view a store receives.
 - `event_store.md`: the system of record for events.
@@ -94,8 +110,8 @@ comes from and where it lives:
 | tenant configuration | per-tenant values recorded on the tenant row, one section per component, validated by the component's model; each field is an option, mutable or immutable | `<Component>TenantConfig`, `tenants.config`, `config_version` |
 | template | a named tenant configuration in the settings, copied at create | `tenant_templates` |
 | overrides | the sections a create or update request supplies on top of a template or the recorded configuration | request field `config` |
-| defaults | the options of a tenant configuration that fill request parameters a request omits | `SearchDefaults` |
-| partition or collection configuration | per-key values a store records in its registry row at create (codec configuration, container) | `<Store>PartitionConfig`, column `config` |
+| defaults | the options of a tenant configuration that fill request parameters a request omits | `SearchOptions` in the tenant section |
+| partition or collection configuration | per-key values a store records in its registry row at create, taken from its settings at that moment (codec configuration, container) | column `config` |
 | request parameters | fields of a request model; a request may set any of them | `SearchRequest`, `ExpandRequest` |
 | parameters and arguments | a parameter is in a signature, an argument is the value passed; a resource's constructor takes its dependencies and one settings model as parameters | |
 | job arguments | what a job's hook is called with, recorded on the job row | `tenant_jobs.arguments` |

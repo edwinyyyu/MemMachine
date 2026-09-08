@@ -161,5 +161,5 @@ the server itself no longer knows, never from a caller.
 - #1436's `TimeRangesContext` becomes the `TimeRanges` part, its
   `CompositeContext` and `find_contexts` become `with_part` and
   `get_part`, and its temporal segmenter merges instead of nesting.
-- `string_from_segment_context` renders from parts; the deriver's
+- `EpisodicMemory.render` renders from parts; the deriver's
   `_format_with_context` reads `Author` by kind.

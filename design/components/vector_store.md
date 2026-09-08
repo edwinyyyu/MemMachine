@@ -11,12 +11,14 @@ Queries return ids and scores, never properties.
   from `key_registry.md` and the client is the backend's (an
   `AsyncQdrantClient`, a Milvus client, an engine for pgvector and the
   SQLite stores, for which the registry is a table beside the data).
-- Settings: `containers: Mapping[str, ContainerSettings]`, one per
-  embedder id, each with `dimensions` and any backend-specific option
-  (the metric is cosine, always); `indexed_properties: Mapping[str,
-  PropertyType]`, one schema for every container of the store, plus
-  the system fields, which are always declared; `request_timeout`,
-  required.
+- Settings: `indexed_properties: Mapping[str, PropertyType]`, one
+  schema for every container of the store, plus the system fields,
+  which are always declared; `request_timeout`, required;
+  `container_options: Mapping[str, Mapping]`, optional backend-specific
+  options per container. Containers themselves are not declared: the
+  store has one per embedder id the deployment built, named by that
+  id, with the embedder's `dimensions` and cosine as the metric, so
+  dimensions are declared once, on the embedder.
 
 ## Types
 
@@ -29,9 +31,6 @@ class Record(BaseModel):
 class QueryMatch(BaseModel):
     uuid: UUID
     score: float                             # cosine similarity
-
-class QueryResult(BaseModel):
-    matches: list[QueryMatch]                # descending score, at most `limit`
 ```
 
 ## API
@@ -64,9 +63,8 @@ class VectorCollection(ABC):              # data, bound to one key and container
     async def upsert(self, records: Iterable[Record]) -> None
     async def delete(self, uuids: Iterable[UUID]) -> None
     async def query(self, vectors: Iterable[Sequence[float]], *,
-                    limit: int, min_score: float | None,
-                    filter: FilterExpr | None,
-                    allowed_uuids: Iterable[UUID] | None) -> list[QueryResult]
+                    limit: int, min_similarity: float | None,
+                    filter: FilterExpr | None) -> list[list[QueryMatch]]
     async def get_cosine_similarity(self, vector: Sequence[float],
                                     uuids: Iterable[UUID]) -> dict[UUID, float]
     @property
@@ -76,19 +74,22 @@ class VectorCollection(ABC):              # data, bound to one key and container
 Scores are cosine similarity everywhere; there is no `SimilarityMetric`
 (reference branch, commit 6ab12098): every container and every engine
 is configured for cosine, the embedder exposes no metric, and `query`
-takes `min_score` as a cosine similarity.
+takes `min_similarity` as a cosine similarity.
 
 Semantics:
 
-- `provision_containers`: idempotently create every container the
-  settings declare, with the store's one indexed-property schema. Run by
-  `memmachine schema upgrade`, never by a request.
+- `provision_containers`: idempotently create one container per
+  embedder the composition built, with the store's one indexed-property
+  schema. Run by `memmachine schema upgrade`, never by a request.
 - `create_collection(key, container)`: strict. Where a tenant is a value
   inside the container: one registry row, `live`, address `{container}`.
   Where a tenant is a native object (Chroma collection, Weaviate
   tenant): row as `creating`, create the object, set `live` with its
   address (`{container, collection_id}`); a caller resuming a
-  `creating` row creates the object if absent and sets `live`.
+  `creating` row creates the object if absent and sets `live`. The
+  native object is named by the key's 32 hex characters under the
+  container, so a resume finds an object a crashed attempt created, and
+  the no-row purge path can address it by name.
 - `upsert`, `delete`: a record carrying an undeclared property key
   raises `UndeclaredPropertyKeyError` before anything is sent. Read the
   registry row (not `live`: `KeyNotLiveError`); perform the remote
@@ -98,22 +99,28 @@ Semantics:
 - `query`: `filter` names declared keys only and raises
   `UndeclaredPropertyKeyError` otherwise, and uses only nodes in
   `supported_filter_nodes`, raising `UnsupportedFilterError` otherwise;
-  evaluated during the search. `allowed_uuids` restricts the search to
-  those records. Read the row, query, read the row again. Returns at
-  most `limit` matches per vector, fewer when the filter admits fewer.
+  evaluated during the search. Read the row, query, read the row again.
+  Returns, per vector, at most `limit` matches in descending
+  similarity, none below `min_similarity`, fewer when the filter admits
+  fewer.
 - `supported_filter_nodes`: the node classes the backend evaluates
   during a search, per the table in `filters_and_properties.md`; the
   subsystem routes any other predicate to the segment store.
-- `get_cosine_similarity`: score given records against a vector,
-  fenced the same way; the allowlist plan's scoring step.
-- `delete_collection`: `set_state(key, DROPPING)`; O(1); idempotent.
+- `get_cosine_similarity`: the similarity of each given record to the
+  vector, fenced the same way; the selective plan's scoring step, over
+  the bounded set of derivative ids the segment store's probe returned,
+  which is why `query` needs no id allowlist.
+- `delete_collection`: set the registry row `dropping` (the key
+  registry's `set_state`, or the row's `state` column in the SQL-backed
+  stores); O(1); idempotent.
 - `purge_collection`: with a `dropping` row, delete records under the
   key in bounded steps (filter delete; a filtered-query loop and keyed
   delete on S3 Vectors; `delete_collection` on Chroma; remove the
   tenant on Weaviate); `MORE` while records remain; remove the row when
   none do and return `DONE`. With no row, delete by key in every
   container the store has; `DONE` when nothing is found. `purge` on
-  a `live` row raises; the tenant service never calls it on one.
+  a `live` row raises `KeyLiveError`; the sweep step's own `delete`
+  call precedes every purge, so it never sees one.
 - `collection(key, container)`: builds the handle without I/O. Every
   operation through it reads the registry row and raises
   `KeyNotLiveError` when the row is not `live` or names another
@@ -159,11 +166,17 @@ the usearch store `process`.
   property keys and container names only.
 - Content-addressed native names (`_build_native_collection_name`,
   `qdrant_vector_store.py:619`) go; a container is named by its
-  embedder id and provisioned by the schema command (#1572).
+  embedder id and provisioned by the schema command (#1572), and a
+  native per-tenant object by the key's hex.
 - Qdrant's shard key per collection and `_name_locks` go (#1564);
   payload partitioning by the key's hex is the one mode.
 - `query` returns ids and scores only; `get` and `return_vector` go;
   `get_cosine_similarity` is added (reference branch, commit 2d5dc2b5).
+- A datetime, whether the system timestamp or a declared user
+  property, is stored where a backend has no datetime type (sqlite-vec,
+  S3 Vectors, the engine-backed store's records table) as an integer of
+  microseconds since the epoch, the same precision the SQL stores keep,
+  so a `since` or `before` bound evaluates identically in every store.
 - Undeclared property keys are rejected on write and query.
 - Post-operation registry checks replace the absent fence (#1537,
   #1563); `purge_collection` and container retirement are added
@@ -176,6 +189,20 @@ the usearch store `process`.
 - Every client is constructed with `request_timeout`.
 
 ## Schema of the SQL-backed stores
+
+`vector_store_pt`, the registry row beside the data in pgvector and the
+two SQLite stores, the same shape as the key registry's row so the
+store's outward behaviour is the same without depending on it:
+
+| column | type | constraint |
+| --- | --- | --- |
+| `key` | `Uuid` | primary key |
+| `state` | `String(16)` | not null; check in (`live`, `dropping`) |
+| `container` | `Text` | not null; the embedder id |
+| `created_at` | `DateTime(timezone=True)` | not null, `func.now()` |
+| `dropped_at` | `DateTime(timezone=True)` | null |
+
+Index: `vector_store_pt__state_dropped (state, dropped_at)`.
 
 pgvector, one table per container, created by `provision_containers`:
 
@@ -208,11 +235,11 @@ table:
 CREATE VIRTUAL TABLE vec_<container> USING vec0(
     key TEXT PARTITION KEY,          -- 32 hex characters
     vector FLOAT[<dimensions>] distance_metric=cosine,
-    memmachine_event_timestamp INTEGER,      -- metadata column, epoch seconds
+    memmachine_event_timestamp INTEGER,      -- metadata column, epoch microseconds
     memmachine_event_session TEXT,
     memmachine_event_source TEXT,
     memmachine_block_kind TEXT,
-    <declared user key> <TEXT|INTEGER|FLOAT|BOOLEAN>, ...
+    <declared user key> <TEXT|INTEGER|FLOAT|BOOLEAN>, ...   -- datetime as INTEGER
     chunk_size=<settings.chunk_size>
 );
 ```
@@ -223,7 +250,8 @@ CREATE VIRTUAL TABLE vec_<container> USING vec0(
 The vec0 table's metadata columns carry every declared filterable key;
 the records table maps record uuids to rowids for `delete` and
 `get_cosine_similarity`. The registry row is `vector_store_pt` in the
-same file.
+same file, and the fence is the same in-statement predicate on its
+`state` as in the segment store.
 
 Engine-backed store (usearch, hnswlib, or turbovec engines, as the
 reference branch's `VectorSearchEngine` family), one shared records

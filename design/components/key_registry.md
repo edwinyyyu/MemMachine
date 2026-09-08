@@ -13,23 +13,14 @@ rows. A store receives only a view scoped to its own name.
 
 ## Storage
 
-`key_registry`:
-
-| column | type | note |
-| --- | --- | --- |
-| `scope` | `TEXT` | the store's name |
-| `key` | `UUID` | the tenant id |
-| `state` | enum | `creating`, `live`, `dropping` |
-| `address` | `JSON` | what the store needs beyond the key: container, backend-assigned id |
-| `created_at`, `updated_at` | timestamps | |
-
-Primary key `(scope, key)`. A row exists before any record can carry the
-key, and goes when the store's purge finds nothing under it.
+One table, `key_registry`, keyed by `(scope, key)`; the schema is
+below. A row exists before any record can carry the key, and goes when
+the store's purge finds nothing under it.
 
 ## API of the scoped view
 
 ```python
-class KeyRegistry(Protocol):
+class KeyRegistry(ABC):
     async def create(self, key: UUID, address: Mapping, *,
                      state: KeyState = KeyState.LIVE) -> None
     async def get(self, key: UUID) -> KeyRow | None
@@ -53,6 +44,9 @@ class KeyRegistry(Protocol):
 - After the remote operation: `get(key)` again; not `live` raises
   `KeyNotLiveError`. A write already sent is then garbage under a
   `dropping` key, purged by the store's `purge`.
+- The SQL-backed stores do not use it: each keeps a row of the same
+  shape and states in its own database beside its data, so its fence
+  is in-statement and its outward behaviour is the same.
 - Logical delete: `set_state(key, DROPPING)`; waits for nothing.
 - No lock is held across the remote operation, and no clock is read.
 

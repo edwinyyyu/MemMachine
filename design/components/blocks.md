@@ -117,8 +117,8 @@ caller.
   every registered family uses; the closed `Block` union (`:40`)
   becomes the union built from the kind table; `encode_block` and
   `decode_block` go through it and produce `UnknownBlock`.
-- `TextBlock` gains `render`; `string_from_segment_context` calls it
-  instead of reading `.text`.
+- `TextBlock` gains `render`; `EpisodicMemory.render` calls it instead
+  of reading `.text`.
 - The segmenter and deriver contracts gain the unhandled-kind clause
   above.
 - `Segment` rows gain `block_kind` (`segment_store.md`); vector records

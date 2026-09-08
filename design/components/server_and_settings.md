@@ -8,7 +8,8 @@ the routers, error mapping, and the settings models.
 ```python
 class Server:
     def __init__(self, tenants: TenantService, ingest: IngestService,
-                 subsystems: Sequence[MemorySubsystem], settings: ServerSettings)
+                 event_store: EventStore, episodic: EpisodicMemoryManager,
+                 settings: ServerSettings)
     async def start(self) -> None     # verify schema, check scope, start roles
     async def stop(self) -> None
 ```
@@ -22,19 +23,29 @@ class Server:
 
 ## Routers
 
-- `/v1/tenants`: `TenantService`.
+- `/v1/tenants` and `/v1/tenants/{id}/components`: `TenantService`.
 - `/v1/tenants/{id}/events`: `IngestService` and `EventStore`.
-- `/v1/tenants/{id}/episodic-memory`: `EpisodicMemoryManager`.
+- `/v1/tenants/{id}/episodic-memory`: `EpisodicMemoryManager`; the
+  status route reads the manager's watermark and the event store's
+  head.
 
-One exception handler maps the `MemMachineError` hierarchy:
-`TenantNotFoundError` 404, `TenantNotActiveError` 409,
-`TenantExistsError` 409, `InvalidTenantConfigError`,
-`InvalidPropertyKeyError`, `InvalidPropertyValueError`,
-`UndeclaredPropertyKeyError` 422, `ProviderUnavailableError` 503,
-anything else 500 `internal` with the traceback logged and never
-returned. A `KeyNotLiveError` or an unknown tenant on the data path is
-resolved by `tenants.state_of(id)`: no row or `deleted` is 404, else
-409.
+One exception handler maps the `MemMachineError` hierarchy to a status
+and a code: `TenantNotFoundError` 404 `tenant_not_found`,
+`ComponentNotEnabledError` 404 `component_not_enabled`,
+`TenantNotActiveError` 409 `tenant_not_active`,
+`ComponentNotActiveError` 409 `component_not_active`,
+`TenantExistsError` and `ComponentExistsError` 409 `tenant_exists` and
+`component_exists`, `InvalidTenantConfigError`, `InvalidEventError`,
+`UndeclaredPropertyKeyError` and `UnsupportedFilterError` 422
+`invalid_request`, `ProviderUnavailableError` 503
+`provider_unavailable`, anything else, `KeyReusedError` and
+`AttemptsExhaustedError` included, 500 `internal` with the traceback
+logged and never returned. A `KeyNotLiveError` or a missing per-tenant
+row on the data path is resolved by `tenants.state_of(id)` and
+`tenants.component_state(id, name)`: no tenant row or `deleted` is 404
+`tenant_not_found`; `deleting` is 409 `tenant_not_active`; no component
+row or `deleted` is 404 `component_not_enabled`; `provisioning` or
+`deleting` is 409 `component_not_active`.
 
 ## Settings
 
@@ -43,16 +54,18 @@ standard composition; read from environment variables and an optional
 YAML or TOML file of the same shape; `memmachine settings schema` and
 `memmachine settings example` are generated from them.
 
-- `ServerSettings`: `bind`, `roles`, `concurrency_scope`,
-  `request_timeout`, `databases`, `vector_store`, `embedders`,
+- `ServerSettings`, the root of the settings file: `bind`, `roles`,
+  `concurrency_scope`, `databases`, `vector_store`, `embedders`,
   `rerankers`, `language_models`, `event_store`, `segment_store`,
-  `episodic_memory`, `tenants`, `tenant_templates`.
+  `episodic_memory`, `ingest`, `tenants`, `tenant_templates`. There is
+  no nested `server` section; the `Server` object takes the root.
 - Slot settings are discriminated unions over registered kinds, keyed
   by `kind`: `DatabaseSettings` (`postgres`, `sqlite`, with the SQLite
   pragmas as fields), `VectorStoreSettings` (`qdrant`, `milvus`,
   `pgvector`, `sqlite_vec`, `usearch`, ...), `EmbedderSettings`,
   `RerankerSettings`, `LanguageModelSettings`.
-- Every client settings model has a required `request_timeout`.
+- Every client settings model has a required `request_timeout`; there
+  is no server-wide one.
 
 ## Adding a service type
 
