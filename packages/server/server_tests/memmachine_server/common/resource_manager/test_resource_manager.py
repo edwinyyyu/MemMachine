@@ -35,6 +35,7 @@ from memmachine_server.common.errors import (
     InvalidLanguageModelError,
     InvalidRerankerError,
     ResourceManagerClosedError,
+    ResourceNotReadyError,
 )
 from memmachine_server.common.resource_manager import CommonResourceManager
 from memmachine_server.common.resource_manager import (
@@ -318,3 +319,33 @@ async def test_get_segment_store_after_close_raises(invalid_resource_manager):
     await invalid_resource_manager.close()
     with pytest.raises(ResourceManagerClosedError):
         await invalid_resource_manager.get_segment_store(SQLDB_ID)
+
+
+@pytest.fixture
+def semantic_disabled_resource_manager(invalid_configure) -> CommonResourceManager:
+    invalid_configure.semantic_memory.enabled = False
+    return ResourceManagerImpl(invalid_configure)
+
+
+@pytest.mark.asyncio
+async def test_get_semantic_manager_refuses_when_semantic_memory_disabled(
+    semantic_disabled_resource_manager,
+):
+    with pytest.raises(ResourceNotReadyError, match="disabled"):
+        await semantic_disabled_resource_manager.get_semantic_manager()
+
+
+@pytest.mark.asyncio
+async def test_get_semantic_service_refuses_when_semantic_memory_disabled(
+    semantic_disabled_resource_manager,
+):
+    with pytest.raises(ResourceNotReadyError, match="disabled"):
+        await semantic_disabled_resource_manager.get_semantic_service()
+
+
+@pytest.mark.asyncio
+async def test_get_semantic_session_manager_refuses_when_semantic_memory_disabled(
+    semantic_disabled_resource_manager,
+):
+    with pytest.raises(ResourceNotReadyError, match="disabled"):
+        await semantic_disabled_resource_manager.get_semantic_session_manager()

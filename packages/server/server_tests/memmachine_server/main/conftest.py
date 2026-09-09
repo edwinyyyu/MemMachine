@@ -258,6 +258,7 @@ def memmachine_config(
             reranker=reranker_id,
         ),
         semantic_memory=SemanticMemoryConf(
+            enabled=True,
             database=postgres_db,
             config_database=postgres_db,
             llm_model=language_model_id,

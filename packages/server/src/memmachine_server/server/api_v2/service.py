@@ -84,17 +84,20 @@ async def _delete_memories(
     spec: DeleteMemoriesSpec,
     memmachine: MemMachine,
 ) -> None:
-    delete_episodes = memmachine.delete_episodes(
-        session_data=_SessionData(
-            org_id=spec.org_id,
-            project_id=spec.project_id,
-        ),
-        episode_ids=spec.episodic_memory_uids,
-    )
-    delete_semantics = memmachine.delete_features(
-        feature_ids=spec.semantic_memory_uids,
-    )
-    await asyncio.gather(delete_episodes, delete_semantics)
+    deletions = [
+        memmachine.delete_episodes(
+            session_data=_SessionData(
+                org_id=spec.org_id,
+                project_id=spec.project_id,
+            ),
+            episode_ids=spec.episodic_memory_uids,
+        )
+    ]
+    if spec.semantic_memory_uids:
+        deletions.append(
+            memmachine.delete_features(feature_ids=spec.semantic_memory_uids)
+        )
+    await asyncio.gather(*deletions)
 
 
 async def _search_target_memories(

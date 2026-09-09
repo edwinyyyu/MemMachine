@@ -146,10 +146,12 @@ async def test_delete_episode_store_processes_in_batches(
 
     conf = MagicMock()
     conf.episodic_memory.enabled = False
-    conf.semantic_memory.enabled = False
+    conf.semantic_memory.enabled = True
 
     resources = MagicMock()
     resources.close = AsyncMock()
+    resources.get_semantic_service = AsyncMock()
+    resources.get_semantic_session_manager = AsyncMock()
     session_manager = MagicMock()
     session_manager.get_session_info = AsyncMock(
         return_value=MagicMock(status="active")

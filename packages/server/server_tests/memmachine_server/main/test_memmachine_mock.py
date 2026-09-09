@@ -26,14 +26,14 @@ from memmachine_server.common.episode_store import (
     EpisodeEntry,
     EpisodeResponse,
 )
-from memmachine_server.common.errors import SessionNotFoundError
+from memmachine_server.common.errors import ResourceNotReadyError, SessionNotFoundError
 from memmachine_server.common.filter.filter_parser import And as FilterAnd
 from memmachine_server.common.filter.filter_parser import Comparison as FilterComparison
 from memmachine_server.common.session_manager.session_data_manager import (
     SessionDataManager,
 )
 from memmachine_server.episodic_memory import EpisodicMemory
-from memmachine_server.main.memmachine import MemMachine, MemoryType
+from memmachine_server.main.memmachine import ALL_MEMORY_TYPES, MemMachine, MemoryType
 from memmachine_server.retrieval_agent.common.agent_api import AgentToolBase
 from memmachine_server.semantic_memory.semantic_model import SemanticFeature
 
@@ -933,3 +933,225 @@ async def test_start_deletes_marked_sessions(minimal_conf, patched_resource_mana
     )
 
     session_manager.delete_session.assert_awaited_once_with(session_key=session_key)
+
+
+def test_enabled_memory_types_follows_configuration(
+    minimal_conf, patched_resource_manager
+):
+    minimal_conf.semantic_memory.enabled = True
+    memmachine = MemMachine(minimal_conf, patched_resource_manager)
+    assert memmachine.enabled_memory_types == frozenset(ALL_MEMORY_TYPES)
+
+    minimal_conf.semantic_memory.enabled = False
+    assert memmachine.enabled_memory_types == frozenset({MemoryType.Episodic})
+
+    minimal_conf.episodic_memory.enabled = False
+    assert memmachine.enabled_memory_types == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_query_search_skips_semantic_memory_when_disabled(
+    minimal_conf, patched_resource_manager, monkeypatch
+):
+    minimal_conf.semantic_memory.enabled = False
+    async_episodic = AsyncMock(
+        return_value=EpisodicMemory.QueryResponse(
+            long_term_memory=EpisodicMemory.QueryResponse.LongTermMemoryResponse(
+                episodes=[]
+            ),
+            short_term_memory=EpisodicMemory.QueryResponse.ShortTermMemoryResponse(
+                episodes=[],
+                episode_summary=[],
+            ),
+        )
+    )
+    monkeypatch.setattr(MemMachine, "_search_episodic_memory", async_episodic)
+
+    memmachine = MemMachine(minimal_conf, patched_resource_manager)
+    result = await memmachine.query_search(
+        DummySessionData("s1"),
+        target_memories=ALL_MEMORY_TYPES,
+        query="hello world",
+    )
+
+    async_episodic.assert_awaited_once()
+    patched_resource_manager.get_semantic_session_manager.assert_not_awaited()
+    assert result.episodic_memory is async_episodic.return_value
+    assert result.semantic_memory is None
+
+
+@pytest.mark.asyncio
+async def test_query_search_skips_episodic_memory_when_disabled(
+    minimal_conf, patched_resource_manager, monkeypatch
+):
+    minimal_conf.episodic_memory.enabled = False
+    minimal_conf.semantic_memory.enabled = True
+    async_episodic = AsyncMock()
+    monkeypatch.setattr(MemMachine, "_search_episodic_memory", async_episodic)
+
+    semantic_features = [
+        SemanticFeature(
+            category="profile",
+            tag="name",
+            feature_name="value",
+            value="semantic-response",
+        )
+    ]
+
+    async def mock_search(*args, **kwargs):
+        for feature in semantic_features:
+            yield feature
+
+    semantic_manager = MagicMock()
+    semantic_manager.search = mock_search
+    patched_resource_manager.get_semantic_session_manager = AsyncMock(
+        return_value=semantic_manager
+    )
+
+    memmachine = MemMachine(minimal_conf, patched_resource_manager)
+    result = await memmachine.query_search(
+        DummySessionData("s1"),
+        target_memories=ALL_MEMORY_TYPES,
+        query="hello world",
+    )
+
+    async_episodic.assert_not_awaited()
+    assert result.episodic_memory is None
+    assert result.semantic_memory == semantic_features
+
+
+@pytest.mark.asyncio
+async def test_add_episodes_skips_semantic_memory_when_disabled(
+    minimal_conf, patched_resource_manager
+):
+    minimal_conf.semantic_memory.enabled = False
+    episode = _make_episode("e1", "s1")
+    episode_storage = AsyncMock()
+    episode_storage.add_episodes = AsyncMock(return_value=[episode])
+    patched_resource_manager.get_episode_storage = AsyncMock(
+        return_value=episode_storage
+    )
+
+    episodic_session = MagicMock()
+    episodic_session.add_memory_episodes = AsyncMock()
+    episodic_memory_manager = MagicMock()
+    episodic_memory_manager.open_or_create_episodic_memory = MagicMock(
+        return_value=_async_cm(episodic_session)
+    )
+    patched_resource_manager.get_episodic_memory_manager = AsyncMock(
+        return_value=episodic_memory_manager
+    )
+
+    memmachine = MemMachine(minimal_conf, patched_resource_manager)
+    episode_ids = await memmachine.add_episodes(
+        DummySessionData("s1"),
+        [EpisodeEntry(content="hello", producer_id="user", producer_role="user")],
+        target_memories=ALL_MEMORY_TYPES,
+    )
+
+    assert episode_ids == ["e1"]
+    episodic_session.add_memory_episodes.assert_awaited_once_with([episode])
+    patched_resource_manager.get_semantic_session_manager.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_list_search_skips_semantic_memory_when_disabled(
+    minimal_conf, patched_resource_manager
+):
+    minimal_conf.semantic_memory.enabled = False
+    episode_storage = AsyncMock()
+    episode_storage.get_episode_messages = AsyncMock(return_value=[])
+    patched_resource_manager.get_episode_storage = AsyncMock(
+        return_value=episode_storage
+    )
+
+    memmachine = MemMachine(minimal_conf, patched_resource_manager)
+    result = await memmachine.list_search(
+        DummySessionData("s1"),
+        target_memories=ALL_MEMORY_TYPES,
+    )
+
+    episode_storage.get_episode_messages.assert_awaited_once()
+    patched_resource_manager.get_semantic_session_manager.assert_not_awaited()
+    assert result.episodic_memory == []
+    assert result.semantic_memory is None
+
+
+@pytest.mark.asyncio
+async def test_delete_episodes_skips_semantic_history_when_disabled(
+    minimal_conf, patched_resource_manager
+):
+    minimal_conf.semantic_memory.enabled = False
+    episode_storage = AsyncMock()
+    patched_resource_manager.get_episode_storage = AsyncMock(
+        return_value=episode_storage
+    )
+    patched_resource_manager.get_semantic_service = AsyncMock(
+        side_effect=ResourceNotReadyError(
+            "No database configured for semantic storage.", "semantic_memory"
+        )
+    )
+
+    memmachine = MemMachine(minimal_conf, patched_resource_manager)
+    await memmachine.delete_episodes(["e1", "e2"])
+
+    episode_storage.delete_episodes.assert_awaited_once_with(["e1", "e2"])
+    patched_resource_manager.get_semantic_service.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_session_completes_with_semantic_memory_disabled(
+    minimal_conf, patched_resource_manager
+):
+    minimal_conf.semantic_memory.enabled = False
+    session_manager = AsyncMock()
+    session_manager.get_session_info = AsyncMock(
+        return_value=MagicMock(status=SessionDataManager.SessionStatus.Active)
+    )
+    patched_resource_manager.get_session_data_manager = AsyncMock(
+        return_value=session_manager
+    )
+    episode_storage = AsyncMock()
+    episode_storage.get_episode_ids = AsyncMock(side_effect=[["e1", "e2"], []])
+    patched_resource_manager.get_episode_storage = AsyncMock(
+        return_value=episode_storage
+    )
+    patched_resource_manager.get_semantic_service = AsyncMock(
+        side_effect=ResourceNotReadyError(
+            "No database configured for semantic storage.", "semantic_memory"
+        )
+    )
+
+    memmachine = MemMachine(minimal_conf, patched_resource_manager)
+    await memmachine.start()
+    try:
+        await memmachine.delete_session(DummySessionData("s1"))
+        await memmachine._deletion_queue.join()
+    finally:
+        await memmachine.stop()
+
+    episode_storage.delete_episodes.assert_awaited_once_with(["e1", "e2"])
+    session_manager.delete_session.assert_awaited_once_with(session_key="s1")
+    patched_resource_manager.get_semantic_service.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_all_skips_semantic_stores_when_disabled(
+    minimal_conf, patched_resource_manager
+):
+    minimal_conf.semantic_memory.enabled = False
+    episode_storage = AsyncMock()
+    patched_resource_manager.get_episode_storage = AsyncMock(
+        return_value=episode_storage
+    )
+    patched_resource_manager.get_semantic_manager = AsyncMock(
+        side_effect=ResourceNotReadyError(
+            "Semantic memory is disabled.", "semantic_memory"
+        )
+    )
+
+    memmachine = MemMachine(minimal_conf, patched_resource_manager)
+    await memmachine.delete_all()
+
+    episode_storage.delete_all.assert_awaited_once()
+    patched_resource_manager.get_semantic_manager.assert_not_awaited()

@@ -17,7 +17,10 @@ from memmachine_server.common.episode_store import (
 from memmachine_server.common.episode_store.episode_sqlalchemy_store import (
     SqlAlchemyEpisodeStore,
 )
-from memmachine_server.common.errors import ResourceManagerClosedError
+from memmachine_server.common.errors import (
+    ResourceManagerClosedError,
+    ResourceNotReadyError,
+)
 from memmachine_server.common.language_model import LanguageModel
 from memmachine_server.common.metrics_factory import MetricsFactory
 from memmachine_server.common.reranker import Reranker
@@ -299,6 +302,10 @@ class ResourceManagerImpl:
 
     async def get_semantic_manager(self) -> SemanticResourceManager:
         """Return the semantic resource manager, constructing if needed."""
+        if not self._conf.semantic_memory.enabled:
+            raise ResourceNotReadyError(
+                "Semantic memory is disabled.", "semantic_memory"
+            )
         if self._semantic_manager is None:
             async with self._semantic_manager_lock:
                 if self._semantic_manager is None:

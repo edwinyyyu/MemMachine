@@ -381,7 +381,8 @@ class MemMachine:
             )
             if not episode_ids:
                 break
-            await self._cleanup_semantic_history(episode_ids)
+            if self._conf.semantic_memory.enabled:
+                await self._cleanup_semantic_history(episode_ids)
             await episode_store.delete_episodes(episode_ids)
 
     async def _delete_session_episodic_memory(self, session_key: str) -> None:
@@ -615,23 +616,6 @@ class MemMachine:
             session_key, status=SessionDataManager.SessionStatus.Active
         )
 
-    async def _cleanup_semantic_history(
-        self,
-        episode_ids: list[EpisodeIdT],
-    ) -> None:
-        """Remove semantic history and citations for the given episode IDs."""
-        try:
-            semantic_service = await self._resources.get_semantic_service()
-        except ResourceNotReadyError:
-            logger.exception(
-                "Semantic service not ready during history cleanup; "
-                "skipping cleanup for episode IDs %s",
-                episode_ids,
-            )
-            return
-
-        await semantic_service.delete_history(episode_ids)
-
     async def delete_session(self, session_data: SessionData) -> None:
         """
         Delete all data associated with a session.
@@ -732,6 +716,16 @@ class MemMachine:
             return left
         return FilterAnd(left=left, right=right)
 
+    @property
+    def enabled_memory_types(self) -> frozenset[MemoryType]:
+        """Memory types this instance serves, per the configuration flags."""
+        enabled: set[MemoryType] = set()
+        if self._conf.episodic_memory.enabled:
+            enabled.add(MemoryType.Episodic)
+        if self._conf.semantic_memory.enabled:
+            enabled.add(MemoryType.Semantic)
+        return frozenset(enabled)
+
     async def add_episodes(
         self,
         session_data: InstanceOf[SessionData],
@@ -745,12 +739,16 @@ class MemMachine:
         Args:
             session_data: Session context used to route writes.
             episode_entries: Episode messages/entries to add.
-            target_memories: Memory types to update (episodic, semantic).
+            target_memories: Memory types to update (episodic, semantic). Types
+                disabled in the configuration are skipped.
 
         Returns:
             IDs of the created episodes.
 
         """
+        target_memories = [
+            memory for memory in target_memories if memory in self.enabled_memory_types
+        ]
         episode_storage = await self._resources.get_episode_storage()
         episodes = await episode_storage.add_episodes(
             session_data.session_key,
@@ -1018,7 +1016,8 @@ class MemMachine:
 
         Args:
             session_data: Session context used to route the search.
-            target_memories: Which memory types to query.
+            target_memories: Which memory types to query. Types disabled in the
+                configuration are skipped and come back as `None`.
             set_metadata: Optional metadata tags used to select semantic sets.
             query: Query string.
             limit: Optional maximum number of results per memory.
@@ -1031,6 +1030,9 @@ class MemMachine:
             Aggregated search results across memory types.
 
         """
+        target_memories = [
+            memory for memory in target_memories if memory in self.enabled_memory_types
+        ]
         episodic_task: Task | None = None
         semantic_task: Task | None = None
 
@@ -1092,7 +1094,8 @@ class MemMachine:
 
         Args:
             session_data: Session context used to route the query.
-            target_memories: Which memory types to query.
+            target_memories: Which memory types to query. Types disabled in the
+                configuration are skipped and come back as `None`.
             set_metadata: Optional metadata tags used to select semantic sets.
             search_filter: Optional filter string applied to the query.
             page_size: Optional page size.
@@ -1102,6 +1105,9 @@ class MemMachine:
             Aggregated list results across memory types.
 
         """
+        target_memories = [
+            memory for memory in target_memories if memory in self.enabled_memory_types
+        ]
         search_filter_expr = parse_filter(search_filter) if search_filter else None
 
         episodic_task: Task | None = None
@@ -1200,7 +1206,11 @@ class MemMachine:
 
         """
         episode_storage = await self._resources.get_episode_storage()
-        semantic_service = await self._resources.get_semantic_service()
+        semantic_service = (
+            await self._resources.get_semantic_service()
+            if self._conf.semantic_memory.enabled
+            else None
+        )
 
         tasks: list[Coroutine[Any, Any, Any]] = []
 
@@ -1215,7 +1225,8 @@ class MemMachine:
                 tasks.append(t)
 
         tasks.append(episode_storage.delete_episodes(episode_ids))
-        tasks.append(semantic_service.delete_history(episode_ids))
+        if semantic_service is not None:
+            tasks.append(semantic_service.delete_history(episode_ids))
         await asyncio.gather(*tasks)
 
     async def _cleanup_semantic_history(self, episode_ids: list[str]) -> None:
@@ -1712,15 +1723,17 @@ class MemMachine:
 
         # TODO: Add episodic memory deletion
 
-        semantic_resource_manager = await self._resources.get_semantic_manager()
-        semantic_storage = await semantic_resource_manager.get_semantic_storage()
-        semantic_config_storage = (
-            await semantic_resource_manager.get_semantic_config_storage()
-        )
-
         episodic_store = await self._resources.get_episode_storage()
 
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(semantic_storage.delete_all())
-            tg.create_task(semantic_config_storage.delete_all())
+            if self._conf.semantic_memory.enabled:
+                semantic_resource_manager = await self._resources.get_semantic_manager()
+                semantic_storage = (
+                    await semantic_resource_manager.get_semantic_storage()
+                )
+                semantic_config_storage = (
+                    await semantic_resource_manager.get_semantic_config_storage()
+                )
+                tg.create_task(semantic_storage.delete_all())
+                tg.create_task(semantic_config_storage.delete_all())
             tg.create_task(episodic_store.delete_all())

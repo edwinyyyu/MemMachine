@@ -11,11 +11,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from memmachine_common.api import MemoryType
 from memmachine_common.api.spec import (
+    DeleteMemoriesSpec,
     ListMemoriesSpec,
     SearchMemoriesSpec,
 )
 
 from memmachine_server.server.api_v2.service import (
+    _delete_memories,
     _list_target_memories,
     _search_target_memories,
 )
@@ -218,3 +220,41 @@ async def test_list_target_memories_other_fields_still_passed():
     assert call_kwargs["page_size"] == 25
     assert call_kwargs["page_num"] == 2
     assert call_kwargs["set_metadata"] == {"user_id": "u2"}
+
+
+# ---------------------------------------------------------------------------
+# _delete_memories
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_memories_skips_semantic_delete_without_semantic_uids():
+    """No semantic uids named means the semantic stack is never asked for."""
+    spec = DeleteMemoriesSpec.model_validate(
+        {"org_id": "org", "project_id": "proj", "episodic_memory_uids": ["e1"]}
+    )
+    memmachine = AsyncMock()
+
+    await _delete_memories(spec=spec, memmachine=memmachine)
+
+    memmachine.delete_episodes.assert_awaited_once()
+    assert memmachine.delete_episodes.call_args[1]["episode_ids"] == ["e1"]
+    memmachine.delete_features.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_memories_deletes_features_when_semantic_uids_given():
+    spec = DeleteMemoriesSpec.model_validate(
+        {
+            "org_id": "org",
+            "project_id": "proj",
+            "episodic_memory_uids": ["e1"],
+            "semantic_memory_uids": ["f1"],
+        }
+    )
+    memmachine = AsyncMock()
+
+    await _delete_memories(spec=spec, memmachine=memmachine)
+
+    memmachine.delete_episodes.assert_awaited_once()
+    memmachine.delete_features.assert_awaited_once_with(feature_ids=["f1"])
