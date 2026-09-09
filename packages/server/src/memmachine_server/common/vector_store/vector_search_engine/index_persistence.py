@@ -69,13 +69,28 @@ def atomic_index_write(path: str) -> Iterator[str]:
     The swap is atomic, not durable: after a power failure the index at `path`
     may be the previous one.
 
+    The body must write the yielded path **in place** -- opening it, or
+    truncating and rewriting it, is fine; replacing it is not. A descriptor on
+    the temp file is held open across the body so that the flush reports errors
+    from the body's own write (see `_flush_to_disk`), and a body that builds a
+    different file and renames it over the yielded path leaves that descriptor
+    on an orphaned inode. That is checked rather than trusted: it raises
+    `OSError` and publishes nothing, so a caller that breaks the rule finds out
+    at its first save rather than at a power cut.
+
     Args:
         path (str):
             The final index file path to swap the written index into.
 
     Yields:
         str:
-            The temp path to write the index to.
+            The temp path to write the index to, in place.
+
+    Raises:
+        OSError:
+            If the yielded path was replaced rather than written in place, or
+            if the index bytes could not be flushed to disk. In both cases any
+            existing index at `path` is left as it was.
     """
     temp = _temp_path(path)
     # Clear any temp left by a previously interrupted save before reusing it.
@@ -112,11 +127,10 @@ def _flush_to_disk(fd: int, path: str) -> None:
     descriptor opened after an error was recorded never learns of it and the
     fsync returns success over bytes already known bad.
 
-    Holding a descriptor across someone else's write assumes they write in
-    place. An engine that wrote a file of its own and renamed it over this one
-    would leave this descriptor on an orphaned inode, and the fsync would
-    report on a file nobody is about to publish -- so that is checked rather
-    than assumed.
+    Predating the write is also what makes the in-place rule `atomic_index_write`
+    states enforceable here: a body that replaced the file rather than writing
+    it leaves this descriptor on an orphaned inode, and fsyncing that would
+    report on a file nobody is about to publish.
     """
     written = Path(path).stat()
     held = os.fstat(fd)
