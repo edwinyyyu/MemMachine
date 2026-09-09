@@ -148,30 +148,27 @@ def _fsync(fd: int) -> None:
     Flush `fd` as hard as the platform can be asked to.
 
     Darwin's `fsync` returns once the data reaches the drive, which may hold it
-    in a volatile write cache -- so on macOS alone it does not order the data
-    ahead of the rename at the device, which is the whole point of flushing
-    here. `F_FULLFSYNC` asks the drive to flush that cache.
+    in a volatile write cache. That is not enough here. The data and the rename
+    that follows it land in the same cache with nothing ordering them, and the
+    rename is a few bytes of metadata against an index of megabytes, so a drive
+    flushing as it pleases can easily put the new name on media while the bytes
+    behind it are still queued -- the torn publication this module exists to
+    prevent. `F_FULLFSYNC` forces the cache out, which restores the ordering.
 
-    Any failure of it falls through to `fsync`, without inspecting the errno.
-    The refusals cannot be enumerated: `ENOTSUP` and `EOPNOTSUPP` are distinct
-    values here, `/dev/null` refuses with `ENODEV`, and what a network mount
-    answers is not knowable from here, so a list would be a guess that fails
-    closed on whatever it missed. Falling through is not a suppression: `fsync`
-    runs on the same descriptor and raises in its turn, so a flush that cannot
-    happen still fails the save. What it gives up is the drive-cache flush,
-    leaving the guarantee this had before `F_FULLFSYNC` was asked for at all.
+    A failure is not softened into `fsync`. Falling back would answer a request
+    for ordering with a flush that does not provide it under power loss, and
+    say nothing -- and a filesystem that cannot order data ahead of a rename is
+    not one to publish an index onto. Point `index_directory` at storage that
+    can. This also means no errno is inspected: refusal and failure take the
+    same path, so there is no line to draw and no list to get wrong.
 
-    Elsewhere `os.fsync` is already the strongest ordinary flush -- `fsync` on
-    Linux, `FlushFileBuffers` on Windows.
+    Elsewhere `os.fsync` already reaches the device -- `fsync` on Linux,
+    `FlushFileBuffers` on Windows.
     """
     if sys.platform == "darwin":
         import fcntl
 
-        try:
-            fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
-        except OSError:
-            pass
-        else:
-            return
+        fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+        return
 
     os.fsync(fd)

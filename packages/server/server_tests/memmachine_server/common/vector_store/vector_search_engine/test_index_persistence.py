@@ -1,7 +1,5 @@
 """Tests for the shared atomic index persistence helpers."""
 
-import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -151,23 +149,3 @@ class TestFlushGuards:
 
         assert target.read_bytes() == b"old"
         assert not Path(f"{target}.tmp").exists()
-
-
-class TestFsyncFallback:
-    @pytest.mark.skipif(sys.platform != "darwin", reason="F_FULLFSYNC is Darwin-only")
-    def test_a_refused_full_fsync_falls_back(self):
-        """A descriptor that cannot take F_FULLFSYNC is still flushed.
-
-        `/dev/null` refuses it with ENODEV while accepting `fsync`, which is a
-        real instance of the case the fallback exists for -- and one an errno
-        allowlist would have to know about in advance to get right.
-        """
-        import fcntl
-
-        fd = os.open(os.devnull, os.O_RDWR)
-        try:
-            with pytest.raises(OSError, match="not supported by device"):
-                fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
-            index_persistence._fsync(fd)
-        finally:
-            os.close(fd)
