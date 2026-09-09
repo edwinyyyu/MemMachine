@@ -17,6 +17,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any, override
 from unittest.mock import create_autospec
+from uuid import uuid4
 
 import pytest
 
@@ -32,6 +33,11 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.vector_store import VectorStore
 from memmachine_server.common.vector_store.data_types import (
     VectorStoreCollectionConfig,
+)
+from memmachine_server.episodic_memory.event_memory.data_types import (
+    SearchHit,
+    Segment,
+    TextBlock,
 )
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     WholeTextDeriver,
@@ -725,8 +731,8 @@ async def test_expand_context_window_stays_within_the_episode_limit(
     async def recording_get_segment_contexts(seed_segment_uuids, **kwargs):
         windows.append(
             (
-                kwargs.get("max_backward_segments", 0),
-                kwargs.get("max_forward_segments", 0),
+                kwargs.get("before", 0),
+                kwargs.get("after", 0),
             )
         )
         return await get_segment_contexts(seed_segment_uuids, **kwargs)
@@ -786,21 +792,23 @@ def test_unify_first_window_keeps_the_score():
 
 
 def test_episode_uid_context_dedup_and_nucleus():
-    class _Seg:
-        def __init__(self, uuid, uid):
-            self.uuid = uuid
-            self.properties = {"_episode_uid": uid}
+    def _seg(uid: str) -> Segment:
+        return Segment(
+            uuid=uuid4(),
+            event_uuid=uuid4(),
+            index=0,
+            offset=0,
+            timestamp=datetime(2026, 1, 15, 12, 0, tzinfo=UTC),
+            block=TextBlock(text=uid),
+            properties={"_episode_uid": uid},
+        )
 
-    class _Ctx:
-        def __init__(self):
-            self.seed_segment_uuid = "s2"
-            self.segments = [
-                _Seg("s1", "e1"),
-                _Seg("s2", "e2"),
-                _Seg("s3", "e2"),
-                _Seg("s4", "e3"),
-            ]
+    hit = SearchHit(
+        score=1.0,
+        seed=1,
+        segments=[_seg("e1"), _seg("e2"), _seg("e2"), _seg("e3")],
+    )
 
-    nucleus, context = LongTermMemory._episode_uid_context(_Ctx())
+    nucleus, context = LongTermMemory._episode_uid_context(hit)
     assert nucleus == "e2"
     assert context == ["e1", "e2", "e3"]
