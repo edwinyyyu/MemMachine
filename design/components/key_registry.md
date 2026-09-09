@@ -47,7 +47,7 @@ class KeyRegistry(ABC):
 - The SQL-backed stores do not use it: each keeps a registry row and a
   purge queue in its own database beside its data, a row being live and
   a queue entry dropping, so its fence is in-statement and its outward
-  behaviour is the same.
+  behavior is the same.
 - Logical delete: `set_state(key, DROPPING)`; waits for nothing.
 - No lock is held across the remote operation, and no clock is read.
 

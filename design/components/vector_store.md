@@ -193,7 +193,7 @@ the usearch store `process`.
 `vector_store_pt`, the registry row beside the data in pgvector and the
 two SQLite stores, and `vector_store_gc`, their purge queue; a row is
 live and a queue entry is dropping, the same two conditions as the
-segment store's, so the store's outward behaviour matches the
+segment store's, so the store's outward behavior matches the
 key-registry stores' without depending on the key registry:
 
 | column | type | constraint |

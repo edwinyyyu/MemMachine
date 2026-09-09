@@ -149,7 +149,7 @@ job is eligible is computed at claim time from `last_run_at`,
 change of a setting applies to every pending job at once and rewrites
 no row, and an operator's retry is `attempts = 0`. A `next_run_at`
 column would be a prescription written by one version of the policy
-and honoured by another.
+and honored by another.
 
 `arguments` carries what the hook is called with. For `provision` it is
 the section and its version: the job carries the section itself
@@ -410,7 +410,7 @@ same end state whichever order the two land in.
 | claim | claim, other reconciler | the claim `UPDATE` is atomic: one wins, the other's rowcount is 0 and it moves on |
 | sweep step | tombstone pass | the pass skips a component whose sweep is `pending` or `running` |
 | tombstone pass | tombstone pass, other reconciler | `SKIP LOCKED` on the rows; each row is handled by one pass at a time |
-| `replay` step | delete request | the delete hook removes the subsystem's per-tenant row; a `replay` step that finds no row returns `DONE`; the `deleted` transition removes the `replay` row afterwards; a `replay` that had already written derived rows is purged by the sweep |
+| `replay` step | delete request | the delete hook removes the subsystem's per-tenant row; a `replay` step that finds no row returns `DONE`; the `deleted` transition removes the `replay` row afterward; a `replay` that had already written derived rows is purged by the sweep |
 | `replay` step | `provision` step (configuration update) | `provision` writes the section and version columns only, never the watermark, so both land; the next `replay` step uses the new options |
 | data operation | delete commit | store fences: in-statement for SQL stores, check-after for the rest; the operation raises `KeyNotLiveError`, and the router answers 409 while the component row is `deleting` and 404 once it is `deleted` or gone; a remote write already sent is purged by the sweep, or by the round the tombstone pass resets |
 | data operation | component `provisioning` | the component's per-tenant row is written at the end of `provision`; an operation that finds none is answered 409 `component_not_active` while the row is `provisioning` and 404 `component_not_enabled` when there is no component row |

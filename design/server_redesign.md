@@ -778,14 +778,14 @@ Operations, in the order the stores are touched:
   the manager runs over the rendered windows, with its own candidate
   count and threshold, so over-fetching is one limit set above
   another.
-- Expand: the neighbourhood of a segment or event in its session's
+- Expand: the neighborhood of a segment or event in its session's
   one total order, `before` and `after` counted in segments, the way
   claude-memory walks a conversation around a memory; one indexed read
   on the segment store, no embedding. Segments are the one unit: a
   long event is several of them, read inward by expanding from one.
   The anchor is never returned: the caller named it and holds it, the
-  filters apply to the neighbours only, and the two sides come back as
-  two lists with the anchor's place between them, so a neighbourhood is
+  filters apply to the neighbors only, and the two sides come back as
+  two lists with the anchor's place between them, so a neighborhood is
   kept even when its anchor would fail the filter and nothing in it can
   be mistaken for the anchor (#1498). Specified in
   `design/components/episodic_memory.md`.
@@ -861,7 +861,7 @@ Tenant configuration section `episodic_memory`, with mutability:
   tenant and a new ingestion.
 - `segmenter`, `deriver`, `format`: their options; mutable, applying
   to events processed after the change.
-- `eviction` (similarity threshold, neighbours consulted, target
+- `eviction` (similarity threshold, neighbors consulted, target
   cluster size, or none): mutable, applying to batches processed after
   the change; the threshold is calibrated per embedder, so a template
   sets it beside its embedder.
@@ -879,7 +879,7 @@ Eviction. An agent's stream repeats itself, and every repetition is
 another derivative with nearly the same vector; left alone they grow
 with the corpus and crowd a search with copies of one thing. With
 eviction on, `encode` treats near-duplicates as a cluster: a new
-derivative's cluster is its stored neighbours at or above the
+derivative's cluster is its stored neighbors at or above the
 similarity threshold, the earlier derivatives of its own batch above
 it, and itself; a cluster larger than the target size is trimmed from
 the temporal middle, keeping the earliest and the latest, by deleting
@@ -1111,7 +1111,7 @@ database keeps it in a table beside the data, with a purge queue beside
 it; every other store keeps it in the key registry (below), whose row
 has three states, `creating`, `live`, `dropping`. A SQL store has two
 conditions it can observe, a row (live) and a queue entry (dropping),
-and they give it the same outward behaviour without a second
+and they give it the same outward behavior without a second
 component: the row's existence is checked in the same transaction as
 the data statement, and the queue entry is written in the same
 transaction as the delete, so what remains to purge is a durable,

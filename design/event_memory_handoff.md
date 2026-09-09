@@ -29,7 +29,7 @@ Worktrees on this machine:
   What to take from it, by file and line at its tip `05902295`:
   - `segment_store/segment_store.py:73` `get_neighbor_segments` and
     `sqlalchemy_segment_store.py:384` its implementation (commit
-    `0c19942a`): the neighbours-only read, which becomes
+    `0c19942a`): the neighbors-only read, which becomes
     `get_neighbourhoods`. Do not port `get_neighbor_events` (`:113`,
     `:454`); segments are the one unit.
   - `event_memory.py:429` `_compute_batch_predecessors`, `:480`
@@ -52,7 +52,7 @@ Worktrees on this machine:
 - Design, on branch `design/tenant-lifecycle` (this worktree):
   `design/components/episodic_memory.md` (API, eviction, expansion),
   `design/components/segment_store.md` (schema, the total order, the
-  neighbours rule), `design/components/filters_and_properties.md`
+  neighbors rule), `design/components/filters_and_properties.md`
   (reserved keys, system fields as typed parameters, the tree),
   `design/components/context.md` (parts), `design/components/blocks.md`
   (kinds). They describe the full redesign; take only what this
@@ -148,13 +148,13 @@ class SearchHit(BaseModel):
     seed: int                       # index in `segments` of the matched segment
     segments: list[Segment]         # the context window, in the store's order
 
-class Neighbourhood(BaseModel):
+class Neighborhood(BaseModel):
     before: list[Segment]           # in order, ending just before the anchor
     after: list[Segment]            # in order, starting just after it
 
 class EvictionOptions(BaseModel):
     similarity_threshold: float     # cosine; at or above it, one cluster
-    search_limit: int               # stored neighbours consulted per new derivative
+    search_limit: int               # stored neighbors consulted per new derivative
     target_size: int                # a cluster larger than this is trimmed to it
 ```
 
@@ -254,7 +254,7 @@ async def get_neighbourhoods(self, seed_segment_uuids: Iterable[UUID], *,
         since: datetime | None = None, until: datetime | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
-        property_filter: FilterExpr | None = None) -> dict[UUID, Neighbourhood]
+        property_filter: FilterExpr | None = None) -> dict[UUID, Neighborhood]
 
 async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
 ```
@@ -265,7 +265,7 @@ async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
   `since` is inclusive and `until` exclusive on the `timestamp` column,
   so ranges meet without overlap (`until`, not `before`, so that
   `before` is a count everywhere); `source_ids`, `block_kinds` and
-  `property_filter` select rows. A window or neighbourhood is confined
+  `property_filter` select rows. A window or neighborhood is confined
   to its seed's session by a null-safe equality on the seed's own
   session id. The existing lateral and loop plans serve both.
 - `get_segment_contexts` is the search window. The seed is a result:
@@ -273,16 +273,16 @@ async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
   that fails has no entry.
 - `get_neighbourhoods` is expansion. The seed is an address the caller
   named and holds: it is located whether or not it passes any filter,
-  the filters apply to the neighbours only, and it is never in the
+  the filters apply to the neighbors only, and it is never in the
   result. Each seed maps to two lists in the store's order, `before`
   ending just before the seed and `after` starting just after it, so
   the seed's place is between them and the caller needs nothing but
-  the lists. A seed with no neighbours to show maps to two empty lists;
+  the lists. A seed with no neighbors to show maps to two empty lists;
   an unknown seed is absent from the mapping. Port the branch's
   `get_neighbor_segments` and split its one list at the seed's position
   in the order. This is the rule of #1498: during a search a seed that
   fails is dropped before a window is built; after a search a
-  neighbourhood is kept even when its seed would fail, and then the
+  neighborhood is kept even when its seed would fail, and then the
   seed is never returned.
 - `delete_derivatives` removes link rows by derivative uuid and leaves
   the segments; eviction needs it.
@@ -314,7 +314,7 @@ class EventMemory:
                      since: datetime | None, until: datetime | None,
                      source_ids: Iterable[str] | None,
                      block_kinds: Iterable[str] | None,
-                     property_filter: FilterExpr | None) -> Neighbourhood
+                     property_filter: FilterExpr | None) -> Neighborhood
     @staticmethod
     def render(segments: Iterable[Segment], *,
                format_options: FormatOptions) -> str
@@ -364,12 +364,12 @@ Eviction, from the branch, cosine only:
   matrix product, keep only earlier indices (`j < i`) at or above the
   threshold, so a batch evicts exactly what serial ingestion would.
   The metric `match` goes.
-- Stored neighbours: one collection `query` per derivative with the
+- Stored neighbors: one collection `query` per derivative with the
   batch's embeddings, `min_cosine_similarity=threshold`,
   `limit=search_limit`, properties returned so the event timestamp is
   known.
 - `_select_eviction_targets` as on the branch: the cluster is the
-  stored neighbours not already displaced in this batch, the batch
+  stored neighbors not already displaced in this batch, the batch
   predecessors not already skipped, and the derivative itself; within
   `target_size` nothing happens; over it, sort by event timestamp and
   keep the earliest `target_size // 2` and the latest remainder; the
@@ -391,12 +391,12 @@ fields and keeps the rest of its properties as they are.
 
 ## Tests
 
-- Port the branch's neighbour tests
+- Port the branch's neighbor tests
   (`server_tests/.../segment_store/test_sqlalchemy_segment_store.py`
   on `agentic_expansion`) to the two-list shape, on both dialects, and
   add: the anchor is absent from both lists; an anchor that fails the
-  filter still yields its neighbours; a null-session anchor's
-  neighbourhood stays in the ungrouped stream; `since`/`until` meet
+  filter still yields its neighbors; a null-session anchor's
+  neighborhood stays in the ungrouped stream; `since`/`until` meet
   without overlap on a boundary timestamp; a non-UTC bound compares as
   an instant on SQLite.
 - Eviction tests from the branch (`test_event_memory.py`): cluster
@@ -406,7 +406,7 @@ fields and keeps the rest of its properties as they are.
 - Do not test retrieval order with a fake embedder that ties every
   score; under cosine such a fake makes every ordering assertion
   vacuous. Use a fake whose vectors differ per text, and assert the
-  contract (a neighbour ranks last, a threshold excludes) rather than
+  contract (a neighbor ranks last, a threshold excludes) rather than
   an exact list.
 - Run the new store tests against the unfixed store first, so each
   asserts something the change made true.

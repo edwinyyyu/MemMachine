@@ -57,7 +57,7 @@ watermark is one, and the segment order breaks timestamp ties with it.
 `enqueued_at DateTime(timezone=True)` not null `func.now()`, index
 `event_store_gc__enqueued_at`. A key is in one of two conditions the
 store can observe, a registry row (live) or a queue entry (dropping),
-and those two give the store the same outward behaviour as a
+and those two give the store the same outward behavior as a
 key-registry store without a second component: the row's existence is
 the fence, checked in the same transaction as the data statement, and
 the queue is the durable, ordered list of what remains to purge, written

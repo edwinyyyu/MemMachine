@@ -66,7 +66,7 @@ Conventions shared by every specification:
 - Types are few and each answers one need: `StoredEvent` (an event
   with its position), `IngestResult` (what ingest returns), `LogEntry`,
   `SearchHit` (a scored window with its matched segment),
-  `Neighbourhood` (the two sides of an expansion, the anchor between
+  `Neighborhood` (the two sides of an expansion, the anchor between
   them and never in them), `EvictionOptions`, `Tenant` with
   `TenantState` and `ComponentState`, `SearchOptions` and
   `RerankOptions` (one model for a tenant's defaults and a request's
@@ -134,7 +134,7 @@ Every contract a component implements is an abstract base class, never
 a `Protocol`: abstract methods are enforced when an object is
 instantiated, not only when a type checker runs; `isinstance` holds,
 which the composition's scope check and Pydantic's `InstanceOf` rely
-on; `@override` is checked against a real base; and shared behaviour
+on; `@override` is checked against a real base; and shared behavior
 (a formatting helper, a default) has a home. A third-party
 implementation imports the base class, which it does anyway to register
 a kind. A `Protocol` is used only to describe the shape of an object we
@@ -171,4 +171,4 @@ marked `@override` and carries no docstring (the contract is on the
 ABC); `D102`, `D213` and `RET504` are enforced; lint ignores are pruned
 to load-bearing rules with a stated rationale; directly imported
 dependencies are declared explicitly and unused ones removed. Nothing
-here changes behaviour.
+here changes behavior.
