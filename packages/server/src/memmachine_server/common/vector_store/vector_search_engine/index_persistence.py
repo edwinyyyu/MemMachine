@@ -26,7 +26,9 @@ already commits that way needs none of this.
 """
 
 import contextlib
+import errno
 import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -139,4 +141,33 @@ def _flush_to_disk(fd: int, path: str) -> None:
             f"{path} was replaced while it was being written, so the "
             f"descriptor held across the write no longer refers to it"
         )
+    _fsync(fd)
+
+
+def _fsync(fd: int) -> None:
+    """
+    Flush `fd` as hard as the platform can be asked to.
+
+    Darwin's `fsync` returns once the data reaches the drive, which may hold it
+    in a volatile write cache -- so on macOS alone it does not order the data
+    ahead of the rename at the device, which is the whole point of flushing
+    here. `F_FULLFSYNC` asks the drive to flush that cache. Filesystems that
+    cannot do it refuse the request, and there `fsync` is the most that can be
+    asked; a refusal is a statement about the filesystem, so it falls back,
+    while any other error is a write failure and propagates.
+
+    Elsewhere `os.fsync` is already the strongest ordinary flush -- `fsync` on
+    Linux, `FlushFileBuffers` on Windows.
+    """
+    if sys.platform == "darwin":
+        import fcntl
+
+        try:
+            fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+        except OSError as error:
+            if error.errno not in (errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL):
+                raise
+        else:
+            return
+
     os.fsync(fd)

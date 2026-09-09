@@ -1,10 +1,12 @@
 """Tests for the shared atomic index persistence helpers."""
 
-import os
 from pathlib import Path
 
 import pytest
 
+from memmachine_server.common.vector_store.vector_search_engine import (
+    index_persistence,
+)
 from memmachine_server.common.vector_store.vector_search_engine.index_persistence import (
     atomic_index_write,
     clear_stale_index_temp,
@@ -109,7 +111,9 @@ class TestFlushFailsTheSave:
         def failing_fsync(fd: int) -> None:
             raise OSError(5, "Input/output error")
 
-        monkeypatch.setattr(os, "fsync", failing_fsync)
+        # Patched at the module's own flush, which is what every platform
+        # reaches; `os.fsync` is not it on Darwin.
+        monkeypatch.setattr(index_persistence, "_fsync", failing_fsync)
 
         with (
             pytest.raises(OSError, match="Input/output error"),
