@@ -26,7 +26,6 @@ already commits that way needs none of this.
 """
 
 import contextlib
-import errno
 import os
 import sys
 from collections.abc import Iterator
@@ -151,10 +150,16 @@ def _fsync(fd: int) -> None:
     Darwin's `fsync` returns once the data reaches the drive, which may hold it
     in a volatile write cache -- so on macOS alone it does not order the data
     ahead of the rename at the device, which is the whole point of flushing
-    here. `F_FULLFSYNC` asks the drive to flush that cache. Filesystems that
-    cannot do it refuse the request, and there `fsync` is the most that can be
-    asked; a refusal is a statement about the filesystem, so it falls back,
-    while any other error is a write failure and propagates.
+    here. `F_FULLFSYNC` asks the drive to flush that cache.
+
+    Any failure of it falls through to `fsync`, without inspecting the errno.
+    The refusals cannot be enumerated: `ENOTSUP` and `EOPNOTSUPP` are distinct
+    values here, `/dev/null` refuses with `ENODEV`, and what a network mount
+    answers is not knowable from here, so a list would be a guess that fails
+    closed on whatever it missed. Falling through is not a suppression: `fsync`
+    runs on the same descriptor and raises in its turn, so a flush that cannot
+    happen still fails the save. What it gives up is the drive-cache flush,
+    leaving the guarantee this had before `F_FULLFSYNC` was asked for at all.
 
     Elsewhere `os.fsync` is already the strongest ordinary flush -- `fsync` on
     Linux, `FlushFileBuffers` on Windows.
@@ -164,9 +169,8 @@ def _fsync(fd: int) -> None:
 
         try:
             fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
-        except OSError as error:
-            if error.errno not in (errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL):
-                raise
+        except OSError:
+            pass
         else:
             return
 
