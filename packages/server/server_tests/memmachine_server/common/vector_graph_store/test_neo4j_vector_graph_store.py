@@ -281,9 +281,12 @@ async def test_search_similar_nodes(vector_graph_store, vector_graph_store_ann):
             properties={
                 "name": "Node1",
             },
+            # embedding2 deliberately disagrees with embedding1 about which
+            # node the query below is nearest, so searching by name has to
+            # pick the right one to get the right answer.
             embeddings={
                 "embedding1": [1000.0, 0.0],
-                "embedding2": [1000.0, 0.0],
+                "embedding2": [10.0, 10.0],
             },
         ),
         Node(
@@ -294,7 +297,7 @@ async def test_search_similar_nodes(vector_graph_store, vector_graph_store_ann):
             },
             embeddings={
                 "embedding1": [10.0, 10.0],
-                "embedding2": [10.0, 10.0],
+                "embedding2": [1000.0, 0.0],
             },
         ),
         Node(
