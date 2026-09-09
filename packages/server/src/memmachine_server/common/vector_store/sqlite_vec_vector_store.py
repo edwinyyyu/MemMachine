@@ -6,7 +6,6 @@ Partition keys are avoided in favor of per-collection tables,
 since sqlite-vec ANN indexes may not support them.
 """
 
-import struct
 from collections.abc import Iterable, Mapping, Sequence
 from typing import ClassVar, override
 from uuid import UUID
@@ -22,10 +21,12 @@ from sqlalchemy import (
     String,
     Table,
     Uuid,
+    bindparam,
     delete,
     event,
     select,
     text,
+    update,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine.interfaces import DBAPIConnection
@@ -33,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, MappedColumn, mapped_column
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 
-from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
 from memmachine_server.common.properties_json import (
@@ -70,11 +71,6 @@ class _CollectionRow(BaseSQLiteVecVectorStore):
 class SQLiteVecVectorStoreCollection(VectorStoreCollection):
     """A logical collection backed by SQLite + sqlite-vec."""
 
-    _DISTANCE_FUNCTIONS: ClassVar[dict[SimilarityMetric, str]] = {
-        SimilarityMetric.COSINE: "vec_distance_cosine",
-        SimilarityMetric.EUCLIDEAN: "vec_distance_L2",
-    }
-
     def __init__(
         self,
         *,
@@ -89,8 +85,6 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         self._records_table = records_table
         self._vector_table_name = vector_table_name
 
-        self._similarity_metric = config.similarity_metric
-
     @property
     @override
     def config(self) -> VectorStoreCollectionConfig:
@@ -101,33 +95,9 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         return sqlite_vec.serialize_float32(list(vector))
 
     @staticmethod
-    def _deserialize_vector(data: bytes) -> list[float]:
-        count = len(data) // 4
-        return list(struct.unpack(f"={count}f", data))
-
-    @staticmethod
-    def _distance_to_score(
-        distance: float, similarity_metric: SimilarityMetric
-    ) -> float:
-        match similarity_metric:
-            case SimilarityMetric.COSINE:
-                return 1.0 - distance
-            case SimilarityMetric.EUCLIDEAN:
-                return distance
-            case _:
-                raise NotImplementedError(similarity_metric)
-
-    @staticmethod
-    def _threshold_to_max_distance(
-        threshold: float, similarity_metric: SimilarityMetric
-    ) -> float:
-        match similarity_metric:
-            case SimilarityMetric.COSINE:
-                return 1.0 - threshold
-            case SimilarityMetric.EUCLIDEAN:
-                return threshold
-            case _:
-                raise NotImplementedError(similarity_metric)
+    def _distance_to_cosine_similarity(distance: float) -> float:
+        """Convert a sqlite-vec cosine distance to a cosine similarity."""
+        return 1.0 - distance
 
     @override
     async def upsert(self, *, records: Iterable[Record]) -> None:
@@ -198,9 +168,8 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         *,
         query_vectors: Iterable[Sequence[float]],
         limit: int,
-        score_threshold: float | None = None,
+        min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
         return_properties: bool = True,
     ) -> list[QueryResult]:
         query_vectors = list(query_vectors)
@@ -237,9 +206,8 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
                 matches = await self._build_matches(
                     session=session,
                     rowid_to_distance=rowid_to_distance,
-                    score_threshold=score_threshold,
+                    min_cosine_similarity=min_cosine_similarity,
                     property_filter=property_filter,
-                    return_vector=return_vector,
                     return_properties=return_properties,
                 )
                 results.append(QueryResult(matches=matches))
@@ -250,9 +218,8 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         self,
         session: AsyncSession,
         rowid_to_distance: Mapping[int, float],
-        score_threshold: float | None,
+        min_cosine_similarity: float | None,
         property_filter: FilterExpr | None,
-        return_vector: bool,
         return_properties: bool,
     ) -> list[QueryMatch]:
         matched_rowids = list(rowid_to_distance.keys())
@@ -277,23 +244,16 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
 
         matched_rows = (await session.execute(fetch_records)).all()
 
-        rowid_to_vector: dict[int, list[float]] = {}
-        if return_vector:
-            rowid_to_vector = await self._fetch_vectors(
-                session, [row.rowid for row in matched_rows]
-            )
-
         matches: list[QueryMatch] = []
         for row in matched_rows:
             distance = rowid_to_distance.get(row.rowid)
             if distance is None:
                 continue
 
-            score = self._distance_to_score(distance, self._similarity_metric)
-            if score_threshold is not None and (
-                score < score_threshold
-                if self._similarity_metric.higher_is_better
-                else score > score_threshold
+            cosine_similarity = self._distance_to_cosine_similarity(distance)
+            if (
+                min_cosine_similarity is not None
+                and cosine_similarity < min_cosine_similarity
             ):
                 continue
 
@@ -301,92 +261,40 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
             if return_properties:
                 properties = decode_properties(row.properties)
 
-            vector: list[float] | None = None
-            if return_vector:
-                vector = rowid_to_vector.get(row.rowid)
-
             matches.append(
                 QueryMatch(
-                    score=score,
-                    record=Record(uuid=row.uuid, vector=vector, properties=properties),
+                    cosine_similarity=cosine_similarity,
+                    record=Record(uuid=row.uuid, properties=properties),
                 )
             )
 
-        matches.sort(
-            key=lambda match: match.score,
-            reverse=self._similarity_metric.higher_is_better,
-        )
+        matches.sort(key=lambda match: match.cosine_similarity, reverse=True)
         return matches
 
-    async def _fetch_vectors(
-        self, session: AsyncSession, rowids: Iterable[int]
-    ) -> dict[int, list[float]]:
-        rowids = list(rowids)
-        if not rowids:
-            return {}
-
-        placeholders = ", ".join(f":r{i}" for i in range(len(rowids)))
-        vector_rows = (
-            await session.execute(
-                text(
-                    f"SELECT rowid, vector FROM [{self._vector_table_name}] "
-                    f"WHERE rowid IN ({placeholders})"
-                ),
-                {f"r{i}": rowid for i, rowid in enumerate(rowids)},
-            )
-        ).all()
-        return {row.rowid: self._deserialize_vector(row.vector) for row in vector_rows}
-
     @override
-    async def get(
+    async def set_properties(
         self,
         *,
-        record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
-        record_uuids = list(record_uuids)
-        if not record_uuids:
-            return []
+        record_properties: Mapping[UUID, Mapping[str, PropertyValue]],
+    ) -> None:
+        # Properties live in the records table and vectors live in the sqlite-vec
+        # virtual table, so replacing properties never reads a vector back.
+        if not record_properties:
+            return
 
-        selected_columns = [self._records_table.c.uuid, self._records_table.c.rowid]
-        if return_properties:
-            selected_columns.append(self._records_table.c.properties)
-
-        async with self._create_session() as session:
-            fetched_rows = (
-                await session.execute(
-                    select(*selected_columns).where(
-                        self._records_table.c.uuid.in_(record_uuids),
-                    )
-                )
-            ).all()
-
-            rowid_to_vector: dict[int, list[float]] = {}
-            if return_vector:
-                rowid_to_vector = await self._fetch_vectors(
-                    session, [row.rowid for row in fetched_rows]
-                )
-
-        record_map: dict[UUID, Record] = {}
-        for row in fetched_rows:
-            record_uuid = row.uuid
-
-            properties: dict[str, PropertyValue] | None = None
-            if return_properties:
-                properties = decode_properties(row.properties)
-
-            vector: list[float] | None = rowid_to_vector.get(row.rowid)
-
-            record_map[record_uuid] = Record(
-                uuid=record_uuid, vector=vector, properties=properties
+        async with self._create_session() as session, session.begin():
+            await session.execute(
+                update(self._records_table).where(
+                    self._records_table.c.uuid == bindparam("target_uuid")
+                ),
+                [
+                    {
+                        "target_uuid": record_uuid,
+                        "properties": encode_properties(dict(properties)),
+                    }
+                    for record_uuid, properties in record_properties.items()
+                ],
             )
-
-        return [
-            record_map[record_uuid]
-            for record_uuid in record_uuids
-            if record_uuid in record_map
-        ]
 
     @override
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
@@ -460,10 +368,7 @@ class SQLiteVecVectorStore(VectorStore):
     Each logical collection gets its own records table and vec0 virtual table.
     """
 
-    _SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE: ClassVar[dict[SimilarityMetric, str]] = {
-        SimilarityMetric.COSINE: "cosine",
-        SimilarityMetric.EUCLIDEAN: "L2",
-    }
+    _SQLITE_VEC_DISTANCE_METRIC: ClassVar[str] = "cosine"
 
     def __init__(self, params: SQLiteVecVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
@@ -504,8 +409,6 @@ class SQLiteVecVectorStore(VectorStore):
     ) -> None:
         if not validate_identifier(namespace) or not validate_identifier(name):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
-        self._validate_metric(config.similarity_metric)
-
         async with self._create_session() as session, session.begin():
             existing_config = await self._get_stored_config(session, namespace, name)
             if existing_config is not None:
@@ -530,8 +433,6 @@ class SQLiteVecVectorStore(VectorStore):
     ) -> VectorStoreCollection:
         if not validate_identifier(namespace) or not validate_identifier(name):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
-        self._validate_metric(config.similarity_metric)
-
         async with self._create_session() as session, session.begin():
             existing_config = await self._get_stored_config(session, namespace, name)
             if existing_config is not None:
@@ -634,21 +535,6 @@ class SQLiteVecVectorStore(VectorStore):
     def _vector_table_name(namespace: str, name: str) -> str:
         return f"{SQLiteVecVectorStore._collection_prefix(namespace, name)}_vc"
 
-    @staticmethod
-    def _validate_metric(similarity_metric: SimilarityMetric) -> None:
-        if (
-            similarity_metric
-            not in SQLiteVecVectorStore._SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE
-        ):
-            supported = ", ".join(
-                similarity_metric.value
-                for similarity_metric in SQLiteVecVectorStore._SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE
-            )
-            raise ValueError(
-                f"sqlite-vec only supports {supported} similarity metrics, "
-                f"got {similarity_metric.value!r}"
-            )
-
     async def _get_stored_config(
         self, session: AsyncSession, namespace: str, name: str
     ) -> VectorStoreCollectionConfig | None:
@@ -683,9 +569,6 @@ class SQLiteVecVectorStore(VectorStore):
     ) -> tuple[Table, str]:
         records_table = self._records_table(namespace, name)
         vector_table_name = self._vector_table_name(namespace, name)
-        distance_metric_value = self._SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE[
-            config.similarity_metric
-        ]
 
         connection = await session.connection()
         await connection.run_sync(
@@ -696,7 +579,8 @@ class SQLiteVecVectorStore(VectorStore):
         await session.execute(
             text(
                 f"CREATE VIRTUAL TABLE IF NOT EXISTS [{vector_table_name}] USING vec0("
-                f"vector float[{config.vector_dimensions}] distance_metric={distance_metric_value}"
+                f"vector float[{config.vector_dimensions}] "
+                f"distance_metric={SQLiteVecVectorStore._SQLITE_VEC_DISTANCE_METRIC}"
                 f")"
             )
         )

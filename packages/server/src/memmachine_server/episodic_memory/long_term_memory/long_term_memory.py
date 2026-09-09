@@ -192,13 +192,6 @@ class LongTermMemory:
         self._segment_store: SegmentStore | None = None
         self._partition_key: str | None = None
         self._episode_storage: EpisodeStorage | None = None
-        # Event backend only: whether scores from `EventMemory.query` are
-        # higher-is-better. Matches the same derivation inside EventMemory.query
-        # (reranker scores are higher-is-better; raw vector scores depend on the
-        # collection's similarity metric — cosine is higher-is-better, euclidean
-        # is lower-is-better). Used to apply `score_threshold` in the correct
-        # direction so it doesn't invert under euclidean with no reranker.
-        self._score_higher_is_better: bool = True
         # Event backend only: configured user-property names from
         # properties_schema. Empty means "no validation"; non-empty means the
         # set is closed and filter expressions referencing `m.<unknown>` raise
@@ -234,10 +227,6 @@ class LongTermMemory:
                 self._segment_store = params.segment_store
                 self._partition_key = params.partition_key
                 self._episode_storage = params.episode_storage
-                self._score_higher_is_better = (
-                    params.reranker is not None
-                    or params.vector_store_collection.config.similarity_metric.higher_is_better
-                )
                 self._user_property_keys = params.user_property_keys
 
     async def add_episodes(self, episodes: Iterable[Episode]) -> None:
@@ -264,12 +253,11 @@ class LongTermMemory:
     ) -> list[tuple[float, Episode]]:
         """Score-thresholded query.
 
-        `score_threshold=None` (default) keeps every result. With a numeric
-        value, the comparison direction matches the scoring metric:
-        higher-is-better metrics (cosine, dot, any reranker) drop scores BELOW
-        the threshold; lower-is-better metrics (raw euclidean / manhattan with
-        no reranker) drop scores ABOVE it. Avoids the prior `-inf` sentinel,
-        which silently inverted to "drop everything" under euclidean.
+        `score_threshold=None` (default) keeps every result. A numeric value
+        drops scores below it: every score here is a cosine similarity or a
+        reranker score, and both are higher-is-better, so the comparison needs
+        no direction. Avoids the prior `-inf` sentinel, which silently
+        inverted to "drop everything" under a lower-is-better metric.
         """
         if self._backend == "declarative":
             return await self._search_scored_declarative(
@@ -360,10 +348,8 @@ class LongTermMemory:
         # Map seed segment -> _episode_uid (system field already lives on
         # event/segment.properties under the underscore-prefixed key). Keep
         # first-seen score per episode_uid; preserve query result ordering.
-        # The threshold comparison direction depends on the scoring metric:
-        # higher-is-better (cosine + any reranker) → drop scores BELOW threshold;
-        # lower-is-better (raw euclidean without a reranker) → drop scores
-        # ABOVE threshold.
+        # Cosine similarities and reranker scores are both higher-is-better,
+        # so the threshold always drops scores below it.
         ordered_uids: list[str] = []
         scores_by_uid: dict[str, float] = {}
         for scored_context in result.scored_segment_contexts:
@@ -461,17 +447,13 @@ class LongTermMemory:
     def _score_passes_threshold(
         self, score: float, score_threshold: float | None
     ) -> bool:
-        """Apply `score_threshold` in the correct direction for the metric.
+        """Drop scores below `score_threshold`; None never drops.
 
-        higher-is-better → drop scores BELOW threshold;
-        lower-is-better  → drop scores ABOVE threshold;
-        None             → never drop.
+        Reranker scores and cosine similarities are both higher-is-better.
         """
         if score_threshold is None:
             return True
-        if self._score_higher_is_better:
-            return score >= score_threshold
-        return score <= score_threshold
+        return score >= score_threshold
 
     def _require_event_backend_live(self) -> EventMemory:
         """Return the EventMemory or raise if the instance was dropped."""

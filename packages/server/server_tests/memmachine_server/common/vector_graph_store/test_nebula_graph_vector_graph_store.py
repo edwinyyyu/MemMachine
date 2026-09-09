@@ -9,7 +9,6 @@ import pytest_asyncio
 # Skip all tests if nebulagraph_python is not installed
 pytest.importorskip("nebulagraph_python")
 
-from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
     And as FilterAnd,
 )
@@ -178,12 +177,12 @@ async def test_add_nodes(nebula_client, vector_graph_store):
         Node(
             uid=str(uuid4()),
             properties={"name": "Alice", "age": 30},
-            embeddings={"vec": ([1.0, 2.0, 3.0], SimilarityMetric.COSINE)},
+            embeddings={"vec": [1.0, 2.0, 3.0]},
         ),
         Node(
             uid=str(uuid4()),
             properties={"name": "Bob", "age": 25},
-            embeddings={"vec": ([4.0, 5.0, 6.0], SimilarityMetric.COSINE)},
+            embeddings={"vec": [4.0, 5.0, 6.0]},
         ),
     ]
 
@@ -223,12 +222,12 @@ async def test_add_edges(nebula_client, vector_graph_store):
     person = Node(
         uid=str(uuid4()),
         properties={"name": "Alice"},
-        embeddings={"profile": ([1.0, 0.0, 0.0], SimilarityMetric.EUCLIDEAN)},
+        embeddings={"profile": [1.0, 0.0, 0.0]},
     )
     company = Node(
         uid=str(uuid4()),
         properties={"name": "Acme Corp"},
-        embeddings={"profile": ([0.0, 1.0, 0.0], SimilarityMetric.EUCLIDEAN)},
+        embeddings={"profile": [0.0, 1.0, 0.0]},
     )
 
     await vector_graph_store.add_nodes(collection=source_collection, nodes=[person])
@@ -240,7 +239,7 @@ async def test_add_edges(nebula_client, vector_graph_store):
         source_uid=person.uid,
         target_uid=company.uid,
         properties={"since": 2020, "role": "Engineer"},
-        embeddings={"relation_vec": ([0.5, 0.5, 0.0], SimilarityMetric.EUCLIDEAN)},
+        embeddings={"relation_vec": [0.5, 0.5, 0.0]},
     )
 
     await vector_graph_store.add_edges(
@@ -281,17 +280,17 @@ async def test_search_similar_nodes(vector_graph_store):
         Node(
             uid=str(uuid4()),
             properties={"title": "Doc 1"},
-            embeddings={"content": ([1.0, 0.0, 0.0], SimilarityMetric.EUCLIDEAN)},
+            embeddings={"content": [1.0, 0.0, 0.0]},
         ),
         Node(
             uid=str(uuid4()),
             properties={"title": "Doc 2"},
-            embeddings={"content": ([0.0, 1.0, 0.0], SimilarityMetric.EUCLIDEAN)},
+            embeddings={"content": [0.0, 1.0, 0.0]},
         ),
         Node(
             uid=str(uuid4()),
             properties={"title": "Doc 3"},
-            embeddings={"content": ([0.9, 0.1, 0.0], SimilarityMetric.EUCLIDEAN)},
+            embeddings={"content": [0.9, 0.1, 0.0]},
         ),
     ]
 
@@ -304,7 +303,6 @@ async def test_search_similar_nodes(vector_graph_store):
         collection=collection,
         embedding_name="content",
         query_embedding=query_vec,
-        similarity_metric=SimilarityMetric.EUCLIDEAN,
         limit=2,
     )
 
@@ -322,17 +320,17 @@ async def test_search_similar_nodes_with_filter(vector_graph_store):
         Node(
             uid=str(uuid4()),
             properties={"title": "Doc 1", "category": "tech"},
-            embeddings={"content": ([1.0, 0.0, 0.0], SimilarityMetric.EUCLIDEAN)},
+            embeddings={"content": [1.0, 0.0, 0.0]},
         ),
         Node(
             uid=str(uuid4()),
             properties={"title": "Doc 2", "category": "business"},
-            embeddings={"content": ([0.9, 0.1, 0.0], SimilarityMetric.EUCLIDEAN)},
+            embeddings={"content": [0.9, 0.1, 0.0]},
         ),
         Node(
             uid=str(uuid4()),
             properties={"title": "Doc 3", "category": "tech"},
-            embeddings={"content": ([0.8, 0.2, 0.0], SimilarityMetric.EUCLIDEAN)},
+            embeddings={"content": [0.8, 0.2, 0.0]},
         ),
     ]
 
@@ -346,7 +344,6 @@ async def test_search_similar_nodes_with_filter(vector_graph_store):
         collection=collection,
         embedding_name="content",
         query_embedding=query_vec,
-        similarity_metric=SimilarityMetric.EUCLIDEAN,
         limit=10,
         property_filter=filter_expr,
     )
@@ -848,416 +845,6 @@ async def test_complex_filters(vector_graph_store):
 # ---------------------------------------------------------------------------
 
 
-def test_similarity_metric_mappings():
-    """Unit test covering every row of the metric support table.
-
-    | Metric    | _similarity_metric_to_nebula | _get_distance_func_and_order | ANN possible? |
-    |-----------|------------------------------|------------------------------|---------------|
-    | EUCLIDEAN | "L2"                         | euclidean() ASC              | yes           |
-    | DOT       | "IP"                         | inner_product() DESC         | yes           |
-    | COSINE    | None (no index)              | cosine() DESC                | no — KNN only |
-    | MANHATTAN | None (no index)              | raises ValueError            | no            |
-    """
-    # _similarity_metric_to_nebula
-    assert (
-        NebulaGraphVectorGraphStore._similarity_metric_to_nebula(
-            SimilarityMetric.EUCLIDEAN
-        )
-        == "L2"
-    )
-    assert (
-        NebulaGraphVectorGraphStore._similarity_metric_to_nebula(SimilarityMetric.DOT)
-        == "IP"
-    )
-    assert (
-        NebulaGraphVectorGraphStore._similarity_metric_to_nebula(
-            SimilarityMetric.COSINE
-        )
-        is None
-    )
-    assert (
-        NebulaGraphVectorGraphStore._similarity_metric_to_nebula(
-            SimilarityMetric.MANHATTAN
-        )
-        is None
-    )
-
-    # _get_distance_func_and_order
-    assert NebulaGraphVectorGraphStore._get_distance_func_and_order(
-        SimilarityMetric.EUCLIDEAN
-    ) == ("euclidean", "ASC")
-    assert NebulaGraphVectorGraphStore._get_distance_func_and_order(
-        SimilarityMetric.DOT
-    ) == ("inner_product", "DESC")
-    assert NebulaGraphVectorGraphStore._get_distance_func_and_order(
-        SimilarityMetric.COSINE
-    ) == ("cosine", "DESC")
-    with pytest.raises(ValueError, match="manhattan"):
-        NebulaGraphVectorGraphStore._get_distance_func_and_order(
-            SimilarityMetric.MANHATTAN
-        )
-
-
-@pytest.mark.asyncio
-async def test_search_similar_nodes_dot_metric(vector_graph_store):
-    """DOT metric: inner_product() DESC, KNN search."""
-    collection = "dot_docs"
-
-    nodes = [
-        Node(
-            uid=str(uuid4()),
-            properties={"title": "Doc 1"},
-            embeddings={"content": ([1.0, 0.0, 0.0], SimilarityMetric.DOT)},
-        ),
-        Node(
-            uid=str(uuid4()),
-            properties={"title": "Doc 2"},
-            embeddings={"content": ([0.0, 1.0, 0.0], SimilarityMetric.DOT)},
-        ),
-        Node(
-            uid=str(uuid4()),
-            properties={"title": "Doc 3"},
-            embeddings={"content": ([0.9, 0.1, 0.0], SimilarityMetric.DOT)},
-        ),
-    ]
-
-    await vector_graph_store.add_nodes(collection=collection, nodes=nodes)
-
-    # Inner products with query [1,0,0]: Doc1=1.0, Doc3=0.9, Doc2=0.0 → ranked order: Doc1, Doc3
-    query_vec = [1.0, 0.0, 0.0]
-    results = await vector_graph_store.search_similar_nodes(
-        collection=collection,
-        embedding_name="content",
-        query_embedding=query_vec,
-        similarity_metric=SimilarityMetric.DOT,
-        limit=2,
-    )
-
-    assert len(results) == 2
-    assert results[0].properties["title"] == "Doc 1"
-    assert results[1].properties["title"] == "Doc 3"
-
-
-@pytest.mark.asyncio
-async def test_search_similar_nodes_cosine_metric(vector_graph_store):
-    """COSINE metric: cosine() DESC, always KNN (no ANN index)."""
-    collection = "cosine_docs"
-
-    nodes = [
-        Node(
-            uid=str(uuid4()),
-            properties={"title": "Doc 1"},
-            embeddings={"content": ([1.0, 0.0, 0.0], SimilarityMetric.COSINE)},
-        ),
-        Node(
-            uid=str(uuid4()),
-            properties={"title": "Doc 2"},
-            embeddings={"content": ([0.0, 1.0, 0.0], SimilarityMetric.COSINE)},
-        ),
-        Node(
-            uid=str(uuid4()),
-            properties={"title": "Doc 3"},
-            # Slightly off-axis: cosine ≈ 0.993 with [1,0,0]
-            embeddings={"content": ([0.9, 0.1, 0.0], SimilarityMetric.COSINE)},
-        ),
-    ]
-
-    await vector_graph_store.add_nodes(collection=collection, nodes=nodes)
-
-    # Cosine similarities with [1,0,0]: Doc1=1.0, Doc3≈0.993, Doc2=0.0 → ranked: Doc1, Doc3
-    query_vec = [1.0, 0.0, 0.0]
-    results = await vector_graph_store.search_similar_nodes(
-        collection=collection,
-        embedding_name="content",
-        query_embedding=query_vec,
-        similarity_metric=SimilarityMetric.COSINE,
-        limit=2,
-    )
-
-    assert len(results) == 2
-    assert results[0].properties["title"] == "Doc 1"
-    assert results[1].properties["title"] == "Doc 3"
-
-
-@pytest.mark.asyncio
-async def test_search_similar_nodes_manhattan_raises(vector_graph_store):
-    """MANHATTAN metric: not supported by NebulaGraph, raises ValueError."""
-    collection = "manhattan_docs"
-
-    nodes = [
-        Node(
-            uid=str(uuid4()),
-            properties={"title": "Doc 1"},
-            embeddings={"content": ([1.0, 0.0, 0.0], SimilarityMetric.EUCLIDEAN)},
-        ),
-    ]
-    await vector_graph_store.add_nodes(collection=collection, nodes=nodes)
-
-    with pytest.raises(ValueError, match="manhattan"):
-        await vector_graph_store.search_similar_nodes(
-            collection=collection,
-            embedding_name="content",
-            query_embedding=[1.0, 0.0, 0.0],
-            similarity_metric=SimilarityMetric.MANHATTAN,
-            limit=1,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Multi-property directional search
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_search_directional_nodes_multiple_by_properties(vector_graph_store):
-    """Test search_directional_nodes with multiple sort properties (timestamp + sequence)."""
-    collection = "seq_events"
-
-    now = datetime.now(UTC)
-    delta = timedelta(hours=1)
-
-    # Two timestamps x two sequence values = 4 nodes
-    nodes = [
-        Node(
-            uid=str(uuid4()),
-            properties={"name": "T1S1", "timestamp": now, "sequence": 1},
-            embeddings={},
-        ),
-        Node(
-            uid=str(uuid4()),
-            properties={"name": "T1S2", "timestamp": now, "sequence": 2},
-            embeddings={},
-        ),
-        Node(
-            uid=str(uuid4()),
-            properties={"name": "T2S1", "timestamp": now + delta, "sequence": 1},
-            embeddings={},
-        ),
-        Node(
-            uid=str(uuid4()),
-            properties={"name": "T2S2", "timestamp": now + delta, "sequence": 2},
-            embeddings={},
-        ),
-    ]
-
-    await vector_graph_store.add_nodes(collection=collection, nodes=nodes)
-
-    # Start at (T1, S2) inclusive, both ascending → T1S2, T2S1, T2S2
-    results = await vector_graph_store.search_directional_nodes(
-        collection=collection,
-        by_properties=["timestamp", "sequence"],
-        starting_at=[now, 2],
-        order_ascending=[True, True],
-        include_equal_start=True,
-        limit=None,
-    )
-    assert len(results) == 3
-    assert results[0].properties["name"] == "T1S2"
-    assert results[1].properties["name"] == "T2S1"
-    assert results[2].properties["name"] == "T2S2"
-
-    # Start at (T2, S1) inclusive, first ascending second descending → T2S1, T2S2 reversed
-    # (same first key, second key descending from S1 means S1 then... S2 > S1 so excluded)
-    # Actually: ascending timestamp, descending sequence from S1 inclusive:
-    # At T2: include S1 (equal, inclusive), nothing below S1 for descending → just T2S1
-    results = await vector_graph_store.search_directional_nodes(
-        collection=collection,
-        by_properties=["timestamp", "sequence"],
-        starting_at=[now + delta, 1],
-        order_ascending=[True, False],
-        include_equal_start=True,
-        limit=None,
-    )
-    assert len(results) == 1
-    assert results[0].properties["name"] == "T2S1"
-
-
-# ---------------------------------------------------------------------------
-# Edge cases
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_add_nodes_empty_list(vector_graph_store):
-    """Adding an empty list of nodes is a no-op."""
-    collection = "empty_test"
-
-    await vector_graph_store.add_nodes(collection=collection, nodes=[])
-
-    results = await vector_graph_store.search_matching_nodes(
-        collection=collection,
-        limit=10,
-    )
-    assert len(results) == 0
-
-
-@pytest.mark.asyncio
-async def test_add_edges_empty_list(vector_graph_store):
-    """Adding an empty list of edges is a no-op."""
-    node = Node(uid=str(uuid4()), properties={"name": "Solo"}, embeddings={})
-    await vector_graph_store.add_nodes(collection="solo", nodes=[node])
-
-    # Should not raise
-    await vector_graph_store.add_edges(
-        relation="knows",
-        source_collection="solo",
-        target_collection="solo",
-        edges=[],
-    )
-
-    # Node still exists, no edges created
-    results = await vector_graph_store.get_nodes(
-        collection="solo", node_uids=[node.uid]
-    )
-    assert len(results) == 1
-
-
-@pytest.mark.asyncio
-async def test_add_nodes_with_none_property(vector_graph_store):
-    """Nodes with None property values are stored and retrieved without error."""
-    collection = "nullable_test"
-
-    node = Node(
-        uid=str(uuid4()),
-        properties={"name": "Alice", "optional_field": None},
-        embeddings={},
-    )
-    await vector_graph_store.add_nodes(collection=collection, nodes=[node])
-
-    results = await vector_graph_store.get_nodes(
-        collection=collection, node_uids=[node.uid]
-    )
-    assert len(results) == 1
-    # None properties may be omitted on retrieval (same behaviour as Neo4j)
-    assert results[0].properties.get("name") == "Alice"
-
-
-@pytest.mark.asyncio
-async def test_add_edges_with_none_property(vector_graph_store):
-    """Edges with None property values are stored without error."""
-    person_collection = "nullable_person"
-    company_collection = "nullable_company"
-    relation = "works_at_nullable"
-
-    alice = Node(uid=str(uuid4()), properties={"name": "Alice"}, embeddings={})
-    acme = Node(uid=str(uuid4()), properties={"name": "Acme"}, embeddings={})
-
-    await vector_graph_store.add_nodes(collection=person_collection, nodes=[alice])
-    await vector_graph_store.add_nodes(collection=company_collection, nodes=[acme])
-
-    edge = Edge(
-        uid=str(uuid4()),
-        source_uid=alice.uid,
-        target_uid=acme.uid,
-        properties={"role": "Engineer", "optional_field": None},
-        embeddings={},
-    )
-    await vector_graph_store.add_edges(
-        relation=relation,
-        source_collection=person_collection,
-        target_collection=company_collection,
-        edges=[edge],
-    )
-
-    # Verify edge was created by searching related nodes
-    results = await vector_graph_store.search_related_nodes(
-        relation=relation,
-        other_collection=company_collection,
-        this_collection=person_collection,
-        this_node_uid=alice.uid,
-        find_targets=True,
-        find_sources=False,
-    )
-    assert len(results) == 1
-    assert results[0].uid == acme.uid
-
-
-@pytest.mark.asyncio
-async def test_get_nodes_with_nonexistent_uids(vector_graph_store):
-    """get_nodes ignores UIDs that do not exist — returns only found nodes."""
-    collection = "partial_get"
-
-    node = Node(uid=str(uuid4()), properties={"name": "Real"}, embeddings={})
-    await vector_graph_store.add_nodes(collection=collection, nodes=[node])
-
-    fake_uid = str(uuid4())
-    results = await vector_graph_store.get_nodes(
-        collection=collection,
-        node_uids=[node.uid, fake_uid],
-    )
-    assert len(results) == 1
-    assert results[0].uid == node.uid
-
-
-@pytest.mark.asyncio
-async def test_delete_nodes_wrong_collection(vector_graph_store):
-    """Deleting from a non-matching collection leaves nodes untouched."""
-    collection = "real_collection"
-    wrong_collection = "wrong_collection"
-
-    node = Node(uid=str(uuid4()), properties={"name": "Keep"}, embeddings={})
-    await vector_graph_store.add_nodes(collection=collection, nodes=[node])
-
-    # Attempt to delete from the wrong collection
-    await vector_graph_store.delete_nodes(
-        collection=wrong_collection, node_uids=[node.uid]
-    )
-
-    results = await vector_graph_store.get_nodes(
-        collection=collection, node_uids=[node.uid]
-    )
-    assert len(results) == 1
-
-
-# ---------------------------------------------------------------------------
-# ANN mode
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_search_similar_nodes_ann(vector_graph_store_ann):
-    """ANN mode: vector index is created immediately (threshold=0) and results are returned."""
-    collection = "ann_docs"
-
-    nodes = [
-        Node(
-            uid=str(uuid4()),
-            properties={"title": "Doc 1"},
-            embeddings={"content": ([1.0, 0.0, 0.0], SimilarityMetric.EUCLIDEAN)},
-        ),
-        Node(
-            uid=str(uuid4()),
-            properties={"title": "Doc 2"},
-            embeddings={"content": ([0.0, 1.0, 0.0], SimilarityMetric.EUCLIDEAN)},
-        ),
-        Node(
-            uid=str(uuid4()),
-            properties={"title": "Doc 3"},
-            embeddings={"content": ([0.9, 0.1, 0.0], SimilarityMetric.EUCLIDEAN)},
-        ),
-    ]
-
-    await vector_graph_store_ann.add_nodes(collection=collection, nodes=nodes)
-
-    results = await vector_graph_store_ann.search_similar_nodes(
-        collection=collection,
-        embedding_name="content",
-        query_embedding=[1.0, 0.0, 0.0],
-        similarity_metric=SimilarityMetric.EUCLIDEAN,
-        limit=3,
-    )
-
-    # ANN may return approximate results but at minimum should return some nodes
-    assert 0 < len(results) <= 3
-    # The closest node (Doc 1) should still appear first in a reasonable ANN implementation
-    assert results[0].properties["title"] == "Doc 1"
-
-
-# ---------------------------------------------------------------------------
-# Extended sanitize/desanitize coverage
-# ---------------------------------------------------------------------------
-
-
 def test_sanitize_name_extended():
     """Comprehensive sanitize/desanitize round-trip for edge-case inputs."""
     names = [
@@ -1370,10 +957,7 @@ async def test_index_creation_with_special_character_names(
             "display name": "Test User",  # space
         },
         embeddings={
-            "content-vector": (
-                [1.0, 0.0, 0.0],
-                SimilarityMetric.EUCLIDEAN,
-            ),  # hyphen in embedding name
+            "content-vector": [1.0, 0.0, 0.0],  # hyphen in embedding name
         },
     )
 
@@ -1395,7 +979,6 @@ async def test_index_creation_with_special_character_names(
         collection=collection,
         embedding_name="content-vector",
         query_embedding=[1.0, 0.0, 0.0],
-        similarity_metric=SimilarityMetric.EUCLIDEAN,
         limit=10,
     )
     assert len(similar) == 1
