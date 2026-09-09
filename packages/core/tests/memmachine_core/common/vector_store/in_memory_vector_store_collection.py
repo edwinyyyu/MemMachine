@@ -159,22 +159,6 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
         return results
 
     @override
-    async def get_cosine_similarity(
-        self,
-        *,
-        query_vector: Sequence[float],
-        record_uuids: Iterable[UUID],
-    ) -> dict[UUID, float]:
-        qv = list(query_vector)
-        similarities: dict[UUID, float] = {}
-        for uid in record_uuids:
-            record = self.records.get(uid)
-            if record is None:
-                continue
-            similarities[uid] = _cosine_similarity(qv, record.vector)
-        return similarities
-
-    @override
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
         for uid in record_uuids:
             self.records.pop(uid, None)

@@ -757,64 +757,6 @@ class TestFilterRouting:
             )
 
 
-# ── Get cosine similarity ──
-
-
-class TestGetCosineSimilarity:
-    @pytest.mark.asyncio
-    async def test_get_cosine_similarity_by_uuids(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        v2 = _normalize([0.0, 1.0, 0.0])
-
-        r1 = _make_record(vector=v1, properties={"name": "a"})
-        r2 = _make_record(vector=v2, properties={"name": "b"})
-        await collection.upsert(records=[r1, r2])
-
-        similarities = await collection.get_cosine_similarity(
-            query_vector=v1, record_uuids=[r2.uuid, r1.uuid]
-        )
-        assert set(similarities) == {r1.uuid, r2.uuid}
-        assert similarities[r1.uuid] == pytest.approx(1.0, abs=0.01)
-        assert similarities[r2.uuid] == pytest.approx(0.0, abs=0.01)
-
-    @pytest.mark.asyncio
-    async def test_get_cosine_similarity_missing_uuids_omitted(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        r1 = _make_record(vector=v1)
-        await collection.upsert(records=[r1])
-
-        missing = uuid4()
-        similarities = await collection.get_cosine_similarity(
-            query_vector=v1, record_uuids=[r1.uuid, missing]
-        )
-        assert set(similarities) == {r1.uuid}
-
-    @pytest.mark.asyncio
-    async def test_get_cosine_similarity_empty_list(self, collection):
-        similarities = await collection.get_cosine_similarity(
-            query_vector=_normalize([1.0, 0.0, 0.0]), record_uuids=[]
-        )
-        assert similarities == {}
-
-    @pytest.mark.asyncio
-    async def test_get_cosine_similarity_matches_query_scores(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        v2 = _normalize([1.0, 0.2, 0.0])
-        r1 = _make_record(vector=v1)
-        r2 = _make_record(vector=v2)
-        await collection.upsert(records=[r1, r2])
-
-        query_results = await collection.query(query_vectors=[v1], limit=2)
-        query_scores = {
-            match.record_uuid: match.cosine_similarity
-            for match in query_results[0].matches
-        }
-        similarities = await collection.get_cosine_similarity(
-            query_vector=v1, record_uuids=[r1.uuid, r2.uuid]
-        )
-        assert similarities == pytest.approx(query_scores, abs=1e-4)
-
-
 # ── Delete ──
 
 
@@ -830,10 +772,9 @@ class TestDelete:
         await collection.upsert(records=[r1, r2])
         await collection.delete(record_uuids=[r1.uuid])
 
-        similarities = await collection.get_cosine_similarity(
-            query_vector=v1, record_uuids=[r1.uuid, r2.uuid]
-        )
-        assert set(similarities) == {r2.uuid}
+        query_results = await collection.query(query_vectors=[v1], limit=10)
+        uuids = {match.record_uuid for match in query_results[0].matches}
+        assert uuids == {r2.uuid}
 
     @pytest.mark.asyncio
     async def test_delete_empty_list(self, collection):
@@ -891,35 +832,6 @@ class TestPartitionIsolation:
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
 
     @pytest.mark.asyncio
-    async def test_get_cosine_similarity_only_scores_own_collection(self, store):
-        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        await store.create_collection(
-            namespace=NAMESPACE, name="tenant_a", config=config
-        )
-        await store.create_collection(
-            namespace=NAMESPACE, name="tenant_b", config=config
-        )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
-        assert coll_a is not None
-        assert coll_b is not None
-
-        v1 = _normalize([1.0, 0.0, 0.0])
-        r1 = _make_record(vector=v1)
-        r2 = _make_record(vector=v1)
-
-        await coll_a.upsert(records=[r1])
-        await coll_b.upsert(records=[r2])
-
-        similarities = await coll_a.get_cosine_similarity(
-            query_vector=v1, record_uuids=[r1.uuid, r2.uuid]
-        )
-        assert set(similarities) == {r1.uuid}
-
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
-
-    @pytest.mark.asyncio
     async def test_delete_only_affects_own_collection(self, store):
         config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
         await store.create_collection(
@@ -942,10 +854,8 @@ class TestPartitionIsolation:
 
         await coll_a.delete(record_uuids=[r2.uuid])
 
-        similarities = await coll_b.get_cosine_similarity(
-            query_vector=v1, record_uuids=[r2.uuid]
-        )
-        assert set(similarities) == {r2.uuid}
+        results_b = await coll_b.query(query_vectors=[v1], limit=10)
+        assert {match.record_uuid for match in results_b[0].matches} == {r2.uuid}
 
         await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
@@ -1120,10 +1030,15 @@ class TestConcurrentAsync:
         )
 
         # Verify all records were persisted (deterministic, not ANN-dependent).
-        similarities = await collection.get_cosine_similarity(
-            query_vector=_normalize([1.0, 0.0, 0.0]), record_uuids=all_uuids
-        )
-        assert len(similarities) == 30
+        async with collection._create_session() as session:
+            persisted = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(collection._records_table)
+                    .where(collection._records_table.c.uuid.in_(all_uuids))
+                )
+            ).scalar()
+        assert persisted == 30
 
     @pytest.mark.asyncio
     async def test_concurrent_upsert_and_query(self, collection):
@@ -1185,10 +1100,6 @@ class _GatedSearchEngine(VectorSearchEngine):
             self.gate_reached.set()
             await gate.wait()
         return results
-
-    @override
-    async def get_cosine_similarities(self, query_vector, keys):
-        return await self.inner.get_cosine_similarities(query_vector, keys)
 
     @override
     async def save(self, path):
@@ -1435,12 +1346,7 @@ class TestCrashRecovery:
         results = await coll2.query(
             query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=10
         )
-        assert len(results[0].matches) == 1
-
-        similarities = await coll2.get_cosine_similarity(
-            query_vector=_normalize([1.0, 0.0, 0.0]), record_uuids=[r1.uuid]
-        )
-        assert similarities == {}
+        assert [match.record_uuid for match in results[0].matches] == [r2.uuid]
 
         await store2.shutdown()
         await engine2.dispose()
@@ -1470,15 +1376,10 @@ class TestCrashRecovery:
         results = await coll2.query(
             query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=10
         )
-        assert len(results[0].matches) == 2
-
-        similarities = await coll2.get_cosine_similarity(
-            query_vector=_normalize([1.0, 0.0, 0.0]),
-            record_uuids=[r1.uuid, r2.uuid, r3.uuid],
-        )
-        assert r1.uuid in similarities
-        assert r2.uuid not in similarities
-        assert r3.uuid in similarities
+        assert {match.record_uuid for match in results[0].matches} == {
+            r1.uuid,
+            r3.uuid,
+        }
 
         await store2.shutdown()
         await engine2.dispose()
@@ -1586,10 +1487,6 @@ class _GatedRemoveEngine(VectorSearchEngine):
         return await self.inner.search(vectors, limit=limit, allowlist=allowlist)
 
     @override
-    async def get_cosine_similarities(self, query_vector, keys):
-        return await self.inner.get_cosine_similarities(query_vector, keys)
-
-    @override
     async def save(self, path):
         await self.inner.save(path)
 
@@ -1629,10 +1526,6 @@ class _GatedSaveEngine(VectorSearchEngine):
     @override
     async def search(self, vectors, *, limit, allowlist=None):
         return await self.inner.search(vectors, limit=limit, allowlist=allowlist)
-
-    @override
-    async def get_cosine_similarities(self, query_vector, keys):
-        return await self.inner.get_cosine_similarities(query_vector, keys)
 
     @override
     async def save(self, path):
@@ -1887,11 +1780,6 @@ class TestConcurrentWriteOrdering:
             coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
             assert coll2 is not None
 
-            similarities = await coll2.get_cosine_similarity(
-                query_vector=_normalize([0.0, 1.0, 0.0]), record_uuids=[behind.uuid]
-            )
-            assert set(similarities) == {behind.uuid}
-
             results = await coll2.query(
                 query_vectors=[_normalize([0.0, 1.0, 0.0])], limit=5
             )
@@ -2116,13 +2004,9 @@ class TestIndexFileDurability:
             ).scalar()
         assert stored_uuid == r2.uuid
 
-        # The index just cannot find or score it any more.
+        # The index just cannot find it any more.
         results = await coll2.query(query_vectors=[r2.vector], limit=10)
         assert [match.record_uuid for match in results[0].matches] == [r1.uuid]
-        similarities = await coll2.get_cosine_similarity(
-            query_vector=r2.vector, record_uuids=[r2.uuid]
-        )
-        assert similarities == {}
 
         await store2.shutdown()
         await engine2.dispose()

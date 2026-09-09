@@ -32,7 +32,7 @@ from memmachine_core.common.filter import (
     OrderingOp,
 )
 from memmachine_core.common.metrics_factory import MetricsFactory, OperationTracker
-from memmachine_core.common.utils import compute_cosine_similarity, ensure_tz_aware
+from memmachine_core.common.utils import ensure_tz_aware
 
 from .data_types import (
     QueryMatch,
@@ -336,46 +336,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                 )
                 for batch in batch_results
             ]
-
-    @override
-    async def get_cosine_similarity(
-        self,
-        *,
-        query_vector: Sequence[float],
-        record_uuids: Iterable[UUID],
-    ) -> dict[UUID, float]:
-        async with self._tracker("get_cosine_similarity"):
-            uuid_list = list(record_uuids)
-            if not uuid_list:
-                return {}
-
-            # Retrieval by id is exact; an id-filtered ANN query is not
-            # guaranteed to return every matching point.
-            # Payload is fetched to check partition_key.
-            points = await self._client.retrieve(
-                collection_name=self._collection_name,
-                ids=list(uuid_list),
-                with_vectors=True,
-                with_payload=True,
-                shard_key_selector=self._shard_key,
-            )
-
-            matched_uuids: list[UUID] = []
-            vectors: list[list[float]] = []
-            for point in points:
-                payload = point.payload
-                if (
-                    payload is None
-                    or payload.get(_PAYLOAD_PARTITION_KEY) != self._partition_key
-                ):
-                    continue
-                if point.vector is None:
-                    continue
-                matched_uuids.append(UUID(str(point.id)))
-                vectors.append(cast(list[float], point.vector))
-
-            similarities = compute_cosine_similarity(list(query_vector), vectors)
-            return dict(zip(matched_uuids, similarities, strict=True))
 
     @override
     async def delete(

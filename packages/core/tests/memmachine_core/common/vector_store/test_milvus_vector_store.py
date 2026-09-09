@@ -328,10 +328,10 @@ class TestUpsertAndQuery:
                 ]
             )
 
-        similarities = await collection.get_cosine_similarity(
-            query_vector=old_vector, record_uuids=[record.uuid]
-        )
-        assert similarities[record.uuid] == pytest.approx(1.0, abs=1e-4)
+        results = await collection.query(query_vectors=[old_vector], limit=10)
+        [match] = results[0].matches
+        assert match.record_uuid == record.uuid
+        assert match.cosine_similarity == pytest.approx(1.0, abs=1e-4)
 
         results = await collection.query(
             query_vectors=[old_vector],
@@ -457,33 +457,7 @@ class TestFilters:
         assert {m.record_uuid for m in or_results[0].matches} == {r1.uuid, r2.uuid}
 
 
-class TestGetCosineSimilarityAndDelete:
-    @pytest.mark.asyncio
-    async def test_get_cosine_similarity_by_uuids(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        v2 = _normalize([0.0, 1.0, 0.0])
-        r1 = _make_record(vector=v1, properties={"name": "a"})
-        r2 = _make_record(vector=v2, properties={"name": "b"})
-        await collection.upsert(records=[r1, r2])
-
-        similarities = await collection.get_cosine_similarity(
-            query_vector=v1, record_uuids=[r2.uuid, r1.uuid]
-        )
-        assert set(similarities) == {r1.uuid, r2.uuid}
-        assert similarities[r1.uuid] == pytest.approx(1.0, abs=0.01)
-        assert similarities[r2.uuid] == pytest.approx(0.0, abs=0.01)
-
-    @pytest.mark.asyncio
-    async def test_get_cosine_similarity_missing_uuids_omitted(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        r1 = _make_record(vector=v1)
-        await collection.upsert(records=[r1])
-
-        similarities = await collection.get_cosine_similarity(
-            query_vector=v1, record_uuids=[r1.uuid, uuid4()]
-        )
-        assert set(similarities) == {r1.uuid}
-
+class TestDelete:
     @pytest.mark.asyncio
     async def test_delete_records(self, collection):
         v1 = _normalize([1.0, 0.0, 0.0])
@@ -494,10 +468,9 @@ class TestGetCosineSimilarityAndDelete:
 
         await collection.delete(record_uuids=[r1.uuid])
 
-        similarities = await collection.get_cosine_similarity(
-            query_vector=v1, record_uuids=[r1.uuid, r2.uuid]
-        )
-        assert set(similarities) == {r2.uuid}
+        query_results = await collection.query(query_vectors=[v1], limit=10)
+        uuids = {match.record_uuid for match in query_results[0].matches}
+        assert uuids == {r2.uuid}
 
 
 class TestPartitionIsolation:

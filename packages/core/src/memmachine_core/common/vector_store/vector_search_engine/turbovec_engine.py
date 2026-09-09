@@ -130,24 +130,6 @@ class TurboVecVectorSearchEngine(VectorSearchEngine):
         return array / norms
 
     @override
-    async def get_cosine_similarities(
-        self,
-        query_vector: Sequence[float],
-        keys: Iterable[int],
-    ) -> dict[int, float]:
-        # turbovec has no keyed vector access, so this leans on the native
-        # allowlist search, which returns min(k, allowed) matches -- with
-        # k = len(keys), every present key comes back.
-        key_set = {int(key) for key in keys}
-        if not key_set:
-            return {}
-        async with self._lock.read_lock():
-            [result] = await asyncio.to_thread(
-                self._sync_search, [query_vector], len(key_set), key_set
-            )
-        return {match.key: match.cosine_similarity for match in result.matches}
-
-    @override
     async def remove(self, keys: Iterable[int]) -> None:
         async with self._lock.write_lock():
             await asyncio.to_thread(self._sync_remove, keys)

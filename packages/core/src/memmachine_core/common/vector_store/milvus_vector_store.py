@@ -253,38 +253,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             return results
 
     @override
-    async def get_cosine_similarity(
-        self,
-        *,
-        query_vector: Sequence[float],
-        record_uuids: Iterable[UUID],
-    ) -> dict[UUID, float]:
-        async with self._tracker("get_cosine_similarity"):
-            uuid_list = list(record_uuids)
-            if not uuid_list:
-                return {}
-
-            primary_ids = [
-                self._primary_id(self._partition_key, uuid) for uuid in uuid_list
-            ]
-            raw_records = await asyncio.to_thread(
-                self._client.get,
-                collection_name=self._collection_name,
-                ids=primary_ids,
-                output_fields=[_RECORD_UUID_FIELD, _VECTOR_FIELD],
-            )
-
-            query_vector = list(query_vector)
-            return {
-                UUID(str(entity[_RECORD_UUID_FIELD])): (
-                    self._cosine_similarity_from_entity_vector(query_vector, entity)
-                )
-                for entity in (
-                    cast(Mapping[str, Any], raw_record) for raw_record in raw_records
-                )
-            }
-
-    @override
     async def delete(
         self,
         *,

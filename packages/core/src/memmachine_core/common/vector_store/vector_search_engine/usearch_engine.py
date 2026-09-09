@@ -11,7 +11,7 @@ from usearch.index import Index, MetricKind
 from memmachine_core.common.rw_locks import AsyncRWLock
 
 from .index_persistence import atomic_index_write, clear_stale_index_temp
-from .scoring import cosine_similarities, top_k_matches
+from .scoring import top_k_matches
 from .vector_search_engine import SearchMatch, SearchResult, VectorSearchEngine
 
 
@@ -126,24 +126,6 @@ class USearchVectorSearchEngine(VectorSearchEngine):
             )
             for query_vector in vectors
         ]
-
-    @override
-    async def get_cosine_similarities(
-        self,
-        query_vector: Sequence[float],
-        keys: Iterable[int],
-    ) -> dict[int, float]:
-        async with self._lock.read_lock():
-            present_keys, matrix = await asyncio.to_thread(
-                self._sync_gather_vectors, keys
-            )
-        if not present_keys:
-            return {}
-        similarities = cosine_similarities(query_vector, matrix)
-        return {
-            key: float(similarity)
-            for key, similarity in zip(present_keys, similarities, strict=True)
-        }
 
     def _sync_gather_vectors(
         self, keys: Iterable[int]

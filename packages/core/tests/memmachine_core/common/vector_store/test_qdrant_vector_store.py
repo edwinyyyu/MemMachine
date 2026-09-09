@@ -877,67 +877,6 @@ class TestFilters:
         assert len(matches) == 2
 
 
-# ── Get cosine similarity ──
-
-
-class TestGetCosineSimilarity:
-    @pytest.mark.asyncio
-    async def test_get_cosine_similarity_by_uuids(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        v2 = _normalize([0.0, 1.0, 0.0])
-        v3 = _normalize([0.0, 0.0, 1.0])
-
-        r1 = _make_record(vector=v1, properties={"name": "a"})
-        r2 = _make_record(vector=v2, properties={"name": "b"})
-        r3 = _make_record(vector=v3, properties={"name": "c"})
-
-        await collection.upsert(records=[r1, r2, r3])
-
-        similarities = await collection.get_cosine_similarity(
-            query_vector=v1, record_uuids=[r3.uuid, r1.uuid]
-        )
-        assert set(similarities) == {r1.uuid, r3.uuid}
-        assert similarities[r1.uuid] == pytest.approx(1.0, abs=0.01)
-        assert similarities[r3.uuid] == pytest.approx(0.0, abs=0.01)
-
-    @pytest.mark.asyncio
-    async def test_get_cosine_similarity_missing_uuids_omitted(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        r1 = _make_record(vector=v1)
-        await collection.upsert(records=[r1])
-
-        missing_uuid = uuid4()
-        similarities = await collection.get_cosine_similarity(
-            query_vector=v1, record_uuids=[r1.uuid, missing_uuid]
-        )
-        assert set(similarities) == {r1.uuid}
-
-    @pytest.mark.asyncio
-    async def test_get_cosine_similarity_empty_list(self, collection):
-        similarities = await collection.get_cosine_similarity(
-            query_vector=_normalize([1.0, 0.0, 0.0]), record_uuids=[]
-        )
-        assert similarities == {}
-
-    @pytest.mark.asyncio
-    async def test_get_cosine_similarity_matches_query_scores(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        v2 = _normalize([1.0, 0.2, 0.0])
-        r1 = _make_record(vector=v1)
-        r2 = _make_record(vector=v2)
-        await collection.upsert(records=[r1, r2])
-
-        query_results = list(await collection.query(query_vectors=[v1], limit=2))
-        query_scores = {
-            match.record_uuid: match.cosine_similarity
-            for match in query_results[0].matches
-        }
-        similarities = await collection.get_cosine_similarity(
-            query_vector=v1, record_uuids=[r1.uuid, r2.uuid]
-        )
-        assert similarities == pytest.approx(query_scores, abs=1e-4)
-
-
 # ── Delete ──
 
 
@@ -953,10 +892,9 @@ class TestDelete:
         await collection.upsert(records=[r1, r2])
         await collection.delete(record_uuids=[r1.uuid])
 
-        similarities = await collection.get_cosine_similarity(
-            query_vector=v1, record_uuids=[r1.uuid, r2.uuid]
-        )
-        assert set(similarities) == {r2.uuid}
+        query_results = await collection.query(query_vectors=[v1], limit=10)
+        uuids = {match.record_uuid for match in query_results[0].matches}
+        assert uuids == {r2.uuid}
 
 
 # ── Partition isolation (via separate logical collections) ──
@@ -999,38 +937,6 @@ class TestPartitionIsolation:
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
 
     @pytest.mark.asyncio
-    async def test_get_cosine_similarity_only_scores_own_partition(self, store):
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="tenant_a",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="tenant_b",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
-        assert coll_a is not None
-        assert coll_b is not None
-
-        v1 = _normalize([1.0, 0.0, 0.0])
-        r1 = _make_record(vector=v1)
-        r2 = _make_record(vector=v1)
-
-        await coll_a.upsert(records=[r1])
-        await coll_b.upsert(records=[r2])
-
-        similarities = await coll_a.get_cosine_similarity(
-            query_vector=v1, record_uuids=[r1.uuid, r2.uuid]
-        )
-        assert set(similarities) == {r1.uuid}
-
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
-
-    @pytest.mark.asyncio
     async def test_delete_only_affects_own_partition(self, store):
         await store.create_collection(
             namespace=NAMESPACE,
@@ -1057,10 +963,8 @@ class TestPartitionIsolation:
         # Attempt to delete r2 using tenant_a's collection — should not work
         await coll_a.delete(record_uuids=[r2.uuid])
 
-        similarities = await coll_b.get_cosine_similarity(
-            query_vector=v1, record_uuids=[r2.uuid]
-        )
-        assert set(similarities) == {r2.uuid}
+        results_b = await coll_b.query(query_vectors=[v1], limit=10)
+        assert {match.record_uuid for match in results_b[0].matches} == {r2.uuid}
 
         await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
@@ -1130,7 +1034,7 @@ class TestDistributedSharding:
     """Tests for custom-sharding behaviour when is_distributed=True."""
 
     async def test_crud_lifecycle(self, distributed_store):
-        """Full create → upsert → query → score → delete records → delete collection."""
+        """Full create → upsert → query → delete records → delete collection."""
         store = distributed_store
         ns, name = NAMESPACE, "distributed_crud"
 
@@ -1153,16 +1057,9 @@ class TestDistributedSharding:
         assert len(results) == 1
         assert results[0].matches[0].record_uuid == r1.uuid
 
-        similarities = await coll.get_cosine_similarity(
-            query_vector=v1, record_uuids=[r1.uuid]
-        )
-        assert set(similarities) == {r1.uuid}
-
         await coll.delete(record_uuids=[r1.uuid])
-        similarities = await coll.get_cosine_similarity(
-            query_vector=v1, record_uuids=[r1.uuid]
-        )
-        assert similarities == {}
+        results = await coll.query(query_vectors=[v1], limit=1)
+        assert results[0].matches == []
 
         await store.delete_collection(namespace=ns, name=name)
 
@@ -1193,10 +1090,8 @@ class TestDistributedSharding:
         await store.delete_collection(namespace=ns, name="tenant_a")
 
         # tenant_b data should be untouched.
-        similarities = await coll_b.get_cosine_similarity(
-            query_vector=v2, record_uuids=[r_b.uuid]
-        )
-        assert set(similarities) == {r_b.uuid}
+        results_b = await coll_b.query(query_vectors=[v2], limit=10)
+        assert {match.record_uuid for match in results_b[0].matches} == {r_b.uuid}
 
         await store.delete_collection(namespace=ns, name="tenant_b")
 

@@ -17,10 +17,9 @@ The index is published atomically but not durably (see
 `vector_search_engine.index_persistence`), so a power failure can revert the
 last publication while the records table -- and the trim that ran behind that
 publication -- stay committed. The result is records whose vectors are missing
-from the index: `query` cannot find them, `get_cosine_similarity` omits them,
-and re-upserting them is the repair. Callers that need every record searchable
-after a power failure must be able to re-ingest; nothing here detects the gap
-for them.
+from the index: `query` cannot find them, and re-upserting them is the repair.
+Callers that need every record searchable after a power failure must be able
+to re-ingest; nothing here detects the gap for them.
 """
 
 import asyncio
@@ -528,39 +527,6 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
 
         matches.sort(key=lambda match: match.cosine_similarity, reverse=True)
         return matches
-
-    @override
-    async def get_cosine_similarity(
-        self,
-        *,
-        query_vector: Sequence[float],
-        record_uuids: Iterable[UUID],
-    ) -> dict[UUID, float]:
-        record_uuids = list(record_uuids)
-        if not record_uuids:
-            return {}
-
-        async with self._create_session() as session:
-            fetched_rows = (
-                await session.execute(
-                    select(
-                        self._records_table.c.uuid, self._records_table.c.row_id
-                    ).where(
-                        self._records_table.c.uuid.in_(record_uuids),
-                    )
-                )
-            ).all()
-        if not fetched_rows:
-            return {}
-
-        row_id_to_uuid = {row.row_id: row.uuid for row in fetched_rows}
-        similarities = await self._search_engine.get_cosine_similarities(
-            query_vector, row_id_to_uuid.keys()
-        )
-        return {
-            row_id_to_uuid[row_id]: similarity
-            for row_id, similarity in similarities.items()
-        }
 
     @override
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:

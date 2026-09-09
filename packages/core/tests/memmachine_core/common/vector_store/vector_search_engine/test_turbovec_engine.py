@@ -326,52 +326,6 @@ class TestSearchAllowlist:
         assert [m.key for m in result.matches] == [target]
 
 
-# -- get_cosine_similarities --
-
-
-class TestGetCosineSimilarities:
-    @pytest.mark.asyncio
-    async def test_similarities_by_key(self):
-        engine = _make_engine()
-        await engine.add({1: _normalize(_one_hot(0)), 2: _normalize(_one_hot(1))})
-
-        similarities = await engine.get_cosine_similarities(
-            _normalize(_one_hot(0)), [1, 2]
-        )
-        assert set(similarities) == {1, 2}
-        assert similarities[1] == pytest.approx(1.0, abs=QUANT_ABS)
-        assert similarities[2] == pytest.approx(0.0, abs=QUANT_ABS)
-
-    @pytest.mark.asyncio
-    async def test_missing_keys_omitted(self):
-        engine = _make_engine()
-        await engine.add({1: _normalize(_one_hot(0))})
-
-        similarities = await engine.get_cosine_similarities(
-            _normalize(_one_hot(0)), [1, 99]
-        )
-        assert set(similarities) == {1}
-
-    @pytest.mark.asyncio
-    async def test_empty_keys(self):
-        engine = _make_engine()
-        await engine.add({1: _normalize(_one_hot(0))})
-
-        assert await engine.get_cosine_similarities(_normalize(_one_hot(0)), []) == {}
-
-    @pytest.mark.asyncio
-    async def test_low_ranked_keys_included(self):
-        engine = _make_engine()
-        vectors = {index: _spread(index) for index in range(2 * NDIM)}
-        await engine.add(vectors)
-
-        target = 2 * NDIM - 1
-        similarities = await engine.get_cosine_similarities(
-            _normalize(_one_hot(0)), [target]
-        )
-        assert set(similarities) == {target}
-
-
 # -- Persistence --
 
 

@@ -96,33 +96,6 @@ class VectorStoreCollection(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_cosine_similarity(
-        self,
-        *,
-        query_vector: Sequence[float],
-        record_uuids: Iterable[UUID],
-    ) -> dict[UUID, float]:
-        """
-        Get cosine similarities between a query vector and records' vectors.
-
-        Similarities may be computed from quantized stored vectors,
-        so they may not be faithful to similarities computed
-        with a fresh embedding.
-
-        Args:
-            query_vector (Sequence[float]):
-                The vector to compare against.
-            record_uuids (Iterable[UUID]):
-                UUIDs of the records to compare.
-
-        Returns:
-            dict[UUID, float]:
-                Mapping of record UUID to cosine similarity in [-1, 1].
-                UUIDs without a stored record are omitted.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
     async def delete(
         self,
         *,

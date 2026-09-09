@@ -247,49 +247,6 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         return matches
 
     @override
-    async def get_cosine_similarity(
-        self,
-        *,
-        query_vector: Sequence[float],
-        record_uuids: Iterable[UUID],
-    ) -> dict[UUID, float]:
-        record_uuids = list(record_uuids)
-        if not record_uuids:
-            return {}
-
-        query_blob = self._serialize_vector(query_vector)
-        similarities: dict[UUID, float] = {}
-        async with self._create_session() as session:
-            fetched_rows = (
-                await session.execute(
-                    select(
-                        self._records_table.c.uuid, self._records_table.c.rowid
-                    ).where(
-                        self._records_table.c.uuid.in_(record_uuids),
-                    )
-                )
-            ).all()
-
-            # One point query per rowid: vec0 plans `rowid = ?` as a point
-            # lookup but `rowid IN (...)` as a full scan.
-            for row in fetched_rows:
-                distance = (
-                    await session.execute(
-                        text(
-                            f"SELECT vec_distance_cosine(vector, :query) "
-                            f"FROM [{self._vector_table_name}] "
-                            f"WHERE rowid = :rowid"
-                        ),
-                        {"query": query_blob, "rowid": row.rowid},
-                    )
-                ).scalar()
-                if distance is None:
-                    continue
-                similarities[row.uuid] = self._distance_to_cosine_similarity(distance)
-
-        return similarities
-
-    @override
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
         record_uuids = list(record_uuids)
         if not record_uuids:
