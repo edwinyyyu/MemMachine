@@ -214,9 +214,14 @@ the partition tables exactly as shipped in #1548 since lifecycle is
 out of scope:
 
 - `segment_store_sg` gains `session_id TEXT NULL`, `source_id TEXT
-  NULL` and `block_kind TEXT NOT NULL`, written from the segment's
-  fields; `block_kind` exists because the encoded block cannot be
-  filtered.
+  NULL` and `block_kind TEXT NOT NULL`. All three are projections of
+  the segment the store already holds, written in the same insert as
+  the encoded block, the way `timestamp` and `properties` already are:
+  the codec-encoded block is opaque to SQL, so what the store filters
+  on is copied out beside it. The model does not change; `Segment`
+  still carries one `block` with its `kind` inside. The store derives
+  `block_kind` from `segment.block.kind` and never accepts it as a
+  separate input, so the column cannot disagree with the block.
 - Indexes: keep `(incarnation, event_uuid, index, offset)` for lookup
   by event; replace the timestamp ordering index with
   `segment_store_sg__in_order (incarnation, session_id, timestamp,

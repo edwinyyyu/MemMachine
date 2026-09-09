@@ -204,7 +204,7 @@ window is bounded by the same filters as the hits it surrounds.
 | `session_id` | `Text` | null; copied from the event |
 | `source_id` | `Text` | null; copied from the event |
 | `context` | `LargeBinary` | null, codec-encoded; copied from the event, for rendering |
-| `block_kind` | `Text` | not null; the block's kind name, for filtering |
+| `block_kind` | `Text` | not null; `block.kind` projected out of the encoded block at write, for filtering |
 | `block` | `LargeBinary` | not null, codec-encoded |
 | `properties` | `JSON` (`JSONB` on PostgreSQL) | not null |
 
