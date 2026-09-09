@@ -925,22 +925,21 @@ Two tiers of fields, one mechanism underneath. The reference is the
 `default` branch of edwinyyyu/MemMachine (commits 27b3279b, 822ccb6b,
 2d5dc2b5), adjusted where noted.
 
-System fields. Defined by the server, first-class in the API, typed: for
-an event, `id`, `timestamp`, `session_id` and `source_id`; for a
-segment, its event's fields and the `kind` of its one block. Search
-takes them as named parameters, `since` and `until` (inclusive and
-exclusive, so ranges meet without overlap; `until` rather than `before`
-because `before` counts segments in expansion), `session_ids`,
-`source_ids` and `block_kinds` (lists; a source's rendered name lives
-in the context and is never filtered). They are never spelled inside the user filter,
-so no caller and no model decides between `timestamp` and some prefixed
-form of it. Underneath, each system field is stored as a reserved
-property key, `memmachine_<system>_<field>`, built by one function that
-validates the key against the stores' naming contract at import time;
-the prefix is the distribution name, so its uniqueness is the package
-registry's. Stores therefore index and filter system fields with the
-same machinery as user properties, and a caller key beginning with the
-prefix is rejected on the way in.
+System fields. Defined by the server, first-class in the API, typed: for an
+event, `id`, `timestamp`, `session_id` and `source_id`; for a segment, its
+event's fields and the `kind` of its one block. Search takes them as named
+parameters, `since` and `until` (inclusive and exclusive, so ranges meet
+without overlap; `until` rather than `before` because `before` counts segments
+in expansion), `session_ids`, `source_ids` and `block_kinds` (lists; a source's
+rendered name lives in the context and is never filtered). They are never
+spelled inside the user filter, so no caller and no model decides between
+`timestamp` and some prefixed form of it. Underneath, each system field is
+stored as a reserved property key, `memmachine_<system>_<field>`, built by one
+function that validates the key against the stores' naming contract at import
+time; the prefix is the distribution name, so its uniqueness is the package
+registry's. Stores therefore index and filter system fields with the same
+machinery as user properties, and a caller key beginning with the prefix is
+rejected on the way in.
 
 Which fields are system fields is decided by one criterion: the server
 gives the field semantics beyond filtering. `timestamp` orders,
