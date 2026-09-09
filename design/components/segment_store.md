@@ -59,7 +59,7 @@ class SegmentPartition(ABC):              # data, bound to one key; no method ta
     async def get_neighbours(self, anchor: UUID, *,
                              before: int, after: int,
                              source_ids: Iterable[str] | None,
-                             block_kinds: Iterable[str] | None) -> list[Segment]
+                             block_kinds: Iterable[str] | None) -> Neighbourhood
     async def get_segment_uuids_by_event_uuids(self,
                                                event_uuids: Iterable[UUID]) -> dict[UUID, list[UUID]]
     async def get_derivative_uuids_by_segment_uuids(self,
@@ -86,10 +86,18 @@ into another conversation interleaved in time.
 
 `get_neighbours` serves expansion (`episodic_memory.md`): the `before`
 segments preceding the anchor and the `after` following it, within the
-anchor's session, optionally restricted to source ids and block kinds;
-the anchor itself is included. The order is total and stable, so a
-caller walks further by repeating the call from the first or last
-segment returned. `get_segment_contexts`
+anchor's session, optionally restricted to source ids and block kinds,
+as two lists in the store's order, `Neighbourhood(before, after)`. The
+anchor itself is never returned: it is an address the caller named and
+already holds, so the filters apply to the neighbours only, an anchor
+that would fail them still anchors, and nothing in the result can be
+mistaken for it. Its place is between the two lists. The order is
+total and stable, so a caller walks further by repeating the call from
+the first of `before` or the last of `after`. That is the rule decided
+for MemMachine #1498: during a search a seed that fails the filter is
+dropped before any window is built, and after a search a neighbourhood
+is kept even when its anchor would fail, in which case the anchor is
+never returned. `get_segment_contexts`
 applies `since`, `before`, `source_ids`, `block_kinds` and
 `property_filter` to the window rows as well as to the seeds, so a
 window is bounded by the same filters as the hits it surrounds.
@@ -145,7 +153,8 @@ window is bounded by the same filters as the hits it surrounds.
 - `segment_store_sg` gains `block_kind`, the kind name of the segment's
   one block as a plain column, since the encoded block cannot be
   filtered (`blocks.md`).
-- `get_neighbours` is added for expansion, over the ordering index.
+- `get_neighbours` is added for expansion, over the ordering index,
+  returning the neighbours and never the anchor.
 - The two ABCs stay two, `SegmentStore` and `SegmentPartition`, with
   the line between them redrawn: the store names keys, the partition
   never does.

@@ -783,7 +783,12 @@ Operations, in the order the stores are touched:
   claude-memory walks a conversation around a memory; one indexed read
   on the segment store, no embedding. Segments are the one unit: a
   long event is several of them, read inward by expanding from one.
-  Specified in `design/components/episodic_memory.md`.
+  The anchor is never returned: the caller named it and holds it, the
+  filters apply to the neighbours only, and the two sides come back as
+  two lists with the anchor's place between them, so a neighbourhood is
+  kept even when its anchor would fail the filter and nothing in it can
+  be mistaken for the anchor (#1498). Specified in
+  `design/components/episodic_memory.md`.
 - `forget`: look up segments and derivatives; delete vector records;
   delete segments.
 
@@ -1654,7 +1659,7 @@ Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 | Method and path | Effect | Status |
 | --- | --- | --- |
 | `POST .../search` | body `query`; the search options, each optional with the tenant's default: `limit`, `min_similarity`, `expand_context`, `rerank` (`reranker`, `candidates`, `min_score`, or `null` for none); the system filters `since`, `before`, `session_ids`, `source_ids`, `block_kinds`; `filter` (JSON tree); `format` (dates, times, locale, timezone for `text`) | 200 with up to `limit` hits in descending score |
-| `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after` (segments), `source_ids`, `block_kinds`, `format` | 200 with the segments in order, within the anchor's session, and `text` |
+| `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after` (segments), `source_ids`, `block_kinds`, `format` | 200 with `before` and `after`, the segments on each side in order within the anchor's session, never the anchor itself, and their `text` |
 | `GET ...` | `watermark` and `head`, the lag being their difference | 200 |
 
 Event body: `id` (optional UUID; a caller that retries a request
@@ -1670,7 +1675,8 @@ Search hit: `score`, `seed` (the index in `segments` of the matched
 segment), `segments` (each with `uuid`, `event_id`, `position`,
 `index`, `offset`, `timestamp` with offset, `session_id`, `source_id`,
 `context`, `block`, `properties`), `text` (the window rendered with
-`format`). An expansion returns the same segment shape and `text`.
+`format`). An expansion returns `before` and `after`, each a list of the
+same segment shape, and their `text`.
 
 Errors: one handler for the domain error hierarchy maps to a status and
 a body `{error: {code, message}}` with a closed set of codes:

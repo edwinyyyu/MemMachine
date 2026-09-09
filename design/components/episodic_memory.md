@@ -44,6 +44,10 @@ class SearchHit(BaseModel):
     seed: int                       # index in `segments` of the matched segment
     segments: list[Segment]         # the context window, in the store's order
 
+class Neighbourhood(BaseModel):
+    before: list[Segment]           # in order, ending just before the anchor
+    after: list[Segment]            # in order, starting just after it
+
 class EpisodicMemory:
     async def encode(self, events: Iterable[StoredEvent]) -> None
     async def forget(self, event_uuids: Iterable[UUID]) -> None
@@ -58,7 +62,7 @@ class EpisodicMemory:
     async def expand(self, anchor: UUID, *,
                      before: int, after: int,
                      source_ids: Iterable[str] | None,
-                     block_kinds: Iterable[str] | None) -> list[Segment]
+                     block_kinds: Iterable[str] | None) -> Neighbourhood
     @staticmethod
     def render(segments: Iterable[Segment], *,
                format_options: FormatOptions) -> str
@@ -97,12 +101,13 @@ class EpisodicMemory:
   segments, the one unit the store has; a long event is several
   segments and is read inward by expanding from one of them. The walk
   stays in the anchor's session, and `source_ids` and `block_kinds`
-  restrict it.
-  Returns the segments in the store's order, the anchor among them; a
-  caller walks further by calling again with the first or last segment
-  as the anchor and one side zero. Backed by
-  `SegmentPartition.get_neighbours` over the ordering index; no vector
-  search and no embedding, so it is one indexed read.
+  restrict it. Returns the two sides in the store's order and never the
+  anchor: the caller named it and holds it, from the hit or the event,
+  the filters apply to the neighbours only, and the anchor's place is
+  between the lists. A caller walks further by calling again with the
+  first of `before` or the last of `after` as the anchor and one side
+  zero. Backed by `SegmentPartition.get_neighbours` over the ordering
+  index; no vector search and no embedding, so it is one indexed read.
 - `render`: the reader's text for a run of segments, in their order:
   each segment's timestamp formatted by `format_options`, its context
   parts' contributions, and its block's rendering (`context.md`,
@@ -158,9 +163,10 @@ segment is one block, so its kind is a system field filtered by
   `source_id` and context itself. `FormatOptions` stays dates, times,
   locale and timezone. `produced_for` and the producer roles of the old
   episode model are not carried over and nothing replaces them.
-- `expand` is added, with `get_neighbours` on the segment store;
-  `string_from_segment_context` and `string_from_segment_contexts`
-  become `render`.
+- `expand` is added, with `get_neighbours` on the segment store, on
+  the rule of MemMachine #1498 and `agentic_expansion` commit 0c19942a:
+  the neighbours, never the anchor; `string_from_segment_context` and
+  `string_from_segment_contexts` become `render`.
 - Scores are cosine similarity; `SimilarityMetric` goes from the
   embedder, the vector store and the engines, as on the reference
   branch (commit 6ab12098): the embedder exposes `model_id` and

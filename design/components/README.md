@@ -65,7 +65,9 @@ Conventions shared by every specification:
   needs and returns.
 - Types are few and each answers one need: `StoredEvent` (an event
   with its position), `IngestResult` (what ingest returns), `LogEntry`,
-  `SearchHit` (a scored window with its matched segment), `Tenant` with
+  `SearchHit` (a scored window with its matched segment),
+  `Neighbourhood` (the two sides of an expansion, the anchor between
+  them and never in them), `Tenant` with
   `TenantState` and `ComponentState`, `SearchOptions` and
   `RerankOptions` (one model for a tenant's defaults and a request's
   overrides), and the API request models `SearchRequest` and

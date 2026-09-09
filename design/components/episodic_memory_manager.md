@@ -94,7 +94,7 @@ Toward the routers:
 
 ```python
     async def search(self, tenant_id: UUID, request: SearchRequest) -> list[SearchHit]
-    async def expand(self, tenant_id: UUID, request: ExpandRequest) -> list[Segment]
+    async def expand(self, tenant_id: UUID, request: ExpandRequest) -> Neighbourhood
     async def watermark(self, tenant_id: UUID) -> int
 ```
 
