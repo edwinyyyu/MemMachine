@@ -1,0 +1,87 @@
+logging:
+  path: results/mm-server.log
+  level: info
+
+server:
+  host: 127.0.0.1
+  port: 8091
+
+episode_store:
+  database: profile_storage
+
+episodic_memory:
+  short_term_memory_enabled: false
+  long_term_memory:
+    backend: event
+    embedder: openai_embedder
+    vector_store: event_vector_store
+    segment_store: profile_storage
+  short_term_memory:
+    llm_model: openai_model
+    message_capacity: 500
+
+retrieval_agent:
+  llm_model: openai_model
+  reranker: my_reranker_id
+
+semantic_memory:
+  enabled: false
+  llm_model: openai_model
+  embedding_model: openai_embedder
+  database: profile_storage
+  config_database: profile_storage
+
+session_manager:
+  database: profile_storage
+
+prompt:
+  default_project_categories:
+  - profile_prompt
+
+resources:
+  databases:
+    profile_storage:
+      provider: postgres
+      config:
+        host: localhost
+        port: 5442
+        user: memmachine
+        password: memmachine
+        db_name: memmachine
+        pool_size: 10
+        max_overflow: 5
+    event_vector_store:
+      provider: qdrant
+      config:
+        host: localhost
+        port: 6343
+        grpc_port: 6344
+        prefer_grpc: false
+        https: false
+  embedders:
+    openai_embedder:
+      provider: openai
+      config:
+        max_input_length: 2048
+        model: "text-embedding-3-small"
+        api_key: "sk-mock"
+        base_url: "http://127.0.0.1:8791/v1"
+        dimensions: 1536
+  language_models:
+    openai_model:
+      provider: openai-chat-completions
+      config:
+        model: "gpt-4o-mini"
+        api_key: "sk-mock"
+        base_url: "http://127.0.0.1:8791/v1"
+  rerankers:
+    my_reranker_id:
+      provider: "rrf-hybrid"
+      config:
+        reranker_ids:
+          - id_ranker_id
+          - bm_ranker_id
+    id_ranker_id:
+      provider: "identity"
+    bm_ranker_id:
+      provider: "bm25"
