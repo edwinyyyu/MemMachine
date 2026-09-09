@@ -80,18 +80,24 @@ def atomic_index_write(path: str) -> Iterator[str]:
     temp = _temp_path(path)
     # Clear any temp left by a previously interrupted save before reusing it.
     Path(temp).unlink(missing_ok=True)
+    # Opened before the caller writes and held across that write, so the fsync
+    # below is on a descriptor that predates it. See `_flush_to_disk`.
+    fd = os.open(temp, os.O_RDWR | os.O_CREAT, 0o644)
     try:
-        yield temp
-        _flush_to_disk(temp)
+        try:
+            yield temp
+            _flush_to_disk(fd, temp)
+        finally:
+            os.close(fd)
         Path(temp).replace(path)
     except BaseException:
         Path(temp).unlink(missing_ok=True)
         raise
 
 
-def _flush_to_disk(path: str) -> None:
+def _flush_to_disk(fd: int, path: str) -> None:
     """
-    Fsync the temp file so its bytes are on disk before the swap.
+    Fsync the index bytes, on a descriptor that predates them.
 
     This is what rules out publishing the new name over incomplete bytes: the
     data is durable before the rename is issued, and a durable write does not
@@ -99,18 +105,24 @@ def _flush_to_disk(path: str) -> None:
     the temp and the previously published index stands -- because a failure
     here is exactly the evidence that the bytes are not safe to publish.
 
-    The descriptor is a fresh one, because the engine writes through its own
-    and closes it before returning. Flushing works regardless: dirty pages
-    belong to the file, not to the descriptor that dirtied them. Error
-    reporting does not. Linux hands a writeback error to descriptors that were
-    open when it was recorded, so one recorded in the gap between the engine's
-    close and this open is never reported here and the save proceeds. What
-    closes that window is fsyncing the descriptor the bytes were written
-    through, which needs an engine that writes through a caller-supplied
-    handle rather than to a path.
+    The descriptor has to predate the write for that to hold. Flushing would
+    work on one opened afterwards, since dirty pages belong to the file rather
+    than to the descriptor that dirtied them, but error reporting would not:
+    Linux samples the writeback error sequence when a file is opened, so a
+    descriptor opened after an error was recorded never learns of it and the
+    fsync returns success over bytes already known bad.
+
+    Holding a descriptor across someone else's write assumes they write in
+    place. An engine that wrote a file of its own and renamed it over this one
+    would leave this descriptor on an orphaned inode, and the fsync would
+    report on a file nobody is about to publish -- so that is checked rather
+    than assumed.
     """
-    fd = os.open(path, os.O_RDWR)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    written = Path(path).stat()
+    held = os.fstat(fd)
+    if (held.st_dev, held.st_ino) != (written.st_dev, written.st_ino):
+        raise OSError(
+            f"{path} was replaced while it was being written, so the "
+            f"descriptor held across the write no longer refers to it"
+        )
+    os.fsync(fd)
