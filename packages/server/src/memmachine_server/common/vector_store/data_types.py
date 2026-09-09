@@ -105,21 +105,21 @@ class VectorStoreCollectionConfigMismatchError(Exception):
 
 class Record(BaseModel):
     """
-    A record in the vector store.
+    A record to write to a vector store collection.
+
+    Records are only ever written. A collection stores vectors to search
+    them and properties to filter on them, and answers a query with
+    `QueryMatch`; neither a vector nor a property is read back out.
 
     Attributes:
         uuid (UUID):
             Unique identifier for the record.
         vector (list[float] | None):
-            Vector for similarity search.
-            `None` is not allowed on input.
-            Always `None` on output: a collection stores vectors to search
-            them, and does not read them back out
+            Vector for similarity search. Required; `None` is rejected
             (default: None).
         properties (dict[str, PropertyValue] | None):
             Property key-value pairs.
-            Use `{}` to represent missing properties; `None` on input is treated as `{}`.
-            `None` on output means the properties were not requested (`return_properties=False`)
+            Use `{}` to represent missing properties; `None` is treated as `{}`
             (default: None).
     """
 
@@ -153,12 +153,12 @@ class QueryMatch(BaseModel):
         cosine_similarity (float):
             Cosine similarity between the query vector and the matched
             record's vector, in [-1, 1]. Higher is a better match.
-        record (Record):
-            The matched record.
+        record_uuid (UUID):
+            UUID of the matched record.
     """
 
     cosine_similarity: float
-    record: Record
+    record_uuid: UUID
 
 
 class QueryResult(BaseModel):

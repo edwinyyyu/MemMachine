@@ -2,7 +2,7 @@
 
 import math
 import operator
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from uuid import UUID
 
 from memmachine_server.common.data_types import PropertyValue
@@ -122,7 +122,6 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
         min_cosine_similarity: float | None = None,
         limit: int | None = None,
         property_filter: FilterExpr | None = None,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         results: list[QueryResult] = []
         for query_vector in query_vectors:
@@ -144,7 +143,7 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
                 matches.append(
                     QueryMatch(
                         cosine_similarity=cosine_similarity,
-                        record=self._project_record(record, return_properties),
+                        record_uuid=record.uuid,
                     )
                 )
             matches.sort(key=lambda m: m.cosine_similarity, reverse=True)
@@ -153,33 +152,6 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
             results.append(QueryResult(matches=matches))
         return results
 
-    async def set_properties(
-        self,
-        *,
-        record_properties: Mapping[UUID, Mapping[str, PropertyValue]],
-    ) -> None:
-        for uid, properties in record_properties.items():
-            record = self.records.get(uid)
-            if record is None:
-                continue
-            self.records[uid] = Record(
-                uuid=record.uuid,
-                vector=list(record.vector) if record.vector is not None else None,
-                properties=dict(properties),
-            )
-
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
         for uid in record_uuids:
             self.records.pop(uid, None)
-
-    @staticmethod
-    def _project_record(record: Record, return_properties: bool) -> Record:
-        """Return a copy of the record with only the requested fields."""
-        return Record(
-            uuid=record.uuid,
-            properties=(
-                dict(record.properties)
-                if return_properties and record.properties
-                else None
-            ),
-        )

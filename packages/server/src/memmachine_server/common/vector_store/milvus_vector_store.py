@@ -38,7 +38,6 @@ from memmachine_server.common.filter.filter_parser import (
 )
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 from memmachine_server.common.properties_json import (
-    decode_properties,
     encode_properties,
 )
 from memmachine_server.common.utils import compute_cosine_similarity, ensure_tz_aware
@@ -184,30 +183,9 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             entity[_property_field(key)] = _normalize_property_filter_value(value)
         return entity
 
-    @staticmethod
-    def _parse_record(
-        entity: Mapping[str, Any],
-        *,
-        return_properties: bool,
-    ) -> Record:
-        """Parse a Milvus entity into a vector store record."""
-        properties: dict[str, PropertyValue] | None = None
-        if return_properties:
-            properties = decode_properties(
-                cast(Mapping | None, entity.get(_PROPERTIES_FIELD))
-            )
-
-        return Record(
-            uuid=UUID(str(entity[_RECORD_UUID_FIELD])),
-            properties=properties,
-        )
-
-    def _output_fields(self, *, return_properties: bool) -> list[str]:
+    def _output_fields(self) -> list[str]:
         # The vector always comes back: search scores are recomputed from it.
-        fields = [_RECORD_UUID_FIELD, _VECTOR_FIELD]
-        if return_properties:
-            fields.append(_PROPERTIES_FIELD)
-        return fields
+        return [_RECORD_UUID_FIELD, _VECTOR_FIELD]
 
     @staticmethod
     def _cosine_similarity_from_entity_vector(
@@ -255,7 +233,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         limit: int,
         min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         """Query for records matching the criteria by query vectors."""
         async with self._tracker("query"):
@@ -281,9 +258,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 # Milvus Lite returns COSINE as distance, while Zilliz Cloud
                 # returns it as similarity. Fetch vectors and compute scores
                 # locally so MemMachine score semantics stay consistent.
-                output_fields=self._output_fields(
-                    return_properties=return_properties,
-                ),
+                output_fields=self._output_fields(),
                 anns_field=_VECTOR_FIELD,
             )
 
@@ -307,10 +282,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                     matches.append(
                         QueryMatch(
                             cosine_similarity=cosine_similarity,
-                            record=self._parse_record(
-                                entity,
-                                return_properties=return_properties,
-                            ),
+                            record_uuid=UUID(str(entity[_RECORD_UUID_FIELD])),
                         )
                     )
 
@@ -318,61 +290,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 results.append(QueryResult(matches=matches))
 
             return results
-
-    @override
-    async def set_properties(
-        self,
-        *,
-        record_properties: Mapping[UUID, Mapping[str, PropertyValue]],
-    ) -> None:
-        """Replace the properties of records already in the collection."""
-        async with self._tracker("set_properties"):
-            if not record_properties:
-                return
-
-            uuid_list = list(record_properties)
-            primary_ids = [
-                self._primary_id(self._partition_key, uuid) for uuid in uuid_list
-            ]
-
-            # Milvus has no partial update: an upsert writes the whole row, so
-            # the vector has to be read back to be written again unchanged. A
-            # row Milvus does not hold is skipped rather than inserted without
-            # a vector.
-            raw_records = await asyncio.to_thread(
-                self._client.get,
-                collection_name=self._collection_name,
-                ids=primary_ids,
-                output_fields=[_RECORD_UUID_FIELD, _VECTOR_FIELD],
-            )
-            vectors_by_uuid = {
-                UUID(str(raw[_RECORD_UUID_FIELD])): list(
-                    cast(Sequence[float], raw[_VECTOR_FIELD])
-                )
-                for raw in (cast(Mapping[str, Any], r) for r in raw_records)
-            }
-
-            entities = [
-                self._build_entity(
-                    Record(
-                        uuid=record_uuid,
-                        vector=vectors_by_uuid[record_uuid],
-                        properties=dict(record_properties[record_uuid]),
-                    )
-                )
-                for record_uuid in uuid_list
-                if record_uuid in vectors_by_uuid
-            ]
-            if not entities:
-                return
-
-            def _upsert() -> None:
-                self._client.upsert(
-                    collection_name=self._collection_name,
-                    data=entities,
-                )
-
-            await asyncio.to_thread(_upsert)
 
     @override
     async def delete(

@@ -339,7 +339,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         limit: int,
         min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         """Query for records matching the criteria by query vectors."""
         async with self._tracker("query"):
@@ -368,7 +367,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                     score_threshold=min_cosine_similarity,
                     limit=limit,
                     with_vector=False,
-                    with_payload=return_properties,
+                    with_payload=False,
                 )
                 for query_vector in query_vectors
             ]
@@ -380,54 +379,16 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
 
             query_results: list[QueryResult] = []
             for batch in batch_results:
-                matches: list[QueryMatch] = []
-                for point in batch.points:
-                    properties: dict[str, PropertyValue] | None = None
-                    if return_properties and point.payload is not None:
-                        properties = self._parse_payload(point.payload)
-
-                    matches.append(
-                        QueryMatch(
-                            cosine_similarity=point.score,
-                            record=Record(
-                                uuid=UUID(str(point.id)),
-                                properties=properties,
-                            ),
-                        ),
+                matches = [
+                    QueryMatch(
+                        cosine_similarity=point.score,
+                        record_uuid=UUID(str(point.id)),
                     )
+                    for point in batch.points
+                ]
                 query_results.append(QueryResult(matches=matches))
 
             return query_results
-
-    @override
-    async def set_properties(
-        self,
-        *,
-        record_properties: Mapping[UUID, Mapping[str, PropertyValue]],
-    ) -> None:
-        """Replace the properties of records already in the collection."""
-        async with self._tracker("set_properties"):
-            for record_uuid, properties in record_properties.items():
-                # Select by filter rather than by id: the id alone would reach a
-                # point another logical collection owns in the same native one,
-                # and an id list raises on an id the collection does not hold
-                # where a filter simply matches nothing, which is the contract.
-                selector = models.FilterSelector(
-                    filter=models.Filter(
-                        must=[
-                            _partition_filter(self._partition_key),
-                            models.HasIdCondition(has_id=[record_uuid]),
-                        ]
-                    )
-                )
-                # Overwrite rather than merge: the payload carries the partition
-                # key alongside the properties, so `_build_payload` puts it back.
-                await self._client.overwrite_payload(
-                    collection_name=self._collection_name,
-                    payload=cast(dict[str, Any], self._build_payload(dict(properties))),
-                    points=selector,
-                    shard_key_selector=self._shard_key,
-                )
 
     @override
     async def delete(

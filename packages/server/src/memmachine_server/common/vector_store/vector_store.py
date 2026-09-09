@@ -5,10 +5,9 @@ Defines the interface for adding, querying, and deleting records.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from uuid import UUID
 
-from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
 )
@@ -27,8 +26,8 @@ class VectorStoreCollection(ABC):
     Identified by a (namespace, name) pair.
     All data operations are scoped to this logical collection.
 
-    Implementations must support storing, filtering on, and returning
-    record properties not declared in the configured indexed properties schema.
+    Implementations must support storing and filtering on record properties
+    not declared in the configured indexed properties schema.
 
     The schema exists to support indexing on fixed-type record properties.
     Record properties not declared in the schema may have mixed-type values.
@@ -69,10 +68,15 @@ class VectorStoreCollection(ABC):
         limit: int,
         min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         """
         Query for records matching the criteria by query vectors.
+
+        Answers with UUIDs and scores. Stored properties are filterable but
+        never returned: this store is not the authority for a record's
+        content, and its copy is only as fresh as the last write to it -- a
+        caller that needs a record's fields reads them from whatever owns
+        them.
 
         Args:
             query_vectors (Iterable[Sequence[float]]):
@@ -87,37 +91,11 @@ class VectorStoreCollection(ABC):
                 Filter expression tree.
                 If None or empty, no property filtering is applied
                 (default: None).
-            return_properties (bool):
-                Whether to include the properties in the returned records
-                (default: True).
 
         Returns:
             list[QueryResult]:
                 Results for each query vector,
                 ordered as in the input iterable.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    async def set_properties(
-        self,
-        *,
-        record_properties: Mapping[UUID, Mapping[str, PropertyValue]],
-    ) -> None:
-        """
-        Replace the properties of records already in the collection.
-
-        Each record keeps the vector it was stored with, so a caller that is
-        only correcting a record's properties does not have to hold the vector
-        to write it back. UUIDs the collection does not hold are ignored, the
-        way `delete` ignores them: whether a backend can tell a missing record
-        from one it just wrote varies, so the contract does not promise to.
-
-        Args:
-            record_properties (Mapping[UUID, Mapping[str, PropertyValue]]):
-                Mapping of record UUID to the properties that replace whatever
-                that record currently holds. Properties not in the indexed
-                properties schema are allowed.
         """
         raise NotImplementedError
 

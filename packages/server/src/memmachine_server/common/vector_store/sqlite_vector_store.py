@@ -43,7 +43,6 @@ from sqlalchemy import (
     String,
     Table,
     Uuid,
-    bindparam,
     create_engine,
     delete,
     event,
@@ -59,11 +58,9 @@ from sqlalchemy.orm import DeclarativeBase, MappedColumn, Session, mapped_column
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 
-from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
 from memmachine_server.common.properties_json import (
-    decode_properties,
     encode_properties,
 )
 
@@ -403,7 +400,6 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         limit: int,
         min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         query_vectors = list(query_vectors)
         if not query_vectors:
@@ -427,11 +423,10 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                 results.append(QueryResult(matches=[]))
                 continue
             matches = await self._build_matches(
-                row_id_to_similarity={
+                row_id_to_cosine_similarity={
                     m.key: m.cosine_similarity for m in search_result.matches
                 },
                 min_cosine_similarity=min_cosine_similarity,
-                return_properties=return_properties,
             )
             results.append(QueryResult(matches=matches))
 
@@ -457,17 +452,14 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
 
     async def _build_matches(
         self,
-        row_id_to_similarity: Mapping[int, float],
+        row_id_to_cosine_similarity: Mapping[int, float],
         min_cosine_similarity: float | None,
-        return_properties: bool,
     ) -> list[QueryMatch]:
-        matched_row_ids = list(row_id_to_similarity.keys())
+        matched_row_ids = list(row_id_to_cosine_similarity.keys())
 
-        selected_columns = [self._records_table.c.uuid, self._records_table.c.row_id]
-        if return_properties:
-            selected_columns.append(self._records_table.c.properties)
-
-        fetch_records = select(*selected_columns).where(
+        fetch_records = select(
+            self._records_table.c.uuid, self._records_table.c.row_id
+        ).where(
             self._records_table.c.row_id.in_(matched_row_ids),
         )
 
@@ -476,7 +468,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
 
         matches: list[QueryMatch] = []
         for row in matched_rows:
-            cosine_similarity = row_id_to_similarity.get(row.row_id)
+            cosine_similarity = row_id_to_cosine_similarity.get(row.row_id)
             if cosine_similarity is None:
                 continue
 
@@ -486,45 +478,15 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
             ):
                 continue
 
-            properties: dict[str, PropertyValue] | None = None
-            if return_properties:
-                properties = decode_properties(row.properties)
-
             matches.append(
                 QueryMatch(
                     cosine_similarity=cosine_similarity,
-                    record=Record(uuid=row.uuid, properties=properties),
+                    record_uuid=row.uuid,
                 )
             )
 
         matches.sort(key=lambda match: match.cosine_similarity, reverse=True)
         return matches
-
-    @override
-    async def set_properties(
-        self,
-        *,
-        record_properties: Mapping[UUID, Mapping[str, PropertyValue]],
-    ) -> None:
-        # Properties live in the records table and vectors live in the search
-        # engine, so replacing properties never touches the engine: no pending
-        # operation, no index save, nothing for a crash to lose.
-        if not record_properties:
-            return
-
-        async with self._create_session() as session, session.begin():
-            await session.execute(
-                update(self._records_table).where(
-                    self._records_table.c.uuid == bindparam("target_uuid")
-                ),
-                [
-                    {
-                        "target_uuid": record_uuid,
-                        "properties": encode_properties(dict(properties)),
-                    }
-                    for record_uuid, properties in record_properties.items()
-                ],
-            )
 
     @override
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:

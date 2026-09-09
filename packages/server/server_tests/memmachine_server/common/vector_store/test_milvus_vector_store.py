@@ -48,12 +48,12 @@ def _normalize(vector: list[float]) -> list[float]:
 _FETCH_LIMIT = 1000
 
 
-async def _fetch_records(collection, record_uuids) -> list[Record]:
-    """Read records back by UUID.
+async def _present_uuids(collection, record_uuids) -> list[UUID]:
+    """Which of these UUIDs the collection still holds, in the order given.
 
-    The collection contract has no read-by-UUID: `query` is the only read, and
-    with no score threshold it returns every record it holds, so a probe vector
-    in any direction lists the collection for a test to pick out of.
+    `query` is the only read and it answers with UUIDs and scores, so existence
+    is all a test can observe about a record here. With no score threshold a
+    probe vector in any direction lists the whole collection.
     """
     record_uuids = list(record_uuids)
     if not record_uuids:
@@ -61,8 +61,8 @@ async def _fetch_records(collection, record_uuids) -> list[Record]:
     dimensions = collection.config.vector_dimensions
     probe = [1.0] + [0.0] * (dimensions - 1)
     [result] = await collection.query(query_vectors=[probe], limit=_FETCH_LIMIT)
-    by_uuid = {match.record.uuid: match.record for match in result.matches}
-    return [by_uuid[uuid] for uuid in record_uuids if uuid in by_uuid]
+    present = {match.record_uuid for match in result.matches}
+    return [uuid for uuid in record_uuids if uuid in present]
 
 
 def _make_record(
@@ -261,9 +261,9 @@ class TestUpsertAndQuery:
         matches = query_results[0].matches
 
         assert len(matches) == 3
-        assert matches[0].record.uuid == r1.uuid
-        assert matches[1].record.uuid == r3.uuid
-        assert matches[2].record.uuid == r2.uuid
+        assert matches[0].record_uuid == r1.uuid
+        assert matches[1].record_uuid == r3.uuid
+        assert matches[2].record_uuid == r2.uuid
         assert (
             matches[0].cosine_similarity
             >= matches[1].cosine_similarity
@@ -286,24 +286,25 @@ class TestUpsertAndQuery:
         )
         matches = query_results[0].matches
         assert len(matches) == 1
-        assert matches[0].record.uuid == r1.uuid
+        assert matches[0].record_uuid == r1.uuid
 
     @pytest.mark.asyncio
-    async def test_query_return_flags(self, collection):
+    async def test_a_match_is_a_uuid_and_a_score(self, collection):
+        """A match names the record and how well it scored, and nothing else.
+
+        Stored properties are filterable but never returned: this store is not
+        the authority for a record's content, so a caller that wants its
+        fields reads them from whatever owns them.
+        """
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1, properties={"name": "test"})
         await collection.upsert(records=[r1])
 
-        with_properties = await collection.query(query_vectors=[v1], limit=10)
-        assert with_properties[0].matches[0].record.vector is None
-        assert with_properties[0].matches[0].record.properties is not None
-
-        no_properties = await collection.query(
-            query_vectors=[v1],
-            limit=10,
-            return_properties=False,
-        )
-        assert no_properties[0].matches[0].record.properties is None
+        [result] = await collection.query(query_vectors=[v1], limit=10)
+        assert len(result.matches) == 1
+        assert result.matches[0].record_uuid == r1.uuid
+        assert result.matches[0].cosine_similarity == pytest.approx(1.0, abs=0.01)
+        assert not hasattr(result.matches[0], "record")
 
     @pytest.mark.asyncio
     async def test_query_batch_multiple_vectors(self, collection):
@@ -317,8 +318,8 @@ class TestUpsertAndQuery:
         all_results = await collection.query(query_vectors=[v1, v2], limit=1)
 
         assert len(all_results) == 2
-        assert all_results[0].matches[0].record.uuid == r1.uuid
-        assert all_results[1].matches[0].record.uuid == r2.uuid
+        assert all_results[0].matches[0].record_uuid == r1.uuid
+        assert all_results[1].matches[0].record_uuid == r2.uuid
 
     @pytest.mark.asyncio
     async def test_upsert_removes_stale_filter_fields(self, collection):
@@ -335,7 +336,7 @@ class TestUpsertAndQuery:
             limit=10,
             property_filter=IsNull(field="name"),
         )
-        assert {match.record.uuid for match in results[0].matches} == {record.uuid}
+        assert {match.record_uuid for match in results[0].matches} == {record.uuid}
 
     @pytest.mark.asyncio
     async def test_upsert_failure_preserves_existing_record(
@@ -362,9 +363,7 @@ class TestUpsertAndQuery:
                 ]
             )
 
-        records = await _fetch_records(collection, [record.uuid])
-        assert len(records) == 1
-        assert records[0].properties == {"name": "old"}
+        assert await _present_uuids(collection, [record.uuid]) == [record.uuid]
 
         # The old vector is still the indexed one.
         results = await collection.query(query_vectors=[old_vector], limit=1)
@@ -397,7 +396,7 @@ class TestFilters:
             limit=10,
             property_filter=Comparison(field=field, op=op, value=value),
         )
-        return {match.record.uuid for match in all_results[0].matches}
+        return {match.record_uuid for match in all_results[0].matches}
 
     @pytest.mark.asyncio
     async def test_scalar_filters(self, collection):
@@ -437,10 +436,8 @@ class TestFilters:
         uuids = await self._query(collection, v1, "created_at", "=", dt_filter)
         assert uuids == {r1.uuid}
 
-        results = await _fetch_records(collection, [r1.uuid])
-        properties = results[0].properties
-        assert properties is not None
-        assert properties["created_at"] == dt_utc
+        # Already asserted through the filter above, which is the only way
+        # properties are observable.
 
     @pytest.mark.asyncio
     async def test_is_null_and_not_null(self, collection):
@@ -455,14 +452,14 @@ class TestFilters:
             limit=10,
             property_filter=IsNull(field="name"),
         )
-        assert {m.record.uuid for m in null_results[0].matches} == {r_missing.uuid}
+        assert {m.record_uuid for m in null_results[0].matches} == {r_missing.uuid}
 
         not_null_results = await collection.query(
             query_vectors=[v1],
             limit=10,
             property_filter=Not(expr=IsNull(field="name")),
         )
-        assert {m.record.uuid for m in not_null_results[0].matches} == {
+        assert {m.record_uuid for m in not_null_results[0].matches} == {
             r_has_value.uuid
         }
 
@@ -475,7 +472,7 @@ class TestFilters:
             limit=10,
             property_filter=In(field="name", values=["alice", "carol"]),
         )
-        assert {m.record.uuid for m in in_results[0].matches} == {r1.uuid, r3.uuid}
+        assert {m.record_uuid for m in in_results[0].matches} == {r1.uuid, r3.uuid}
 
         and_results = await collection.query(
             query_vectors=[v1],
@@ -485,7 +482,7 @@ class TestFilters:
                 right=Comparison(field="age", op=">", value=30),
             ),
         )
-        assert {m.record.uuid for m in and_results[0].matches} == {r3.uuid}
+        assert {m.record_uuid for m in and_results[0].matches} == {r3.uuid}
 
         or_results = await collection.query(
             query_vectors=[v1],
@@ -495,53 +492,7 @@ class TestFilters:
                 right=Comparison(field="name", op="=", value="bob"),
             ),
         )
-        assert {m.record.uuid for m in or_results[0].matches} == {r1.uuid, r2.uuid}
-
-
-class TestSetPropertiesAndDelete:
-    @pytest.mark.asyncio
-    async def test_set_properties_replaces_properties_and_keeps_the_vector(
-        self, collection
-    ):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        r1 = _make_record(vector=v1, properties={"name": "a", "rank": 1})
-        await collection.upsert(records=[r1])
-
-        await collection.set_properties(record_properties={r1.uuid: {"name": "b"}})
-
-        [fetched] = await _fetch_records(collection, [r1.uuid])
-        assert fetched.properties == {"name": "b"}
-
-        # The vector is untouched, so the record still answers its own query.
-        results = await collection.query(query_vectors=[v1], limit=1)
-        assert results[0].matches[0].record.uuid == r1.uuid
-        assert results[0].matches[0].cosine_similarity == pytest.approx(1.0, abs=0.01)
-
-    @pytest.mark.asyncio
-    async def test_set_properties_ignores_uuids_the_collection_does_not_hold(
-        self, collection
-    ):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        r1 = _make_record(vector=v1, properties={"name": "a"})
-        await collection.upsert(records=[r1])
-
-        await collection.set_properties(record_properties={uuid4(): {"name": "ghost"}})
-
-        [fetched] = await _fetch_records(collection, [r1.uuid])
-        assert fetched.properties == {"name": "a"}
-
-    @pytest.mark.asyncio
-    async def test_delete_records(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        v2 = _normalize([0.0, 1.0, 0.0])
-        r1 = _make_record(vector=v1)
-        r2 = _make_record(vector=v2)
-        await collection.upsert(records=[r1, r2])
-
-        await collection.delete(record_uuids=[r1.uuid])
-
-        results = await _fetch_records(collection, [r1.uuid, r2.uuid])
-        assert [record.uuid for record in results] == [r2.uuid]
+        assert {m.record_uuid for m in or_results[0].matches} == {r1.uuid, r2.uuid}
 
 
 class TestPartitionIsolation:
@@ -568,11 +519,20 @@ class TestPartitionIsolation:
             records=[Record(uuid=record_uuid, vector=v1, properties={"name": "b"})]
         )
 
-        results_a = await _fetch_records(coll_a, [record_uuid])
-        results_b = await _fetch_records(coll_b, [record_uuid])
-
-        assert results_a[0].properties == {"name": "a"}
-        assert results_b[0].properties == {"name": "b"}
+        # Each collection holds its own record under the shared uuid, and
+        # each one's properties are only reachable through its own filter.
+        [only_a] = await coll_a.query(
+            query_vectors=[v1],
+            limit=10,
+            property_filter=Comparison(field="name", op="=", value="a"),
+        )
+        [only_b] = await coll_b.query(
+            query_vectors=[v1],
+            limit=10,
+            property_filter=Comparison(field="name", op="=", value="b"),
+        )
+        assert [m.record_uuid for m in only_a.matches] == [record_uuid]
+        assert [m.record_uuid for m in only_b.matches] == [record_uuid]
 
         await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
