@@ -170,3 +170,6 @@ segment is one block, so its kind is a system field filtered by
 - `Embedder.ingest_embed` and `search_embed` take `list[str]`, not
   `list[Any]` (reference branch, commit ae1d616a); the only inputs are
   derivative texts and the query.
+- `TextSegmenter` imports the standard-library port of
+  `RecursiveCharacterTextSplitter` (`agentic_expansion`, commit 10ed25a6)
+  in place of `langchain_text_splitters`.

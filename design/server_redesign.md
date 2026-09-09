@@ -1756,7 +1756,14 @@ Reused, with the change named:
 - `episodic_memory/event_memory/`: `EventMemory` renamed to episodic
   memory, the segmenters, the derivers, the data types, and the segment
   store (UUID keys in place of incarnations, `purge_partition`, a
-  stateless handle in place of the incarnation-bound one).
+  stateless handle in place of the incarnation-bound one). The text
+  segmenter splits with the standard-library port of
+  `RecursiveCharacterTextSplitter` from `agentic_expansion` (commit
+  10ed25a6), verified against the original by a differential test, so
+  `langchain-text-splitters` leaves the dependencies; with the Bedrock
+  embedder an optional extra, as every backend client is,
+  `langchain-core` and the `langsmith` tree it pulls in leave the base
+  install with it.
 - `common/vector_store/`: the four implementations, with the registry
   replaced by rows in the key registry checked after each operation,
   the `config` parameter removed from `create_collection`, containers
