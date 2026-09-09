@@ -66,18 +66,18 @@ Worktrees on this machine:
 class Event(BaseModel):
     uuid: UUID
     timestamp: datetime            # aware; keeps the offset it was given
-    session_id: str | None         # required, no default; None = the ungrouped stream
-    source_id: str | None          # required, no default; the responsible entity's id
+    session_id: str | None = None  # None = the ungrouped stream
+    source_id: str | None = None   # the responsible entity's id; None = no source
     context: Context               # a mapping of parts; {} = no context
     blocks: list[Block]            # one or more, each of a registered kind
     properties: dict[str, PropertyValue] = Field(default_factory=dict)
 ```
 
 - `session_id` and `source_id` are first-class fields of the model,
-  not properties. They have no Pydantic default: every constructor call
-  states them, and `None` is a stated value. A layer that builds events
-  from something that has no session or no source passes what it has
-  decided (below, "Translation layers").
+  not properties, and default to `None`: no session is the ungrouped
+  stream and no source is one state, so a caller that has neither says
+  nothing. A layer that has either sets it (below, "Translation
+  layers").
 - Both are bounded strings; bound them by the same limit as a property
   string value, and reject longer ones where events are validated
   (`EventMemory._validate_events`).
@@ -366,11 +366,10 @@ Eviction, from the branch, cosine only:
 ## Translation layers
 
 Nothing in the server is rewired here, but the server's translation
-from `Episode` to `Event` (`episodic_memory/long_term_memory/`) must
-state the two new fields, since they have no model default. Use
-`source_id = producer_id` and `session_id = None` there: the server
-has an author identity and no conversation identity, and `None` is the
-ungrouped stream, not a missing value. Add no `Author` part, since the
+from `Episode` to `Event` (`episodic_memory/long_term_memory/`) should
+set `source_id = producer_id`, the one identity it has; it has no
+conversation identity, so `session_id` keeps its default and the
+events form the ungrouped stream. Add no `Author` part, since the
 server holds no readable name. The claude-memory engine already keeps
 a session id and an author in properties; it moves them into the two
 fields and keeps the rest of its properties as they are.
