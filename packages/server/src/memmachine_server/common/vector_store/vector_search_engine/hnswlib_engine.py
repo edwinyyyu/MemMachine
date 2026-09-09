@@ -49,11 +49,12 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
         """
         self._num_dimensions = num_dimensions
 
-        self._space = self._SPACE
         self._ef_search = ef_search
         self._allow_replace_deleted = allow_replace_deleted
 
-        self._index = hnswlib.Index(space=self._SPACE, dim=num_dimensions)
+        self._index = hnswlib.Index(
+            space=HnswlibVectorSearchEngine._SPACE, dim=num_dimensions
+        )
         self._index.init_index(
             max_elements=initial_capacity,
             ef_construction=ef_construction,
@@ -293,7 +294,9 @@ class HnswlibVectorSearchEngine(VectorSearchEngine):
 
     def _sync_load(self, path: str) -> None:
         clear_stale_index_temp(path)
-        self._index = hnswlib.Index(space=self._space, dim=self._num_dimensions)
+        self._index = hnswlib.Index(
+            space=HnswlibVectorSearchEngine._SPACE, dim=self._num_dimensions
+        )
         self._index.load_index(path, allow_replace_deleted=self._allow_replace_deleted)
         self._index.set_ef(self._ef_search)
         # Reconcile _known_labels with hnswlib's label_lookup_.

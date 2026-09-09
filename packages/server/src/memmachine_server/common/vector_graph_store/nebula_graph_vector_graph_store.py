@@ -18,7 +18,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
 from nebulagraph_python.py_data_types import NVector
 
@@ -107,6 +107,15 @@ class NebulaGraphVectorGraphStoreParams:
     user_metrics_labels: dict[str, str] = field(default_factory=dict)
 
 
+# NebulaGraph's `cosine()` is KNN-only -- it cannot take APPROXIMATE -- and its
+# vector indexes offer only L2 and IP. Cosine similarity between unit vectors
+# *is* their inner product, so embeddings are normalized on the way in and
+# compared with `inner_product()` against an IP index. That is cosine ranking,
+# and unlike `cosine()` it can be approximate.
+_INDEX_METRIC = "IP"
+_DISTANCE_FUNCTION = "inner_product"
+
+
 class NebulaGraphVectorGraphStore(VectorGraphStore):
     """
     NebulaGraph Enterprise implementation of VectorGraphStore.
@@ -118,14 +127,6 @@ class NebulaGraphVectorGraphStore(VectorGraphStore):
     - Vector indexes with IVF/HNSW algorithms
     - SESSION SET SCHEMA and SESSION SET GRAPH for context
     """
-
-    # NebulaGraph's `cosine()` is KNN-only -- it cannot take APPROXIMATE -- and
-    # its vector indexes offer only L2 and IP. Cosine similarity between unit
-    # vectors *is* their inner product, so embeddings are normalized on the way
-    # in and compared with `inner_product()` against an IP index. That is
-    # cosine ranking, and unlike `cosine()` it can be approximate.
-    _INDEX_METRIC: ClassVar[str] = "IP"
-    _DISTANCE_FUNC_AND_ORDER: ClassVar[tuple[str, str]] = ("inner_product", "DESC")
 
     class CacheIndexState(Enum):
         """Index state tracking for local cache."""
@@ -490,26 +491,21 @@ class NebulaGraphVectorGraphStore(VectorGraphStore):
             else:
                 search_limit = effective_limit
 
-            distance_func, order_dir = self._DISTANCE_FUNC_AND_ORDER
-            metric_name = self._INDEX_METRIC
-
             # Build vector literal
             vec_literal = self._vector_to_gql_literal(query_embedding)
 
             # Build OPTIONS clause
             if self._ann_index_type == "IVF":
-                options = (
-                    f"{{METRIC: {metric_name}, TYPE: IVF, NPROBE: {self._ivf_nprobe}}}"
-                )
+                options = f"{{METRIC: {_INDEX_METRIC}, TYPE: IVF, NPROBE: {self._ivf_nprobe}}}"
             else:  # HNSW
-                options = f"{{METRIC: {metric_name}, TYPE: HNSW, EFSEARCH: {self._hnsw_ef_search}}}"
+                options = f"{{METRIC: {_INDEX_METRIC}, TYPE: HNSW, EFSEARCH: {self._hnsw_ef_search}}}"
 
             # Build query
             query_parts = [f"MATCH (n:{sanitized_collection})"]
             if where_clause:
                 query_parts.append(f"WHERE {where_clause}")
             query_parts.append(
-                f"ORDER BY {distance_func}(n.{sanitized_embedding}, {vec_literal}) {order_dir}"
+                f"ORDER BY {_DISTANCE_FUNCTION}(n.{sanitized_embedding}, {vec_literal}) DESC"
             )
             query_parts.append("APPROXIMATE")
             query_parts.append(f"LIMIT {search_limit}")
@@ -602,16 +598,13 @@ class NebulaGraphVectorGraphStore(VectorGraphStore):
         # Build vector literal
         vec_literal = self._vector_to_gql_literal(query_embedding)
 
-        # Choose similarity function and order direction
-        distance_func, order_dir = self._DISTANCE_FUNC_AND_ORDER
-
         # Build query (no APPROXIMATE keyword = exact search)
         query_parts = [f"MATCH (n:{sanitized_collection})"]
         if where_clause:
             query_parts.append(f"WHERE {where_clause}")
         query_parts.append("RETURN n")
         query_parts.append(
-            f"ORDER BY {distance_func}(n.{sanitized_embedding}, {vec_literal}) {order_dir}"
+            f"ORDER BY {_DISTANCE_FUNCTION}(n.{sanitized_embedding}, {vec_literal}) DESC"
         )
         if limit:
             query_parts.append(f"LIMIT {limit}")
@@ -1767,8 +1760,6 @@ class NebulaGraphVectorGraphStore(VectorGraphStore):
             dimensions: Vector dimensions
 
         """
-        nebula_metric = self._INDEX_METRIC
-
         # Use mangled and sanitized embedding name to ensure valid identifier
         mangled_embedding = mangle_embedding_name(embedding_name)
         index_name = f"idx_{self._sanitize_name(node_or_edge_type)}_{self._sanitize_name(mangled_embedding)}"
@@ -1792,13 +1783,12 @@ class NebulaGraphVectorGraphStore(VectorGraphStore):
             try:
                 sanitized_type = self._sanitize_name(node_or_edge_type)
                 sanitized_embedding = self._sanitize_name(mangled_embedding)
-                metric = nebula_metric
 
                 # Build index options based on type
                 if self._ann_index_type == "IVF":
                     options = f"""{{
                         DIM: {dimensions},
-                        METRIC: {metric},
+                        METRIC: {_INDEX_METRIC},
                         TYPE: IVF,
                         NLIST: {self._ivf_nlist},
                         TRAINSIZE: 10000
@@ -1806,7 +1796,7 @@ class NebulaGraphVectorGraphStore(VectorGraphStore):
                 else:  # HNSW
                     options = f"""{{
                         DIM: {dimensions},
-                        METRIC: {metric},
+                        METRIC: {_INDEX_METRIC},
                         TYPE: HNSW,
                         MAXDEGREE: {self._hnsw_max_degree},
                         EFCONSTRUCTION: {self._hnsw_ef_construction},
