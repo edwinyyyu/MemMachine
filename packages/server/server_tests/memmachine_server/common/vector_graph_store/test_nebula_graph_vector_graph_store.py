@@ -297,7 +297,8 @@ async def test_search_similar_nodes(vector_graph_store):
     await vector_graph_store.add_nodes(collection=collection, nodes=nodes)
 
     # Query closest to Doc 1 ([1,0,0]).
-    # Euclidean distances: Doc1=0, Doc3≈0.141, Doc2≈1.414 → ranked order: Doc1, Doc3.
+    # Doc1 is the query itself and Doc3 is near it; Doc2 is orthogonal.
+    # Ranked by cosine: Doc1, Doc3.
     query_vec = [1.0, 0.0, 0.0]
     results = await vector_graph_store.search_similar_nodes(
         collection=collection,
@@ -841,13 +842,13 @@ async def test_complex_filters(vector_graph_store):
 
 
 # ---------------------------------------------------------------------------
-# Similarity metric table coverage
+# Cosine scoring
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_search_similar_nodes_cosine_metric(vector_graph_store):
-    """COSINE metric: cosine() DESC, always KNN (no ANN index)."""
+    """Cosine ranking, spelled as inner_product() DESC over unit vectors."""
     collection = "cosine_docs"
 
     nodes = [
@@ -1278,3 +1279,46 @@ def test_sanitize_name_no_false_decode():
         sanitized = NebulaGraphVectorGraphStore._sanitize_name(name)
         desanitized = NebulaGraphVectorGraphStore._desanitize_name(sanitized)
         assert desanitized == name, f"Round-trip failed for {name!r}"
+
+
+@pytest.mark.asyncio
+async def test_search_similar_nodes_ann(vector_graph_store_ann):
+    """ANN mode: vector index is created immediately (threshold=0) and results are returned."""
+    collection = "ann_docs"
+
+    nodes = [
+        Node(
+            uid=str(uuid4()),
+            properties={"title": "Doc 1"},
+            embeddings={"content": [1.0, 0.0, 0.0]},
+        ),
+        Node(
+            uid=str(uuid4()),
+            properties={"title": "Doc 2"},
+            embeddings={"content": [0.0, 1.0, 0.0]},
+        ),
+        Node(
+            uid=str(uuid4()),
+            properties={"title": "Doc 3"},
+            embeddings={"content": [0.9, 0.1, 0.0]},
+        ),
+    ]
+
+    await vector_graph_store_ann.add_nodes(collection=collection, nodes=nodes)
+
+    results = await vector_graph_store_ann.search_similar_nodes(
+        collection=collection,
+        embedding_name="content",
+        query_embedding=[1.0, 0.0, 0.0],
+        limit=3,
+    )
+
+    # ANN may return approximate results but at minimum should return some nodes
+    assert 0 < len(results) <= 3
+    # The closest node (Doc 1) should still appear first in a reasonable ANN implementation
+    assert results[0].properties["title"] == "Doc 1"
+
+
+# ---------------------------------------------------------------------------
+# Extended sanitize/desanitize coverage
+# ---------------------------------------------------------------------------

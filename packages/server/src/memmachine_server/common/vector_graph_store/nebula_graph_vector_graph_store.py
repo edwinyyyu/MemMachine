@@ -12,6 +12,7 @@ interface using NebulaGraph Enterprise as the backend. It supports:
 
 import asyncio
 import logging
+import math
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -114,15 +115,17 @@ class NebulaGraphVectorGraphStore(VectorGraphStore):
     with GQL (ISO Graph Query Language) instead of Cypher. Key differences:
     - Schema + Graph model
     - Native VECTOR<N, FLOAT> data type
+    - Vector indexes with IVF/HNSW algorithms
     - SESSION SET SCHEMA and SESSION SET GRAPH for context
-
-    Similarity search is always exact (KNN): NebulaGraph's `cosine()` does not
-    support APPROXIMATE, and its vector indexes only offer L2 and IP metrics,
-    neither of which serves cosine similarity.
     """
 
-    # GQL distance function and ORDER BY direction for cosine similarity.
-    _DISTANCE_FUNC_AND_ORDER: ClassVar[tuple[str, str]] = ("cosine", "DESC")
+    # NebulaGraph's `cosine()` is KNN-only -- it cannot take APPROXIMATE -- and
+    # its vector indexes offer only L2 and IP. Cosine similarity between unit
+    # vectors *is* their inner product, so embeddings are normalized on the way
+    # in and compared with `inner_product()` against an IP index. That is
+    # cosine ranking, and unlike `cosine()` it can be approximate.
+    _INDEX_METRIC: ClassVar[str] = "IP"
+    _DISTANCE_FUNC_AND_ORDER: ClassVar[tuple[str, str]] = ("inner_product", "DESC")
 
     class CacheIndexState(Enum):
         """Index state tracking for local cache."""
@@ -245,6 +248,7 @@ class NebulaGraphVectorGraphStore(VectorGraphStore):
                 formatted_value = self._format_value(prop_value)
                 prop_assignments.append(f"{sanitized}: {formatted_value}")
 
+            # Add embeddings with companion metric property
             for emb_name, emb_vec in node.embeddings.items():
                 mangled = mangle_embedding_name(emb_name)
                 sanitized = self._sanitize_name(mangled)
@@ -262,6 +266,25 @@ class NebulaGraphVectorGraphStore(VectorGraphStore):
         current_count = self._collection_node_counts.get(collection, 0)
         new_count = current_count + len(nodes_list)
         self._collection_node_counts[collection] = new_count
+
+        # Check if we should create indexes
+        if (
+            self._vector_index_threshold
+            and new_count >= self._vector_index_threshold
+            and current_count < self._vector_index_threshold
+        ):
+            # Create vector indexes
+            for emb_name, emb_vec in all_embeddings.items():
+                task = asyncio.create_task(
+                    self._create_vector_index_if_not_exists(
+                        EntityType.NODE,
+                        collection,
+                        emb_name,
+                        len(emb_vec),
+                    )
+                )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
 
         # Create range indexes based on configured hierarchies
         # Note: We don't create a range index on 'uid' because it's declared as PRIMARY KEY
@@ -341,6 +364,7 @@ class NebulaGraphVectorGraphStore(VectorGraphStore):
                 formatted_value = self._format_value(prop_value)
                 prop_assignments.append(f"{sanitized}: {formatted_value}")
 
+            # Build embedding assignments with companion metric property
             for emb_name, emb_vec in edge.embeddings.items():
                 mangled = mangle_embedding_name(emb_name)
                 sanitized = self._sanitize_name(mangled)
@@ -367,6 +391,25 @@ class NebulaGraphVectorGraphStore(VectorGraphStore):
         current_count = self._relation_edge_counts.get(relation, 0)
         new_count = current_count + len(edges_list)
         self._relation_edge_counts[relation] = new_count
+
+        # Check if we should create indexes
+        if (
+            self._vector_index_threshold
+            and new_count >= self._vector_index_threshold
+            and current_count < self._vector_index_threshold
+        ):
+            # Create vector indexes for edge embeddings
+            for emb_name, emb_vec in all_embeddings.items():
+                task = asyncio.create_task(
+                    self._create_vector_index_if_not_exists(
+                        EntityType.EDGE,
+                        relation,
+                        emb_name,
+                        len(emb_vec),
+                    )
+                )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
 
         # Create range indexes based on configured hierarchies when threshold is reached
         if (
@@ -414,9 +457,105 @@ class NebulaGraphVectorGraphStore(VectorGraphStore):
         """
         await self._discover_existing_indexes()
 
-        # NebulaGraph's cosine() is KNN-only -- APPROXIMATE is not supported for
-        # it, and no vector index metric serves it -- so with cosine the only
-        # similarity, search is always exact.
+        sanitized_collection = self._sanitize_name(collection)
+        mangled_embedding = mangle_embedding_name(embedding_name)
+        sanitized_embedding = self._sanitize_name(mangled_embedding)
+
+        # Check if vector index exists
+        # Use mangled and sanitized embedding name to ensure valid identifier
+        index_name = f"idx_{sanitized_collection}_{sanitized_embedding}"
+        has_index = (
+            index_name in self._index_state_cache
+            and self._index_state_cache[index_name] == self.CacheIndexState.ONLINE
+        )
+
+        # Decide on search mode.
+        # ANN requires both a vector index AND a function that supports APPROXIMATE.
+        # cosine() is KNN-only in NebulaGraph, so COSINE must always use exact search.
+        use_ann = has_index and not self._force_exact_similarity_search
+
+        # Build WHERE clause from property filter
+        where_clause = ""
+        if property_filter:
+            where_clause = self._render_filter_expr("n", property_filter)
+
+        # Build query based on search mode
+        if use_ann:
+            # ANN search requires a finite limit (default to 1000 like Neo4j)
+            effective_limit = limit if limit is not None else 1000
+
+            # Use fudge factor when filtering to get more candidates
+            if property_filter:
+                search_limit = int(effective_limit * self._fudge_factor)
+            else:
+                search_limit = effective_limit
+
+            distance_func, order_dir = self._DISTANCE_FUNC_AND_ORDER
+            metric_name = self._INDEX_METRIC
+
+            # Build vector literal
+            vec_literal = self._vector_to_gql_literal(query_embedding)
+
+            # Build OPTIONS clause
+            if self._ann_index_type == "IVF":
+                options = (
+                    f"{{METRIC: {metric_name}, TYPE: IVF, NPROBE: {self._ivf_nprobe}}}"
+                )
+            else:  # HNSW
+                options = f"{{METRIC: {metric_name}, TYPE: HNSW, EFSEARCH: {self._hnsw_ef_search}}}"
+
+            # Build query
+            query_parts = [f"MATCH (n:{sanitized_collection})"]
+            if where_clause:
+                query_parts.append(f"WHERE {where_clause}")
+            query_parts.append(
+                f"ORDER BY {distance_func}(n.{sanitized_embedding}, {vec_literal}) {order_dir}"
+            )
+            query_parts.append("APPROXIMATE")
+            query_parts.append(f"LIMIT {search_limit}")
+            query_parts.append(f"OPTIONS {options}")
+            query_parts.append("RETURN n")
+
+            query = "\n".join(query_parts)
+
+            result = await self._client.execute(query)
+
+            # Convert results
+            nodes = []
+            for row in result:
+                node_data = row["n"]
+                # Unwrap ValueWrapper if needed
+                if hasattr(node_data, "cast_primitive"):
+                    node_data = node_data.cast_primitive()
+                    if "properties" in node_data:
+                        node_data = node_data["properties"]
+                nodes.append(self._nebula_result_to_node(collection, node_data))
+
+            # Check fallback threshold
+            if (
+                property_filter
+                and len(nodes) < (limit or 100) * self._fallback_threshold
+            ):
+                # Fall back to exact search
+                logger.info(
+                    "ANN search returned insufficient results (%s), falling back to exact search",
+                    len(nodes),
+                )
+                return await self._exact_similarity_search(
+                    collection=collection,
+                    embedding_name=embedding_name,
+                    query_embedding=query_embedding,
+                    limit=limit,
+                    property_filter=property_filter,
+                )
+
+            # Trim to requested limit
+            if limit and len(nodes) > limit:
+                nodes = nodes[:limit]
+
+            return nodes
+
+        # Exact search (no index or forced)
         return await self._exact_similarity_search(
             collection=collection,
             embedding_name=embedding_name,
@@ -1219,6 +1358,18 @@ class NebulaGraphVectorGraphStore(VectorGraphStore):
             return "NULL"
         raise ValueError(f"Unsupported value type: {type(value)}")
 
+    @staticmethod
+    def _unit(vec: list[float]) -> list[float]:
+        """Scale to unit length, so an inner product is a cosine similarity.
+
+        A zero vector has no direction to preserve and is left as it is; it
+        scores 0 against everything either way.
+        """
+        magnitude = math.sqrt(sum(component * component for component in vec))
+        if magnitude == 0.0:
+            return list(vec)
+        return [component / magnitude for component in vec]
+
     def _vector_to_gql_literal(self, vec: list[float]) -> str:
         """
         Convert Python list to GQL VECTOR literal.
@@ -1230,7 +1381,7 @@ class NebulaGraphVectorGraphStore(VectorGraphStore):
             GQL VECTOR literal
 
         """
-        vec_str = ", ".join(str(v) for v in vec)
+        vec_str = ", ".join(str(v) for v in self._unit(vec))
         return f"VECTOR<{len(vec)}, FLOAT>([{vec_str}])"
 
     def _render_filter_expr(
@@ -1598,6 +1749,95 @@ class NebulaGraphVectorGraphStore(VectorGraphStore):
 
             # Cache the schema
             self._graph_type_schemas[edge_key] = incoming_schema
+
+    async def _create_vector_index_if_not_exists(
+        self,
+        entity_type: EntityType,
+        node_or_edge_type: str,
+        embedding_name: str,
+        dimensions: int,
+    ) -> None:
+        """
+        Create vector index if it doesn't exist.
+
+        Args:
+            entity_type: NODE or EDGE
+            node_or_edge_type: Type name
+            embedding_name: Embedding property name
+            dimensions: Vector dimensions
+
+        """
+        nebula_metric = self._INDEX_METRIC
+
+        # Use mangled and sanitized embedding name to ensure valid identifier
+        mangled_embedding = mangle_embedding_name(embedding_name)
+        index_name = f"idx_{self._sanitize_name(node_or_edge_type)}_{self._sanitize_name(mangled_embedding)}"
+
+        # Check cache
+        if index_name in self._index_state_cache:
+            return
+
+        # Acquire lock for this index
+        if index_name not in self._index_locks:
+            self._index_locks[index_name] = asyncio.Lock()
+
+        async with self._index_locks[index_name]:
+            # Double-check after acquiring lock
+            if index_name in self._index_state_cache:
+                return
+
+            # Mark as creating
+            self._index_state_cache[index_name] = self.CacheIndexState.CREATING
+
+            try:
+                sanitized_type = self._sanitize_name(node_or_edge_type)
+                sanitized_embedding = self._sanitize_name(mangled_embedding)
+                metric = nebula_metric
+
+                # Build index options based on type
+                if self._ann_index_type == "IVF":
+                    options = f"""{{
+                        DIM: {dimensions},
+                        METRIC: {metric},
+                        TYPE: IVF,
+                        NLIST: {self._ivf_nlist},
+                        TRAINSIZE: 10000
+                    }}"""
+                else:  # HNSW
+                    options = f"""{{
+                        DIM: {dimensions},
+                        METRIC: {metric},
+                        TYPE: HNSW,
+                        MAXDEGREE: {self._hnsw_max_degree},
+                        EFCONSTRUCTION: {self._hnsw_ef_construction},
+                        CAPACITY: 1000000
+                    }}"""
+
+                # Create index (use sanitized embedding name for valid GQL identifier)
+                if entity_type == EntityType.NODE:
+                    create_stmt = f"""
+                    CREATE VECTOR INDEX IF NOT EXISTS {index_name}
+                    ON NODE {sanitized_type}::{sanitized_embedding}
+                    OPTIONS {options}
+                    """
+                else:  # EDGE
+                    create_stmt = f"""
+                    CREATE VECTOR INDEX IF NOT EXISTS {index_name}
+                    ON EDGE {sanitized_type}::{sanitized_embedding}
+                    OPTIONS {options}
+                    """
+
+                await self._client.execute(create_stmt)
+
+                # Mark as online
+                self._index_state_cache[index_name] = self.CacheIndexState.ONLINE
+                logger.info("Created vector index: %s", index_name)
+
+            except Exception:
+                # Remove from cache on error
+                self._index_state_cache.pop(index_name, None)
+                logger.exception("Failed to create vector index %s", index_name)
+                raise
 
     async def _create_range_index_if_not_exists(
         self,
