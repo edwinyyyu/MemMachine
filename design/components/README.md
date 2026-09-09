@@ -67,7 +67,7 @@ Conventions shared by every specification:
   with its position), `IngestResult` (what ingest returns), `LogEntry`,
   `SearchHit` (a scored window with its matched segment),
   `Neighbourhood` (the two sides of an expansion, the anchor between
-  them and never in them), `Tenant` with
+  them and never in them), `EvictionOptions`, `Tenant` with
   `TenantState` and `ComponentState`, `SearchOptions` and
   `RerankOptions` (one model for a tenant's defaults and a request's
   overrides), and the API request models `SearchRequest` and

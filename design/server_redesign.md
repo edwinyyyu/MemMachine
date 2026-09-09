@@ -861,6 +861,10 @@ Tenant configuration section `episodic_memory`, with mutability:
   tenant and a new ingestion.
 - `segmenter`, `deriver`, `format`: their options; mutable, applying
   to events processed after the change.
+- `eviction` (similarity threshold, neighbours consulted, target
+  cluster size, or none): mutable, applying to batches processed after
+  the change; the threshold is calibrated per embedder, so a template
+  sets it beside its embedder.
 - `search`: default `limit`, `min_similarity`, `expand_context` and
   `rerank` (reranker id, candidates, threshold, or none); mutable; each
   overridable per request, the reranker within the ids the deployment
@@ -870,6 +874,20 @@ Episodic memory uses no language model today (the two segmenters and
 the one deriver are deterministic; the embedder is the only model
 call). The section gains a `language_model` id when a deriver needs
 one.
+
+Eviction. An agent's stream repeats itself, and every repetition is
+another derivative with nearly the same vector; left alone they grow
+with the corpus and crowd a search with copies of one thing. With
+eviction on, `encode` treats near-duplicates as a cluster: a new
+derivative's cluster is its stored neighbours at or above the
+similarity threshold, the earlier derivatives of its own batch above
+it, and itself; a cluster larger than the target size is trimmed from
+the temporal middle, keeping the earliest and the latest, by deleting
+stored derivatives and not writing new ones. Segments and events are
+untouched, so the loss is to search only and a reprocessing starts
+from the full record. Specified in
+`design/components/episodic_memory.md`; from `agentic_expansion`,
+where it runs in production.
 
 Hooks:
 

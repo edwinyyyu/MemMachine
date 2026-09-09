@@ -18,8 +18,14 @@ EpisodicMemory(
     deriver: Deriver,
     embedder: Embedder,
     format_options: FormatOptions,  # how the deriver renders dates and names into embedded text
+    eviction: EvictionOptions | None,   # None: no eviction
     metrics_factory: MetricsFactory | None,
 )
+
+class EvictionOptions(BaseModel):
+    similarity_threshold: float     # cosine; at or above it, two derivatives are one cluster
+    search_limit: int               # stored neighbours consulted per new derivative
+    target_size: int                # a cluster larger than this is trimmed to it
 ```
 
 One tenant, one embedder, one segmenter, one deriver, one way of
@@ -69,12 +75,15 @@ class EpisodicMemory:
 ```
 
 - `encode`: for each event, first `forget` its derived rows (so a
-  repeat leaves one copy), then segment, derive, embed; write segments
-  to the segment store; upsert derivatives to the vector store with the
-  declared properties (system fields under reserved keys, plus the
-  declared user keys). Segment and derivative uuids are `uuid4`. The
-  caller's batch is fully written when `encode` returns; the manager
-  advances the watermark only then.
+  repeat leaves one copy), then segment, derive, embed; with eviction
+  on, decide which new derivatives are not worth keeping and which
+  stored ones they displace (below); write segments and the surviving
+  derivatives' links to the segment store; upsert the surviving
+  derivatives to the vector store with the declared properties (system
+  fields under reserved keys, plus the declared user keys); delete the
+  displaced derivatives from both stores. Segment and derivative uuids
+  are `uuid4`. The caller's batch is fully written when `encode`
+  returns; the manager advances the watermark only then.
 - `forget`: look up segments by event uuids and derivatives by segment
   uuids; delete vector records; delete segments.
 - `query`: one stage, vector search. Embed the query; split `filter`
@@ -113,6 +122,52 @@ class EpisodicMemory:
   parts' contributions, and its block's rendering (`context.md`,
   `blocks.md`). What the API returns as `text`, and what a reranker
   scores.
+
+## Eviction
+
+From `agentic_expansion` (commit ed2c5702), where it runs in production
+over agent transcripts. Why: an agent's stream repeats itself, the same
+tool output, the same re-sent context, the same boilerplate, and every
+repetition is another derivative with nearly the same vector. Left
+alone they grow in proportion to the corpus, crowd a search's hits
+with copies of one thing, and add nothing a reader did not already
+have. Eviction is deduplication done lazily, at the moment a cluster
+of near-duplicates gets too large, on derived data only.
+
+What it does, per batch of derivatives in `encode`:
+
+- Batch predecessors: for each derivative, the earlier derivatives in
+  the same batch whose cosine similarity to it is at or above
+  `similarity_threshold`. Only earlier ones count, so a batch evicts
+  exactly what serial ingestion of the same events would have.
+- Stored neighbours: one vector query per derivative against the
+  tenant's collection, all sessions, `search_limit` results at or above
+  the threshold.
+- The cluster of a derivative is its stored neighbours not already
+  displaced in this batch, its batch predecessors not already skipped,
+  and itself. A cluster within `target_size` changes nothing. A larger
+  one is trimmed from the temporal middle: the earliest half of
+  `target_size` and the latest half are kept, ordered by the
+  derivative's event timestamp, and the rest go: a stored member is
+  displaced, a batch member is skipped.
+- Displaced derivatives are deleted from the vector store and their
+  links from the segment store; skipped ones are never written. The
+  segment stays either way: it is reconstructed and expanded like any
+  other, and is found by search only through its surviving
+  derivatives, the same standing as a block kind the deriver does not
+  handle.
+
+What it guarantees and what it costs. The event store is untouched:
+eviction is lossy for search and lossless for the record, and a
+reprocessing into a new tenant starts from the full history. A redo of
+a batch after a crash forgets the batch's own derivatives first and
+runs eviction again over a store that has already lost what the first
+run displaced, so it can displace more and never restores anything.
+The cost is one bounded vector query per new derivative, which
+`eviction: null` removes entirely. The threshold is a property of the
+embedder, since two models put the same pair of texts at different
+similarities, so a template sets it beside the embedder it chooses and
+a deployment calibrates it per embedder; the design gives no number.
 
 ## Context
 
@@ -167,6 +222,11 @@ segment is one block, so its kind is a system field filtered by
   the rule of MemMachine #1498 and `agentic_expansion` commit 0c19942a:
   the neighbours, never the anchor; `string_from_segment_context` and
   `string_from_segment_contexts` become `render`.
+- Eviction comes from `agentic_expansion` (commit ed2c5702):
+  `_compute_batch_predecessors` and `_select_eviction_targets` as they
+  are, cosine only; the three parameters become `EvictionOptions`; the
+  displaced derivatives' link rows are deleted as well as their vector
+  records, which the branch left dangling.
 - Scores are cosine similarity; `SimilarityMetric` goes from the
   embedder, the vector store and the engines, as on the reference
   branch (commit 6ab12098): the embedder exposes `model_id` and

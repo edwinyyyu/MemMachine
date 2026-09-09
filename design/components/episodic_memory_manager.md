@@ -48,8 +48,13 @@ class EpisodicMemoryTenantConfig(BaseModel):
     segmenter: SegmenterOptions         # mutable; later events
     deriver: DeriverOptions             # mutable; later events
     format: FormatOptions               # mutable; later events
+    eviction: EvictionOptions | None    # mutable; later batches; None: off
     search: SearchOptions               # mutable; defaults for a search
 ```
+
+`eviction.similarity_threshold` is calibrated per embedder, so a
+template sets it beside the `embedder` it names; the manager rejects
+no value, since the design gives none.
 
 `SearchOptions` is one model with two uses: in the tenant section every
 field is set and is the default; in a search request every field is
@@ -102,9 +107,9 @@ Each reads the per-tenant row (absent: `ComponentNotEnabledError`,
 which the router turns into 404 or 409 by asking the tenant service),
 builds the tenant's `EpisodicMemory` in one constructor call from
 `segment_store.partition(tenant_id)`, `vector_store.collection(tenant_id,
-e)`, `embedders[e]`, the row's `format`, and the segmenter and deriver
-objects for the row's options, taken from the cache, and makes one
-call.
+e)`, `embedders[e]`, the row's `format` and `eviction`, and the
+segmenter and deriver objects for the row's options, taken from the
+cache, and makes one call.
 
 `search` is the stages. It fills each `SearchOptions` field the request
 omits from the row's defaults. Without `rerank`, it calls `query` with

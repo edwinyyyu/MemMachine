@@ -71,6 +71,7 @@ class SegmentPartition(ABC):              # data, bound to one key; no method ta
                             block_kinds: Iterable[str] | None,
                             property_filter: FilterExpr, limit: int) -> list[UUID]
     async def delete_segments(self, segment_uuids: Iterable[UUID]) -> None
+    async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
 ```
 
 The one total order. Segments within a key are ordered by
@@ -155,6 +156,8 @@ window is bounded by the same filters as the hits it surrounds.
   filtered (`blocks.md`).
 - `get_neighbours` is added for expansion, over the ordering index,
   returning the neighbours and never the anchor.
+- `delete_derivatives` is added for eviction (`episodic_memory.md`):
+  removes link rows by derivative uuid and leaves the segments.
 - The two ABCs stay two, `SegmentStore` and `SegmentPartition`, with
   the line between them redrawn: the store names keys, the partition
   never does.
