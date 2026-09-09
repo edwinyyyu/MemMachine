@@ -845,6 +845,252 @@ async def test_complex_filters(vector_graph_store):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
+async def test_search_similar_nodes_cosine_metric(vector_graph_store):
+    """COSINE metric: cosine() DESC, always KNN (no ANN index)."""
+    collection = "cosine_docs"
+
+    nodes = [
+        Node(
+            uid=str(uuid4()),
+            properties={"title": "Doc 1"},
+            embeddings={"content": [1.0, 0.0, 0.0]},
+        ),
+        Node(
+            uid=str(uuid4()),
+            properties={"title": "Doc 2"},
+            embeddings={"content": [0.0, 1.0, 0.0]},
+        ),
+        Node(
+            uid=str(uuid4()),
+            properties={"title": "Doc 3"},
+            # Slightly off-axis: cosine ≈ 0.993 with [1,0,0]
+            embeddings={"content": [0.9, 0.1, 0.0]},
+        ),
+    ]
+
+    await vector_graph_store.add_nodes(collection=collection, nodes=nodes)
+
+    # Cosine similarities with [1,0,0]: Doc1=1.0, Doc3≈0.993, Doc2=0.0 → ranked: Doc1, Doc3
+    query_vec = [1.0, 0.0, 0.0]
+    results = await vector_graph_store.search_similar_nodes(
+        collection=collection,
+        embedding_name="content",
+        query_embedding=query_vec,
+        limit=2,
+    )
+
+    assert len(results) == 2
+    assert results[0].properties["title"] == "Doc 1"
+    assert results[1].properties["title"] == "Doc 3"
+
+
+@pytest.mark.asyncio
+async def test_search_directional_nodes_multiple_by_properties(vector_graph_store):
+    """Test search_directional_nodes with multiple sort properties (timestamp + sequence)."""
+    collection = "seq_events"
+
+    now = datetime.now(UTC)
+    delta = timedelta(hours=1)
+
+    # Two timestamps x two sequence values = 4 nodes
+    nodes = [
+        Node(
+            uid=str(uuid4()),
+            properties={"name": "T1S1", "timestamp": now, "sequence": 1},
+            embeddings={},
+        ),
+        Node(
+            uid=str(uuid4()),
+            properties={"name": "T1S2", "timestamp": now, "sequence": 2},
+            embeddings={},
+        ),
+        Node(
+            uid=str(uuid4()),
+            properties={"name": "T2S1", "timestamp": now + delta, "sequence": 1},
+            embeddings={},
+        ),
+        Node(
+            uid=str(uuid4()),
+            properties={"name": "T2S2", "timestamp": now + delta, "sequence": 2},
+            embeddings={},
+        ),
+    ]
+
+    await vector_graph_store.add_nodes(collection=collection, nodes=nodes)
+
+    # Start at (T1, S2) inclusive, both ascending → T1S2, T2S1, T2S2
+    results = await vector_graph_store.search_directional_nodes(
+        collection=collection,
+        by_properties=["timestamp", "sequence"],
+        starting_at=[now, 2],
+        order_ascending=[True, True],
+        include_equal_start=True,
+        limit=None,
+    )
+    assert len(results) == 3
+    assert results[0].properties["name"] == "T1S2"
+    assert results[1].properties["name"] == "T2S1"
+    assert results[2].properties["name"] == "T2S2"
+
+    # Start at (T2, S1) inclusive, first ascending second descending → T2S1, T2S2 reversed
+    # (same first key, second key descending from S1 means S1 then... S2 > S1 so excluded)
+    # Actually: ascending timestamp, descending sequence from S1 inclusive:
+    # At T2: include S1 (equal, inclusive), nothing below S1 for descending → just T2S1
+    results = await vector_graph_store.search_directional_nodes(
+        collection=collection,
+        by_properties=["timestamp", "sequence"],
+        starting_at=[now + delta, 1],
+        order_ascending=[True, False],
+        include_equal_start=True,
+        limit=None,
+    )
+    assert len(results) == 1
+    assert results[0].properties["name"] == "T2S1"
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_nodes_empty_list(vector_graph_store):
+    """Adding an empty list of nodes is a no-op."""
+    collection = "empty_test"
+
+    await vector_graph_store.add_nodes(collection=collection, nodes=[])
+
+    results = await vector_graph_store.search_matching_nodes(
+        collection=collection,
+        limit=10,
+    )
+    assert len(results) == 0
+
+
+@pytest.mark.asyncio
+async def test_add_edges_empty_list(vector_graph_store):
+    """Adding an empty list of edges is a no-op."""
+    node = Node(uid=str(uuid4()), properties={"name": "Solo"}, embeddings={})
+    await vector_graph_store.add_nodes(collection="solo", nodes=[node])
+
+    # Should not raise
+    await vector_graph_store.add_edges(
+        relation="knows",
+        source_collection="solo",
+        target_collection="solo",
+        edges=[],
+    )
+
+    # Node still exists, no edges created
+    results = await vector_graph_store.get_nodes(
+        collection="solo", node_uids=[node.uid]
+    )
+    assert len(results) == 1
+
+
+@pytest.mark.asyncio
+async def test_add_nodes_with_none_property(vector_graph_store):
+    """Nodes with None property values are stored and retrieved without error."""
+    collection = "nullable_test"
+
+    node = Node(
+        uid=str(uuid4()),
+        properties={"name": "Alice", "optional_field": None},
+        embeddings={},
+    )
+    await vector_graph_store.add_nodes(collection=collection, nodes=[node])
+
+    results = await vector_graph_store.get_nodes(
+        collection=collection, node_uids=[node.uid]
+    )
+    assert len(results) == 1
+    # None properties may be omitted on retrieval (same behaviour as Neo4j)
+    assert results[0].properties.get("name") == "Alice"
+
+
+@pytest.mark.asyncio
+async def test_add_edges_with_none_property(vector_graph_store):
+    """Edges with None property values are stored without error."""
+    person_collection = "nullable_person"
+    company_collection = "nullable_company"
+    relation = "works_at_nullable"
+
+    alice = Node(uid=str(uuid4()), properties={"name": "Alice"}, embeddings={})
+    acme = Node(uid=str(uuid4()), properties={"name": "Acme"}, embeddings={})
+
+    await vector_graph_store.add_nodes(collection=person_collection, nodes=[alice])
+    await vector_graph_store.add_nodes(collection=company_collection, nodes=[acme])
+
+    edge = Edge(
+        uid=str(uuid4()),
+        source_uid=alice.uid,
+        target_uid=acme.uid,
+        properties={"role": "Engineer", "optional_field": None},
+        embeddings={},
+    )
+    await vector_graph_store.add_edges(
+        relation=relation,
+        source_collection=person_collection,
+        target_collection=company_collection,
+        edges=[edge],
+    )
+
+    # Verify edge was created by searching related nodes
+    results = await vector_graph_store.search_related_nodes(
+        relation=relation,
+        other_collection=company_collection,
+        this_collection=person_collection,
+        this_node_uid=alice.uid,
+        find_targets=True,
+        find_sources=False,
+    )
+    assert len(results) == 1
+    assert results[0].uid == acme.uid
+
+
+@pytest.mark.asyncio
+async def test_get_nodes_with_nonexistent_uids(vector_graph_store):
+    """get_nodes ignores UIDs that do not exist — returns only found nodes."""
+    collection = "partial_get"
+
+    node = Node(uid=str(uuid4()), properties={"name": "Real"}, embeddings={})
+    await vector_graph_store.add_nodes(collection=collection, nodes=[node])
+
+    fake_uid = str(uuid4())
+    results = await vector_graph_store.get_nodes(
+        collection=collection,
+        node_uids=[node.uid, fake_uid],
+    )
+    assert len(results) == 1
+    assert results[0].uid == node.uid
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes_wrong_collection(vector_graph_store):
+    """Deleting from a non-matching collection leaves nodes untouched."""
+    collection = "real_collection"
+    wrong_collection = "wrong_collection"
+
+    node = Node(uid=str(uuid4()), properties={"name": "Keep"}, embeddings={})
+    await vector_graph_store.add_nodes(collection=collection, nodes=[node])
+
+    # Attempt to delete from the wrong collection
+    await vector_graph_store.delete_nodes(
+        collection=wrong_collection, node_uids=[node.uid]
+    )
+
+    results = await vector_graph_store.get_nodes(
+        collection=collection, node_uids=[node.uid]
+    )
+    assert len(results) == 1
+
+
+# ---------------------------------------------------------------------------
+# ANN mode
+# ---------------------------------------------------------------------------
+
+
 def test_sanitize_name_extended():
     """Comprehensive sanitize/desanitize round-trip for edge-case inputs."""
     names = [
