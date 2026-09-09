@@ -60,15 +60,17 @@ class EpisodicMemory:
     async def query(self, query: str, *,
                     limit: int, min_similarity: float | None,
                     expand_context: int,
-                    since: datetime | None, before: datetime | None,
+                    since: datetime | None, until: datetime | None,
                     session_ids: Iterable[str] | None,
                     source_ids: Iterable[str] | None,
                     block_kinds: Iterable[str] | None,
                     filter: FilterExpr | None) -> list[SearchHit]
     async def expand(self, anchor: UUID, *,
                      before: int, after: int,
+                     since: datetime | None, until: datetime | None,
                      source_ids: Iterable[str] | None,
-                     block_kinds: Iterable[str] | None) -> Neighbourhood
+                     block_kinds: Iterable[str] | None,
+                     filter: FilterExpr | None) -> Neighbourhood
     @staticmethod
     def render(segments: Iterable[Segment], *,
                format_options: FormatOptions) -> str
@@ -103,19 +105,19 @@ class EpisodicMemory:
   index of the matched segment in it; windows of different hits may
   overlap, and each hit is returned whole. Every count is a maximum:
   a filtered search returns fewer when the filter admits fewer.
-- `expand`: the neighbourhood of an anchor in its session's one total
-  order (`segment_store.md`), as claude-memory's `memory_expand` walks
-  a conversation around a memory. The anchor is a segment uuid (from a
-  hit) or an event uuid (its first segment). `before` and `after` count
-  segments, the one unit the store has; a long event is several
-  segments and is read inward by expanding from one of them. The walk
-  stays in the anchor's session, and `source_ids` and `block_kinds`
-  restrict it. Returns the two sides in the store's order and never the
-  anchor: the caller named it and holds it, from the hit or the event,
-  the filters apply to the neighbours only, and the anchor's place is
-  between the lists. A caller walks further by calling again with the
-  first of `before` or the last of `after` as the anchor and one side
-  zero. Backed by `SegmentPartition.get_neighbours` over the ordering
+- `expand`: the neighbourhood of an anchor in its session's one total order
+  (`segment_store.md`), as claude-memory's `memory_expand` walks a conversation
+  around a memory. The anchor is a segment uuid (from a hit) or an event uuid
+  (its first segment). `before` and `after` count segments, the one unit the
+  store has; a long event is several segments and is read inward by expanding
+  from one of them. The walk stays in the anchor's session, and the same
+  filters that bound a search bound it: `since` and `until` on the timestamp,
+  `source_ids`, `block_kinds` and `filter`. Returns the two sides in the
+  store's order and never the anchor: the caller named it and holds it, from
+  the hit or the event, the filters apply to the neighbours only, and the
+  anchor's place is between the lists. A caller walks further by calling again
+  with the first of `before` or the last of `after` as the anchor and one side
+  zero. Backed by `SegmentPartition.get_neighbourhoods` over the ordering
   index; no vector search and no embedding, so it is one indexed read.
 - `render`: the reader's text for a run of segments, in their order:
   each segment's timestamp formatted by `format_options`, its context
@@ -198,8 +200,10 @@ segment is one block, so its kind is a system field filtered by
   event's position; `forget_events` (`:680`) becomes `forget`.
 - `query` (`:353`): `vector_search_limit` becomes `limit` with
   maximum semantics, the threshold becomes `min_similarity` on cosine
-  similarity; `since`, `before`, `session_ids`, `source_ids` and
-  `block_kinds` are added as typed parameters; the reserved-key mapping
+  similarity; `since`, `until`, `session_ids`, `source_ids` and
+  `block_kinds` are added as typed parameters (`until` exclusive, the
+  reference branch's `before` renamed so that `before` counts segments
+  everywhere); the reserved-key mapping
   `_to_vector_record_property` (`:340`) and the `m.` user prefix go,
   replaced by `filters_and_properties.md`'s reserved namespace; the plan
   split is added; the result is `list[SearchHit]`.
@@ -218,7 +222,7 @@ segment is one block, so its kind is a system field filtered by
   `source_id` and context itself. `FormatOptions` stays dates, times,
   locale and timezone. `produced_for` and the producer roles of the old
   episode model are not carried over and nothing replaces them.
-- `expand` is added, with `get_neighbours` on the segment store, on
+- `expand` is added, with `get_neighbourhoods` on the segment store, on
   the rule of MemMachine #1498 and `agentic_expansion` commit 0c19942a:
   the neighbours, never the anchor; `string_from_segment_context` and
   `string_from_segment_contexts` become `render`.

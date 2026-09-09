@@ -690,7 +690,7 @@ tenant id, with the fence under "Store contracts".
 - Data operations, on the handle `event_store.partition(key)` and none
   taking a key: `add_events(events) -> IngestResult` (stored ids,
   skipped ids, the head position), `delete_events(ids)`,
-  `get_events(ids)`, `list_events(filter, since, before, after, limit)`
+  `get_events(ids)`, `list_events(filter, since, until, after, limit)`
   in position order with the last position as the cursor,
   `read_log(after, limit)`, `read_events_after(after, limit)`,
   `head()`.
@@ -928,10 +928,11 @@ Two tiers of fields, one mechanism underneath. The reference is the
 System fields. Defined by the server, first-class in the API, typed: for
 an event, `id`, `timestamp`, `session_id` and `source_id`; for a
 segment, its event's fields and the `kind` of its one block. Search
-takes them as named parameters, `since` and `before` (inclusive and
-exclusive, so ranges meet without overlap), `session_ids`, `source_ids`
-and `block_kinds` (lists; a source's rendered name lives in the context
-and is never filtered). They are never spelled inside the user filter,
+takes them as named parameters, `since` and `until` (inclusive and
+exclusive, so ranges meet without overlap; `until` rather than `before`
+because `before` counts segments in expansion), `session_ids`,
+`source_ids` and `block_kinds` (lists; a source's rendered name lives
+in the context and is never filtered). They are never spelled inside the user filter,
 so no caller and no model decides between `timestamp` and some prefixed
 form of it. Underneath, each system field is stored as a reserved
 property key, `memmachine_<system>_<field>`, built by one function that
@@ -1669,15 +1670,15 @@ Events, under `/v1/tenants/{id}`:
 | --- | --- | --- |
 | `POST .../events` | ingest a batch | 202 with stored ids, skipped ids and the head position, or with `wait` 200 once every subsystem has processed it and 202 with the watermarks so far otherwise; 404; 409; 422 |
 | `GET .../events/{event_id}` | one event | 200; 404 |
-| `GET .../events?filter=&since=&before=&after=&limit=` | list in ingestion order; `filter` a JSON tree, URL-encoded; `after` the last position returned | 200 |
+| `GET .../events?filter=&since=&until=&after=&limit=` | list in ingestion order; `filter` a JSON tree, URL-encoded; `after` the last position returned | 200 |
 | `POST .../events/delete` | body `ids` | 202 with the head position, or 200 with `wait` |
 
 Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 
 | Method and path | Effect | Status |
 | --- | --- | --- |
-| `POST .../search` | body `query`; the search options, each optional with the tenant's default: `limit`, `min_similarity`, `expand_context`, `rerank` (`reranker`, `candidates`, `min_score`, or `null` for none); the system filters `since`, `before`, `session_ids`, `source_ids`, `block_kinds`; `filter` (JSON tree); `format` (dates, times, locale, timezone for `text`) | 200 with up to `limit` hits in descending score |
-| `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after` (segments), `source_ids`, `block_kinds`, `format` | 200 with `before` and `after`, the segments on each side in order within the anchor's session, never the anchor itself, and their `text` |
+| `POST .../search` | body `query`; the search options, each optional with the tenant's default: `limit`, `min_similarity`, `expand_context`, `rerank` (`reranker`, `candidates`, `min_score`, or `null` for none); the system filters `since`, `until`, `session_ids`, `source_ids`, `block_kinds`; `filter` (JSON tree); `format` (dates, times, locale, timezone for `text`) | 200 with up to `limit` hits in descending score |
+| `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after` (segments), `since`, `until`, `source_ids`, `block_kinds`, `filter`, `format` | 200 with `before` and `after`, the segments on each side in order within the anchor's session, never the anchor itself, and their `text` |
 | `GET ...` | `watermark` and `head`, the lag being their difference | 200 |
 
 Event body: `id` (optional UUID; a caller that retries a request

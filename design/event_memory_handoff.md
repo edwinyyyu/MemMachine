@@ -29,8 +29,9 @@ Worktrees on this machine:
   What to take from it, by file and line at its tip `05902295`:
   - `segment_store/segment_store.py:73` `get_neighbor_segments` and
     `sqlalchemy_segment_store.py:384` its implementation (commit
-    `0c19942a`): the neighbours-only read. Do not port
-    `get_neighbor_events` (`:113`, `:454`); segments are the one unit.
+    `0c19942a`): the neighbours-only read, which becomes
+    `get_neighbourhoods`. Do not port `get_neighbor_events` (`:113`,
+    `:454`); segments are the one unit.
   - `event_memory.py:429` `_compute_batch_predecessors`, `:480`
     `_select_eviction_targets`, and the eviction step inside
     `_encode_events` (`:267`, the block after the embedder call;
@@ -182,7 +183,7 @@ class EvictionOptions(BaseModel):
   below stay open.
 
 Typed parameters, and the point of contention. The accepted design
-passes the system filters as typed parameters (`since`, `before`,
+passes the system filters as typed parameters (`since`, `until`,
 `session_ids`, `source_ids`, `block_kinds`) beside the caller's
 `property_filter`, and a caller never names a system field in a tree.
 Whether that stays, or a caller may instead write `memmachine_event_session`
@@ -190,7 +191,7 @@ inside the tree, is undecided. Implement so that either is a small
 change:
 
 - One module, `event_memory/system_filters.py`, owns the translation.
-  `system_predicates(since, before, session_ids, source_ids,
+  `system_predicates(since, until, session_ids, source_ids,
   block_kinds) -> FilterExpr | None` builds the tree the vector store
   gets, on reserved keys. `split_system(expr) -> tuple[SystemFilters,
   FilterExpr | None]` takes a tree, pulls out the conjuncts that name
@@ -241,40 +242,48 @@ out of scope:
 `SegmentStorePartition` (`segment_store/segment_store.py`):
 
 ```python
-async def get_segment_contexts(self, seed_segment_uuids, *,
-        max_backward_segments=0, max_forward_segments=0,
-        since: datetime | None = None, before: datetime | None = None,
+async def get_segment_contexts(self, seed_segment_uuids: Iterable[UUID], *,
+        before: int = 0, after: int = 0,
+        since: datetime | None = None, until: datetime | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None) -> dict[UUID, list[Segment]]
 
-async def get_neighbours(self, anchor: UUID, *, before: int, after: int,
+async def get_neighbourhoods(self, seed_segment_uuids: Iterable[UUID], *,
+        before: int = 0, after: int = 0,
+        since: datetime | None = None, until: datetime | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
-        property_filter: FilterExpr | None = None) -> Neighbourhood
+        property_filter: FilterExpr | None = None) -> dict[UUID, Neighbourhood]
 
 async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
 ```
 
+- The two reads take the same parameters and differ only in what they
+  return. `before` and `after` count segments on each side (the
+  shipped `max_backward_segments` and `max_forward_segments`, renamed);
+  `since` is inclusive and `until` exclusive on the `timestamp` column,
+  so ranges meet without overlap (`until`, not `before`, so that
+  `before` is a count everywhere); `source_ids`, `block_kinds` and
+  `property_filter` select rows. A window or neighbourhood is confined
+  to its seed's session by a null-safe equality on the seed's own
+  session id. The existing lateral and loop plans serve both.
 - `get_segment_contexts` is the search window. The seed is a result:
-  every filter, system and user, applies to the seed and to the window
-  rows, and a seed that fails has no entry. A window is confined to the
-  seed's session by a null-safe equality on the seed's own session id;
-  `since` is inclusive and `before` exclusive, on the `timestamp`
-  column, so ranges meet without overlap. The existing lateral and
-  loop plans stay.
-- `get_neighbours` is expansion. The anchor is an address the caller
+  every filter applies to the seed and to the window rows, and a seed
+  that fails has no entry.
+- `get_neighbourhoods` is expansion. The seed is an address the caller
   named and holds: it is located whether or not it passes any filter,
   the filters apply to the neighbours only, and it is never in the
-  result. The two lists come back in the store's order, `before`
-  ending just before the anchor and `after` starting just after it,
-  within the anchor's session, so the anchor's place is between them
-  and the caller needs nothing but the lists. An unknown anchor raises.
-  Port the branch's `get_neighbor_segments` and split its one list at
-  the anchor's position in the order. This is the rule of #1498:
-  during a search a seed that fails is dropped before a window is
-  built; after a search a neighbourhood is kept even when its anchor
-  would fail, and then the anchor is never returned.
+  result. Each seed maps to two lists in the store's order, `before`
+  ending just before the seed and `after` starting just after it, so
+  the seed's place is between them and the caller needs nothing but
+  the lists. A seed with no neighbours to show maps to two empty lists;
+  an unknown seed is absent from the mapping. Port the branch's
+  `get_neighbor_segments` and split its one list at the seed's position
+  in the order. This is the rule of #1498: during a search a seed that
+  fails is dropped before a window is built; after a search a
+  neighbourhood is kept even when its seed would fail, and then the
+  seed is never returned.
 - `delete_derivatives` removes link rows by derivative uuid and leaves
   the segments; eviction needs it.
 - Datetime bounds are normalized to UTC before binding
@@ -296,12 +305,13 @@ class EventMemory:
     async def query(self, query: str, *,
                     limit: int, min_cosine_similarity: float | None,
                     expand_context: int,
-                    since: datetime | None, before: datetime | None,
+                    since: datetime | None, until: datetime | None,
                     session_ids: Iterable[str] | None,
                     source_ids: Iterable[str] | None,
                     block_kinds: Iterable[str] | None,
                     property_filter: FilterExpr | None) -> list[SearchHit]
     async def expand(self, anchor: UUID, *, before: int, after: int,
+                     since: datetime | None, until: datetime | None,
                      source_ids: Iterable[str] | None,
                      block_kinds: Iterable[str] | None,
                      property_filter: FilterExpr | None) -> Neighbourhood
@@ -339,8 +349,8 @@ class EventMemory:
   `_query` did inside. Call sites in the server change only as far as
   calling it; nothing else in the server is in scope.
 - `expand`: an event uuid anchor resolves to its first segment via
-  `get_segment_uuids_by_event_uuids`; otherwise pass through to
-  `get_neighbours`.
+  `get_segment_uuids_by_event_uuids`; then one seed through
+  `get_neighbourhoods` with the same filters a search takes.
 - `render` replaces `string_from_segment_context` and
   `string_from_segment_contexts` and uses `_immediately_follows` for
   the header decision: a new header when the segment is not the very
@@ -386,7 +396,7 @@ fields and keeps the rest of its properties as they are.
   on `agentic_expansion`) to the two-list shape, on both dialects, and
   add: the anchor is absent from both lists; an anchor that fails the
   filter still yields its neighbours; a null-session anchor's
-  neighbourhood stays in the ungrouped stream; `since`/`before` meet
+  neighbourhood stays in the ungrouped stream; `since`/`until` meet
   without overlap on a boundary timestamp; a non-UTC bound compares as
   an instant on SQLite.
 - Eviction tests from the branch (`test_event_memory.py`): cluster

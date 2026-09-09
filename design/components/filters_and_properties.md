@@ -60,7 +60,7 @@ Not(operand: FilterExpr)
   ordered.
 - A field in a caller's tree must pass `validate_caller_property_key`;
   a caller never names a system field in a tree. System fields are
-  typed parameters of the operation (`since`, `before`, `session_ids`,
+  typed parameters of the operation (`since`, `until`, `session_ids`,
   `source_ids`, `block_kinds`) that the subsystem turns into predicates
   on reserved keys itself, in a tree of its own that it conjoins with
   the caller's before calling a store.

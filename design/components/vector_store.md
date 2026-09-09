@@ -176,7 +176,7 @@ the usearch store `process`.
   property, is stored where a backend has no datetime type (sqlite-vec,
   S3 Vectors, the engine-backed store's records table) as an integer of
   microseconds since the epoch, the same precision the SQL stores keep,
-  so a `since` or `before` bound evaluates identically in every store.
+  so a `since` or `until` bound evaluates identically in every store.
 - Undeclared property keys are rejected on write and query.
 - Post-operation registry checks replace the absent fence (#1537,
   #1563); `purge_collection` and container retirement are added

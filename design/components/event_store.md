@@ -133,7 +133,7 @@ class EventPartition(ABC):                # data, bound to one key; no method ta
     async def delete_events(self, uuids: Iterable[UUID]) -> int      # the head after
     async def get_events(self, uuids: Iterable[UUID]) -> list[StoredEvent]
     async def list_events(self, *, filter: FilterExpr | None,
-                          since: datetime | None, before: datetime | None,
+                          since: datetime | None, until: datetime | None,
                           after: int | None, limit: int) -> list[StoredEvent]
     async def read_log(self, after: int, limit: int) -> list[LogEntry]
     async def read_events_after(self, after: int, limit: int) -> list[StoredEvent]
@@ -178,7 +178,7 @@ class EventPartition(ABC):                # data, bound to one key; no method ta
   row appends nothing. Returns the head after the transaction.
 - `get_events`: the events, in the order asked.
 - `list_events`: the events in position order, with `position >
-  after`, at most `limit`, filtered by `since` and `before` on the
+  after`, at most `limit`, filtered by `since` and `until` on the
   timestamp and by `filter` on the properties. The cursor is the last
   position returned; a caller passes it back as `after`. Positions are
   stable, so a listing is exact under concurrent ingest.
