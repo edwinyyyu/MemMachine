@@ -25,7 +25,6 @@ constraint-dependencies = [
 [dependency-groups]
 dev = [
     "complexipy>=5.4.1",
-    "complexipy>=5.4.1",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.2.0",
     "ruff==0.15.14",

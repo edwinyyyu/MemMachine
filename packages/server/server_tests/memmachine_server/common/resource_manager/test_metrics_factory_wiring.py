@@ -94,7 +94,7 @@ def test_get_segment_store_supplies_a_factory(monkeypatch, mock_metrics_factory)
     async def fake_engine(_name):
         return MagicMock(spec=AsyncEngine)
 
-    manager.get_sql_engine = fake_engine
+    monkeypatch.setattr(manager, "get_sql_engine", fake_engine)
 
     asyncio.run(manager.get_segment_store("profile_storage"))
 
