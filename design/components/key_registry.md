@@ -44,9 +44,10 @@ class KeyRegistry(ABC):
 - After the remote operation: `get(key)` again; not `live` raises
   `KeyNotLiveError`. A write already sent is then garbage under a
   `dropping` key, purged by the store's `purge`.
-- The SQL-backed stores do not use it: each keeps a row of the same
-  shape and states in its own database beside its data, so its fence
-  is in-statement and its outward behaviour is the same.
+- The SQL-backed stores do not use it: each keeps a registry row and a
+  purge queue in its own database beside its data, a row being live and
+  a queue entry dropping, so its fence is in-statement and its outward
+  behaviour is the same.
 - Logical delete: `set_state(key, DROPPING)`; waits for nothing.
 - No lock is held across the remote operation, and no clock is read.
 

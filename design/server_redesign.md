@@ -506,8 +506,11 @@ Delete a tenant, `DELETE /v1/tenants/{id}`:
 Tombstone pass: a duty of the tenant service, run by reconciler
 processes every `reconciler.tombstone_interval`, in every one of them
 without exclusion, claiming rows so that each is handled by one pass at
-a time, bounded per call. For each `deleted` component row whose sweep
-is done, by the round's outcome and the row's `clean_at`:
+a time, bounded per call. The rows record only when things happened;
+the retention is a setting, and the comparison is datetime arithmetic
+in the claim statement with the database's `now()`, never a stored due
+time and never a process's clock. For each `deleted` component row
+whose sweep is done, by the round's outcome and the row's `clean_at`:
 
 - No `clean_at` yet: a round that purged something is followed by
   another; a round that found nothing on its first batch stamps
@@ -776,10 +779,11 @@ Operations, in the order the stores are touched:
   count and threshold, so over-fetching is one limit set above
   another.
 - Expand: the neighbourhood of a segment or event in its session's
-  one total order, `before` and `after` counted in segments or events, the
-  way claude-memory walks a conversation around a memory; one indexed
-  read on the segment store, no embedding. Specified in
-  `design/components/episodic_memory.md`.
+  one total order, `before` and `after` counted in segments, the way
+  claude-memory walks a conversation around a memory; one indexed read
+  on the segment store, no embedding. Segments are the one unit: a
+  long event is several of them, read inward by expanding from one.
+  Specified in `design/components/episodic_memory.md`.
 - `forget`: look up segments and derivatives; delete vector records;
   delete segments.
 
@@ -1080,18 +1084,22 @@ reused, the registry row keyed by the caller's UUID is the whole fence.
 ### How a store fences
 
 A store keeps one registry row per key: a store whose data is in a SQL
-database keeps it in a table beside the data; every other store keeps it
-in the key registry (below). The row has the same shape and states
-either way, `creating`, `live`, `dropping`, so every store behaves the
-same outwardly and the SQL stores depend on no second component. The
-row holds liveness, the store's phase for the key, and whatever the
-store needs to address the key on its backend, so the fence read is
-also the lookup and nothing is opened per tenant.
+database keeps it in a table beside the data, with a purge queue beside
+it; every other store keeps it in the key registry (below), whose row
+has three states, `creating`, `live`, `dropping`. A SQL store has two
+conditions it can observe, a row (live) and a queue entry (dropping),
+and they give it the same outward behaviour without a second
+component: the row's existence is checked in the same transaction as
+the data statement, and the queue entry is written in the same
+transaction as the delete, so what remains to purge is a durable,
+ordered list and not a best effort. The row holds whatever the store
+needs to address the key on its backend, so the fence read is also the
+lookup and nothing is opened per tenant.
 
 Stores whose data is in a SQL database (the event store, the segment
 store, pgvector, the SQLite stores): the data statement carries the
-liveness predicate, `EXISTS (SELECT 1 FROM <registry> WHERE key = ? AND
-state = 'live')`; a write's transaction pins the row for its duration
+liveness predicate, `EXISTS (SELECT 1 FROM <registry> WHERE key = ?)`;
+a write's transaction pins the row for its duration
 and the logical delete takes it exclusively, as shipped in #1548 (`FOR
 SHARE` and `FOR UPDATE` on PostgreSQL; on SQLite, where the driver
 defers `BEGIN` and a shared engine cannot be put under `BEGIN
@@ -1100,8 +1108,9 @@ which takes the file's write lock for the statement and fails when
 the row is no longer live). Those locks are in the same database as
 the data, with no remote I/O inside the transaction, so they cost
 nothing and give exactness: after the delete commits, no row can be
-written under the key. The logical delete sets the row `dropping`, and
-the purge removes the data in batches and the row last.
+written under the key. The logical delete removes the row and enqueues
+the key in that one transaction; the purge removes the data in batches
+and the queue entry last.
 
 Stores whose data is elsewhere (the vector stores on Qdrant, Milvus,
 Pinecone, S3 Vectors, Weaviate, Chroma): read the row for the address;
@@ -1220,8 +1229,8 @@ reusing keys can cause, and `provision` raises `KeyReusedError` for an
 operator.
 
 What every store operation does with a key whose row is present but
-not `live` (`creating` and `dropping`, in the key registry or in a SQL
-store's own registry table), and with no row at all. Only `provision`
+not `live` (`creating` and `dropping` in the key registry; a purge-queue
+entry in a SQL store), and with no row at all. Only `provision`
 proceeds on `creating`, as above:
 
 | Operation | present, not live | no row |
@@ -1230,15 +1239,14 @@ proceeds on `creating`, as above:
 | write | not-live error; a remote write already sent is garbage until purged | not-live error |
 | read | not-live error | not-live error |
 | logical delete | returns; idempotent | returns; idempotent |
-| purge | proceeds on `dropping`, and the row goes when nothing remains; raises on `live` | deletes by key in every container; `DONE` when nothing is found |
+| purge | proceeds on `dropping` or a queue entry, which goes when nothing remains; raises on `live` | deletes by key in every container; `DONE` when nothing is found |
 
 ### Segment store
 
 As shipped in #1548, with these changes:
 
 - Key type `UUID`; the `incarnation` column of every table becomes the
-  key, the registry row gains a `state` and the purge queue table goes
-  (a `dropping` row is the queue), and the store mints nothing.
+  key, the purge queue is keyed by the key, and the store mints nothing.
   The incarnation existed to keep a new life under a reused string key
   apart from the previous life's rows still awaiting purge; a key that
   is never reused is the life, and the strict create refuses a key whose
@@ -1255,8 +1263,8 @@ As shipped in #1548, with these changes:
   configuration; codec objects are cached process-wide by
   configuration, not per key.
 - `purge_partition(key) -> DONE | MORE`: purges this key's rows,
-  bounded per call, while the row is `dropping`; `DONE` when nothing
-  remains and the row is gone; raises on a `live` row. On SQLite the
+  bounded per call, while its queue entry exists; `DONE` when nothing
+  remains and the entry is gone; raises on a live row. On SQLite the
   DELETE waits on the write lock up to the driver's busy timeout and
   raises past it; the reconciler retries.
 - `purge_deleted_partitions()`: kept for library users without a tenant
@@ -1266,7 +1274,7 @@ As shipped in #1548, with these changes:
 
 The collection registry leaves the vector backend and becomes the
 store's rows in the key registry, or, for pgvector and the SQLite
-stores, a row of the same shape beside the data; that is the record of
+stores, a row and a purge queue beside the data; that is the record of
 every key that ever carried a record and what makes every record
 purgeable on a backend that cannot list or reject keys.
 
@@ -1646,7 +1654,7 @@ Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 | Method and path | Effect | Status |
 | --- | --- | --- |
 | `POST .../search` | body `query`; the search options, each optional with the tenant's default: `limit`, `min_similarity`, `expand_context`, `rerank` (`reranker`, `candidates`, `min_score`, or `null` for none); the system filters `since`, `before`, `session_ids`, `source_ids`, `block_kinds`; `filter` (JSON tree); `format` (dates, times, locale, timezone for `text`) | 200 with up to `limit` hits in descending score |
-| `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after`, `unit` (`segments` or `events`), `source_ids`, `block_kinds`, `format` | 200 with the segments in order, within the anchor's session, and `text` |
+| `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after` (segments), `source_ids`, `block_kinds`, `format` | 200 with the segments in order, within the anchor's session, and `text` |
 | `GET ...` | `watermark` and `head`, the lag being their difference | 200 |
 
 Event body: `id` (optional UUID; a caller that retries a request
@@ -1674,7 +1682,12 @@ traceback logged. Every request is answered; no path drops the
 connection.
 
 MCP: rebuilt over the same component objects, with the tenant id taken
-from a header; not designed here.
+from a header; not designed here, except for one rule carried over from
+claude-memory: the tools expose no expansion counts to the model.
+Segments are not an intuitive unit for an agent, so a tool's expansion
+is a fixed maximum the deployment or the tenant's defaults choose, and
+the model asks for context, not for a number of it. Programmers keep
+the numbers in the API, whose unit is learned once.
 
 Clients: the Python and TypeScript clients are generated from the OpenAPI
 document, not mirrored by hand.
@@ -1849,11 +1862,10 @@ is corrected to it.
 ## Relation to open issues
 
 - #1574: this document is the target for every row.
-- #1548: kept; UUID keys replace incarnations, the registry row gains
-  a state and the purge queue table goes, `purge_partition` is added,
-  the incarnation-bound partition handle gives way to a stateless
-  handle whose operations take no key, and `open_or_create_partition`
-  goes.
+- #1548: kept; UUID keys replace incarnations, `purge_partition` is
+  added, the incarnation-bound partition handle gives way to a
+  stateless handle whose operations take no key, and
+  `open_or_create_partition` goes.
 - #1530: agrees on the outcome, the store ABCs keeping only the strict
   create, and on the reason: only the caller knows why an existing row
   is acceptable. The two prove different things at the same signature.

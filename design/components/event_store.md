@@ -49,17 +49,19 @@ watermark is one, and the segment order breaks timestamp ties with it.
 | column | type | constraint |
 | --- | --- | --- |
 | `key` | `Uuid` | primary key |
-| `state` | `String(16)` | not null; check in (`live`, `dropping`) |
 | `config` | `JSON` | not null; the codec configuration at create |
 | `next_position` | `BigInteger` | not null, default 1 |
 | `created_at` | `DateTime(timezone=True)` | not null, `func.now()` |
-| `dropped_at` | `DateTime(timezone=True)` | null; set by the logical delete |
 
-Index: `event_store_pt__state_dropped (state, dropped_at)` for
-`purge_deleted_partitions`. The row has the same states as a key
-registry row, so the store's outward behaviour is the same as every
-other store's without depending on the key registry: `creating` does
-not occur, since the partition is one insert.
+`event_store_gc`, the purge queue: `key Uuid` primary key,
+`enqueued_at DateTime(timezone=True)` not null `func.now()`, index
+`event_store_gc__enqueued_at`. A key is in one of two conditions the
+store can observe, a registry row (live) or a queue entry (dropping),
+and those two give the store the same outward behaviour as a
+key-registry store without a second component: the row's existence is
+the fence, checked in the same transaction as the data statement, and
+the queue is the durable, ordered list of what remains to purge, written
+in the same transaction as the delete.
 
 `event_store_ev`, the events:
 
@@ -138,21 +140,22 @@ class EventPartition(ABC):                # data, bound to one key; no method ta
     async def head(self) -> int                            # last position
 ```
 
-- `create_partition`: strict; `KeyExistsError` on any row under the key,
-  in any state. The row records the store's `payload_codec` setting as
-  the partition's configuration, so a later change of the setting
-  applies to new partitions only.
-- `delete_partition`: set the row `dropping` with `dropped_at`. One row
-  flip, O(1), idempotent; a `dropping` row is left as it is.
-- `purge_partition`: with a `dropping` row, delete up to `purge_batch`
-  of the key's rows across the three data tables; `MORE` while rows
-  remain; remove the registry row when none do and return `DONE`. With
-  no row, `DONE` after finding nothing under the key. On a `live` row,
-  raise `KeyLiveError`. On SQLite the `DELETE` waits on the write lock
-  up to `busy_timeout` and raises past it; the reconciler retries.
+- `create_partition`: strict; `KeyExistsError` on any row or queue
+  entry under the key. The row records the store's `payload_codec`
+  setting as the partition's configuration, so a later change of the
+  setting applies to new partitions only.
+- `delete_partition`: one transaction: lock the row, enqueue the key,
+  remove the row. O(1), idempotent.
+- `purge_partition`: with a queue entry, delete up to `purge_batch` of
+  the key's rows across the three data tables; `MORE` while rows
+  remain; remove the entry when none do and return `DONE`. With neither
+  entry nor row, `DONE` after finding nothing under the key. With a row
+  and no entry, the key is live: raise `KeyLiveError`. On SQLite the
+  `DELETE` waits on the write lock up to `busy_timeout` and raises past
+  it; the reconciler retries.
 - `purge_deleted_partitions`: for library users without a tenant
-  service: one `purge_partition` batch for the oldest `dropping` row;
-  `True` while any `dropping` row remains. The server does not run it.
+  service: one `purge_partition` batch for the oldest queue entry;
+  `True` while any entry remains. The server does not run it.
 - `add_events`: one transaction that locks the registry row `FOR
   UPDATE` (on SQLite, the self-checking `UPDATE` of `next_position`
   serves as the lock, as in the segment store), so ingests to one
@@ -186,8 +189,8 @@ class EventPartition(ABC):                # data, bound to one key; no method ta
   entry's own, so an entry superseded by a delete and a re-ingest of
   the same uuid carries `None`, as does one whose event has since been
   deleted, and a subsystem skips it.
-- Reads carry `EXISTS (registry row, state = 'live')`; a read on a key
-  that is not live raises `KeyNotLiveError`.
+- Reads carry `EXISTS (registry row)`; a read on a key with no row
+  raises `KeyNotLiveError`.
 
 ## What positions are for
 

@@ -340,8 +340,13 @@ row, the idempotency of every hook, and the store fences.
 - Tombstone pass, every `tombstone_interval`, in every reconciler
   process without exclusion, claiming rows with `FOR UPDATE SKIP LOCKED`
   on PostgreSQL and under the write lock on SQLite, bounded per call.
-  For each component row in `deleted` whose `sweep` job is `done`
-  (a pending or running sweep is a round in progress, skipped):
+  The rows record only what happened and when (`deleted_at`,
+  `clean_at`, the sweep job's `last_run_at`); the retention is policy,
+  a setting, and every comparison below is evaluated in the claim
+  statement as datetime arithmetic with the database's `now()`, never
+  on a process's clock and never stored as a due time. For each
+  component row in `deleted` whose `sweep` job is `done` (a pending or
+  running sweep is a round in progress, skipped):
   - `clean_at` null and the round `purged`: reset the sweep, a new
     round.
   - `clean_at` null and the round `clean`: `clean_at = now()`.

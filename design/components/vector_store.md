@@ -110,9 +110,9 @@ Semantics:
   vector, fenced the same way; the selective plan's scoring step, over
   the bounded set of derivative ids the segment store's probe returned,
   which is why `query` needs no id allowlist.
-- `delete_collection`: set the registry row `dropping` (the key
-  registry's `set_state`, or the row's `state` column in the SQL-backed
-  stores); O(1); idempotent.
+- `delete_collection`: `set_state(key, DROPPING)` in the key registry;
+  in the SQL-backed stores, remove the row and enqueue the key in one
+  transaction; O(1); idempotent.
 - `purge_collection`: with a `dropping` row, delete records under the
   key in bounded steps (filter delete; a filtered-query loop and keyed
   delete on S3 Vectors; `delete_collection` on Chroma; remove the
@@ -191,18 +191,20 @@ the usearch store `process`.
 ## Schema of the SQL-backed stores
 
 `vector_store_pt`, the registry row beside the data in pgvector and the
-two SQLite stores, the same shape as the key registry's row so the
-store's outward behaviour is the same without depending on it:
+two SQLite stores, and `vector_store_gc`, their purge queue; a row is
+live and a queue entry is dropping, the same two conditions as the
+segment store's, so the store's outward behaviour matches the
+key-registry stores' without depending on the key registry:
 
 | column | type | constraint |
 | --- | --- | --- |
 | `key` | `Uuid` | primary key |
-| `state` | `String(16)` | not null; check in (`live`, `dropping`) |
 | `container` | `Text` | not null; the embedder id |
 | `created_at` | `DateTime(timezone=True)` | not null, `func.now()` |
-| `dropped_at` | `DateTime(timezone=True)` | null |
 
-Index: `vector_store_pt__state_dropped (state, dropped_at)`.
+`vector_store_gc`: `key Uuid` primary key, `enqueued_at
+DateTime(timezone=True)` not null `func.now()`, index
+`vector_store_gc__enqueued_at`.
 
 pgvector, one table per container, created by `provision_containers`:
 
@@ -251,7 +253,7 @@ The vec0 table's metadata columns carry every declared filterable key;
 the records table maps record uuids to rowids for `delete` and
 `get_cosine_similarity`. The registry row is `vector_store_pt` in the
 same file, and the fence is the same in-statement predicate on its
-`state` as in the segment store.
+existence as in the segment store.
 
 Engine-backed store (usearch, hnswlib, or turbovec engines, as the
 reference branch's `VectorSearchEngine` family), one shared records

@@ -14,14 +14,14 @@ store. This file lists what changes; everything not listed stays.
 
 ## Storage, after the changes
 
-`segment_store_pt`: `key UUID PK`, `state`, `config JSON`,
-`created_at`, `dropped_at`. `segment_store_sg`: `key UUID`, `uuid UUID`,
+`segment_store_pt`: `key UUID PK`, `config JSON`, `created_at`.
+`segment_store_sg`: `key UUID`, `uuid UUID`,
 `event_uuid UUID`, `event_position`, `index`, `offset`, `timestamp`,
 `timestamp_timezone_offset`, `session_id TEXT`, `source_id TEXT`,
 `context BLOB`, `block_kind TEXT`, `block BLOB`, `properties JSON`;
 primary key `(key, uuid)`. `segment_store_dv_ln`: `key UUID`, `uuid
 UUID`, `segment_uuid UUID`, foreign key to the segment row with cascade.
-The purge queue table goes: a `dropping` registry row is the queue.
+`segment_store_gc`: `key UUID PK`, `enqueued_at`, the purge queue.
 
 ## API, after the changes
 
@@ -58,7 +58,6 @@ class SegmentPartition(ABC):              # data, bound to one key; no method ta
                                    property_filter: FilterExpr | None) -> dict[UUID, list[Segment]]
     async def get_neighbours(self, anchor: UUID, *,
                              before: int, after: int,
-                             unit: Literal["segments", "events"],
                              source_ids: Iterable[str] | None,
                              block_kinds: Iterable[str] | None) -> list[Segment]
     async def get_segment_uuids_by_event_uuids(self,
@@ -86,12 +85,11 @@ session by an equality predicate on its session id, so they never cross
 into another conversation interleaved in time.
 
 `get_neighbours` serves expansion (`episodic_memory.md`): the `before`
-segments or whole events preceding the anchor and the `after` following
-it, per `unit`, within the anchor's session, optionally restricted to
-source ids and block kinds; the anchor itself is included, and with
-`unit = "events"` every segment of a counted event is included. The
-order is total and stable, so a caller walks further by repeating the
-call from the first or last segment returned. `get_segment_contexts`
+segments preceding the anchor and the `after` following it, within the
+anchor's session, optionally restricted to source ids and block kinds;
+the anchor itself is included. The order is total and stable, so a
+caller walks further by repeating the call from the first or last
+segment returned. `get_segment_contexts`
 applies `since`, `before`, `source_ids`, `block_kinds` and
 `property_filter` to the window rows as well as to the seeds, so a
 window is bounded by the same filters as the hits it surrounds.
@@ -107,15 +105,14 @@ window is bounded by the same filters as the hits it surrounds.
   unique incarnation goes, the physical-key helper in `utils.py` goes,
   and the store mints nothing. Rationale in `server_redesign.md`,
   "Segment store".
-- The registry row gains `state` (`live`, `dropping`) and `dropped_at`,
-  and the purge queue table `segment_store_gc` goes: the logical delete
-  sets the row `dropping` instead of removing it and enqueueing the
-  key, the purge removes the row when nothing remains, and
-  `purge_deleted_partitions` iterates `dropping` rows oldest first. The
-  store's outward behaviour is then the same as the key-registry
-  stores' (a row in any state refuses create; a row not `live` refuses
-  data operations; `purge` on a `live` row raises `KeyLiveError`)
-  without depending on the key registry.
+- The registry row and the purge queue stay as shipped, keyed by the
+  key: the logical delete removes the row and enqueues the key in one
+  transaction, and a key is in one of two conditions the store can
+  observe, a row (live) or a queue entry (dropping). Those two give the
+  same outward behaviour as the key-registry stores' `live` and
+  `dropping` without a second component: a row or an entry refuses
+  create; no row refuses data operations; `purge` proceeds on an entry
+  and raises `KeyLiveError` on a row with no entry.
 - `SegmentStorePartition` (`segment_store.py:20`) becomes
   `SegmentPartition`: the same data operations, none taking a key,
   bound to the key at construction and stateless (no incarnation,
@@ -128,11 +125,11 @@ window is bounded by the same filters as the hits it surrounds.
 - `create_partition` stays strict: `KeyExistsError` on a row in any
   state. The `config` parameter goes: the row records the store's
   `payload_codec` setting at create.
-- `purge_partition(key) -> Progress` is added: this key's rows, bounded
-  by `purge_max_segments`; `DONE` when none remain and the row is
-  gone. It is what the `sweep` job calls; `purge_deleted_partitions`
-  stays for library users, keeps its `bool`, and the server does not
-  run it.
+- `purge_partition(key) -> Progress` is added: this key's rows while
+  its queue entry exists, bounded by `purge_max_segments`; `DONE` when
+  none remain and the entry is removed. It is what the `sweep` job
+  calls; `purge_deleted_partitions` stays for library users, keeps its
+  `bool`, and the server does not run it.
 - `Segment` gains `event_position`, copied from the `StoredEvent` the
   segmenter was given, and the row the column; the ordering index
   changes accordingly.
@@ -148,8 +145,7 @@ window is bounded by the same filters as the hits it surrounds.
 - `segment_store_sg` gains `block_kind`, the kind name of the segment's
   one block as a plain column, since the encoded block cannot be
   filtered (`blocks.md`).
-- `get_neighbours` is added for expansion, over the ordering index,
-  with `unit`.
+- `get_neighbours` is added for expansion, over the ordering index.
 - The two ABCs stay two, `SegmentStore` and `SegmentPartition`, with
   the line between them redrawn: the store names keys, the partition
   never does.
@@ -158,11 +154,10 @@ window is bounded by the same filters as the hits it surrounds.
   `KeyExistsError`; `SegmentStoreAttemptsExhaustedError` becomes
   `AttemptsExhaustedError`; `SegmentPartitionConfigMismatchError`
   goes with open-or-create.
-- Fencing is unchanged in mechanism: writes pin the registry row for
-  the transaction (`FOR SHARE` on PostgreSQL; the self-checking
-  registry `UPDATE` on SQLite, as shipped), the logical delete takes it
-  exclusively, reads carry the liveness predicate, now `state =
-  'live'`.
+- Fencing is unchanged: writes pin the registry row for the
+  transaction (`FOR SHARE` on PostgreSQL; the self-checking registry
+  `UPDATE` on SQLite, as shipped), the logical delete takes it
+  exclusively, reads carry the liveness predicate, the row's existence.
 - Segmenter and deriver contracts gain a clause: a segment carries a
   verbatim copy of its event's properties, session id, source id,
   context, timestamp with offset and position, and a derivative of its
@@ -175,12 +170,12 @@ window is bounded by the same filters as the hits it surrounds.
 | column | type | constraint |
 | --- | --- | --- |
 | `key` | `Uuid` | primary key |
-| `state` | `String(16)` | not null; check in (`live`, `dropping`) |
 | `config` | `JSON` (`JSONB` on PostgreSQL) | not null |
 | `created_at` | `DateTime(timezone=True)` | not null, `func.now()` |
-| `dropped_at` | `DateTime(timezone=True)` | null |
 
-Index: `segment_store_pt__state_dropped (state, dropped_at)`.
+`segment_store_gc`, the purge queue: `key Uuid` primary key,
+`enqueued_at DateTime(timezone=True)` not null `func.now()`, index
+`segment_store_gc__enqueued_at`.
 
 `segment_store_sg`, the segments:
 

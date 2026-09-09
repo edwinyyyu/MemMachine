@@ -57,7 +57,6 @@ class EpisodicMemory:
                     filter: FilterExpr | None) -> list[SearchHit]
     async def expand(self, anchor: UUID, *,
                      before: int, after: int,
-                     unit: Literal["segments", "events"],
                      source_ids: Iterable[str] | None,
                      block_kinds: Iterable[str] | None) -> list[Segment]
     @staticmethod
@@ -94,9 +93,11 @@ class EpisodicMemory:
 - `expand`: the neighbourhood of an anchor in its session's one total
   order (`segment_store.md`), as claude-memory's `memory_expand` walks
   a conversation around a memory. The anchor is a segment uuid (from a
-  hit) or an event uuid (its first segment). `unit` says what `before`
-  and `after` count, segments or whole events; the walk stays in the
-  anchor's session, and `source_ids` and `block_kinds` restrict it.
+  hit) or an event uuid (its first segment). `before` and `after` count
+  segments, the one unit the store has; a long event is several
+  segments and is read inward by expanding from one of them. The walk
+  stays in the anchor's session, and `source_ids` and `block_kinds`
+  restrict it.
   Returns the segments in the store's order, the anchor among them; a
   caller walks further by calling again with the first or last segment
   as the anchor and one side zero. Backed by
