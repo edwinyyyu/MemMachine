@@ -20,7 +20,6 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.episode_store import (
     Episode,
     EpisodeEntry,
@@ -150,7 +149,6 @@ def vector_store():
 def vector_store_collection(fake_embedder):
     config = VectorStoreCollectionConfig(
         vector_dimensions=fake_embedder.dimensions,
-        similarity_metric=fake_embedder.similarity_metric,
         indexed_properties_schema={
             **EventMemory.expected_vector_store_collection_schema(),
             **EVENT_BACKEND_SYSTEM_FIELDS,
@@ -480,20 +478,15 @@ async def test_timestamp_filter_field_is_accepted(long_term_memory, episodes):
     )
 
 
-def _make_ltm_with_metric(
-    metric: SimilarityMetric,
-    episodes: list[Episode],
-) -> LongTermMemory:
-    """Build a self-contained LongTermMemory whose vector store uses `metric`.
+def _make_ltm(episodes: list[Episode]) -> LongTermMemory:
+    """Build a self-contained LongTermMemory, bypassing the shared fixtures.
 
-    Avoids the shared fixtures so each test can pick its own similarity metric.
-    No reranker is configured — that's the failure mode under euclidean.
+    No reranker is configured, so scores come straight from the vector store.
     """
-    fake_embedder = FakeEmbedder(similarity_metric=metric)
+    fake_embedder = FakeEmbedder()
     vector_store_collection = InMemoryVectorStoreCollection(
         VectorStoreCollectionConfig(
             vector_dimensions=fake_embedder.dimensions,
-            similarity_metric=metric,
             indexed_properties_schema={
                 **EventMemory.expected_vector_store_collection_schema(),
                 **EVENT_BACKEND_SYSTEM_FIELDS,
@@ -526,7 +519,7 @@ async def test_score_threshold_drops_low_scores_under_cosine():
         _episode("near", "abc"),
         _episode("far", "abcdefghij"),
     ]
-    ltm = _make_ltm_with_metric(SimilarityMetric.COSINE, episodes)
+    ltm = _make_ltm(episodes)
     await ltm.add_episodes(episodes)
 
     kept_all = await ltm.search_scored("abc", num_episodes_limit=10)
@@ -536,62 +529,6 @@ async def test_score_threshold_drops_low_scores_under_cosine():
         "abc", num_episodes_limit=10, score_threshold=2.0
     )
     assert kept_none == []
-
-
-async def test_score_threshold_not_inverted_under_euclidean_no_reranker():
-    """Regression: with no reranker the threshold filter must respect
-    similarity_metric.higher_is_better. Under euclidean, scores are distances
-    (lower = better). The filter must DROP scores ABOVE the threshold, not
-    BELOW it.
-
-    Without this fix, `score < threshold` keeps far matches and drops close
-    ones — leaking unrelated content past a "max-distance" gate.
-    """
-    # FakeEmbedder maps text -> [len, -len], so a shorter embedded anchor lands
-    # closer to the short query "abc". "near" (content "abc") is therefore a
-    # closer euclidean match than "far" (content "abcdefghij"). The exact
-    # distances depend on the embedding format (producer prefix, JSON quoting,
-    # date stamp), so we read the actual scores and pick a threshold strictly
-    # between them rather than hard-coding the arithmetic.
-    episodes = [
-        _episode("near", "abc"),
-        _episode("far", "abcdefghij"),
-    ]
-    ltm = _make_ltm_with_metric(SimilarityMetric.EUCLIDEAN, episodes)
-    await ltm.add_episodes(episodes)
-
-    scores_by_uid = {
-        ep.uid: score
-        for score, ep in await ltm.search_scored("abc", num_episodes_limit=10)
-    }
-    assert scores_by_uid["near"] < scores_by_uid["far"], (
-        "FakeEmbedder should make the shorter 'near' anchor a closer "
-        "euclidean match than 'far'."
-    )
-    midpoint_threshold = (scores_by_uid["near"] + scores_by_uid["far"]) / 2
-
-    kept = await ltm.search_scored(
-        "abc", num_episodes_limit=10, score_threshold=midpoint_threshold
-    )
-    uids = {ep.uid for _, ep in kept}
-    assert "near" in uids, (
-        "Close match was dropped — threshold filter is inverted for euclidean."
-    )
-    assert "far" not in uids, (
-        "Far match was kept — threshold filter is inverted for euclidean."
-    )
-
-
-async def test_score_threshold_none_keeps_all_results_under_euclidean():
-    """Regression for the prior `-inf` sentinel: under euclidean (lower=better)
-    the default "no threshold" must NOT drop everything. Default is now
-    `score_threshold=None` which short-circuits the filter."""
-    episodes = [_episode("only", "abc")]
-    ltm = _make_ltm_with_metric(SimilarityMetric.EUCLIDEAN, episodes)
-    await ltm.add_episodes(episodes)
-
-    scored = await ltm.search_scored("abc", num_episodes_limit=10)
-    assert [ep.uid for _, ep in scored] == ["only"]
 
 
 def _timeline_episode(uid: str, content: str, minute: int) -> Episode:
@@ -695,8 +632,8 @@ def timeline_long_term_memory(
     segment_store_partition,
     timeline_storage,
 ) -> LongTermMemory:
-    # `RankedEmbedder` shares FakeEmbedder's dimensions and similarity metric,
-    # so the shared `vector_store_collection` config still applies.
+    # `RankedEmbedder` shares FakeEmbedder's dimensions, so the shared
+    # `vector_store_collection` config still applies.
     return LongTermMemory(
         EventBackendParams(
             session_id="sess1",
