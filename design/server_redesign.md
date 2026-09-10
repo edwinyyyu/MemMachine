@@ -939,9 +939,9 @@ function that validates the key against the stores' naming contract at import
 time; the prefix is the distribution name, so its uniqueness is the package
 registry's. The prefix is reserved as a whole and there is no central list of
 keys under it: each service names its own, and services do not share a vector
-store, so two services' keys never meet in one schema. Stores therefore index and filter system fields with the same
-machinery as user properties, and a caller key beginning with the prefix is
-rejected on the way in.
+store, so two services' keys never meet in one schema. Stores therefore index
+and filter system fields with the same machinery as user properties, and a
+caller key beginning with the prefix is rejected on the way in.
 
 Which fields are system fields is decided by one criterion: the server
 gives the field semantics beyond filtering. `timestamp` orders,

@@ -243,12 +243,12 @@ CREATE VIRTUAL TABLE vec_<container> USING vec0(
 );
 ```
 
-`vec_<container>_rec`: `key Uuid` and `uuid Uuid` primary key and
-`rowid BigInteger` not null unique (the vec0 rowid). The vec0 table's
-metadata columns carry every declared filterable key; the records
-table maps record uuids to rowids for `delete`. The registry row is `vector_store_pt` in the
-same file, and the fence is the same in-statement predicate on its
-existence as in the segment store.
+`vec_<container>_rec`: `key Uuid` and `uuid Uuid` primary key and `rowid
+BigInteger` not null unique (the vec0 rowid). The vec0 table's metadata columns
+carry every declared filterable key; the records table maps record uuids to
+rowids for `delete`. The registry row is `vector_store_pt` in the same file,
+and the fence is the same in-statement predicate on its existence as in the
+segment store.
 
 Engine-backed store (usearch, hnswlib, or turbovec engines, as the
 reference branch's `VectorSearchEngine` family), one shared records
