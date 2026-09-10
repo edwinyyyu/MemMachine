@@ -163,11 +163,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
 
     def _build_entity(self, record: Record) -> dict[str, Any]:
         """Build a Milvus entity from a vector store record."""
-        if record.vector is None:
-            raise ValueError(
-                f"Record {record.uuid} has vector=None, which is not allowed on input."
-            )
-
         properties = record.properties if record.properties is not None else {}
         entity: dict[str, Any] = {
             _ID_FIELD: self._primary_id(self._partition_key, record.uuid),

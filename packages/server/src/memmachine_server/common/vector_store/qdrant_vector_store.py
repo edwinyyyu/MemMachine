@@ -300,11 +300,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         async with self._tracker("upsert"):
             points: list[models.PointStruct] = []
             for record in records:
-                if record.vector is None:
-                    raise ValueError(
-                        f"Record {record.uuid} has vector=None, which is not allowed on input."
-                    )
-                properties = record.properties if record.properties is not None else {}
+                properties = record.properties
                 points.append(
                     models.PointStruct(
                         id=record.uuid,
