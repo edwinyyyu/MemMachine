@@ -66,12 +66,6 @@ class SegmentPartition(ABC):              # data, bound to one key; no method ta
                                                event_uuids: Iterable[UUID]) -> dict[UUID, list[UUID]]
     async def get_derivative_uuids_by_segment_uuids(self,
                                                     segment_uuids: Iterable[UUID]) -> dict[UUID, list[UUID]]
-    async def find_segments(self, *,
-                            since: datetime | None, until: datetime | None,
-                            session_ids: Iterable[str] | None,
-                            source_ids: Iterable[str] | None,
-                            block_kinds: Iterable[str] | None,
-                            property_filter: FilterExpr, limit: int) -> list[UUID]
     async def delete_segments(self, segment_uuids: Iterable[UUID]) -> None
     async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
 ```
@@ -154,10 +148,6 @@ to it.
   become `before` and `after`, the names expansion uses. It takes no
   `session_ids`: a window is confined to its seed's session by the
   store.
-- `find_segments` is added for the selectivity probe under
-  `filters_and_properties.md`: segments matching the system filters and
-  a property filter, up to `limit + 1`, so the caller can tell
-  "selective" from "broad".
 - `segment_store_sg` gains `block_kind`, the kind name of the segment's
   one block as a plain column, since the encoded block cannot be
   filtered (`blocks.md`).

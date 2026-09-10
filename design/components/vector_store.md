@@ -65,8 +65,6 @@ class VectorCollection(ABC):              # data, bound to one key and container
     async def query(self, vectors: Iterable[Sequence[float]], *,
                     limit: int, min_similarity: float | None,
                     filter: FilterExpr | None) -> list[list[QueryMatch]]
-    async def get_cosine_similarity(self, vector: Sequence[float],
-                                    uuids: Iterable[UUID]) -> dict[UUID, float]
     @property
     def supported_filter_nodes(self) -> frozenset[type]
 ```
@@ -106,10 +104,10 @@ Semantics:
 - `supported_filter_nodes`: the node classes the backend evaluates
   during a search, per the table in `filters_and_properties.md`; the
   subsystem routes any other predicate to the segment store.
-- `get_cosine_similarity`: the similarity of each given record to the
-  vector, fenced the same way; the selective plan's scoring step, over
-  the bounded set of derivative ids the segment store's probe returned,
-  which is why `query` needs no id allowlist.
+- There is no scoring by id and no allowlist on `query`: the store
+  never scores a candidate set assembled outside it. The undeclared
+  part of a filter is applied afterward by the segment store, and the
+  vector limit is widened to compensate (`episodic_memory.md`).
 - `delete_collection`: `set_state(key, DROPPING)` in the key registry;
   in the SQL-backed stores, remove the row and enqueue the key in one
   transaction; O(1); idempotent.
@@ -170,8 +168,9 @@ the usearch store `process`.
   native per-tenant object by the key's hex.
 - Qdrant's shard key per collection and `_name_locks` go (#1564);
   payload partitioning by the key's hex is the one mode.
-- `query` returns ids and scores only; `get` and `return_vector` go;
-  `get_cosine_similarity` is added (reference branch, commit 2d5dc2b5).
+- `query` returns ids and scores only; `get` and `return_vector` go
+  (reference branch, commit 2d5dc2b5, without its
+  `get_cosine_similarity`, which had no consumer).
 - A datetime, whether the system timestamp or a declared user
   property, is stored where a backend has no datetime type (sqlite-vec,
   S3 Vectors, the engine-backed store's records table) as an integer of
@@ -219,8 +218,6 @@ pgvector, one table per container, created by `provision_containers`:
 | `memmachine_event_session` | `Text` | null |
 | `memmachine_event_source` | `Text` | null |
 | `memmachine_block_kind` | `Text` | not null |
-| `memmachine_event_uuid` | `Uuid` | not null |
-| `memmachine_segment_uuid` | `Uuid` | not null |
 | one column per declared user key | by declared type: `Text`, `BigInteger`, `Float`, `Boolean`, `DateTime(timezone=True)` | null |
 
 Indexes: `vec_<container>__vector`, HNSW with `vector_cosine_ops`;
@@ -246,12 +243,10 @@ CREATE VIRTUAL TABLE vec_<container> USING vec0(
 );
 ```
 
-`vec_<container>_rec`: `key Uuid` and `uuid Uuid` primary key,
-`rowid BigInteger` not null unique (the vec0 rowid), and
-`memmachine_event_uuid Uuid`, `memmachine_segment_uuid Uuid` not null.
-The vec0 table's metadata columns carry every declared filterable key;
-the records table maps record uuids to rowids for `delete` and
-`get_cosine_similarity`. The registry row is `vector_store_pt` in the
+`vec_<container>_rec`: `key Uuid` and `uuid Uuid` primary key and
+`rowid BigInteger` not null unique (the vec0 rowid). The vec0 table's
+metadata columns carry every declared filterable key; the records
+table maps record uuids to rowids for `delete`. The registry row is `vector_store_pt` in the
 same file, and the fence is the same in-statement predicate on its
 existence as in the segment store.
 

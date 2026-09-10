@@ -20,12 +20,14 @@ def validate_property_value(value: object,
 
 - `PropertyValue = bool | int | float | str | datetime`; no lists, no
   nesting, no `None`.
-- System fields are stored under reserved keys:
+- Episodic memory's system fields are stored under reserved keys:
   `memmachine_event_timestamp`, `memmachine_event_session`,
-  `memmachine_event_source` (the source
-  id; a rendered name is never stored in a vector record),
-  `memmachine_block_kind` (the segment's one block's kind),
-  `memmachine_event_uuid`, `memmachine_segment_uuid`.
+  `memmachine_event_source` (the source id; a rendered name is never
+  stored in a vector record), `memmachine_block_kind` (the segment's
+  one block's kind). The derivative-to-segment mapping is the segment
+  store's, so no uuid is written into a record. The prefix is reserved
+  as a whole; another service names its own keys under it, on its own
+  store, and no central list exists.
 - A caller key beginning with the prefix, or outside `[a-z0-9_]`, or
   longer than 32 bytes (the identifier bound every backend accepts,
   `PROPERTY_KEY_MAX_BYTES`), is rejected at ingest with

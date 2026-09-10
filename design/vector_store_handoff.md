@@ -37,8 +37,8 @@ document adds.
   owns the reserved keys, `system_filters.py`, and the segment store's
   `session_id`, `source_id` and `block_kind` columns). #1599 (turbovec
   engine) is independent. #1588 (atomic index publish) is merged.
-- One decision #1598 made must be reopened here, below under "Scoring
-  by id".
+- #1598's decision that the store scores nothing by id stands: the
+  plan below needs no such call.
 
 ## References
 
@@ -57,9 +57,10 @@ document adds.
   - `822ccb6b`, the closed filter union
     (`common/filter/filter_expression.py`) and the per-backend
     compilers recompiled over it.
-  - `2d5dc2b5`, score-only queries, `get_cosine_similarity` per engine,
-    and the selectivity plan (a LIMIT probe; selective filters become
-    an allowlist, broad ones widen with a cap).
+  - `2d5dc2b5`, score-only queries; its selective and broad regimes
+    live inside the engine-backed SQLite store and stay there, and its
+    `get_cosine_similarity` is not taken (zero callers; YAGNI, decided
+    2026-09-09).
   - `b17fd0a1`, the widening cap returns what survived.
   - `a0753d3c`, Qdrant `hnsw_config`, `optimizers_config` and
     `quantization_config` as plain mappings validated against the
@@ -83,18 +84,22 @@ configuration, with no owner and no migration.
   `indexed_properties: Mapping[str, PropertyType]` in the store's
   params, from deployment configuration. `PropertyType` is the scalar
   set (`str`, `int`, `float`, `bool`, `datetime`).
-- The system keys are always declared. `common/property_keys.py`
-  gains `SYSTEM_PROPERTY_SCHEMA`, the four reserved keys #1597 writes
-  (`memmachine_event_timestamp: datetime`, `memmachine_event_session:
+- The system keys are always declared, by the consumer that writes
+  them. `EventMemory.expected_vector_store_collection_schema` stays as
+  that declaration (the four reserved keys #1597 writes:
+  `memmachine_event_timestamp: datetime`, `memmachine_event_session:
   str`, `memmachine_event_source: str`, `memmachine_block_kind: str`),
-  and every store adds it to its declared schema. Nothing in the
-  vector store imports from `event_memory`.
+  and the schema a store is built with is the configured user keys
+  plus its consumer's system keys, merged where the store is
+  constructed for that consumer. There is no central list of reserved
+  keys: the prefix is reserved as a whole, each service names its own
+  keys under it, and services do not share a vector store, so two
+  services' keys never meet in one schema.
 - `indexed_properties_schema` leaves `VectorStoreCollectionConfig`;
   `create_collection` and `open_or_create_collection` keep their
   shape otherwise (their removal is the other side of the seam).
-  `EventMemory.expected_vector_store_collection_schema` goes; instead
   `EventMemory` checks at construction that the collection's store
-  declares the four system keys and raises `InvalidCollectionSchemaError`
+  declares its four system keys and raises `InvalidCollectionSchemaError`
   if not.
 - The server's configuration gains the store-level
   `indexed_properties` setting and stops passing a schema per
@@ -139,29 +144,16 @@ configuration, with no owner and no migration.
   of the compared type; `NotEquals` keeps records holding a differing
   value; `Not(Equals)` also keeps records holding none.
 
-## Scoring by id
+## No scoring by id
 
-The selective plan (below) scores a small, known set of derivative
-records against the query vector. #1598 removed `get` and added no
-scoring-by-id entry point, on the reasoning that property filtering
-stays inside the store so a candidate set never leaves it. Under the
-declared-index model that is no longer true: an undeclared key is
-filtered in the segment store, so the candidate set is assembled
-outside the vector store and must be scored by id.
-
-- Add `get_cosine_similarity(vector: Sequence[float], uuids:
-  Iterable[UUID]) -> dict[UUID, float]` to `VectorStoreCollection`, as
-  #1593 had it and `2d5dc2b5` implements it per backend: keyed vector
-  access where an engine can return a stored vector (hnswlib, usearch,
-  sqlite-vec via `vec_distance_cosine` per rowid, Qdrant and Milvus by
-  id), and a filtered search with `limit = len(uuids)` on turbovec,
-  which holds only codes. A similarity may come from a quantized stored
-  vector and may differ from one computed on a fresh embedding; the
-  docstring says so. A uuid with no record is absent from the result.
-- This is the one place this document contradicts an open PR; if the
-  reviewer of #1598 prefers an allowlist parameter on `query` instead,
-  the plan below works with either, and the design chose the scoring
-  call because the probe's result is bounded and small.
+`get_cosine_similarity` is not added, and no allowlist parameter on
+`query` either. Both would exist to score a candidate set assembled
+outside the store, which the plan below never does: the vector store
+gets the declared part of a filter and applies it during the search,
+and the undeclared part is applied afterward by the segment store,
+which already holds every segment's properties. The `default` branch
+added `get_cosine_similarity` for a consumer that never arrived, and
+#1598 removed it with `get`; it stays removed.
 
 ## Datetimes
 
@@ -197,30 +189,22 @@ store rejects any other `m`.
 This is the consumer side of the contract and belongs with it; the
 author of #1597 is the natural owner.
 
-- `EventMemoryParams` gains `filter: FilterOptions` with
-  `selective_limit: int` and `max_overfetch: int`.
+- `EventMemoryParams` gains `filter: FilterOptions` with one field,
+  `max_overfetch: int`.
 - `split_declared(expr, declared) -> tuple[FilterExpr | None,
   FilterExpr | None]` (`filters_and_properties.md`): the part of a
   conjunction naming declared keys only, and the rest; a disjunction
   or negation that mixes the two is undeclared as a whole. Applied to
-  the caller's `property_filter` after `system_predicates` has been
-  conjoined, against the collection's declared schema.
-- `SegmentStorePartition.find_segments(*, since, until, session_ids,
-  source_ids, block_kinds, property_filter, limit) -> list[UUID]`:
-  segments matching the system filters and a property filter, up to
-  `limit + 1`, so the caller can tell selective from broad. Over the
-  ordering index plus the JSON properties column.
-- The plan in `query`. Selective: `find_segments` with the undeclared
-  part up to `selective_limit`; if it fits, take those segments'
-  derivative uuids (`get_derivative_uuids_by_segment_uuids`), score
-  them with `get_cosine_similarity`, drop those below
-  `min_cosine_similarity`, keep the best `limit`. Broad: `query` with
-  the declared part and the system predicates, `limit` widened up to
-  `max_overfetch` while the segment store rejects seeds against the
-  undeclared part (`get_segment_contexts` with the same filters is the
-  rejection), and cut to `limit`; at the cap return what survived
-  (`b17fd0a1`). With no undeclared part there is one plan, `query` with
-  the whole tree.
+  the caller's `property_filter` against the collection's declared
+  schema; the system predicates are declared by construction.
+- One plan in `query`. The vector store gets the declared part and the
+  system predicates, evaluated during the search. When there is an
+  undeclared part, `get_segment_contexts` with the same system values
+  and the undeclared part is the post-filter: a seed whose segment the
+  store does not return is dropped. The vector `limit` is widened, up
+  to `max_overfetch`, while dropped seeds leave fewer than `limit`
+  hits; at the cap the search returns what survived (`b17fd0a1`). With
+  no undeclared part the first `query` is the last.
 - Every count is a maximum: a filtered search returns fewer when the
   filter admits fewer, and nothing promises exactly `limit`.
 
@@ -232,13 +216,10 @@ author of #1597 is the natural owner.
   excludes records lacking the key and `Not(Equals)` includes them;
   `IsMissing` matches absence, never null; a datetime bound at
   microsecond precision behaves the same on sqlite-vec, the engine
-  store and pgvector; `get_cosine_similarity` returns nothing for an
-  unknown uuid and a score within the engine's quantization error for
-  a known one.
-- EventMemory: the selective plan is chosen exactly when the probe
-  returns at most `selective_limit` segments; the broad plan widens no
-  further than `max_overfetch` and returns what survived; a fully
-  declared filter takes the one-plan path.
+  store and pgvector.
+- EventMemory: an undeclared predicate never reaches the vector store;
+  widening stops at `max_overfetch` and returns what survived; a fully
+  declared filter issues one query.
 - Do not test ranking with a fake embedder that ties every score under
   cosine; use one whose vectors differ per text and assert the
   contract, not an exact list. Run each new store test against the

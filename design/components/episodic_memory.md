@@ -89,18 +89,17 @@ class EpisodicMemory:
 - `forget`: look up segments by event uuids and derivatives by segment
   uuids; delete vector records; delete segments.
 - `query`: one stage, vector search. Embed the query; split `filter`
-  into the declared part and the rest (`filters_and_properties.md`);
-  choose the plan. Selective plan: if `find_segments` with the system
-  filters and the undeclared part returns at most
-  `filter.selective_limit` segments, score their derivatives with
-  `get_cosine_similarity`, drop those below `min_similarity`, and keep
-  the best `limit`. Broad plan: `collection.query` with the declared
-  part and the system filters as predicates on reserved keys, `limit`
-  widened up to `filter.max_overfetch` while the segment store rejects
-  seeds against the undeclared part, and cut to `limit`. Then
-  `get_segment_contexts` for the surviving seeds with `expand_context`
-  split as today (`event_memory.py:450`) and the same filters, which
-  bound the window rows too. Returns at most `limit` hits in descending
+  into the declared part and the rest (`filters_and_properties.md`).
+  `collection.query` with the declared part and the system filters
+  (`since`, `until`, `session_ids`, `source_ids`, `block_kinds`) as
+  predicates on reserved keys, evaluated during the search. Then
+  `get_segment_contexts` for the seeds with `expand_context` split as
+  today (`event_memory.py:450`), the same system filters, and the
+  undeclared part as `property_filter`, which bounds the window rows
+  and is the post-filter for the seeds: a seed the store does not
+  return is dropped. When seeds are dropped the vector `limit` is
+  widened, up to `filter.max_overfetch`, and at the cap the search
+  returns what survived. Returns at most `limit` hits in descending
   score, one per matched derivative, each carrying its window and the
   index of the matched segment in it; windows of different hits may
   overlap, and each hit is returned whole. Every count is a maximum:

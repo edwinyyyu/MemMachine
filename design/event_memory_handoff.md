@@ -7,12 +7,12 @@ lifecycle, handles, the event store, the manager, settings, the HTTP
 API) is out of scope here, and nothing is renamed: the class stays
 `EventMemory`, the package stays `episodic_memory/event_memory/`.
 
-Target: a branch off upstream `speedkick`, stacked on PR #1593 (cosine
-as the only similarity, `min_cosine_similarity`, `get_cosine_similarity`),
-which is itself stacked on #1591 (turbovec engine) and #1588 (atomic
-index publish). Eviction needs a threshold query and a single score
-scale, and #1593 provides both, so base on it rather than re-deriving
-them.
+Target: a branch off upstream `speedkick`, stacked on PR #1598 (cosine
+as the only similarity, `min_cosine_similarity`, scores and uuids from
+`query`; it replaced #1591 and #1593). Eviction needs a threshold
+query and a single score scale, and #1598 provides both, so base on it
+rather than re-deriving them. #1597 is the implementation of this
+document on that base.
 
 ## References
 
@@ -172,12 +172,14 @@ class EvictionOptions(BaseModel):
   check.
 - Every system value written into a vector record uses a reserved key:
   `memmachine_event_timestamp`, `memmachine_event_session`,
-  `memmachine_event_source`, `memmachine_block_kind`,
-  `memmachine_event_uuid`, `memmachine_segment_uuid`. The current
-  `_segment_uuid` and `_timestamp` keys go, and
-  `expected_vector_store_collection_schema` declares the six with their
-  types, so the vector store indexes them through the collection schema
-  mechanism it has today.
+  `memmachine_event_source`, `memmachine_block_kind`. The current
+  `_segment_uuid` and `_timestamp` keys go: the segment store maps a
+  derivative to its segment (#1598), so no uuid is written into a
+  record. `expected_vector_store_collection_schema` declares the four
+  with their types, so the vector store indexes them through the
+  collection schema mechanism it has today. No central list of
+  reserved keys exists; the prefix is reserved as a whole and each
+  service names its own under it.
 - The prefix is reserved whether or not a caller is ever allowed to
   name a system field inside a filter, so both answers to the question
   below stay open.
@@ -336,7 +338,8 @@ class EventMemory:
 - `query` is the vector stage only: embed the query; `query` the
   collection with `limit`, `min_cosine_similarity` and the conjunction
   of `system_predicates(...)` and `property_filter`; resolve seeds
-  through `memmachine_segment_uuid`; `get_segment_contexts` with the
+  through the segment store's `get_segment_uuids_by_derivative_uuids`
+  (#1598); `get_segment_contexts` with the
   same system values and `property_filter`, `expand_context` split as
   today; drop seeds the store did not return; return at most `limit`
   hits in descending similarity, each with its window and the index

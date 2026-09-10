@@ -937,7 +937,9 @@ spelled inside the user filter, so no caller and no model decides between
 stored as a reserved property key, `memmachine_<system>_<field>`, built by one
 function that validates the key against the stores' naming contract at import
 time; the prefix is the distribution name, so its uniqueness is the package
-registry's. Stores therefore index and filter system fields with the same
+registry's. The prefix is reserved as a whole and there is no central list of
+keys under it: each service names its own, and services do not share a vector
+store, so two services' keys never meet in one schema. Stores therefore index and filter system fields with the same
 machinery as user properties, and a caller key beginning with the prefix is
 rejected on the way in.
 
@@ -1077,16 +1079,14 @@ do and on how selective the predicate is; the caller never chooses.
   filters. The table is in `design/components/filters_and_properties.md`.
 - Undeclared keys, and predicates the store cannot evaluate, never
   reach the vector store. Episodic memory splits the filter: the part
-  the store evaluates goes to the vector query; the rest is
-  resolved in the segment store by a bounded probe
-  (`filter.selective_limit`). If the matching segments fit under it,
-  their derivative ids are scored directly by `get_cosine_similarity`,
-  a bounded read of those records, and the subsystem applies the
-  threshold and the limit to the scores itself. If not, the vector
-  query runs with the declared part alone, over-fetches with bounded
-  widening up to `filter.max_overfetch`, and the segment store drops
-  the seeds that do not match. At the cap the search returns what
-  survived, which can be fewer than `limit`.
+  the store evaluates goes to the vector query; the rest is applied
+  afterward by the segment store, which holds every segment's
+  properties, when it builds the seeds' windows, and a seed it does
+  not return is dropped. The vector query over-fetches with bounded
+  widening up to `filter.max_overfetch` while seeds are dropped, and
+  at the cap the search returns what survived, which can be fewer than
+  `limit`. The store scores nothing by id: no candidate set is ever
+  assembled outside it.
 - A backend that cannot filter during the search (the usearch engine)
   is handed an allowlist by its store, computed the same way over the
   store's own records table.
@@ -1334,7 +1334,7 @@ purgeable on a backend that cannot list or reject keys.
   is not live. No row before the write: the not-live error, and no
   write creates a collection.
 - Read, on the handle (`query(vectors, limit, min_similarity,
-  filter)`, `get_cosine_similarity(vector, uuids)`): read the row for
+  filter)`): read the row for
   the address, query, read the row again, raise the not-live error if
   the key is not live. `filter` names declared keys only and raises on
   any other; it is evaluated during the search where the backend can.
