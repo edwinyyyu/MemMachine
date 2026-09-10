@@ -23,6 +23,7 @@ Callers that need every record searchable after a power failure must be able
 to re-ingest; nothing here detects the gap for them.
 """
 
+import asyncio
 import logging
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -191,7 +192,12 @@ async def _save_collection_index(
 
 
 class SQLiteVectorStoreCollection(VectorStoreCollection):
-    """A logical collection backed by SQLite + a pluggable vector search engine."""
+    """A logical collection backed by SQLite + a pluggable vector search engine.
+
+    Reads run freely. Writes are serialized by `write_lock`, which the store
+    shares among every handle on one collection, so the engine sees a
+    collection's writes in the order SQLite committed them.
+    """
 
     class _KeyFilter:
         """Per-candidate SQL filter using a sync SQLAlchemy session."""
@@ -248,6 +254,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         records_table: Table,
         search_engine: VectorSearchEngine,
         engine_lock: AsyncRWLock,
+        write_lock: asyncio.Lock,
         namespace: str,
         name: str,
         config: VectorStoreCollectionConfig,
@@ -260,6 +267,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         self._records_table = records_table
         self._search_engine = search_engine
         self._engine_lock = engine_lock
+        self._write_lock = write_lock
 
         self._namespace = namespace
         self._name = name
@@ -275,7 +283,12 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         return self._config
 
     async def _maybe_save_index(self) -> None:
-        """Save the index to disk if applied pending operations exceed the threshold."""
+        """Save the index to disk if applied pending operations exceed the threshold.
+
+        Call with the write lock held: saving trims every applied operation
+        from the log, and the log is the only other copy of a vector applied
+        after the index was written.
+        """
         if self._index_path is None:
             return
 
@@ -306,59 +319,60 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         if not records:
             return
 
-        async with self._create_session() as session, session.begin():
-            upsert_records = (
-                sqlite_insert(self._records_table)
-                .on_conflict_do_update(
-                    index_elements=[self._records_table.c.uuid],
-                    set_={
-                        "properties": sqlite_insert(
-                            self._records_table
-                        ).excluded.properties,
-                    },
-                )
-                .returning(self._records_table.c.uuid, self._records_table.c.row_id)
-            )
-            rows = (
-                await session.execute(
-                    upsert_records,
-                    [
-                        {
-                            "uuid": record.uuid,
-                            "properties": encode_properties(record.properties),
-                        }
-                        for record in records
-                    ],
-                )
-            ).all()
-            uuid_to_row_id: dict[UUID, int] = {row.uuid: row.row_id for row in rows}
-
-            pending_operation_values = [
-                {
-                    "namespace": self._namespace,
-                    "name": self._name,
-                    "record_row_id": uuid_to_row_id[record.uuid],
-                    "operation_type": "upsert",
-                    "vector": np.array(record.vector, dtype=np.float32).tobytes(),
-                    "applied": False,
-                }
-                for record in records
-            ]
-            if pending_operation_values:
-                upsert_pending_operation = sqlite_insert(_PendingOperationRow)
-                await session.execute(
-                    upsert_pending_operation.on_conflict_do_update(
-                        index_elements=["namespace", "name", "record_row_id"],
+        async with self._write_lock:
+            async with self._create_session() as session, session.begin():
+                upsert_records = (
+                    sqlite_insert(self._records_table)
+                    .on_conflict_do_update(
+                        index_elements=[self._records_table.c.uuid],
                         set_={
-                            "operation_type": upsert_pending_operation.excluded.operation_type,
-                            "vector": upsert_pending_operation.excluded.vector,
-                            "applied": upsert_pending_operation.excluded.applied,
+                            "properties": sqlite_insert(
+                                self._records_table
+                            ).excluded.properties,
                         },
-                    ),
-                    pending_operation_values,
+                    )
+                    .returning(self._records_table.c.uuid, self._records_table.c.row_id)
                 )
+                rows = (
+                    await session.execute(
+                        upsert_records,
+                        [
+                            {
+                                "uuid": record.uuid,
+                                "properties": encode_properties(record.properties),
+                            }
+                            for record in records
+                        ],
+                    )
+                ).all()
+                uuid_to_row_id: dict[UUID, int] = {row.uuid: row.row_id for row in rows}
 
-        await self._apply_engine_upserts(records, uuid_to_row_id)
+                pending_operation_values = [
+                    {
+                        "namespace": self._namespace,
+                        "name": self._name,
+                        "record_row_id": uuid_to_row_id[record.uuid],
+                        "operation_type": "upsert",
+                        "vector": np.array(record.vector, dtype=np.float32).tobytes(),
+                        "applied": False,
+                    }
+                    for record in records
+                ]
+                if pending_operation_values:
+                    upsert_pending_operation = sqlite_insert(_PendingOperationRow)
+                    await session.execute(
+                        upsert_pending_operation.on_conflict_do_update(
+                            index_elements=["namespace", "name", "record_row_id"],
+                            set_={
+                                "operation_type": upsert_pending_operation.excluded.operation_type,
+                                "vector": upsert_pending_operation.excluded.vector,
+                                "applied": upsert_pending_operation.excluded.applied,
+                            },
+                        ),
+                        pending_operation_values,
+                    )
+
+            await self._apply_engine_upserts(records, uuid_to_row_id)
 
     async def _apply_engine_upserts(
         self,
@@ -500,60 +514,61 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
 
         record_uuids = list(uuid_list)
 
-        async with self._create_session() as session, session.begin():
-            rows = (
+        async with self._write_lock:
+            async with self._create_session() as session, session.begin():
+                rows = (
+                    await session.execute(
+                        select(self._records_table.c.row_id).where(
+                            self._records_table.c.uuid.in_(record_uuids),
+                        )
+                    )
+                ).all()
+                if not rows:
+                    return
+
+                record_row_ids = [row.row_id for row in rows]
+
+                upsert_pending_operation = sqlite_insert(_PendingOperationRow)
                 await session.execute(
-                    select(self._records_table.c.row_id).where(
+                    upsert_pending_operation.on_conflict_do_update(
+                        index_elements=["namespace", "name", "record_row_id"],
+                        set_={
+                            "operation_type": upsert_pending_operation.excluded.operation_type,
+                            "applied": upsert_pending_operation.excluded.applied,
+                        },
+                    ),
+                    [
+                        {
+                            "namespace": self._namespace,
+                            "name": self._name,
+                            "record_row_id": record_row_id,
+                            "operation_type": "delete",
+                            "applied": False,
+                        }
+                        for record_row_id in record_row_ids
+                    ],
+                )
+
+                await session.execute(
+                    delete(self._records_table).where(
                         self._records_table.c.uuid.in_(record_uuids),
                     )
                 )
-            ).all()
-            if not rows:
-                return
 
-            record_row_ids = [row.row_id for row in rows]
-
-            upsert_pending_operation = sqlite_insert(_PendingOperationRow)
-            await session.execute(
-                upsert_pending_operation.on_conflict_do_update(
-                    index_elements=["namespace", "name", "record_row_id"],
-                    set_={
-                        "operation_type": upsert_pending_operation.excluded.operation_type,
-                        "applied": upsert_pending_operation.excluded.applied,
-                    },
-                ),
-                [
-                    {
-                        "namespace": self._namespace,
-                        "name": self._name,
-                        "record_row_id": record_row_id,
-                        "operation_type": "delete",
-                        "applied": False,
-                    }
-                    for record_row_id in record_row_ids
-                ],
-            )
-
-            await session.execute(
-                delete(self._records_table).where(
-                    self._records_table.c.uuid.in_(record_uuids),
+            async with self._engine_lock.write_lock():
+                await self._search_engine.remove(record_row_ids)
+            async with self._create_session() as session, session.begin():
+                await session.execute(
+                    update(_PendingOperationRow)
+                    .where(
+                        _PendingOperationRow.namespace == self._namespace,
+                        _PendingOperationRow.name == self._name,
+                        _PendingOperationRow.record_row_id.in_(record_row_ids),
+                        _PendingOperationRow.applied.is_(False),
+                    )
+                    .values(applied=True)
                 )
-            )
-
-        async with self._engine_lock.write_lock():
-            await self._search_engine.remove(record_row_ids)
-        async with self._create_session() as session, session.begin():
-            await session.execute(
-                update(_PendingOperationRow)
-                .where(
-                    _PendingOperationRow.namespace == self._namespace,
-                    _PendingOperationRow.name == self._name,
-                    _PendingOperationRow.record_row_id.in_(record_row_ids),
-                    _PendingOperationRow.applied.is_(False),
-                )
-                .values(applied=True)
-            )
-        await self._maybe_save_index()
+            await self._maybe_save_index()
 
 
 VectorSearchEngineFactory = Callable[[int], VectorSearchEngine]
@@ -641,6 +656,7 @@ class SQLiteVectorStore(VectorStore):
         )
         self._search_engines: dict[tuple[str, str], VectorSearchEngine] = {}
         self._engine_locks: dict[tuple[str, str], AsyncRWLock] = {}
+        self._write_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._sa_metadata = MetaData()
 
         self._sync_sqlalchemy_engine = create_engine(
@@ -751,14 +767,18 @@ class SQLiteVectorStore(VectorStore):
             for (namespace, name), search_engine in self._search_engines.items():
                 path = self._index_path(namespace, name)
                 assert path is not None
-                await _save_collection_index(
-                    create_session=self._create_session,
-                    namespace=namespace,
-                    name=name,
-                    search_engine=search_engine,
-                    engine_lock=self._engine_lock_for(namespace, name),
-                    path=str(path),
-                )
+                # Hold the collection's write lock for the whole save. A write
+                # that applied after the index file was written but before the
+                # trim would be absent from the file and trimmed from the log.
+                async with self._write_lock_for(namespace, name):
+                    await _save_collection_index(
+                        create_session=self._create_session,
+                        namespace=namespace,
+                        name=name,
+                        search_engine=search_engine,
+                        engine_lock=self._engine_lock_for(namespace, name),
+                        path=str(path),
+                    )
         self._search_engines.clear()
         self._started = False
 
@@ -819,6 +839,7 @@ class SQLiteVectorStore(VectorStore):
                     records_table=records_table,
                     search_engine=search_engine,
                     engine_lock=self._engine_lock_for(namespace, name),
+                    write_lock=self._write_lock_for(namespace, name),
                     namespace=namespace,
                     name=name,
                     config=existing_config,
@@ -844,6 +865,7 @@ class SQLiteVectorStore(VectorStore):
             records_table=records_table,
             search_engine=search_engine,
             engine_lock=self._engine_lock_for(namespace, name),
+            write_lock=self._write_lock_for(namespace, name),
             namespace=namespace,
             name=name,
             config=config,
@@ -879,6 +901,7 @@ class SQLiteVectorStore(VectorStore):
             records_table=records_table,
             search_engine=search_engine,
             engine_lock=self._engine_lock_for(namespace, name),
+            write_lock=self._write_lock_for(namespace, name),
             namespace=namespace,
             name=name,
             config=existing,
@@ -955,6 +978,16 @@ class SQLiteVectorStore(VectorStore):
         held would guard nobody.
         """
         return self._engine_locks.setdefault((namespace, name), AsyncRWLock())
+
+    def _write_lock_for(self, namespace: str, name: str) -> asyncio.Lock:
+        """Get or create the lock serializing a collection's writes.
+
+        Held from SQL commit through engine apply, mark-applied, and any save,
+        so the engine sees writes in commit order and a save's trim cannot land
+        between another write's apply and its bookkeeping. Kept for the store's
+        lifetime: replacing a held lock would serialize nobody.
+        """
+        return self._write_locks.setdefault((namespace, name), asyncio.Lock())
 
     def _index_path(self, namespace: str, name: str) -> Path | None:
         """Return the on-disk index path for a collection, or None if in-memory."""
