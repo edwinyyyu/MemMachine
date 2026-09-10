@@ -1181,6 +1181,10 @@ class SQLiteVectorStore(VectorStore):
             Column("uuid", Uuid, nullable=False),
             Column("properties", JSON, nullable=False, default=dict),
             UniqueConstraint("incarnation", "uuid"),
+            # A plain rowid is reused once the highest row is deleted. query()
+            # resolves scored keys to rows without a lock, so a scored key could
+            # resolve to a record other than the one the engine scored.
+            sqlite_autoincrement=True,
         )
 
     def _declared_schema(self) -> PartitionSchema:
