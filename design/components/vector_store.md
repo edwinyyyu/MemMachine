@@ -253,8 +253,11 @@ segment store.
 Engine-backed store (usearch, hnswlib, or turbovec engines, as the
 reference branch's `VectorSearchEngine` family), one shared records
 table and one index file per key:
-`vec_<container>_rec` with `key`, `uuid`, `rowid` as above plus the
-declared columns for post-filtering; the index file at
+`vec_<container>_rec` with `key`, `uuid`, `rowid` as above plus one
+typed column per declared key, over which the store resolves a filter
+before the search (#1602: a LIMIT probe; an exact engine allowlist when
+the filter is selective, an unrestricted search post-filtered with
+bounded widening when it is broad); the index file at
 `<settings.index_dir>/<container>/<key hex>.usearch`, loaded into
 process memory on first use and written back on change, which is why
 the store is `process`-scoped. Two fixes from the reference branch are

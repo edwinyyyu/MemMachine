@@ -98,7 +98,7 @@ class EpisodicMemory:
   undeclared part as `property_filter`, which bounds the window rows
   and is the post-filter for the seeds: a seed the store does not
   return is dropped. When seeds are dropped the vector `limit` is
-  widened, up to `filter.max_overfetch`, and at the cap the search
+  widened, up to `filter.max_overfetch_factor`, and at the cap the search
   returns what survived. Returns at most `limit` hits in descending
   score, one per matched derivative, each carrying its window and the
   index of the matched segment in it; windows of different hits may

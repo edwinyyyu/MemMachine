@@ -26,7 +26,7 @@ EpisodicMemoryManager(
 The mappings hold resources; products of the manager never appear in
 settings. `settings.embedders` and `settings.rerankers`, when given,
 restrict the offered ids to a subset of the mappings; `settings.filter`
-holds `max_overfetch`; `settings.cache_size`
+holds `max_overfetch_factor`, a multiple of `limit`; `settings.cache_size`
 bounds the segmenter and deriver cache.
 
 ## Tenant configuration model

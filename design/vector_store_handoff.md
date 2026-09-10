@@ -32,13 +32,22 @@ document adds.
 
 ## Base and order
 
-- Branch off upstream `speedkick` after #1598 (cosine scores and uuids;
-  replaces #1591 and #1593) and #1597 (the EventMemory handoff, which
-  owns the reserved keys, `system_filters.py`, and the segment store's
-  `session_id`, `source_id` and `block_kind` columns). #1599 (turbovec
-  engine) is independent. #1588 (atomic index publish) is merged.
-- #1598's decision that the store scores nothing by id stands: the
-  plan below needs no such call.
+- Branch off upstream `speedkick` after the #1603 stack, #1598 (cosine
+  scores and uuids; replaces #1591 and #1593), #1602 (filtered queries
+  routed by selectivity inside the engine-backed SQLite store, with an
+  exact engine allowlist) and #1603 (`Record` requires a vector and
+  never has `None` properties), and after #1597 (the EventMemory
+  handoff, stacked on #1598, which owns the reserved keys,
+  `system_filters.py`, and the segment store's `session_id`,
+  `source_id` and `block_kind` columns). #1599 (turbovec engine, which
+  takes #1602's allowlist natively) is independent. #1588 (atomic
+  index publish) is merged.
+- #1598's decision that the store scores nothing by id stands, and
+  #1602 keeps it: its allowlist is the engine's interface, reached only
+  by the store's own regime, never by a caller. The plan below needs
+  no such call.
+- `Record` is what #1603 made it: `uuid`, a required `vector`, and
+  `properties` defaulting to `{}`, matching `vector_store.md`.
 
 ## References
 
@@ -58,7 +67,11 @@ document adds.
     (`common/filter/filter_expression.py`) and the per-backend
     compilers recompiled over it.
   - `2d5dc2b5`, score-only queries; its selective and broad regimes
-    live inside the engine-backed SQLite store and stay there, and its
+    live inside the engine-backed SQLite store, where #1602 ports them
+    to `speedkick` (a LIMIT probe over the records table, one row past
+    `selective_filter_limit`; an exact engine allowlist when
+    selective, an unrestricted search post-filtered with widening up
+    to `limit * max_overfetch_factor` when broad), and its
     `get_cosine_similarity` is not taken (zero callers; YAGNI, decided
     2026-09-09).
   - `b17fd0a1`, the widening cap returns what survived.
@@ -133,9 +146,12 @@ configuration, with no owner and no migration.
   `filters_and_properties.md`: Qdrant, Milvus and the SQL stores
   evaluate everything; sqlite-vec evaluates `Equals`, `NotEquals`,
   `Ordering` and `And` only (its KNN takes comparisons joined by
-  `AND`); the engine-backed store post-filters over its records table
-  and reports the SQL set. A `query` whose tree uses a node outside the
-  set raises `UnsupportedFilterError`.
+  `AND`); the engine-backed store resolves the tree over its records
+  table in SQL (#1602's regime) and reports the SQL set. A `query`
+  whose tree uses a node outside the set raises
+  `UnsupportedFilterError`. The declared schema gives that records
+  table one typed column per declared key, which is what #1602's probe
+  and post-filter then run over.
 - Two normalizations belong to the compilers that need them: `Not` is
   pushed to the leaves by De Morgan where a backend has no negation
   node, and `NotEquals` compiles to "not equal and exists" where a
@@ -190,7 +206,11 @@ This is the consumer side of the contract and belongs with it; the
 author of #1597 is the natural owner.
 
 - `EventMemoryParams` gains `filter: FilterOptions` with one field,
-  `max_overfetch: int`.
+  `max_overfetch_factor: int`, a multiple of `limit`, named as #1602
+  names the store's own cap. The two caps are two layers: the store's
+  bounds its broad regime over declared keys; this one bounds the
+  widening below over undeclared keys, and a query with no undeclared
+  part never reaches it.
 - `split_declared(expr, declared) -> tuple[FilterExpr | None,
   FilterExpr | None]` (`filters_and_properties.md`): the part of a
   conjunction naming declared keys only, and the rest; a disjunction
@@ -203,8 +223,9 @@ author of #1597 is the natural owner.
   and the undeclared part is the post-filter: a seed whose segment the
   store does not return is dropped. The vector `limit` is widened, up
   to `max_overfetch`, while dropped seeds leave fewer than `limit`
-  hits; at the cap the search returns what survived (`b17fd0a1`). With
-  no undeclared part the first `query` is the last.
+  hits, `limit * max_overfetch_factor` at most; at the cap the search
+  returns what survived (`b17fd0a1`, and #1602 for the store's own
+  cap). With no undeclared part the first `query` is the last.
 - Every count is a maximum: a filtered search returns fewer when the
   filter admits fewer, and nothing promises exactly `limit`.
 
@@ -218,8 +239,8 @@ author of #1597 is the natural owner.
   microsecond precision behaves the same on sqlite-vec, the engine
   store and pgvector.
 - EventMemory: an undeclared predicate never reaches the vector store;
-  widening stops at `max_overfetch` and returns what survived; a fully
-  declared filter issues one query.
+  widening stops at `limit * max_overfetch_factor` and returns what
+  survived; a fully declared filter issues one query.
 - Do not test ranking with a fake embedder that ties every score under
   cosine; use one whose vectors differ per text and assert the
   contract, not an exact list. Run each new store test against the
@@ -234,6 +255,7 @@ container per embedder with tenants as values, the SQLite stores on
 shared tables and the `vec0` partition key, container provisioning by
 the schema command, content-addressed names and Qdrant shard keys
 going, the six surveyed remote backends, and the engines' durability
-contract (#1588, #1599). The interim registry stack (#1526 to #1533,
+contract (#1588, #1599, #1602's engine allowlist). The interim
+registry stack (#1526 to #1533,
 being resliced) and #1537 cover the collection side until the lifecycle
 work lands; nothing here assumes or forbids them.

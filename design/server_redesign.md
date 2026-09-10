@@ -1083,7 +1083,7 @@ do and on how selective the predicate is; the caller never chooses.
   afterward by the segment store, which holds every segment's
   properties, when it builds the seeds' windows, and a seed it does
   not return is dropped. The vector query over-fetches with bounded
-  widening up to `filter.max_overfetch` while seeds are dropped, and
+  widening up to `filter.max_overfetch_factor` while seeds are dropped, and
   at the cap the search returns what survived, which can be fewer than
   `limit`. The store scores nothing by id: no candidate set is ever
   assembled outside it.
