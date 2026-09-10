@@ -30,6 +30,8 @@ SAMPLE_PROPERTIES = {
 class TestSegmentRoundTrip:
     def test_all_property_types(self):
         seg = Segment(
+            session_id="s",
+            source_id="src",
             uuid=uuid4(),
             event_uuid=uuid4(),
             index=0,
@@ -45,6 +47,8 @@ class TestSegmentRoundTrip:
 
     def test_empty_properties(self):
         seg = Segment(
+            session_id="s",
+            source_id="src",
             uuid=uuid4(),
             event_uuid=uuid4(),
             index=0,
@@ -57,6 +61,8 @@ class TestSegmentRoundTrip:
 
     def test_from_code_plain_values(self):
         seg = Segment(
+            session_id="s",
+            source_id="src",
             uuid=uuid4(),
             event_uuid=uuid4(),
             index=0,
@@ -69,6 +75,8 @@ class TestSegmentRoundTrip:
 
     def test_context_preserved(self):
         seg = Segment(
+            session_id="s",
+            source_id="src",
             uuid=uuid4(),
             event_uuid=uuid4(),
             index=0,
@@ -81,10 +89,37 @@ class TestSegmentRoundTrip:
         assert isinstance(seg2.context, ProducerContext)
         assert seg2.context.producer == "user"
 
+    def test_session_and_source_round_trip(self):
+        seg = Segment(
+            uuid=uuid4(),
+            event_uuid=uuid4(),
+            index=0,
+            offset=0,
+            timestamp=datetime(2026, 1, 15, 10, 30, tzinfo=UTC),
+            session_id="s1",
+            source_id="alice",
+            block=TextBlock(text="hello"),
+        )
+        seg2 = Segment.model_validate(seg.model_dump(mode="json"))
+        assert (seg2.session_id, seg2.source_id) == ("s1", "alice")
+
+    def test_session_and_source_default_to_null(self):
+        seg = Segment(
+            uuid=uuid4(),
+            event_uuid=uuid4(),
+            index=0,
+            offset=0,
+            timestamp=datetime(2026, 1, 15, 10, 30, tzinfo=UTC),
+            block=TextBlock(text="hello"),
+        )
+        assert (seg.session_id, seg.source_id) == (None, None)
+
 
 class TestEventRoundTrip:
     def test_all_property_types(self):
         evt = Event(
+            session_id="s",
+            source_id="src",
             uuid=uuid4(),
             timestamp=datetime(2026, 1, 15, 10, 30, tzinfo=UTC),
             blocks=[TextBlock(text="hi")],
@@ -99,6 +134,8 @@ class TestEventRoundTrip:
 class TestDerivativeRoundTrip:
     def test_all_property_types(self):
         der = Derivative(
+            session_id="s",
+            source_id="src",
             uuid=uuid4(),
             segment_uuid=uuid4(),
             timestamp=datetime(2026, 1, 15, 10, 30, tzinfo=UTC),
