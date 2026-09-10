@@ -923,6 +923,10 @@ class SQLiteVectorStore(VectorStore):
             Column("uuid", Uuid, nullable=False, unique=True),
             Column("properties", JSON, nullable=False, default=dict),
             extend_existing=True,
+            # A plain rowid is reused once the highest row is deleted. query()
+            # resolves scored keys to rows without a lock, so a scored key could
+            # resolve to a record other than the one the engine scored.
+            sqlite_autoincrement=True,
         )
 
     def _index_path(self, namespace: str, name: str) -> Path | None:
