@@ -56,12 +56,12 @@ class SegmentPartition(ABC):              # data, bound to one key; no method ta
                                    source_ids: Iterable[str] | None,
                                    block_kinds: Iterable[str] | None,
                                    property_filter: FilterExpr | None) -> dict[UUID, list[Segment]]
-    async def get_neighbourhoods(self, seed_segment_uuids: Iterable[UUID], *,
+    async def get_segment_neighbors(self, seed_segment_uuids: Iterable[UUID], *,
                                  before: int, after: int,
                                  since: datetime | None, until: datetime | None,
                                  source_ids: Iterable[str] | None,
                                  block_kinds: Iterable[str] | None,
-                                 property_filter: FilterExpr | None) -> dict[UUID, Neighborhood]
+                                 property_filter: FilterExpr | None) -> dict[UUID, SegmentNeighbors]
     async def get_segment_uuids_by_event_uuids(self,
                                                event_uuids: Iterable[UUID]) -> dict[UUID, list[UUID]]
     async def get_derivative_uuids_by_segment_uuids(self,
@@ -87,18 +87,18 @@ the timestamp, inclusive and exclusive; `source_ids`, `block_kinds` and
 `property_filter` select rows; every walk stays in its seed's session.
 `get_segment_contexts` is the search window: the seed is a result, every filter
 applies to it as to the window rows, and a seed that fails has no entry.
-`get_neighbourhoods` is expansion: the seed is an address the caller named and
+`get_segment_neighbors` is expansion: the seed is an address the caller named and
 already holds, the filters apply to the neighbors only, a seed that would fail
 them still anchors, and the seed is never in the result, which is two lists in
-the store's order, `Neighborhood(before, after)`, with the seed's place
+the store's order, `SegmentNeighbors(before, after)`, with the seed's place
 between them, so nothing in it can be mistaken for the seed. The order is total
 and stable, so a caller walks further by repeating the call from the first of
 `before` or the last of `after`. That is the rule decided for MemMachine #1498:
 during a search a seed that fails the filter is dropped before any window is
-built, and after a search a neighborhood is kept even when its seed would
+built, and after a search the segment neighbors are kept even when their seed would
 fail, in which case the seed is never returned. Both apply `since`, `until`,
 `source_ids`, `block_kinds` and `property_filter` to the surrounding rows, so a
-window or a neighborhood is bounded by the same filters as the search that led
+window or the segment neighbors are bounded by the same filters as the search that led
 to it.
 
 ## Changes required
@@ -151,7 +151,7 @@ to it.
 - `segment_store_sg` gains `block_kind`, the kind name of the segment's
   one block as a plain column, since the encoded block cannot be
   filtered (`blocks.md`).
-- `get_neighbourhoods` is added for expansion, over the ordering
+- `get_segment_neighbors` is added for expansion, over the ordering
   index, with the parameters of `get_segment_contexts`, returning the
   neighbors and never the seed.
 - `delete_derivatives` is added for eviction (`episodic_memory.md`):

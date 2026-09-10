@@ -66,7 +66,7 @@ Conventions shared by every specification:
 - Types are few and each answers one need: `StoredEvent` (an event
   with its position), `IngestResult` (what ingest returns), `LogEntry`,
   `SearchHit` (a scored window with its matched segment),
-  `Neighborhood` (the two sides of an expansion, the anchor between
+  `SegmentNeighbors` (the two sides of an expansion, the anchor between
   them and never in them), `EvictionOptions`, `Tenant` with
   `TenantState` and `ComponentState`, `SearchOptions` and
   `RerankOptions` (one model for a tenant's defaults and a request's

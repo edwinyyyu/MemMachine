@@ -778,14 +778,14 @@ Operations, in the order the stores are touched:
   the manager runs over the rendered windows, with its own candidate
   count and threshold, so over-fetching is one limit set above
   another.
-- Expand: the neighborhood of a segment or event in its session's
+- Expand: the segment neighbors of a segment or event in its session's
   one total order, `before` and `after` counted in segments, the way
   claude-memory walks a conversation around a memory; one indexed read
   on the segment store, no embedding. Segments are the one unit: a
   long event is several of them, read inward by expanding from one.
   The anchor is never returned: the caller named it and holds it, the
   filters apply to the neighbors only, and the two sides come back as
-  two lists with the anchor's place between them, so a neighborhood is
+  two lists with the anchor's place between them, so the segment neighbors are
   kept even when its anchor would fail the filter and nothing in it can
   be mistaken for the anchor (#1498). Specified in
   `design/components/episodic_memory.md`.
