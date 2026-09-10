@@ -18,7 +18,6 @@ from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedR
 from memmachine_server.common.data_types import (
     OrderedValue,
     PropertyValue,
-    SimilarityMetric,
 )
 from memmachine_server.common.filter.filter_parser import (
     And as FilterAnd,
@@ -338,10 +337,8 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         *,
         query_vectors: Iterable[Sequence[float]],
         limit: int,
-        score_threshold: float | None = None,
+        min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         """Query for records matching the criteria by query vectors."""
         async with self._tracker("query"):
@@ -367,10 +364,10 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                     shard_key=self._shard_key,
                     query=query_vector,
                     filter=qdrant_filter,
-                    score_threshold=score_threshold,
+                    score_threshold=min_cosine_similarity,
                     limit=limit,
-                    with_vector=return_vector,
-                    with_payload=return_properties,
+                    with_vector=False,
+                    with_payload=False,
                 )
                 for query_vector in query_vectors
             ]
@@ -382,86 +379,16 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
 
             query_results: list[QueryResult] = []
             for batch in batch_results:
-                matches: list[QueryMatch] = []
-                for point in batch.points:
-                    vector: list[float] | None = None
-                    if return_vector and point.vector is not None:
-                        vector = cast(list[float], point.vector)
-
-                    properties: dict[str, PropertyValue] | None = None
-                    if return_properties and point.payload is not None:
-                        properties = self._parse_payload(point.payload)
-
-                    matches.append(
-                        QueryMatch(
-                            score=point.score,
-                            record=Record(
-                                uuid=UUID(str(point.id)),
-                                vector=vector,
-                                properties=properties,
-                            ),
-                        ),
+                matches = [
+                    QueryMatch(
+                        cosine_similarity=point.score,
+                        record_uuid=UUID(str(point.id)),
                     )
+                    for point in batch.points
+                ]
                 query_results.append(QueryResult(matches=matches))
 
             return query_results
-
-    @override
-    async def get(
-        self,
-        *,
-        record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
-        """Get records from the collection by their UUIDs."""
-        async with self._tracker("get"):
-            uuid_list = list(record_uuids)
-            if not uuid_list:
-                return []
-
-            # Always get payload so we can check partition_key.
-            points = await self._client.retrieve(
-                collection_name=self._collection_name,
-                ids=list(uuid_list),
-                with_vectors=return_vector,
-                with_payload=True,
-                shard_key_selector=self._shard_key,
-            )
-
-            points_by_uuid: dict[UUID, models.Record] = {
-                UUID(str(point.id)): point
-                for point in points
-                if point.payload
-                and cast(dict[str, Any], point.payload).get(_PAYLOAD_PARTITION_KEY)
-                == self._partition_key
-            }
-
-            records: list[Record] = []
-            for point_uuid in uuid_list:
-                point = points_by_uuid.get(point_uuid)
-                if point is None:
-                    continue
-
-                vector: list[float] | None = None
-                if return_vector and point.vector is not None:
-                    vector = cast(list[float], point.vector)
-
-                properties: dict[str, PropertyValue] | None = None
-                if return_properties and point.payload is not None:
-                    properties = self._parse_payload(
-                        cast(dict[str, Any] | None, point.payload),
-                    )
-
-                records.append(
-                    Record(
-                        uuid=point_uuid,
-                        vector=vector,
-                        properties=properties,
-                    ),
-                )
-
-            return records
 
     @override
     async def delete(
@@ -545,14 +472,7 @@ class QdrantVectorStoreParams(BaseModel):
 class QdrantVectorStore(VectorStore):
     """Asynchronous Qdrant-based implementation of VectorStore."""
 
-    _SIMILARITY_METRIC_TO_QDRANT_DISTANCE: ClassVar[
-        dict[SimilarityMetric, models.Distance]
-    ] = {
-        SimilarityMetric.COSINE: models.Distance.COSINE,
-        SimilarityMetric.DOT: models.Distance.DOT,
-        SimilarityMetric.EUCLIDEAN: models.Distance.EUCLID,
-        SimilarityMetric.MANHATTAN: models.Distance.MANHATTAN,
-    }
+    _QDRANT_DISTANCE: ClassVar[models.Distance] = models.Distance.COSINE
 
     _PROPERTY_TYPE_TO_INDEX_TYPE: ClassVar[
         dict[type[PropertyValue], models.PayloadSchemaType]
@@ -568,7 +488,6 @@ class QdrantVectorStore(VectorStore):
     _REGISTRY_SUFFIX: ClassVar[str] = "__registry"
     _REGISTRY_NAME: ClassVar[str] = "name"
     _REGISTRY_VECTOR_DIMENSIONS: ClassVar[str] = "vector_dimensions"
-    _REGISTRY_SIMILARITY_METRIC: ClassVar[str] = "similarity_metric"
     _REGISTRY_INDEXED_PROPERTIES_SCHEMA: ClassVar[str] = "indexed_properties_schema"
 
     # Fixed UUID namespace for deterministic registry point IDs.
@@ -711,7 +630,6 @@ class QdrantVectorStore(VectorStore):
         """Parse a VectorStoreCollectionConfig from a registry entry."""
         return VectorStoreCollectionConfig(
             vector_dimensions=entry[QdrantVectorStore._REGISTRY_VECTOR_DIMENSIONS],
-            similarity_metric=entry[QdrantVectorStore._REGISTRY_SIMILARITY_METRIC],
             indexed_properties_schema=entry[
                 QdrantVectorStore._REGISTRY_INDEXED_PROPERTIES_SCHEMA
             ],
@@ -739,9 +657,7 @@ class QdrantVectorStore(VectorStore):
         native_collection_name = QdrantVectorStore._build_native_collection_name(
             namespace, config
         )
-        distance = QdrantVectorStore._SIMILARITY_METRIC_TO_QDRANT_DISTANCE[
-            config.similarity_metric
-        ]
+        distance = QdrantVectorStore._QDRANT_DISTANCE
         # The collection and its indexes are created under separate guards. Sharing
         # one meant a collection that already existed - a second worker, or a retry
         # after a crash between the two calls - raised on create_collection, took
@@ -818,7 +734,6 @@ class QdrantVectorStore(VectorStore):
                     payload={
                         QdrantVectorStore._REGISTRY_NAME: name,
                         QdrantVectorStore._REGISTRY_VECTOR_DIMENSIONS: config.vector_dimensions,
-                        QdrantVectorStore._REGISTRY_SIMILARITY_METRIC: config.similarity_metric.value,
                         QdrantVectorStore._REGISTRY_INDEXED_PROPERTIES_SCHEMA: config.model_dump(
                             mode="json"
                         )["indexed_properties_schema"],

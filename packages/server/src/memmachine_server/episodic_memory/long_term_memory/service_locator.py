@@ -115,7 +115,6 @@ async def _event_params(
         user_schema = _resolve_user_properties_schema(config.properties_schema)
         collection_config = VectorStoreCollectionConfig(
             vector_dimensions=embedder.dimensions,
-            similarity_metric=embedder.similarity_metric,
             indexed_properties_schema={
                 **EventMemory.expected_vector_store_collection_schema(),
                 **EVENT_BACKEND_SYSTEM_FIELDS,
