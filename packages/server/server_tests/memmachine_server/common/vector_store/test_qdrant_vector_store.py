@@ -140,13 +140,13 @@ def _normalize(v: list[float]) -> list[float]:
 def _make_record(
     *,
     uuid: UUID | None = None,
-    vector: list[float] | None = None,
+    vector: list[float],
     properties: dict | None = None,
 ) -> Record:
     return Record(
         uuid=uuid or uuid4(),
         vector=vector,
-        properties=properties,
+        properties=properties or {},
     )
 
 
