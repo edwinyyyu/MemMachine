@@ -89,21 +89,24 @@ class Piece:                                # a piece of one block: what one seg
 
 class BlockSegmenter[B: Block](ABC):
     kind: ClassVar[str]                     # the one kind this handler splits
-    async def split(self, event: Event, block: B, *, format_options: FormatOptions) -> list[Piece]: ...
+    async def split(self, event: Event, block: B) -> list[Piece]: ...
 
 class BlockDeriver[B: Block](ABC):
     kind: ClassVar[str]                     # the one kind this handler derives from
-    async def derive(self, segment: Segment, block: B, *, format_options: FormatOptions) -> list[Block]: ...
-        # a derived block may be of another kind (an image's caption is text)
+    async def derive(self, segment: Segment, block: B) -> list[str]: ...
+        # content only; the memory composes the anchor around it
 
 class Segmenter:
     def __init__(self, handlers: Iterable[BlockSegmenter[Any]] = ()): ...   # later wins for its kind
     handlers: Mapping[str, BlockSegmenter[Any]]
     def with_handlers(self, *handlers: BlockSegmenter[Any]) -> Self: ...
-    async def segment(self, event: Event, *, format_options: FormatOptions) -> list[Segment]: ...
+    async def segment(self, event: Event) -> list[Segment]: ...
 
 class Deriver:                              # the same shape over BlockDeriver
-    async def derive(self, segment: Segment, *, format_options: FormatOptions) -> list[Derivative]: ...
+    async def derive(self, segment: Segment) -> list[Derivative]: ...
+
+Derivative.text: str                        # what the handler derived; always text
+Derivative.block_kind: str                  # the segment's block kind, for the record
 ```
 
 One kind per handler, typed by the block class. The table dispatched on
@@ -123,19 +126,29 @@ the segment's, so a handler that built them could only get them wrong.
 `Piece` is what a segmenter decides: the sub-block, its offset, and any
 context parts to lay over the event's (a temporal segmenter adds
 `TimeRanges`); the pieces of a block in offset order reconstruct it,
-the kind's join contract. A deriver decides the derived blocks, each
-embedded as one derivative. A handler still sees the whole event or
-segment, so it reads context with `get_part`. `format_options` is the
-memory's (`episodic_memory.md`): the segmenter passes it through, the
-deriver formats the embedded text with it.
+the kind's join contract. A deriver decides texts, each embedded as one
+derivative: a derivative is always text, whatever kind it came from, so
+every derivative gets the same context processing. The memory, not the
+handler, composes the embedded anchor from the timestamp, the parts
+`format_options.parts` lists and the text, with the same `_header`
+rendering uses (`context.md`, "Rendering"); a handler that formatted
+parts itself would be one more place that knows the order. A handler
+still sees the whole event or segment, so it reads context with
+`get_part`; no handler takes format options.
 
 The built-in handlers, all for `text` and keeping their names:
 `TextSegmenter` (the recursive character splitter, `max_chunk_length`),
 `WholeTextDeriver` and `SentenceTextDeriver`. `PassthroughSegmenter` is
-gone: the passthrough is the table's own fallback. A kind a table has
-no handler for has one fixed outcome, and a step never raises on it:
-the segmenter emits the block as one segment, unchanged, so the join
-contract holds; the deriver derives nothing from it. Such a block is
+gone, and so is its configuration name: one segment per block is the
+identity segmentation, the complete answer for any kind, and a default
+gets no name; `segmenter` omitted in configuration means it. A kind a
+table has no handler for has one fixed outcome, and a step never
+raises on it: the segmenter emits the block as one segment, unchanged,
+so the join contract holds; the deriver derives nothing from it. The
+deriver's outcome is a hole a kind's registration should close by
+declaring its deriver or declaring none (below); it is not an error at
+ingest, which would fail a batch on replayed history whose kind the
+server no longer registers. Such a block is
 stored, reconstructed, returned by expansion and rendered, and is found
 by search only through its event's other blocks. That is the outcome
 for a library user's kind until they lay their handlers over the table,
@@ -149,10 +162,9 @@ and `WholeTextDeriver`, and the base is those handlers in registration
 order, built-ins first. Tenant options (`episodic_memory_manager.md`,
 `SegmenterOptions` and `DeriverOptions`) are per kind: an entry names a
 registered handler and its options for that kind, and a kind without
-an entry keeps its default. Today's `type: passthrough` / `type: text`
-segmenter choice is the `text` entry of `segmenter` (`passthrough` is
-a table with no `text` handler); `whole_text` / `sentence_text` is the
-`text` entry of `deriver`.
+an entry keeps its default. Today's `segmenter` option, present or omitted, is the `text` entry
+of `segmenter`; `whole_text` / `sentence_text` is the `text` entry of
+`deriver`.
 
 ## Filtering
 

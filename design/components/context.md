@@ -111,12 +111,22 @@ it depth-first (want 4).
 Rendering assembles a segment's text for a reader from the segment's
 own fields and its parts: the timestamp, formatted by `FormatOptions`;
 then each part's contribution; then the block's own rendering,
-`block.render(options)` (`blocks.md`). A kind
-contributes by implementing `render(self, options: FormatOptions) ->
-str | None`; `Author` renders its name, `TimeRanges` renders nothing.
-Placement is the renderer's, by a fixed order of kinds it knows, so
-parts stay unordered; a kind the renderer does not know contributes
-nothing. A source with no good name to render has a `source_id` and no
+`block.render(options)` (`blocks.md`). A kind contributes by
+implementing `render(self, options: FormatOptions) -> str | None`;
+`Author` renders its name, `TimeRanges` renders nothing.
+
+Order. The timestamp is always first and the content always last.
+Between them come the parts `FormatOptions.parts` names, by kind, in
+that order (default `("author",)`); a part not named contributes
+nothing, and parts carry no order of their own. So a new kind is
+placed by listing it, a composition that needs a different order
+lists a different one, and the same option governs the embedded
+anchor, where it is the memory's fixed `format_options`, and a
+rendering for display, where it is the caller's. The one composition
+point is `EpisodicMemory._header`; the anchor is that header over the
+derivative's text (`blocks.md`, "Processing"), so every part kind
+contributes to anchors and renderings by implementing its one method,
+and no step enumerates parts. A source with no good name to render has a `source_id` and no
 `author` part, and its segments render with the timestamp and the
 text (wants 1 and 2). A caller that wants current names, or the source
 id shown, renders from the returned `source_id` and context itself;
@@ -125,9 +135,10 @@ every hit and expansion returns both as data.
 ## Processing
 
 A step reads the part it needs by kind and ignores the rest: the
-temporal scorer of #1436 reads `TimeRanges` from segments, the deriver
-reads `Author` to format text, a library user's step reads its own
-kind. No step enumerates parts.
+temporal scorer of #1436 reads `TimeRanges` from segments, a library
+user's step reads its own kind. No step enumerates parts, and no
+deriver formats parts into text: the memory composes the anchor
+("Rendering").
 
 ## Filtering
 

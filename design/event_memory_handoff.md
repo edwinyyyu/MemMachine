@@ -386,13 +386,17 @@ Eviction, from the branch, cosine only:
 `blocks.md`, "Processing": `Segmenter` and `Deriver` become tables
 from block kind to handler, `BlockSegmenter[B]` and `BlockDeriver[B]`
 the one-kind handler contracts, `Piece` what a segmenter handler
-returns; the table builds every envelope. `TextSegmenter`,
-`WholeTextDeriver` and `SentenceTextDeriver` become `text` handlers;
-`PassthroughSegmenter` goes, the passthrough being the table's own
-fallback, and the `passthrough` segmenter option builds a table with
-no handler. `EventMemory` is unchanged: it holds one table of each and
-calls `segment` and `derive` as before. The base-from-defaults and
-per-kind options of `blocks.md` are not in this change.
+returns and `list[str]` what a deriver handler returns; the table
+builds every envelope. `Derivative.block` becomes `text` plus
+`block_kind`. `EventMemory` composes the anchor and the rendered header
+in one place, `_header`, ordered by `FormatOptions.parts`
+(`context.md`, "Rendering"); handlers take no format options.
+`TextSegmenter`, `WholeTextDeriver` and `SentenceTextDeriver` become
+`text` handlers; `PassthroughSegmenter` and the `passthrough`
+configuration name go, an omitted `segmenter` meaning one segment per
+block. The base-from-defaults and per-kind options of `blocks.md` are
+not in this change. This is the second PR of the split; the first
+carries session, source, expansion and eviction.
 
 ## Translation layers
 
