@@ -44,13 +44,10 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from memmachine_server.common.data_types import (
     PropertyType,
-    PropertyValue,
-    SimilarityMetric,
 )
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
 from memmachine_server.common.properties_json import (
-    decode_properties,
     encode_properties,
 )
 
@@ -250,7 +247,6 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         search_engine: VectorSearchEngine,
         vector_store_name: str,
         partition_key: str,
-        similarity_metric: SimilarityMetric,
         indexed_properties: Mapping[str, PropertyType],
         index_path: str | None,
         save_threshold: int,
@@ -264,7 +260,6 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         self._vector_store_name = vector_store_name
         self._partition_key = partition_key
 
-        self._similarity_metric = similarity_metric
         self._indexed_properties = dict(indexed_properties)
 
         self._index_path = index_path
@@ -274,11 +269,6 @@ class SQLiteVectorStorePartition(VectorStorePartition):
     @override
     def partition_key(self) -> str:
         return self._partition_key
-
-    @property
-    @override
-    def similarity_metric(self) -> SimilarityMetric:
-        return self._similarity_metric
 
     @property
     @override
@@ -420,10 +410,8 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         *,
         query_vectors: Iterable[Sequence[float]],
         limit: int,
-        score_threshold: float | None = None,
+        min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         query_vectors = list(query_vectors)
         if not query_vectors:
@@ -447,10 +435,10 @@ class SQLiteVectorStorePartition(VectorStorePartition):
                 results.append(QueryResult(matches=[]))
                 continue
             matches = await self._build_matches(
-                row_id_to_score={m.key: m.score for m in search_result.matches},
-                score_threshold=score_threshold,
-                return_vector=return_vector,
-                return_properties=return_properties,
+                row_id_to_cosine_similarity={
+                    m.key: m.cosine_similarity for m in search_result.matches
+                },
+                min_cosine_similarity=min_cosine_similarity,
             )
             results.append(QueryResult(matches=matches))
 
@@ -476,109 +464,41 @@ class SQLiteVectorStorePartition(VectorStorePartition):
 
     async def _build_matches(
         self,
-        row_id_to_score: Mapping[int, float],
-        score_threshold: float | None,
-        return_vector: bool,
-        return_properties: bool,
+        row_id_to_cosine_similarity: Mapping[int, float],
+        min_cosine_similarity: float | None,
     ) -> list[QueryMatch]:
-        matched_row_ids = list(row_id_to_score.keys())
+        matched_row_ids = list(row_id_to_cosine_similarity.keys())
 
-        selected_columns = [self._records_table.c.uuid, self._records_table.c.row_id]
-        if return_properties:
-            selected_columns.append(self._records_table.c.properties)
-
-        fetch_records = select(*selected_columns).where(
+        fetch_records = select(
+            self._records_table.c.uuid, self._records_table.c.row_id
+        ).where(
             self._records_table.c.row_id.in_(matched_row_ids),
         )
 
         async with self._create_session() as session:
             matched_rows = (await session.execute(fetch_records)).all()
 
-        vector_map: dict[int, list[float]] = {}
-        if return_vector:
-            vector_map = await self._search_engine.get_vectors(matched_row_ids)
-
-        higher_is_better = self._similarity_metric.higher_is_better
         matches: list[QueryMatch] = []
         for row in matched_rows:
-            score = row_id_to_score.get(row.row_id)
-            if score is None:
+            cosine_similarity = row_id_to_cosine_similarity.get(row.row_id)
+            if cosine_similarity is None:
                 continue
 
-            if score_threshold is not None and (
-                score < score_threshold if higher_is_better else score > score_threshold
+            if (
+                min_cosine_similarity is not None
+                and cosine_similarity < min_cosine_similarity
             ):
                 continue
 
-            properties: dict[str, PropertyValue] | None = None
-            if return_properties:
-                properties = decode_properties(row.properties)
-
-            vector: list[float] | None = vector_map.get(row.row_id)
-
             matches.append(
                 QueryMatch(
-                    score=score,
-                    record=Record(uuid=row.uuid, vector=vector, properties=properties),
+                    cosine_similarity=cosine_similarity,
+                    record_uuid=row.uuid,
                 )
             )
 
-        matches.sort(
-            key=lambda match: match.score,
-            reverse=self._similarity_metric.higher_is_better,
-        )
+        matches.sort(key=lambda match: match.cosine_similarity, reverse=True)
         return matches
-
-    @override
-    async def get(
-        self,
-        *,
-        record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
-        record_uuids = list(record_uuids)
-        if not record_uuids:
-            return []
-
-        selected_columns = [self._records_table.c.uuid, self._records_table.c.row_id]
-        if return_properties:
-            selected_columns.append(self._records_table.c.properties)
-
-        async with self._create_session() as session:
-            fetched_rows = (
-                await session.execute(
-                    select(*selected_columns).where(
-                        self._records_table.c.uuid.in_(record_uuids),
-                    )
-                )
-            ).all()
-
-        row_id_to_vector: dict[int, list[float]] = {}
-        if return_vector:
-            row_id_to_vector = await self._search_engine.get_vectors(
-                [row.row_id for row in fetched_rows]
-            )
-
-        record_map: dict[UUID, Record] = {}
-        for row in fetched_rows:
-            record_uuid = row.uuid
-
-            properties: dict[str, PropertyValue] | None = None
-            if return_properties:
-                properties = decode_properties(row.properties)
-
-            vector: list[float] | None = row_id_to_vector.get(row.row_id)
-
-            record_map[record_uuid] = Record(
-                uuid=record_uuid, vector=vector, properties=properties
-            )
-
-        return [
-            record_map[record_uuid]
-            for record_uuid in record_uuids
-            if record_uuid in record_map
-        ]
 
     @override
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
@@ -647,8 +567,8 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         await self._maybe_save_index()
 
 
-VectorSearchEngineFactory = Callable[[int, SimilarityMetric], VectorSearchEngine]
-"""Callable that creates a VectorSearchEngine given (num_dimensions, similarity_metric)."""
+VectorSearchEngineFactory = Callable[[int], VectorSearchEngine]
+"""Callable that creates a VectorSearchEngine given the number of dimensions."""
 
 
 class SQLiteVectorStoreParams(BaseModel):
@@ -662,15 +582,12 @@ class SQLiteVectorStoreParams(BaseModel):
             stores of different names may share the engine.
         vector_dimensions (int):
             Dimensionality of every vector in the store.
-        similarity_metric (SimilarityMetric):
-            The metric every query of the store scores by
-            (default: cosine).
         indexed_properties (IndexedProperties):
             The declared schema every partition of this store carries: each
             key is indexed for filtering, and its values are typed.
-        vector_search_engine_factory (Callable[[int, SimilarityMetric], VectorSearchEngine]):
+        vector_search_engine_factory (Callable[[int], VectorSearchEngine]):
             Factory for creating :class:`VectorSearchEngine` instances.
-            Receives `(ndim, metric)` and returns a search engine.
+            Receives the number of dimensions and returns a search engine.
         index_directory (str | None):
             Directory for persisting index files.
             If None, indexes are in-memory only
@@ -688,10 +605,6 @@ class SQLiteVectorStoreParams(BaseModel):
     vector_dimensions: int = Field(
         ..., gt=0, description="Dimensionality of every vector in the store"
     )
-    similarity_metric: SimilarityMetric = Field(
-        SimilarityMetric.COSINE,
-        description="The metric every query of the store scores by",
-    )
     indexed_properties: IndexedProperties = Field(
         ...,
         description="The declared schema every partition of this store carries",
@@ -700,7 +613,7 @@ class SQLiteVectorStoreParams(BaseModel):
         ...,
         description=(
             "Factory for creating VectorSearchEngine instances. "
-            "Receives `(ndim, metric)` and returns a search engine"
+            "Receives the number of dimensions and returns a search engine"
         ),
     )
     index_directory: str | None = Field(
@@ -755,7 +668,6 @@ class SQLiteVectorStore(VectorStore):
         self._sqlalchemy_engine = params.sqlalchemy_engine
         self._vector_store_name = params.vector_store_name
         self._vector_dimensions = params.vector_dimensions
-        self._similarity_metric = params.similarity_metric
         self._indexed_properties = params.indexed_properties
         self._vector_search_engine_factory = params.vector_search_engine_factory
 
@@ -794,11 +706,6 @@ class SQLiteVectorStore(VectorStore):
     @override
     def vector_dimensions(self) -> int:
         return self._vector_dimensions
-
-    @property
-    @override
-    def similarity_metric(self) -> SimilarityMetric:
-        return self._similarity_metric
 
     @property
     @override
@@ -990,7 +897,6 @@ class SQLiteVectorStore(VectorStore):
             search_engine=search_engine,
             vector_store_name=self._vector_store_name,
             partition_key=partition_key,
-            similarity_metric=self._similarity_metric,
             indexed_properties=self._indexed_properties,
             index_path=str(index_path) if index_path is not None else None,
             save_threshold=self._save_threshold,
@@ -1070,7 +976,6 @@ class SQLiteVectorStore(VectorStore):
     def _declared_schema(self) -> PartitionSchema:
         return PartitionSchema(
             vector_dimensions=self._vector_dimensions,
-            similarity_metric=self._similarity_metric,
             indexed_properties=indexed_property_names(self._indexed_properties),
         )
 
@@ -1117,9 +1022,7 @@ class SQLiteVectorStore(VectorStore):
         if partition_key in self._search_engines:
             return self._search_engines[partition_key]
 
-        search_engine = self._vector_search_engine_factory(
-            self._vector_dimensions, self._similarity_metric
-        )
+        search_engine = self._vector_search_engine_factory(self._vector_dimensions)
 
         index_path = self._index_path(partition_key)
         if index_path is not None:

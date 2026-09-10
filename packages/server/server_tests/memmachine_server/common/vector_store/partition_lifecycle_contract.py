@@ -58,7 +58,7 @@ async def _fresh(store, key: str):
 
 
 def _uuids(result) -> set:
-    return {match.record.uuid for match in result.matches}
+    return {match.record_uuid for match in result.matches}
 
 
 class PartitionLifecycleContract:
@@ -89,8 +89,6 @@ class PartitionLifecycleContract:
         with pytest.raises(VectorStorePartitionHandleStaleError, match=LIFECYCLE_KEY):
             await collection.query(query_vectors=[record.vector], limit=5)
         with pytest.raises(VectorStorePartitionHandleStaleError, match=LIFECYCLE_KEY):
-            await collection.get(record_uuids=[record.uuid])
-        with pytest.raises(VectorStorePartitionHandleStaleError, match=LIFECYCLE_KEY):
             await collection.delete(record_uuids=[record.uuid])
 
     @pytest.mark.asyncio
@@ -106,7 +104,6 @@ class PartitionLifecycleContract:
 
         [before] = await new.query(query_vectors=[old_record.vector], limit=5)
         assert before.matches == []
-        assert await new.get(record_uuids=[old_record.uuid]) == []
 
         await new.upsert(records=[new_record])
         [after] = await new.query(query_vectors=[new_record.vector], limit=5)
@@ -241,9 +238,6 @@ class PartitionLifecycleContract:
         await partition.query(query_vectors=[record.vector], limit=1)
         assert checks == 1
         checks = 0
-        await partition.get(record_uuids=[record.uuid])
-        assert checks == 1
-        checks = 0
         await partition.delete(record_uuids=[record.uuid])
         assert checks == 2
 
@@ -299,7 +293,8 @@ class PartitionLifecycleContract:
         assert lost
         record = _records(1)[0]
         await partition.upsert(records=[record])
-        assert await partition.get(record_uuids=[record.uuid])
+        [result] = await partition.query(query_vectors=[record.vector], limit=1)
+        assert _uuids(result) == {record.uuid}
 
     @pytest.mark.asyncio
     async def test_lifecycle_churn_raises_only_domain_errors(self, store):

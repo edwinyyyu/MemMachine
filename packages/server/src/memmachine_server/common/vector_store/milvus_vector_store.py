@@ -2,9 +2,8 @@
 
 import asyncio
 import json
-import math
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime
 from typing import Any, ClassVar, cast, override
 from uuid import UUID
 
@@ -15,7 +14,6 @@ from pymilvus.exceptions import MilvusException
 from memmachine_server.common.data_types import (
     PropertyType,
     PropertyValue,
-    SimilarityMetric,
 )
 from memmachine_server.common.filter.filter_parser import (
     And as FilterAnd,
@@ -41,10 +39,9 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 from memmachine_server.common.properties_json import (
     PROPERTY_VALUE_KEY,
-    decode_properties,
     encode_properties,
 )
-from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
+from memmachine_server.common.utils import ensure_tz_aware
 
 from .data_types import (
     IndexedProperties,
@@ -85,12 +82,6 @@ _PROPERTIES_FIELD = "properties"
 """A JSON field holding the properties the collection's schema does not declare."""
 _DECLARED_FIELD_PREFIX = "_p_"
 """The prefix of the typed field holding a declared property."""
-_OFFSET_FIELD_PREFIX = "_tz_"
-"""The prefix of the field holding a declared datetime property's UTC offset.
-
-A TIMESTAMPTZ field keeps the instant and returns it in UTC; the offset, in
-seconds, restores the timezone the value was written in.
-"""
 
 _MAX_UUID_LENGTH = 36
 _MAX_PRIMARY_ID_LENGTH = 128
@@ -248,18 +239,6 @@ class MilvusVectorStorePartition(VectorStorePartition):
     """A partition backed by Milvus: one partition-key value inside the store's collection."""
 
     @staticmethod
-    def _passes_threshold(
-        score: float,
-        threshold: float | None,
-        similarity_metric: SimilarityMetric,
-    ) -> bool:
-        if threshold is None:
-            return True
-        if similarity_metric.higher_is_better:
-            return score >= threshold
-        return score <= threshold
-
-    @staticmethod
     def _primary_id(incarnation: UUID, record_uuid: UUID) -> str:
         """Build a native primary key unique within a shared native collection."""
         return f"{incarnation.hex}:{record_uuid}"
@@ -272,7 +251,6 @@ class MilvusVectorStorePartition(VectorStorePartition):
         partition_key: str,
         incarnation: UUID,
         vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
         indexed_properties: Mapping[str, PropertyType],
         tracker: OperationTracker,
         is_live: Callable[[UUID], Awaitable[bool]],
@@ -284,7 +262,6 @@ class MilvusVectorStorePartition(VectorStorePartition):
         self._partition_key = partition_key
         self._incarnation = incarnation
         self._vector_dimensions = vector_dimensions
-        self._similarity_metric = similarity_metric
         self._indexed_properties = dict(indexed_properties)
         self._tracker = tracker
         self._is_live = is_live
@@ -313,11 +290,6 @@ class MilvusVectorStorePartition(VectorStorePartition):
     @override
     def partition_key(self) -> str:
         return self._partition_key
-
-    @property
-    @override
-    def similarity_metric(self) -> SimilarityMetric:
-        return self._similarity_metric
 
     @property
     @override
@@ -353,73 +325,11 @@ class MilvusVectorStorePartition(VectorStorePartition):
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = ensure_tz_aware(
                     value
                 ).isoformat()
-                entity[f"{_OFFSET_FIELD_PREFIX}{key}"] = utc_offset_seconds(value)
-            elif declared_type is datetime:
-                entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = None
-                entity[f"{_OFFSET_FIELD_PREFIX}{key}"] = None
             elif declared_type is float and isinstance(value, int | float):
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = float(value)
             else:
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = value
         return entity
-
-    def _parse_record(
-        self,
-        entity: Mapping[str, Any],
-        *,
-        return_vector: bool,
-        return_properties: bool,
-    ) -> Record:
-        """Parse a Milvus entity into a vector store record."""
-        vector: list[float] | None = None
-        if return_vector:
-            raw_vector = entity.get(_VECTOR_FIELD)
-            if raw_vector is not None:
-                vector = list(cast(Sequence[float], raw_vector))
-
-        properties: dict[str, PropertyValue] | None = None
-        if return_properties:
-            properties = decode_properties(
-                cast(Mapping | None, entity.get(_PROPERTIES_FIELD))
-            )
-            for key, declared_type in self._indexed_properties.items():
-                value = entity.get(f"{_DECLARED_FIELD_PREFIX}{key}")
-                if value is None:
-                    continue
-                if declared_type is datetime:
-                    offset = timedelta(seconds=entity[f"{_OFFSET_FIELD_PREFIX}{key}"])
-                    value = datetime.fromisoformat(value).astimezone(timezone(offset))
-                properties[key] = value
-
-        return Record(
-            uuid=UUID(str(entity[_RECORD_UUID_FIELD])),
-            vector=vector,
-            properties=properties,
-        )
-
-    def _output_fields(
-        self, *, return_vector: bool, return_properties: bool
-    ) -> list[str]:
-        fields = [_RECORD_UUID_FIELD]
-        if return_vector:
-            fields.append(_VECTOR_FIELD)
-        if return_properties:
-            fields.append(_PROPERTIES_FIELD)
-            for key, declared_type in self._indexed_properties.items():
-                fields.append(f"{_DECLARED_FIELD_PREFIX}{key}")
-                if declared_type is datetime:
-                    fields.append(f"{_OFFSET_FIELD_PREFIX}{key}")
-        return fields
-
-    def _score(self, distance: float) -> float:
-        """The store's score for a distance Milvus returned.
-
-        Milvus returns cosine similarity and inner product as they are, and
-        the squared Euclidean distance.
-        """
-        if self._similarity_metric is SimilarityMetric.EUCLIDEAN:
-            return math.sqrt(max(distance, 0.0))
-        return distance
 
     def _partition_filter(self) -> str:
         return _incarnation_filter(self._incarnation)
@@ -454,10 +364,8 @@ class MilvusVectorStorePartition(VectorStorePartition):
         *,
         query_vectors: Iterable[Sequence[float]],
         limit: int,
-        score_threshold: float | None = None,
+        min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         async with self._tracker("query"):
             query_vectors = [list(query_vector) for query_vector in query_vectors]
@@ -483,10 +391,7 @@ class MilvusVectorStorePartition(VectorStorePartition):
                 filter=filter_expr,
                 limit=limit,
                 search_params={"params": _SEARCH_PARAMS},
-                output_fields=self._output_fields(
-                    return_vector=return_vector,
-                    return_properties=return_properties,
-                ),
+                output_fields=[_RECORD_UUID_FIELD],
                 anns_field=_VECTOR_FIELD,
                 timeout=self._request_timeout_seconds,
             )
@@ -495,77 +400,26 @@ class MilvusVectorStorePartition(VectorStorePartition):
             for raw_matches in raw_results:
                 matches: list[QueryMatch] = []
                 for raw_match in raw_matches:
-                    entity = cast(Mapping[str, Any], raw_match["entity"])
-                    score = self._score(raw_match["distance"])
-                    if not self._passes_threshold(
-                        score, score_threshold, self._similarity_metric
+                    # Milvus returns the cosine similarity as a COSINE index's distance.
+                    cosine_similarity = raw_match["distance"]
+                    if (
+                        min_cosine_similarity is not None
+                        and cosine_similarity < min_cosine_similarity
                     ):
                         continue
 
+                    entity = cast(Mapping[str, Any], raw_match["entity"])
                     matches.append(
                         QueryMatch(
-                            score=score,
-                            record=self._parse_record(
-                                entity,
-                                return_vector=return_vector,
-                                return_properties=return_properties,
-                            ),
+                            cosine_similarity=cosine_similarity,
+                            record_uuid=UUID(str(entity[_RECORD_UUID_FIELD])),
                         )
                     )
 
-                matches.sort(
-                    key=lambda match: match.score,
-                    reverse=self._similarity_metric.higher_is_better,
-                )
+                matches.sort(key=lambda match: match.cosine_similarity, reverse=True)
                 results.append(QueryResult(matches=matches))
 
             return results
-
-    @override
-    async def get(
-        self,
-        *,
-        record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
-        async with self._tracker("get"):
-            uuid_list = list(record_uuids)
-            if not uuid_list:
-                return []
-
-            await self._fence()
-            primary_ids = [
-                self._primary_id(self._incarnation, uuid) for uuid in uuid_list
-            ]
-            raw_records = await asyncio.to_thread(
-                self._client.get,
-                collection_name=self._collection_name,
-                ids=primary_ids,
-                output_fields=self._output_fields(
-                    return_vector=return_vector,
-                    return_properties=return_properties,
-                ),
-                timeout=self._request_timeout_seconds,
-            )
-
-            records_by_uuid = {
-                record.uuid: record
-                for record in (
-                    self._parse_record(
-                        cast(Mapping[str, Any], raw_record),
-                        return_vector=return_vector,
-                        return_properties=return_properties,
-                    )
-                    for raw_record in raw_records
-                )
-            }
-            records = [
-                records_by_uuid[record_uuid]
-                for record_uuid in uuid_list
-                if record_uuid in records_by_uuid
-            ]
-            return records
 
     @override
     async def delete(
@@ -608,9 +462,6 @@ class MilvusVectorStoreParams(BaseModel):
             is, so stores of different names may share the client.
         vector_dimensions (int):
             Dimensionality of every vector in the store.
-        similarity_metric (SimilarityMetric):
-            The metric every query of the store scores by; cosine, dot or
-            euclidean (default: cosine).
         indexed_properties (IndexedProperties):
             The declared schema every partition of this store carries: each
             key is a nullable typed field, `_p_<key>`, with a scalar index,
@@ -642,10 +493,6 @@ class MilvusVectorStoreParams(BaseModel):
     )
     vector_dimensions: int = Field(
         ..., gt=0, description="Dimensionality of every vector in the store"
-    )
-    similarity_metric: SimilarityMetric = Field(
-        SimilarityMetric.COSINE,
-        description="The metric every query of the store scores by",
     )
     indexed_properties: IndexedProperties = Field(
         ...,
@@ -688,11 +535,7 @@ class MilvusVectorStore(VectorStore):
     partition.
     """
 
-    _SIMILARITY_METRIC_TO_MILVUS_METRIC: ClassVar[dict[SimilarityMetric, str]] = {
-        SimilarityMetric.COSINE: "COSINE",
-        SimilarityMetric.DOT: "IP",
-        SimilarityMetric.EUCLIDEAN: "L2",
-    }
+    _MILVUS_METRIC_TYPE: ClassVar[str] = "COSINE"
 
     @staticmethod
     def _is_already_exists_error(error: Exception) -> bool:
@@ -700,30 +543,13 @@ class MilvusVectorStore(VectorStore):
         message = str(error).lower()
         return "already exist" in message or "already exists" in message
 
-    @staticmethod
-    def _validate_metric(similarity_metric: SimilarityMetric) -> None:
-        if (
-            similarity_metric
-            not in MilvusVectorStore._SIMILARITY_METRIC_TO_MILVUS_METRIC
-        ):
-            supported = ", ".join(
-                metric.value
-                for metric in MilvusVectorStore._SIMILARITY_METRIC_TO_MILVUS_METRIC
-            )
-            raise ValueError(
-                f"Milvus only supports {supported} similarity metrics, "
-                f"got {similarity_metric.value!r}"
-            )
-
     def __init__(self, params: MilvusVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
         super().__init__()
-        MilvusVectorStore._validate_metric(params.similarity_metric)
         self._client = params.client
         self._vector_store_name = params.vector_store_name
         self._collection_name = f"{_COLLECTION_NAME_PREFIX}{params.vector_store_name}"
         self._vector_dimensions = params.vector_dimensions
-        self._similarity_metric = params.similarity_metric
         self._indexed_properties = params.indexed_properties
         self._consistency_level = params.consistency_level
         self._request_timeout_seconds = params.request_timeout_seconds
@@ -747,18 +573,12 @@ class MilvusVectorStore(VectorStore):
 
     @property
     @override
-    def similarity_metric(self) -> SimilarityMetric:
-        return self._similarity_metric
-
-    @property
-    @override
     def indexed_properties(self) -> Mapping[str, PropertyType]:
         return self._indexed_properties
 
     def _declared_schema(self) -> PartitionSchema:
         return PartitionSchema(
             vector_dimensions=self._vector_dimensions,
-            similarity_metric=self._similarity_metric,
             indexed_properties=indexed_property_names(self._indexed_properties),
         )
 
@@ -821,9 +641,7 @@ class MilvusVectorStore(VectorStore):
             index_params.add_index(
                 field_name=_VECTOR_FIELD,
                 index_type=_VECTOR_INDEX_TYPE,
-                metric_type=self._SIMILARITY_METRIC_TO_MILVUS_METRIC[
-                    self._similarity_metric
-                ],
+                metric_type=MilvusVectorStore._MILVUS_METRIC_TYPE,
                 params=_VECTOR_INDEX_PARAMS,
             )
             for key, declared_type in self._indexed_properties.items():
@@ -838,12 +656,6 @@ class MilvusVectorStore(VectorStore):
                     schema.add_field(
                         field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
                         datatype=_DECLARED_DATA_TYPES[declared_type],
-                        nullable=True,
-                    )
-                if declared_type is datetime:
-                    schema.add_field(
-                        field_name=f"{_OFFSET_FIELD_PREFIX}{key}",
-                        datatype=DataType.INT32,
                         nullable=True,
                     )
                 index_params.add_index(
@@ -890,7 +702,6 @@ class MilvusVectorStore(VectorStore):
             partition_key=partition_key,
             incarnation=incarnation,
             vector_dimensions=self._vector_dimensions,
-            similarity_metric=self._similarity_metric,
             indexed_properties=self._indexed_properties,
             tracker=self._tracker,
             is_live=self._partition_registry.is_live,

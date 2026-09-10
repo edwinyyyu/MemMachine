@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
@@ -94,7 +94,6 @@ def _ts(minutes: int) -> datetime.datetime:
 class TestSchema:
     def test_expected_vector_store_collection_schema_only_has_base_fields(self):
         assert EventMemory.expected_vector_store_collection_schema() == {
-            "_segment_uuid": str,
             "_timestamp": datetime.datetime,
         }
 
@@ -127,8 +126,13 @@ class TestEncodeEvents:
         assert len(fake_vector_store_partition.records) == 1
         record = next(iter(fake_vector_store_partition.records.values()))
         props = _record_properties(record)
-        assert props["_segment_uuid"] == str(segment.uuid)
         assert props["_timestamp"] == event.timestamp
+        # The derivative's segment is not copied here; the segment store owns
+        # that mapping and answers it from the derivative's own row.
+        assert "_segment_uuid" not in props
+        assert await fake_segment_store_partition.get_segment_uuids_by_derivative_uuids(
+            [record.uuid]
+        ) == {record.uuid: segment.uuid}
 
     async def test_producer_context(
         self,
@@ -221,7 +225,6 @@ class TestEncodeEvents:
     ):
         # Collection without context fields.
         collection = InMemoryVectorStorePartition(
-            similarity_metric=SimilarityMetric.COSINE,
             indexed_properties={
                 "_segment_uuid": str,
                 "_timestamp": datetime.datetime,
@@ -249,7 +252,6 @@ class TestEncodeEvents:
     async def test_init_raises_on_missing_base_field(self, fake_embedder):
         # Collection without _timestamp — base field required at init.
         collection = InMemoryVectorStorePartition(
-            similarity_metric=SimilarityMetric.COSINE,
             indexed_properties={
                 "_segment_uuid": str,
             },
@@ -1045,7 +1047,6 @@ class TestIngestFormatOptions:
     @staticmethod
     def _build(embedder: FakeEmbedder) -> EventMemory:
         vector_store_partition = InMemoryVectorStorePartition(
-            similarity_metric=embedder.similarity_metric,
             indexed_properties=(EventMemory.expected_vector_store_collection_schema()),
         )
         return EventMemory(
@@ -1084,7 +1085,6 @@ class TestIngestFormatOptions:
         embedder = _RecordingEmbedder()
         partition = InMemorySegmentStorePartition()
         vector_store_partition = InMemoryVectorStorePartition(
-            similarity_metric=embedder.similarity_metric,
             indexed_properties=(EventMemory.expected_vector_store_collection_schema()),
         )
         event_memory = EventMemory(

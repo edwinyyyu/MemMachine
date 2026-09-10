@@ -2,8 +2,7 @@
 Abstract base class for a vector store.
 
 A store is one collection: a body of records searched together, with one
-dimensionality, one similarity metric and one declared schema, named at
-construction. Within it, a partition holds one tenant's records, and
+dimensionality and one declared schema, named at construction. Within it, a partition holds one tenant's records, and
 `VectorStorePartition` is the handle a data consumer holds for it.
 """
 
@@ -11,7 +10,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
 from uuid import UUID
 
-from memmachine_server.common.data_types import PropertyType, SimilarityMetric
+from memmachine_server.common.data_types import PropertyType
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
 )
@@ -37,19 +36,15 @@ class VectorStorePartition(ABC):
     A partition stores every property of a record and filters on any key;
     the keys its store declares (`indexed_properties`) are indexed for
     filtering during a search, and their values are typed. Record
-    properties not declared may have mixed-type values.
+    properties not declared may have mixed-type values. Neither a vector
+    nor a property is read back out: a query answers with UUIDs and cosine
+    similarities.
     """
 
     @property
     @abstractmethod
     def partition_key(self) -> str:
         """The key this handle is bound to."""
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def similarity_metric(self) -> SimilarityMetric:
-        """The metric every query of this partition scores by."""
         raise NotImplementedError
 
     @property
@@ -85,64 +80,35 @@ class VectorStorePartition(ABC):
         *,
         query_vectors: Iterable[Sequence[float]],
         limit: int,
-        score_threshold: float | None = None,
+        min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         """
         Query for records matching the criteria by query vectors.
+
+        Answers with UUIDs and scores. Stored properties are filterable but
+        never returned: this store is not the authority for a record's
+        content, and its copy is only as fresh as the last write to it -- a
+        caller that needs a record's fields reads them from whatever owns
+        them.
 
         Args:
             query_vectors (Iterable[Sequence[float]]):
                 The vectors to compare against.
             limit (int):
                 Maximum number of matching records to return per query vector.
-            score_threshold (float | None):
-                Score threshold to consider a match
+            min_cosine_similarity (float | None):
+                If provided, only return matches whose cosine similarity
+                is greater than or equal to this value
                 (default: None).
             property_filter (FilterExpr | None):
                 Filter expression tree.
                 If None or empty, no property filtering is applied
                 (default: None).
-            return_vector (bool):
-                Whether to include the vector in the returned records
-                (default: False).
-            return_properties (bool):
-                Whether to include the properties in the returned records
-                (default: True).
 
         Returns:
             list[QueryResult]:
                 Results for each query vector,
-                ordered as in the input iterable.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    async def get(
-        self,
-        *,
-        record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
-        """
-        Get records from the partition by their UUIDs.
-
-        Args:
-            record_uuids (Iterable[UUID]):
-                Iterable of UUIDs of the records to retrieve.
-            return_vector (bool):
-                Whether to include the vector in the returned records
-                (default: False).
-            return_properties (bool):
-                Whether to include the properties in the returned records
-                (default: True).
-
-        Returns:
-            list[Record]:
-                Iterable of records with the specified UUIDs,
                 ordered as in the input iterable.
         """
         raise NotImplementedError
@@ -168,12 +134,12 @@ class VectorStore(ABC):
     Abstract base class for a vector store.
 
     A store is one collection, named at construction with its vector
-    dimensions, its similarity metric and its declared schema; the
-    composition root builds one store per collection it needs, and the
-    name is what keeps two stores over one engine or one client apart.
-    Every partition of the store shares the collection's dimensions,
-    metric and schema, and the schema is fixed for the life of the store's
-    data: changing it is a migration.
+    dimensions and its declared schema; the composition root builds one
+    store per collection it needs, and the name is what keeps two stores
+    over one engine or one client apart. Every partition of the store
+    shares the collection's dimensions and schema, and the schema is fixed
+    for the life of the store's data: changing it is a migration. Every
+    store scores by cosine similarity.
 
     A partition is identified to callers by its key and inside the store
     by an incarnation minted per life of the key, so nothing written under
@@ -199,12 +165,6 @@ class VectorStore(ABC):
     @abstractmethod
     def vector_dimensions(self) -> int:
         """Dimensionality of every vector in the store."""
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def similarity_metric(self) -> SimilarityMetric:
-        """The metric every query of the store scores by."""
         raise NotImplementedError
 
     @property
@@ -270,8 +230,7 @@ class VectorStore(ABC):
         Raises:
             VectorStorePartitionSchemaMismatchError:
                 If the partition exists and was created under other
-                dimensions, another metric or another declared schema
-                than this store's.
+                dimensions or another declared schema than this store's.
             VectorStoreAttemptsExhaustedError: If the store gave up opening or
                 creating the partition after repeated attempts that made no
                 progress.
@@ -294,8 +253,8 @@ class VectorStore(ABC):
 
         Raises:
             VectorStorePartitionSchemaMismatchError:
-                If the partition was created under other dimensions,
-                another metric or another declared schema than this store's.
+                If the partition was created under other dimensions or
+                another declared schema than this store's.
         """
         raise NotImplementedError
 

@@ -58,21 +58,9 @@ Fixed, because the name locates the store's data.
 """
 _VECTOR_STORE_PARTITION_KEY = "semantic_memory"
 
-# The keys semantic storage may write into a vector record; the vector store
-# is built with these.
-_INDEXED_PROPERTIES: dict[str, PropertyType] = {
-    "feature_id": str,
-    "set_id": str,
-    "set": str,
-    "semantic_category_id": str,
-    "category_name": str,
-    "category": str,
-    "tag_id": str,
-    "tag": str,
-    "feature": str,
-    "feature_name": str,
-    "value": str,
-}
+# Semantic storage writes vectors only: the feature row is the authority for
+# every field, so its store declares no key to index.
+_INDEXED_PROPERTIES: dict[str, PropertyType] = {}
 
 
 class SemanticResourceManager:
@@ -175,7 +163,6 @@ class SemanticResourceManager:
                 _VECTOR_STORE_NAMESPACE, self._get_default_embedder_name()
             ).hex,
             vector_dimensions=vector_dimensions,
-            similarity_metric=self._conf.vector_similarity_metric,
             indexed_properties=_INDEXED_PROPERTIES,
         )
 

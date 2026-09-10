@@ -17,7 +17,6 @@ from memmachine_server.common.configuration.database_conf import (
     SQLiteVectorStoreEngine,
     SQLiteVecVectorStoreConf,
 )
-from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.errors import (
     MilvusConfigurationError,
     QdrantConfigurationError,
@@ -35,7 +34,6 @@ requires_pymilvus = pytest.mark.skipif(
 _STORE: dict[str, Any] = {
     "vector_store_name": "c",
     "vector_dimensions": 3,
-    "similarity_metric": SimilarityMetric.COSINE,
     "indexed_properties": {},
 }
 
@@ -441,7 +439,6 @@ async def test_get_vector_store_builds_a_qdrant_store():
     assert kwargs["partition_registry"] is mock_registry_cls.return_value
     assert kwargs["vector_store_name"] == "c"
     assert kwargs["vector_dimensions"] == 3
-    assert kwargs["similarity_metric"] == SimilarityMetric.COSINE
     assert kwargs["indexed_properties"] == {}
     # Asserted as "not None" rather than pinned to a value: OperationTracker
     # accepts None and then discards every timing without error, so passing the
@@ -701,7 +698,6 @@ async def test_get_vector_store_builds_a_milvus_store():
         partition_registry=mock_registry_cls.return_value,
         vector_store_name="c",
         vector_dimensions=3,
-        similarity_metric=SimilarityMetric.COSINE,
         indexed_properties={},
         consistency_level="Strong",
         request_timeout_seconds=30,
@@ -861,7 +857,6 @@ async def test_sqlite_vector_store_creates_store_and_engine():
     assert params_kwargs["sqlalchemy_engine"] is mock_engine
     assert params_kwargs["vector_store_name"] == "c"
     assert params_kwargs["vector_dimensions"] == 3
-    assert params_kwargs["similarity_metric"] == SimilarityMetric.COSINE
     assert params_kwargs["indexed_properties"] == {}
     assert params_kwargs["index_directory"] == "/tmp/vs"
     assert params_kwargs["save_threshold"] == 200
@@ -904,7 +899,6 @@ async def test_stores_of_one_sqlite_backend_share_the_engine():
             "vs1",
             vector_store_name="d",
             vector_dimensions=3,
-            similarity_metric=SimilarityMetric.COSINE,
             indexed_properties={},
         )
 
@@ -941,7 +935,6 @@ async def test_get_vector_store_rejects_another_schema_for_a_built_collection():
         store.startup = AsyncMock()
         store.shutdown = AsyncMock()
         store.vector_dimensions = 3
-        store.similarity_metric = SimilarityMetric.COSINE
         store.indexed_properties = {}
         builder = DatabaseManager(conf)
         await builder.get_vector_store("vs1", **_STORE)
@@ -953,7 +946,6 @@ async def test_get_vector_store_rejects_another_schema_for_a_built_collection():
                 "vs1",
                 vector_store_name="c",
                 vector_dimensions=4,
-                similarity_metric=SimilarityMetric.COSINE,
                 indexed_properties={},
             )
         with pytest.raises(
@@ -963,17 +955,6 @@ async def test_get_vector_store_rejects_another_schema_for_a_built_collection():
                 "vs1",
                 vector_store_name="c",
                 vector_dimensions=3,
-                similarity_metric=SimilarityMetric.EUCLIDEAN,
-                indexed_properties={},
-            )
-        with pytest.raises(
-            VectorStoreConfigurationError, match="one vector store name is one store"
-        ):
-            await builder.get_vector_store(
-                "vs1",
-                vector_store_name="c",
-                vector_dimensions=3,
-                similarity_metric=SimilarityMetric.COSINE,
                 indexed_properties={"k": str},
             )
 
@@ -1017,10 +998,8 @@ async def test_sqlite_vector_store_default_engine_is_usearch():
 
         # Invoke the factory the manager passed into params and confirm it
         # routes to the USearch engine.
-        from memmachine_server.common.data_types import SimilarityMetric
-
         factory = mock_params_cls.call_args.kwargs["vector_search_engine_factory"]
-        factory(8, SimilarityMetric.COSINE)
+        factory(8)
 
     mock_usearch_cls.assert_called_once()
 
@@ -1052,7 +1031,6 @@ async def test_sqlite_vector_store_caches_after_first_call():
         store.startup = AsyncMock()
         store.shutdown = AsyncMock()
         store.vector_dimensions = 3
-        store.similarity_metric = SimilarityMetric.COSINE
         store.indexed_properties = {}
         builder = DatabaseManager(conf)
         first = await builder.get_vector_store("vs1", **_STORE)
@@ -1133,7 +1111,6 @@ async def test_sqlite_vec_vector_store_creates_store_and_engine():
     assert params_kwargs["engine"] is mock_engine
     assert params_kwargs["vector_store_name"] == "c"
     assert params_kwargs["vector_dimensions"] == 3
-    assert params_kwargs["similarity_metric"] == SimilarityMetric.COSINE
     assert params_kwargs["indexed_properties"] == {}
 
     mock_store_cls.return_value.startup.assert_awaited_once()

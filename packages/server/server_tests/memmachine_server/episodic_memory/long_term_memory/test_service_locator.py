@@ -8,7 +8,6 @@ import pytest
 from memmachine_server.common.configuration.episodic_config import (
     EventLongTermMemoryConf,
 )
-from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.embedder import Embedder
 from memmachine_server.common.episode_store import EpisodeStorage
 from memmachine_server.common.resource_manager import CommonResourceManager
@@ -107,7 +106,6 @@ async def test_any_embedder_id_names_a_vector_store():
     )
     embedder = create_autospec(Embedder, instance=True)
     embedder.dimensions = 3
-    embedder.similarity_metric = SimilarityMetric.COSINE
     resource_manager = create_autospec(CommonResourceManager, instance=True)
     resource_manager.get_embedder.return_value = embedder
 
@@ -136,7 +134,6 @@ async def test_event_params_opens_the_session_partition_of_the_embedders_collect
     vector_store.open_or_create_partition.return_value = partition
     embedder = create_autospec(Embedder, instance=True)
     embedder.dimensions = 3
-    embedder.similarity_metric = SimilarityMetric.COSINE
     resource_manager = create_autospec(CommonResourceManager, instance=True)
     resource_manager.get_vector_store.return_value = vector_store
     resource_manager.get_segment_store.return_value = create_autospec(
@@ -159,6 +156,5 @@ async def test_event_params_opens_the_session_partition_of_the_embedders_collect
         "vs",
         vector_store_name="9f2137ad9dd259d3b15516148bd5d7cc",
         vector_dimensions=3,
-        similarity_metric=SimilarityMetric.COSINE,
         indexed_properties=event_backend_indexed_properties(),
     )

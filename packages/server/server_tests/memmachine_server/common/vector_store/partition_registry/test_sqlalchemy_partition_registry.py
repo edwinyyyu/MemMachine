@@ -18,7 +18,6 @@ from sqlalchemy import (
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.vector_store.data_types import (
     PartitionSchema,
     VectorStoreAttemptsExhaustedError,
@@ -30,12 +29,10 @@ from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partiti
 
 SCHEMA = PartitionSchema(
     vector_dimensions=3,
-    similarity_metric=SimilarityMetric.COSINE,
     indexed_properties={"name": "str"},
 )
 OTHER_SCHEMA = PartitionSchema(
     vector_dimensions=4,
-    similarity_metric=SimilarityMetric.COSINE,
     indexed_properties={},
 )
 RETENTION = timedelta(days=1)

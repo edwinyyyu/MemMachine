@@ -31,7 +31,6 @@ from memmachine_server.common.configuration.language_model_conf import (
     OpenAIResponsesLanguageModelConf,
 )
 from memmachine_server.common.configuration.reranker_conf import EmbedderRerankerConf
-from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.errors import (
     InvalidEmbedderError,
     InvalidLanguageModelError,
@@ -405,7 +404,6 @@ async def test_vector_store_purge_drains_backlog_without_waiting(monkeypatch):
 _VECTOR_STORE: dict[str, Any] = {
     "vector_store_name": "c",
     "vector_dimensions": 3,
-    "similarity_metric": SimilarityMetric.COSINE,
     "indexed_properties": {},
 }
 
