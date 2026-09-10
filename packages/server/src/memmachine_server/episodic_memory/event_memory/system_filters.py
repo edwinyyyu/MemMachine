@@ -16,14 +16,14 @@ from typing import Final
 
 from pydantic import BaseModel
 
-from memmachine_server.common.filter.filter_parser import (
-    And,
-    Comparison,
+from memmachine_server.common.filter import (
+    Equals,
     FilterExpr,
     In,
-    IsNull,
-    Not,
-    Or,
+    Ordering,
+    conjoin,
+    conjuncts,
+    filter_fields,
 )
 from memmachine_server.common.property_keys import (
     is_reserved_property_key,
@@ -50,16 +50,6 @@ class SystemFilters(BaseModel):
     block_kinds: list[str] | None = None
 
 
-def conjoin(clauses: Iterable[FilterExpr | None]) -> FilterExpr | None:
-    """The conjunction of the given clauses; None when there are none."""
-    combined: FilterExpr | None = None
-    for clause in clauses:
-        if clause is None:
-            continue
-        combined = clause if combined is None else And(left=combined, right=clause)
-    return combined
-
-
 def system_predicates(
     *,
     since: datetime | None = None,
@@ -71,26 +61,27 @@ def system_predicates(
     """The predicates on reserved keys that a vector store evaluates.
 
     `since` is inclusive and `until` exclusive, so ranges meet without
-    overlap. An empty id or kind list admits nothing; None admits everything.
+    overlap. None admits everything. An empty id or kind list admits
+    nothing, which is not a predicate: the caller answers that without a
+    query, and passing one here raises ValueError.
     """
     clauses: list[FilterExpr | None] = [
-        Comparison(field=EVENT_TIMESTAMP_KEY, op=">=", value=since)
-        if since is not None
-        else None,
-        Comparison(field=EVENT_TIMESTAMP_KEY, op="<", value=until)
-        if until is not None
-        else None,
-        In(field=EVENT_SESSION_KEY, values=list(session_ids))
-        if session_ids is not None
-        else None,
-        In(field=EVENT_SOURCE_KEY, values=list(source_ids))
-        if source_ids is not None
-        else None,
-        In(field=BLOCK_KIND_KEY, values=list(block_kinds))
-        if block_kinds is not None
-        else None,
+        Ordering(EVENT_TIMESTAMP_KEY, ">=", since) if since is not None else None,
+        Ordering(EVENT_TIMESTAMP_KEY, "<", until) if until is not None else None,
+        _in_ids(EVENT_SESSION_KEY, session_ids),
+        _in_ids(EVENT_SOURCE_KEY, source_ids),
+        _in_ids(BLOCK_KIND_KEY, block_kinds),
     ]
     return conjoin(clauses)
+
+
+def _in_ids(key: str, ids: Iterable[str] | None) -> In | None:
+    if ids is None:
+        return None
+    values = tuple(ids)
+    if not values:
+        raise ValueError(f"An empty {key} list admits nothing and is not a predicate")
+    return In(key, values)
 
 
 def split_system(expr: FilterExpr | None) -> tuple[SystemFilters, FilterExpr | None]:
@@ -100,91 +91,56 @@ def split_system(expr: FilterExpr | None) -> tuple[SystemFilters, FilterExpr | N
     caller write a system field inside a filter: the returned tree names no
     reserved key and is what the caller's `property_filter` becomes. A
     reserved key is accepted only as a top-level conjunct in the shape
-    `system_predicates` builds (a `>=` or `<` on the timestamp, an `=` or an
-    `In` on the session, source or block kind); repeated conjuncts on one
-    field intersect. Anywhere else, or on any other reserved key, it raises
-    ValueError, since no typed value could carry it.
+    `system_predicates` builds (a `>=` or `<` on the timestamp, an `Equals`
+    or an `In` on the session, source or block kind); repeated conjuncts on
+    one field intersect. Anywhere else, or on any other reserved key, it
+    raises ValueError, since no typed value could carry it.
     """
     filters = SystemFilters()
     rest: list[FilterExpr] = []
-    for conjunct in _conjuncts(expr):
-        if not _names_reserved_key(conjunct):
+    for conjunct in conjuncts(expr):
+        if not any(is_reserved_property_key(f) for f in filter_fields(conjunct)):
             rest.append(conjunct)
             continue
         _absorb(filters, conjunct)
     return filters, conjoin(rest)
 
 
-def _conjuncts(expr: FilterExpr | None) -> list[FilterExpr]:
-    if expr is None:
-        return []
-    if isinstance(expr, And):
-        return [*_conjuncts(expr.left), *_conjuncts(expr.right)]
-    return [expr]
-
-
-def _names_reserved_key(expr: FilterExpr) -> bool:
-    if isinstance(expr, Comparison | In | IsNull):
-        return is_reserved_property_key(expr.field)
-    if isinstance(expr, And | Or):
-        return _names_reserved_key(expr.left) or _names_reserved_key(expr.right)
-    if isinstance(expr, Not):
-        return _names_reserved_key(expr.expr)
-    raise TypeError(f"Unsupported filter expression type: {type(expr)!r}")
-
-
 def _absorb(filters: SystemFilters, conjunct: FilterExpr) -> None:
-    if isinstance(conjunct, Comparison) and conjunct.field == EVENT_TIMESTAMP_KEY:
-        _absorb_timestamp(filters, conjunct)
-    elif isinstance(conjunct, Comparison | In):
-        _absorb_ids(filters, conjunct)
-    else:
-        raise ValueError(
-            f"A reserved key is accepted only as a top-level = or In conjunct "
-            f"over strings, or >= and < on {EVENT_TIMESTAMP_KEY}; got {conjunct!r}"
-        )
+    match conjunct:
+        case Ordering(field, op, value) if field == EVENT_TIMESTAMP_KEY:
+            if not isinstance(value, datetime):
+                raise TypeError(f"{EVENT_TIMESTAMP_KEY} compares with a datetime")
+            if op == ">=":
+                filters.since = _later(filters.since, value)
+            elif op == "<":
+                filters.until = _earlier(filters.until, value)
+            else:
+                raise ValueError(
+                    f"{EVENT_TIMESTAMP_KEY} takes only >= (since) and < (until), "
+                    f"got {op!r}"
+                )
+        case Equals(field, value) if isinstance(value, str):
+            _absorb_ids(filters, field, [value])
+        case In(field, values) if all(isinstance(value, str) for value in values):
+            _absorb_ids(filters, field, [str(value) for value in values])
+        case _:
+            raise ValueError(
+                f"A reserved key is accepted only as a top-level Equals or In "
+                f"conjunct over strings, or >= and < on {EVENT_TIMESTAMP_KEY}; "
+                f"got {conjunct!r}"
+            )
 
 
-def _absorb_timestamp(filters: SystemFilters, conjunct: Comparison) -> None:
-    if not isinstance(conjunct.value, datetime):
-        raise TypeError(f"{EVENT_TIMESTAMP_KEY} compares with a datetime")
-    if conjunct.op == ">=":
-        filters.since = _later(filters.since, conjunct.value)
-    elif conjunct.op == "<":
-        filters.until = _earlier(filters.until, conjunct.value)
-    else:
-        raise ValueError(
-            f"{EVENT_TIMESTAMP_KEY} takes only >= (since) and < (until), "
-            f"got {conjunct.op!r}"
-        )
-
-
-def _absorb_ids(filters: SystemFilters, conjunct: Comparison | In) -> None:
-    ids = _string_ids(conjunct)
-    if ids is None:
-        raise ValueError(
-            f"A reserved key is accepted only as a top-level = or In conjunct "
-            f"over strings, or >= and < on {EVENT_TIMESTAMP_KEY}; got {conjunct!r}"
-        )
-    if conjunct.field == EVENT_SESSION_KEY:
+def _absorb_ids(filters: SystemFilters, field: str, ids: list[str]) -> None:
+    if field == EVENT_SESSION_KEY:
         filters.session_ids = _intersect(filters.session_ids, ids)
-    elif conjunct.field == EVENT_SOURCE_KEY:
+    elif field == EVENT_SOURCE_KEY:
         filters.source_ids = _intersect(filters.source_ids, ids)
-    elif conjunct.field == BLOCK_KIND_KEY:
+    elif field == BLOCK_KIND_KEY:
         filters.block_kinds = _intersect(filters.block_kinds, ids)
     else:
-        raise ValueError(f"{conjunct.field!r} is not a filterable system field")
-
-
-def _string_ids(conjunct: Comparison | In) -> list[str] | None:
-    """The string values an `=` or `In` leaf names; None for any other leaf."""
-    if isinstance(conjunct, Comparison):
-        if conjunct.op == "=" and isinstance(conjunct.value, str):
-            return [conjunct.value]
-        return None
-    if all(isinstance(value, str) for value in conjunct.values):
-        return [str(value) for value in conjunct.values]
-    return None
+        raise ValueError(f"{field!r} is not a filterable system field")
 
 
 def _later(current: datetime | None, bound: datetime) -> datetime:

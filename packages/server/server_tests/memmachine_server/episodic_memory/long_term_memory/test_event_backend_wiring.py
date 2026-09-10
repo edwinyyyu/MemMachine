@@ -27,8 +27,9 @@ from memmachine_server.common.episode_store import (
     EpisodeIdT,
     EpisodeStorage,
 )
-from memmachine_server.common.filter.filter_parser import (
-    Comparison as FilterComparison,
+from memmachine_server.common.filter import (
+    Equals,
+    Ordering,
 )
 from memmachine_server.common.vector_store import VectorStore
 from memmachine_server.common.vector_store.data_types import (
@@ -153,14 +154,13 @@ def vector_store():
 
 @pytest.fixture
 def vector_store_collection(fake_embedder):
-    config = VectorStoreCollectionConfig(
-        vector_dimensions=fake_embedder.dimensions,
-        indexed_properties_schema={
+    return InMemoryVectorStoreCollection(
+        VectorStoreCollectionConfig(vector_dimensions=fake_embedder.dimensions),
+        {
             **EventMemory.expected_vector_store_collection_schema(),
             **EVENT_BACKEND_SYSTEM_FIELDS,
         },
     )
-    return InMemoryVectorStoreCollection(config)
 
 
 @pytest.fixture
@@ -352,7 +352,7 @@ async def test_user_metadata_filter_round_trips(
     scored = await long_term_memory.search_scored(
         "fruit",
         num_episodes_limit=10,
-        property_filter=FilterComparison(field="m.color", op="=", value="red"),
+        property_filter=Equals(field="m.color", value="red"),
     )
     uids = {ep.uid for _, ep in scored}
     assert uids == {"m-1"}
@@ -391,7 +391,7 @@ async def test_system_field_filter_round_trips(
     scored = await long_term_memory.search_scored(
         "msg",
         num_episodes_limit=10,
-        property_filter=FilterComparison(field="producer_id", op="=", value="alice"),
+        property_filter=Equals(field="producer_id", value="alice"),
     )
     uids = {ep.uid for _, ep in scored}
     assert uids == {"s-1"}
@@ -412,9 +412,7 @@ async def test_unknown_bare_filter_field_raises(long_term_memory):
         await long_term_memory.search_scored(
             "msg",
             num_episodes_limit=10,
-            property_filter=FilterComparison(
-                field="producre_id", op="=", value="alice"
-            ),
+            property_filter=Equals(field="producre_id", value="alice"),
         )
 
 
@@ -429,7 +427,7 @@ async def test_unknown_user_metadata_field_passes_when_no_schema(long_term_memor
     scored = await long_term_memory.search_scored(
         "msg",
         num_episodes_limit=10,
-        property_filter=FilterComparison(field="m.anything", op="=", value="x"),
+        property_filter=Equals(field="m.anything", value="x"),
     )
     assert scored == []
 
@@ -465,7 +463,7 @@ async def test_unknown_user_metadata_field_raises_when_schema_configured(
         await ltm.search_scored(
             "msg",
             num_episodes_limit=10,
-            property_filter=FilterComparison(field="m.coloor", op="=", value="red"),
+            property_filter=Equals(field="m.coloor", value="red"),
         )
 
 
@@ -476,10 +474,8 @@ async def test_timestamp_filter_field_is_accepted(long_term_memory, episodes):
     await long_term_memory.search_scored(
         "anything",
         num_episodes_limit=10,
-        property_filter=FilterComparison(
-            field="timestamp",
-            op=">=",
-            value=datetime(2000, 1, 1, tzinfo=UTC),
+        property_filter=Ordering(
+            field="timestamp", op=">=", value=datetime(2000, 1, 1, tzinfo=UTC)
         ),
     )
 
@@ -491,13 +487,11 @@ def _make_ltm(episodes: list[Episode]) -> LongTermMemory:
     """
     fake_embedder = FakeEmbedder()
     vector_store_collection = InMemoryVectorStoreCollection(
-        VectorStoreCollectionConfig(
-            vector_dimensions=fake_embedder.dimensions,
-            indexed_properties_schema={
-                **EventMemory.expected_vector_store_collection_schema(),
-                **EVENT_BACKEND_SYSTEM_FIELDS,
-            },
-        )
+        VectorStoreCollectionConfig(vector_dimensions=fake_embedder.dimensions),
+        {
+            **EventMemory.expected_vector_store_collection_schema(),
+            **EVENT_BACKEND_SYSTEM_FIELDS,
+        },
     )
     return LongTermMemory(
         EventBackendParams(

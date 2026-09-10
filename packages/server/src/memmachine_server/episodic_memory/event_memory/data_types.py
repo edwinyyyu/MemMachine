@@ -390,6 +390,20 @@ class Neighborhood(BaseModel):
     """In order, starting just after the anchor."""
 
 
+class FilterOptions(BaseModel):
+    """How EventMemory applies the part of a filter the vector store does not evaluate."""
+
+    max_overfetch_factor: int = Field(default=64, ge=1)
+    """Cap on widening the vector search, as a multiple of `limit`.
+
+    A predicate on a key the vector store does not declare is applied
+    afterward by the segment store, and a seed it drops leaves the search
+    short; the search is widened until `limit` hits survive or the fetch
+    reaches `limit * max_overfetch_factor`, where it returns what survived.
+    A query with no undeclared part never widens.
+    """
+
+
 class EvictionOptions(BaseModel):
     """How EventMemory trims clusters of near-duplicate derivatives."""
 

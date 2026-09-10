@@ -17,7 +17,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from memmachine_server.common.filter.filter_parser import Comparison, parse_filter
+from memmachine_server.common.filter import (
+    Equals,
+)
+from memmachine_server.common.filter.filter_parser import (
+    parse_filter,
+)
 from memmachine_server.common.payload_codec.payload_codec_config import (
     PlaintextPayloadCodecConfig,
 )
@@ -530,7 +535,7 @@ async def test_contexts_property_filter(
     s3 = _seg(event_uuid=ep, offset=3, ts_offset_seconds=3, properties={"tag": "a"})
     await partition.add_segments(_links(s0, s1, s2, s3))
 
-    filt = Comparison(field="m.tag", op="=", value="a")
+    filt = Equals(field="m.tag", value="a")
     result = await partition.get_segment_contexts(
         [s2.uuid],
         before=5,
@@ -575,7 +580,7 @@ async def test_contexts_filter_by_context_producer(
     )
     await partition.add_segments(_links(s0, s1, s2))
 
-    filt = Comparison(field="context.producer", op="=", value="Alice")
+    filt = Equals(field="context.producer", value="Alice")
     contexts = await partition.get_segment_contexts(
         [s0.uuid],
         before=5,
@@ -611,7 +616,7 @@ async def test_contexts_filter_by_context_type(
     )
     await partition.add_segments(_links(s0, s1, s2))
 
-    filt = Comparison(field="context.context_type", op="=", value="producer")
+    filt = Equals(field="context.context_type", value="producer")
     contexts = await partition.get_segment_contexts(
         [s0.uuid],
         before=5,

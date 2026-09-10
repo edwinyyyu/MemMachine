@@ -12,12 +12,20 @@ from uuid import UUID
 import numpy as np
 from pydantic import BaseModel, Field, InstanceOf
 
-from memmachine_server.common.data_types import PropertyValue
+from memmachine_server.common.data_types import (
+    PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
+    PropertyType,
+    PropertyValue,
+)
 from memmachine_server.common.embedder import Embedder
-from memmachine_server.common.filter.filter_parser import (
+from memmachine_server.common.filter import (
     FilterExpr,
-    demangle_user_metadata_key,
+    conjoin,
     map_filter_fields,
+    split_declared,
+)
+from memmachine_server.common.filter.filter_parser import (
+    demangle_user_metadata_key,
     normalize_filter_field,
 )
 from memmachine_server.common.metrics_factory import (
@@ -38,6 +46,7 @@ from .data_types import (
     Derivative,
     Event,
     EvictionOptions,
+    FilterOptions,
     FormatOptions,
     Neighborhood,
     SearchHit,
@@ -53,7 +62,6 @@ from .system_filters import (
     EVENT_SESSION_KEY,
     EVENT_SOURCE_KEY,
     EVENT_TIMESTAMP_KEY,
-    conjoin,
     system_predicates,
 )
 
@@ -68,6 +76,33 @@ mints, never content.
 
 # The context part kinds rendering prints, in the order they are printed.
 _RENDERED_PART_KINDS: tuple[type[ContextPart], ...] = (Author,)
+
+# Each widening step multiplies the vector fetch by this.
+_OVERFETCH_BASE = 4
+
+
+class InvalidCollectionSchemaError(ValueError):
+    """Raised when a vector store collection does not declare EventMemory's system keys."""
+
+    def __init__(
+        self,
+        missing: Mapping[str, PropertyType],
+        declared: Mapping[str, PropertyType],
+    ) -> None:
+        """Initialize with the keys the collection lacks and the ones it declares."""
+        self.missing = dict(missing)
+        self.declared = dict(declared)
+        super().__init__(
+            "The vector store collection does not declare the system keys EventMemory "
+            f"writes: missing {_schema_names(missing)}, declared {_schema_names(declared)}."
+        )
+
+
+def _schema_names(schema: Mapping[str, PropertyType]) -> dict[str, str]:
+    return {
+        key: PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[property_type]
+        for key, property_type in sorted(schema.items())
+    }
 
 
 class EventMemoryParams(BaseModel):
@@ -94,6 +129,9 @@ class EventMemoryParams(BaseModel):
             Trim clusters of near-duplicate derivatives at ingest. None
             keeps every derivative and issues no eviction query
             (default: None).
+        filter (FilterOptions):
+            How far a search widens to make up for seeds the segment store's
+            post-filter drops (default: `FilterOptions()`).
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -126,6 +164,10 @@ class EventMemoryParams(BaseModel):
     eviction: EvictionOptions | None = Field(
         None,
         description="Trim clusters of near-duplicate derivatives at ingest",
+    )
+    filter: FilterOptions = Field(
+        default_factory=FilterOptions,
+        description="How far a search widens over the segment store's post-filter",
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
@@ -175,21 +217,24 @@ class EventMemory:
         self._embedder = params.embedder
         self._format_options = params.format_options
         self._eviction = params.eviction
+        self._filter = params.filter
 
         self._tracker = OperationTracker(
             params.metrics_factory,
             prefix="event_memory",
         )
 
-        declared_fields = frozenset(
-            params.vector_store_collection.config.indexed_properties_schema
-        )
-        missing_fields = EventMemory._RESERVED_PROPERTY_SCHEMA.keys() - declared_fields
-        if missing_fields:
-            raise ValueError(
-                f"Collection schema missing fields required by EventMemory: "
-                f"{', '.join(sorted(missing_fields))}"
-            )
+        # The store declares what it indexes; the system keys must be among
+        # them, with the types this memory writes.
+        declared = dict(params.vector_store_collection.indexed_properties)
+        missing = {
+            key: property_type
+            for key, property_type in EventMemory._RESERVED_PROPERTY_SCHEMA.items()
+            if declared.get(key) is not property_type
+        }
+        if missing:
+            raise InvalidCollectionSchemaError(missing, declared)
+        self._declared_properties = declared
 
         self._encode_events_phase_seconds: MetricsFactory.Histogram | None = None
         self._query_phase_seconds: MetricsFactory.Histogram | None = None
@@ -210,12 +255,20 @@ class EventMemory:
         Validate a batch of events before encoding.
 
         Raises ValueError if any event supplies a property key in the
-        reserved namespace or outside the naming contract, or a session
-        or source id longer than `ID_MAX_BYTES`.
+        reserved namespace or outside the naming contract, a value of another
+        type than the vector store declares for its key, or a session or
+        source id longer than `ID_MAX_BYTES`.
         """
         for event in events:
-            for key in event.properties:
+            for key, value in event.properties.items():
                 validate_caller_property_key(key)
+                declared = self._declared_properties.get(key)
+                if declared is not None and type(value) is not declared:
+                    raise ValueError(
+                        f"Event {event.uuid} property {key!r} is a "
+                        f"{type(value).__name__}; the vector store declares it as "
+                        f"{PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[declared]}."
+                    )
             for name, value in (
                 ("session_id", event.session_id),
                 ("source_id", event.source_id),
@@ -344,7 +397,7 @@ class EventMemory:
             )
         )
         derivative_records = [
-            EventMemory._build_derivative_record(
+            self._build_derivative_record(
                 derivative, embeddings_by_derivative[derivative.uuid]
             )
             for derivative in derivatives
@@ -406,16 +459,25 @@ class EventMemory:
             if segment_uuid in segments_by_uuid
         }
 
-    @staticmethod
     def _build_derivative_record(
+        self,
         derivative: Derivative,
         derivative_embedding: Sequence[float],
     ) -> Record:
-        """Build a vector record from a derivative and its embedding."""
+        """Build a vector record from a derivative and its embedding.
+
+        Only the caller properties the store declares go in: an undeclared
+        key never exists in the vector store, and the segment store holds
+        every property for the filtering the vector store does not do.
+        """
         # Caller properties first: a reserved key cannot reach here
         # (encode_events validates), and building in this order makes the
         # merge itself enforce that a system value always wins.
-        properties: dict[str, PropertyValue] = dict(derivative.properties)
+        properties: dict[str, PropertyValue] = {
+            key: value
+            for key, value in derivative.properties.items()
+            if key in self._declared_properties
+        }
         properties[EVENT_TIMESTAMP_KEY] = derivative.timestamp
         if derivative.session_id is not None:
             properties[EVENT_SESSION_KEY] = derivative.session_id
@@ -629,6 +691,12 @@ class EventMemory:
         session_ids = list(session_ids) if session_ids is not None else None
         source_ids = list(source_ids) if source_ids is not None else None
         block_kinds = list(block_kinds) if block_kinds is not None else None
+        # An empty id or kind list admits nothing, and needs no query to say so.
+        if any(
+            ids is not None and not ids
+            for ids in (session_ids, source_ids, block_kinds)
+        ):
+            return []
 
         query_embedding = (
             await self._embedder.search_embed(
@@ -637,7 +705,16 @@ class EventMemory:
         )[0]
         t_embedding = time.monotonic()
 
-        # Translate filter fields for vector store.
+        # One plan. The vector store gets the system predicates and the part
+        # of the caller's filter naming keys it declares, evaluated during
+        # the search; the rest is the segment store's, applied to the seeds
+        # afterward, and the search is widened to make up for what it drops.
+        declared_part, undeclared_part = split_declared(
+            map_filter_fields(property_filter, EventMemory._to_vector_record_property)
+            if property_filter is not None
+            else None,
+            self._declared_properties,
+        )
         collection_filter = conjoin(
             [
                 system_predicates(
@@ -647,23 +724,89 @@ class EventMemory:
                     source_ids=source_ids,
                     block_kinds=block_kinds,
                 ),
-                map_filter_fields(
-                    property_filter, EventMemory._to_vector_record_property
-                )
-                if property_filter is not None
-                else None,
+                declared_part,
             ]
         )
 
-        # Search derivative collection for matches.
-        [query_result] = await self._vector_store_collection.query(
-            query_vectors=[query_embedding],
-            limit=limit,
-            min_cosine_similarity=min_cosine_similarity,
-            property_filter=collection_filter,
-        )
-        t_vector_query = time.monotonic()
+        before = expand_context // 3
+        after = expand_context - before
 
+        max_fetch = limit * self._filter.max_overfetch_factor
+        fetch_limit = limit
+        vector_query_seconds = 0.0
+        segment_query_seconds = 0.0
+        while True:
+            t_vector_start = time.monotonic()
+            [query_result] = await self._vector_store_collection.query(
+                query_vectors=[query_embedding],
+                limit=fetch_limit,
+                min_cosine_similarity=min_cosine_similarity,
+                property_filter=collection_filter,
+            )
+            t_vector_query = time.monotonic()
+            vector_query_seconds += t_vector_query - t_vector_start
+
+            hits = await self._hits(
+                query_result,
+                before=before,
+                after=after,
+                since=since,
+                until=until,
+                source_ids=source_ids,
+                block_kinds=block_kinds,
+                property_filter=property_filter,
+            )
+            segment_query_seconds += time.monotonic() - t_vector_query
+
+            exhausted = len(query_result.matches) < fetch_limit
+            if (
+                undeclared_part is None
+                or len(hits) >= limit
+                or exhausted
+                or fetch_limit >= max_fetch
+            ):
+                break
+            fetch_limit = min(fetch_limit * _OVERFETCH_BASE, max_fetch)
+
+        phase_durations = {
+            "embedding": t_embedding - t_start,
+            "vector_query": vector_query_seconds,
+            "segment_query": segment_query_seconds,
+        }
+
+        logger.debug(
+            "query timing: %s total=%.3fs",
+            " ".join(
+                f"{phase}={duration:.3f}s"
+                for phase, duration in phase_durations.items()
+            ),
+            time.monotonic() - t_start,
+        )
+
+        if self._query_phase_seconds is not None:
+            for phase, duration in phase_durations.items():
+                self._query_phase_seconds.observe(duration, labels={"phase": phase})
+
+        return hits[:limit]
+
+    async def _hits(
+        self,
+        query_result: QueryResult,
+        *,
+        before: int,
+        after: int,
+        since: datetime.datetime | None,
+        until: datetime.datetime | None,
+        source_ids: list[str] | None,
+        block_kinds: list[str] | None,
+        property_filter: FilterExpr | None,
+    ) -> list[SearchHit]:
+        """The hits of one vector query: each seed's window, in similarity order.
+
+        The segment store applies the whole caller filter to the seed and its
+        window, so a neighbor satisfies what the seed satisfies; a seed the
+        store does not return is dropped.
+        """
         segment_by_derivative = (
             await self._segment_store_partition.get_segment_uuids_by_derivative_uuids(
                 match.record_uuid for match in query_result.matches
@@ -681,9 +824,6 @@ class EventMemory:
             if segment_uuid not in seed_cosine_similarities:
                 seed_cosine_similarities[segment_uuid] = match.cosine_similarity
 
-        before = expand_context // 3
-        after = expand_context - before
-
         segment_contexts_by_seed = (
             await self._segment_store_partition.get_segment_contexts(
                 seed_segment_uuids=seed_cosine_similarities.keys(),
@@ -696,9 +836,7 @@ class EventMemory:
                 property_filter=property_filter,
             )
         )
-        t_segment_query = time.monotonic()
 
-        # Seeds the store did not return are dropped; similarity order is kept.
         hits: list[SearchHit] = []
         for seed_uuid, score in seed_cosine_similarities.items():
             segments = segment_contexts_by_seed.get(seed_uuid)
@@ -710,26 +848,6 @@ class EventMemory:
                 if segment.uuid == seed_uuid
             )
             hits.append(SearchHit(score=score, seed=seed_index, segments=segments))
-
-        phase_durations = {
-            "embedding": t_embedding - t_start,
-            "vector_query": t_vector_query - t_embedding,
-            "segment_query": t_segment_query - t_vector_query,
-        }
-
-        logger.debug(
-            "query timing: %s total=%.3fs",
-            " ".join(
-                f"{phase}={duration:.3f}s"
-                for phase, duration in phase_durations.items()
-            ),
-            time.monotonic() - t_start,
-        )
-
-        if self._query_phase_seconds is not None:
-            for phase, duration in phase_durations.items():
-                self._query_phase_seconds.observe(duration, labels={"phase": phase})
-
         return hits
 
     async def expand(

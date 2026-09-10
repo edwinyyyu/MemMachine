@@ -16,10 +16,9 @@ from memmachine_server.common.episode_store import (
     EpisodeStorage,
     EpisodeType,
 )
+from memmachine_server.common.filter import FilterExpr, map_filter_fields
 from memmachine_server.common.filter.filter_parser import (
-    FilterExpr,
     demangle_user_metadata_key,
-    map_filter_fields,
     normalize_filter_field,
 )
 from memmachine_server.common.metrics_factory import MetricsFactory

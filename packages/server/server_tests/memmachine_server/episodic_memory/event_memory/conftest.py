@@ -9,10 +9,12 @@ from uuid import UUID
 
 import pytest
 
-from memmachine_server.common.filter.filter_parser import (
+from memmachine_server.common.filter import (
     FilterExpr,
-    demangle_user_metadata_key,
     map_filter_fields,
+)
+from memmachine_server.common.filter.filter_parser import (
+    demangle_user_metadata_key,
     normalize_filter_field,
 )
 from memmachine_server.common.reranker import Reranker
@@ -386,13 +388,8 @@ class AngleEmbedder(FakeEmbedder):
 def make_collection(embedder: FakeEmbedder) -> InMemoryVectorStoreCollection:
     """A collection declaring EventMemory's reserved keys and a `color` property."""
     return InMemoryVectorStoreCollection(
-        VectorStoreCollectionConfig(
-            vector_dimensions=embedder.dimensions,
-            indexed_properties_schema={
-                **EventMemory.expected_vector_store_collection_schema(),
-                "color": str,
-            },
-        )
+        VectorStoreCollectionConfig(vector_dimensions=embedder.dimensions),
+        {**EventMemory.expected_vector_store_collection_schema(), "color": str},
     )
 
 

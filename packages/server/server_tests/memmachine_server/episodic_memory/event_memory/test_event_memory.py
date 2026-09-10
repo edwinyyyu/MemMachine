@@ -9,13 +9,16 @@ from uuid import UUID, uuid4
 import pytest
 
 from memmachine_server.common.data_types import PropertyValue
-from memmachine_server.common.filter.filter_parser import (
+from memmachine_server.common.filter import (
     And,
-    Comparison,
+    Equals,
     In,
-    IsNull,
+    IsMissing,
     Not,
+    NotEquals,
     Or,
+    Ordering,
+    filter_fields,
 )
 from memmachine_server.common.vector_store.data_types import (
     Record,
@@ -26,6 +29,7 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     Context,
     Event,
     EvictionOptions,
+    FilterOptions,
     FormatOptions,
     SearchHit,
     Segment,
@@ -41,6 +45,7 @@ from memmachine_server.episodic_memory.event_memory.event_memory import (
     ID_MAX_BYTES,
     EventMemory,
     EventMemoryParams,
+    InvalidCollectionSchemaError,
 )
 from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter import (
     TextSegmenter,
@@ -303,14 +308,9 @@ class TestEncodeEvents:
         schema = EventMemory.expected_vector_store_collection_schema()
         del schema[EVENT_SESSION_KEY]
         collection = InMemoryVectorStoreCollection(
-            VectorStoreCollectionConfig(
-                vector_dimensions=2, indexed_properties_schema=schema
-            )
+            VectorStoreCollectionConfig(vector_dimensions=2), schema
         )
-        with pytest.raises(
-            ValueError,
-            match="Collection schema missing fields required by EventMemory",
-        ):
+        with pytest.raises(InvalidCollectionSchemaError, match=EVENT_SESSION_KEY):
             EventMemory(
                 EventMemoryParams(
                     vector_store_collection=collection,
@@ -494,7 +494,7 @@ class TestQuerySystemFilters:
 
         hits = await event_memory.query(
             "x",
-            property_filter=Comparison(field="timestamp", op=">=", value=_ts(5)),
+            property_filter=Ordering(field="timestamp", op=">=", value=_ts(5)),
             expand_context=6,
         )
 
@@ -563,7 +563,7 @@ class TestExpand:
             anchor,
             before=5,
             after=5,
-            property_filter=Comparison(field="m.color", op="=", value="green"),
+            property_filter=Equals(field="m.color", value="green"),
         )
 
         assert neighborhood.before == []
@@ -864,7 +864,7 @@ class TestQueryWithFilter:
 
         hits = await event_memory.query(
             "thing",
-            property_filter=Comparison(field="m.color", op="=", value="red"),
+            property_filter=Equals(field="m.color", value="red"),
         )
         assert _texts(hits) == {"red thing"}
 
@@ -875,7 +875,7 @@ class TestQueryWithFilter:
 
         hits = await event_memory.query(
             "thing",
-            property_filter=Comparison(field="m.color", op="!=", value="red"),
+            property_filter=NotEquals(field="m.color", value="red"),
         )
         assert _texts(hits) == {"blue thing"}
 
@@ -887,7 +887,7 @@ class TestQueryWithFilter:
 
         hits = await event_memory.query(
             "thing",
-            property_filter=In(field="m.color", values=["red", "green"]),
+            property_filter=In(field="m.color", values=("red", "green")),
         )
         assert _texts(hits) == {"red thing", "green thing"}
 
@@ -898,7 +898,7 @@ class TestQueryWithFilter:
 
         hits = await event_memory.query(
             "thing",
-            property_filter=IsNull(field="m.color"),
+            property_filter=IsMissing(field="m.color"),
         )
         assert _texts(hits) == {"no color"}
 
@@ -910,8 +910,7 @@ class TestQueryWithFilter:
         hits = await event_memory.query(
             "thing",
             property_filter=And(
-                left=Comparison(field="m.color", op="=", value="red"),
-                right=Not(expr=IsNull(field="m.color")),
+                (Equals(field="m.color", value="red"), Not(IsMissing(field="m.color")))
             ),
         )
         assert _texts(hits) == {"red small"}
@@ -925,8 +924,10 @@ class TestQueryWithFilter:
         hits = await event_memory.query(
             "thing",
             property_filter=Or(
-                left=Comparison(field="m.color", op="=", value="red"),
-                right=Comparison(field="m.color", op="=", value="blue"),
+                (
+                    Equals(field="m.color", value="red"),
+                    Equals(field="m.color", value="blue"),
+                )
             ),
         )
         assert _texts(hits) == {"red thing", "blue thing"}
@@ -938,7 +939,7 @@ class TestQueryWithFilter:
 
         hits = await event_memory.query(
             "thing",
-            property_filter=Not(expr=Comparison(field="m.color", op="=", value="red")),
+            property_filter=Not(Equals(field="m.color", value="red")),
         )
         assert _texts(hits) == {"blue thing"}
 
@@ -951,7 +952,7 @@ class TestQueryWithFilter:
 
         hits = await event_memory.query(
             "thing",
-            property_filter=Comparison(field="m.color", op="=", value="purple"),
+            property_filter=Equals(field="m.color", value="purple"),
         )
         assert hits == []
 
@@ -961,9 +962,147 @@ class TestQueryWithFilter:
 
         hits = await event_memory.query(
             "hi",
-            property_filter=Comparison(field="context.author", op="=", value="Alice"),
+            property_filter=Equals(field="context.author", value="Alice"),
         )
         assert hits == []
+
+
+# ===================================================================
+# Filter routing between the vector store and the segment store
+# ===================================================================
+
+
+def _routing_memory(
+    embedder: FakeEmbedder,
+    collection: InMemoryVectorStoreCollection,
+    *,
+    max_overfetch_factor: int,
+) -> EventMemory:
+    return EventMemory(
+        EventMemoryParams(
+            segment_store_partition=InMemorySegmentStorePartition(),
+            vector_store_collection=collection,
+            segmenter=TextSegmenter(),
+            deriver=WholeTextDeriver(),
+            embedder=embedder,
+            filter=FilterOptions(max_overfetch_factor=max_overfetch_factor),
+        )
+    )
+
+
+def _sized(index: int, size: str) -> Event:
+    return _make_event(
+        f"{size} thing {index}",
+        timestamp=_ts(index),
+        properties={"color": "red", "size": size},
+    )
+
+
+@_async
+class TestFilterRouting:
+    """The declared part of a filter is the vector store's; the rest is the segment store's.
+
+    The collection declares `color` and not `size`, so a predicate on
+    `size` can only be applied by the segment store, after the search.
+    """
+
+    async def test_an_undeclared_predicate_never_reaches_the_vector_store(
+        self, fake_embedder
+    ):
+        collection = make_collection(fake_embedder)
+        memory = _routing_memory(fake_embedder, collection, max_overfetch_factor=4)
+        await memory.encode_events([_sized(0, "big"), _sized(1, "small")])
+
+        hits = await memory.query(
+            "thing",
+            property_filter=And(
+                (
+                    Equals(field="m.color", value="red"),
+                    Equals(field="m.size", value="big"),
+                )
+            ),
+        )
+
+        assert _texts(hits) == {"big thing 0"}
+        # The declared part alone went to the vector store; `size` was
+        # neither scanned for nor stored there.
+        [vector_filter] = collection.queries
+        assert vector_filter is not None
+        assert filter_fields(vector_filter) == {"color"}
+        assert all("size" not in r.properties for r in collection.records.values())
+
+    async def test_a_fully_declared_filter_issues_one_query(self, fake_embedder):
+        collection = make_collection(fake_embedder)
+        memory = _routing_memory(fake_embedder, collection, max_overfetch_factor=4)
+        await memory.encode_events([_sized(index, "big") for index in range(8)])
+
+        hits = await memory.query(
+            "thing", limit=2, property_filter=Equals(field="m.color", value="red")
+        )
+
+        assert len(hits) == 2
+        assert len(collection.queries) == 1
+
+    async def test_the_search_widens_to_make_up_for_dropped_seeds(self, fake_embedder):
+        collection = make_collection(fake_embedder)
+        memory = _routing_memory(fake_embedder, collection, max_overfetch_factor=4)
+        sizes = ["big", "small", "small", "small", "big", "small", "small", "big"]
+        await memory.encode_events([_sized(i, size) for i, size in enumerate(sizes)])
+
+        hits = await memory.query(
+            "thing", limit=2, property_filter=Equals(field="m.size", value="big")
+        )
+
+        # Two seeds fetched, one survived, so the fetch widened once to the
+        # cap of eight, where three survive and the limit is met.
+        assert len(hits) == 2
+        assert _texts(hits) <= {"big thing 0", "big thing 4", "big thing 7"}
+        assert len(collection.queries) == 2
+
+    async def test_widening_stops_at_the_cap_and_returns_what_survived(
+        self, fake_embedder
+    ):
+        collection = make_collection(fake_embedder)
+        memory = _routing_memory(fake_embedder, collection, max_overfetch_factor=2)
+        sizes = ["small", "small", "small", "big", "small", "small", "small", "small"]
+        await memory.encode_events([_sized(i, size) for i, size in enumerate(sizes)])
+
+        hits = await memory.query(
+            "thing", limit=2, property_filter=Equals(field="m.size", value="big")
+        )
+
+        # limit * max_overfetch_factor is four: the fetch of two found no
+        # survivor, the fetch of four found one, and the cap ends the search.
+        assert _texts(hits) == {"big thing 3"}
+        assert len(collection.queries) == 2
+
+    async def test_every_count_is_a_maximum(self, fake_embedder):
+        collection = make_collection(fake_embedder)
+        memory = _routing_memory(fake_embedder, collection, max_overfetch_factor=4)
+        await memory.encode_events([_sized(0, "big"), _sized(1, "small")])
+
+        hits = await memory.query(
+            "thing", limit=5, property_filter=Equals(field="m.size", value="big")
+        )
+        assert len(hits) == 1
+
+    async def test_an_empty_id_list_admits_nothing_without_a_query(self, fake_embedder):
+        collection = make_collection(fake_embedder)
+        memory = _routing_memory(fake_embedder, collection, max_overfetch_factor=4)
+        await memory.encode_events([_sized(0, "big")])
+
+        assert await memory.query("thing", session_ids=[]) == []
+        assert await memory.query("thing", source_ids=[]) == []
+        assert await memory.query("thing", block_kinds=[]) == []
+        assert collection.queries == []
+
+    async def test_a_declared_value_of_another_type_is_rejected_at_ingest(
+        self, fake_embedder
+    ):
+        collection = make_collection(fake_embedder)
+        memory = _routing_memory(fake_embedder, collection, max_overfetch_factor=4)
+        with pytest.raises(ValueError, match="declares it as str"):
+            await memory.encode_events([_make_event("hi", properties={"color": 7})])
 
 
 # ===================================================================
