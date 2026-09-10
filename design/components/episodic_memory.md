@@ -93,7 +93,7 @@ class EpisodicMemory:
   `collection.query` with the declared part and the system filters
   (`since`, `until`, `session_ids`, `source_ids`, `block_kinds`) as
   predicates on reserved keys, evaluated during the search. Then
-  `get_segment_contexts` for the seeds with `expand_context` split as
+  `get_segments_windows` for the seeds with `expand_context` split as
   today (`event_memory.py:450`), the same system filters, and the
   undeclared part as `property_filter`, which bounds the window rows
   and is the post-filter for the seeds: a seed the store does not
@@ -116,7 +116,7 @@ class EpisodicMemory:
   the hit or the event, the filters apply to the neighbors only, and the
   anchor's place is between the lists. A caller walks further by calling again
   with the first of `before` or the last of `after` as the anchor and one side
-  zero. Backed by `SegmentPartition.get_segment_neighbors` over the ordering
+  zero. Backed by `SegmentPartition.get_segments_neighbors` over the ordering
   index; no vector search and no embedding, so it is one indexed read.
 - `render`: the reader's text for a run of segments, in their order:
   each segment's timestamp formatted by `format_options`, its context
@@ -222,7 +222,7 @@ filtered by `block_kinds`; rendering calls `block.render`.
   `source_id` and context itself. `FormatOptions` stays dates, times,
   locale and timezone. `produced_for` and the producer roles of the old
   episode model are not carried over and nothing replaces them.
-- `expand` is added, with `get_segment_neighbors` on the segment store, on
+- `expand` is added, with `get_segments_neighbors` on the segment store, on
   the rule of MemMachine #1498 and `agentic_expansion` commit 0c19942a:
   the neighbors, never the anchor; `string_from_segment_context` and
   `string_from_segment_contexts` become `render`.

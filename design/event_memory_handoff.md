@@ -30,7 +30,7 @@ Worktrees on this machine:
   - `segment_store/segment_store.py:73` `get_neighbor_segments` and
     `sqlalchemy_segment_store.py:384` its implementation (commit
     `0c19942a`): the neighbors-only read, which becomes
-    `get_segment_neighbors`. Do not port `get_neighbor_events` (`:113`,
+    `get_segments_neighbors`. Do not port `get_neighbor_events` (`:113`,
     `:454`); segments are the one unit.
   - `event_memory.py:429` `_compute_batch_predecessors`, `:480`
     `_select_eviction_targets`, and the eviction step inside
@@ -242,14 +242,14 @@ out of scope:
 `SegmentStorePartition` (`segment_store/segment_store.py`):
 
 ```python
-async def get_segment_contexts(self, seed_segment_uuids: Iterable[UUID], *,
+async def get_segments_windows(self, seed_segment_uuids: Iterable[UUID], *,
         before: int = 0, after: int = 0,
         since: datetime | None = None, until: datetime | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None) -> dict[UUID, list[Segment]]
 
-async def get_segment_neighbors(self, seed_segment_uuids: Iterable[UUID], *,
+async def get_segments_neighbors(self, seed_segment_uuids: Iterable[UUID], *,
         before: int = 0, after: int = 0,
         since: datetime | None = None, until: datetime | None = None,
         source_ids: Iterable[str] | None = None,
@@ -268,10 +268,10 @@ async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
   `property_filter` select rows. A window or the segment neighbors are confined
   to its seed's session by a null-safe equality on the seed's own
   session id. The existing lateral and loop plans serve both.
-- `get_segment_contexts` is the search window. The seed is a result:
+- `get_segments_windows` is the search window. The seed is a result:
   every filter applies to the seed and to the window rows, and a seed
   that fails has no entry.
-- `get_segment_neighbors` is expansion. The seed is an address the caller
+- `get_segments_neighbors` is expansion. The seed is an address the caller
   named and holds: it is located whether or not it passes any filter,
   the filters apply to the neighbors only, and it is never in the
   result. Each seed maps to two lists in the store's order, `before`
@@ -337,7 +337,7 @@ class EventMemory:
   collection with `limit`, `min_cosine_similarity` and the conjunction
   of `system_predicates(...)` and `property_filter`; resolve seeds
   through the segment store's `get_segment_uuids_by_derivative_uuids`
-  (#1598); `get_segment_contexts` with the
+  (#1598); `get_segments_windows` with the
   same system values and `property_filter`, `expand_context` split as
   today; drop seeds the store did not return; return at most `limit`
   hits in descending similarity, each with its window and the index
@@ -351,7 +351,7 @@ class EventMemory:
   calling it; nothing else in the server is in scope.
 - `expand`: an event uuid anchor resolves to its first segment via
   `get_segment_uuids_by_event_uuids`; then one seed through
-  `get_segment_neighbors` with the same filters a search takes.
+  `get_segments_neighbors` with the same filters a search takes.
 - `render` replaces `string_from_segment_context` and
   `string_from_segment_contexts` and uses `_immediately_follows` for
   the header decision: a new header when the segment is not the very

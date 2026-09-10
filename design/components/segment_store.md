@@ -50,13 +50,13 @@ class SegmentPartition(ABC):              # data, bound to one key; no method ta
     def key(self) -> UUID
     async def add_segments(self,
                            segments_to_derivative_uuids: Mapping[Segment, Iterable[UUID]]) -> None
-    async def get_segment_contexts(self, seed_segment_uuids: Iterable[UUID], *,
+    async def get_segments_windows(self, seed_segment_uuids: Iterable[UUID], *,
                                    before: int, after: int,
                                    since: datetime | None, until: datetime | None,
                                    source_ids: Iterable[str] | None,
                                    block_kinds: Iterable[str] | None,
                                    property_filter: FilterExpr | None) -> dict[UUID, list[Segment]]
-    async def get_segment_neighbors(self, seed_segment_uuids: Iterable[UUID], *,
+    async def get_segments_neighbors(self, seed_segment_uuids: Iterable[UUID], *,
                                  before: int, after: int,
                                  since: datetime | None, until: datetime | None,
                                  source_ids: Iterable[str] | None,
@@ -85,9 +85,9 @@ The two reads take the same parameters and return different things. `before`
 and `after` count segments on each side of a seed; `since` and `until` bound
 the timestamp, inclusive and exclusive; `source_ids`, `block_kinds` and
 `property_filter` select rows; every walk stays in its seed's session.
-`get_segment_contexts` is the search window: the seed is a result, every filter
+`get_segments_windows` is the search window: the seed is a result, every filter
 applies to it as to the window rows, and a seed that fails has no entry.
-`get_segment_neighbors` is expansion: the seed is an address the caller named and
+`get_segments_neighbors` is expansion: the seed is an address the caller named and
 already holds, the filters apply to the neighbors only, a seed that would fail
 them still anchors, and the seed is never in the result, which is two lists in
 the store's order, `SegmentNeighbors(before, after)`, with the seed's place
@@ -140,7 +140,7 @@ to it.
 - `Segment` gains `event_position`, copied from the `StoredEvent` the
   segmenter was given, and the row the column; the ordering index
   changes accordingly.
-- `get_segment_contexts` gains `since` and `until` on the real
+- `get_segments_windows` gains `since` and `until` on the real
   `timestamp` column, as on the reference branch (commit 27b3279b,
   where the pair is `since` and `before`), and the reserved timestamp
   property key goes from the segment side; and `source_ids` and
@@ -151,8 +151,8 @@ to it.
 - `segment_store_sg` gains `block_kind`, the kind name of the segment's
   one block as a plain column, since the encoded block cannot be
   filtered (`blocks.md`).
-- `get_segment_neighbors` is added for expansion, over the ordering
-  index, with the parameters of `get_segment_contexts`, returning the
+- `get_segments_neighbors` is added for expansion, over the ordering
+  index, with the parameters of `get_segments_windows`, returning the
   neighbors and never the seed.
 - `delete_derivatives` is added for eviction (`episodic_memory.md`):
   removes link rows by derivative uuid and leaves the segments.
