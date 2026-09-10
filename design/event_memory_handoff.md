@@ -227,9 +227,9 @@ out of scope:
   separate input, so the column cannot disagree with the block.
 - Indexes: keep `(incarnation, event_uuid, index, offset)` for lookup
   by event; replace the timestamp ordering index with
-  `segment_store_sg__in_order (incarnation, session_id, timestamp,
+  `segment_store_sg__in_se_ts_ev_ix_of (incarnation, session_id, timestamp,
   event_uuid, index, offset)`, the one total order the store exposes;
-  add `segment_store_sg__in_source (incarnation, source_id)`.
+  add `segment_store_sg__in_so (incarnation, source_id)`.
 - The total order is `(session_id, timestamp, event_uuid, index,
   offset)` within an incarnation. A null session id compares equal to
   a null session id and to nothing else (`IS NOT DISTINCT FROM`, or the
