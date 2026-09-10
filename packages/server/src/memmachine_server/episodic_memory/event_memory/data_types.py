@@ -94,10 +94,18 @@ def decode_block(encoded: Mapping[str, JsonValue]) -> Block:
 
 
 class Event(BaseModel):
-    """An event."""
+    """Some content, along with its associated context and properties.
+
+    `session_id` names the conversation or stream the event belongs to;
+    `source_id` names the entity responsible for it. Both are optional and
+    filterable at search: `None` is null, the record carries no key for it,
+    and `None` in a typed id list (or `IS NULL`) selects it.
+    """
 
     uuid: UUID
     timestamp: datetime
+    session_id: str | None = None
+    source_id: str | None = None
     context: Context = Field(default_factory=NullContext)
     blocks: list[Block]
     properties: dict[str, PropertyValue] = Field(default_factory=dict)
@@ -124,13 +132,19 @@ class Event(BaseModel):
 
 
 class Segment(BaseModel):
-    """Snapshot of an event, representing a smaller unit of content."""
+    """Snapshot of an event, representing a smaller unit of content.
+
+    `session_id`, `source_id`, `context`, `timestamp` and `properties` are
+    copied verbatim from the event.
+    """
 
     uuid: UUID
     event_uuid: UUID
     index: int
     offset: int
     timestamp: datetime
+    session_id: str | None = None
+    source_id: str | None = None
     context: Context = Field(default_factory=NullContext)
     block: Block
     properties: dict[str, PropertyValue] = Field(default_factory=dict)
@@ -158,11 +172,17 @@ class Segment(BaseModel):
 
 
 class Derivative(BaseModel):
-    """Information derived from a segment."""
+    """Information derived from a segment.
+
+    `session_id`, `source_id`, `context`, `timestamp` and `properties` are
+    copied verbatim from the segment.
+    """
 
     uuid: UUID
     segment_uuid: UUID
     timestamp: datetime
+    session_id: str | None = None
+    source_id: str | None = None
     context: Context = Field(default_factory=NullContext)
     block: Block
     properties: dict[str, PropertyValue] = Field(default_factory=dict)
@@ -203,18 +223,35 @@ class FormatOptions(BaseModel):
     timezone: InstanceOf[tzinfo] | None = None
 
 
-# QueryResult: the result of a memory query.
+# Results and options.
 
 
-class ScoredSegmentContext(BaseModel):
-    """A segment context anchored on a seed segment, with a score."""
+class SearchHit(BaseModel):
+    """One matched derivative with the context window around its segment."""
 
     score: float
-    seed_segment_uuid: UUID
+    """Cosine similarity of the matched derivative."""
+    seed: int
+    """Index in `segments` of the matched segment."""
     segments: list[Segment]
+    """The context window, in the store's order."""
 
 
-class QueryResult(BaseModel):
-    """Memory query result, ordered by reranker score."""
+class Neighborhood(BaseModel):
+    """The segments around an anchor, never the anchor itself: its open neighborhood."""
 
-    scored_segment_contexts: list[ScoredSegmentContext]
+    before: list[Segment]
+    """In order, ending just before the anchor."""
+    after: list[Segment]
+    """In order, starting just after the anchor."""
+
+
+class EvictionOptions(BaseModel):
+    """How EventMemory trims clusters of near-duplicate derivatives."""
+
+    similarity_threshold: float = Field(ge=-1.0, le=1.0)
+    """Cosine similarity at or above which two derivatives are one cluster."""
+    search_limit: int = Field(gt=0)
+    """Stored neighbors consulted per new derivative."""
+    target_size: int = Field(gt=0)
+    """A cluster larger than this is trimmed to it."""
