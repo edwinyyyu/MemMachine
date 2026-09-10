@@ -381,6 +381,19 @@ Eviction, from the branch, cosine only:
   skipped ones are never written. Segments and events are untouched.
 - `eviction=None` skips all of it, including the queries.
 
+## Segmenter and deriver
+
+`blocks.md`, "Processing": `Segmenter` and `Deriver` become tables
+from block kind to handler, `BlockSegmenter[B]` and `BlockDeriver[B]`
+the one-kind handler contracts, `Piece` what a segmenter handler
+returns; the table builds every envelope. `TextSegmenter`,
+`WholeTextDeriver` and `SentenceTextDeriver` become `text` handlers;
+`PassthroughSegmenter` goes, the passthrough being the table's own
+fallback, and the `passthrough` segmenter option builds a table with
+no handler. `EventMemory` is unchanged: it holds one table of each and
+calls `segment` and `derive` as before. The base-from-defaults and
+per-kind options of `blocks.md` are not in this change.
+
 ## Translation layers
 
 Nothing in the server is rewired here, but the server's translation
@@ -418,8 +431,7 @@ fields and keeps the rest of its properties as they are.
 
 Tenants, handles, the event store, positions, the manager and the
 staged-search API, settings, the HTTP API, the `EpisodicMemory` rename,
-block-kind registration beyond the rename, the segmenter and deriver
-tables from kind to handler (`blocks.md`, "Processing"), the `query_vector`
+block-kind registration beyond the rename, the `query_vector`
 parameter, the gap marker, annotate and demote, and the vector store's
 declared-index model. The design documents describe them; they land
 separately.

@@ -71,79 +71,88 @@ policy as it was (wants 2 and 6).
 ## Processing
 
 A step's policy is per kind. `BlockSegmenter` and `BlockDeriver` are
-the handler contracts: one block of one kind in, segments or
-derivatives out. `Segmenter` and `Deriver` are the two objects a memory
-holds (`episodic_memory.md`), each a mapping from kind name to handler.
-A table is built from handlers in order, a later handler replacing an
-earlier one for every kind it names, so a library user's table is the
-base with their handlers laid over it (want 6). Nothing is recursive
-and nothing is chained: a step looks its block's kind up once and calls
-one handler.
+the handler contracts, one kind each; `Segmenter` and `Deriver` are the
+two objects a memory holds (`episodic_memory.md`), each a table from
+kind name to handler. A table is built from handlers in order, a later
+handler replacing an earlier one for its kind, and `with_handlers` lays
+more over an existing table without changing it, so a library user's
+table is the base with their handlers laid over it (want 6). Nothing is
+recursive and nothing is chained: a step looks its block's kind up once
+and calls one handler.
 
 ```python
-class BlockSegmenter(ABC):
-    kinds: ClassVar[frozenset[str]]        # the kinds this handler splits
+@dataclass(frozen=True, slots=True)
+class Piece:                                # a piece of one block: what one segment holds
+    offset: int                             # position among the block's pieces
+    block: Block
+    parts: tuple[ContextPart, ...] = ()     # laid over the event's context
 
-    async def segment_block(
-        self, event: Event, index: int, block: Block, *, format_options: FormatOptions
-    ) -> list[Segment]: ...
-        # the segments of event.blocks[index], offsets within the block;
-        # the kind's join contract holds over what it returns
+class BlockSegmenter[B: Block](ABC):
+    kind: ClassVar[str]                     # the one kind this handler splits
+    async def split(self, event: Event, block: B, *, format_options: FormatOptions) -> list[Piece]: ...
 
-class BlockDeriver(ABC):
-    kinds: ClassVar[frozenset[str]]        # the kinds this handler derives from
-
-    async def derive_block(
-        self, segment: Segment, *, format_options: FormatOptions
-    ) -> list[Derivative]: ...
-        # the derivatives of one segment; a derivative's block may be of
-        # another kind (an image's caption is text)
+class BlockDeriver[B: Block](ABC):
+    kind: ClassVar[str]                     # the one kind this handler derives from
+    async def derive(self, segment: Segment, block: B, *, format_options: FormatOptions) -> list[Block]: ...
+        # a derived block may be of another kind (an image's caption is text)
 
 class Segmenter:
-    def __init__(self, handlers: Iterable[BlockSegmenter] = ()): ...
-        # later handlers replace earlier ones for the kinds they name
-    def with_handlers(self, *handlers: BlockSegmenter) -> Segmenter: ...
-        # a new table: this one with `handlers` laid over it
-    async def segment(
-        self, event: Event, *, format_options: FormatOptions
-    ) -> list[Segment]: ...
-        # for each (index, block): the handler for block.kind, else passthrough
+    def __init__(self, handlers: Iterable[BlockSegmenter[Any]] = ()): ...   # later wins for its kind
+    handlers: Mapping[str, BlockSegmenter[Any]]
+    def with_handlers(self, *handlers: BlockSegmenter[Any]) -> Self: ...
+    async def segment(self, event: Event, *, format_options: FormatOptions) -> list[Segment]: ...
 
-class Deriver:                             # the same shape; no handler: no derivatives
+class Deriver:                              # the same shape over BlockDeriver
+    async def derive(self, segment: Segment, *, format_options: FormatOptions) -> list[Derivative]: ...
 ```
 
-A handler sees one block and the event or segment it belongs to, so it
-reads context parts with `get_part` and adds its own with `with_part`
-(`context.md`, "Propagation"), and it decides the offsets and the join
-contract of its kind. `format_options` is the memory's
-(`episodic_memory.md`): the segmenter passes it through, the deriver
-formats the embedded text with it.
+One kind per handler, typed by the block class. The table dispatched on
+the kind, so a handler that took several kinds would only narrow again
+what the table already decided, and its "other kind" branch would be
+the `NotImplementedError` this design removes; a policy shared by two
+kinds is a base class or a function, registered once per kind. The
+kind and the class are one-to-one in the kind table, so "per kind" and
+"per block class" are the same unit, and the handler's `B` gives it a
+typed block.
 
-The built-in handlers, all for `text`: `TextBlockSegmenter` (the
-recursive character splitter, `max_chunk_length`) and
-`PassthroughBlockSegmenter` (one segment per block, unchanged);
-`WholeTextBlockDeriver` and `SentenceTextBlockDeriver`. A kind a table
-has no handler for has one fixed outcome, and a step never raises on
-it: the segmenter emits the block as one segment, unchanged, so the
-join contract holds (the passthrough handler is the fallback); the
-deriver derives nothing from it. Such a block is stored, reconstructed,
-returned by expansion and rendered, and is found by search only through
-its event's other blocks. That is the outcome for a library user's kind
-until they lay their handlers over the table, and for a built-in kind
-under a table with no policy for it.
+The table builds the envelope; a handler returns only what varies by
+kind. A segment's `uuid`, `event_uuid`, `index`, `timestamp`,
+`session_id`, `source_id` and `properties` are the event's by contract
+(`context.md`, "Propagation"; `event_store.md`), and a derivative's are
+the segment's, so a handler that built them could only get them wrong.
+`Piece` is what a segmenter decides: the sub-block, its offset, and any
+context parts to lay over the event's (a temporal segmenter adds
+`TimeRanges`); the pieces of a block in offset order reconstruct it,
+the kind's join contract. A deriver decides the derived blocks, each
+embedded as one derivative. A handler still sees the whole event or
+segment, so it reads context with `get_part`. `format_options` is the
+memory's (`episodic_memory.md`): the segmenter passes it through, the
+deriver formats the embedded text with it.
+
+The built-in handlers, all for `text` and keeping their names:
+`TextSegmenter` (the recursive character splitter, `max_chunk_length`),
+`WholeTextDeriver` and `SentenceTextDeriver`. `PassthroughSegmenter` is
+gone: the passthrough is the table's own fallback. A kind a table has
+no handler for has one fixed outcome, and a step never raises on it:
+the segmenter emits the block as one segment, unchanged, so the join
+contract holds; the deriver derives nothing from it. Such a block is
+stored, reconstructed, returned by expansion and rendered, and is found
+by search only through its event's other blocks. That is the outcome
+for a library user's kind until they lay their handlers over the table,
+and for a built-in kind under a table with no policy for it.
 
 Base and configuration (proposed; the decision above covers the tables
 and the override order, not this). The base tables are the kind
 table's defaults: each registered kind names a default segmenter
-handler and a default deriver handler, `text` naming
-`TextBlockSegmenter` and `WholeTextBlockDeriver`, and the base is those
-handlers in registration order, built-ins first. Tenant options
-(`episodic_memory_manager.md`, `SegmenterOptions` and `DeriverOptions`)
-are per kind: an entry names a registered handler and its options for
-that kind, and a kind without an entry keeps its default. Today's
-`PassthroughSegmenterConf` / `TextSegmenterConf` choice becomes the
-`text` entry of `segmenter`; `WholeTextDeriverConf` /
-`SentenceTextDeriverConf` becomes the `text` entry of `deriver`.
+handler and a default deriver handler, `text` naming `TextSegmenter`
+and `WholeTextDeriver`, and the base is those handlers in registration
+order, built-ins first. Tenant options (`episodic_memory_manager.md`,
+`SegmenterOptions` and `DeriverOptions`) are per kind: an entry names a
+registered handler and its options for that kind, and a kind without
+an entry keeps its default. Today's `type: passthrough` / `type: text`
+segmenter choice is the `text` entry of `segmenter` (`passthrough` is
+a table with no `text` handler); `whole_text` / `sentence_text` is the
+`text` entry of `deriver`.
 
 ## Filtering
 
@@ -192,13 +201,13 @@ caller.
 - `Segmenter` and `Deriver` (`segmenter/segmenter.py`,
   `deriver/deriver.py`) stop being the ABCs a whole policy implements
   and become the kind tables above; `BlockSegmenter` and `BlockDeriver`
-  are the ABCs. `TextSegmenter` becomes `TextBlockSegmenter`,
-  `PassthroughSegmenter` becomes `PassthroughBlockSegmenter` and the
-  fallback, `WholeTextDeriver` and `SentenceTextDeriver` become the
-  `text` derivers; their `NotImplementedError` on another kind
-  (`text_segmenter.py:97`, `text_deriver.py:86`, `:111`) goes, since a
-  table never routes a handler another kind. `service_locator.py`
-  builds the two tables from the per-kind options.
+  are the ABCs, and `Piece` is the segmenter handler's result.
+  `TextSegmenter`, `WholeTextDeriver` and `SentenceTextDeriver` become
+  `text` handlers returning pieces and blocks, their envelope building
+  and their `NotImplementedError` on another kind gone, since a table
+  never routes a handler another kind; `PassthroughSegmenter` goes.
+  `service_locator.py` builds a table per configured option. Done in
+  #1597.
 - `Segment` rows gain `block_kind` (`segment_store.md`); vector records
   gain `memmachine_block_kind` (`vector_store.md`); search and expansion
   gain `block_kinds` (`episodic_memory.md`).

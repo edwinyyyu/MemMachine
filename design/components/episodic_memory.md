@@ -240,7 +240,7 @@ filtered by `block_kinds`; rendering calls `block.render`.
 - `Embedder.ingest_embed` and `search_embed` take `list[str]`, not
   `list[Any]` (reference branch, commit ae1d616a); the only inputs are
   derivative texts and the query.
-- `TextSegmenter` (the `text` handler `TextBlockSegmenter` under
-  `blocks.md`, "Processing") imports the standard-library port of
+- `TextSegmenter` (the `text` handler under `blocks.md`, "Processing")
+  imports the standard-library port of
   `RecursiveCharacterTextSplitter` (`agentic_expansion`, commit 10ed25a6)
   in place of `langchain_text_splitters`.
