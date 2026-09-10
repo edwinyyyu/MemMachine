@@ -9,7 +9,6 @@ from memmachine_server.common.data_types import (
     PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE,
     PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
     PropertyValue,
-    SimilarityMetric,
 )
 
 from .utils import validate_identifier
@@ -22,14 +21,11 @@ class VectorStoreCollectionConfig(BaseModel):
     Attributes:
         vector_dimensions (int):
             Dimensionality of vectors stored in the collection.
-        similarity_metric (SimilarityMetric):
-            Metric used to compare vectors.
         indexed_properties_schema (dict[str, type[PropertyValue]]):
             Schema suggesting which properties should be indexed for filtering.
     """
 
     vector_dimensions: int
-    similarity_metric: SimilarityMetric = SimilarityMetric.COSINE
     indexed_properties_schema: dict[str, type[PropertyValue]] = Field(
         default_factory=dict
     )
@@ -109,20 +105,21 @@ class VectorStoreCollectionConfigMismatchError(Exception):
 
 class Record(BaseModel):
     """
-    A record in the vector store.
+    A record to write to a vector store collection.
+
+    Records are only ever written. A collection stores vectors to search
+    them and properties to filter on them, and answers a query with
+    `QueryMatch`; neither a vector nor a property is read back out.
 
     Attributes:
         uuid (UUID):
             Unique identifier for the record.
         vector (list[float] | None):
-            Vector for similarity search.
-            `None` is not allowed on input.
-            `None` on output means the vector was not requested (`return_vector=False`)
+            Vector for similarity search. Required; `None` is rejected
             (default: None).
         properties (dict[str, PropertyValue] | None):
             Property key-value pairs.
-            Use `{}` to represent missing properties; `None` on input is treated as `{}`.
-            `None` on output means the properties were not requested (`return_properties=False`)
+            Use `{}` to represent missing properties; `None` is treated as `{}`
             (default: None).
     """
 
@@ -153,21 +150,15 @@ class QueryMatch(BaseModel):
     A single vector store query match.
 
     Attributes:
-        score (float):
-            The meaning depends on the collection's `SimilarityMetric`:
-            - *cosine*: cosine similarity in [-1, 1].
-            - *dot*: raw dot product [0, inf).
-            - *euclidean*: Euclidean distance [0, inf).
-            - *manhattan*: Manhattan distance [0, inf).
-
-            Use `SimilarityMetric.higher_is_better` to determine which
-            direction indicates a better match.
-        record (Record):
-            The matched record.
+        cosine_similarity (float):
+            Cosine similarity between the query vector and the matched
+            record's vector, in [-1, 1]. Higher is a better match.
+        record_uuid (UUID):
+            UUID of the matched record.
     """
 
-    score: float
-    record: Record
+    cosine_similarity: float
+    record_uuid: UUID
 
 
 class QueryResult(BaseModel):

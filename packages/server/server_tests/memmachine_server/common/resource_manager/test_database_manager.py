@@ -797,10 +797,8 @@ async def test_sqlite_vector_store_default_engine_is_usearch():
 
         # Invoke the factory the manager passed into params and confirm it
         # routes to the USearch engine.
-        from memmachine_server.common.data_types import SimilarityMetric
-
         factory = mock_params_cls.call_args.kwargs["vector_search_engine_factory"]
-        factory(8, SimilarityMetric.COSINE)
+        factory(8)
 
     mock_usearch_cls.assert_called_once()
 
