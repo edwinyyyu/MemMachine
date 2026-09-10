@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from memmachine_server.common.filter.filter_parser import (
@@ -66,13 +67,13 @@ async def _present_uuids(collection, record_uuids) -> list[UUID]:
 def _make_record(
     *,
     uuid=None,
-    vector: list[float] | None = None,
+    vector: list[float],
     properties: dict | None = None,
 ) -> Record:
     return Record(
         uuid=uuid or uuid4(),
         vector=vector,
-        properties=properties,
+        properties=properties or {},
     )
 
 
@@ -830,16 +831,18 @@ class TestNoProperties:
 
 
 class TestInputValidation:
-    @pytest.mark.asyncio
-    async def test_upsert_rejects_none_vector(self, collection):
-        record = _make_record(vector=None)
-        with pytest.raises(ValueError, match="vector=None"):
-            await collection.upsert(records=[record])
+    def test_record_requires_a_vector(self):
+        """The model rejects it, so no store has to re-check."""
+        with pytest.raises(ValidationError):
+            Record(uuid=uuid4())  # ty: ignore[missing-argument]
+
+    def test_record_defaults_properties_to_empty(self):
+        record = Record(uuid=uuid4(), vector=_normalize([1.0, 0.0, 0.0]))
+        assert record.properties == {}
 
     @pytest.mark.asyncio
-    async def test_upsert_none_properties_treated_as_empty(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        record = _make_record(vector=v1, properties=None)
+    async def test_upsert_accepts_a_record_without_properties(self, collection):
+        record = Record(uuid=uuid4(), vector=_normalize([1.0, 0.0, 0.0]))
         await collection.upsert(records=[record])
         assert await _present_uuids(collection, [record.uuid]) == [record.uuid]
 
