@@ -101,12 +101,6 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         if not records:
             return
 
-        for record in records:
-            if record.vector is None:
-                raise ValueError(
-                    f"Record {record.uuid} has vector=None, which is not allowed on input."
-                )
-
         async with self._create_session() as session, session.begin():
             upsert_records = (
                 sqlite_insert(self._records_table)
