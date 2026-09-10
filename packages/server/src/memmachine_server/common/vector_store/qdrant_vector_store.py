@@ -302,20 +302,14 @@ class QdrantVectorStorePartition(VectorStorePartition):
         """Upsert records into the collection."""
         async with self._tracker("upsert"):
             await self._fence()
-            points: list[models.PointStruct] = []
-            for record in records:
-                if record.vector is None:
-                    raise ValueError(
-                        f"Record {record.uuid} has vector=None, which is not allowed on input."
-                    )
-                properties = record.properties if record.properties is not None else {}
-                points.append(
-                    models.PointStruct(
-                        id=record.uuid,
-                        vector=record.vector,
-                        payload=self._build_payload(properties),
-                    )
+            points = [
+                models.PointStruct(
+                    id=record.uuid,
+                    vector=record.vector,
+                    payload=self._build_payload(record.properties),
                 )
+                for record in records
+            ]
             if points:
                 await self._upsert_with_backoff(points)
             await self._fence()

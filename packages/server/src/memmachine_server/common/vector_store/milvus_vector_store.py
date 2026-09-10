@@ -195,23 +195,17 @@ class MilvusVectorStorePartition(VectorStorePartition):
 
     def _build_entity(self, record: Record) -> dict[str, Any]:
         """Build a Milvus entity from a vector store record."""
-        if record.vector is None:
-            raise ValueError(
-                f"Record {record.uuid} has vector=None, which is not allowed on input."
-            )
-
-        properties = record.properties if record.properties is not None else {}
         entity: dict[str, Any] = {
             _ID_FIELD: self._primary_id(self._incarnation, record.uuid),
             _RECORD_UUID_FIELD: str(record.uuid),
             _PARTITION_KEY_FIELD: self._incarnation.hex,
             _VECTOR_FIELD: record.vector,
-            _PROPERTIES_FIELD: encode_properties(properties),
+            _PROPERTIES_FIELD: encode_properties(record.properties),
         }
         # Explicit nulls clear stale dynamic fields during native Milvus upserts.
         for key in self._indexed_properties:
             entity[_property_field(key)] = None
-        for key, value in properties.items():
+        for key, value in record.properties.items():
             entity[_property_field(key)] = _normalize_property_filter_value(value)
         return entity
 

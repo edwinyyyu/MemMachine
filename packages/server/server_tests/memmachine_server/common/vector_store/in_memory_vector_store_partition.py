@@ -123,8 +123,8 @@ class InMemoryVectorStorePartition(VectorStorePartition):
         for record in records:
             self.records[record.uuid] = Record(
                 uuid=record.uuid,
-                vector=list(record.vector) if record.vector is not None else None,
-                properties=dict(record.properties) if record.properties else {},
+                vector=list(record.vector),
+                properties=dict(record.properties),
             )
 
     @override
@@ -141,10 +141,8 @@ class InMemoryVectorStorePartition(VectorStorePartition):
             qv = list(query_vector)
             matches: list[QueryMatch] = []
             for record in self.records.values():
-                if record.vector is None:
-                    continue
                 if property_filter is not None and not evaluate_filter(
-                    property_filter, record.properties or {}
+                    property_filter, record.properties
                 ):
                     continue
                 cosine_similarity = _cosine_similarity(qv, record.vector)

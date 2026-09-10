@@ -226,12 +226,6 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
         if not records:
             return
 
-        for record in records:
-            if record.vector is None:
-                raise ValueError(
-                    f"Record {record.uuid} has vector=None, which is not allowed on input."
-                )
-
         async with self._create_session() as session, session.begin():
             await self._fence_write(session)
             upsert_records = (
@@ -264,16 +258,14 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
             ).all()
             uuid_to_rowid: dict[UUID, int] = {row.uuid: row.rowid for row in rows}
 
-            vector_params = []
-            for record in records:
-                assert record.vector is not None  # Validated above.
-                vector_params.append(
-                    {
-                        "rowid": uuid_to_rowid[record.uuid],
-                        "incarnation": self._incarnation.hex,
-                        "vector": self._serialize_vector(record.vector),
-                    }
-                )
+            vector_params = [
+                {
+                    "rowid": uuid_to_rowid[record.uuid],
+                    "incarnation": self._incarnation.hex,
+                    "vector": self._serialize_vector(record.vector),
+                }
+                for record in records
+            ]
             await session.execute(
                 text(f"DELETE FROM [{self._vector_table_name}] WHERE rowid = :rowid"),
                 vector_params,

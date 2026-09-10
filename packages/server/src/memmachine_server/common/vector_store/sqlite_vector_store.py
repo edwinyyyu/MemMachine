@@ -404,12 +404,6 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         if not records:
             return
 
-        for record in records:
-            if record.vector is None:
-                raise ValueError(
-                    f"Record {record.uuid} has vector=None, which is not allowed on input."
-                )
-
         async with self._create_session() as session, session.begin():
             await self._ensure_live(session)
             upsert_records = (
