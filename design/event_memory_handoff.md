@@ -124,7 +124,6 @@ class UnknownPart(ContextPart):     # produced only by decode
 type Context = Mapping[str, ContextPart]
 def get_part[P: ContextPart](context: Context, part: type[P]) -> P | None
 def with_part(context: Context, part: ContextPart) -> Context
-def without_part(context: Context, part: type[ContextPart]) -> Context
 ```
 
 - Replaces `ProducerContext`, `NullContext` and the discriminated
@@ -195,12 +194,11 @@ change:
 - One module, `event_memory/system_filters.py`, owns the translation.
   `system_predicates(since, until, session_ids, source_ids,
   block_kinds) -> FilterExpr | None` builds the tree the vector store
-  gets, on reserved keys. `split_system(expr) -> tuple[SystemFilters,
-  FilterExpr | None]` takes a tree, pulls out the conjuncts that name
-  reserved keys into the typed values, and returns the rest; it is the
-  only thing to call at an API boundary if the other choice is made.
-  The segment store never sees the tree for system fields: it gets the
-  typed values and compares columns.
+  gets, on reserved keys. The inverse, pulling the conjuncts that name
+  reserved keys out of a tree into the typed values, is not built until
+  an API boundary makes the other choice; nothing calls it. The segment
+  store never sees the tree for system fields: it gets the typed values
+  and compares columns.
 - `EventMemory.query` and `expand` take the typed parameters. Nothing
   else in `EventMemory` knows which choice was made.
 

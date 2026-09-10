@@ -74,9 +74,8 @@ A step's policy is per kind. `BlockSegmenter` and `BlockDeriver` are
 the handler contracts, one kind each; `Segmenter` and `Deriver` are the
 two objects a memory holds (`episodic_memory.md`), each a table from
 kind name to handler. A table is built from handlers in order, a later
-handler replacing an earlier one for its kind, and `with_handlers` lays
-more over an existing table without changing it, so a library user's
-table is the base with their handlers laid over it (want 6). Nothing is
+handler replacing an earlier one for its kind, so a library user's
+table is the base handlers with their own listed after (want 6). Nothing is
 recursive and nothing is chained: a step looks its block's kind up once
 and calls one handler.
 
@@ -85,7 +84,6 @@ and calls one handler.
 class Piece:                                # a piece of one block: what one segment holds
     offset: int                             # position among the block's pieces
     block: Block
-    parts: tuple[ContextPart, ...] = ()     # laid over the event's context
 
 class BlockSegmenter[B: Block](ABC):
     kind: ClassVar[str]                     # the one kind this handler splits
@@ -98,8 +96,6 @@ class BlockDeriver[B: Block](ABC):
 
 class Segmenter:
     def __init__(self, handlers: Iterable[BlockSegmenter[Any]] = ()): ...   # later wins for its kind
-    handlers: Mapping[str, BlockSegmenter[Any]]
-    def with_handlers(self, *handlers: BlockSegmenter[Any]) -> Self: ...
     async def segment(self, event: Event) -> list[Segment]: ...
 
 class Deriver:                              # the same shape over BlockDeriver
@@ -123,10 +119,11 @@ kind. A segment's `uuid`, `event_uuid`, `index`, `timestamp`,
 `session_id`, `source_id` and `properties` are the event's by contract
 (`context.md`, "Propagation"; `event_store.md`), and a derivative's are
 the segment's, so a handler that built them could only get them wrong.
-`Piece` is what a segmenter decides: the sub-block, its offset, and any
-context parts to lay over the event's (a temporal segmenter adds
-`TimeRanges`); the pieces of a block in offset order reconstruct it,
-the kind's join contract. A deriver decides texts, each embedded as one
+`Piece` is what a segmenter decides: the sub-block and its offset; the
+pieces of a block in offset order reconstruct it, the kind's join
+contract. A segmenter that adds context parts (a temporal one adding
+`TimeRanges`) extends `Piece` when it lands; nothing is built for it
+before. A deriver decides texts, each embedded as one
 derivative: a derivative is always text, whatever kind it came from, so
 every derivative gets the same context processing. The memory, not the
 handler, composes the embedded anchor from the timestamp, the parts

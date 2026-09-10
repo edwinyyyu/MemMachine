@@ -52,7 +52,6 @@ type Context = Mapping[str, ContextPart]
 def get_part[P: ContextPart](context: Context, part: type[P]) -> P | None
 def with_part(context: Context, part: ContextPart) -> Context
     # replaces the part of that kind
-def without_part(context: Context, part: type[ContextPart]) -> Context
 ```
 
 `Event.context: Context`, `Segment.context: Context`,
@@ -85,7 +84,7 @@ in the core changes (want 3).
 ## Composition
 
 `with_part` returns a context with the part set under its kind,
-replacing any part of that kind; `without_part` removes one. A
+replacing any part of that kind. A
 segmenter that extracts time ranges does `with_part(event.context,
 TimeRanges(...))` for each segment, and what the event carried stays.
 Because a context is keyed, there is no order to agree on and no
