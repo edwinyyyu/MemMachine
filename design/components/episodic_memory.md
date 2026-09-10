@@ -14,8 +14,8 @@ user builds one directly.
 EpisodicMemory(
     partition: SegmentPartition,    # handle: this tenant's segments
     collection: VectorCollection,   # handle: this tenant's records in its embedder's container
-    segmenter: Segmenter,
-    deriver: Deriver,
+    segmenter: Segmenter,           # table from block kind to BlockSegmenter (blocks.md, "Processing")
+    deriver: Deriver,               # table from block kind to BlockDeriver
     embedder: Embedder,
     format_options: FormatOptions,  # how the deriver renders dates and names into embedded text
     eviction: EvictionOptions | None,   # None: no eviction
@@ -180,10 +180,11 @@ scorer reads `TimeRanges`.
 ## Blocks
 
 Specified in `blocks.md`: a registered family of kinds, `text` built
-in; the segmenter and deriver dispatch on the kind and pass a kind
-they do not handle through as one segment with no derivatives; a
-segment is one block, so its kind is a system field filtered by
-`block_kinds`; rendering calls `block.render`.
+in; the segmenter and the deriver are tables from kind to handler, a
+later handler replacing an earlier one for the kinds it names, and a
+kind with no handler passes through as one segment with no
+derivatives; a segment is one block, so its kind is a system field
+filtered by `block_kinds`; rendering calls `block.render`.
 
 ## Changes required
 
@@ -239,6 +240,7 @@ segment is one block, so its kind is a system field filtered by
 - `Embedder.ingest_embed` and `search_embed` take `list[str]`, not
   `list[Any]` (reference branch, commit ae1d616a); the only inputs are
   derivative texts and the query.
-- `TextSegmenter` imports the standard-library port of
+- `TextSegmenter` (the `text` handler `TextBlockSegmenter` under
+  `blocks.md`, "Processing") imports the standard-library port of
   `RecursiveCharacterTextSplitter` (`agentic_expansion`, commit 10ed25a6)
   in place of `langchain_text_splitters`.

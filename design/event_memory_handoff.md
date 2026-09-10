@@ -418,7 +418,8 @@ fields and keeps the rest of its properties as they are.
 
 Tenants, handles, the event store, positions, the manager and the
 staged-search API, settings, the HTTP API, the `EpisodicMemory` rename,
-block-kind registration beyond the rename, the `query_vector`
+block-kind registration beyond the rename, the segmenter and deriver
+tables from kind to handler (`blocks.md`, "Processing"), the `query_vector`
 parameter, the gap marker, annotate and demote, and the vector store's
 declared-index model. The design documents describe them; they land
 separately.

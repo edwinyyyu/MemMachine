@@ -859,8 +859,9 @@ Tenant configuration section `episodic_memory`, with mutability:
 
 - `embedder` (provider id): immutable; a different embedder is a new
   tenant and a new ingestion.
-- `segmenter`, `deriver`, `format`: their options; mutable, applying
-  to events processed after the change.
+- `segmenter`, `deriver`: per-kind handler options (`blocks.md`,
+  "Processing"); `format`: its options; all mutable, applying to
+  events processed after the change.
 - `eviction` (similarity threshold, neighbors consulted, target
   cluster size, or none): mutable, applying to batches processed after
   the change; the threshold is calibrated per embedder, so a template
@@ -870,8 +871,8 @@ Tenant configuration section `episodic_memory`, with mutability:
   overridable per request, the reranker within the ids the deployment
   offers.
 
-Episodic memory uses no language model today (the two segmenters and
-the one deriver are deterministic; the embedder is the only model
+Episodic memory uses no language model today (the segmenter and
+deriver handlers are deterministic; the embedder is the only model
 call). The section gains a `language_model` id when a deriver needs
 one.
 

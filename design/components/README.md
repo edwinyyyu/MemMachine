@@ -92,8 +92,9 @@ Files:
   to `EpisodicMemory` objects and registers with the tenant service.
 - `context.md`: the typed, non-filterable parts attached to content,
   their registration, composition, propagation and rendering.
-- `blocks.md`: block kinds as a registered family, and the kind as a
-  system field of the segment.
+- `blocks.md`: block kinds as a registered family, the segmenter and
+  deriver as tables from kind to handler, and the kind as a system
+  field of the segment.
 - `ingest_service.md`: the write path from the API to the event store
   and the subsystems.
 - `filters_and_properties.md`: the filter expression tree, property

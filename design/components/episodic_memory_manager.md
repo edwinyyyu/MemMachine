@@ -45,8 +45,8 @@ class SearchOptions(BaseModel):
 
 class EpisodicMemoryTenantConfig(BaseModel):
     embedder: str                       # immutable; an offered id
-    segmenter: SegmenterOptions         # mutable; later events
-    deriver: DeriverOptions             # mutable; later events
+    segmenter: SegmenterOptions         # mutable; later events; per block kind (blocks.md)
+    deriver: DeriverOptions             # mutable; later events; per block kind
     format: FormatOptions               # mutable; later events
     eviction: EvictionOptions | None    # mutable; later batches; None: off
     search: SearchOptions               # mutable; defaults for a search
@@ -138,7 +138,8 @@ head; `MORE` otherwise. A step that finds no per-tenant row returns
 
 ## Cache
 
-Segmenter and deriver objects, keyed by their options, never by tenant;
+Segmenter and deriver tables (`blocks.md`, "Processing"), keyed by
+their options, never by tenant;
 bounded by `settings.cache_size`. `EpisodicMemory` objects and handles
 are not cached: each is a few references, built per request and
 discarded, so nothing bound to a tenant outlives the request.
