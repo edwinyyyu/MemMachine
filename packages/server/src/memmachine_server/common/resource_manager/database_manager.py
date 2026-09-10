@@ -18,7 +18,6 @@ from memmachine_server.common.configuration.database_conf import (
     SQLiteVectorStoreConf,
     SQLiteVectorStoreEngine,
 )
-from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.errors import (
     MilvusConfigurationError,
     Neo4JConfigurationError,
@@ -741,8 +740,8 @@ class DatabaseManager:
     @staticmethod
     def _make_sqlite_search_engine_factory(
         conf: SQLiteVectorStoreConf,
-    ) -> Callable[[int, SimilarityMetric], VectorSearchEngine]:
-        """Build a (ndim, metric) -> VectorSearchEngine factory from config.
+    ) -> Callable[[int], VectorSearchEngine]:
+        """Build a ndim -> VectorSearchEngine factory from config.
 
         Imports are deferred so the engine packages remain optional unless
         their backend is actually used.
@@ -753,13 +752,8 @@ class DatabaseManager:
                     USearchVectorSearchEngine,
                 )
 
-                def usearch_factory(
-                    num_dimensions: int, similarity_metric: SimilarityMetric
-                ) -> VectorSearchEngine:
-                    return USearchVectorSearchEngine(
-                        num_dimensions=num_dimensions,
-                        similarity_metric=similarity_metric,
-                    )
+                def usearch_factory(num_dimensions: int) -> VectorSearchEngine:
+                    return USearchVectorSearchEngine(num_dimensions=num_dimensions)
 
                 return usearch_factory
             case SQLiteVectorStoreEngine.HNSWLIB:
@@ -767,13 +761,8 @@ class DatabaseManager:
                     HnswlibVectorSearchEngine,
                 )
 
-                def hnswlib_factory(
-                    num_dimensions: int, similarity_metric: SimilarityMetric
-                ) -> VectorSearchEngine:
-                    return HnswlibVectorSearchEngine(
-                        num_dimensions=num_dimensions,
-                        similarity_metric=similarity_metric,
-                    )
+                def hnswlib_factory(num_dimensions: int) -> VectorSearchEngine:
+                    return HnswlibVectorSearchEngine(num_dimensions=num_dimensions)
 
                 return hnswlib_factory
 
