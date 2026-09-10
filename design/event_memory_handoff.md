@@ -67,7 +67,7 @@ Worktrees on this machine:
 class Event(BaseModel):
     uuid: UUID
     timestamp: datetime            # aware; keeps the offset it was given
-    session_id: str | None = None  # None = the ungrouped stream
+    session_id: str | None = None  # None = in no session
     source_id: str | None = None   # the responsible entity's id; None = no source
     context: Context               # a mapping of parts; {} = no context
     blocks: list[Block]            # one or more, each of a registered kind
@@ -75,9 +75,8 @@ class Event(BaseModel):
 ```
 
 - `session_id` and `source_id` are first-class fields of the model,
-  not properties, and default to `None`: no session is the ungrouped
-  stream and no source is one state, so a caller that has neither says
-  nothing. A layer that has either sets it (below, "Translation
+  not properties, and default to `None`: no session is no session and
+  no source is one state, so a caller that has neither says nothing. A layer that has either sets it (below, "Translation
   layers").
 - Both are bounded strings; bound them by the same limit as a property
   string value, and reject longer ones where events are validated
@@ -226,14 +225,16 @@ out of scope:
 - Indexes: keep `(incarnation, event_uuid, index, offset)` for lookup
   by event; replace the timestamp ordering index with
   `segment_store_sg__in_se_ts_ev_ix_of (incarnation, session_id, timestamp,
-  event_uuid, index, offset)`, the one total order the store exposes;
-  add `segment_store_sg__in_so (incarnation, source_id)`.
-- The total order is `(session_id, timestamp, event_uuid, index,
-  offset)` within an incarnation. A null session id compares equal to
-  a null session id and to nothing else (`IS NOT DISTINCT FROM`, or the
-  dialect's equivalent), so the ungrouped stream is one stream. The
-  tie-break stays `event_uuid` here; the redesign's event position
-  needs the event store, which is out of scope.
+  event_uuid, index, offset)` beside the timeline index
+  `segment_store_sg__in_ts_ev_ix_of`, which serves the walk of a seed
+  with no session; add `segment_store_sg__in_so (incarnation, source_id)`.
+- The total order is `(timestamp, event_uuid, index, offset)` within
+  an incarnation; a walk is confined to the seed's session by an
+  equality predicate, and a seed with no session is confined to none.
+  There is no null session: a sessioned seed's walk never includes a
+  segment with no session. The tie-break stays `event_uuid` here; the
+  redesign's event position needs the event store, which is out of
+  scope.
 - Migration: an Alembic revision adding the three columns and the
   indexes, with `block_kind` backfilled to `text` for existing rows and
   the two id columns left null. Follow the shipped store's migration
@@ -402,7 +403,7 @@ Nothing in the server is rewired here, but the server's translation
 from `Episode` to `Event` (`episodic_memory/long_term_memory/`) should
 set `source_id = producer_id`, the one identity it has; it has no
 conversation identity, so `session_id` keeps its default and the
-events form the ungrouped stream. Add no `Author` part, since the
+events are in no session. Add no `Author` part, since the
 server holds no readable name. The claude-memory engine already keeps
 a session id and an author in properties; it moves them into the two
 fields and keeps the rest of its properties as they are.
@@ -413,8 +414,8 @@ fields and keeps the rest of its properties as they are.
   (`server_tests/.../segment_store/test_sqlalchemy_segment_store.py`
   on `agentic_expansion`) to the two-list shape, on both dialects, and
   add: the anchor is absent from both lists; an anchor that fails the
-  filter still yields its neighbors; a null-session anchor's
-  neighborhoods stay in the ungrouped stream; `since`/`until` meet
+  filter still yields its neighbors; an anchor with no session walks
+  every segment and a sessioned one never reaches it; `since`/`until` meet
   without overlap on a boundary timestamp; a non-UTC bound compares as
   an instant on SQLite.
 - Eviction tests from the branch (`test_event_memory.py`): cluster
