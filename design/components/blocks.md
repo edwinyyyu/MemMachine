@@ -167,7 +167,7 @@ of `segmenter`; `whole_text` / `sentence_text` is the `text` entry of
 
 The kind is a system field of the segment: `block_kinds` on
 episodic-memory search and expansion restricts hits, context windows,
-the selectivity probe and segment neighbors to segments of those kinds
+the selectivity probe and neighborhoods to segments of those kinds
 (`episodic_memory.md`), evaluated on the vector record under the
 reserved key `memmachine_block_kind` and on the segment row's
 `block_kind` column. Event listing has no kind filter: an event has

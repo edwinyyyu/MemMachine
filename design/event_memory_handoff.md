@@ -30,7 +30,7 @@ Worktrees on this machine:
   - `segment_store/segment_store.py:73` `get_neighbor_segments` and
     `sqlalchemy_segment_store.py:384` its implementation (commit
     `0c19942a`): the neighbors-only read, which becomes
-    `get_segments_neighbors`. Do not port `get_neighbor_events` (`:113`,
+    `get_segment_neighborhoods`. Do not port `get_neighbor_events` (`:113`,
     `:454`); segments are the one unit.
   - `event_memory.py:429` `_compute_batch_predecessors`, `:480`
     `_select_eviction_targets`, and the eviction step inside
@@ -147,7 +147,7 @@ class SearchHit(BaseModel):
     seed: int                       # index in `segments` of the matched segment
     segments: list[Segment]         # the context window, in the store's order
 
-class SegmentNeighbors(BaseModel):
+class Neighborhood(BaseModel):
     before: list[Segment]           # in order, ending just before the anchor
     after: list[Segment]            # in order, starting just after it
 
@@ -242,19 +242,19 @@ out of scope:
 `SegmentStorePartition` (`segment_store/segment_store.py`):
 
 ```python
-async def get_segments_windows(self, seed_segment_uuids: Iterable[UUID], *,
+async def get_segment_windows(self, seed_segment_uuids: Iterable[UUID], *,
         before: int = 0, after: int = 0,
         since: datetime | None = None, until: datetime | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None) -> dict[UUID, list[Segment]]
 
-async def get_segments_neighbors(self, seed_segment_uuids: Iterable[UUID], *,
+async def get_segment_neighborhoods(self, seed_segment_uuids: Iterable[UUID], *,
         before: int = 0, after: int = 0,
         since: datetime | None = None, until: datetime | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
-        property_filter: FilterExpr | None = None) -> dict[UUID, SegmentNeighbors]
+        property_filter: FilterExpr | None = None) -> dict[UUID, Neighborhood]
 
 async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
 ```
@@ -265,13 +265,13 @@ async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
   `since` is inclusive and `until` exclusive on the `timestamp` column,
   so ranges meet without overlap (`until`, not `before`, so that
   `before` is a count everywhere); `source_ids`, `block_kinds` and
-  `property_filter` select rows. A window or the segment neighbors are confined
+  `property_filter` select rows. A window or neighborhood is confined
   to its seed's session by a null-safe equality on the seed's own
   session id. The existing lateral and loop plans serve both.
-- `get_segments_windows` is the search window. The seed is a result:
+- `get_segment_windows` is the search window. The seed is a result:
   every filter applies to the seed and to the window rows, and a seed
   that fails has no entry.
-- `get_segments_neighbors` is expansion. The seed is an address the caller
+- `get_segment_neighborhoods` is expansion. The seed is an address the caller
   named and holds: it is located whether or not it passes any filter,
   the filters apply to the neighbors only, and it is never in the
   result. Each seed maps to two lists in the store's order, `before`
@@ -282,7 +282,7 @@ async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
   `get_neighbor_segments` and split its one list at the seed's position
   in the order. This is the rule of #1498: during a search a seed that
   fails is dropped before a window is built; after a search a
-  segment neighbors are kept even when their seed would fail, and then the
+  neighborhood is kept even when its seed would fail, and then the
   seed is never returned.
 - `delete_derivatives` removes link rows by derivative uuid and leaves
   the segments; eviction needs it.
@@ -314,7 +314,7 @@ class EventMemory:
                      since: datetime | None, until: datetime | None,
                      source_ids: Iterable[str] | None,
                      block_kinds: Iterable[str] | None,
-                     property_filter: FilterExpr | None) -> SegmentNeighbors
+                     property_filter: FilterExpr | None) -> Neighborhood
     @staticmethod
     def render(segments: Iterable[Segment], *,
                format_options: FormatOptions) -> str
@@ -337,7 +337,7 @@ class EventMemory:
   collection with `limit`, `min_cosine_similarity` and the conjunction
   of `system_predicates(...)` and `property_filter`; resolve seeds
   through the segment store's `get_segment_uuids_by_derivative_uuids`
-  (#1598); `get_segments_windows` with the
+  (#1598); `get_segment_windows` with the
   same system values and `property_filter`, `expand_context` split as
   today; drop seeds the store did not return; return at most `limit`
   hits in descending similarity, each with its window and the index
@@ -351,7 +351,7 @@ class EventMemory:
   calling it; nothing else in the server is in scope.
 - `expand`: an event uuid anchor resolves to its first segment via
   `get_segment_uuids_by_event_uuids`; then one seed through
-  `get_segments_neighbors` with the same filters a search takes.
+  `get_segment_neighborhoods` with the same filters a search takes.
 - `render` replaces `string_from_segment_context` and
   `string_from_segment_contexts` and uses `_immediately_follows` for
   the header decision: a new header when the segment is not the very
@@ -414,7 +414,7 @@ fields and keeps the rest of its properties as they are.
   on `agentic_expansion`) to the two-list shape, on both dialects, and
   add: the anchor is absent from both lists; an anchor that fails the
   filter still yields its neighbors; a null-session anchor's
-  segment neighbors stay in the ungrouped stream; `since`/`until` meet
+  neighborhoods stay in the ungrouped stream; `since`/`until` meet
   without overlap on a boundary timestamp; a non-UTC bound compares as
   an instant on SQLite.
 - Eviction tests from the branch (`test_event_memory.py`): cluster
