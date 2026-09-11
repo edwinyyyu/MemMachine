@@ -23,12 +23,12 @@ from memmachine_server.common.payload_codec.payload_codec_config import (
     PlaintextPayloadCodecConfig,
 )
 from memmachine_server.episodic_memory.event_memory.data_types import (
+    Author,
     Context,
     Neighborhood,
-    NullContext,
-    ProducerContext,
     Segment,
     TextBlock,
+    with_part,
 )
 from memmachine_server.episodic_memory.event_memory.event_memory_store import (
     EventMemoryStoreAttemptsExhaustedError,
@@ -65,7 +65,7 @@ BASE_TIME = datetime(2024, 1, 1, tzinfo=UTC)
 
 
 def _author(name: str) -> Context:
-    return ProducerContext(producer=name)
+    return with_part({}, Author(name=name))
 
 
 def _seg(
@@ -89,7 +89,7 @@ def _seg(
         session_id=session_id,
         source_id=source_id,
         block=TextBlock(text=text),
-        context=context if context is not None else NullContext(),
+        context=context if context is not None else {},
         properties=properties or {},
     )
 
@@ -292,8 +292,8 @@ async def test_add_events_with_producer_context(
         row = (
             await session.execute(select(SegmentRow).where(SegmentRow.uuid == seg.uuid))
         ).scalar_one()
-    assert json.loads(row.context) == {"context_type": "producer", "producer": "User"}
-    assert json.loads(row.block) == {"block_type": "text", "text": "hello"}
+    assert json.loads(row.context) == {"author": {"name": "User"}}
+    assert json.loads(row.block) == {"kind": "text", "text": "hello"}
 
 
 @pytest.mark.asyncio
@@ -307,10 +307,10 @@ async def test_add_events_with_no_context(
         row = (
             await session.execute(select(SegmentRow).where(SegmentRow.uuid == seg.uuid))
         ).scalar_one()
-    assert json.loads(row.context) == {"context_type": "null"}
+    assert json.loads(row.context) == {}
 
     result = await partition.get_segments([seg.uuid])
-    assert result[seg.uuid].context == NullContext()
+    assert result[seg.uuid].context == {}
 
 
 @pytest.mark.asyncio
@@ -342,7 +342,7 @@ async def test_timestamp_roundtrips_with_timezone(
         offset=0,
         timestamp=ts,
         block=TextBlock(text="tz"),
-        context=NullContext(),
+        context={},
         properties={},
     )
     await _add(partition, _links(seg))
@@ -643,7 +643,7 @@ async def test_contexts_filter_by_context_type(
         event_uuid=ep,
         offset=1,
         ts_offset_seconds=1,
-        context=NullContext(),
+        context={},
     )
     s2 = _seg(
         event_uuid=ep,
@@ -1317,13 +1317,13 @@ async def test_pg_mixed_context_types(
                 select(SegmentRow).where(SegmentRow.uuid == s_none.uuid)
             )
         ).scalar_one()
-    assert json.loads(row.context) == {"context_type": "null"}
+    assert json.loads(row.context) == {}
 
     result = await partition.get_segments([s_msg.uuid])
     assert result[s_msg.uuid].context == ctx_msg
 
     result = await partition.get_segments([s_none.uuid])
-    assert result[s_none.uuid].context == NullContext()
+    assert result[s_none.uuid].context == {}
 
 
 # ===================================================================
