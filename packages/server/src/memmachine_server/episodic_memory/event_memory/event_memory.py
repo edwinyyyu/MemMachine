@@ -386,11 +386,11 @@ class EventMemory:
         )
         if not segment_by_derivative:
             return {}
-        segments_by_uuid = await self._segment_store_partition.get_segment_windows(
-            seed_segment_uuids=set(segment_by_derivative.values())
+        segments_by_uuid = await self._segment_store_partition.get_segments(
+            set(segment_by_derivative.values())
         )
         return {
-            derivative_uuid: segments_by_uuid[segment_uuid][0].timestamp
+            derivative_uuid: segments_by_uuid[segment_uuid].timestamp
             for derivative_uuid, segment_uuid in segment_by_derivative.items()
             if segment_uuid in segments_by_uuid
         }
@@ -672,34 +672,47 @@ class EventMemory:
             if segment_uuid not in seed_cosine_similarities:
                 seed_cosine_similarities[segment_uuid] = match.cosine_similarity
 
-        before = expand_context // 3
-        after = expand_context - before
-
-        windows_by_seed = await self._segment_store_partition.get_segment_windows(
-            seed_segment_uuids=seed_cosine_similarities.keys(),
-            before=before,
-            after=after,
+        seed_segments = await self._segment_store_partition.get_segments(
+            seed_cosine_similarities.keys(),
             since=since,
             until=until,
             source_ids=source_ids,
             block_kinds=block_kinds,
             property_filter=property_filter,
         )
+        before = expand_context // 3
+        after = expand_context - before
+        neighborhoods: dict[UUID, Neighborhood] = {}
+        if expand_context > 0 and seed_segments:
+            neighborhoods = (
+                await self._segment_store_partition.get_segment_neighborhoods(
+                    seed_segments.values(),
+                    before=before,
+                    after=after,
+                    since=since,
+                    until=until,
+                    source_ids=source_ids,
+                    block_kinds=block_kinds,
+                    property_filter=property_filter,
+                )
+            )
         t_segment_query = time.monotonic()
 
         # Seeds the store did not return are dropped; cosine similarity order is kept.
         hits: list[SearchHit] = []
         for seed_uuid, score in seed_cosine_similarities.items():
-            segments = windows_by_seed.get(seed_uuid)
-            if segments is None:
+            seed = seed_segments.get(seed_uuid)
+            if seed is None:
                 continue
-            seed_index = next(
-                index
-                for index, segment in enumerate(segments)
-                if segment.uuid == seed_uuid
+            neighborhood = neighborhoods.get(
+                seed_uuid, Neighborhood(before=[], after=[])
             )
             hits.append(
-                SearchHit(score=score, seed_index=seed_index, segments=segments)
+                SearchHit(
+                    score=score,
+                    seed_index=len(neighborhood.before),
+                    segments=[*neighborhood.before, seed, *neighborhood.after],
+                )
             )
 
         phase_durations = {
@@ -778,11 +791,18 @@ class EventMemory:
                 )
             )
             event_segment_uuids = segment_uuids_by_event.get(anchor)
-            seed = event_segment_uuids[0] if event_segment_uuids else anchor
+            seed_uuid = event_segment_uuids[0] if event_segment_uuids else anchor
 
-            neighborhoods_by_seed = (
+            seed = (await self._segment_store_partition.get_segments([seed_uuid])).get(
+                seed_uuid
+            )
+            if seed is None:
+                raise LookupError(
+                    f"Anchor {anchor} is neither a segment nor an event of this memory"
+                )
+            neighborhoods = (
                 await self._segment_store_partition.get_segment_neighborhoods(
-                    seed_segment_uuids=[seed],
+                    [seed],
                     before=before,
                     after=after,
                     since=since,
@@ -792,12 +812,7 @@ class EventMemory:
                     property_filter=property_filter,
                 )
             )
-            neighborhood = neighborhoods_by_seed.get(seed)
-            if neighborhood is None:
-                raise LookupError(
-                    f"Anchor {anchor} is neither a segment nor an event of this memory"
-                )
-            return neighborhood
+            return neighborhoods[seed_uuid]
 
     @staticmethod
     async def rerank(

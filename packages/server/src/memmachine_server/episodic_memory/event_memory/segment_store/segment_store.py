@@ -34,11 +34,10 @@ class SegmentStorePartition(ABC):
     that edits a row.
 
     Segments within a partition are in one total order,
-    `(timestamp, event_uuid, index, offset)`. The two reads around seed
-    segments differ in whether the seed is part of the answer:
-    `get_segment_windows` returns each seed inside its window and filters
-    it like any other row; `get_segment_neighborhoods` returns only the
-    segments around each seed and filters those alone.
+    `(timestamp, event_uuid, index, offset)`. `get_segments` looks
+    segments up by uuid, filtered; `get_segment_neighborhoods` walks the
+    order around segments the caller holds. Filters select what a read
+    returns, and only a segment obtained first can be walked from.
     """
 
     @property
@@ -62,34 +61,22 @@ class SegmentStorePartition(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_segment_windows(
+    async def get_segments(
         self,
-        seed_segment_uuids: Iterable[UUID],
+        segment_uuids: Iterable[UUID],
         *,
-        before: int = 0,
-        after: int = 0,
         since: datetime | None = None,
         until: datetime | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
-    ) -> dict[UUID, list[Segment]]:
+    ) -> dict[UUID, Segment]:
         """
-        Get a window of segments around each seed segment, in the store's order.
-
-        A window walks the seed's session: a seed with a session id sees
-        only segments of that session, and a seed with none sees segments
-        of every session. The seed is among the results, so every filter
-        applies to it as to the other rows, and a seed that fails a filter
-        or is unknown has no entry.
+        Get the segments among these that the partition holds and that pass the filters.
 
         Args:
-            seed_segment_uuids (Iterable[UUID]):
-                The UUIDs of the seed segments whose windows to retrieve.
-            before (int):
-                The maximum number of segments before each seed (default: 0).
-            after (int):
-                The maximum number of segments after each seed (default: 0).
+            segment_uuids (Iterable[UUID]):
+                The uuids to look up.
             since (datetime | None):
                 Inclusive lower bound on the segment timestamp (default: None).
             until (datetime | None):
@@ -105,16 +92,17 @@ class SegmentStorePartition(ABC):
                 A filter expression over segment properties (default: None).
 
         Returns:
-            dict[UUID, list[Segment]]:
-                A mapping from each seed segment UUID to its window,
-                in the store's order, the seed among them.
+            dict[UUID, Segment]:
+                A mapping from each uuid found and admitted to its segment.
+                A uuid the partition does not hold, or whose segment fails
+                a filter, is absent.
         """
         raise NotImplementedError
 
     @abstractmethod
     async def get_segment_neighborhoods(
         self,
-        seed_segment_uuids: Iterable[UUID],
+        segments: Iterable[Segment],
         *,
         before: int = 0,
         after: int = 0,
@@ -125,21 +113,23 @@ class SegmentStorePartition(ABC):
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, Neighborhood]:
         """
-        Get the segments around each seed segment, never the seed itself.
+        Get the segments around each given segment, never the segment itself.
 
-        The neighbors are walked as a window is: within the seed's session,
-        or across every session when it has none. The seed is an address:
-        it is located whether or not it passes any filter, the filters
-        apply to the neighbors only, and it is never in the result. Other
-        segments of the seed's own event are ordinary neighbors.
+        A given segment is a place in the order, not a row: the walk starts
+        from the position and the session it carries and looks nothing up,
+        so a segment the caller holds can be walked from even after its
+        row is gone. The walk stays within the segment's session, or spans
+        every session when it has none, and the filters select the
+        neighbors. Other segments of the same event are ordinary neighbors.
 
         Args:
-            seed_segment_uuids (Iterable[UUID]):
-                The UUIDs of the segments to gather neighbors around.
+            segments (Iterable[Segment]):
+                The segments to gather neighbors around, as the caller
+                holds them.
             before (int):
-                The maximum number of neighbors before each seed (default: 0).
+                The maximum number of neighbors before each segment (default: 0).
             after (int):
-                The maximum number of neighbors after each seed (default: 0).
+                The maximum number of neighbors after each segment (default: 0).
             since (datetime | None):
                 Inclusive lower bound on the neighbors' timestamp (default: None).
             until (datetime | None):
@@ -157,10 +147,10 @@ class SegmentStorePartition(ABC):
 
         Returns:
             dict[UUID, Neighborhood]:
-                A mapping from each known seed to its neighbors: `before`
-                in order ending just before the seed, `after` in order
-                starting just after it. A seed with no neighbors to show
-                maps to two empty lists; an unknown seed is absent.
+                A mapping from each given segment's uuid to its neighbors:
+                `before` in order ending just before it, `after` in order
+                starting just after it. Every given segment has an entry;
+                a segment with no neighbors to show maps to two empty lists.
         """
         raise NotImplementedError
 

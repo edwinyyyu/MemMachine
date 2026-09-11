@@ -2,7 +2,7 @@
 
 import math
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 from typing import Any, override
 from uuid import UUID
@@ -60,9 +60,9 @@ def _order_key(segment: Segment) -> tuple:
 class InMemorySegmentStorePartition(SegmentStorePartition):
     """Minimal in-memory segment store partition for testing.
 
-    Mirrors the SQLAlchemy store's reads: one total order, windows
-    within the seed's session, or every session when it has none, the seed filtered for a window and
-    never returned among the neighbors.
+    Mirrors the SQLAlchemy store's reads: one total order, a filtered
+    lookup by uuid, and a walk around a given segment within its session,
+    or every session when it has none, that never returns the segment.
     """
 
     def __init__(
@@ -117,123 +117,6 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
             return evaluate_filter(normalized_filter, evaluated)
         return True
 
-    def _window(
-        self,
-        seed: Segment,
-        before: int,
-        after: int,
-        passes: Any,
-    ) -> tuple[list[Segment], list[Segment]]:
-        ordered = [
-            s
-            for s in self._ordered()
-            if seed.session_id is None or s.session_id == seed.session_id
-        ]
-        position = next(i for i, s in enumerate(ordered) if s.uuid == seed.uuid)
-        backward = (
-            [s for s in ordered[:position] if passes(s)][-before:] if before > 0 else []
-        )
-        forward = [s for s in ordered[position + 1 :] if passes(s)][:after]
-        return backward, forward
-
-    def _read(
-        self,
-        seed_segment_uuids: Iterable[UUID],
-        *,
-        before: int,
-        after: int,
-        since: datetime | None,
-        until: datetime | None,
-        source_ids: Iterable[str] | None,
-        block_kinds: Iterable[str] | None,
-        property_filter: FilterExpr | None,
-        seed_must_pass: bool,
-    ) -> dict[UUID, tuple[list[Segment], Segment, list[Segment]]]:
-        normalized_filter = (
-            map_filter_fields(property_filter, self._normalize_segment_field)
-            if property_filter is not None
-            else None
-        )
-        source_ids = list(source_ids) if source_ids is not None else None
-        block_kinds = list(block_kinds) if block_kinds is not None else None
-
-        def passes(segment: Segment) -> bool:
-            return self._passes(
-                segment,
-                since=since,
-                until=until,
-                source_ids=source_ids,
-                block_kinds=block_kinds,
-                normalized_filter=normalized_filter,
-            )
-
-        result: dict[UUID, tuple[list[Segment], Segment, list[Segment]]] = {}
-        for seed_uuid in seed_segment_uuids:
-            seed = self.segments.get(seed_uuid)
-            if seed is None or (seed_must_pass and not passes(seed)):
-                continue
-            backward, forward = self._window(seed, before, after, passes)
-            result[seed_uuid] = (backward, seed, forward)
-        return result
-
-    @override
-    async def get_segment_windows(
-        self,
-        seed_segment_uuids: Iterable[UUID],
-        *,
-        before: int = 0,
-        after: int = 0,
-        since: datetime | None = None,
-        until: datetime | None = None,
-        source_ids: Iterable[str] | None = None,
-        block_kinds: Iterable[str] | None = None,
-        property_filter: FilterExpr | None = None,
-    ) -> dict[UUID, list[Segment]]:
-        windows = self._read(
-            seed_segment_uuids,
-            before=before,
-            after=after,
-            since=since,
-            until=until,
-            source_ids=source_ids,
-            block_kinds=block_kinds,
-            property_filter=property_filter,
-            seed_must_pass=True,
-        )
-        return {
-            seed_uuid: [*backward, seed, *forward]
-            for seed_uuid, (backward, seed, forward) in windows.items()
-        }
-
-    @override
-    async def get_segment_neighborhoods(
-        self,
-        seed_segment_uuids: Iterable[UUID],
-        *,
-        before: int = 0,
-        after: int = 0,
-        since: datetime | None = None,
-        until: datetime | None = None,
-        source_ids: Iterable[str] | None = None,
-        block_kinds: Iterable[str] | None = None,
-        property_filter: FilterExpr | None = None,
-    ) -> dict[UUID, Neighborhood]:
-        windows = self._read(
-            seed_segment_uuids,
-            before=before,
-            after=after,
-            since=since,
-            until=until,
-            source_ids=source_ids,
-            block_kinds=block_kinds,
-            property_filter=property_filter,
-            seed_must_pass=False,
-        )
-        return {
-            seed_uuid: Neighborhood(before=backward, after=forward)
-            for seed_uuid, (backward, _, forward) in windows.items()
-        }
-
     @staticmethod
     def _normalize_segment_field(field: str) -> str:
         """Translate canonical filter field names to raw segment property keys.
@@ -250,6 +133,97 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         if is_user_metadata:
             return demangle_user_metadata_key(internal_name)
         return f"_{field}"
+
+    def _admits(
+        self,
+        *,
+        since: datetime | None,
+        until: datetime | None,
+        source_ids: Iterable[str] | None,
+        block_kinds: Iterable[str] | None,
+        property_filter: FilterExpr | None,
+    ) -> Callable[[Segment], bool]:
+        normalized_filter = (
+            map_filter_fields(property_filter, self._normalize_segment_field)
+            if property_filter is not None
+            else None
+        )
+        listed_sources = list(source_ids) if source_ids is not None else None
+        listed_kinds = list(block_kinds) if block_kinds is not None else None
+
+        def passes(segment: Segment) -> bool:
+            return self._passes(
+                segment,
+                since=since,
+                until=until,
+                source_ids=listed_sources,
+                block_kinds=listed_kinds,
+                normalized_filter=normalized_filter,
+            )
+
+        return passes
+
+    @override
+    async def get_segments(
+        self,
+        segment_uuids: Iterable[UUID],
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        source_ids: Iterable[str] | None = None,
+        block_kinds: Iterable[str] | None = None,
+        property_filter: FilterExpr | None = None,
+    ) -> dict[UUID, Segment]:
+        passes = self._admits(
+            since=since,
+            until=until,
+            source_ids=source_ids,
+            block_kinds=block_kinds,
+            property_filter=property_filter,
+        )
+        found: dict[UUID, Segment] = {}
+        for segment_uuid in segment_uuids:
+            segment = self.segments.get(segment_uuid)
+            if segment is not None and passes(segment):
+                found[segment_uuid] = segment
+        return found
+
+    @override
+    async def get_segment_neighborhoods(
+        self,
+        segments: Iterable[Segment],
+        *,
+        before: int = 0,
+        after: int = 0,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        source_ids: Iterable[str] | None = None,
+        block_kinds: Iterable[str] | None = None,
+        property_filter: FilterExpr | None = None,
+    ) -> dict[UUID, Neighborhood]:
+        passes = self._admits(
+            since=since,
+            until=until,
+            source_ids=source_ids,
+            block_kinds=block_kinds,
+            property_filter=property_filter,
+        )
+        neighborhoods: dict[UUID, Neighborhood] = {}
+        for seed in segments:
+            # The seed is a place in the order, looked up nowhere.
+            key = _order_key(seed)
+            walk = [
+                s
+                for s in self._ordered()
+                if seed.session_id is None or s.session_id == seed.session_id
+            ]
+            backward = [s for s in walk if _order_key(s) < key and passes(s)]
+            forward = [s for s in walk if _order_key(s) > key and passes(s)]
+            neighborhoods[seed.uuid] = Neighborhood(
+                before=backward[-before:] if before > 0 else [],
+                after=forward[:after],
+            )
+        return neighborhoods
 
     @override
     async def get_segment_uuids_by_event_uuids(
