@@ -60,13 +60,6 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
-ID_MAX_BYTES = 255
-"""Bound on `Event.session_id` and `Event.source_id`, in bytes.
-
-The width the store's key columns use; an id is an identifier a caller
-mints, never content.
-"""
-
 
 # The context part kinds rendering prints, in the order they are printed.
 class EventMemoryParams(BaseModel):
@@ -90,9 +83,9 @@ class EventMemoryParams(BaseModel):
             derivatives must be formatted one way; a display format is a
             call argument (default: a full date and no time).
         eviction (EvictionOptions | None):
-            Trim clusters of near-duplicate derivatives at ingest. None
-            keeps every derivative and issues no eviction query
-            (default: None).
+            Evict stored derivatives a new one nearly duplicates, at
+            ingest. None keeps every derivative and issues no eviction
+            query (default: None).
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -124,7 +117,7 @@ class EventMemoryParams(BaseModel):
     )
     eviction: EvictionOptions | None = Field(
         None,
-        description="Trim clusters of near-duplicate derivatives at ingest",
+        description="Evict stored derivatives a new one nearly duplicates, at ingest",
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
@@ -209,21 +202,11 @@ class EventMemory:
         Validate a batch of events before encoding.
 
         Raises ValueError if any event supplies a property key in the
-        reserved namespace or outside the naming contract, or a session
-        or source id longer than `ID_MAX_BYTES`.
+        reserved namespace or outside the naming contract.
         """
         for event in events:
             for key in event.properties:
                 validate_caller_property_key(key)
-            for name, value in (
-                ("session_id", event.session_id),
-                ("source_id", event.source_id),
-            ):
-                if value is not None and len(value.encode()) > ID_MAX_BYTES:
-                    raise ValueError(
-                        f"Event {event.uuid} {name} is {len(value.encode())} bytes; "
-                        f"the maximum is {ID_MAX_BYTES}."
-                    )
 
     async def encode_events(self, events: Iterable[Event]) -> None:
         """
@@ -237,8 +220,7 @@ class EventMemory:
 
         Raises:
             ValueError:
-                If any event supplies a reserved or illegal property key, or
-                a session or source id over `ID_MAX_BYTES`.
+                If any event supplies a reserved or illegal property key.
         """
         async with self._tracker("encode_events"):
             await self._encode_events(events)
@@ -302,11 +284,11 @@ class EventMemory:
         if self._eviction is not None and derivatives:
             batch_predecessors = EventMemory._compute_batch_predecessors(
                 derivative_embeddings,
-                self._eviction.similarity_threshold,
+                self._eviction.cosine_similarity_threshold,
             )
             stored_neighbors = await self._vector_store_collection.query(
                 query_vectors=derivative_embeddings,
-                min_cosine_similarity=self._eviction.similarity_threshold,
+                min_cosine_similarity=self._eviction.cosine_similarity_threshold,
                 limit=self._eviction.search_limit,
             )
             stored_timestamps = await self._stored_derivative_timestamps(
@@ -431,7 +413,7 @@ class EventMemory:
     @staticmethod
     def _compute_batch_predecessors(
         derivative_embeddings: Iterable[Sequence[float]],
-        similarity_threshold: float,
+        cosine_similarity_threshold: float,
     ) -> list[set[int]]:
         """
         Compute batch predecessors for each derivative embedding.
@@ -452,7 +434,7 @@ class EventMemory:
 
         # The diagonal and the upper triangle can never pass the threshold.
         similarity_matrix[np.triu_indices(num_embeddings)] = -np.inf
-        mask = similarity_matrix >= similarity_threshold
+        mask = similarity_matrix >= cosine_similarity_threshold
 
         return [set(np.where(mask[i])[0].tolist()) for i in range(num_embeddings)]
 
@@ -550,8 +532,8 @@ class EventMemory:
         expand_context: int = 0,
         since: datetime.datetime | None = None,
         until: datetime.datetime | None = None,
-        session_ids: Iterable[str | None] | None = None,
-        source_ids: Iterable[str | None] | None = None,
+        session_ids: Iterable[str] | None = None,
+        source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
     ) -> list[SearchHit]:
@@ -577,12 +559,12 @@ class EventMemory:
                 Inclusive lower bound on the event timestamp (default: None).
             until (datetime | None):
                 Exclusive upper bound on the event timestamp (default: None).
-            session_ids (Iterable[str | None] | None):
-                Keep only events of these sessions; `None` among them keeps
-                events in no session (default: None, every session).
-            source_ids (Iterable[str | None] | None):
-                Keep only events of these sources; `None` among them keeps
-                events with no source (default: None, every source).
+            session_ids (Iterable[str] | None):
+                Keep only events of these sessions; an empty list keeps
+                none (default: None, every session).
+            source_ids (Iterable[str] | None):
+                Keep only events of these sources; an empty list keeps
+                none (default: None, every source).
             block_kinds (Iterable[str] | None):
                 Keep only segments whose block is of these kinds (default: None).
             property_filter (FilterExpr | None):
@@ -593,7 +575,7 @@ class EventMemory:
         Returns:
             list[SearchHit]:
                 At most `limit` hits in descending similarity, each with
-                its context window and the index of the matched segment in
+                its segment window and the index of the seed segment in
                 it. Windows of different hits may overlap; each hit is
                 returned whole. Every count is a maximum.
 
@@ -621,8 +603,8 @@ class EventMemory:
         expand_context: int,
         since: datetime.datetime | None,
         until: datetime.datetime | None,
-        session_ids: Iterable[str | None] | None,
-        source_ids: Iterable[str | None] | None,
+        session_ids: Iterable[str] | None,
+        source_ids: Iterable[str] | None,
         block_kinds: Iterable[str] | None,
         property_filter: FilterExpr | None,
     ) -> list[SearchHit]:
@@ -708,7 +690,9 @@ class EventMemory:
                 for index, segment in enumerate(segments)
                 if segment.uuid == seed_uuid
             )
-            hits.append(SearchHit(score=score, seed=seed_index, segments=segments))
+            hits.append(
+                SearchHit(score=score, seed_index=seed_index, segments=segments)
+            )
 
         phase_durations = {
             "embedding": t_embedding - t_start,
@@ -744,7 +728,7 @@ class EventMemory:
         property_filter: FilterExpr | None = None,
     ) -> Neighborhood:
         """
-        Get the neighborhood of an anchor in its session's order.
+        Get the neighborhood of an anchor in the store's order, within its session when it has one.
 
         The anchor is a segment uuid (from a hit) or an event uuid (its
         first segment). The filters apply to the neighbors only, and the
@@ -763,9 +747,9 @@ class EventMemory:
                 Inclusive lower bound on the neighbors' timestamp (default: None).
             until (datetime | None):
                 Exclusive upper bound on the neighbors' timestamp (default: None).
-            source_ids (Iterable[str | None] | None):
-                Keep only neighbors of these sources; `None` among them keeps
-                neighbors with no source (default: None, every source).
+            source_ids (Iterable[str] | None):
+                Keep only neighbors of these sources; an empty list keeps
+                none (default: None, every source).
             block_kinds (Iterable[str] | None):
                 Keep only neighbors whose block is of these kinds (default: None).
             property_filter (FilterExpr | None):
@@ -837,7 +821,7 @@ class EventMemory:
             ],
         )
         reranked = [
-            SearchHit(score=score, seed=hit.seed, segments=hit.segments)
+            SearchHit(score=score, seed_index=hit.seed_index, segments=hit.segments)
             for hit, score in zip(hits, scores, strict=True)
             if min_score is None or score >= min_score
         ]

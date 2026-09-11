@@ -2864,10 +2864,10 @@ async def test_windows_stay_in_the_seeds_session(
 
 
 @pytest.mark.asyncio
-async def test_null_session_is_one_stream(
+async def test_a_seed_with_no_session_walks_every_session(
     partition: SQLAlchemySegmentStorePartition,
 ) -> None:
-    """A null session id equals a null session id and nothing else."""
+    """A seed with no session sees every segment; a seed with one stays in it."""
     n0 = _seg(session_id=None, ts_offset_seconds=0)
     s0 = _seg(session_id="s", ts_offset_seconds=1)
     n1 = _seg(session_id=None, ts_offset_seconds=2)
@@ -2876,8 +2876,8 @@ async def test_null_session_is_one_stream(
         [n0.uuid], after=5
     )
     windows = await partition.get_segment_windows([n1.uuid, s0.uuid], before=5)
-    assert [s.uuid for s in neighborhoods_by_seed[n0.uuid].after] == [n1.uuid]
-    assert [s.uuid for s in windows[n1.uuid]] == [n0.uuid, n1.uuid]
+    assert [s.uuid for s in neighborhoods_by_seed[n0.uuid].after] == [s0.uuid, n1.uuid]
+    assert [s.uuid for s in windows[n1.uuid]] == [n0.uuid, s0.uuid, n1.uuid]
     assert [s.uuid for s in windows[s0.uuid]] == [s0.uuid]
 
 
@@ -2885,7 +2885,7 @@ async def test_null_session_is_one_stream(
 async def test_multiple_seeds_across_sessions(
     partition: SQLAlchemySegmentStorePartition,
 ) -> None:
-    """Seeds of different sessions in one call each get their own session's window."""
+    """Seeds of different sessions in one call each get their own walk."""
     a0 = _seg(session_id="a", ts_offset_seconds=0)
     b0 = _seg(session_id="b", ts_offset_seconds=1)
     a1 = _seg(session_id="a", ts_offset_seconds=2)
@@ -2899,7 +2899,7 @@ async def test_multiple_seeds_across_sessions(
 
     assert [s.uuid for s in result[a0.uuid]] == [a0.uuid, a1.uuid]
     assert [s.uuid for s in result[b0.uuid]] == [b0.uuid, b1.uuid]
-    assert [s.uuid for s in result[n0.uuid]] == [n0.uuid]
+    assert [s.uuid for s in result[n0.uuid]] == [a1.uuid, b1.uuid, n0.uuid]
 
 
 # ===================================================================
@@ -2988,18 +2988,9 @@ async def test_source_ids_select_rows(
     )
     nobody = await partition.get_segment_windows([s0.uuid], after=5, source_ids=[])
 
-    unsourced_around_alice = await partition.get_segment_neighborhoods(
-        [s0.uuid], after=5, source_ids=[None]
-    )
-    alice_or_unsourced = await partition.get_segment_windows(
-        [s0.uuid], after=5, source_ids=["alice", None]
-    )
     assert [s.uuid for s in alice[s0.uuid]] == [s0.uuid, s2.uuid]
     assert [s.uuid for s in bob_around_alice[s0.uuid].after] == [s1.uuid]
     assert nobody == {}
-    # `None` among the ids is IS NULL: it keeps rows with no source.
-    assert [s.uuid for s in unsourced_around_alice[s0.uuid].after] == [s3.uuid]
-    assert [s.uuid for s in alice_or_unsourced[s0.uuid]] == [s0.uuid, s2.uuid, s3.uuid]
     assert alice[s0.uuid][0].source_id == "alice"
 
 

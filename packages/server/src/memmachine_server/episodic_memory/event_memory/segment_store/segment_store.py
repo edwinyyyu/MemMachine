@@ -30,19 +30,11 @@ class SegmentStorePartition(ABC):
     the handle.
 
     Segments within a partition are in one total order,
-    `(timestamp, event_uuid, index, offset)`. Context windows and
-    neighborhoods walk it confined to their seed's session, so they never
-    cross into another conversation interleaved in time. A null session
-    id equals a null session id and nothing else: the segments in no
-    session are one stream, selectable like any other with `None` in a
-    session list.
-
-    The two reads, `get_segment_windows` and `get_segment_neighborhoods`, take
-    the same parameters and differ in what they return. `before` and
-    `after` count segments on each side of a seed; `since` (inclusive)
-    and `until` (exclusive) bound the segment timestamp, so ranges meet
-    without overlap; `source_ids`, `block_kinds` and `property_filter`
-    select rows, and an empty id or kind list admits nothing.
+    `(timestamp, event_uuid, index, offset)`. The two reads around seed
+    segments differ in whether the seed is part of the answer:
+    `get_segment_windows` returns each seed inside its window and filters
+    it like any other row; `get_segment_neighborhoods` returns only the
+    segments around each seed and filters those alone.
     """
 
     @property
@@ -59,9 +51,6 @@ class SegmentStorePartition(ABC):
         """
         Add segments and their associated derivative UUIDs to the partition.
 
-        A segment's `session_id`, `source_id` and its block's type name are
-        stored beside the encoded block, so the store can filter on them.
-
         Args:
             segments_to_derivative_uuids (Mapping[Segment, Iterable[UUID]]):
                 A mapping from each segment to the UUIDs of its derivatives.
@@ -77,35 +66,39 @@ class SegmentStorePartition(ABC):
         after: int = 0,
         since: datetime | None = None,
         until: datetime | None = None,
-        source_ids: Iterable[str | None] | None = None,
+        source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, list[Segment]]:
         """
-        Get a window of segments around each of the seed segments.
+        Get a window of segments around each seed segment, in the store's order.
 
-        The seed is among the results: every filter applies to it as to
-        the window rows, and a seed that fails a filter or is unknown has
-        no entry.
+        A window walks the seed's session: a seed with a session id sees
+        only segments of that session, and a seed with none sees segments
+        of every session. The seed is among the results, so every filter
+        applies to it as to the other rows, and a seed that fails a filter
+        or is unknown has no entry.
 
         Args:
             seed_segment_uuids (Iterable[UUID]):
                 The UUIDs of the seed segments whose windows to retrieve.
             before (int):
-                The maximum number of segments to include before each seed segment (default: 0).
+                The maximum number of segments before each seed (default: 0).
             after (int):
-                The maximum number of segments to include after each seed segment (default: 0).
+                The maximum number of segments after each seed (default: 0).
             since (datetime | None):
                 Inclusive lower bound on the segment timestamp (default: None).
             until (datetime | None):
-                Exclusive upper bound on the segment timestamp (default: None).
-            source_ids (Iterable[str | None] | None):
-                Keep only segments whose source id is one of these; `None`
-                among them keeps segments with no source (default: None).
+                Exclusive upper bound on the segment timestamp, so ranges
+                meet without overlap (default: None).
+            source_ids (Iterable[str] | None):
+                Keep only segments whose source id is one of these; an
+                empty list keeps none (default: None, every source).
             block_kinds (Iterable[str] | None):
-                Keep only segments whose block is of one of these kinds (default: None).
+                Keep only segments whose block is of one of these kinds;
+                an empty list keeps none (default: None, every kind).
             property_filter (FilterExpr | None):
-                An optional filter expression over segment properties (default: None).
+                A filter expression over segment properties (default: None).
 
         Returns:
             dict[UUID, list[Segment]]:
@@ -123,36 +116,39 @@ class SegmentStorePartition(ABC):
         after: int = 0,
         since: datetime | None = None,
         until: datetime | None = None,
-        source_ids: Iterable[str | None] | None = None,
+        source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, Neighborhood]:
         """
         Get the segments around each seed segment, never the seed itself.
 
-        The seed is an address: it is located whether or not it passes
-        any filter, the filters apply to the neighbors only, and it is
-        never in the result. Other segments of the seed's own event are
-        ordinary neighbors.
+        The neighbors are walked as a window is: within the seed's session,
+        or across every session when it has none. The seed is an address:
+        it is located whether or not it passes any filter, the filters
+        apply to the neighbors only, and it is never in the result. Other
+        segments of the seed's own event are ordinary neighbors.
 
         Args:
             seed_segment_uuids (Iterable[UUID]):
                 The UUIDs of the segments to gather neighbors around.
             before (int):
-                The maximum number of segments to include before each seed (default: 0).
+                The maximum number of neighbors before each seed (default: 0).
             after (int):
-                The maximum number of segments to include after each seed (default: 0).
+                The maximum number of neighbors after each seed (default: 0).
             since (datetime | None):
                 Inclusive lower bound on the neighbors' timestamp (default: None).
             until (datetime | None):
-                Exclusive upper bound on the neighbors' timestamp (default: None).
-            source_ids (Iterable[str | None] | None):
-                Keep only neighbors whose source id is one of these; `None`
-                among them keeps neighbors with no source (default: None).
+                Exclusive upper bound on the neighbors' timestamp, so ranges
+                meet without overlap (default: None).
+            source_ids (Iterable[str] | None):
+                Keep only neighbors whose source id is one of these; an
+                empty list keeps none (default: None, every source).
             block_kinds (Iterable[str] | None):
-                Keep only neighbors whose block is of one of these kinds (default: None).
+                Keep only neighbors whose block is of one of these kinds;
+                an empty list keeps none (default: None, every kind).
             property_filter (FilterExpr | None):
-                An optional filter expression over the neighbors' properties
+                A filter expression over the neighbors' properties
                 (default: None).
 
         Returns:

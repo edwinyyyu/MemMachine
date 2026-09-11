@@ -6,8 +6,6 @@ from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
     In,
-    IsNull,
-    Or,
 )
 from memmachine_server.episodic_memory.event_memory.utils import (
     BLOCK_KIND_KEY,
@@ -50,14 +48,4 @@ def test_predicates_name_the_reserved_keys():
 
 def test_empty_ids_admit_nothing_and_none_admits_everything():
     assert system_predicates(session_ids=None) is None
-    assert system_predicates(session_ids=[]) == In(field=EVENT_SESSION_KEY, values=[])
-
-
-def test_none_among_ids_is_null():
-    """A `None` member selects records with no value for the field."""
-    assert system_predicates(session_ids=[None]) == IsNull(field=EVENT_SESSION_KEY)
-    assert system_predicates(source_ids=["alice", None]) == Or(
-        left=In(field=EVENT_SOURCE_KEY, values=["alice"]),
-        right=IsNull(field=EVENT_SOURCE_KEY),
-    )
     assert system_predicates(session_ids=[]) == In(field=EVENT_SESSION_KEY, values=[])

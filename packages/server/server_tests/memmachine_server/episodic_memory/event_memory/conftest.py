@@ -61,7 +61,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
     """Minimal in-memory segment store partition for testing.
 
     Mirrors the SQLAlchemy store's reads: one total order, windows
-    confined to the seed's session, the seed filtered for a window and
+    within the seed's session, or every session when it has none, the seed filtered for a window and
     never returned among the neighbors.
     """
 
@@ -98,7 +98,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         *,
         since: datetime | None,
         until: datetime | None,
-        source_ids: list[str | None] | None,
+        source_ids: list[str] | None,
         block_kinds: list[str] | None,
         normalized_filter: FilterExpr | None,
     ) -> bool:
@@ -122,7 +122,11 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         after: int,
         passes: Any,
     ) -> tuple[list[Segment], list[Segment]]:
-        ordered = [s for s in self._ordered() if s.session_id == seed.session_id]
+        ordered = [
+            s
+            for s in self._ordered()
+            if seed.session_id is None or s.session_id == seed.session_id
+        ]
         position = next(i for i, s in enumerate(ordered) if s.uuid == seed.uuid)
         backward = (
             [s for s in ordered[:position] if passes(s)][-before:] if before > 0 else []
@@ -138,7 +142,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         after: int,
         since: datetime | None,
         until: datetime | None,
-        source_ids: Iterable[str | None] | None,
+        source_ids: Iterable[str] | None,
         block_kinds: Iterable[str] | None,
         property_filter: FilterExpr | None,
         seed_must_pass: bool,
@@ -179,7 +183,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         after: int = 0,
         since: datetime | None = None,
         until: datetime | None = None,
-        source_ids: Iterable[str | None] | None = None,
+        source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, list[Segment]]:
@@ -208,7 +212,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         after: int = 0,
         since: datetime | None = None,
         until: datetime | None = None,
-        source_ids: Iterable[str | None] | None = None,
+        source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, Neighborhood]:
@@ -454,7 +458,7 @@ def event_memory_with_eviction(
             deriver=WholeTextDeriver(),
             embedder=fake_embedder,
             eviction=EvictionOptions(
-                similarity_threshold=0.5, search_limit=100, target_size=5
+                cosine_similarity_threshold=0.5, search_limit=100, target_size=5
             ),
         )
     )
