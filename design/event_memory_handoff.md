@@ -153,10 +153,11 @@ def with_part(context: Context, part: ContextPart) -> Context
 Results:
 
 ```python
-class SearchHit(BaseModel):
-    score: float                    # cosine similarity of the matched derivative
-    seed_index: int                 # index in `segments` of the seed segment
-    segments: list[Segment]         # the segment window, in the store's order
+class QueryHit(BaseModel):
+    score: float                    # relevance of the seed to the query; cosine similarity from `query`
+    seed: Segment                   # the segment the query matched
+    neighborhood: Neighborhood      # the segments around it, in the store's order
+    def window(self) -> list[Segment]   # before, seed, after
 
 class Neighborhood(BaseModel):
     before: list[Segment]           # in order, ending just before the anchor
@@ -168,9 +169,10 @@ class EvictionOptions(BaseModel):
     target_size: int                # how many of a new derivative and those at or above it are kept
 ```
 
-`SearchHit` replaces `ScoredSegmentContext` (`seed_segment_uuid` is
-`segments[seed].uuid`), and `EventMemory.query` returns
-`list[SearchHit]` in place of `QueryResult`.
+`QueryHit` replaces `ScoredSegmentContext` (`seed_segment_uuid` is
+`seed.uuid`), and `EventMemory.query` returns `list[QueryHit]` in place
+of `QueryResult`; a hit has the shape `expand` returns around a seed, so
+walking further from a hit composes with `expand`.
 
 ## Reserved property keys and system fields
 
@@ -256,14 +258,13 @@ out of scope:
 `SegmentStorePartition` (`segment_store/segment_store.py`):
 
 ```python
-async def get_segment_windows(self, seed_segment_uuids: Iterable[UUID], *,
-        before: int = 0, after: int = 0,
+async def get_segments(self, segment_uuids: Iterable[UUID], *,
         since: datetime | None = None, until: datetime | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
-        property_filter: FilterExpr | None = None) -> dict[UUID, list[Segment]]
+        property_filter: FilterExpr | None = None) -> dict[UUID, Segment]
 
-async def get_segment_neighborhoods(self, seed_segment_uuids: Iterable[UUID], *,
+async def get_segment_neighborhoods(self, segments: Iterable[Segment], *,
         before: int = 0, after: int = 0,
         since: datetime | None = None, until: datetime | None = None,
         source_ids: Iterable[str] | None = None,
@@ -273,21 +274,24 @@ async def get_segment_neighborhoods(self, seed_segment_uuids: Iterable[UUID], *,
 async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
 ```
 
-- The two reads take the same parameters and differ only in what they
-  return. `before` and `after` count segments on each side (the
-  shipped `max_backward_segments` and `max_forward_segments`, renamed);
+- The two reads have different jobs, a filtered lookup and a walk.
+  `before` and `after` count neighbors on each side of a given segment
+  (the shipped `max_backward_segments` and `max_forward_segments`,
+  renamed);
   `since` is inclusive and `until` exclusive on the `timestamp` column,
   so ranges meet without overlap (`until`, not `before`, so that
   `before` is a count everywhere); `source_ids`, `block_kinds` and
-  `property_filter` select rows. A window or neighborhood is confined
-  to its seed's session by a null-safe equality on the seed's own
-  session id. The existing lateral and loop plans serve both.
-- `get_segment_windows` is the search window. The seed is a result:
-  every filter applies to the seed and to the window rows, and a seed
-  that fails has no entry.
-- `get_segment_neighborhoods` is expansion. The seed is an address the caller
-  named and holds: it is located whether or not it passes any filter,
-  the filters apply to the neighbors only, and it is never in the
+  `property_filter` select rows. A walk is confined to the given
+  segment's session by an equality on its session id, or spans every
+  session when it has none. The lateral and loop plans serve it, with
+  the seed keys bound as parameters, not read from the table.
+- `get_segments` is the filtered lookup: the segments among the given
+  uuids that the partition holds and that pass every filter; a uuid
+  that fails has no entry. A search fetches its seeds with it.
+- `get_segment_neighborhoods` is the walk. It takes segments the caller
+  holds and looks nothing up: the walk starts from the position and
+  session each carries, the filters apply to the neighbors only, and
+  the given segment is never in the
   result. Each seed maps to two lists in the store's order, `before`
   ending just before the seed and `after` starting just after it, so
   the seed's place is between them and the caller needs nothing but
@@ -323,7 +327,7 @@ class EventMemory:
                     session_ids: Iterable[str] | None,
                     source_ids: Iterable[str] | None,
                     block_kinds: Iterable[str] | None,
-                    property_filter: FilterExpr | None) -> list[SearchHit]
+                    property_filter: FilterExpr | None) -> list[QueryHit]
     async def expand(self, anchor: UUID, *, before: int, after: int,
                      since: datetime | None, until: datetime | None,
                      source_ids: Iterable[str] | None,
@@ -333,9 +337,9 @@ class EventMemory:
     def render(segments: Iterable[Segment], *,
                format_options: FormatOptions) -> str
     @staticmethod
-    async def rerank(query: str, hits: Sequence[SearchHit], *,
+    async def rerank(query: str, hits: Sequence[QueryHit], *,
                      reranker: Reranker,
-                     format_options: FormatOptions) -> list[SearchHit]
+                     format_options: FormatOptions) -> list[QueryHit]
 ```
 
 - `encode_events`: first `forget_events` for the batch's event uuids,
@@ -350,22 +354,24 @@ class EventMemory:
   collection with `limit`, `min_cosine_similarity` and the conjunction
   of `system_predicates(...)` and `property_filter`; resolve seeds
   through the segment store's `get_segment_uuids_by_derivative_uuids`
-  (#1598); `get_segment_windows` with the
-  same system values and `property_filter`, `expand_context` split as
-  today; drop seeds the store did not return; return at most `limit`
-  hits in descending cosine similarity, each with its window and the index
-  of the matched segment. Windows of different hits may overlap and
-  each hit is returned whole. Every count is a maximum.
+  (#1598); `get_segments` with the same system values and
+  `property_filter`, then `get_segment_neighborhoods` from the segments
+  it returned, `expand_context` split as today and no walk when it is
+  zero; drop seeds the store did not return; return at most `limit`
+  hits in descending cosine similarity, each its seed with the
+  neighborhood around it. Neighborhoods of different hits may overlap
+  and each hit is returned whole. Every count is a maximum.
 - `rerank` is the second stage, a static helper so a caller that has a
   reranker (the server's `LongTermMemory`, the claude-memory engine)
-  runs it after `query` over `render(hit.segments)`; it returns every
+  runs it after `query` over `render(hit.window())`; it returns every
   hit rescored in descending score, and the caller cuts and thresholds,
   since the memory makes no use of either bound. It replaces the
   reranking that `_query` did inside. Call sites in the server change
   only as far as calling it; nothing else in the server is in scope.
 - `expand`: an event uuid anchor resolves to its first segment via
-  `get_segment_uuids_by_event_uuids`; then one seed through
-  `get_segment_neighborhoods` with the same filters a search takes.
+  `get_segment_uuids_by_event_uuids`; then `get_segments` for that one
+  uuid, unfiltered, and `get_segment_neighborhoods` from it with the
+  same filters a search takes.
 - `render` replaces `string_from_segment_context` and
   `string_from_segment_contexts` and uses `_immediately_follows` for
   the header decision: a new header when the segment is not the very

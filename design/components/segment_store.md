@@ -50,23 +50,17 @@ class SegmentPartition(ABC):              # data, bound to one key; no method ta
     def key(self) -> UUID
     async def add_segments(self,
                            segments_to_derivative_uuids: Mapping[Segment, Iterable[UUID]]) -> None
-    async def get_segment_windows(self, seed_segment_uuids: Iterable[UUID], *,
-                                   before: int, after: int,
-                                   since: datetime | None, until: datetime | None,
-                                   source_ids: Iterable[str] | None,
-                                   block_kinds: Iterable[str] | None,
-                                   property_filter: FilterExpr | None) -> dict[UUID, list[Segment]]
-    async def get_segment_neighborhoods(self, seed_segment_uuids: Iterable[UUID], *,
+    async def get_segments(self, segment_uuids: Iterable[UUID], *,
+                           since: datetime | None, until: datetime | None,
+                           source_ids: Iterable[str] | None,
+                           block_kinds: Iterable[str] | None,
+                           property_filter: FilterExpr | None) -> dict[UUID, Segment]
+    async def get_segment_neighborhoods(self, segments: Iterable[Segment], *,
                                  before: int, after: int,
                                  since: datetime | None, until: datetime | None,
                                  source_ids: Iterable[str] | None,
                                  block_kinds: Iterable[str] | None,
                                  property_filter: FilterExpr | None) -> dict[UUID, Neighborhood]
-    async def get_segment_uuids_by_event_uuids(self,
-                                               event_uuids: Iterable[UUID]) -> dict[UUID, list[UUID]]
-    async def get_derivative_uuids_by_segment_uuids(self,
-                                                    segment_uuids: Iterable[UUID]) -> dict[UUID, list[UUID]]
-    async def delete_segments(self, segment_uuids: Iterable[UUID]) -> None
     async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
 ```
 
@@ -82,18 +76,22 @@ belong together, so the only timeline around one is everything. A
 session list holds ids only, and a filter that names no session means
 every session.
 
-The two reads take the same parameters and return different things. `before`
-and `after` count segments on each side of a seed; `since` and `until` bound
+The two reads have different jobs. `before`
+and `after` count neighbors on each side of a given segment; `since` and `until` bound
 the timestamp, inclusive and exclusive; `source_ids`, `block_kinds` and
 `property_filter` select rows; every walk stays in its seed's session, or
 spans every session when the seed has none.
-`get_segment_windows` is the search window: the seed is a result, every filter
-applies to it as to the window rows, and a seed that fails has no entry.
-`get_segment_neighborhoods` is expansion: the seed is an address the caller named and
-already holds, the filters apply to the neighbors only, a seed that would fail
-them still anchors, and the seed is never in the result, which is two lists in
-the store's order, `Neighborhood(before, after)`, with the seed's place
-between them, so nothing in it can be mistaken for the seed. The order is total
+`get_segments` is the filtered lookup: the segments among the given uuids
+that the partition holds and that pass every filter; a uuid that fails has
+no entry. `get_segment_neighborhoods` is the walk: it takes segments the
+caller holds, starts from the position and session each carries without
+looking anything up, applies the filters to the neighbors only, and never
+returns the given segment; the result is two lists in the store's order,
+`Neighborhood(before, after)`, with the segment's place between them, so
+nothing in it can be mistaken for it. The rule for a caller: filters select
+what a read returns, and only a segment obtained first can be walked from;
+a search fetches its seeds with the filters, expansion fetches its anchor
+without them. The order is total
 and stable, so a caller walks further by repeating the call from the first of
 `before` or the last of `after`. That is the rule decided for MemMachine #1498:
 during a search a seed that fails the filter is dropped before any window is
@@ -142,20 +140,20 @@ to it.
 - `Segment` gains `event_position`, copied from the `StoredEvent` the
   segmenter was given, and the row the column; the ordering index
   changes accordingly.
-- `get_segment_windows` gains `since` and `until` on the real
-  `timestamp` column, as on the reference branch (commit 27b3279b,
-  where the pair is `since` and `before`), and the reserved timestamp
-  property key goes from the segment side; and `source_ids` and
-  `block_kinds`; `max_backward_segments` and `max_forward_segments`
-  become `before` and `after`, the names expansion uses. It takes no
-  `session_ids`: a window is confined to its seed's session by the
-  store.
+- `get_segment_windows` becomes `get_segments`, a filtered lookup by
+  uuid: `since` and `until` on the real `timestamp` column, as on the
+  reference branch (commit 27b3279b, where the pair is `since` and
+  `before`), and the reserved timestamp property key goes from the
+  segment side; `source_ids` and `block_kinds`; no window counts and no
+  `session_ids`.
 - `segment_store_sg` gains `block_kind`, the kind name of the segment's
   one block as a plain column, since the encoded block cannot be
   filtered (`blocks.md`).
-- `get_segment_neighborhoods` is added for expansion, over the ordering
-  index, with the parameters of `get_segment_windows`, returning the
-  neighbors and never the seed.
+- `get_segment_neighborhoods` is the one walk, over the ordering index,
+  from segments the caller holds (`max_backward_segments` and
+  `max_forward_segments` become `before` and `after`), confined to the
+  given segment's session by the store, or spanning every session when
+  it has none, returning the neighbors and never the segment.
 - `delete_derivatives` is added for eviction (`episodic_memory.md`):
   removes link rows by derivative uuid and leaves the segments.
 - The two ABCs stay two, `SegmentStore` and `SegmentPartition`, with

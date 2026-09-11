@@ -65,7 +65,7 @@ Conventions shared by every specification:
   needs and returns.
 - Types are few and each answers one need: `StoredEvent` (an event
   with its position), `IngestResult` (what ingest returns), `LogEntry`,
-  `SearchHit` (a scored window with its matched segment),
+  `QueryHit` (a matched segment, scored, with its neighborhood),
   `Neighborhood` (the two sides of an expansion, the anchor between
   them and never in them), `EvictionOptions`, `Tenant` with
   `TenantState` and `ComponentState`, `SearchOptions` and

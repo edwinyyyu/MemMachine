@@ -219,7 +219,7 @@ author of #1597 is the natural owner.
   schema; the system predicates are declared by construction.
 - One plan in `query`. The vector store gets the declared part and the
   system predicates, evaluated during the search. When there is an
-  undeclared part, `get_segment_windows` with the same system values
+  undeclared part, `get_segments` with the same system values
   and the undeclared part is the post-filter: a seed whose segment the
   store does not return is dropped. The vector `limit` is widened, up
   to `max_overfetch`, while dropped seeds leave fewer than `limit`

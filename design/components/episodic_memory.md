@@ -45,10 +45,11 @@ change.
 ## API
 
 ```python
-class SearchHit(BaseModel):
-    score: float                    # cosine similarity of the matched derivative
-    seed_index: int                 # index in `segments` of the seed segment
-    segments: list[Segment]         # the segment window, in the store's order
+class QueryHit(BaseModel):
+    score: float                    # relevance of the seed to the query; cosine similarity from `query`
+    seed: Segment                   # the segment the query matched
+    neighborhood: Neighborhood      # the segments around it, in the store's order
+    def window(self) -> list[Segment]   # before, seed, after
 
 class Neighborhood(BaseModel):
     before: list[Segment]           # in order, ending just before the anchor
@@ -64,7 +65,7 @@ class EpisodicMemory:
                     session_ids: Iterable[str] | None,
                     source_ids: Iterable[str] | None,
                     block_kinds: Iterable[str] | None,
-                    filter: FilterExpr | None) -> list[SearchHit]
+                    filter: FilterExpr | None) -> list[QueryHit]
     async def expand(self, anchor: UUID, *,
                      before: int, after: int,
                      since: datetime | None, until: datetime | None,
@@ -93,7 +94,8 @@ class EpisodicMemory:
   `collection.query` with the declared part and the system filters
   (`since`, `until`, `session_ids`, `source_ids`, `block_kinds`) as
   predicates on reserved keys, evaluated during the search. Then
-  `get_segment_windows` for the seeds with `expand_context` split as
+  `get_segments` for the seeds, then `get_segment_neighborhoods` from
+  them with `expand_context` split as
   today (`event_memory.py:450`), the same system filters, and the
   undeclared part as `property_filter`, which bounds the window rows
   and is the post-filter for the seeds: a seed the store does not
@@ -205,7 +207,7 @@ filtered by `block_kinds`; rendering calls `block.render`.
   everywhere); the reserved-key mapping
   `_to_vector_record_property` (`:340`) and the `m.` user prefix go,
   replaced by `filters_and_properties.md`'s reserved namespace; the plan
-  split is added; the result is `list[SearchHit]`.
+  split is added; the result is `list[QueryHit]`.
 - `_SEGMENT_UUID_FIELD_NAME` and `_TIMESTAMP_FIELD_NAME` (`:111`, `:112`)
   become reserved keys built by `reserved_property_key`;
   `expected_vector_store_collection_schema` (`:118`) goes, since the
