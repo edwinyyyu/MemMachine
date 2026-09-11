@@ -82,7 +82,14 @@ logger = logging.getLogger(__name__)
 
 
 class IndexLoadError(RuntimeError):
-    """Raised when a collection's on-disk index file cannot be loaded."""
+    """A collection's saved index could not be loaded.
+
+    The cause is not classified: engines propagate whatever their backend
+    raises, and backends report a truncated index and a permission denial the
+    same way. `__cause__` says which. Rebuilding from content is right for a
+    corrupt index and useless for an unreadable one, so read the cause before
+    choosing a remedy.
+    """
 
     def __init__(self, namespace: str, name: str, path: Path) -> None:
         """Initialize with the collection namespace, name, and index file path."""
@@ -92,6 +99,31 @@ class IndexLoadError(RuntimeError):
         super().__init__(
             f"Index for collection ({namespace!r}, {name!r}) "
             f"at {path} could not be loaded"
+        )
+
+
+class PendingOperationCorruptError(RuntimeError):
+    """A pending operation row cannot be replayed as written.
+
+    An upsert with no vector, a vector that is not whole float32s or not the
+    collection's width, or an operation type this store never writes. This code produces none of those,
+    so something else wrote the database.
+
+    Do not clear the log to get past it: until the next index save it holds
+    the only durable copy of those vectors. Repair the row, or accept the loss
+    deliberately.
+    """
+
+    def __init__(
+        self, namespace: str, name: str, record_row_id: int, reason: str
+    ) -> None:
+        """Initialize with the collection, the row, and what is wrong with it."""
+        self.namespace = namespace
+        self.name = name
+        self.record_row_id = record_row_id
+        super().__init__(
+            f"Pending operation for row {record_row_id} of collection "
+            f"({namespace!r}, {name!r}) cannot be replayed: {reason}"
         )
 
 
@@ -729,16 +761,50 @@ class SQLiteVectorStore(VectorStore):
             namespace, name, config
         )
 
+        # A row that cannot be replayed is damage to a durable record: until
+        # the next index save the log holds the only copy of the vector, so
+        # skipping the row would leave a record no search can find. Refuse,
+        # and leave the log for whoever repairs it.
         upserted_vectors: dict[int, list[float]] = {}
         deleted_row_ids: list[int] = []
         for operation in operations:
-            if operation.operation_type == "upsert" and operation.vector is not None:
-                vector = np.frombuffer(operation.vector, dtype=np.float32)
+            if operation.operation_type == "upsert":
+                if operation.vector is None:
+                    raise PendingOperationCorruptError(
+                        namespace,
+                        name,
+                        operation.record_row_id,
+                        "upsert with no vector",
+                    )
+                try:
+                    vector = np.frombuffer(operation.vector, dtype=np.float32)
+                except ValueError as error:
+                    raise PendingOperationCorruptError(
+                        namespace,
+                        name,
+                        operation.record_row_id,
+                        f"vector cannot be decoded: {error}",
+                    ) from error
+                if vector.size != config.vector_dimensions:
+                    raise PendingOperationCorruptError(
+                        namespace,
+                        name,
+                        operation.record_row_id,
+                        f"holds a {vector.size}-dimension vector in a "
+                        f"{config.vector_dimensions}-dimension collection",
+                    )
                 upserted_vectors[operation.record_row_id] = [
                     float(value) for value in vector.flat
                 ]
             elif operation.operation_type == "delete":
                 deleted_row_ids.append(operation.record_row_id)
+            else:
+                raise PendingOperationCorruptError(
+                    namespace,
+                    name,
+                    operation.record_row_id,
+                    f"unknown operation_type {operation.operation_type!r}",
+                )
 
         all_row_ids = list(upserted_vectors.keys()) + deleted_row_ids
         if not all_row_ids:
@@ -1045,8 +1111,9 @@ class SQLiteVectorStore(VectorStore):
                 ).scalar_one_or_none()
 
             if saved:
-                # The engine just propagates whatever its backend raises.
-                # Wrap any failure as IndexLoadError so callers see one type.
+                # Backends raise unclassified errors, so nothing narrower than
+                # Exception can be caught. `IndexLoadError` says what a caller
+                # can do with the cause.
                 try:
                     async with self._engine_lock_for(namespace, name).write_lock():
                         await search_engine.load(str(index_path))
