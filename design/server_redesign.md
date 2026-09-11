@@ -149,11 +149,11 @@ Named so the redesign can be checked against it.
   optional; events with the same session id form one ordered stream.
   A system field beside `timestamp`, indexed, filtered by
   `session_ids`, and the field the server's own semantics depend on:
-  expansion and context windows walk the one total order confined to
+  expansion and segment windows walk the one total order confined to
   the seed's session, so they never cross from one conversation into
   another that happens to be interleaved in time. Events in no session
-  are one stream, selectable like any other with `None` in
-  `session_ids`. Inside a tenant "session" means exactly a
+  do not belong together: a walk from one reaches every event, and
+  `session_ids` names sessions only. Inside a tenant "session" means exactly a
   conversation, which is why the tenant is not called one.
 - Source id: the stable identifier of the entity responsible for an
   event's content, human, agent, tool or import, a bounded string the
@@ -948,7 +948,7 @@ caller key beginning with the prefix is rejected on the way in.
 Which fields are system fields is decided by one criterion: the server
 gives the field semantics beyond filtering. `timestamp` orders,
 bounds and scores; `session_id` bounds the total order that expansion
-and context windows walk; `source_id` is kept for universality and its
+and segment windows walk; `source_id` is kept for universality and its
 tie to the `author` part; a block's `kind` selects its processing and
 its rendering, and is a field of the segment, never of the event. The
 other candidates fail the criterion, and each maps onto one of these

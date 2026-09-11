@@ -23,7 +23,7 @@ EpisodicMemory(
 )
 
 class EvictionOptions(BaseModel):
-    similarity_threshold: float     # cosine; at or above it, two derivatives are one cluster
+    cosine_similarity_threshold: float  # at or above it, eviction is considered
     search_limit: int               # stored neighbors consulted per new derivative
     target_size: int                # a cluster larger than this is trimmed to it
 ```
@@ -47,8 +47,8 @@ change.
 ```python
 class SearchHit(BaseModel):
     score: float                    # cosine similarity of the matched derivative
-    seed: int                       # index in `segments` of the matched segment
-    segments: list[Segment]         # the context window, in the store's order
+    seed_index: int                 # index in `segments` of the seed segment
+    segments: list[Segment]         # the segment window, in the store's order
 
 class Neighborhood(BaseModel):
     before: list[Segment]           # in order, ending just before the anchor
@@ -139,7 +139,7 @@ What it does, per batch of derivatives in `encode`:
 
 - Batch predecessors: for each derivative, the earlier derivatives in
   the same batch whose cosine similarity to it is at or above
-  `similarity_threshold`. Only earlier ones count, so a batch evicts
+  `cosine_similarity_threshold`. Only earlier ones count, so a batch evicts
   exactly what serial ingestion of the same events would have.
 - Stored neighbors: one vector query per derivative against the
   tenant's collection, all sessions, `search_limit` results at or above

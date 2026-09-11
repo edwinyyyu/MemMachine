@@ -74,18 +74,19 @@ The one total order. Segments within a key are ordered by
 `(timestamp, event_position, index, offset)`: timestamp ties break by
 the event's position in the event store, which is the order the events
 were ingested in, and a segment's place within its event by index and
-offset. Context windows and expansion walk this order confined to the
+offset. Segment windows and expansion walk this order confined to the
 seed's or anchor's session by an equality predicate on its session id,
 so they never cross into another conversation interleaved in time. A
-null session id equals a null session id and nothing else, so the
-segments in no session are one stream, selectable like any other with
-`None` in a session list; a filter that names no session means every
-session.
+seed with no session walks every segment: events in no session do not
+belong together, so the only timeline around one is everything. A
+session list holds ids only, and a filter that names no session means
+every session.
 
 The two reads take the same parameters and return different things. `before`
 and `after` count segments on each side of a seed; `since` and `until` bound
 the timestamp, inclusive and exclusive; `source_ids`, `block_kinds` and
-`property_filter` select rows; every walk stays in its seed's session.
+`property_filter` select rows; every walk stays in its seed's session, or
+spans every session when the seed has none.
 `get_segment_windows` is the search window: the seed is a result, every filter
 applies to it as to the window rows, and a seed that fails has no entry.
 `get_segment_neighborhoods` is expansion: the seed is an address the caller named and
@@ -209,7 +210,7 @@ to it.
 
 Indexes: `segment_store_sg__key_event (key, event_uuid, index, offset)`
 for lookup by event; `segment_store_sg__key_source (key, source_id)` for
-`source_ids` on context windows and expansion; `segment_store_sg__key_order
+`source_ids` on segment windows and expansion; `segment_store_sg__key_order
 (key, session_id, timestamp, event_position, index, offset)` for context
 windows, expansion and `since` and `until`, which is the one total order
 the store exposes; expression indexes on `properties` for the keys a

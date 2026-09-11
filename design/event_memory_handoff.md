@@ -76,11 +76,12 @@ class Event(BaseModel):
 
 - `session_id` and `source_id` are first-class fields of the model,
   not properties, and nullable. Null is encoded as a missing key on the
-  vector record, so every backend's "missing" implements `IS NULL`, and
-  `None` in a typed id list (`session_ids=["a", None]`) selects it. A
-  filter that names no session means every session. Property values
-  are never `None`: absence is the one no-value state. A layer that has either sets it (below, "Translation
-  layers").
+  vector record, so every backend's "missing" implements `IS NULL`. A
+  typed id list (`session_ids`, `source_ids`) holds ids only: events
+  with no session do not belong together, so "no session" is not a
+  value a list can name, and a filter that names no session means every
+  session. Property values are never `None`: absence is the one no-value
+  state. A layer that has either sets it (below, "Translation layers").
 - Both are bounded strings; bound them by the same limit as a property
   string value, and reject longer ones where events are validated
   (`EventMemory._validate_events`).
@@ -146,17 +147,17 @@ Results:
 ```python
 class SearchHit(BaseModel):
     score: float                    # cosine similarity of the matched derivative
-    seed: int                       # index in `segments` of the matched segment
-    segments: list[Segment]         # the context window, in the store's order
+    seed_index: int                 # index in `segments` of the seed segment
+    segments: list[Segment]         # the segment window, in the store's order
 
 class Neighborhood(BaseModel):
     before: list[Segment]           # in order, ending just before the anchor
     after: list[Segment]            # in order, starting just after it
 
 class EvictionOptions(BaseModel):
-    similarity_threshold: float     # cosine; at or above it, one cluster
-    search_limit: int               # stored neighbors consulted per new derivative
-    target_size: int                # a cluster larger than this is trimmed to it
+    cosine_similarity_threshold: float  # at or above it, eviction is considered
+    search_limit: int               # stored derivatives at or above it fetched per new one
+    target_size: int                # how many of a new derivative and those at or above it are kept
 ```
 
 `SearchHit` replaces `ScoredSegmentContext` (`seed_segment_uuid` is
@@ -226,14 +227,17 @@ out of scope:
   `block_kind` from `segment.block.kind` and never accepts it as a
   separate input, so the column cannot disagree with the block.
 - Indexes: keep `(incarnation, event_uuid, index, offset)` for lookup
-  by event; replace the timestamp ordering index with
+  by event and the timestamp ordering index
+  `segment_store_sg__in_ts_ev_ix_of`, which serves the walk from a seed
+  with no session and the timestamp bounds; add
   `segment_store_sg__in_se_ts_ev_ix_of (incarnation, session_id, timestamp,
-  event_uuid, index, offset)`, which serves every walk; add
+  event_uuid, index, offset)` for the walk within a session, and
   `segment_store_sg__in_so (incarnation, source_id)`.
 - The total order is `(timestamp, event_uuid, index, offset)` within
-  an incarnation; a walk is confined to the seed's session by an
-  equality predicate, `IS NULL` for a null session, so the segments in
-  no session are one stream, selectable like any other. The tie-break
+  an incarnation; a walk from a seed with a session is confined to it
+  by an equality predicate, and a walk from a seed with none reaches
+  every segment: events in no session do not belong together, so the
+  only timeline to show around one is everything. The tie-break
   stays `event_uuid` here; the redesign's event position needs the
   event store, which is out of scope.
 - Migration: an Alembic revision adding the three columns and the
@@ -404,8 +408,8 @@ Nothing in the server is rewired here, but the server's translation
 from `Episode` to `Event` (`episodic_memory/long_term_memory/`) should
 set `source_id = producer_id` and leave `session_id` null: the server's
 session is its own grouping, not a conversation, and the API carries no
-conversation id; when it does, it goes here. Until then the events are
-one stream. Add no `Author` part, since the
+conversation id; when it does, it goes here. Until then a walk from
+any event reaches every other. Add no `Author` part, since the
 server holds no readable name. The claude-memory engine already keeps
 a session id and an author in properties; it moves them into the two
 fields and keeps the rest of its properties as they are.
