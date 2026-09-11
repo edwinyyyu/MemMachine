@@ -67,7 +67,7 @@ Worktrees on this machine:
 class Event(BaseModel):
     uuid: UUID
     timestamp: datetime            # aware; keeps the offset it was given
-    session_id: str | None = None  # None = null: in no session
+    session_id: str                # the stream the event belongs to; required, non-empty
     source_id: str | None = None   # the responsible entity's id; None = null
     context: Context               # a mapping of parts; {} = no context
     blocks: list[Block]            # one or more, each of a registered kind
@@ -75,13 +75,17 @@ class Event(BaseModel):
 ```
 
 - `session_id` and `source_id` are first-class fields of the model,
-  not properties, and nullable. Null is encoded as a missing key on the
-  vector record, so every backend's "missing" implements `IS NULL`. A
-  typed id list (`session_ids`, `source_ids`) holds ids only: events
-  with no session do not belong together, so "no session" is not a
-  value a list can name, and a filter that names no session means every
+  not properties. The session is required: it is the unit the order is
+  partitioned into, every event belongs to one stream, and a walk never
+  leaves it. The source is nullable, and its null is encoded as a
+  missing key on the vector record, so every backend's "missing"
+  implements `IS NULL`. A typed id list (`session_ids`, `source_ids`)
+  holds ids only, and a filter that names no session means every
   session. Property values are never `None`: absence is the one no-value
-  state. A layer that has either sets it (below, "Translation layers").
+  state. Session ids beginning with `memmachine_` are reserved for the
+  server; `memmachine_default` is the stream of events the API ingests
+  without a conversation id, a stop-gap until the API requires one
+  (below, "Translation layers").
 - Stored events are immutable (`server_redesign.md`, "Propagation"):
   `encode_events` replaces an event's earlier encoding wholesale under
   new segment and derivative uuids, `forget_events` removes one, and no
@@ -237,17 +241,13 @@ out of scope:
   `block_kind` from `segment.block.kind` and never accepts it as a
   separate input, so the column cannot disagree with the block.
 - Indexes: keep `(incarnation, event_uuid, index, offset)` for lookup
-  by event and the timestamp ordering index
-  `segment_store_sg__in_ts_ev_ix_of`, which serves the walk from a seed
-  with no session and the timestamp bounds; add
+  by event; replace the timestamp ordering index with
   `segment_store_sg__in_se_ts_ev_ix_of (incarnation, session_id, timestamp,
-  event_uuid, index, offset)` for the walk within a session, and
-  `segment_store_sg__in_so (incarnation, source_id)`.
+  event_uuid, index, offset)`, which serves every walk since every walk
+  pins a session; add `segment_store_sg__in_so (incarnation, source_id)`.
 - The total order is `(timestamp, event_uuid, index, offset)` within
-  an incarnation; a walk from a seed with a session is confined to it
-  by an equality predicate, and a walk from a seed with none reaches
-  every segment: events in no session do not belong together, so the
-  only timeline to show around one is everything. The tie-break
+  an incarnation; a walk is confined to the seed's session by an
+  equality predicate on the session id. The tie-break
   stays `event_uuid` here; the redesign's event position needs the
   event store, which is out of scope.
 - Migration: an Alembic revision adding the three columns and the

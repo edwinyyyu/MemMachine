@@ -145,15 +145,18 @@ Named so the redesign can be checked against it.
   expansion, and of nothing else. Specified in
   `design/components/blocks.md`.
 - Session id: the stream an event belongs to, a conversation or an
-  interaction the application delimits, a bounded string it owns,
-  optional; events with the same session id form one ordered stream.
+  interaction the application delimits, a bounded non-empty string it
+  owns, required; events with the same session id form one ordered
+  stream. Ids beginning with `memmachine_` are reserved for the server:
+  `memmachine_default` is the stream of events the legacy API ingests
+  without a conversation id, a stop-gap, since the new API requires a
+  session.
   A system field beside `timestamp`, indexed, filtered by
   `session_ids`, and the field the server's own semantics depend on:
   expansion and segment windows walk the one total order confined to
   the seed's session, so they never cross from one conversation into
-  another that happens to be interleaved in time. Events in no session
-  do not belong together: a walk from one reaches every event, and
-  `session_ids` names sessions only. Inside a tenant "session" means exactly a
+  another that happens to be interleaved in time. `session_ids` names
+  sessions only. Inside a tenant "session" means exactly a
   conversation, which is why the tenant is not called one.
 - Source id: the stable identifier of the entity responsible for an
   event's content, human, agent, tool or import, a bounded string the

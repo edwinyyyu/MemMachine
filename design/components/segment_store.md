@@ -72,17 +72,14 @@ the event's position in the event store, which is the order the events
 were ingested in, and a segment's place within its event by index and
 offset. Segment windows and expansion walk this order confined to the
 seed's or anchor's session by an equality predicate on its session id,
-so they never cross into another conversation interleaved in time. A
-seed with no session walks every segment: events in no session do not
-belong together, so the only timeline around one is everything. A
-session list holds ids only, and a filter that names no session means
-every session.
+so they never cross into another conversation interleaved in time.
+Every segment has a session, so every walk pins one. A session list
+holds ids only, and a filter that names no session means every session.
 
 The two reads have different jobs. `before`
 and `after` count neighbors on each side of a given segment; `since` and `until` bound
 the timestamp, inclusive and exclusive; `source_ids`, `block_kinds` and
-`property_filter` select rows; every walk stays in its seed's session, or
-spans every session when the seed has none.
+`property_filter` select rows; every walk stays in its seed's session.
 `get_segments` is the filtered lookup: the segments among the given uuids
 that the partition holds and that pass every filter; a uuid that fails has
 no entry. `get_segment_neighborhoods` is the walk: it takes segments the
@@ -155,8 +152,9 @@ to it.
 - `get_segment_neighborhoods` is the one walk, over the ordering index,
   from segments the caller holds (`max_backward_segments` and
   `max_forward_segments` become `before` and `after`), confined to the
-  given segment's session by the store, or spanning every session when
-  it has none, returning the neighbors and never the segment.
+  given segment's session by the store, returning the neighbors and
+  never the segment. It takes no `session_ids`: confinement decides the
+  session, and the lookup decides which segments are visible.
 - `delete_derivatives` is added for eviction (`episodic_memory.md`):
   removes link rows by derivative uuid and leaves the segments.
 - The two ABCs stay two, `SegmentStore` and `SegmentPartition`, with

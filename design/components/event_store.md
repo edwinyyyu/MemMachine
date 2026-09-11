@@ -14,8 +14,8 @@ blocks and context), `purge_batch` (rows per `purge` call).
 ## Types
 
 `Event` from `event_memory/data_types.py` (`Event.uuid: UUID`), with
-`Event.session_id: str | None` and `Event.source_id: str | None` added
-beside `timestamp`, each any string of at most
+`Event.session_id: str` (required) and `Event.source_id: str | None` added
+beside `timestamp`, each a string of at most
 `properties.max_string_bytes`; `Event.blocks`, a list of the registered
 block kinds (see `blocks.md`); and `Event.context: Context`, a mapping
 from part kind to one registered part (see `context.md`), never `None`,

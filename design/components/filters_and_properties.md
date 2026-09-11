@@ -150,8 +150,8 @@ FilterExpr` is the only conversion, and it validates, never parses.
 ## Absence and negation
 
 A property has a value or is absent; a property value is never `None`,
-so absence is the one no-value state, and a system field's `None` is
-the same state under a fixed name. Every backend encodes it the same
+so absence is the one no-value state, and a nullable system field's
+`None` (the source id) is the same state under a fixed name. Every backend encodes it the same
 way, a missing key, which is the one encoding all of them accept.
 
 The grammar is two-valued. A leaf predicate on a field with no value is
