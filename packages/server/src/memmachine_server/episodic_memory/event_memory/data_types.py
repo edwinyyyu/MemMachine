@@ -17,7 +17,6 @@ from pydantic import (
     TypeAdapter,
     field_serializer,
     field_validator,
-    model_validator,
 )
 
 from memmachine_server.common.data_types import PropertyValue
@@ -265,27 +264,6 @@ class FormatOptions(BaseModel):
 # Results and options.
 
 
-class SearchHit(BaseModel):
-    """A segment found by search, scored, with the segment window around it."""
-
-    score: float = Field(
-        description="Relevance of the seed segment to the query; higher is better"
-    )
-    seed_index: int = Field(ge=0, description="Index of the seed segment in `segments`")
-    segments: list[Segment] = Field(
-        min_length=1,
-        description="The segment window around the seed, in the store's order",
-    )
-
-    @model_validator(mode="after")
-    def _seed_is_in_the_window(self) -> "SearchHit":
-        if self.seed_index >= len(self.segments):
-            raise ValueError(
-                f"seed_index {self.seed_index} is outside the {len(self.segments)} segments"
-            )
-        return self
-
-
 class Neighborhood(BaseModel):
     """The segments around an anchor, never the anchor itself: its open neighborhood."""
 
@@ -295,6 +273,22 @@ class Neighborhood(BaseModel):
     after: list[Segment] = Field(
         description="In the store's order, starting just after the anchor"
     )
+
+
+class QueryHit(BaseModel):
+    """A segment a query matched, scored, with the neighborhood around it."""
+
+    score: float = Field(
+        description="Relevance of the seed segment to the query; higher is better"
+    )
+    seed: Segment = Field(description="The segment the query matched")
+    neighborhood: Neighborhood = Field(
+        description="The segments around the seed, in the store's order"
+    )
+
+    def window(self) -> list[Segment]:
+        """The seed and its neighbors, in the store's order."""
+        return [*self.neighborhood.before, self.seed, *self.neighborhood.after]
 
 
 class EvictionOptions(BaseModel):

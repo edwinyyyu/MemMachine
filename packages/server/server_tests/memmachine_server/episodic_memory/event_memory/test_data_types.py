@@ -10,8 +10,9 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     ID_MAX_BYTES,
     Derivative,
     Event,
+    Neighborhood,
     ProducerContext,
-    SearchHit,
+    QueryHit,
     Segment,
     TextBlock,
     decode_block,
@@ -146,20 +147,24 @@ class TestBounds:
                 }
             )
 
-    def test_seed_index_must_be_inside_the_window(self):
-        segment = Segment(
-            uuid=uuid4(),
-            event_uuid=uuid4(),
-            index=0,
-            offset=0,
-            timestamp=datetime(2026, 1, 15, 10, 30, tzinfo=UTC),
-            block=TextBlock(text="hello"),
+    def test_query_hit_window_is_the_seed_among_its_neighbors(self):
+        def segment(seconds: int) -> Segment:
+            return Segment(
+                uuid=uuid4(),
+                event_uuid=uuid4(),
+                index=0,
+                offset=0,
+                timestamp=datetime(2026, 1, 15, 10, 30, seconds, tzinfo=UTC),
+                block=TextBlock(text="hello"),
+            )
+
+        before, seed, after = segment(0), segment(1), segment(2)
+        hit = QueryHit(
+            score=1.0,
+            seed=seed,
+            neighborhood=Neighborhood(before=[before], after=[after]),
         )
-        assert SearchHit(score=1.0, seed_index=0, segments=[segment]).seed_index == 0
-        with pytest.raises(ValidationError, match="seed_index"):
-            SearchHit(score=1.0, seed_index=1, segments=[segment])
-        with pytest.raises(ValidationError, match="segments"):
-            SearchHit(score=1.0, seed_index=0, segments=[])
+        assert hit.window() == [before, seed, after]
 
 
 class TestEventRoundTrip:
