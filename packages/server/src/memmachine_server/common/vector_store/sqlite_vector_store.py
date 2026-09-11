@@ -34,9 +34,10 @@ to re-ingest; nothing here detects the gap for them.
 """
 
 import asyncio
+import contextlib
 import logging
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import override
@@ -67,7 +68,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.engine.interfaces import DBAPIConnection
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -250,12 +251,63 @@ class _PendingOperationRow(BaseSQLiteVectorStore):
     applied: MappedColumn[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
+_BEGIN_IMMEDIATE_OPTION = "memmachine_sqlite_begin_immediate"
+"""Execution option asking the begin hook for `BEGIN IMMEDIATE`."""
+
+
+def _disable_implicit_begin(
+    dbapi_connection: DBAPIConnection, _record: ConnectionPoolEntry
+) -> None:
+    dbapi_connection.isolation_level = None
+
+
+def _begin(connection: Connection) -> None:
+    if connection.get_execution_options().get(_BEGIN_IMMEDIATE_OPTION):
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+    else:
+        connection.exec_driver_sql("BEGIN")
+
+
 def _enable_sqlite_foreign_keys(
     dbapi_connection: DBAPIConnection, _record: ConnectionPoolEntry
 ) -> None:
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.close()
+
+
+def _register_sqlite_begin(engine: AsyncEngine) -> None:
+    """Emit `BEGIN` explicitly, and `BEGIN IMMEDIATE` where asked for.
+
+    With the DBAPI connection in autocommit, pysqlite emits no `BEGIN` of its
+    own, so the mode is chosen here, per transaction. Reads keep the deferred
+    `BEGIN`. Stores sharing an engine register once: a second `begin`
+    listener would issue a second `BEGIN`.
+    """
+    if event.contains(engine.sync_engine, "begin", _begin):
+        return
+    event.listen(engine.sync_engine, "connect", _disable_implicit_begin)
+    event.listen(engine.sync_engine, "begin", _begin)
+
+
+@contextlib.asynccontextmanager
+async def _write_transaction(
+    create_session: async_sessionmaker[AsyncSession],
+) -> AsyncIterator[AsyncSession]:
+    """A transaction holding SQLite's write lock from `BEGIN`.
+
+    A deferred `BEGIN` would take the lock at the first write, letting another
+    writer commit between an earlier read and it. Taking it at `BEGIN` makes
+    read-then-write atomic.
+    """
+    async with create_session() as session:
+        # Set before the transaction begins, where the begin hook reads it.
+        await session.connection(execution_options={_BEGIN_IMMEDIATE_OPTION: True})
+        yield session
+        # A body that raises is rolled back when the session closes. A rollback
+        # issued here could fail and mask the body's error; one issued by the
+        # pool is logged and invalidates the connection instead.
+        await session.commit()
 
 
 async def _save_partition_index(
@@ -280,7 +332,7 @@ async def _save_partition_index(
         await search_engine.save(path)
 
     # Delete applied pending operations and flip index_saved to True.
-    async with create_session() as session, session.begin():
+    async with _write_transaction(create_session) as session:
         await session.execute(
             delete(_PendingOperationRow).where(
                 _PendingOperationRow.incarnation == incarnation,
@@ -411,8 +463,10 @@ class SQLiteVectorStorePartition(VectorStorePartition):
     async def _ensure_live(self, session: AsyncSession) -> None:
         """Raise if this handle's incarnation is no longer registered.
 
-        Writes call this inside their transaction. Reads call it when their
-        data statement returned no rows: it tells an empty partition from a
+        Writes call this inside their write transaction, which holds
+        SQLite's write lock from `BEGIN IMMEDIATE`, so a deletion cannot
+        land between the check and the write. Reads call it when their data
+        statement returned no rows: it tells an empty partition from a
         stale handle.
         """
         row = (await session.execute(self._registry_row_query())).scalar_one_or_none()
@@ -457,7 +511,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
             return
 
         async with self._write_lock:
-            async with self._create_session() as session, session.begin():
+            async with _write_transaction(self._create_session) as session:
                 await self._ensure_live(session)
                 upsert_records = (
                     sqlite_insert(self._records_table)
@@ -534,7 +588,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
                 await self._search_engine.remove(engine_vectors.keys())
                 await self._search_engine.add(engine_vectors)
 
-            async with self._create_session() as session, session.begin():
+            async with _write_transaction(self._create_session) as session:
                 await session.execute(
                     update(_PendingOperationRow)
                     .where(
@@ -665,7 +719,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         record_uuids = list(uuid_list)
 
         async with self._write_lock:
-            async with self._create_session() as session, session.begin():
+            async with _write_transaction(self._create_session) as session:
                 await self._ensure_live(session)
                 rows = (
                     await session.execute(
@@ -708,7 +762,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
 
             async with self._engine_lock.write_lock():
                 await self._search_engine.remove(record_row_ids)
-            async with self._create_session() as session, session.begin():
+            async with _write_transaction(self._create_session) as session:
                 await session.execute(
                     update(_PendingOperationRow)
                     .where(
@@ -863,6 +917,7 @@ class SQLiteVectorStore(VectorStore):
             str(self._sqlalchemy_engine.url).replace("aiosqlite", "pysqlite")
         )
 
+        _register_sqlite_begin(self._sqlalchemy_engine)
         for sync_engine in (
             self._sqlalchemy_engine.sync_engine,
             self._sync_sqlalchemy_engine,
@@ -1016,7 +1071,7 @@ class SQLiteVectorStore(VectorStore):
             if upserted_vectors:
                 await search_engine.add(upserted_vectors)
 
-        async with self._create_session() as session, session.begin():
+        async with _write_transaction(self._create_session) as session:
             await session.execute(
                 update(_PendingOperationRow)
                 .where(
@@ -1074,7 +1129,9 @@ class SQLiteVectorStore(VectorStore):
         The registry's unique constraint rejects an incarnation colliding
         with a live one; the in-transaction queue check rejects one whose
         rows still await purge, so rows can never be adopted by, or
-        reclaimed out from under, a new partition.
+        reclaimed out from under, a new partition. The write transaction
+        holds SQLite's write lock from BEGIN, so the check is against the
+        latest committed state.
 
         Raises:
             VectorStorePartitionAlreadyExistsError:
@@ -1084,7 +1141,7 @@ class SQLiteVectorStore(VectorStore):
                 fresh incarnation.
         """
         try:
-            async with self._create_session() as session, session.begin():
+            async with _write_transaction(self._create_session) as session:
                 await session.execute(
                     insert(_PartitionRow).values(
                         collection=self._collection,
@@ -1164,13 +1221,14 @@ class SQLiteVectorStore(VectorStore):
             raise ValueError(f"Invalid partition key {partition_key!r}")
 
         # O(1) regardless of partition size: the incarnation goes onto the
-        # purge queue and the registry row is deleted. Rows, log and engine
-        # become unreachable immediately: every operation resolves the
-        # registry first. The partition's in-process write lock is held too,
-        # so a write of this process that has committed but not yet applied
-        # to the engine finishes its bookkeeping before the engine is
-        # dropped; this store gives one process the partition, so no other
-        # writer exists.
+        # purge queue and the registry row is deleted, under SQLite's write
+        # lock from BEGIN, so a writer's fence and this deletion never
+        # interleave. Rows, log and engine become unreachable immediately:
+        # every operation resolves the registry first. The partition's
+        # in-process write lock is held too, so a write of this process
+        # that has committed but not yet applied to the engine finishes its
+        # bookkeeping before the engine is dropped; this store gives one
+        # process the partition, so no other writer exists.
         while True:
             async with self._create_session() as session:
                 row = await self._registry_row(session, partition_key)
@@ -1178,7 +1236,7 @@ class SQLiteVectorStore(VectorStore):
                 return
             incarnation = row.incarnation
             async with self._write_lock_for(incarnation):
-                async with self._create_session() as session, session.begin():
+                async with _write_transaction(self._create_session) as session:
                     current = await self._registry_row(session, partition_key)
                     if current is None:
                         return
@@ -1208,15 +1266,15 @@ class SQLiteVectorStore(VectorStore):
         # Reclaim dead incarnations of this collection oldest-first, within
         # the per-call bounds, in one write transaction: a raise rolls the
         # whole call back, which is what makes it safe to repeat. SQLite has
-        # one writer, so concurrent purgers serialize; an entry is retired
-        # only when the retirer's own DELETE found fewer rows than its
-        # budget, so a doubly-claimed entry costs empty round trips, never
-        # duplicated or missed reclamation. The index file goes before the
-        # entry: a retired entry never leaves a file behind, and a file
+        # one writer, so concurrent purgers serialize at BEGIN; an entry is
+        # retired only when the retirer's own DELETE found fewer rows than
+        # its budget, so a doubly-claimed entry costs empty round trips,
+        # never duplicated or missed reclamation. The index file goes before
+        # the entry: a retired entry never leaves a file behind, and a file
         # missing on a repeated call is the expected state.
         remaining = self._purge_max_records
         entries = 0
-        async with self._create_session() as session, session.begin():
+        async with _write_transaction(self._create_session) as session:
             while True:
                 incarnation = (
                     await session.execute(
