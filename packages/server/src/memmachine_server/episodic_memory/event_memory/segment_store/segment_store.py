@@ -29,9 +29,9 @@ class SegmentStorePartition(ABC):
     A call with empty input may do no work and return without checking
     the handle.
 
-    Rows are immutable: `add_segments` inserts, a segment uuid already
+    Segments are immutable: `add_segments` adds, a segment uuid already
     stored is rejected rather than replaced, and there is no operation
-    that edits a row.
+    that edits a stored segment.
 
     Segments within a partition are in one total order,
     `(timestamp, event_uuid, index, offset)`. `get_segments` looks
@@ -115,10 +115,10 @@ class SegmentStorePartition(ABC):
         """
         Get the segments around each given segment, never the segment itself.
 
-        A given segment is a place in the order, not a row: the walk starts
-        from the position and the session it carries and looks nothing up,
-        so a segment the caller holds can be walked from even after its
-        row is gone. The walk stays within the segment's session, or spans
+        A given segment is a place in the order, not a lookup: the walk
+        starts from the position and the session it carries and reads
+        nothing about it, so a segment the caller holds can be walked from
+        even after it is gone. The walk stays within the segment's session, or spans
         every session when it has none, and the filters select the
         neighbors. Other segments of the same event are ordinary neighbors.
 

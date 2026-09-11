@@ -2894,7 +2894,7 @@ async def test_windows_stay_in_the_seeds_session(
 async def test_add_segments_rejects_a_stored_uuid(
     partition: SQLAlchemySegmentStorePartition,
 ) -> None:
-    """Rows are immutable: a second add of the same uuid is rejected, not replaced."""
+    """Segments are immutable: a second add of the same uuid is rejected, not replaced."""
     s0 = _seg(text="first")
     await partition.add_segments(_links(s0))
     again = s0.model_copy(update={"block": TextBlock(text="second")})
