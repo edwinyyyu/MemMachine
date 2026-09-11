@@ -676,6 +676,7 @@ class EventMemory:
             seed_cosine_similarities.keys(),
             since=since,
             until=until,
+            session_ids=session_ids,
             source_ids=source_ids,
             block_kinds=block_kinds,
             property_filter=property_filter,
@@ -691,6 +692,7 @@ class EventMemory:
                     after=after,
                     since=since,
                     until=until,
+                    session_ids=session_ids,
                     source_ids=source_ids,
                     block_kinds=block_kinds,
                     property_filter=property_filter,
@@ -738,6 +740,7 @@ class EventMemory:
         after: int = 0,
         since: datetime.datetime | None = None,
         until: datetime.datetime | None = None,
+        session_ids: Iterable[str] | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
@@ -762,6 +765,9 @@ class EventMemory:
                 Inclusive lower bound on the neighbors' timestamp (default: None).
             until (datetime | None):
                 Exclusive upper bound on the neighbors' timestamp (default: None).
+            session_ids (Iterable[str] | None):
+                Keep only neighbors of these sessions; an empty list keeps
+                none (default: None, every session the walk reaches).
             source_ids (Iterable[str] | None):
                 Keep only neighbors of these sources; an empty list keeps
                 none (default: None, every source).
@@ -801,6 +807,7 @@ class EventMemory:
                     after=after,
                     since=since,
                     until=until,
+                    session_ids=session_ids,
                     source_ids=source_ids,
                     block_kinds=block_kinds,
                     property_filter=property_filter,

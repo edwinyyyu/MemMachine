@@ -564,6 +564,26 @@ class TestExpand:
         assert neighborhood.before == []
         assert [s.event_uuid for s in neighborhood.after] == [green.uuid]
 
+    async def test_expand_session_ids_select_neighbors(
+        self,
+        event_memory: EventMemory,
+        fake_segment_store_partition: InMemorySegmentStorePartition,
+    ):
+        a0 = _make_event("a0", timestamp=_ts(0), session_id="a")
+        b0 = _make_event("b0", timestamp=_ts(1), session_id="b")
+        n0 = _make_event("n0", timestamp=_ts(2))
+        a1 = _make_event("a1", timestamp=_ts(3), session_id="a")
+        await event_memory.encode_events([a0, b0, n0, a1])
+        [anchor] = fake_segment_store_partition.event_to_segments[n0.uuid]
+
+        # An anchor with no session walks every session; the filter selects among them.
+        neighborhood = await event_memory.expand(
+            anchor, before=5, after=5, session_ids=["a"]
+        )
+
+        assert [s.event_uuid for s in neighborhood.before] == [a0.uuid]
+        assert [s.event_uuid for s in neighborhood.after] == [a1.uuid]
+
     async def test_expand_walks_further_from_an_edge(
         self,
         event_memory: EventMemory,
