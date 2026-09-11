@@ -85,7 +85,6 @@ from memmachine_server.common.properties_json import (
 from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Neighborhood,
-    NullContext,
     Segment,
     decode_block,
     decode_context,
@@ -421,7 +420,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 "context": self._payload_codec.encode(
                     json.dumps(encode_context(segment.context)).encode("utf-8")
                 ),
-                "block_kind": segment.block.block_type,
+                "block_kind": segment.block.kind,
                 "block": self._payload_codec.encode(
                     json.dumps(encode_block(segment.block)).encode("utf-8")
                 ),
@@ -1045,8 +1044,6 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     def _segment_from_segment_row(self, row: SegmentRow) -> Segment:
         """Convert a SegmentRow into a Segment."""
         context = decode_context(json.loads(self._payload_codec.decode(row.context)))
-        if context is None:
-            context = NullContext()
         block = decode_block(json.loads(self._payload_codec.decode(row.block)))
         properties = decode_properties(row.properties)
         original_timezone = timezone(timedelta(seconds=row.timestamp_timezone_offset))

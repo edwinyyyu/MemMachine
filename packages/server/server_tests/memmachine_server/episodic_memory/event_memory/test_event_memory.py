@@ -4,7 +4,7 @@ import datetime
 import json
 import math
 from datetime import UTC
-from typing import Any
+from typing import Any, ClassVar, override
 from uuid import UUID, uuid4
 
 import pytest
@@ -23,16 +23,19 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStoreCollectionConfig,
 )
 from memmachine_server.episodic_memory.event_memory.data_types import (
+    Author,
     Context,
+    ContextPart,
+    Derivative,
     Event,
     EvictionOptions,
     FormatOptions,
-    NullContext,
-    ProducerContext,
     QueryHit,
     Segment,
     TextBlock,
+    with_part,
 )
+from memmachine_server.episodic_memory.event_memory.deriver import Deriver
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
     WholeTextDeriver,
@@ -41,6 +44,7 @@ from memmachine_server.episodic_memory.event_memory.event_memory import (
     EventMemory,
     EventMemoryParams,
 )
+from memmachine_server.episodic_memory.event_memory.segmenter import Segmenter
 from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter import (
     TextSegmenter,
 )
@@ -79,7 +83,7 @@ def _record_properties(record: Record) -> dict[str, PropertyValue]:
 
 
 def _author(name: str) -> Context:
-    return ProducerContext(producer=name)
+    return with_part({}, Author(name=name))
 
 
 def _make_event(
@@ -96,7 +100,7 @@ def _make_event(
         timestamp=timestamp,
         session_id=session_id,
         source_id=source_id,
-        context=context if context is not None else NullContext(),
+        context=context if context is not None else {},
         blocks=[TextBlock(text=text)],
         properties=properties or {},
     )
@@ -127,8 +131,8 @@ def _build(
     params: dict[str, Any] = {
         "segment_store_partition": partition or InMemorySegmentStorePartition(),
         "vector_store_collection": collection or make_collection(embedder),
-        "segmenter": TextSegmenter(),
-        "deriver": WholeTextDeriver(),
+        "segmenter": Segmenter([TextSegmenter()]),
+        "deriver": Deriver([WholeTextDeriver()]),
         "embedder": embedder,
         "eviction": eviction,
     }
@@ -305,9 +309,9 @@ class TestEncodeEvents:
                 EventMemoryParams(
                     vector_store_collection=collection,
                     segment_store_partition=InMemorySegmentStorePartition(),
-                    segmenter=TextSegmenter(),
+                    segmenter=Segmenter([TextSegmenter()]),
                     embedder=fake_embedder,
-                    deriver=WholeTextDeriver(),
+                    deriver=Deriver([WholeTextDeriver()]),
                 )
             )
 
@@ -538,7 +542,7 @@ class TestExpand:
 
         assert [s.event_uuid for s in neighborhood.before] == [events[0].uuid]
         # The anchor is the event's first segment; its second block is a neighbor.
-        assert [s.block.text for s in neighborhood.after] == [
+        assert [s.block.render(_SHORT_TIME) for s in neighborhood.after] == [
             "second block",
             "event 2",
         ]
@@ -669,7 +673,7 @@ def _make_segment(
         offset=offset,
         timestamp=timestamp,
         block=TextBlock(text=text),
-        context=context if context is not None else NullContext(),
+        context=context if context is not None else {},
     )
 
 
@@ -680,7 +684,7 @@ class TestRender:
         assert json.dumps("hello world") in result
         assert "[" in result  # Timestamp bracket.
 
-    def test_producer_renders_its_name(self):
+    def test_author_renders_its_name(self):
         segment = _make_segment(text="hi", context=_author("Alice"))
         result = EventMemory.render([segment], format_options=_SHORT_TIME)
         assert "Alice:" in result
@@ -800,7 +804,7 @@ class TestRoundTrips:
         await event_memory.encode_events([event])
 
         [hit] = await event_memory.query("test")
-        assert hit.seed.context == ProducerContext(producer="Alice")
+        assert hit.seed.context.get("author") == Author(name="Alice")
 
     async def test_forget_then_query_excludes_forgotten(
         self, event_memory: EventMemory
@@ -1010,8 +1014,8 @@ class TestQueryDeduplication:
             EventMemoryParams(
                 segment_store_partition=InMemorySegmentStorePartition(),
                 vector_store_collection=make_collection(embedder),
-                segmenter=TextSegmenter(),
-                deriver=SentenceTextDeriver(),
+                segmenter=Segmenter([TextSegmenter()]),
+                deriver=Deriver([SentenceTextDeriver()]),
                 embedder=embedder,
             )
         )
@@ -1243,3 +1247,100 @@ class TestEviction:
 
         assert len(_linked(fake_segment_store_partition)) == 5
         assert len(fake_segment_store_partition.segments) == 20
+
+
+class _Mood(ContextPart):
+    """A part kind a library user would add; contributes its word."""
+
+    kind: ClassVar[str] = "mood"
+    word: str
+
+    @override
+    def render(self, options: FormatOptions) -> str | None:
+        return self.word
+
+
+class TestComposition:
+    """Timestamp, then the parts `format_options.parts` lists in that order,
+    then the content; parts carry no order of their own."""
+
+    def _segment(self, context) -> Segment:
+        return Segment(
+            session_id="s",
+            source_id="src",
+            uuid=uuid4(),
+            event_uuid=uuid4(),
+            index=0,
+            offset=0,
+            timestamp=datetime.datetime(2026, 1, 15, 10, 30, tzinfo=UTC),
+            context=context,
+            block=TextBlock(text="hi"),
+        )
+
+    def test_default_order_is_timestamp_then_author_then_content(self):
+        segment = self._segment({"author": Author(name="Alice")})
+        rendered = EventMemory.render([segment], format_options=_SHORT_TIME)
+        # Babel puts a narrow no-break space before the meridiem.
+        assert rendered.replace("\u202f", " ") == (
+            '[Thursday, January 15, 2026, 10:30 AM] Alice: "hi"'
+        )
+
+    def test_listed_parts_render_in_the_listed_order(self):
+        context = {"author": Author(name="Alice"), "mood": _Mood(word="happy")}
+        options = FormatOptions(time_style=None, parts=("mood", "author"))
+        assert EventMemory.render([self._segment(context)], format_options=options) == (
+            '[Thursday, January 15, 2026] happy: Alice: "hi"'
+        )
+        options = FormatOptions(time_style=None, parts=("author", "mood"))
+        assert EventMemory.render([self._segment(context)], format_options=options) == (
+            '[Thursday, January 15, 2026] Alice: happy: "hi"'
+        )
+
+    def test_a_part_not_listed_contributes_nothing(self):
+        context = {"author": Author(name="Alice"), "mood": _Mood(word="happy")}
+        options = FormatOptions(time_style=None, parts=("author",))
+        assert EventMemory.render([self._segment(context)], format_options=options) == (
+            '[Thursday, January 15, 2026] Alice: "hi"'
+        )
+        options = FormatOptions(time_style=None, parts=())
+        assert EventMemory.render([self._segment(context)], format_options=options) == (
+            '[Thursday, January 15, 2026] "hi"'
+        )
+
+    def test_parts_must_be_kind_names(self):
+        with pytest.raises(ValueError, match="Part kind"):
+            FormatOptions(parts=("Not A Kind",))
+
+    def test_anchor_is_the_same_composition_over_the_derivative_text(
+        self, event_memory: EventMemory
+    ):
+        derivative = Derivative(
+            session_id="s",
+            source_id="src",
+            uuid=uuid4(),
+            segment_uuid=uuid4(),
+            timestamp=datetime.datetime(2026, 1, 15, 10, 30, tzinfo=UTC),
+            context={"author": Author(name="Alice")},
+            block_kind="text",
+            text="hi there",
+        )
+        # The memory's default format: a full date and no time.
+        assert event_memory._anchor(derivative) == (
+            '[Thursday, January 15, 2026] Alice: "hi there"'
+        )
+
+    def test_anchor_without_author_or_timestamp(self, fake_embedder: FakeEmbedder):
+        derivative = Derivative(
+            session_id="s",
+            source_id="src",
+            uuid=uuid4(),
+            segment_uuid=uuid4(),
+            timestamp=datetime.datetime(2026, 1, 15, 10, 30, tzinfo=UTC),
+            block_kind="text",
+            text="hello world",
+        )
+        memory = _build(
+            fake_embedder,
+            format_options=FormatOptions(date_style=None, time_style=None),
+        )
+        assert memory._anchor(derivative) == '"hello world"'

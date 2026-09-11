@@ -33,17 +33,14 @@ from memmachine_server.common.vector_store import (
 )
 
 from .data_types import (
-    Block,
+    Context,
     Derivative,
     Event,
     EvictionOptions,
     FormatOptions,
     Neighborhood,
-    NullContext,
-    ProducerContext,
     QueryHit,
     Segment,
-    TextBlock,
 )
 from .deriver import Deriver
 from .formatting import format_timestamp
@@ -78,10 +75,11 @@ class EventMemoryParams(BaseModel):
         embedder (Embedder):
             Embedder instance for creating embeddings.
         format_options (FormatOptions):
-            How the deriver formats a segment's timestamp and author into
-            the text it embeds. Fixed per memory because a memory's
-            derivatives must be formatted one way; a display format is a
-            call argument (default: a full date and no time).
+            How the memory composes the text it embeds: the timestamp,
+            then the context parts `parts` names, then the derivative's
+            text. Fixed per memory because a memory's derivatives must be
+            formatted one way; a display format is a call argument
+            (default: a full date and no time).
         eviction (EvictionOptions | None):
             Evict stored derivatives a new one nearly duplicates, at
             ingest. None keeps every derivative and issues no eviction
@@ -113,7 +111,7 @@ class EventMemoryParams(BaseModel):
     )
     format_options: FormatOptions = Field(
         default_factory=lambda: FormatOptions(time_style=None),
-        description="How the deriver formats the text it embeds",
+        description="How the memory composes the text it embeds",
     )
     eviction: EvictionOptions | None = Field(
         None,
@@ -248,10 +246,7 @@ class EventMemory:
         events = sorted(events, key=lambda event: (event.timestamp, event.uuid))
 
         segment_lists = await asyncio.gather(
-            *(
-                self._segmenter.segment(event, format_options=self._format_options)
-                for event in events
-            )
+            *(self._segmenter.segment(event) for event in events)
         )
         segments = [
             segment for segment_list in segment_lists for segment in segment_list
@@ -259,10 +254,7 @@ class EventMemory:
         t_segmentation = time.monotonic()
 
         derivative_lists = await asyncio.gather(
-            *(
-                self._deriver.derive(segment, format_options=self._format_options)
-                for segment in segments
-            )
+            *(self._deriver.derive(segment) for segment in segments)
         )
         segments_to_derivatives: dict[Segment, list[Derivative]] = dict(
             zip(segments, derivative_lists, strict=True)
@@ -275,15 +267,7 @@ class EventMemory:
         ]
         t_derivation = time.monotonic()
 
-        derivative_texts: list[str] = []
-        for derivative in derivatives:
-            text = EventMemory._extract_text(derivative.block)
-            if text is None:
-                raise NotImplementedError(
-                    f"Cannot embed a derivative of block type {derivative.block.block_type!r}"
-                )
-            derivative_texts.append(text)
-
+        derivative_texts = [self._anchor(derivative) for derivative in derivatives]
         derivative_embeddings = await self._embedder.ingest_embed(derivative_texts)
         t_embedding = time.monotonic()
 
@@ -409,7 +393,7 @@ class EventMemory:
         properties[EVENT_SESSION_KEY] = derivative.session_id
         if derivative.source_id is not None:
             properties[EVENT_SOURCE_KEY] = derivative.source_id
-        properties[BLOCK_KIND_KEY] = derivative.block.block_type
+        properties[BLOCK_KIND_KEY] = derivative.block_kind
 
         return Record(
             uuid=derivative.uuid,
@@ -880,64 +864,63 @@ class EventMemory:
         """
         The reader's text for a run of segments, in their order.
 
-        A header (the timestamp formatted by `format_options`, then the
-        context parts' contributions) starts each run of adjacent pieces
-        of one event; the pieces' block renderings are joined under it.
+        A header (`_header`: the timestamp, then the parts `format_options`
+        lists) starts each run of adjacent pieces of one event; the pieces'
+        block renderings are joined under it.
         """
         context_string = ""
         previous: Segment | None = None
         accumulated_text = ""
-
         for segment in segments:
             is_continuation = previous is not None and EventMemory._immediately_follows(
                 previous, segment
             )
-
             if not is_continuation:
                 if previous is not None:
                     context_string += (
                         json.dumps(accumulated_text, ensure_ascii=False) + "\n"
                     )
                 accumulated_text = ""
-                context_string += EventMemory._segment_header(segment, format_options)
-
-            text = EventMemory._extract_text(segment.block)
+                context_string += EventMemory._header(
+                    segment.timestamp, segment.context, format_options
+                )
+            text = segment.block.render(format_options)
             if text is not None:
                 accumulated_text += text
             elif not is_continuation:
-                context_string += f"[{segment.block.block_type}]\n"
-
+                context_string += f"[{segment.block.kind}]\n"
             previous = segment
-
         if previous is not None:
             context_string += json.dumps(accumulated_text, ensure_ascii=False) + "\n"
-
         return context_string.strip()
 
-    @staticmethod
-    def _segment_header(segment: Segment, format_options: FormatOptions) -> str:
-        """Build the header emitted before a segment."""
-        formatted_timestamp = format_timestamp(segment.timestamp, format_options)
-        timestamp_prefix = f"[{formatted_timestamp}] " if formatted_timestamp else ""
-
-        match segment.context:
-            case ProducerContext(producer=producer):
-                return f"{timestamp_prefix}{producer}: "
-            case NullContext():
-                return timestamp_prefix
-            case _:
-                raise NotImplementedError(
-                    f"Unsupported context type: {type(segment.context).__name__}"
-                )
+    def _anchor(self, derivative: Derivative) -> str:
+        """The text embedded for a derivative: its header, then its text as one escaped token."""
+        return EventMemory._header(
+            derivative.timestamp, derivative.context, self._format_options
+        ) + json.dumps(derivative.text, ensure_ascii=False)
 
     @staticmethod
-    def _extract_text(block: Block) -> str | None:
-        """Extract text from a block, if it contains text."""
-        match block:
-            case TextBlock(text=text):
-                return text
-            case _:
-                return None
+    def _header(
+        timestamp: datetime.datetime,
+        context: Context,
+        format_options: FormatOptions,
+    ) -> str:
+        """The header before content: the timestamp, then each listed part's contribution.
+
+        The order is `format_options.parts`; a part not listed contributes
+        nothing, and a listed part that renders None contributes nothing.
+        """
+        formatted_timestamp = format_timestamp(timestamp, format_options)
+        header = f"[{formatted_timestamp}] " if formatted_timestamp else ""
+        for kind in format_options.parts:
+            part = context.get(kind)
+            if part is None:
+                continue
+            contribution = part.render(format_options)
+            if contribution:
+                header += f"{contribution}: "
+        return header
 
     async def forget_events(self, event_uuids: Iterable[UUID]) -> None:
         """Forget events by their UUIDs."""

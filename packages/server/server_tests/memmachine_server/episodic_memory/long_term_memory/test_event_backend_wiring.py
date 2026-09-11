@@ -40,6 +40,7 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     Segment,
     TextBlock,
 )
+from memmachine_server.episodic_memory.event_memory.deriver import Deriver
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     WholeTextDeriver,
 )
@@ -47,9 +48,7 @@ from memmachine_server.episodic_memory.event_memory.event_memory import EventMem
 from memmachine_server.episodic_memory.event_memory.segment_store import (
     SegmentStore,
 )
-from memmachine_server.episodic_memory.event_memory.segmenter.passthrough_segmenter import (
-    PassthroughSegmenter,
-)
+from memmachine_server.episodic_memory.event_memory.segmenter import Segmenter
 from memmachine_server.episodic_memory.long_term_memory import (
     EVENT_BACKEND_SYSTEM_FIELDS,
     EventBackendParams,
@@ -197,8 +196,8 @@ def long_term_memory(
             partition_key="sess1",
             episode_storage=fake_episode_storage,
             embedder=fake_embedder,
-            segmenter=PassthroughSegmenter(),
-            deriver=WholeTextDeriver(),
+            segmenter=Segmenter(),
+            deriver=Deriver([WholeTextDeriver()]),
         ),
     )
 
@@ -275,7 +274,7 @@ async def test_delete_episodes_removes_from_event_memory(
     episodes,
 ):
     await long_term_memory.add_episodes(episodes)
-    # Sanity: 3 events, each with 1 segment under PassthroughSegmenter.
+    # Sanity: 3 events, each with 1 segment under a segmenter with no handler.
     assert len(segment_store_partition.segments) == 3
 
     await long_term_memory.delete_episodes(["ep-1"])
@@ -455,8 +454,8 @@ async def test_unknown_user_metadata_field_raises_when_schema_configured(
             partition_key="sess1",
             episode_storage=fake_episode_storage,
             embedder=fake_embedder,
-            segmenter=PassthroughSegmenter(),
-            deriver=WholeTextDeriver(),
+            segmenter=Segmenter(),
+            deriver=Deriver([WholeTextDeriver()]),
             user_property_keys=frozenset({"color"}),
         ),
     )
@@ -511,8 +510,8 @@ def _make_ltm(episodes: list[Episode]) -> LongTermMemory:
             partition_key="sess1",
             episode_storage=FakeEpisodeStorage({e.uid: e for e in episodes}),
             embedder=fake_embedder,
-            segmenter=PassthroughSegmenter(),
-            deriver=WholeTextDeriver(),
+            segmenter=Segmenter(),
+            deriver=Deriver([WholeTextDeriver()]),
         ),
     )
 
@@ -652,8 +651,8 @@ def timeline_long_term_memory(
             partition_key="sess1",
             episode_storage=timeline_storage,
             embedder=RankedEmbedder(),
-            segmenter=PassthroughSegmenter(),
-            deriver=WholeTextDeriver(),
+            segmenter=Segmenter(),
+            deriver=Deriver([WholeTextDeriver()]),
         ),
     )
 
