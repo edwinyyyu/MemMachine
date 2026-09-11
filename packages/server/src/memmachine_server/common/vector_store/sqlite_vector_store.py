@@ -82,6 +82,7 @@ from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
 from memmachine_server.common.properties_json import (
     encode_properties,
 )
+from memmachine_server.common.rw_locks import AsyncRWLock
 
 from .data_types import (
     COLLECTION_NAME_MAX_BYTES,
@@ -228,6 +229,7 @@ async def _save_partition_index(
     create_session: async_sessionmaker[AsyncSession],
     incarnation: UUID,
     search_engine: VectorSearchEngine,
+    engine_lock: AsyncRWLock,
     path: str,
 ) -> None:
     """Publish a partition's index to disk and trim the operations it holds.
@@ -240,7 +242,8 @@ async def _save_partition_index(
     committed. See the module docstring for what that leaves behind.
     """
     # Write index to path.
-    await search_engine.save(path)
+    async with engine_lock.write_lock():
+        await search_engine.save(path)
 
     # Delete applied pending operations and flip index_saved to True.
     async with create_session() as session, session.begin():
@@ -320,6 +323,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         sync_sqlalchemy_engine: Engine,
         records_table: Table,
         search_engine: VectorSearchEngine,
+        engine_lock: AsyncRWLock,
         collection: str,
         partition_key: str,
         incarnation: UUID,
@@ -332,6 +336,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         self._sync_sqlalchemy_engine = sync_sqlalchemy_engine
         self._records_table = records_table
         self._search_engine = search_engine
+        self._engine_lock = engine_lock
 
         self._collection = collection
         self._partition_key = partition_key
@@ -395,6 +400,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
                 create_session=self._create_session,
                 incarnation=self._incarnation,
                 search_engine=self._search_engine,
+                engine_lock=self._engine_lock,
                 path=self._index_path,
             )
 
@@ -475,8 +481,11 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         }
 
         if engine_vectors:
-            await self._search_engine.remove(engine_vectors.keys())
-            await self._search_engine.add(engine_vectors)
+            # One hold for both, so no search sees the record's old vector gone
+            # and its new one not yet there.
+            async with self._engine_lock.write_lock():
+                await self._search_engine.remove(engine_vectors.keys())
+                await self._search_engine.add(engine_vectors)
 
             async with self._create_session() as session, session.begin():
                 await session.execute(
@@ -514,9 +523,10 @@ class SQLiteVectorStorePartition(VectorStorePartition):
 
         key_filter = self._build_key_filter(property_filter)
 
-        search_results = await self._search_engine.search(
-            query_vectors, limit=limit, allowed_keys=key_filter
-        )
+        async with self._engine_lock.read_lock():
+            search_results = await self._search_engine.search(
+                query_vectors, limit=limit, allowed_keys=key_filter
+            )
 
         results: list[QueryResult] = []
         async with self._create_session() as session:
@@ -648,7 +658,8 @@ class SQLiteVectorStorePartition(VectorStorePartition):
                 )
             )
 
-        await self._search_engine.remove(record_row_ids)
+        async with self._engine_lock.write_lock():
+            await self._search_engine.remove(record_row_ids)
         async with self._create_session() as session, session.begin():
             await session.execute(
                 update(_PendingOperationRow)
@@ -795,6 +806,7 @@ class SQLiteVectorStore(VectorStore):
             self._sqlalchemy_engine, expire_on_commit=False
         )
         self._search_engines: dict[UUID, VectorSearchEngine] = {}
+        self._engine_locks: dict[UUID, AsyncRWLock] = {}
         self._sa_metadata = MetaData()
         self._records_table = self._build_records_table()
 
@@ -916,9 +928,10 @@ class SQLiteVectorStore(VectorStore):
         if not all_row_ids:
             return
 
-        await search_engine.remove(all_row_ids)
-        if upserted_vectors:
-            await search_engine.add(upserted_vectors)
+        async with self._engine_lock_for(incarnation).write_lock():
+            await search_engine.remove(all_row_ids)
+            if upserted_vectors:
+                await search_engine.add(upserted_vectors)
 
         async with self._create_session() as session, session.begin():
             await session.execute(
@@ -939,6 +952,7 @@ class SQLiteVectorStore(VectorStore):
                     create_session=self._create_session,
                     incarnation=incarnation,
                     search_engine=search_engine,
+                    engine_lock=self._engine_lock_for(incarnation),
                     path=str(self._index_path(incarnation)),
                 )
         self._search_engines.clear()
@@ -1046,6 +1060,7 @@ class SQLiteVectorStore(VectorStore):
             search_engine=await self._get_or_create_vector_search_engine(
                 incarnation, partition_key, index_saved=row.index_saved
             ),
+            engine_lock=self._engine_lock_for(incarnation),
             collection=self._collection,
             partition_key=partition_key,
             incarnation=incarnation,
@@ -1193,6 +1208,16 @@ class SQLiteVectorStore(VectorStore):
             indexed_properties=indexed_property_names(self._indexed_properties),
         )
 
+    def _engine_lock_for(self, incarnation: UUID) -> AsyncRWLock:
+        """Get or create the lock guarding an incarnation's search engine.
+
+        Engines are not safe for concurrent use: searches take the read side,
+        everything else the write side. Shared by every handle on the
+        incarnation and kept for the store's lifetime: a lock replaced while
+        held would guard nobody.
+        """
+        return self._engine_locks.setdefault(incarnation, AsyncRWLock())
+
     def _index_path(self, incarnation: UUID) -> Path | None:
         """Return the on-disk index path for an incarnation, or None if in-memory."""
         if self._index_directory is None:
@@ -1243,7 +1268,8 @@ class SQLiteVectorStore(VectorStore):
             # The engine just propagates whatever its backend raises.
             # Wrap any failure as IndexLoadError so callers see one type.
             try:
-                await search_engine.load(str(index_path))
+                async with self._engine_lock_for(incarnation).write_lock():
+                    await search_engine.load(str(index_path))
             except Exception as e:
                 raise IndexLoadError(self._collection, partition_key, index_path) from e
 
