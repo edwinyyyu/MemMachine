@@ -61,8 +61,8 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
     """Minimal in-memory segment store partition for testing.
 
     Mirrors the SQLAlchemy store's reads: one total order, a filtered
-    lookup by uuid, and a walk around a given segment within its session,
-    or every session when it has none, that never returns the segment.
+    lookup by uuid, and a walk around a given segment within its session
+    that never returns the segment.
     """
 
     def __init__(
@@ -205,7 +205,6 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         after: int = 0,
         since: datetime | None = None,
         until: datetime | None = None,
-        session_ids: Iterable[str] | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
@@ -213,7 +212,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         passes = self._admits(
             since=since,
             until=until,
-            session_ids=session_ids,
+            session_ids=None,
             source_ids=source_ids,
             block_kinds=block_kinds,
             property_filter=property_filter,
@@ -222,11 +221,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         for seed in segments:
             # The seed is a place in the order, looked up nowhere.
             key = _order_key(seed)
-            walk = [
-                s
-                for s in self._ordered()
-                if seed.session_id is None or s.session_id == seed.session_id
-            ]
+            walk = [s for s in self._ordered() if s.session_id == seed.session_id]
             backward = [s for s in walk if _order_key(s) < key and passes(s)]
             forward = [s for s in walk if _order_key(s) > key and passes(s)]
             neighborhoods[seed.uuid] = Neighborhood(

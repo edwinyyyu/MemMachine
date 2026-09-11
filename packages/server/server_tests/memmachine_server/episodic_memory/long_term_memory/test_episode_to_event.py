@@ -16,6 +16,7 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
 )
 from memmachine_server.episodic_memory.long_term_memory.long_term_memory import (
     _EVENT_UUID_NAMESPACE,
+    DEFAULT_SESSION_ID,
     LongTermMemory,
 )
 
@@ -57,17 +58,18 @@ def test_event_uuid_is_deterministic_uuid5_of_episode_uid():
     assert LongTermMemory._episode_to_event(episode).uuid == event.uuid
 
 
-def test_producer_is_the_source_and_the_session_is_null():
-    """The producer id is the event's source; the session is null.
+def test_producer_is_the_source_and_the_session_is_the_default_stream():
+    """The producer id is the event's source; the session is the reserved default.
 
     A message carries a `ProducerContext`, as before. The server has no
-    conversation id to give, so the events are one stream.
+    conversation id to give, so the events are one stream under a name a
+    caller cannot use.
     """
     episode = _episode(producer_id="alice")
     event = LongTermMemory._episode_to_event(episode)
     assert event.source_id == "alice"
     assert event.context == ProducerContext(producer="alice")
-    assert event.session_id is None
+    assert event.session_id == DEFAULT_SESSION_ID == "memmachine_default"
 
 
 def test_event_has_single_text_block_with_episode_content():

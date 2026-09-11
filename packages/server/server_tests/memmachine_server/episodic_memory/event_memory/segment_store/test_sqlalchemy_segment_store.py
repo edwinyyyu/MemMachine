@@ -72,7 +72,7 @@ def _seg(
     offset: int = 0,
     ts_offset_seconds: int = 0,
     text: str = "hello",
-    session_id: str | None = None,
+    session_id: str = "s",
     source_id: str | None = None,
     context: Context | None = None,
     properties: dict | None = None,
@@ -2905,22 +2905,6 @@ async def test_add_segments_rejects_a_stored_uuid(
 
 
 @pytest.mark.asyncio
-async def test_a_seed_with_no_session_walks_every_session(
-    partition: SQLAlchemySegmentStorePartition,
-) -> None:
-    """A seed with no session sees every segment; a seed with one stays in it."""
-    n0 = _seg(session_id=None, ts_offset_seconds=0)
-    s0 = _seg(session_id="s", ts_offset_seconds=1)
-    n1 = _seg(session_id=None, ts_offset_seconds=2)
-    await partition.add_segments(_links(n0, s0, n1))
-    neighborhoods_by_seed = await partition.get_segment_neighborhoods([n0], after=5)
-    windows = await _windows(partition, [n1, s0], before=5)
-    assert [s.uuid for s in neighborhoods_by_seed[n0.uuid].after] == [s0.uuid, n1.uuid]
-    assert [s.uuid for s in windows[n1.uuid]] == [n0.uuid, s0.uuid, n1.uuid]
-    assert [s.uuid for s in windows[s0.uuid]] == [s0.uuid]
-
-
-@pytest.mark.asyncio
 async def test_multiple_seeds_across_sessions(
     partition: SQLAlchemySegmentStorePartition,
 ) -> None:
@@ -2929,14 +2913,14 @@ async def test_multiple_seeds_across_sessions(
     b0 = _seg(session_id="b", ts_offset_seconds=1)
     a1 = _seg(session_id="a", ts_offset_seconds=2)
     b1 = _seg(session_id="b", ts_offset_seconds=3)
-    n0 = _seg(session_id=None, ts_offset_seconds=4)
-    await partition.add_segments(_links(a0, b0, a1, b1, n0))
+    c0 = _seg(session_id="c", ts_offset_seconds=4)
+    await partition.add_segments(_links(a0, b0, a1, b1, c0))
 
-    result = await _windows(partition, [a0, b0, n0], before=2, after=2)
+    result = await _windows(partition, [a0, b0, c0], before=2, after=2)
 
     assert [s.uuid for s in result[a0.uuid]] == [a0.uuid, a1.uuid]
     assert [s.uuid for s in result[b0.uuid]] == [b0.uuid, b1.uuid]
-    assert [s.uuid for s in result[n0.uuid]] == [a1.uuid, b1.uuid, n0.uuid]
+    assert [s.uuid for s in result[c0.uuid]] == [c0.uuid]
 
 
 # ===================================================================
@@ -3027,32 +3011,17 @@ async def test_source_ids_select_rows(
 async def test_session_ids_select_segments(
     partition: SQLAlchemySegmentStorePartition,
 ) -> None:
-    """`session_ids` selects what a read returns; the walk's confinement is a separate rule."""
+    """`session_ids` selects what the lookup returns; a walk never leaves its seed's session."""
     a0 = _seg(session_id="a", ts_offset_seconds=0)
     b0 = _seg(session_id="b", ts_offset_seconds=1)
-    n0 = _seg(session_id=None, ts_offset_seconds=2)
-    a1 = _seg(session_id="a", ts_offset_seconds=3)
-    await partition.add_segments(_links(a0, b0, n0, a1))
+    c0 = _seg(session_id="c", ts_offset_seconds=2)
+    await partition.add_segments(_links(a0, b0, c0))
 
     found = await partition.get_segments(
-        [a0.uuid, b0.uuid, n0.uuid], session_ids=["a", "b"]
+        [a0.uuid, b0.uuid, c0.uuid], session_ids=["a", "b"]
     )
     assert set(found) == {a0.uuid, b0.uuid}
     assert await partition.get_segments([a0.uuid], session_ids=[]) == {}
-
-    # A seed with no session walks every session, and the filter selects among them.
-    from_no_session = (
-        await partition.get_segment_neighborhoods(
-            [n0], before=5, after=5, session_ids=["b"]
-        )
-    )[n0.uuid]
-    assert [s.uuid for s in from_no_session.before] == [b0.uuid]
-    assert from_no_session.after == []
-    # A seed with a session never leaves it, whatever the filter names.
-    from_a = (
-        await partition.get_segment_neighborhoods([a0], after=5, session_ids=["b"])
-    )[a0.uuid]
-    assert from_a.after == []
 
 
 @pytest.mark.asyncio

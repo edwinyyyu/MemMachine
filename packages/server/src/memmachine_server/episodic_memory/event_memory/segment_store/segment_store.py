@@ -112,7 +112,6 @@ class SegmentStorePartition(ABC):
         after: int = 0,
         since: datetime | None = None,
         until: datetime | None = None,
-        session_ids: Iterable[str] | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
@@ -123,9 +122,9 @@ class SegmentStorePartition(ABC):
         A given segment is a place in the order, not a lookup: the walk
         starts from the position and the session it carries and reads
         nothing about it, so a segment the caller holds can be walked from
-        even after it is gone. The walk stays within the segment's session, or spans
-        every session when it has none, and the filters select the
-        neighbors. Other segments of the same event are ordinary neighbors.
+        even after it is gone. The walk stays within the segment's session, and the filters
+        select the neighbors. Other segments of the same event are
+        ordinary neighbors.
 
         Args:
             segments (Iterable[Segment]):
@@ -140,10 +139,6 @@ class SegmentStorePartition(ABC):
             until (datetime | None):
                 Exclusive upper bound on the neighbors' timestamp, so ranges
                 meet without overlap (default: None).
-            session_ids (Iterable[str] | None):
-                Keep only neighbors whose session id is one of these; an
-                empty list keeps none (default: None, every session the
-                walk reaches).
             source_ids (Iterable[str] | None):
                 Keep only neighbors whose source id is one of these; an
                 empty list keeps none (default: None, every source).

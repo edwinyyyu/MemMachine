@@ -106,16 +106,21 @@ class TestSegmentRoundTrip:
         seg2 = Segment.model_validate(seg.model_dump(mode="json"))
         assert (seg2.session_id, seg2.source_id) == ("s1", "alice")
 
-    def test_session_and_source_default_to_null(self):
-        seg = Segment(
-            uuid=uuid4(),
-            event_uuid=uuid4(),
-            index=0,
-            offset=0,
-            timestamp=datetime(2026, 1, 15, 10, 30, tzinfo=UTC),
-            block=TextBlock(text="hello"),
-        )
-        assert (seg.session_id, seg.source_id) == (None, None)
+    def test_source_defaults_to_null_and_session_is_required(self):
+        fields = {
+            "uuid": uuid4(),
+            "event_uuid": uuid4(),
+            "index": 0,
+            "offset": 0,
+            "timestamp": datetime(2026, 1, 15, 10, 30, tzinfo=UTC),
+            "block": {"block_type": "text", "text": "hello"},
+        }
+        seg = Segment.model_validate({**fields, "session_id": "s1"})
+        assert seg.source_id is None
+        with pytest.raises(ValidationError, match="session_id"):
+            Segment.model_validate(fields)
+        with pytest.raises(ValidationError, match="session_id"):
+            Segment.model_validate({**fields, "session_id": ""})
 
 
 class TestBounds:
@@ -155,6 +160,7 @@ class TestBounds:
                 index=0,
                 offset=0,
                 timestamp=datetime(2026, 1, 15, 10, 30, seconds, tzinfo=UTC),
+                session_id="s1",
                 block=TextBlock(text="hello"),
             )
 

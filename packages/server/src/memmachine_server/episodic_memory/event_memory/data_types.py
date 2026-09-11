@@ -14,6 +14,7 @@ from pydantic import (
     Field,
     InstanceOf,
     JsonValue,
+    StringConstraints,
     TypeAdapter,
     field_serializer,
     field_validator,
@@ -104,7 +105,9 @@ def _bounded_id(value: str) -> str:
     return value
 
 
-_BoundedId = Annotated[str, AfterValidator(_bounded_id)]
+_BoundedId = Annotated[
+    str, StringConstraints(min_length=1), AfterValidator(_bounded_id)
+]
 
 
 class Event(BaseModel):
@@ -118,9 +121,8 @@ class Event(BaseModel):
     timestamp: datetime = Field(
         description="When the event happened; a naive value means UTC"
     )
-    session_id: _BoundedId | None = Field(
-        default=None,
-        description="The conversation or stream the event belongs to; None for none",
+    session_id: _BoundedId = Field(
+        description="The conversation or stream the event belongs to"
     )
     source_id: _BoundedId | None = Field(
         default=None,
@@ -169,9 +171,7 @@ class Segment(BaseModel):
         ge=0, description="Position of the piece among the block's pieces"
     )
     timestamp: datetime = Field(description="The event's timestamp")
-    session_id: _BoundedId | None = Field(
-        default=None, description="The event's session id"
-    )
+    session_id: _BoundedId = Field(description="The event's session id")
     source_id: _BoundedId | None = Field(
         default=None, description="The event's source id"
     )
@@ -211,9 +211,7 @@ class Derivative(BaseModel):
     uuid: UUID = Field(description="Identity of the derivative")
     segment_uuid: UUID = Field(description="The segment the content was derived from")
     timestamp: datetime = Field(description="The segment's timestamp")
-    session_id: _BoundedId | None = Field(
-        default=None, description="The segment's session id"
-    )
+    session_id: _BoundedId = Field(description="The segment's session id")
     source_id: _BoundedId | None = Field(
         default=None, description="The segment's source id"
     )
