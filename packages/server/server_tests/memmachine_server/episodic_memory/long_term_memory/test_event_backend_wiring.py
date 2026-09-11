@@ -555,7 +555,7 @@ def _timeline_episode(uid: str, content: str, minute: int) -> Episode:
 # contributed anything: a search at `num_episodes_limit=N` returns the first N
 # episodes in store order whether or not the windows are folded in.
 #
-# The expansion tests below give each episode its own similarity instead, by an
+# The expansion tests below give each episode its own cosine similarity instead, by an
 # explicit search rank. The rank order is chosen so that the timeline
 # neighbours of the one matching episode are the LEAST similar of all, which is
 # what lets the tests assert on the contract ("expansion returns timeline

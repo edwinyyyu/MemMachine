@@ -430,11 +430,11 @@ class EventMemory:
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         normalized = embeddings / norms
-        similarity_matrix = normalized @ normalized.T
+        cosine_similarity_matrix = normalized @ normalized.T
 
         # The diagonal and the upper triangle can never pass the threshold.
-        similarity_matrix[np.triu_indices(num_embeddings)] = -np.inf
-        mask = similarity_matrix >= cosine_similarity_threshold
+        cosine_similarity_matrix[np.triu_indices(num_embeddings)] = -np.inf
+        mask = cosine_similarity_matrix >= cosine_similarity_threshold
 
         return [set(np.where(mask[i])[0].tolist()) for i in range(num_embeddings)]
 
@@ -447,7 +447,7 @@ class EventMemory:
         target_size: int,
     ) -> tuple[set[UUID], set[UUID]]:
         """
-        Select eviction targets considering both stored and batch similarity.
+        Select eviction targets by cosine similarity to stored and batch derivatives.
 
         The cluster of a derivative is its stored neighbors not already
         displaced in this batch, its batch predecessors not already skipped,
@@ -574,7 +574,7 @@ class EventMemory:
 
         Returns:
             list[SearchHit]:
-                At most `limit` hits in descending similarity, each with
+                At most `limit` hits in descending cosine similarity, each with
                 its segment window and the index of the seed segment in
                 it. Windows of different hits may overlap; each hit is
                 returned whole. Every count is a maximum.
@@ -679,7 +679,7 @@ class EventMemory:
         )
         t_segment_query = time.monotonic()
 
-        # Seeds the store did not return are dropped; similarity order is kept.
+        # Seeds the store did not return are dropped; cosine similarity order is kept.
         hits: list[SearchHit] = []
         for seed_uuid, score in seed_cosine_similarities.items():
             segments = windows_by_seed.get(seed_uuid)
