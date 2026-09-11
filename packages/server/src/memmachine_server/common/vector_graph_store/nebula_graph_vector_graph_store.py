@@ -28,9 +28,8 @@ from memmachine_server.common.filter import (
     Equals,
     FilterExpr,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
     Ordering,
 )
@@ -1405,14 +1404,12 @@ class NebulaGraphVectorGraphStore(VectorGraphStore):
             match expr:
                 case Equals(field, value):
                     return f"{prop_ref(field)} = {self._format_value(value)}"
-                case NotEquals(field, value):
-                    return f"{prop_ref(field)} <> {self._format_value(value)}"
                 case Ordering(field, op, value):
                     return f"{prop_ref(field)} {op} {self._format_value(value)}"
                 case In(field, values):
                     values_list = ", ".join(self._format_value(v) for v in values)
                     return f"{prop_ref(field)} IN [{values_list}]"
-                case IsMissing(field):
+                case IsNull(field):
                     return f"{prop_ref(field)} IS NULL"
                 case Not(operand):
                     return f"NOT ({render(operand)})"

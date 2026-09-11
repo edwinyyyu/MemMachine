@@ -6,9 +6,8 @@ from memmachine_server.common.filter import (
     And,
     Equals,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
     Ordering,
     map_filter_fields,
@@ -21,15 +20,15 @@ from memmachine_server.common.filter.filter_parser import (
 )
 
 
-def _flatten_and(expr: And) -> list[Equals | NotEquals | Ordering]:
-    result: list[Equals | NotEquals | Ordering] = []
+def _flatten_and(expr: And) -> list[Equals | Ordering]:
+    result: list[Equals | Ordering] = []
 
     def _walk(node):
         if isinstance(node, And):
             for operand in node.operands:
                 _walk(operand)
         else:
-            assert isinstance(node, Equals | NotEquals | Ordering)
+            assert isinstance(node, Equals | Ordering)
             result.append(node)
 
     _walk(expr)
@@ -145,7 +144,7 @@ def test_parse_filter_deeply_nested_groups() -> None:
 
 def test_parse_filter_is_null_operator() -> None:
     expr = parse_filter("metadata.note IS NULL")
-    assert expr == IsMissing(field="metadata.note")
+    assert expr == IsNull(field="metadata.note")
 
 
 def test_parse_filter_is_not_null_and_or_combination() -> None:
@@ -154,9 +153,9 @@ def test_parse_filter_is_not_null_and_or_combination() -> None:
     )
     assert isinstance(expr, Or)
     assert isinstance(expr.operands[0], And)
-    assert expr.operands[0].operands[0] == Not(IsMissing(field="metadata.note"))
+    assert expr.operands[0].operands[0] == Not(IsNull(field="metadata.note"))
     assert expr.operands[0].operands[1] == Equals(field="status", value="OPEN")
-    assert expr.operands[1] == IsMissing(field="owner")
+    assert expr.operands[1] == IsNull(field="owner")
 
 
 def test_keywords_case_insensitive() -> None:
@@ -274,41 +273,41 @@ def test_valid_fixtures_return(valid_filters) -> None:
     assert expr is not None
 
 
-# --- != / <> (Ordering with op="!=") ---
+# --- != / <> (Not(Equals)) ---
 
 
 def test_parse_filter_ne_bang_equal() -> None:
     expr = parse_filter("status != 'CLOSED'")
-    assert expr == NotEquals(field="status", value="CLOSED")
+    assert expr == Not(Equals(field="status", value="CLOSED"))
 
 
 def test_parse_filter_ne_diamond() -> None:
     expr = parse_filter("status <> 'CLOSED'")
-    assert expr == NotEquals(field="status", value="CLOSED")
+    assert expr == Not(Equals(field="status", value="CLOSED"))
 
 
 def test_parse_filter_ne_numeric() -> None:
     expr = parse_filter("count != 0")
-    assert expr == NotEquals(field="count", value=0)
+    assert expr == Not(Equals(field="count", value=0))
 
 
 def test_parse_filter_ne_boolean() -> None:
     expr = parse_filter("active <> false")
-    assert expr == NotEquals(field="active", value=False)
+    assert expr == Not(Equals(field="active", value=False))
 
 
 def test_parse_filter_ne_in_conjunction() -> None:
     expr = parse_filter("owner = 'alice' AND status != 'CLOSED'")
     assert isinstance(expr, And)
     assert expr.operands[0] == Equals(field="owner", value="alice")
-    assert expr.operands[1] == NotEquals(field="status", value="CLOSED")
+    assert expr.operands[1] == Not(Equals(field="status", value="CLOSED"))
 
 
 def test_parse_filter_ne_in_disjunction() -> None:
     expr = parse_filter("status <> 'CLOSED' OR priority != 'LOW'")
     assert isinstance(expr, Or)
-    assert expr.operands[0] == NotEquals(field="status", value="CLOSED")
-    assert expr.operands[1] == NotEquals(field="priority", value="LOW")
+    assert expr.operands[0] == Not(Equals(field="status", value="CLOSED"))
+    assert expr.operands[1] == Not(Equals(field="priority", value="LOW"))
 
 
 def test_legacy_mapping_rejects_ne() -> None:
@@ -368,14 +367,14 @@ def test_parse_filter_not_with_in() -> None:
 def test_parse_filter_not_with_is_null() -> None:
     expr = parse_filter("NOT owner IS NULL")
     assert isinstance(expr, Not)
-    assert expr.operand == IsMissing(field="owner")
+    assert expr.operand == IsNull(field="owner")
 
 
 def test_parse_filter_not_with_ne() -> None:
-    # NOT status != 'OPEN'  =>  NOT(status != 'OPEN')
+    # NOT status != 'OPEN'  =>  NOT(NOT(status = 'OPEN'))
     expr = parse_filter("NOT status != 'OPEN'")
     assert isinstance(expr, Not)
-    assert expr.operand == NotEquals(field="status", value="OPEN")
+    assert expr.operand == Not(Equals(field="status", value="OPEN"))
 
 
 def test_parse_filter_not_case_insensitive() -> None:
@@ -513,9 +512,9 @@ def test_map_filter_fields_in() -> None:
 
 
 def test_map_filter_fields_is_null() -> None:
-    expr = IsMissing(field="m.note")
+    expr = IsNull(field="m.note")
     result = map_filter_fields(expr, lambda f: f.upper())
-    assert result == IsMissing(field="M.NOTE")
+    assert result == IsNull(field="M.NOTE")
 
 
 def test_map_filter_fields_and() -> None:

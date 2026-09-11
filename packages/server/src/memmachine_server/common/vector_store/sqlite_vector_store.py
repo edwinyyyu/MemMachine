@@ -64,9 +64,8 @@ from memmachine_server.common.filter import (
     Equals,
     FilterExpr,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
     Ordering,
 )
@@ -290,7 +289,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         self._save_threshold = save_threshold
 
     _SUPPORTED_FILTER_NODES: ClassVar[frozenset[type]] = frozenset(
-        {Equals, NotEquals, Ordering, In, IsMissing, And, Or, Not}
+        {Equals, Ordering, In, IsNull, And, Or, Not}
     )
 
     @property

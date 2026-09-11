@@ -12,9 +12,8 @@ from memmachine_server.common.filter import (
     And,
     Equals,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
     Ordering,
 )
@@ -375,7 +374,7 @@ async def test_search_similar_nodes(vector_graph_store, vector_graph_store_ann):
         property_filter=Or(
             (
                 Equals(field="include?", value="yes"),
-                IsMissing(
+                IsNull(
                     field="include?",
                 ),
             )
@@ -575,7 +574,7 @@ async def test_search_related_nodes(vector_graph_store):
         node_property_filter=Or(
             (
                 Equals(field="marker?", value="A"),
-                IsMissing(
+                IsNull(
                     field="marker?",
                 ),
             )
@@ -600,7 +599,7 @@ async def test_search_related_nodes(vector_graph_store):
         edge_property_filter=Or(
             (
                 Equals(field="extra", value=1),
-                IsMissing(
+                IsNull(
                     field="extra",
                 ),
             )
@@ -1064,7 +1063,7 @@ async def test_search_matching_nodes(vector_graph_store):
 
     results = await vector_graph_store.search_matching_nodes(
         collection="Robot",
-        property_filter=IsMissing(
+        property_filter=IsNull(
             field="none_value",
         ),
     )
@@ -1115,7 +1114,7 @@ async def test_search_matching_nodes(vector_graph_store):
         property_filter=Or(
             (
                 Equals(field="age!with$pecialchars", value=30),
-                IsMissing(
+                IsNull(
                     field="age!with$pecialchars",
                 ),
             )
@@ -1136,7 +1135,7 @@ async def test_search_matching_nodes(vector_graph_store):
         property_filter=Or(
             (
                 Equals(field="title", value="Engineer"),
-                IsMissing(
+                IsNull(
                     field="title",
                 ),
             )
@@ -1186,7 +1185,7 @@ async def test_search_matching_nodes_extended_filters(vector_graph_store):
     # != on city
     results = await vector_graph_store.search_matching_nodes(
         collection="Person",
-        property_filter=NotEquals(field="city", value="New York"),
+        property_filter=Not(Equals(field="city", value="New York")),
     )
     assert len(results) == 2
 

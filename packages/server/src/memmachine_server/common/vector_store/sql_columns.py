@@ -35,9 +35,8 @@ from memmachine_server.common.filter import (
     Equals,
     FilterExpr,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
     Ordering,
 )
@@ -118,7 +117,7 @@ def compile_property_filter(
     of a match: a row holding no value, whose comparison is NULL, is kept.
     """
     match expr:
-        case Equals() | NotEquals() | Ordering() | In() | IsMissing():
+        case Equals() | Ordering() | In() | IsNull():
             return _compile_leaf(expr, table, indexed_properties)
         case And(operands):
             return and_(
@@ -140,25 +139,23 @@ def compile_property_filter(
 
 
 def _compile_leaf(
-    expr: Equals | NotEquals | Ordering | In | IsMissing,
+    expr: Equals | Ordering | In | IsNull,
     table: Table,
     indexed_properties: Mapping[str, PropertyType],
 ) -> ColumnElement[bool]:
     column = table.c[property_column_name(expr.field)]
     declared = indexed_properties[expr.field]
     match expr:
-        case IsMissing():
+        case IsNull():
             return column.is_(None)
         case In(values=values):
             return column.in_(values) if type(values[0]) is declared else false()
-        case Equals(value=value) | NotEquals(value=value) | Ordering(value=value):
+        case Equals(value=value) | Ordering(value=value):
             if type(value) is not declared:
                 return false()
             bound = epoch_microseconds(value) if isinstance(value, datetime) else value
             match expr:
                 case Equals():
                     return column == bound
-                case NotEquals():
-                    return column != bound
                 case Ordering(op=op):
                     return ORDERING_OPS[op](column, bound)

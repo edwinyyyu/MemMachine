@@ -16,7 +16,7 @@ from memmachine_server.common.filter import (
     And,
     Equals,
     In,
-    IsMissing,
+    IsNull,
     Not,
     Or,
     Ordering,
@@ -823,7 +823,7 @@ class TestFilters:
         assert r1.uuid in uuids
         assert r2.uuid not in uuids
 
-    # ── IsMissing ──
+    # ── IsNull ──
 
     @pytest.mark.asyncio
     async def test_is_null(self, collection):
@@ -843,7 +843,7 @@ class TestFilters:
             await collection.query(
                 query_vectors=[v1],
                 limit=10,
-                property_filter=IsMissing(field="name"),
+                property_filter=IsNull(field="name"),
             )
         )
         uuids = {m.record_uuid for m in query_results[0].matches}
@@ -870,7 +870,7 @@ class TestFilters:
             await collection.query(
                 query_vectors=[v1],
                 limit=10,
-                property_filter=Not(IsMissing(field="name")),
+                property_filter=Not(IsNull(field="name")),
             )
         )
         uuids = {m.record_uuid for m in query_results[0].matches}

@@ -10,9 +10,8 @@ from memmachine_server.common.filter import (
     And,
     Equals,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
 )
 from memmachine_server.common.vector_graph_store.neo4j_vector_graph_store import (
@@ -647,7 +646,7 @@ async def test_get_matching_episodes(declarative_memory):
         property_filter=And(
             (
                 Equals(field="project", value="memmachine"),
-                IsMissing(
+                IsNull(
                     field="length",
                 ),
             )
@@ -882,7 +881,7 @@ async def test_get_matching_episodes_extended_filters(declarative_memory):
 
     # != on project: != 'memmachine' → episodes with project=other, testing
     results = await declarative_memory.get_matching_episodes(
-        property_filter=NotEquals(field="project", value="memmachine"),
+        property_filter=Not(Equals(field="project", value="memmachine")),
     )
     result_uids = {r.uid for r in results}
     assert "episode2" in result_uids

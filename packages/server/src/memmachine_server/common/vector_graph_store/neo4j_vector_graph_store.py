@@ -26,9 +26,8 @@ from memmachine_server.common.filter import (
     Equals,
     FilterExpr,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
     Ordering,
 )
@@ -1215,12 +1214,10 @@ class Neo4jVectorGraphStore(VectorGraphStore):
         return query_filter_string, query_filter_params
 
     @staticmethod
-    def _comparison_operator(expr: Equals | NotEquals | Ordering) -> str:
+    def _comparison_operator(expr: Equals | Ordering) -> str:
         match expr:
             case Equals():
                 return "="
-            case NotEquals():
-                return "!="
             case Ordering(op=op):
                 return op
 
@@ -1237,7 +1234,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
             return f"{entity_query_alias}.{_sanitize(mangle_property_name(field))}"
 
         match expr:
-            case IsMissing(field):
+            case IsNull(field):
                 return f"{field_ref(field)} IS NULL", {}
             case In(field, values):
                 param_name = _sanitize(f"filter_expr_param_{uuid4()}")
@@ -1245,11 +1242,7 @@ class Neo4jVectorGraphStore(VectorGraphStore):
                     f"{field_ref(field)} IN ${query_value_parameter}.{param_name}"
                 )
                 return condition, {param_name: cast(FilterValue, list(values))}
-            case (
-                Equals(field, value)
-                | NotEquals(field, value)
-                | Ordering(field, _, value)
-            ):
+            case Equals(field, value) | Ordering(field, _, value):
                 param_name = _sanitize(f"filter_expr_param_{uuid4()}")
                 condition = render_comparison(
                     left=field_ref(field),

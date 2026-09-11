@@ -31,9 +31,8 @@ from memmachine_server.common.filter import (
     Equals,
     FilterExpr,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
     Ordering,
 )
@@ -326,14 +325,11 @@ class ShortTermMemory:
         match expr:
             case Equals(field, value):
                 return self._compare(self._resolve_field(episode, field), "=", value)
-            case NotEquals(field, value):
-                resolved = self._resolve_field(episode, field)
-                return resolved is not None and self._compare(resolved, "!=", value)
             case Ordering(field, op, value):
                 return self._compare(self._resolve_field(episode, field), op, value)
             case In(field, values):
                 return self._resolve_field(episode, field) in values
-            case IsMissing(field):
+            case IsNull(field):
                 return self._resolve_field(episode, field) is None
             case And(operands):
                 return all(self._check_filter(episode, o) for o in operands)
@@ -379,8 +375,6 @@ class ShortTermMemory:
             expected = ensure_tz_aware(expected)
         if op == "=":
             return value == expected
-        if op == "!=":
-            return value != expected
         if value is None:
             return False
         return self._safe_compare(value, expected, op)

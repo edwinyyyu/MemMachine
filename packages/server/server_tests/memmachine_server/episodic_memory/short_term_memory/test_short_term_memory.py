@@ -656,7 +656,7 @@ class TestSessionMemoryPublicAPI:
         assert len(episodes) == 1
         assert episodes == [ep1]
 
-        # IsMissing filter: ep1 has no category
+        # IsNull filter: ep1 has no category
         filter_str = "m.category IS NULL"
         filters = parse_filter(filter_str)
         episodes, _ = await memory.get_short_term_memory_context(

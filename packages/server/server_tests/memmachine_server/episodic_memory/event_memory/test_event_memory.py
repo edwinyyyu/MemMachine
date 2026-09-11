@@ -13,9 +13,8 @@ from memmachine_server.common.filter import (
     And,
     Equals,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
     Ordering,
     filter_fields,
@@ -875,7 +874,7 @@ class TestQueryWithFilter:
 
         hits = await event_memory.query(
             "thing",
-            property_filter=NotEquals(field="m.color", value="red"),
+            property_filter=Not(Equals(field="m.color", value="red")),
         )
         assert _texts(hits) == {"blue thing"}
 
@@ -898,7 +897,7 @@ class TestQueryWithFilter:
 
         hits = await event_memory.query(
             "thing",
-            property_filter=IsMissing(field="m.color"),
+            property_filter=IsNull(field="m.color"),
         )
         assert _texts(hits) == {"no color"}
 
@@ -910,7 +909,7 @@ class TestQueryWithFilter:
         hits = await event_memory.query(
             "thing",
             property_filter=And(
-                (Equals(field="m.color", value="red"), Not(IsMissing(field="m.color")))
+                (Equals(field="m.color", value="red"), Not(IsNull(field="m.color")))
             ),
         )
         assert _texts(hits) == {"red small"}

@@ -7,12 +7,14 @@ written as a `match` with no default arm is checked for exhaustiveness:
 adding a node here fails type checking in every store rather than raising on
 whichever query first reaches the new node.
 
-A predicate matches a record only when the field holds a value of the
-compared type. A record that does not carry the field, or carries it with a
-different type, is not a match -- which is what `NotEquals` and
-`Not(Equals(...))` distinguish: the former keeps only records that hold a
-comparable, differing value, the latter also keeps records that hold no
-comparable value at all.
+The grammar is two-valued. A predicate matches a record only when the field
+holds a value of the compared type; a record that does not carry the field,
+or carries it with a different type, is not a match, and `IsNull` on such a
+field is true. Nothing is ever unknown, so `And`, `Or` and `Not` are the
+ordinary boolean connectives over the records: `Not` is the complement of a
+match and keeps the records holding no comparable value, and `!=` is
+`Not(Equals(...))` rather than a node of its own. A caller who wants only
+records holding some other value conjoins `Not(IsNull(...))`.
 
 A datetime value denotes an instant, and a naive one means UTC. A node
 normalizes its datetime to a UTC-aware instant at construction, so every
@@ -27,7 +29,7 @@ from typing import Literal
 from memmachine_server.common.data_types import OrderedValue, PropertyValue
 from memmachine_server.common.utils import ensure_tz_aware
 
-type FilterExpr = Equals | NotEquals | Ordering | In | IsMissing | And | Or | Not
+type FilterExpr = Equals | Ordering | In | IsNull | And | Or | Not
 """Any node of a filter expression tree."""
 
 OrderingOp = Literal[">", "<", ">=", "<="]
@@ -40,19 +42,6 @@ def _utc_instant(value: datetime) -> datetime:
 @dataclass(frozen=True)
 class Equals:
     """Field holds a value equal to `value`."""
-
-    field: str
-    value: PropertyValue
-
-    def __post_init__(self) -> None:
-        """Normalize a datetime value to a UTC-aware instant."""
-        if isinstance(self.value, datetime):
-            object.__setattr__(self, "value", _utc_instant(self.value))
-
-
-@dataclass(frozen=True)
-class NotEquals:
-    """Field holds a comparable value that differs from `value`."""
 
     field: str
     value: PropertyValue
@@ -114,12 +103,12 @@ class In:
 
 
 @dataclass(frozen=True)
-class IsMissing:
+class IsNull:
     """
-    Field holds no comparable value.
+    Field holds no value.
 
-    True for a record that does not carry the field at all. Property values
-    are never null, so absence is the only way a field can hold nothing.
+    True for a record that does not carry the field. Property values are
+    never null, so a missing key is the only no-value state.
     """
 
     field: str
@@ -174,14 +163,12 @@ def map_filter_fields(
     match expr:
         case Equals(field, value):
             return Equals(transform(field), value)
-        case NotEquals(field, value):
-            return NotEquals(transform(field), value)
         case Ordering(field, op, value):
             return Ordering(transform(field), op, value)
         case In(field, values):
             return In(transform(field), values)
-        case IsMissing(field):
-            return IsMissing(transform(field))
+        case IsNull(field):
+            return IsNull(transform(field))
         case And(operands):
             return And(tuple(map_filter_fields(o, transform) for o in operands))
         case Or(operands):
@@ -193,13 +180,7 @@ def map_filter_fields(
 def filter_fields(expr: FilterExpr) -> frozenset[str]:
     """Every field name a filter tree addresses."""
     match expr:
-        case (
-            Equals(field)
-            | NotEquals(field)
-            | Ordering(field)
-            | In(field)
-            | IsMissing(field)
-        ):
+        case Equals(field) | Ordering(field) | In(field) | IsNull(field):
             return frozenset((field,))
         case Not(operand):
             return filter_fields(operand)
@@ -214,7 +195,7 @@ def filter_nodes(expr: FilterExpr) -> frozenset[type]:
             return frozenset((Not,)) | filter_nodes(operand)
         case And(operands) | Or(operands):
             return frozenset((type(expr),)).union(*(filter_nodes(o) for o in operands))
-        case Equals() | NotEquals() | Ordering() | In() | IsMissing():
+        case Equals() | Ordering() | In() | IsNull():
             return frozenset((type(expr),))
 
 

@@ -13,9 +13,8 @@ from memmachine_server.common.filter import (
     Equals,
     FilterExpr,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
     Ordering,
 )
@@ -64,13 +63,6 @@ def evaluate_filter(expr: FilterExpr, properties: Mapping[str, PropertyValue]) -
                 and _same_type(held, value)
                 and _comparable(held) == _comparable(value)
             )
-        case NotEquals(field, value):
-            held = properties.get(field)
-            return (
-                held is not None
-                and _same_type(held, value)
-                and _comparable(held) != _comparable(value)
-            )
         case Ordering(field, op, value):
             held = properties.get(field)
             if held is None or not _same_type(held, value):
@@ -79,7 +71,7 @@ def evaluate_filter(expr: FilterExpr, properties: Mapping[str, PropertyValue]) -
         case In(field, values):
             held = properties.get(field)
             return held is not None and _same_type(held, values[0]) and held in values
-        case IsMissing(field):
+        case IsNull(field):
             return field not in properties
         case And(operands):
             return all(evaluate_filter(o, properties) for o in operands)
@@ -119,9 +111,7 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
     and enforces the declared schema the way a real store does.
     """
 
-    _SUPPORTED_FILTER_NODES = frozenset(
-        {Equals, NotEquals, Ordering, In, IsMissing, And, Or, Not}
-    )
+    _SUPPORTED_FILTER_NODES = frozenset({Equals, Ordering, In, IsNull, And, Or, Not})
 
     def __init__(
         self,

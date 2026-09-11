@@ -12,7 +12,7 @@ pytest.importorskip("nebulagraph_python")
 from memmachine_server.common.filter import (
     And,
     Equals,
-    IsMissing,
+    IsNull,
     Or,
     Ordering,
 )
@@ -643,7 +643,7 @@ async def test_search_matching_nodes(vector_graph_store):
     # is_null filter: nodes with no "price" property
     results = await vector_graph_store.search_matching_nodes(
         collection=collection,
-        property_filter=IsMissing(field="price"),
+        property_filter=IsNull(field="price"),
         limit=10,
     )
     assert len(results) == 1

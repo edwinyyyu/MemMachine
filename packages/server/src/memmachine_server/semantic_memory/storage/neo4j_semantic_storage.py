@@ -31,9 +31,8 @@ from memmachine_server.common.filter import (
     Equals,
     FilterExpr,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
     Ordering,
 )
@@ -1092,7 +1091,7 @@ class Neo4jSemanticStorage(SemanticStorage):
                     is not None
                 ]
                 return set.intersection(*definite) if definite else None
-            case NotEquals() | Ordering() | IsMissing() | Or() | Not():
+            case Ordering() | IsNull() | Or() | Not():
                 # None of these names a definite set of values.
                 return None
 
@@ -1102,7 +1101,7 @@ class Neo4jSemanticStorage(SemanticStorage):
         expr: FilterExpr,
     ) -> tuple[str, dict[str, Any]]:
         match expr:
-            case IsMissing(field):
+            case IsNull(field):
                 field_ref, _ = self._resolve_field_reference(alias, field)
                 return f"{field_ref} IS NULL", {}
             case In(field, values):
@@ -1114,11 +1113,7 @@ class Neo4jSemanticStorage(SemanticStorage):
                     else list(values)
                 )
                 return f"{field_ref} IN ${param}", {param: adapted_values}
-            case (
-                Equals(field, value)
-                | NotEquals(field, value)
-                | Ordering(field, _, value)
-            ):
+            case Equals(field, value) | Ordering(field, _, value):
                 field_ref, value_adapter = self._resolve_field_reference(alias, field)
                 param = self._next_filter_param()
                 adapted_value = (
@@ -1129,8 +1124,6 @@ class Neo4jSemanticStorage(SemanticStorage):
                 match expr:
                     case Equals():
                         cypher_op = "="
-                    case NotEquals():
-                        cypher_op = "<>"
                     case Ordering(op=op):
                         cypher_op = op
                 return f"{field_ref} {cypher_op} ${param}", {param: adapted_value}

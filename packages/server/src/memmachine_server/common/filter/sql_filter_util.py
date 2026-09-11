@@ -11,7 +11,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Literal
 
-from sqlalchemy import ColumnElement, and_, or_
+from sqlalchemy import ColumnElement, and_, false, func, or_
 
 from memmachine_server.common.data_types import (
     PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
@@ -28,15 +28,14 @@ from .filter_expression import (
     Equals,
     FilterExpr,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
     Ordering,
     OrderingOp,
 )
 
-type _LeafExpr = Equals | NotEquals | Ordering | In | IsMissing
+type _LeafExpr = Equals | Ordering | In | IsNull
 
 FieldEncoding = Literal["column", "json", "properties_json"]
 
@@ -66,14 +65,12 @@ def _compile_column_leaf(
     column: ColumnElement,
 ) -> ColumnElement[bool]:
     match expr:
-        case IsMissing():
+        case IsNull():
             return column.is_(None)
         case In(values=values):
             return column.in_(values)
         case Equals(value=value):
             return column == value
-        case NotEquals(value=value):
-            return column != value
         case Ordering(op=op, value=value):
             return ORDERING_OPS[op](column, value)
 
@@ -107,7 +104,7 @@ def _compile_json_leaf(
     column: ColumnElement,
 ) -> ColumnElement[bool]:
     match expr:
-        case IsMissing():
+        case IsNull():
             # .as_string() emits ->> instead of JSON_QUOTE(JSON_EXTRACT(...)),
             # which preserves SQL NULL for missing keys on SQLite.
             return column.as_string().is_(None)
@@ -115,8 +112,6 @@ def _compile_json_leaf(
             return _cast_json_value(column, values[0]).in_(values)
         case Equals(value=value):
             return _cast_json_value(column, _check_json_value(value)) == value
-        case NotEquals(value=value):
-            return _cast_json_value(column, _check_json_value(value)) != value
         case Ordering(op=op, value=value):
             return ORDERING_OPS[op](
                 _cast_json_value(column, _check_json_value(value)), value
@@ -156,7 +151,7 @@ def _compile_properties_json_leaf(
     column: ColumnElement,
 ) -> ColumnElement[bool]:
     match expr:
-        case IsMissing():
+        case IsNull():
             return column.as_string().is_(None)
         case In(values=values):
             # Values are homogeneous, so the first one names the type for all.
@@ -165,7 +160,7 @@ def _compile_properties_json_leaf(
             if isinstance(values[0], int):
                 return and_(type_check, value_path.as_integer().in_(values))
             return and_(type_check, value_path.as_string().in_(values))
-        case Equals(value=value) | NotEquals(value=value) | Ordering(value=value):
+        case Equals(value=value) | Ordering(value=value):
             type_check = _properties_json_type_check(column, type(value))
             casted_column, normalized_value = _cast_properties_json_value(
                 column[PROPERTY_VALUE_KEY], value
@@ -173,8 +168,6 @@ def _compile_properties_json_leaf(
             match expr:
                 case Equals():
                     comparison = casted_column == normalized_value
-                case NotEquals():
-                    comparison = casted_column != normalized_value
                 case Ordering(op=op):
                     comparison = ORDERING_OPS[op](casted_column, normalized_value)
             return and_(type_check, comparison)
@@ -193,9 +186,13 @@ def compile_sql_filter(
     Datetime values arrive already normalized -- a node converts them to
     UTC-aware instants at construction -- so column-encoded leaves bind them
     as-is, and the JSON-text encodings only choose a representation.
+
+    A leaf whose field holds no value compares to SQL NULL, so `Not` makes
+    its operand total with `COALESCE(..., FALSE)` before negating it and is
+    the complement of a match, keeping rows that hold no value.
     """
     match expr:
-        case Equals() | NotEquals() | Ordering() | In() | IsMissing():
+        case Equals() | Ordering() | In() | IsNull():
             column, kind = resolve_field(expr.field)
             match kind:
                 case "column":
@@ -209,4 +206,5 @@ def compile_sql_filter(
         case Or(operands):
             return or_(*(compile_sql_filter(o, resolve_field) for o in operands))
         case Not(operand):
-            return ~compile_sql_filter(operand, resolve_field)
+            inner = compile_sql_filter(operand, resolve_field)
+            return ~func.coalesce(inner, false())

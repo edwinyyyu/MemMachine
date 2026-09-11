@@ -17,9 +17,8 @@ from .filter_expression import (
     Equals,
     FilterExpr,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
     Ordering,
     OrderingOp,
@@ -171,7 +170,7 @@ class _Parser:
         if self._accept("EQ"):
             return Equals(field, self._parse_value())
         if self._accept("NE"):
-            return NotEquals(field, self._parse_value())
+            return Not(Equals(field, self._parse_value()))
         op_tok = self._accept("GE", "LE", "GT", "LT")
         if op_tok:
             return Ordering(field, _ORDERING_OPS[op_tok.type], self._parse_ordered())
@@ -193,7 +192,7 @@ class _Parser:
                 raise FilterParseError(
                     "Expected NULL after IS/IS NOT",
                 )
-            expr = IsMissing(field)
+            expr = IsNull(field)
             return Not(expr) if negate else expr
 
         raise FilterParseError(

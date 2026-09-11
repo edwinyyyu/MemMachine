@@ -4,7 +4,7 @@ from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.filter import (
     Equals,
     FilterExpr,
-    NotEquals,
+    Not,
     Ordering,
 )
 
@@ -15,7 +15,7 @@ def comparison(field: str, op: str, value: PropertyValue) -> FilterExpr:
         case "=":
             return Equals(field=field, value=value)
         case "!=":
-            return NotEquals(field=field, value=value)
+            return Not(Equals(field=field, value=value))
         case ">" | "<" | ">=" | "<=":
             if isinstance(value, bool | str):
                 raise TypeError(f"{op} does not order {type(value).__name__}")

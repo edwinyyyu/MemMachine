@@ -17,9 +17,8 @@ from memmachine_server.common.filter import (
     Equals,
     FilterExpr,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
     Ordering,
 )
@@ -657,7 +656,7 @@ class InMemorySemanticStorage(SemanticStorage):
         expr: FilterExpr,
     ) -> bool:
         match expr:
-            case IsMissing(field):
+            case IsNull(field):
                 value, _ = self._resolve_entry_field(entry, field)
                 return value is None
             case In(field, values):
@@ -666,9 +665,6 @@ class InMemorySemanticStorage(SemanticStorage):
             case Equals(field, expected):
                 value, _ = self._resolve_entry_field(entry, field)
                 return value == expected
-            case NotEquals(field, expected):
-                value, _ = self._resolve_entry_field(entry, field)
-                return value is not None and value != expected
             case Ordering(field, op, expected):
                 value, _ = self._resolve_entry_field(entry, field)
                 return value is not None and self._COMPARE_OPS[op](value, expected)

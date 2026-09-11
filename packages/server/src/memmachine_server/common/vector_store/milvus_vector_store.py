@@ -20,9 +20,8 @@ from memmachine_server.common.filter import (
     Equals,
     FilterExpr,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
     Ordering,
     OrderingOp,
@@ -94,7 +93,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
     """A logical collection backed by Milvus."""
 
     _SUPPORTED_FILTER_NODES: ClassVar[frozenset[type]] = frozenset(
-        {Equals, NotEquals, Ordering, In, IsMissing, And, Or, Not}
+        {Equals, Ordering, In, IsNull, And, Or, Not}
     )
 
     @staticmethod
@@ -104,14 +103,12 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         match expr:
             case Equals(field, value):
                 return f"{_property_field(field)} == {_literal(value)}"
-            case NotEquals(field, value):
-                return f"{_property_field(field)} != {_literal(value)}"
             case Ordering(field, op, value):
                 return f"{_property_field(field)} {op} {_literal(value)}"
             case In(field, values):
                 literals = ", ".join(_literal(value) for value in values)
                 return f"{_property_field(field)} in [{literals}]"
-            case IsMissing(field):
+            case IsNull(field):
                 return f"{_property_field(field)} is null"
             case Not(operand):
                 return MilvusVectorStoreCollection._negated(operand)
@@ -136,11 +133,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                     f"({_property_field(field)} != {_literal(value)}) || "
                     f"({_property_field(field)} is null)"
                 )
-            case NotEquals(field, value):
-                return (
-                    f"({_property_field(field)} == {_literal(value)}) || "
-                    f"({_property_field(field)} is null)"
-                )
             case Ordering(field, op, value):
                 return (
                     f"({_property_field(field)} {_INVERSE_ORDERING[op]} {_literal(value)}) || "
@@ -152,7 +144,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                     f"({_property_field(field)} not in [{literals}]) || "
                     f"({_property_field(field)} is null)"
                 )
-            case IsMissing(field):
+            case IsNull(field):
                 return f"{_property_field(field)} is not null"
             case Not(operand):
                 return build(operand)

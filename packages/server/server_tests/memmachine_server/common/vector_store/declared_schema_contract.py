@@ -18,9 +18,8 @@ from memmachine_server.common.filter import (
     And,
     Equals,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
     Ordering,
 )
@@ -32,6 +31,31 @@ from memmachine_server.common.vector_store import (
 
 _LIMIT = 100
 
+_INSTANT = datetime(2024, 5, 1, 12, 0, 0, tzinfo=UTC)
+
+_DECLARED = {
+    "name": "alice",
+    "age": 30,
+    "score": 1.5,
+    "active": True,
+    "created_at": _INSTANT,
+}
+
+_COMPLEMENT_FILTERS = [
+    Equals(field="name", value="alice"),
+    Equals(field="active", value=True),
+    Equals(field="created_at", value=_INSTANT),
+    Ordering(field="age", op=">", value=20),
+    Ordering(field="score", op="<=", value=1.5),
+    Ordering(field="created_at", op=">=", value=_INSTANT),
+    In(field="name", values=("alice", "carol")),
+    IsNull(field="name"),
+    IsNull(field="score"),
+    And((Equals(field="name", value="alice"), Ordering(field="age", op=">", value=20))),
+    Or((Equals(field="name", value="alice"), IsNull(field="name"))),
+    Not(Equals(field="name", value="alice")),
+]
+
 
 def _unit(vector: list[float]) -> list[float]:
     magnitude = math.sqrt(sum(x * x for x in vector))
@@ -40,6 +64,16 @@ def _unit(vector: list[float]) -> list[float]:
 
 def _record(vector: list[float], **properties) -> Record:
     return Record(uuid=uuid4(), vector=_unit(vector), properties=properties)
+
+
+def _presence_records() -> list[Record]:
+    """One record holding every declared key, one lacking each key, and one bare."""
+    records = [_record([1.0, 0.0, 0.0], **_DECLARED)]
+    for index, absent in enumerate(_DECLARED, start=1):
+        held = {key: value for key, value in _DECLARED.items() if key != absent}
+        records.append(_record([1.0, 0.1 * index, 0.0], **held))
+    records.append(_record([0.0, 1.0, 0.0]))
+    return records
 
 
 async def _admitted(collection, property_filter, *, limit=_LIMIT) -> set:
@@ -74,7 +108,7 @@ class DeclaredSchemaContract:
         with pytest.raises(UndeclaredPropertyKeyError, match="color"):
             await _admitted(
                 collection,
-                And((Equals(field="name", value="a"), IsMissing(field="color"))),
+                And((Equals(field="name", value="a"), IsNull(field="color"))),
             )
 
     @pytest.mark.asyncio
@@ -86,10 +120,9 @@ class DeclaredSchemaContract:
 
         expected = {
             Equals: (Equals(field="name", value="alice"), {held.uuid}),
-            NotEquals: (NotEquals(field="name", value="alice"), {other.uuid}),
             Ordering: (Ordering(field="age", op=">", value=35), {other.uuid}),
             In: (In(field="name", values=("alice", "carol")), {held.uuid}),
-            IsMissing: (IsMissing(field="name"), {lacking.uuid}),
+            IsNull: (IsNull(field="name"), {lacking.uuid}),
             And: (
                 And(
                     (Equals(field="name", value="alice"), Equals(field="age", value=30))
@@ -113,34 +146,38 @@ class DeclaredSchemaContract:
             assert await _admitted(collection, property_filter) == admitted, node
 
     @pytest.mark.asyncio
-    async def test_not_equals_excludes_absence_and_not_equals_includes_it(
-        self, collection
-    ):
+    @pytest.mark.parametrize("property_filter", _COMPLEMENT_FILTERS)
+    async def test_negation_is_the_complement(self, collection, property_filter):
+        """`Not` admits every record the operand does not, absence included."""
+        records = _presence_records()
+        await collection.upsert(records=records)
+        everything = {record.uuid for record in records}
+
+        admitted = await _admitted(collection, property_filter)
+        assert (
+            await _admitted(collection, Not(property_filter)) == everything - admitted
+        )
+        assert await _admitted(collection, Not(Not(property_filter))) == admitted
+
+    @pytest.mark.asyncio
+    async def test_is_null_matches_the_records_without_the_key(self, collection):
+        holding = _record([1.0, 0.0, 0.0], name="alice", age=30)
+        lacking = _record([0.0, 1.0, 0.0], age=31)
+        await collection.upsert(records=[holding, lacking])
+
+        assert await _admitted(collection, IsNull(field="name")) == {lacking.uuid}
+        assert await _admitted(collection, Not(IsNull(field="name"))) == {holding.uuid}
+
+    @pytest.mark.asyncio
+    async def test_negated_equality_keeps_a_record_without_the_key(self, collection):
         holding = _record([1.0, 0.0, 0.0], name="alice")
         differing = _record([0.0, 1.0, 0.0], name="bob")
         lacking = _record([0.0, 0.0, 1.0])
         await collection.upsert(records=[holding, differing, lacking])
 
-        assert await _admitted(collection, NotEquals(field="name", value="alice")) == {
-            differing.uuid
-        }
         assert await _admitted(
             collection, Not(Equals(field="name", value="alice"))
-        ) == {
-            differing.uuid,
-            lacking.uuid,
-        }
-
-    @pytest.mark.asyncio
-    async def test_is_missing_matches_absence(self, collection):
-        holding = _record([1.0, 0.0, 0.0], name="alice", age=30)
-        lacking = _record([0.0, 1.0, 0.0], age=31)
-        await collection.upsert(records=[holding, lacking])
-
-        assert await _admitted(collection, IsMissing(field="name")) == {lacking.uuid}
-        assert await _admitted(collection, Not(IsMissing(field="name"))) == {
-            holding.uuid
-        }
+        ) == {differing.uuid, lacking.uuid}
 
     @pytest.mark.asyncio
     async def test_a_predicate_of_another_type_matches_nothing(self, collection):

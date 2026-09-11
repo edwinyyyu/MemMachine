@@ -19,7 +19,7 @@ from memmachine_server.common.filter import (
     And,
     Equals,
     In,
-    IsMissing,
+    IsNull,
     Not,
     Or,
     Ordering,
@@ -341,7 +341,7 @@ class TestUpsertAndQuery:
         results = await collection.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=IsMissing(field="name"),
+            property_filter=IsNull(field="name"),
         )
         assert {match.record_uuid for match in results[0].matches} == {record.uuid}
 
@@ -461,14 +461,14 @@ class TestFilters:
         null_results = await collection.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=IsMissing(field="name"),
+            property_filter=IsNull(field="name"),
         )
         assert {m.record_uuid for m in null_results[0].matches} == {r_missing.uuid}
 
         not_null_results = await collection.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=Not(IsMissing(field="name")),
+            property_filter=Not(IsNull(field="name")),
         )
         assert {m.record_uuid for m in not_null_results[0].matches} == {
             r_has_value.uuid

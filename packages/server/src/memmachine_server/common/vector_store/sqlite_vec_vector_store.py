@@ -48,9 +48,8 @@ from memmachine_server.common.filter import (
     Equals,
     FilterExpr,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
     Ordering,
 )
@@ -101,7 +100,7 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
     """A logical collection backed by SQLite + sqlite-vec."""
 
     _SUPPORTED_FILTER_NODES: ClassVar[frozenset[type]] = frozenset(
-        {Equals, NotEquals, Ordering, In, IsMissing, And, Or, Not}
+        {Equals, Ordering, In, IsNull, And, Or, Not}
     )
 
     def __init__(

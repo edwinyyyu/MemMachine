@@ -25,9 +25,8 @@ from memmachine_server.common.filter import (
     Equals,
     FilterExpr,
     In,
-    IsMissing,
+    IsNull,
     Not,
-    NotEquals,
     Or,
     Ordering,
     OrderingOp,
@@ -78,7 +77,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     }
 
     _SUPPORTED_FILTER_NODES: ClassVar[frozenset[type]] = frozenset(
-        {Equals, NotEquals, Ordering, In, IsMissing, And, Or, Not}
+        {Equals, Ordering, In, IsNull, And, Or, Not}
     )
 
     @staticmethod
@@ -90,12 +89,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         match expr:
             case Equals(field, value):
                 return models.Filter(must=[eq_condition(field, value)])
-            case NotEquals(field, value):
-                # `must_not` of the match alone would also admit points
-                # lacking the field; a differing value is one the point holds.
-                return models.Filter(
-                    must_not=[eq_condition(field, value), missing_condition(field)]
-                )
             case Ordering(field, op, value):
                 return models.Filter(
                     must=[
@@ -114,7 +107,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                         )
                     ]
                 )
-            case IsMissing(field):
+            case IsNull(field):
                 return models.Filter(must=[missing_condition(field)])
             case Not(operand):
                 return models.Filter(must_not=[build(operand)])
