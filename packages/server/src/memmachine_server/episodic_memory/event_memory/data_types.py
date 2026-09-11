@@ -113,8 +113,8 @@ _BoundedId = Annotated[
 class Event(BaseModel):
     """Something that happened at a point in time, and the content it produced.
 
-    Immutable once stored: nothing edits a stored event, and a changed
-    event is forgotten and encoded again under the same uuid.
+    Immutable once stored: no operation may edit a stored event. A change
+    is a forget and a re-encode under the same uuid.
     """
 
     uuid: UUID = Field(description="Identity of the event")

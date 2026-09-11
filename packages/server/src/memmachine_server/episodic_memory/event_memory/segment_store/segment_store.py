@@ -29,9 +29,10 @@ class SegmentStorePartition(ABC):
     A call with empty input may do no work and return without checking
     the handle.
 
-    Segments are immutable: `add_segments` adds, a segment uuid already
-    stored is rejected rather than replaced, and there is no operation
-    that edits a stored segment.
+    Segments are immutable. `add_segments` must reject a segment uuid
+    that is already stored rather than replace it, and no operation that
+    edits a stored segment may be added to this contract; a changed
+    event is forgotten and encoded again.
 
     Segments within a partition are in one total order,
     `(timestamp, event_uuid, index, offset)`. `get_segments` looks
