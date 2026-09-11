@@ -38,7 +38,6 @@ from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import 
     WholeTextDeriver,
 )
 from memmachine_server.episodic_memory.event_memory.event_memory import (
-    ID_MAX_BYTES,
     EventMemory,
     EventMemoryParams,
 )
@@ -290,17 +289,6 @@ class TestEncodeEvents:
         with pytest.raises(ValueError, match=r"\[a-z0-9_\]"):
             await event_memory.encode_events([event])
 
-    @pytest.mark.parametrize("field", ["session_id", "source_id"])
-    async def test_overlong_id_is_rejected(self, event_memory: EventMemory, field):
-        overlong = "x" * (ID_MAX_BYTES + 1)
-        event = (
-            _make_event("hi", session_id=overlong)
-            if field == "session_id"
-            else _make_event("hi", source_id=overlong)
-        )
-        with pytest.raises(ValueError, match=field):
-            await event_memory.encode_events([event])
-
     async def test_init_raises_on_missing_reserved_field(self, fake_embedder):
         schema = EventMemory.expected_vector_store_collection_schema()
         del schema[EVENT_SESSION_KEY]
@@ -377,7 +365,7 @@ class TestQuery:
         assert len(hits) == 2
         for hit in hits:
             assert isinstance(hit, SearchHit)
-            assert hit.segments[hit.seed].uuid in {s.uuid for s in hit.segments}
+            assert hit.segments[hit.seed_index].uuid in {s.uuid for s in hit.segments}
 
     async def test_limit_is_a_maximum(self, event_memory: EventMemory):
         events = [_make_event(f"event {i}", timestamp=_ts(i)) for i in range(10)]
@@ -395,7 +383,7 @@ class TestQuery:
         [hit] = hits
         assert len(hit.segments) > 1
         assert len({seg.event_uuid for seg in hit.segments}) > 1
-        assert hit.segments[hit.seed].uuid == hit.segments[hit.seed].uuid
+        assert hit.segments[hit.seed_index].uuid == hit.segments[hit.seed_index].uuid
         timestamps = [seg.timestamp for seg in hit.segments]
         assert timestamps == sorted(timestamps)
 
@@ -419,14 +407,16 @@ class TestQuery:
         ranked = await memory.query("query")
         thresholded = await memory.query("query", min_cosine_similarity=0.9)
 
-        assert [hit.segments[hit.seed].event_uuid for hit in ranked] == [
+        assert [hit.segments[hit.seed_index].event_uuid for hit in ranked] == [
             near.uuid,
             far.uuid,
         ]
         assert [hit.score for hit in ranked] == sorted(
             (hit.score for hit in ranked), reverse=True
         )
-        assert [hit.segments[hit.seed].event_uuid for hit in thresholded] == [near.uuid]
+        assert [hit.segments[hit.seed_index].event_uuid for hit in thresholded] == [
+            near.uuid
+        ]
 
     async def test_a_neighbor_in_the_window_is_not_a_hit(self):
         embedder = AngleEmbedder({"match": 0.0, "other": 1.4, "query": 0.0})
@@ -438,7 +428,7 @@ class TestQuery:
         hits = await memory.query("query", limit=1, expand_context=3)
 
         [hit] = hits
-        assert hit.segments[hit.seed].event_uuid == match.uuid
+        assert hit.segments[hit.seed_index].event_uuid == match.uuid
         assert {seg.event_uuid for seg in hit.segments} == {other.uuid, match.uuid}
 
 
@@ -455,7 +445,10 @@ class TestQuerySystemFilters:
 
         hits = await event_memory.query("x", session_ids=["a"], expand_context=6)
 
-        assert {hit.segments[hit.seed].event_uuid for hit in hits} == {a0.uuid, a1.uuid}
+        assert {hit.segments[hit.seed_index].event_uuid for hit in hits} == {
+            a0.uuid,
+            a1.uuid,
+        }
         for hit in hits:
             assert {seg.session_id for seg in hit.segments} == {"a"}
 
@@ -731,7 +724,7 @@ class TestRerank:
         )
 
         # FakeReranker scores by rendered length: the longer text first.
-        assert [hit.segments[hit.seed].event_uuid for hit in reranked] == [
+        assert [hit.segments[hit.seed_index].event_uuid for hit in reranked] == [
             e2.uuid,
             e1.uuid,
         ]
@@ -803,7 +796,7 @@ class TestRoundTrips:
         await event_memory.encode_events([event])
 
         [hit] = await event_memory.query("test")
-        assert hit.segments[hit.seed].context == ProducerContext(producer="Alice")
+        assert hit.segments[hit.seed_index].context == ProducerContext(producer="Alice")
 
     async def test_forget_then_query_excludes_forgotten(
         self, event_memory: EventMemory
@@ -1165,7 +1158,7 @@ class TestEviction:
         """A batch evicts what encoding its events one at a time would."""
         events = [_make_event(f"msg {i}", timestamp=_ts(i)) for i in range(12)]
         eviction = EvictionOptions(
-            similarity_threshold=0.5, search_limit=100, target_size=5
+            cosine_similarity_threshold=0.5, search_limit=100, target_size=5
         )
         batched_collection = make_collection(FakeEmbedder())
         serial_collection = make_collection(FakeEmbedder())
@@ -1190,7 +1183,7 @@ class TestEviction:
             embedder,
             collection=collection,
             eviction=EvictionOptions(
-                similarity_threshold=0.5, search_limit=100, target_size=5
+                cosine_similarity_threshold=0.5, search_limit=100, target_size=5
             ),
         )
         alphas = [_make_event(f"alpha {i}", timestamp=_ts(i)) for i in range(7)]

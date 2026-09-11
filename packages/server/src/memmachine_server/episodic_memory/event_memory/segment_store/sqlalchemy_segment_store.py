@@ -32,7 +32,6 @@ from sqlalchemy import (
     func,
     insert,
     literal,
-    or_,
     select,
     true,
     tuple_,
@@ -200,8 +199,18 @@ class SegmentRow(BaseSegmentStore):
             "index",
             "offset",
         ),
-        # The one total order the store exposes: context windows,
-        # neighborhoods and the timestamp bounds walk it.
+        # The one total order the store exposes; a walk from a seed with
+        # no session and the timestamp bounds use it.
+        Index(
+            "segment_store_sg__in_ts_ev_ix_of",
+            "incarnation",
+            "timestamp",
+            "event_uuid",
+            "index",
+            "offset",
+        ),
+        # The same order within a session; a walk from a seed with a
+        # session pins it.
         Index(
             "segment_store_sg__in_se_ts_ev_ix_of",
             "incarnation",
@@ -435,7 +444,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         after: int = 0,
         since: datetime | None = None,
         until: datetime | None = None,
-        source_ids: Iterable[str | None] | None = None,
+        source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, list[Segment]]:
@@ -482,7 +491,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         after: int = 0,
         since: datetime | None = None,
         until: datetime | None = None,
-        source_ids: Iterable[str | None] | None = None,
+        source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, Neighborhood]:
@@ -546,8 +555,9 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     ) -> dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]]:
         """The rows before and after each seed in the store's order.
 
-        Confined to the seed's session and filtered by `conditions`;
-        strictly before and strictly after, so the seed is in neither list.
+        Within the seed's session, or across every session when it has
+        none, and filtered by `conditions`; strictly before and strictly
+        after, so the seed is in neither list.
         """
         if before <= 0 and after <= 0:
             return {seed_uuid: ([], []) for seed_uuid in seed_rows_by_uuid}
@@ -573,7 +583,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     def _row_conditions(
         since: datetime | None,
         until: datetime | None,
-        source_ids: Iterable[str | None] | None,
+        source_ids: Iterable[str] | None,
         block_kinds: Iterable[str] | None,
         property_filter: FilterExpr | None,
     ) -> list[ColumnElement[bool]]:
@@ -607,16 +617,15 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         return conditions
 
     @staticmethod
-    def _session_condition(session_id: str | None) -> ColumnElement[bool]:
-        """Rows of one session: a null session id matches null and nothing else.
+    def _session_conditions(session_id: str | None) -> list[ColumnElement[bool]]:
+        """The rows a seed's walk may reach: its session, or every row when it has none.
 
-        Spelled as `=` or `IS NULL` on a value known before the statement
-        is built, rather than `IS NOT DISTINCT FROM`, which PostgreSQL
-        cannot serve from the ordering index.
+        Spelled as `=` on a value known before the statement is built, so
+        the session-pinned ordering index serves it.
         """
         if session_id is None:
-            return SegmentRow.session_id.is_(None)
-        return SegmentRow.session_id == session_id
+            return []
+        return [SegmentRow.session_id == session_id]
 
     async def _get_window_rows_lateral(
         self,
@@ -629,7 +638,8 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         """Get backward/forward context using LATERAL joins (non-SQLite).
 
         One pair of statements per distinct seed session, so the session
-        predicate is a literal the ordering index serves.
+        predicate is a literal the session-pinned ordering index serves;
+        seeds with no session share a pair with no session predicate.
         """
         rows_by_seed: dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]] = {
             seed_uuid: ([], []) for seed_uuid in seed_rows_by_uuid
@@ -676,7 +686,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 seeds_subquery.c.seed_offset,
             )
             row_conditions = [
-                SQLAlchemySegmentStorePartition._session_condition(session_id),
+                *SQLAlchemySegmentStorePartition._session_conditions(session_id),
                 *conditions,
             ]
 
@@ -798,7 +808,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 literal(seed_row.index),
                 literal(seed_row.offset),
             )
-            session_condition = SQLAlchemySegmentStorePartition._session_condition(
+            session_conditions = SQLAlchemySegmentStorePartition._session_conditions(
                 seed_row.session_id
             )
 
@@ -808,7 +818,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     select(SegmentRow)
                     .where(
                         SegmentRow.incarnation == self._incarnation,
-                        session_condition,
+                        *session_conditions,
                         segment_ordering_columns < seed_ordering_values,
                         self._registry_row_query().exists(),
                         *conditions,
@@ -831,7 +841,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     select(SegmentRow)
                     .where(
                         SegmentRow.incarnation == self._incarnation,
-                        session_condition,
+                        *session_conditions,
                         segment_ordering_columns > seed_ordering_values,
                         self._registry_row_query().exists(),
                         *conditions,
@@ -1053,21 +1063,13 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
 
 def _in_values(
     column: InstrumentedAttribute[str] | InstrumentedAttribute[str | None],
-    values: Iterable[str | None],
+    values: Iterable[str],
 ) -> ColumnElement[bool]:
-    """`column IN values`; a `None` member is `IS NULL`; an empty list admits nothing."""
+    """`column IN values`; an empty list admits nothing."""
     values = list(values)
-    named = [value for value in values if value is not None]
-    clauses: list[ColumnElement[bool]] = []
-    if named:
-        clauses.append(column.in_(named))
-    if None in values:
-        clauses.append(column.is_(None))
-    if not clauses:
+    if not values:
         return false()
-    if len(clauses) == 1:
-        return clauses[0]
-    return or_(*clauses)
+    return column.in_(values)
 
 
 class SQLAlchemySegmentStoreParams(BaseModel):

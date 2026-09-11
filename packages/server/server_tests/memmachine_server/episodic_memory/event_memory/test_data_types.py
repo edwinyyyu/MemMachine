@@ -7,9 +7,11 @@ import pytest
 from pydantic import ValidationError
 
 from memmachine_server.episodic_memory.event_memory.data_types import (
+    ID_MAX_BYTES,
     Derivative,
     Event,
     ProducerContext,
+    SearchHit,
     Segment,
     TextBlock,
     decode_block,
@@ -113,6 +115,51 @@ class TestSegmentRoundTrip:
             block=TextBlock(text="hello"),
         )
         assert (seg.session_id, seg.source_id) == (None, None)
+
+
+class TestBounds:
+    @pytest.mark.parametrize("field", ["session_id", "source_id"])
+    def test_overlong_id_is_rejected(self, field):
+        overlong = "x" * (ID_MAX_BYTES + 1)
+        with pytest.raises(ValidationError, match=field):
+            Event.model_validate(
+                {
+                    "uuid": uuid4(),
+                    "timestamp": datetime(2026, 1, 15, 10, 30, tzinfo=UTC),
+                    "blocks": [{"block_type": "text", "text": "hello"}],
+                    field: overlong,
+                }
+            )
+
+    @pytest.mark.parametrize("field", ["index", "offset"])
+    def test_negative_position_is_rejected(self, field):
+        with pytest.raises(ValidationError, match=field):
+            Segment.model_validate(
+                {
+                    "uuid": uuid4(),
+                    "event_uuid": uuid4(),
+                    "index": 0,
+                    "offset": 0,
+                    "timestamp": datetime(2026, 1, 15, 10, 30, tzinfo=UTC),
+                    "block": {"block_type": "text", "text": "hello"},
+                    field: -1,
+                }
+            )
+
+    def test_seed_index_must_be_inside_the_window(self):
+        segment = Segment(
+            uuid=uuid4(),
+            event_uuid=uuid4(),
+            index=0,
+            offset=0,
+            timestamp=datetime(2026, 1, 15, 10, 30, tzinfo=UTC),
+            block=TextBlock(text="hello"),
+        )
+        assert SearchHit(score=1.0, seed_index=0, segments=[segment]).seed_index == 0
+        with pytest.raises(ValidationError, match="seed_index"):
+            SearchHit(score=1.0, seed_index=1, segments=[segment])
+        with pytest.raises(ValidationError, match="segments"):
+            SearchHit(score=1.0, seed_index=0, segments=[])
 
 
 class TestEventRoundTrip:

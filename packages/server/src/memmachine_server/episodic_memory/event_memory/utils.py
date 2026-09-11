@@ -15,8 +15,6 @@ from memmachine_server.common.filter.filter_parser import (
     Comparison,
     FilterExpr,
     In,
-    IsNull,
-    Or,
 )
 from memmachine_server.common.property_keys import (
     reserved_property_key,
@@ -44,16 +42,15 @@ def system_predicates(
     *,
     since: datetime | None = None,
     until: datetime | None = None,
-    session_ids: Iterable[str | None] | None = None,
-    source_ids: Iterable[str | None] | None = None,
+    session_ids: Iterable[str] | None = None,
+    source_ids: Iterable[str] | None = None,
     block_kinds: Iterable[str] | None = None,
 ) -> FilterExpr | None:
     """The predicates on reserved keys that a vector store evaluates.
 
     `since` is inclusive and `until` exclusive, so ranges meet without
     overlap. A list admits its members and nothing else, so an empty list
-    admits nothing; a `None` member admits records with no value for the
-    field (`IS NULL`); a list left `None` admits everything.
+    admits nothing; a list left `None` admits everything.
     """
     clauses: list[FilterExpr | None] = [
         Comparison(field=EVENT_TIMESTAMP_KEY, op=">=", value=since)
@@ -62,10 +59,10 @@ def system_predicates(
         Comparison(field=EVENT_TIMESTAMP_KEY, op="<", value=until)
         if until is not None
         else None,
-        _ids_predicate(EVENT_SESSION_KEY, session_ids)
+        In(field=EVENT_SESSION_KEY, values=list(session_ids))
         if session_ids is not None
         else None,
-        _ids_predicate(EVENT_SOURCE_KEY, source_ids)
+        In(field=EVENT_SOURCE_KEY, values=list(source_ids))
         if source_ids is not None
         else None,
         In(field=BLOCK_KIND_KEY, values=list(block_kinds))
@@ -73,19 +70,3 @@ def system_predicates(
         else None,
     ]
     return conjoin(clauses)
-
-
-def _ids_predicate(key: str, ids: Iterable[str | None]) -> FilterExpr:
-    """`key` is one of `ids`; a `None` member is `IS NULL`; no members admit nothing."""
-    values = list(ids)
-    named = [value for value in values if value is not None]
-    clauses: list[FilterExpr] = []
-    if named:
-        clauses.append(In(field=key, values=named))
-    if None in values:
-        clauses.append(IsNull(field=key))
-    if not clauses:
-        return In(field=key, values=[])
-    if len(clauses) == 1:
-        return clauses[0]
-    return Or(left=clauses[0], right=clauses[1])

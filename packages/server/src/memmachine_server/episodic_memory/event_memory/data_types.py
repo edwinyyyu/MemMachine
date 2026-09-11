@@ -9,6 +9,7 @@ from typing import (
 from uuid import UUID
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     Field,
     InstanceOf,
@@ -16,6 +17,7 @@ from pydantic import (
     TypeAdapter,
     field_serializer,
     field_validator,
+    model_validator,
 )
 
 from memmachine_server.common.data_types import PropertyValue
@@ -92,23 +94,44 @@ def decode_block(encoded: Mapping[str, JsonValue]) -> Block:
 
 # Event, Segment, Derivative: core data models for EventMemory.
 
+ID_MAX_BYTES = 255
+"""Bound on a session id and a source id, in bytes: the width of the store's key columns."""
+
+
+def _bounded_id(value: str) -> str:
+    size = len(value.encode())
+    if size > ID_MAX_BYTES:
+        raise ValueError(f"is {size} bytes; the maximum is {ID_MAX_BYTES}")
+    return value
+
+
+_BoundedId = Annotated[str, AfterValidator(_bounded_id)]
+
 
 class Event(BaseModel):
-    """Some content, along with its associated context and properties.
+    """Something that happened at a point in time, and the content it produced."""
 
-    `session_id` names the conversation or stream the event belongs to;
-    `source_id` names the entity responsible for it. Both are optional and
-    filterable at search: `None` is null, the record carries no key for it,
-    and `None` in a typed id list (or `IS NULL`) selects it.
-    """
-
-    uuid: UUID
-    timestamp: datetime
-    session_id: str | None = None
-    source_id: str | None = None
-    context: Context = Field(default_factory=NullContext)
-    blocks: list[Block]
-    properties: dict[str, PropertyValue] = Field(default_factory=dict)
+    uuid: UUID = Field(description="Identity of the event")
+    timestamp: datetime = Field(
+        description="When the event happened; a naive value means UTC"
+    )
+    session_id: _BoundedId | None = Field(
+        default=None,
+        description="The conversation or stream the event belongs to; None for none",
+    )
+    source_id: _BoundedId | None = Field(
+        default=None,
+        description="The entity responsible for the content; None for none",
+    )
+    context: Context = Field(
+        default_factory=NullContext,
+        description="The circumstances the content was produced in",
+    )
+    blocks: list[Block] = Field(description="The content, in order")
+    properties: dict[str, PropertyValue] = Field(
+        default_factory=dict,
+        description="Caller-defined values the event can be filtered by",
+    )
 
     @field_validator("properties", mode="before")
     @classmethod
@@ -132,22 +155,30 @@ class Event(BaseModel):
 
 
 class Segment(BaseModel):
-    """Snapshot of an event, representing a smaller unit of content.
+    """A piece of one of an event's blocks, carrying the event's fields."""
 
-    `session_id`, `source_id`, `context`, `timestamp` and `properties` are
-    copied verbatim from the event.
-    """
-
-    uuid: UUID
-    event_uuid: UUID
-    index: int
-    offset: int
-    timestamp: datetime
-    session_id: str | None = None
-    source_id: str | None = None
-    context: Context = Field(default_factory=NullContext)
-    block: Block
-    properties: dict[str, PropertyValue] = Field(default_factory=dict)
+    uuid: UUID = Field(description="Identity of the segment")
+    event_uuid: UUID = Field(description="The event the segment is a piece of")
+    index: int = Field(
+        ge=0, description="Position of the block among the event's blocks"
+    )
+    offset: int = Field(
+        ge=0, description="Position of the piece among the block's pieces"
+    )
+    timestamp: datetime = Field(description="The event's timestamp")
+    session_id: _BoundedId | None = Field(
+        default=None, description="The event's session id"
+    )
+    source_id: _BoundedId | None = Field(
+        default=None, description="The event's source id"
+    )
+    context: Context = Field(
+        default_factory=NullContext, description="The event's context"
+    )
+    block: Block = Field(description="The piece of the event's block")
+    properties: dict[str, PropertyValue] = Field(
+        default_factory=dict, description="The event's properties"
+    )
 
     @field_validator("properties", mode="before")
     @classmethod
@@ -172,20 +203,24 @@ class Segment(BaseModel):
 
 
 class Derivative(BaseModel):
-    """Information derived from a segment.
+    """Content derived from a segment to be embedded in its place, carrying the segment's fields."""
 
-    `session_id`, `source_id`, `context`, `timestamp` and `properties` are
-    copied verbatim from the segment.
-    """
-
-    uuid: UUID
-    segment_uuid: UUID
-    timestamp: datetime
-    session_id: str | None = None
-    source_id: str | None = None
-    context: Context = Field(default_factory=NullContext)
-    block: Block
-    properties: dict[str, PropertyValue] = Field(default_factory=dict)
+    uuid: UUID = Field(description="Identity of the derivative")
+    segment_uuid: UUID = Field(description="The segment the content was derived from")
+    timestamp: datetime = Field(description="The segment's timestamp")
+    session_id: _BoundedId | None = Field(
+        default=None, description="The segment's session id"
+    )
+    source_id: _BoundedId | None = Field(
+        default=None, description="The segment's source id"
+    )
+    context: Context = Field(
+        default_factory=NullContext, description="The segment's context"
+    )
+    block: Block = Field(description="The derived content")
+    properties: dict[str, PropertyValue] = Field(
+        default_factory=dict, description="The segment's properties"
+    )
 
     @field_validator("properties", mode="before")
     @classmethod
@@ -227,31 +262,59 @@ class FormatOptions(BaseModel):
 
 
 class SearchHit(BaseModel):
-    """One matched derivative with the context window around its segment."""
+    """A segment found by search, scored, with the segment window around it."""
 
-    score: float
-    """Cosine similarity of the matched derivative."""
-    seed: int
-    """Index in `segments` of the matched segment."""
-    segments: list[Segment]
-    """The context window, in the store's order."""
+    score: float = Field(
+        description="Relevance of the seed segment to the query; higher is better"
+    )
+    seed_index: int = Field(ge=0, description="Index of the seed segment in `segments`")
+    segments: list[Segment] = Field(
+        min_length=1,
+        description="The segment window around the seed, in the store's order",
+    )
+
+    @model_validator(mode="after")
+    def _seed_is_in_the_window(self) -> "SearchHit":
+        if self.seed_index >= len(self.segments):
+            raise ValueError(
+                f"seed_index {self.seed_index} is outside the {len(self.segments)} segments"
+            )
+        return self
 
 
 class Neighborhood(BaseModel):
     """The segments around an anchor, never the anchor itself: its open neighborhood."""
 
-    before: list[Segment]
-    """In order, ending just before the anchor."""
-    after: list[Segment]
-    """In order, starting just after the anchor."""
+    before: list[Segment] = Field(
+        description="In the store's order, ending just before the anchor"
+    )
+    after: list[Segment] = Field(
+        description="In the store's order, starting just after the anchor"
+    )
 
 
 class EvictionOptions(BaseModel):
-    """How EventMemory trims clusters of near-duplicate derivatives."""
+    """Eviction, at ingest, of stored derivatives that a new derivative nearly duplicates."""
 
-    similarity_threshold: float = Field(ge=-1.0, le=1.0)
-    """Cosine similarity at or above which two derivatives are one cluster."""
-    search_limit: int = Field(gt=0)
-    """Stored neighbors consulted per new derivative."""
-    target_size: int = Field(gt=0)
-    """A cluster larger than this is trimmed to it."""
+    cosine_similarity_threshold: float = Field(
+        ge=-1.0,
+        le=1.0,
+        description=(
+            "Cosine similarity between a new derivative and a stored one "
+            "at or above which eviction is considered"
+        ),
+    )
+    search_limit: int = Field(
+        gt=0,
+        description=(
+            "Maximum number of stored derivatives at or above the threshold "
+            "fetched per new derivative; only those can be evicted"
+        ),
+    )
+    target_size: int = Field(
+        gt=0,
+        description=(
+            "How many derivatives to keep out of a new derivative and the "
+            "stored ones at or above the threshold with it, when there are more"
+        ),
+    )

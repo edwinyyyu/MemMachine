@@ -807,7 +807,7 @@ def test_episode_uid_context_dedup_and_nucleus():
 
     hit = SearchHit(
         score=1.0,
-        seed=1,
+        seed_index=1,
         segments=[_seg("e1"), _seg("e2"), _seg("e2"), _seg("e3")],
     )
 

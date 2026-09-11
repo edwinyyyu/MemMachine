@@ -713,7 +713,7 @@ class LongTermMemory:
             if episode_uid not in seen:
                 seen.add(episode_uid)
                 context_uids.append(episode_uid)
-            if index == hit.seed:
+            if index == hit.seed_index:
                 nuclear_uid = episode_uid
         return nuclear_uid, context_uids
 
@@ -759,7 +759,7 @@ class LongTermMemory:
     @staticmethod
     def _hit_episode_uid(hit: SearchHit) -> str | None:
         """Pull `_episode_uid` from the seed segment of a hit."""
-        seed = hit.segments[hit.seed]
+        seed = hit.segments[hit.seed_index]
         return cast(str | None, seed.properties.get(_EPISODE_UID_FIELD))
 
     @staticmethod
