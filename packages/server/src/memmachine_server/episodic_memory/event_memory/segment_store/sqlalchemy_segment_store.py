@@ -180,7 +180,7 @@ class SegmentRow(BaseSegmentStore):
     timestamp_timezone_offset: MappedColumn[int] = mapped_column(
         Integer, nullable=False, default=0
     )
-    session_id: MappedColumn[str | None] = mapped_column(Text, nullable=True)
+    session_id: MappedColumn[str] = mapped_column(Text, nullable=False)
     source_id: MappedColumn[str | None] = mapped_column(Text, nullable=True)
     context: MappedColumn[bytes] = mapped_column(LargeBinary, nullable=False)
     block_kind: MappedColumn[str] = mapped_column(Text, nullable=False)
@@ -201,18 +201,8 @@ class SegmentRow(BaseSegmentStore):
             "index",
             "offset",
         ),
-        # The one total order the store exposes; a walk from a seed with
-        # no session and the timestamp bounds use it.
-        Index(
-            "segment_store_sg__in_ts_ev_ix_of",
-            "incarnation",
-            "timestamp",
-            "event_uuid",
-            "index",
-            "offset",
-        ),
-        # The same order within a session; a walk from a seed with a
-        # session pins it.
+        # The one total order the store exposes, within a session: a walk
+        # pins the session and follows it.
         Index(
             "segment_store_sg__in_se_ts_ev_ix_of",
             "incarnation",
@@ -286,7 +276,7 @@ class _SeedKey:
     event_uuid: UUID
     index: int
     offset: int
-    session_id: str | None
+    session_id: str
 
 
 def _seed_key(segment: Segment) -> _SeedKey:
@@ -504,7 +494,6 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         after: int = 0,
         since: datetime | None = None,
         until: datetime | None = None,
-        session_ids: Iterable[str] | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
@@ -513,7 +502,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         if not seeds:
             return {}
         conditions = SQLAlchemySegmentStorePartition._row_conditions(
-            since, until, session_ids, source_ids, block_kinds, property_filter
+            since, until, None, source_ids, block_kinds, property_filter
         )
 
         async with (
@@ -564,9 +553,8 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         """The rows before and after each seed in the store's order.
 
         A seed is a place in the order, looked up nowhere. Within the
-        seed's session, or across every session when it has none, and
-        filtered by `conditions`; strictly before and strictly after, so a
-        row at the seed's place is in neither list.
+        seed's session and filtered by `conditions`; strictly before and
+        strictly after, so a row at the seed's place is in neither list.
         """
         if before <= 0 and after <= 0:
             return {seed.uuid: ([], []) for seed in seeds}
@@ -629,15 +617,9 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         return conditions
 
     @staticmethod
-    def _session_conditions(session_id: str | None) -> list[ColumnElement[bool]]:
-        """The rows a seed's walk may reach: its session, or every row when it has none.
-
-        Spelled as `=` on a value known before the statement is built, so
-        the session-pinned ordering index serves it.
-        """
-        if session_id is None:
-            return []
-        return [SegmentRow.session_id == session_id]
+    def _session_condition(session_id: str) -> ColumnElement[bool]:
+        """The rows of a seed's session, as `=` on a value known before the statement is built, so the session-pinned ordering index serves it."""
+        return SegmentRow.session_id == session_id
 
     async def _get_window_rows_lateral(
         self,
@@ -651,15 +633,14 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
 
         The seeds are bound parameters in a row set, one pair of statements
         per distinct seed session, so the session predicate is a literal
-        the session-pinned ordering index serves; seeds with no session
-        share a pair with no session predicate. Binding the seed keys, not
+        the session-pinned ordering index serves. Binding the seed keys, not
         rendering them, keeps the statements cacheable by shape.
         """
         rows_by_seed: dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]] = {
             seed.uuid: ([], []) for seed in seeds
         }
 
-        seeds_by_session: defaultdict[str | None, list[_SeedKey]] = defaultdict(list)
+        seeds_by_session: defaultdict[str, list[_SeedKey]] = defaultdict(list)
         for seed in seeds:
             seeds_by_session[seed.session_id].append(seed)
 
@@ -699,7 +680,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 seeds_subquery.c.seed_offset,
             )
             row_conditions = [
-                *SQLAlchemySegmentStorePartition._session_conditions(session_id),
+                SQLAlchemySegmentStorePartition._session_condition(session_id),
                 self._registry_row_query().exists(),
                 *conditions,
             ]
@@ -823,7 +804,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 literal(seed.index),
                 literal(seed.offset),
             )
-            session_conditions = SQLAlchemySegmentStorePartition._session_conditions(
+            session_condition = SQLAlchemySegmentStorePartition._session_condition(
                 seed.session_id
             )
 
@@ -833,7 +814,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     select(SegmentRow)
                     .where(
                         SegmentRow.incarnation == self._incarnation,
-                        *session_conditions,
+                        session_condition,
                         segment_ordering_columns < seed_ordering_values,
                         self._registry_row_query().exists(),
                         *conditions,
@@ -856,7 +837,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     select(SegmentRow)
                     .where(
                         SegmentRow.incarnation == self._incarnation,
-                        *session_conditions,
+                        session_condition,
                         segment_ordering_columns > seed_ordering_values,
                         self._registry_row_query().exists(),
                         *conditions,

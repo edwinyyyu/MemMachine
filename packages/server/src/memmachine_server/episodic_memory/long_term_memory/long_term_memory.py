@@ -3,7 +3,7 @@
 import datetime
 import logging
 from collections.abc import Iterable
-from typing import Annotated, Literal, cast
+from typing import Annotated, Final, Literal, cast
 from uuid import UUID, uuid4, uuid5
 
 from pydantic import BaseModel, Field, InstanceOf, JsonValue
@@ -68,6 +68,14 @@ _EVENT_UUID_NAMESPACE = UUID("8c2c0e0a-3a2f-4b9c-9d1f-9b6c2a3a4f7e")
 # event.properties with the leading underscore so EventMemory's existing
 # `_to_vector_record_property` translation (bare client-API field -> `_field`)
 # matches the storage layout transparently.
+DEFAULT_SESSION_ID: Final[str] = "memmachine_default"
+"""The session of every event this API ingests.
+
+The API carries no conversation id, so a partition's events are one
+stream. The name is reserved: a caller-named session never begins with
+`memmachine_`.
+"""
+
 _EPISODE_UID_FIELD = "_episode_uid"
 _SESSION_KEY_FIELD = "_session_key"
 _PRODUCER_ID_FIELD = "_producer_id"
@@ -767,9 +775,10 @@ class LongTermMemory:
         - Event.uuid = uuid5(NAMESPACE, episode.uid) so the mapping is
           deterministic and reversible (`_episode_uid` carries the original).
         - Event.source_id = producer_id, the one source an episode has.
-          `session_id` stays null: the server's session is its own grouping,
-          not a conversation, and the API carries no conversation id; when
-          it does, it goes here. Until then the events are one stream.
+          Event.session_id = DEFAULT_SESSION_ID: the API carries no
+          conversation id, so a partition's events are one stream, under
+          a reserved name a caller cannot use; when the API carries one,
+          it goes here.
           Context: ProducerContext for messages; NullContext otherwise.
         - One TextBlock per event (Episode.content is a string today).
         - Properties: system fields stored with `_` prefix, user filterable
@@ -821,6 +830,7 @@ class LongTermMemory:
         return Event(
             uuid=uuid5(_EVENT_UUID_NAMESPACE, episode.uid),
             timestamp=episode.created_at,
+            session_id=DEFAULT_SESSION_ID,
             source_id=episode.producer_id,
             context=context,
             blocks=[TextBlock(text=episode.content)],

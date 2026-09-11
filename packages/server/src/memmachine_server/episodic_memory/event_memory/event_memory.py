@@ -406,8 +406,7 @@ class EventMemory:
         # merge itself enforce that a system value always wins.
         properties: dict[str, PropertyValue] = dict(derivative.properties)
         properties[EVENT_TIMESTAMP_KEY] = derivative.timestamp
-        if derivative.session_id is not None:
-            properties[EVENT_SESSION_KEY] = derivative.session_id
+        properties[EVENT_SESSION_KEY] = derivative.session_id
         if derivative.source_id is not None:
             properties[EVENT_SOURCE_KEY] = derivative.source_id
         properties[BLOCK_KIND_KEY] = derivative.block.block_type
@@ -692,7 +691,6 @@ class EventMemory:
                     after=after,
                     since=since,
                     until=until,
-                    session_ids=session_ids,
                     source_ids=source_ids,
                     block_kinds=block_kinds,
                     property_filter=property_filter,
@@ -746,7 +744,7 @@ class EventMemory:
         property_filter: FilterExpr | None = None,
     ) -> Neighborhood:
         """
-        Get the neighborhood of an anchor in the store's order, within its session when it has one.
+        Get the neighborhood of an anchor in the store's order, within its session.
 
         The anchor is a segment uuid (from a hit) or an event uuid (its
         first segment). The filters apply to the neighbors only, and the
@@ -766,8 +764,8 @@ class EventMemory:
             until (datetime | None):
                 Exclusive upper bound on the neighbors' timestamp (default: None).
             session_ids (Iterable[str] | None):
-                Keep only neighbors of these sessions; an empty list keeps
-                none (default: None, every session the walk reaches).
+                The sessions the anchor may be in; an anchor in another
+                session is not found (default: None, any session).
             source_ids (Iterable[str] | None):
                 Keep only neighbors of these sources; an empty list keeps
                 none (default: None, every source).
@@ -782,7 +780,9 @@ class EventMemory:
                 The neighbors before and after the anchor, in the store's order.
 
         Raises:
-            LookupError: If the anchor is neither a segment nor an event of this memory.
+            LookupError:
+                If the anchor is neither a segment nor an event of this
+                memory, or its session is not among `session_ids`.
         """
         async with self._tracker("expand"):
             segment_uuids_by_event = (
@@ -793,9 +793,11 @@ class EventMemory:
             event_segment_uuids = segment_uuids_by_event.get(anchor)
             seed_uuid = event_segment_uuids[0] if event_segment_uuids else anchor
 
-            seed = (await self._segment_store_partition.get_segments([seed_uuid])).get(
-                seed_uuid
-            )
+            seed = (
+                await self._segment_store_partition.get_segments(
+                    [seed_uuid], session_ids=session_ids
+                )
+            ).get(seed_uuid)
             if seed is None:
                 raise LookupError(
                     f"Anchor {anchor} is neither a segment nor an event of this memory"
@@ -807,7 +809,6 @@ class EventMemory:
                     after=after,
                     since=since,
                     until=until,
-                    session_ids=session_ids,
                     source_ids=source_ids,
                     block_kinds=block_kinds,
                     property_filter=property_filter,
