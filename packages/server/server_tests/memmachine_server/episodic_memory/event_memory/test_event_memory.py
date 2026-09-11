@@ -396,7 +396,7 @@ class TestQuery:
         # FakeEmbedder: all vectors same direction -> cosine 1.0.
         assert hit.score == pytest.approx(1.0, abs=0.01)
 
-    async def test_hits_rank_by_similarity_and_a_threshold_excludes(self):
+    async def test_hits_rank_by_cosine_similarity_and_a_threshold_excludes(self):
         # Angles from the query: "near" 0.1 rad, "far" 1.2 rad, the query 0.
         embedder = AngleEmbedder({"near": 0.1, "far": 1.2, "query": 0.0})
         memory = _build(embedder)
@@ -1098,7 +1098,7 @@ def _linked(partition: InMemorySegmentStorePartition) -> set[UUID]:
 
 
 class TestEviction:
-    """Eviction caps a similarity cluster at `target_size` by dropping its
+    """Eviction caps a cosine similarity cluster at `target_size` by dropping its
     temporally middle members.
 
     The FakeEmbedder maps every text onto one direction (cosine 1.0), so
