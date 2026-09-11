@@ -146,3 +146,25 @@ FilterExpr` is the only conversion, and it validates, never parses.
 - `common/filter/sql_filter_util.py` keeps `compile_sql_filter` and
   its datetime normalization, recompiled over the new union.
 - `property_keys.py` is added, as on the reference branch.
+
+## Absence and negation
+
+A property has a value or is absent; a property value is never `None`,
+so absence is the one no-value state, and a system field's `None` is
+the same state under a fixed name. Every backend encodes it the same
+way, a missing key, which is the one encoding all of them accept.
+
+The grammar is two-valued. A leaf predicate on a field with no value is
+false; `IS NULL` on it is true; `And`, `Or` and `Not` are ordinary
+boolean connectives over the record set, so `NOT (source = alice)` is
+everything not by alice, records with no source included, and `!=` and
+`NOT IN` are literally `NOT =` and `NOT IN`. A caller who means
+"present and other than x" writes `k IS NOT NULL AND k != x`. Nothing
+is ever unknown: the SQL compilers make each leaf total with
+`COALESCE(leaf, FALSE)` before negating, Milvus adds `OR k IS NULL`
+under negation, and `IS NULL` compiles to `IsEmpty` on Qdrant,
+`$exists: false` on Pinecone and S3 Vectors, `IsNull` with
+`indexNullState` on Weaviate, and a presence marker written beside each
+key on Chroma, which has no absence primitive. One conformance suite of
+records with present and absent keys and filters with negated leaves
+and compounds runs against every backend the test environment has.

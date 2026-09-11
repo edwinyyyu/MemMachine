@@ -151,10 +151,10 @@ Named so the redesign can be checked against it.
   `session_ids`, and the field the server's own semantics depend on:
   expansion and context windows walk the one total order confined to
   the seed's session, so they never cross from one conversation into
-  another that happens to be interleaved in time. Every event has one:
-  a caller with no conversation names the stream it writes to. Inside
-  a tenant "session" means exactly a conversation, which is why the
-  tenant is not called one.
+  another that happens to be interleaved in time. Events in no session
+  are one stream, selectable like any other with `None` in
+  `session_ids`. Inside a tenant "session" means exactly a
+  conversation, which is why the tenant is not called one.
 - Source id: the stable identifier of the entity responsible for an
   event's content, human, agent, tool or import, a bounded string the
   application owns. A system field beside `timestamp`, indexed and

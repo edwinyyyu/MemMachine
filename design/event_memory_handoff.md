@@ -67,17 +67,19 @@ Worktrees on this machine:
 class Event(BaseModel):
     uuid: UUID
     timestamp: datetime            # aware; keeps the offset it was given
-    session_id: str                # the conversation or stream the event belongs to
-    source_id: str                 # the responsible entity's id
+    session_id: str | None = None  # None = null: in no session
+    source_id: str | None = None   # the responsible entity's id; None = null
     context: Context               # a mapping of parts; {} = no context
     blocks: list[Block]            # one or more, each of a registered kind
     properties: dict[str, PropertyValue] = Field(default_factory=dict)
 ```
 
 - `session_id` and `source_id` are first-class fields of the model,
-  not properties, and required: a caller with no conversation names
-  the stream it writes to up front, so a filter with no session is
-  never ambiguous and no one has to re-ingest to name one later. A layer that has either sets it (below, "Translation
+  not properties, and nullable. Null is encoded as a missing key on the
+  vector record, so every backend's "missing" implements `IS NULL`, and
+  `None` in a typed id list (`session_ids=["a", None]`) selects it. A
+  filter that names no session means every session. Property values
+  are never `None`: absence is the one no-value state. A layer that has either sets it (below, "Translation
   layers").
 - Both are bounded strings; bound them by the same limit as a property
   string value, and reject longer ones where events are validated
@@ -230,9 +232,10 @@ out of scope:
   `segment_store_sg__in_so (incarnation, source_id)`.
 - The total order is `(timestamp, event_uuid, index, offset)` within
   an incarnation; a walk is confined to the seed's session by an
-  equality predicate. The tie-break stays `event_uuid` here; the
-  redesign's event position needs the event store, which is out of
-  scope.
+  equality predicate, `IS NULL` for a null session, so the segments in
+  no session are one stream, selectable like any other. The tie-break
+  stays `event_uuid` here; the redesign's event position needs the
+  event store, which is out of scope.
 - Migration: an Alembic revision adding the three columns and the
   indexes, with `block_kind` backfilled to `text` for existing rows and
   the two id columns left null. Follow the shipped store's migration
@@ -399,10 +402,10 @@ carries session, source, expansion and eviction.
 
 Nothing in the server is rewired here, but the server's translation
 from `Episode` to `Event` (`episodic_memory/long_term_memory/`) should
-set `session_id = session_key` and `source_id = producer_id`. The
-server's session is its own grouping, not necessarily a conversation,
-but every episode of one memory shares it, so its events form one
-stream, as before. Add no `Author` part, since the
+set `source_id = producer_id` and leave `session_id` null: the server's
+session is its own grouping, not a conversation, and the API carries no
+conversation id; when it does, it goes here. Until then the events are
+one stream. Add no `Author` part, since the
 server holds no readable name. The claude-memory engine already keeps
 a session id and an author in properties; it moves them into the two
 fields and keeps the rest of its properties as they are.

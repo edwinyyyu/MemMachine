@@ -76,10 +76,11 @@ the event's position in the event store, which is the order the events
 were ingested in, and a segment's place within its event by index and
 offset. Context windows and expansion walk this order confined to the
 seed's or anchor's session by an equality predicate on its session id,
-so they never cross into another conversation interleaved in time.
-Every segment has a session and a source; nothing is nullable, so a
-filter that names no session means every session and any stream can be
-named.
+so they never cross into another conversation interleaved in time. A
+null session id equals a null session id and nothing else, so the
+segments in no session are one stream, selectable like any other with
+`None` in a session list; a filter that names no session means every
+session.
 
 The two reads take the same parameters and return different things. `before`
 and `after` count segments on each side of a seed; `since` and `until` bound
