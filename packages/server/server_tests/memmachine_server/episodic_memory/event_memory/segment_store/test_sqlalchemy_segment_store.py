@@ -3024,6 +3024,38 @@ async def test_source_ids_select_rows(
 
 
 @pytest.mark.asyncio
+async def test_session_ids_select_segments(
+    partition: SQLAlchemySegmentStorePartition,
+) -> None:
+    """`session_ids` selects what a read returns; the walk's confinement is a separate rule."""
+    a0 = _seg(session_id="a", ts_offset_seconds=0)
+    b0 = _seg(session_id="b", ts_offset_seconds=1)
+    n0 = _seg(session_id=None, ts_offset_seconds=2)
+    a1 = _seg(session_id="a", ts_offset_seconds=3)
+    await partition.add_segments(_links(a0, b0, n0, a1))
+
+    found = await partition.get_segments(
+        [a0.uuid, b0.uuid, n0.uuid], session_ids=["a", "b"]
+    )
+    assert set(found) == {a0.uuid, b0.uuid}
+    assert await partition.get_segments([a0.uuid], session_ids=[]) == {}
+
+    # A seed with no session walks every session, and the filter selects among them.
+    from_no_session = (
+        await partition.get_segment_neighborhoods(
+            [n0], before=5, after=5, session_ids=["b"]
+        )
+    )[n0.uuid]
+    assert [s.uuid for s in from_no_session.before] == [b0.uuid]
+    assert from_no_session.after == []
+    # A seed with a session never leaves it, whatever the filter names.
+    from_a = (
+        await partition.get_segment_neighborhoods([a0], after=5, session_ids=["b"])
+    )[a0.uuid]
+    assert from_a.after == []
+
+
+@pytest.mark.asyncio
 async def test_block_kinds_select_rows(
     partition: SQLAlchemySegmentStorePartition,
 ) -> None:

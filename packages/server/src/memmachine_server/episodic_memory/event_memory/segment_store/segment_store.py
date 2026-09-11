@@ -67,6 +67,7 @@ class SegmentStorePartition(ABC):
         *,
         since: datetime | None = None,
         until: datetime | None = None,
+        session_ids: Iterable[str] | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
@@ -82,6 +83,9 @@ class SegmentStorePartition(ABC):
             until (datetime | None):
                 Exclusive upper bound on the segment timestamp, so ranges
                 meet without overlap (default: None).
+            session_ids (Iterable[str] | None):
+                Keep only segments whose session id is one of these; an
+                empty list keeps none (default: None, every session).
             source_ids (Iterable[str] | None):
                 Keep only segments whose source id is one of these; an
                 empty list keeps none (default: None, every source).
@@ -108,6 +112,7 @@ class SegmentStorePartition(ABC):
         after: int = 0,
         since: datetime | None = None,
         until: datetime | None = None,
+        session_ids: Iterable[str] | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
@@ -135,6 +140,10 @@ class SegmentStorePartition(ABC):
             until (datetime | None):
                 Exclusive upper bound on the neighbors' timestamp, so ranges
                 meet without overlap (default: None).
+            session_ids (Iterable[str] | None):
+                Keep only neighbors whose session id is one of these; an
+                empty list keeps none (default: None, every session the
+                walk reaches).
             source_ids (Iterable[str] | None):
                 Keep only neighbors whose source id is one of these; an
                 empty list keeps none (default: None, every source).

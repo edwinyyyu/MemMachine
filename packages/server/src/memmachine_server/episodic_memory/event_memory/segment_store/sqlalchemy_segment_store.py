@@ -469,6 +469,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         *,
         since: datetime | None = None,
         until: datetime | None = None,
+        session_ids: Iterable[str] | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
@@ -477,7 +478,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         if not segment_uuids:
             return {}
         conditions = SQLAlchemySegmentStorePartition._row_conditions(
-            since, until, source_ids, block_kinds, property_filter
+            since, until, session_ids, source_ids, block_kinds, property_filter
         )
 
         async with (
@@ -503,6 +504,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         after: int = 0,
         since: datetime | None = None,
         until: datetime | None = None,
+        session_ids: Iterable[str] | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
@@ -511,7 +513,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         if not seeds:
             return {}
         conditions = SQLAlchemySegmentStorePartition._row_conditions(
-            since, until, source_ids, block_kinds, property_filter
+            since, until, session_ids, source_ids, block_kinds, property_filter
         )
 
         async with (
@@ -590,6 +592,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     def _row_conditions(
         since: datetime | None,
         until: datetime | None,
+        session_ids: Iterable[str] | None,
         source_ids: Iterable[str] | None,
         block_kinds: Iterable[str] | None,
         property_filter: FilterExpr | None,
@@ -610,6 +613,8 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             conditions.append(
                 SegmentRow.timestamp < ensure_tz_aware(until).astimezone(UTC)
             )
+        if session_ids is not None:
+            conditions.append(_in_values(SegmentRow.session_id, session_ids))
         if source_ids is not None:
             conditions.append(_in_values(SegmentRow.source_id, source_ids))
         if block_kinds is not None:

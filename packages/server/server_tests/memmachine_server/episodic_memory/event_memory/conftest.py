@@ -100,6 +100,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         *,
         since: datetime | None,
         until: datetime | None,
+        session_ids: list[str] | None,
         source_ids: list[str] | None,
         block_kinds: list[str] | None,
         normalized_filter: FilterExpr | None,
@@ -107,6 +108,8 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         if since is not None and segment.timestamp < since:
             return False
         if until is not None and segment.timestamp >= until:
+            return False
+        if session_ids is not None and segment.session_id not in session_ids:
             return False
         if source_ids is not None and segment.source_id not in source_ids:
             return False
@@ -139,6 +142,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         *,
         since: datetime | None,
         until: datetime | None,
+        session_ids: Iterable[str] | None,
         source_ids: Iterable[str] | None,
         block_kinds: Iterable[str] | None,
         property_filter: FilterExpr | None,
@@ -148,6 +152,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
             if property_filter is not None
             else None
         )
+        listed_sessions = list(session_ids) if session_ids is not None else None
         listed_sources = list(source_ids) if source_ids is not None else None
         listed_kinds = list(block_kinds) if block_kinds is not None else None
 
@@ -156,6 +161,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
                 segment,
                 since=since,
                 until=until,
+                session_ids=listed_sessions,
                 source_ids=listed_sources,
                 block_kinds=listed_kinds,
                 normalized_filter=normalized_filter,
@@ -170,6 +176,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         *,
         since: datetime | None = None,
         until: datetime | None = None,
+        session_ids: Iterable[str] | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
@@ -177,6 +184,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         passes = self._admits(
             since=since,
             until=until,
+            session_ids=session_ids,
             source_ids=source_ids,
             block_kinds=block_kinds,
             property_filter=property_filter,
@@ -197,6 +205,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         after: int = 0,
         since: datetime | None = None,
         until: datetime | None = None,
+        session_ids: Iterable[str] | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
@@ -204,6 +213,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         passes = self._admits(
             since=since,
             until=until,
+            session_ids=session_ids,
             source_ids=source_ids,
             block_kinds=block_kinds,
             property_filter=property_filter,
