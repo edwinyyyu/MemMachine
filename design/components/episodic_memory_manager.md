@@ -39,7 +39,7 @@ class RerankOptions(BaseModel):
 
 class SearchOptions(BaseModel):
     limit: int
-    min_similarity: float | None
+    min_cosine_similarity: float | None
     expand_context: int
     rerank: RerankOptions | None
 
@@ -52,7 +52,7 @@ class EpisodicMemoryTenantConfig(BaseModel):
     search: SearchOptions               # mutable; defaults for a search
 ```
 
-`eviction.similarity_threshold` is calibrated per embedder, so a
+`eviction.cosine_similarity_threshold` is calibrated per embedder, so a
 template sets it beside the `embedder` it names; the manager rejects
 no value, since the design gives none.
 
@@ -113,8 +113,8 @@ cache, and makes one call.
 
 `search` is the stages. It fills each `SearchOptions` field the request
 omits from the row's defaults. Without `rerank`, it calls `query` with
-`limit` and `min_similarity` and returns the hits. With `rerank`, it
-calls `query` with `limit = candidates` and `min_similarity`, renders
+`limit` and `min_cosine_similarity` and returns the hits. With `rerank`, it
+calls `query` with `limit = candidates` and `min_cosine_similarity`, renders
 each hit's window with the request's or the row's `format`, scores the
 renderings with `rerankers[rerank.reranker].score`, drops those below
 `rerank.min_score`, and returns the best `limit` in descending reranker

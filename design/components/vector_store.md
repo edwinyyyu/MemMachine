@@ -63,7 +63,7 @@ class VectorCollection(ABC):              # data, bound to one key and container
     async def upsert(self, records: Iterable[Record]) -> None
     async def delete(self, uuids: Iterable[UUID]) -> None
     async def query(self, vectors: Iterable[Sequence[float]], *,
-                    limit: int, min_similarity: float | None,
+                    limit: int, min_cosine_similarity: float | None,
                     filter: FilterExpr | None) -> list[list[QueryMatch]]
     @property
     def supported_filter_nodes(self) -> frozenset[type]
@@ -72,7 +72,7 @@ class VectorCollection(ABC):              # data, bound to one key and container
 Scores are cosine similarity everywhere; there is no `SimilarityMetric`
 (reference branch, commit 6ab12098): every container and every engine
 is configured for cosine, the embedder exposes no metric, and `query`
-takes `min_similarity` as a cosine similarity.
+takes `min_cosine_similarity` as a cosine similarity.
 
 Semantics:
 
@@ -99,7 +99,7 @@ Semantics:
   `supported_filter_nodes`, raising `UnsupportedFilterError` otherwise;
   evaluated during the search. Read the row, query, read the row again.
   Returns, per vector, at most `limit` matches in descending
-  similarity, none below `min_similarity`, fewer when the filter admits
+  cosine similarity, none below `min_cosine_similarity`, fewer when the filter admits
   fewer.
 - `supported_filter_nodes`: the node classes the backend evaluates
   during a search, per the table in `filters_and_properties.md`; the
