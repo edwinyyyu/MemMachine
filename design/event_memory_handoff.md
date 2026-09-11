@@ -326,8 +326,7 @@ class EventMemory:
                format_options: FormatOptions) -> str
     @staticmethod
     async def rerank(query: str, hits: Sequence[SearchHit], *,
-                     reranker: Reranker, limit: int,
-                     min_score: float | None,
+                     reranker: Reranker,
                      format_options: FormatOptions) -> list[SearchHit]
 ```
 
@@ -346,15 +345,16 @@ class EventMemory:
   (#1598); `get_segment_windows` with the
   same system values and `property_filter`, `expand_context` split as
   today; drop seeds the store did not return; return at most `limit`
-  hits in descending similarity, each with its window and the index
+  hits in descending cosine similarity, each with its window and the index
   of the matched segment. Windows of different hits may overlap and
   each hit is returned whole. Every count is a maximum.
 - `rerank` is the second stage, a static helper so a caller that has a
   reranker (the server's `LongTermMemory`, the claude-memory engine)
-  runs it after `query` over `render(hit.segments)` and cuts to its
-  own `limit` with its own `min_score`; it replaces the reranking that
-  `_query` did inside. Call sites in the server change only as far as
-  calling it; nothing else in the server is in scope.
+  runs it after `query` over `render(hit.segments)`; it returns every
+  hit rescored in descending score, and the caller cuts and thresholds,
+  since the memory makes no use of either bound. It replaces the
+  reranking that `_query` did inside. Call sites in the server change
+  only as far as calling it; nothing else in the server is in scope.
 - `expand`: an event uuid anchor resolves to its first segment via
   `get_segment_uuids_by_event_uuids`; then one seed through
   `get_segment_neighborhoods` with the same filters a search takes.

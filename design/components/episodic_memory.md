@@ -58,7 +58,7 @@ class EpisodicMemory:
     async def encode(self, events: Iterable[StoredEvent]) -> None
     async def forget(self, event_uuids: Iterable[UUID]) -> None
     async def query(self, query: str, *,
-                    limit: int, min_similarity: float | None,
+                    limit: int, min_cosine_similarity: float | None,
                     expand_context: int,
                     since: datetime | None, until: datetime | None,
                     session_ids: Iterable[str] | None,
@@ -199,8 +199,7 @@ filtered by `block_kinds`; rendering calls `block.render`.
   forgetting first, taking `StoredEvent`s so a segment can carry the
   event's position; `forget_events` (`:680`) becomes `forget`.
 - `query` (`:353`): `vector_search_limit` becomes `limit` with
-  maximum semantics, the threshold becomes `min_similarity` on cosine
-  similarity; `since`, `until`, `session_ids`, `source_ids` and
+  maximum semantics, the threshold becomes `min_cosine_similarity`; `since`, `until`, `session_ids`, `source_ids` and
   `block_kinds` are added as typed parameters (`until` exclusive, the
   reference branch's `before` renamed so that `before` counts segments
   everywhere); the reserved-key mapping
