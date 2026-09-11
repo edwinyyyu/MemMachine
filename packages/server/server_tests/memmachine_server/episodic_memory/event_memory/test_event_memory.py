@@ -719,7 +719,6 @@ class TestRerank:
             "anything",
             hits,
             reranker=FakeReranker(),
-            limit=10,
             format_options=_SHORT_TIME,
         )
 
@@ -730,34 +729,25 @@ class TestRerank:
         ]
         assert reranked[0].score > reranked[1].score > 1.0
 
-    async def test_limit_and_min_score_cut(self, event_memory: EventMemory):
+    async def test_every_hit_is_returned_in_descending_score(
+        self, event_memory: EventMemory
+    ):
         events = [_make_event("x" * (i + 1), timestamp=_ts(i)) for i in range(4)]
         await event_memory.encode_events(events)
         hits = await event_memory.query("anything")
 
-        limited = await EventMemory.rerank(
-            "anything",
-            hits,
-            reranker=FakeReranker(),
-            limit=2,
-            format_options=_SHORT_TIME,
-        )
-        thresholded = await EventMemory.rerank(
-            "anything",
-            hits,
-            reranker=FakeReranker(),
-            limit=10,
-            min_score=limited[-1].score,
-            format_options=_SHORT_TIME,
+        reranked = await EventMemory.rerank(
+            "anything", hits, reranker=FakeReranker(), format_options=_SHORT_TIME
         )
 
-        assert len(limited) == 2
-        assert [hit.score for hit in thresholded] == [hit.score for hit in limited]
+        assert len(reranked) == len(hits) == 4
+        scores = [hit.score for hit in reranked]
+        assert scores == sorted(scores, reverse=True)
 
     async def test_empty(self):
         assert (
             await EventMemory.rerank(
-                "q", [], reranker=FakeReranker(), limit=5, format_options=_SHORT_TIME
+                "q", [], reranker=FakeReranker(), format_options=_SHORT_TIME
             )
             == []
         )
