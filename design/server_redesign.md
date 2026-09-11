@@ -151,11 +151,10 @@ Named so the redesign can be checked against it.
   `session_ids`, and the field the server's own semantics depend on:
   expansion and context windows walk the one total order confined to
   the seed's session, so they never cross from one conversation into
-  another that happens to be interleaved in time. An event with no
-  session id is in no session: a window or neighborhood around it walks
-  every event, and one around a sessioned seed never includes it.
-  Inside a tenant "session" means exactly a conversation, which is why
-  the tenant is not called one.
+  another that happens to be interleaved in time. Every event has one:
+  a caller with no conversation names the stream it writes to. Inside
+  a tenant "session" means exactly a conversation, which is why the
+  tenant is not called one.
 - Source id: the stable identifier of the entity responsible for an
   event's content, human, agent, tool or import, a bounded string the
   application owns. A system field beside `timestamp`, indexed and
@@ -1944,7 +1943,5 @@ is corrected to it.
 - Which vector backends the first release implements beyond the four
   existing ones and pgvector; the six remote backends are surveyed for
   the contract only.
-- Selecting only the events with no session id in a search;
-  `session_ids` cannot name them.
 - Log compaction as a scheduled duty rather than an operator command,
   if uncompacted logs ever matter.
