@@ -86,7 +86,7 @@ def _make_event(
     text: str,
     *,
     timestamp: datetime.datetime = _T0,
-    session_id: str = "s",
+    session_id: str | None = "s",
     source_id: str = "src",
     context: Context | None = None,
     properties=None,
@@ -571,7 +571,7 @@ class TestExpand:
     ):
         a0 = _make_event("a0", timestamp=_ts(0), session_id="a")
         b0 = _make_event("b0", timestamp=_ts(1), session_id="b")
-        n0 = _make_event("n0", timestamp=_ts(2))
+        n0 = _make_event("n0", timestamp=_ts(2), session_id=None)
         a1 = _make_event("a1", timestamp=_ts(3), session_id="a")
         await event_memory.encode_events([a0, b0, n0, a1])
         [anchor] = fake_segment_store_partition.event_to_segments[n0.uuid]
