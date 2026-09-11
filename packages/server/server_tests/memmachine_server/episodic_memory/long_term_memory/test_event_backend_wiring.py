@@ -725,37 +725,42 @@ async def test_expand_context_window_stays_within_the_episode_limit(
     """
     await timeline_long_term_memory.add_episodes(timeline_episodes)
 
-    windows: list[tuple[int, int]] = []
-    get_segment_windows = segment_store_partition.get_segment_windows
+    walks: list[tuple[int, int]] = []
+    get_segment_neighborhoods = segment_store_partition.get_segment_neighborhoods
 
-    async def recording_get_segment_windows(seed_segment_uuids, **kwargs):
-        windows.append(
+    async def recording_get_segment_neighborhoods(segments, **kwargs):
+        walks.append(
             (
                 kwargs.get("before", 0),
                 kwargs.get("after", 0),
             )
         )
-        return await get_segment_windows(seed_segment_uuids, **kwargs)
+        return await get_segment_neighborhoods(segments, **kwargs)
 
     monkeypatch.setattr(
         segment_store_partition,
-        "get_segment_windows",
-        recording_get_segment_windows,
+        "get_segment_neighborhoods",
+        recording_get_segment_neighborhoods,
     )
 
     for num_episodes_limit, expand_context in ((0, 5), (1, 5), (3, 99), (5, 2)):
-        windows.clear()
+        walks.clear()
         scored = await timeline_long_term_memory.search_scored(
             _timeline_token(_MATCH_INDEX),
             num_episodes_limit=num_episodes_limit,
             expand_context=expand_context,
         )
         assert len(scored) <= num_episodes_limit
-        assert windows
-        for backward, forward in windows:
+        allowed = max(0, num_episodes_limit - 1)
+        if allowed == 0:
+            # Nothing to expand into: no walk is asked of the store.
+            assert walks == []
+            continue
+        assert walks
+        for backward, forward in walks:
             assert backward >= 0
             assert forward >= 0
-            assert backward + forward <= max(0, num_episodes_limit - 1)
+            assert backward + forward <= allowed
 
 
 def test_unify_takes_whole_contexts_while_they_fit():
