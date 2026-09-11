@@ -85,7 +85,7 @@ class Event(BaseModel):
 - Stored events are immutable (`server_redesign.md`, "Propagation"):
   `encode_events` replaces an event's earlier encoding wholesale under
   new segment and derivative uuids, `forget_events` removes one, and no
-  operation edits a segment row or a vector record. The rule is stated
+  operation edits a stored segment or a vector record. The rule is stated
   on `Event`, on `EventMemory` and on the store contract, whose
   `add_segments` rejects a stored uuid, so the vector record's copy of
   the declared properties is exact by construction and a future update
