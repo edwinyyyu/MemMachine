@@ -82,6 +82,14 @@ class Event(BaseModel):
   value a list can name, and a filter that names no session means every
   session. Property values are never `None`: absence is the one no-value
   state. A layer that has either sets it (below, "Translation layers").
+- Stored events are immutable (`server_redesign.md`, "Propagation"):
+  `encode_events` replaces an event's earlier encoding wholesale under
+  new segment and derivative uuids, `forget_events` removes one, and no
+  operation edits a segment row or a vector record. The rule is stated
+  on `Event`, on `EventMemory` and on the store contract, whose
+  `add_segments` rejects a stored uuid, so the vector record's copy of
+  the declared properties is exact by construction and a future update
+  operation has to argue with three docstrings and a test.
 - Both are bounded strings; bound them by the same limit as a property
   string value, and reject longer ones where events are validated
   (`EventMemory._validate_events`).
