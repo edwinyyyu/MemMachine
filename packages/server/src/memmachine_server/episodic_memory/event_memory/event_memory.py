@@ -797,8 +797,6 @@ class EventMemory:
         hits: Sequence[SearchHit],
         *,
         reranker: Reranker,
-        limit: int,
-        min_score: float | None = None,
         format_options: FormatOptions,
     ) -> list[SearchHit]:
         """
@@ -806,9 +804,9 @@ class EventMemory:
 
         The second stage after `query`, for a caller that has a reranker:
         each hit's window is rendered with `format_options` and scored
-        against the query; hits below `min_score` are dropped and at most
-        `limit` are returned in descending score, each with its score
-        replaced by the reranker's.
+        against the query, and every hit is returned in descending score
+        with its score replaced by the reranker's. Cutting and
+        thresholding are the caller's.
         """
         hits = list(hits)
         if not hits:
@@ -823,10 +821,9 @@ class EventMemory:
         reranked = [
             SearchHit(score=score, seed_index=hit.seed_index, segments=hit.segments)
             for hit, score in zip(hits, scores, strict=True)
-            if min_score is None or score >= min_score
         ]
         reranked.sort(key=lambda hit: hit.score, reverse=True)
-        return reranked[:limit]
+        return reranked
 
     @staticmethod
     def _immediately_follows(previous: Segment, segment: Segment) -> bool:

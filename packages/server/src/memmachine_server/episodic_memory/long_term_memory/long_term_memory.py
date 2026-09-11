@@ -342,7 +342,6 @@ class LongTermMemory:
                 query,
                 hits,
                 reranker=self._reranker,
-                limit=vector_search_limit,
                 format_options=FormatOptions(time_style="short"),
             )
 
