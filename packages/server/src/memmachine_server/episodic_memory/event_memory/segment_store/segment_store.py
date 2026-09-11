@@ -352,7 +352,7 @@ class SegmentStore(ABC):
 
         The partition becomes unreachable immediately: it can no longer be
         opened, and handles opened on it raise from then on.
-        Implementations may defer physically reclaiming its rows to
+        Implementations may defer physically reclaiming its storage to
         `purge_deleted_partitions`. Idempotent.
 
         Args:
