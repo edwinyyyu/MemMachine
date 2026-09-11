@@ -1,6 +1,7 @@
 """Tests for SQLiteVectorStore."""
 
 import asyncio
+import contextlib
 import math
 from datetime import UTC, datetime, timedelta, timezone
 from uuid import UUID, uuid4
@@ -10,6 +11,7 @@ import pytest
 import pytest_asyncio
 from pydantic import ValidationError
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from memmachine_server.common.filter.filter_parser import (
@@ -33,6 +35,7 @@ from memmachine_server.common.vector_store.sqlite_vector_store import (
     SQLiteVectorStoreParams,
     _CollectionRow,
     _PendingOperationRow,
+    _write_transaction,
 )
 from memmachine_server.common.vector_store.vector_search_engine.usearch_engine import (
     USearchVectorSearchEngine,
@@ -1578,6 +1581,83 @@ class TestConcurrentWrites:
 
         await store2.shutdown()
         await engine2.dispose()
+
+    @pytest.mark.asyncio
+    async def test_racing_creates_admit_exactly_one(self, store):
+        """Two creates of one name: one wins, the rest are refused."""
+        attempts = [
+            store.create_collection(namespace=NAMESPACE, name="raced", config=CONFIG)
+            for _ in range(4)
+        ]
+        outcomes = await asyncio.gather(*attempts, return_exceptions=True)
+
+        created = [o for o in outcomes if not isinstance(o, BaseException)]
+        refused = [
+            o
+            for o in outcomes
+            if isinstance(o, VectorStoreCollectionAlreadyExistsError)
+        ]
+        assert len(created) == 1
+        assert len(refused) == len(outcomes) - 1
+
+
+class TestWriteTransactions:
+    """A write transaction takes SQLite's write lock at BEGIN."""
+
+    @pytest.mark.asyncio
+    async def test_a_write_transaction_can_still_write_after_it_has_read(
+        self, tmp_path
+    ):
+        """A write transaction's read and write are one atomic unit.
+
+        Under a deferred BEGIN a transaction that reads first leaves a gap
+        another writer can take the lock in, and the reader then loses: its
+        write cannot upgrade, and SQLite reports that at once rather than
+        waiting out `busy_timeout`, since waiting could only deadlock.
+
+        The assertion is that the reading transaction completes. Without
+        `BEGIN IMMEDIATE` it raises, in either journal mode.
+        """
+        db_path = tmp_path / "test.db"
+        store, engine = await _fresh_store(db_path, tmp_path)
+        await store.open_or_create_collection(
+            namespace=NAMESPACE, name=NAME, config=CONFIG
+        )
+
+        # A second connection with a short busy timeout, so a blocked write
+        # reports instead of waiting out the default five seconds.
+        other = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}", connect_args={"timeout": 0.2}
+        )
+        other_session = async_sessionmaker(other, expire_on_commit=False)
+
+        create_session = async_sessionmaker(engine, expire_on_commit=False)
+        async with _write_transaction(create_session) as session:
+            # Read first, exactly as `delete` does, and write nothing yet.
+            await session.execute(select(func.count()).select_from(_CollectionRow))
+
+            # A second writer takes what it can in the gap and holds it across
+            # the write below. `BEGIN IMMEDIATE` shuts it out; a deferred BEGIN
+            # lets it in.
+            blocked = other_session()
+            try:
+                with contextlib.suppress(OperationalError):
+                    await blocked.execute(
+                        update(_PendingOperationRow).values(applied=True)
+                    )
+
+                await session.execute(
+                    update(_CollectionRow)
+                    .where(_CollectionRow.namespace == NAMESPACE)
+                    .values(index_saved=False)
+                )
+            finally:
+                await blocked.rollback()
+                await blocked.close()
+
+        await other.dispose()
+        await store.shutdown()
+        await engine.dispose()
 
 
 class TestCrashRecovery:
