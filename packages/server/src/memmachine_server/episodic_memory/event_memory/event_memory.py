@@ -128,12 +128,12 @@ class EventMemoryParams(BaseModel):
 class EventMemory:
     """Event memory: encodes events into segments and derivatives, and searches them.
 
-    Stored data is immutable. `encode_events` replaces an event's earlier
-    encoding wholesale, under new segment and derivative uuids, and
-    `forget_events` removes one; no operation edits a stored segment or
+    Stored data is immutable: no operation may edit a stored segment or
     vector record, and none may be added, because a vector record's copy
     of the declared properties is exact only while it is written once,
-    with its segment, and replaced with it.
+    with its segment, and replaced with it. A change is `forget_events`
+    and `encode_events` again; `encode_events` replaces an event's
+    earlier encoding wholesale, under new segment and derivative uuids.
     """
 
     # Every system value written into a vector record, under the reserved
