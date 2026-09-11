@@ -67,6 +67,7 @@ from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
 from memmachine_server.common.properties_json import (
     encode_properties,
 )
+from memmachine_server.common.rw_locks import AsyncRWLock
 
 from .data_types import (
     IndexedProperties,
@@ -179,6 +180,7 @@ async def _save_partition_index(
     vector_store_name: str,
     partition_key: str,
     search_engine: VectorSearchEngine,
+    engine_lock: AsyncRWLock,
     path: str,
 ) -> None:
     """Publish a partition's index to disk and trim the operations it holds.
@@ -191,7 +193,8 @@ async def _save_partition_index(
     committed. See the module docstring for what that leaves behind.
     """
     # Write index to path.
-    await search_engine.save(path)
+    async with engine_lock.write_lock():
+        await search_engine.save(path)
 
     # Delete applied pending operations and flip index_saved to True.
     async with create_session() as session, session.begin():
@@ -270,6 +273,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         sync_sqlalchemy_engine: Engine,
         records_table: Table,
         search_engine: VectorSearchEngine,
+        engine_lock: AsyncRWLock,
         vector_store_name: str,
         partition_key: str,
         indexed_properties: Mapping[str, PropertyType],
@@ -281,6 +285,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         self._sync_sqlalchemy_engine = sync_sqlalchemy_engine
         self._records_table = records_table
         self._search_engine = search_engine
+        self._engine_lock = engine_lock
 
         self._vector_store_name = vector_store_name
         self._partition_key = partition_key
@@ -323,6 +328,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
                 vector_store_name=self._vector_store_name,
                 partition_key=self._partition_key,
                 search_engine=self._search_engine,
+                engine_lock=self._engine_lock,
                 path=self._index_path,
             )
 
@@ -403,8 +409,11 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         }
 
         if engine_vectors:
-            await self._search_engine.remove(engine_vectors.keys())
-            await self._search_engine.add(engine_vectors)
+            # One hold for both, so no search sees the record's old vector gone
+            # and its new one not yet there.
+            async with self._engine_lock.write_lock():
+                await self._search_engine.remove(engine_vectors.keys())
+                await self._search_engine.add(engine_vectors)
 
             async with self._create_session() as session, session.begin():
                 await session.execute(
@@ -444,9 +453,10 @@ class SQLiteVectorStorePartition(VectorStorePartition):
 
         key_filter = self._build_key_filter(property_filter)
 
-        search_results = await self._search_engine.search(
-            query_vectors, limit=limit, allowed_keys=key_filter
-        )
+        async with self._engine_lock.read_lock():
+            search_results = await self._search_engine.search(
+                query_vectors, limit=limit, allowed_keys=key_filter
+            )
 
         results: list[QueryResult] = []
         for search_result in search_results:
@@ -571,7 +581,8 @@ class SQLiteVectorStorePartition(VectorStorePartition):
                 )
             )
 
-        await self._search_engine.remove(record_row_ids)
+        async with self._engine_lock.write_lock():
+            await self._search_engine.remove(record_row_ids)
         async with self._create_session() as session, session.begin():
             await session.execute(
                 update(_PendingOperationRow)
@@ -699,6 +710,7 @@ class SQLiteVectorStore(VectorStore):
             self._sqlalchemy_engine, expire_on_commit=False
         )
         self._search_engines: dict[str, VectorSearchEngine] = {}
+        self._engine_locks: dict[str, AsyncRWLock] = {}
         self._sa_metadata = MetaData()
 
         self._sync_sqlalchemy_engine = create_engine(
@@ -807,9 +819,10 @@ class SQLiteVectorStore(VectorStore):
         if not all_row_ids:
             return
 
-        await search_engine.remove(all_row_ids)
-        if upserted_vectors:
-            await search_engine.add(upserted_vectors)
+        async with self._engine_lock_for(partition_key).write_lock():
+            await search_engine.remove(all_row_ids)
+            if upserted_vectors:
+                await search_engine.add(upserted_vectors)
 
         async with self._create_session() as session, session.begin():
             await session.execute(
@@ -834,6 +847,7 @@ class SQLiteVectorStore(VectorStore):
                     vector_store_name=self._vector_store_name,
                     partition_key=partition_key,
                     search_engine=search_engine,
+                    engine_lock=self._engine_lock_for(partition_key),
                     path=str(path),
                 )
         self._search_engines.clear()
@@ -914,6 +928,7 @@ class SQLiteVectorStore(VectorStore):
             sync_sqlalchemy_engine=self._sync_sqlalchemy_engine,
             records_table=records_table,
             search_engine=search_engine,
+            engine_lock=self._engine_lock_for(partition_key),
             vector_store_name=self._vector_store_name,
             partition_key=partition_key,
             indexed_properties=self._indexed_properties,
@@ -996,6 +1011,16 @@ class SQLiteVectorStore(VectorStore):
             sqlite_autoincrement=True,
         )
 
+    def _engine_lock_for(self, partition_key: str) -> AsyncRWLock:
+        """Get or create the lock guarding a partition's search engine.
+
+        Engines are not safe for concurrent use: searches take the read side,
+        everything else the write side. Shared by every handle on the
+        partition and kept for the store's lifetime: a lock replaced while
+        held would guard nobody.
+        """
+        return self._engine_locks.setdefault(partition_key, AsyncRWLock())
+
     def _declared_schema(self) -> PartitionSchema:
         return PartitionSchema(
             vector_dimensions=self._vector_dimensions,
@@ -1063,7 +1088,8 @@ class SQLiteVectorStore(VectorStore):
                 # The engine just propagates whatever its backend raises.
                 # Wrap any failure as IndexLoadError so callers see one type.
                 try:
-                    await search_engine.load(str(index_path))
+                    async with self._engine_lock_for(partition_key).write_lock():
+                        await search_engine.load(str(index_path))
                 except Exception as e:
                     raise IndexLoadError(
                         self._vector_store_name, partition_key, index_path
