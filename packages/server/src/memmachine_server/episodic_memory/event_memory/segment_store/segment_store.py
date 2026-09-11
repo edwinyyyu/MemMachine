@@ -35,10 +35,11 @@ class SegmentStorePartition(ABC):
     event is forgotten and encoded again.
 
     Segments within a partition are in one total order,
-    `(timestamp, event_uuid, index, offset)`. `get_segments` looks
-    segments up by uuid, filtered; `get_segment_neighborhoods` walks the
-    order around segments the caller holds. Filters select what a read
-    returns, and only a segment obtained first can be walked from.
+    `(timestamp, event_uuid, index, offset)`. `get_segments` fetches
+    segments by uuid, subject to the filters. `get_segment_neighborhoods`
+    walks the order outward from segments the caller already has, within
+    their session, and returns the neighbors that pass the filters. A
+    walk starts from a segment, not from a uuid: fetch first, then walk.
     """
 
     @property
