@@ -29,6 +29,10 @@ class SegmentStorePartition(ABC):
     A call with empty input may do no work and return without checking
     the handle.
 
+    Rows are immutable: `add_segments` inserts, a segment uuid already
+    stored is rejected rather than replaced, and there is no operation
+    that edits a row.
+
     Segments within a partition are in one total order,
     `(timestamp, event_uuid, index, offset)`. The two reads around seed
     segments differ in whether the seed is part of the answer:

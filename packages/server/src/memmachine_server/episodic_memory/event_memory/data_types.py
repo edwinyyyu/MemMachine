@@ -109,7 +109,11 @@ _BoundedId = Annotated[str, AfterValidator(_bounded_id)]
 
 
 class Event(BaseModel):
-    """Something that happened at a point in time, and the content it produced."""
+    """Something that happened at a point in time, and the content it produced.
+
+    Immutable once stored: nothing edits a stored event, and a changed
+    event is forgotten and encoded again under the same uuid.
+    """
 
     uuid: UUID = Field(description="Identity of the event")
     timestamp: datetime = Field(
