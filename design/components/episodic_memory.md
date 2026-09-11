@@ -167,7 +167,7 @@ run displaced, so it can displace more and never restores anything.
 The cost is one bounded vector query per new derivative, which
 `eviction: null` removes entirely. The threshold is a property of the
 embedder, since two models put the same pair of texts at different
-similarities, so a template sets it beside the embedder it chooses and
+cosine similarities, so a template sets it beside the embedder it chooses and
 a deployment calibrates it per embedder; the design gives no number.
 
 ## Context
