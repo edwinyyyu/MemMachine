@@ -44,7 +44,7 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     FormatOptions,
     NullContext,
     ProducerContext,
-    SearchHit,
+    QueryHit,
     TextBlock,
 )
 from memmachine_server.episodic_memory.event_memory.deriver import Deriver
@@ -640,7 +640,7 @@ class LongTermMemory:
 
     async def _unified_scored_event_episodes(
         self,
-        hits: Iterable[SearchHit],
+        hits: Iterable[QueryHit],
         *,
         num_episodes_limit: int,
         score_threshold: float | None,
@@ -694,7 +694,7 @@ class LongTermMemory:
         )
 
     @staticmethod
-    def _episode_uid_context(hit: SearchHit) -> tuple[str | None, list[str]]:
+    def _episode_uid_context(hit: QueryHit) -> tuple[str | None, list[str]]:
         """Episode uids covered by one segment window.
 
         Returns the seed segment's episode uid (the nucleus) and the deduped
@@ -704,7 +704,7 @@ class LongTermMemory:
         nuclear_uid: str | None = None
         context_uids: list[str] = []
         seen: set[str] = set()
-        for index, segment in enumerate(hit.segments):
+        for segment in hit.window():
             episode_uid = segment.properties.get(_EPISODE_UID_FIELD)
             if episode_uid is None:
                 continue
@@ -712,7 +712,7 @@ class LongTermMemory:
             if episode_uid not in seen:
                 seen.add(episode_uid)
                 context_uids.append(episode_uid)
-            if index == hit.seed_index:
+            if segment.uuid == hit.seed.uuid:
                 nuclear_uid = episode_uid
         return nuclear_uid, context_uids
 
@@ -756,10 +756,9 @@ class LongTermMemory:
         return episode_scores
 
     @staticmethod
-    def _hit_episode_uid(hit: SearchHit) -> str | None:
+    def _hit_episode_uid(hit: QueryHit) -> str | None:
         """Pull `_episode_uid` from the seed segment of a hit."""
-        seed = hit.segments[hit.seed_index]
-        return cast(str | None, seed.properties.get(_EPISODE_UID_FIELD))
+        return cast(str | None, hit.seed.properties.get(_EPISODE_UID_FIELD))
 
     @staticmethod
     def _episode_to_event(episode: Episode) -> Event:

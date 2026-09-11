@@ -35,7 +35,8 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStoreCollectionConfig,
 )
 from memmachine_server.episodic_memory.event_memory.data_types import (
-    SearchHit,
+    Neighborhood,
+    QueryHit,
     Segment,
     TextBlock,
 )
@@ -810,10 +811,10 @@ def test_episode_uid_context_dedup_and_nucleus():
             properties={"_episode_uid": uid},
         )
 
-    hit = SearchHit(
+    hit = QueryHit(
         score=1.0,
-        seed_index=1,
-        segments=[_seg("e1"), _seg("e2"), _seg("e2"), _seg("e3")],
+        seed=_seg("e2"),
+        neighborhood=Neighborhood(before=[_seg("e1")], after=[_seg("e2"), _seg("e3")]),
     )
 
     nucleus, context = LongTermMemory._episode_uid_context(hit)

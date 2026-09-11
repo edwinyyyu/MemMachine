@@ -41,7 +41,7 @@ from .data_types import (
     Neighborhood,
     NullContext,
     ProducerContext,
-    SearchHit,
+    QueryHit,
     Segment,
     TextBlock,
 )
@@ -544,7 +544,7 @@ class EventMemory:
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
-    ) -> list[SearchHit]:
+    ) -> list[QueryHit]:
         """
         Query event memory for segments relevant to the query.
 
@@ -581,11 +581,11 @@ class EventMemory:
                 (default: None).
 
         Returns:
-            list[SearchHit]:
-                At most `limit` hits in descending cosine similarity, each with
-                its segment window and the index of the seed segment in
-                it. Windows of different hits may overlap; each hit is
-                returned whole. Every count is a maximum.
+            list[QueryHit]:
+                At most `limit` hits in descending cosine similarity, each
+                with its seed and the neighborhood around it. Neighborhoods
+                of different hits may overlap; each hit is returned whole.
+                Every count is a maximum.
 
         """
         async with self._tracker("query"):
@@ -615,7 +615,7 @@ class EventMemory:
         source_ids: Iterable[str] | None,
         block_kinds: Iterable[str] | None,
         property_filter: FilterExpr | None,
-    ) -> list[SearchHit]:
+    ) -> list[QueryHit]:
         t_start = time.monotonic()
         session_ids = list(session_ids) if session_ids is not None else None
         source_ids = list(source_ids) if source_ids is not None else None
@@ -699,7 +699,7 @@ class EventMemory:
         t_segment_query = time.monotonic()
 
         # Seeds the store did not return are dropped; cosine similarity order is kept.
-        hits: list[SearchHit] = []
+        hits: list[QueryHit] = []
         for seed_uuid, score in seed_cosine_similarities.items():
             seed = seed_segments.get(seed_uuid)
             if seed is None:
@@ -707,13 +707,7 @@ class EventMemory:
             neighborhood = neighborhoods.get(
                 seed_uuid, Neighborhood(before=[], after=[])
             )
-            hits.append(
-                SearchHit(
-                    score=score,
-                    seed_index=len(neighborhood.before),
-                    segments=[*neighborhood.before, seed, *neighborhood.after],
-                )
-            )
+            hits.append(QueryHit(score=score, seed=seed, neighborhood=neighborhood))
 
         phase_durations = {
             "embedding": t_embedding - t_start,
@@ -817,11 +811,11 @@ class EventMemory:
     @staticmethod
     async def rerank(
         query: str,
-        hits: Sequence[SearchHit],
+        hits: Sequence[QueryHit],
         *,
         reranker: Reranker,
         format_options: FormatOptions,
-    ) -> list[SearchHit]:
+    ) -> list[QueryHit]:
         """
         Rerank hits by a reranker's score of their rendered windows.
 
@@ -837,12 +831,12 @@ class EventMemory:
         scores = await reranker.score(
             query,
             [
-                EventMemory.render(hit.segments, format_options=format_options)
+                EventMemory.render(hit.window(), format_options=format_options)
                 for hit in hits
             ],
         )
         reranked = [
-            SearchHit(score=score, seed_index=hit.seed_index, segments=hit.segments)
+            QueryHit(score=score, seed=hit.seed, neighborhood=hit.neighborhood)
             for hit, score in zip(hits, scores, strict=True)
         ]
         reranked.sort(key=lambda hit: hit.score, reverse=True)
