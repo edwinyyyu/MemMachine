@@ -52,12 +52,14 @@ class SegmentPartition(ABC):              # data, bound to one key; no method ta
                            segments_to_derivative_uuids: Mapping[Segment, Iterable[UUID]]) -> None
     async def get_segments(self, segment_uuids: Iterable[UUID], *,
                            since: datetime | None, until: datetime | None,
+                           session_ids: Iterable[str] | None,
                            source_ids: Iterable[str] | None,
                            block_kinds: Iterable[str] | None,
                            property_filter: FilterExpr | None) -> dict[UUID, Segment]
     async def get_segment_neighborhoods(self, segments: Iterable[Segment], *,
                                  before: int, after: int,
                                  since: datetime | None, until: datetime | None,
+                                 session_ids: Iterable[str] | None,
                                  source_ids: Iterable[str] | None,
                                  block_kinds: Iterable[str] | None,
                                  property_filter: FilterExpr | None) -> dict[UUID, Neighborhood]
@@ -144,8 +146,9 @@ to it.
   uuid: `since` and `until` on the real `timestamp` column, as on the
   reference branch (commit 27b3279b, where the pair is `since` and
   `before`), and the reserved timestamp property key goes from the
-  segment side; `source_ids` and `block_kinds`; no window counts and no
-  `session_ids`.
+  segment side; `session_ids`, `source_ids` and `block_kinds`; no
+  window counts. `session_ids` selects what a read returns; the walk's
+  confinement to the given segment's session is a separate rule.
 - `segment_store_sg` gains `block_kind`, the kind name of the segment's
   one block as a plain column, since the encoded block cannot be
   filtered (`blocks.md`).

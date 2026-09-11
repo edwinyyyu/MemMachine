@@ -69,6 +69,7 @@ class EpisodicMemory:
     async def expand(self, anchor: UUID, *,
                      before: int, after: int,
                      since: datetime | None, until: datetime | None,
+                     session_ids: Iterable[str] | None,
                      source_ids: Iterable[str] | None,
                      block_kinds: Iterable[str] | None,
                      filter: FilterExpr | None) -> Neighborhood

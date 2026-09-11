@@ -260,6 +260,7 @@ out of scope:
 ```python
 async def get_segments(self, segment_uuids: Iterable[UUID], *,
         since: datetime | None = None, until: datetime | None = None,
+        session_ids: Iterable[str] | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None) -> dict[UUID, Segment]
@@ -267,6 +268,7 @@ async def get_segments(self, segment_uuids: Iterable[UUID], *,
 async def get_segment_neighborhoods(self, segments: Iterable[Segment], *,
         before: int = 0, after: int = 0,
         since: datetime | None = None, until: datetime | None = None,
+        session_ids: Iterable[str] | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None) -> dict[UUID, Neighborhood]
@@ -330,6 +332,7 @@ class EventMemory:
                     property_filter: FilterExpr | None) -> list[QueryHit]
     async def expand(self, anchor: UUID, *, before: int, after: int,
                      since: datetime | None, until: datetime | None,
+                     session_ids: Iterable[str] | None,
                      source_ids: Iterable[str] | None,
                      block_kinds: Iterable[str] | None,
                      property_filter: FilterExpr | None) -> Neighborhood
