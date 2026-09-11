@@ -85,6 +85,8 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         segments_to_derivative_uuids: Mapping[Segment, Iterable[UUID]],
     ) -> None:
         for segment, derivative_uuids in segments_to_derivative_uuids.items():
+            if segment.uuid in self.segments:
+                raise ValueError(f"segment {segment.uuid} is already stored")
             self.segments[segment.uuid] = segment
             self.event_to_segments[segment.event_uuid].append(segment.uuid)
             self.segment_to_derivatives[segment.uuid] = list(derivative_uuids)
