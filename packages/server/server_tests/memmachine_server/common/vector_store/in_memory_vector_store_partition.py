@@ -1,4 +1,4 @@
-"""In-memory VectorStoreCollection implementation for testing."""
+"""In-memory VectorStorePartition implementation for testing."""
 
 import math
 import operator
@@ -20,12 +20,11 @@ from memmachine_server.common.filter import (
     Ordering,
 )
 from memmachine_server.common.utils import ensure_tz_aware
-from memmachine_server.common.vector_store import VectorStoreCollection
+from memmachine_server.common.vector_store import VectorStorePartition
 from memmachine_server.common.vector_store.data_types import (
     QueryMatch,
     QueryResult,
     Record,
-    VectorStoreCollectionConfig,
 )
 from memmachine_server.common.vector_store.declared_properties import (
     require_declared_properties,
@@ -108,12 +107,12 @@ def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
 
 
 # ---------------------------------------------------------------------------
-# InMemoryVectorStoreCollection
+# InMemoryVectorStorePartition
 # ---------------------------------------------------------------------------
 
 
-class InMemoryVectorStoreCollection(VectorStoreCollection):
-    """In-memory VectorStoreCollection for testing.
+class InMemoryVectorStorePartition(VectorStorePartition):
+    """In-memory VectorStorePartition for testing.
 
     Scores by cosine similarity, evaluates FilterExpr on record properties,
     and enforces the declared schema the way a real store does.
@@ -125,17 +124,17 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
 
     def __init__(
         self,
-        collection_config: VectorStoreCollectionConfig,
+        partition_key: str,
         indexed_properties: Mapping[str, PropertyType],
         *,
         supported_filter_nodes: Iterable[type] | None = None,
     ) -> None:
-        self.collection_config = collection_config
+        self._partition_key = partition_key
         self._indexed_properties = dict(indexed_properties)
         self._supported_filter_nodes = (
             frozenset(supported_filter_nodes)
             if supported_filter_nodes is not None
-            else InMemoryVectorStoreCollection._SUPPORTED_FILTER_NODES
+            else InMemoryVectorStorePartition._SUPPORTED_FILTER_NODES
         )
         self.records: dict[UUID, Record] = {}
         self.queries: list[FilterExpr | None] = []
@@ -143,8 +142,8 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
 
     @property
     @override
-    def config(self) -> VectorStoreCollectionConfig:
-        return self.collection_config
+    def partition_key(self) -> str:
+        return self._partition_key
 
     @property
     @override

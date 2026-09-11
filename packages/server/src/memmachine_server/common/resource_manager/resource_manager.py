@@ -186,11 +186,19 @@ class ResourceManagerImpl:
         return await self._database_manager.get_vector_graph_store(name)
 
     async def get_vector_store(
-        self, name: str, *, indexed_properties: Mapping[str, PropertyType]
+        self,
+        backend: str,
+        *,
+        collection: str,
+        vector_dimensions: int,
+        indexed_properties: Mapping[str, PropertyType],
     ) -> VectorStore:
-        """Return a vector store by name, built for the service declaring these keys."""
+        """Return the store for one collection on a configured backend."""
         return await self._database_manager.get_vector_store(
-            name, indexed_properties=indexed_properties
+            backend,
+            collection=collection,
+            vector_dimensions=vector_dimensions,
+            indexed_properties=indexed_properties,
         )
 
     async def get_segment_store(self, name: str) -> SegmentStore:

@@ -18,9 +18,6 @@ from memmachine_server.common.filter.filter_parser import (
     normalize_filter_field,
 )
 from memmachine_server.common.reranker import Reranker
-from memmachine_server.common.vector_store.data_types import (
-    VectorStoreCollectionConfig,
-)
 from memmachine_server.episodic_memory.event_memory.data_types import (
     EvictionOptions,
     Neighborhood,
@@ -44,8 +41,8 @@ from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter imp
 from server_tests.memmachine_server.common.reranker.fake_embedder import (
     FakeEmbedder,
 )
-from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_collection import (
-    InMemoryVectorStoreCollection,
+from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_partition import (
+    InMemoryVectorStorePartition,
     evaluate_filter,
 )
 
@@ -385,10 +382,10 @@ class AngleEmbedder(FakeEmbedder):
 # ---------------------------------------------------------------------------
 
 
-def make_collection(embedder: FakeEmbedder) -> InMemoryVectorStoreCollection:
+def make_collection(embedder: FakeEmbedder) -> InMemoryVectorStorePartition:
     """A collection declaring EventMemory's reserved keys and a `color` property."""
-    return InMemoryVectorStoreCollection(
-        VectorStoreCollectionConfig(vector_dimensions=embedder.dimensions),
+    return InMemoryVectorStorePartition(
+        "test",
         {**EventMemory.expected_vector_store_collection_schema(), "color": str},
     )
 
@@ -404,20 +401,20 @@ def fake_segment_store_partition():
 
 
 @pytest.fixture
-def fake_vector_store_collection(fake_embedder):
+def fake_vector_store_partition(fake_embedder):
     return make_collection(fake_embedder)
 
 
 @pytest.fixture
 def event_memory(
-    fake_vector_store_collection,
+    fake_vector_store_partition,
     fake_segment_store_partition,
     fake_embedder,
 ):
     return EventMemory(
         EventMemoryParams(
             segment_store_partition=fake_segment_store_partition,
-            vector_store_collection=fake_vector_store_collection,
+            vector_store_partition=fake_vector_store_partition,
             segmenter=TextSegmenter(),
             deriver=WholeTextDeriver(),
             embedder=fake_embedder,
@@ -427,14 +424,14 @@ def event_memory(
 
 @pytest.fixture
 def event_memory_with_sentences(
-    fake_vector_store_collection,
+    fake_vector_store_partition,
     fake_segment_store_partition,
     fake_embedder,
 ):
     return EventMemory(
         EventMemoryParams(
             segment_store_partition=fake_segment_store_partition,
-            vector_store_collection=fake_vector_store_collection,
+            vector_store_partition=fake_vector_store_partition,
             segmenter=TextSegmenter(),
             deriver=SentenceTextDeriver(),
             embedder=fake_embedder,
@@ -444,7 +441,7 @@ def event_memory_with_sentences(
 
 @pytest.fixture
 def event_memory_with_eviction(
-    fake_vector_store_collection,
+    fake_vector_store_partition,
     fake_segment_store_partition,
     fake_embedder,
 ):
@@ -453,7 +450,7 @@ def event_memory_with_eviction(
     return EventMemory(
         EventMemoryParams(
             segment_store_partition=fake_segment_store_partition,
-            vector_store_collection=fake_vector_store_collection,
+            vector_store_partition=fake_vector_store_partition,
             segmenter=TextSegmenter(),
             deriver=WholeTextDeriver(),
             embedder=fake_embedder,

@@ -1,5 +1,6 @@
 """Helpers for building long-term memory from configuration."""
 
+import contextlib
 import hashlib
 import logging
 
@@ -22,7 +23,11 @@ from memmachine_server.common.data_types import (
     PropertyValue,
 )
 from memmachine_server.common.resource_manager import CommonResourceManager
-from memmachine_server.common.vector_store import VectorStoreCollectionConfig
+from memmachine_server.common.vector_store import (
+    VectorStore,
+    get_or_create_partition,
+    validate_collection_name,
+)
 from memmachine_server.episodic_memory.event_memory.deriver import Deriver
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
@@ -30,6 +35,9 @@ from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import 
 )
 from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 from memmachine_server.episodic_memory.event_memory.segment_store import (
+    SegmentStore,
+    SegmentStorePartition,
+    SegmentStorePartitionAlreadyExistsError,
     SegmentStorePartitionConfig,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.utils import (
@@ -53,7 +61,7 @@ from .long_term_memory import (
 
 logger = logging.getLogger(__name__)
 
-_EVENT_BACKEND_NAMESPACE = "long_term_memory"
+_EVENT_BACKEND_PURPOSE = "long_term_memory"
 
 
 async def long_term_memory_params_from_config(
@@ -94,11 +102,9 @@ async def _event_params(
     config: EventLongTermMemoryConf,
     resource_manager: InstanceOf[CommonResourceManager],
 ) -> EventBackendParams:
-    vector_store = await resource_manager.get_vector_store(
-        config.vector_store, indexed_properties=event_backend_indexed_properties()
-    )
     segment_store = await resource_manager.get_segment_store(config.segment_store)
     embedder = await resource_manager.get_embedder(config.embedder, validate=True)
+    vector_store = await event_backend_vector_store(config, resource_manager)
     reranker = (
         await resource_manager.get_reranker(config.reranker, validate=True)
         if config.reranker is not None
@@ -111,15 +117,9 @@ async def _event_params(
     # The keys a filter may name are validated below; which of them the
     # store indexes is the store's own declaration.
     _resolve_user_properties_schema(config.properties_schema)
-    collection = await vector_store.open_or_create_collection(
-        namespace=_EVENT_BACKEND_NAMESPACE,
-        name=partition_key,
-        config=VectorStoreCollectionConfig(vector_dimensions=embedder.dimensions),
-    )
-
-    partition = await segment_store.open_or_create_partition(
-        partition_key,
-        SegmentStorePartitionConfig(),
+    vector_store_partition = await get_or_create_partition(vector_store, partition_key)
+    partition = await _get_or_create_segment_partition(
+        segment_store, partition_key, SegmentStorePartitionConfig()
     )
 
     segmenter = _build_segmenter(config.segmenter)
@@ -128,8 +128,7 @@ async def _event_params(
     return EventBackendParams(
         session_id=config.session_id,
         vector_store=vector_store,
-        vector_store_collection=collection,
-        vector_store_collection_namespace=_EVENT_BACKEND_NAMESPACE,
+        vector_store_partition=vector_store_partition,
         segment_store=segment_store,
         segment_store_partition=partition,
         partition_key=partition_key,
@@ -141,6 +140,58 @@ async def _event_params(
         user_property_keys=frozenset(config.properties_schema),
         metrics_factory=await resource_manager.get_metrics_factory("prometheus"),
     )
+
+
+async def event_backend_vector_store(
+    config: EventLongTermMemoryConf,
+    resource_manager: InstanceOf[CommonResourceManager],
+) -> VectorStore:
+    """The event backend's vector store: the collection of its embedder, built for it."""
+    embedder = await resource_manager.get_embedder(config.embedder, validate=True)
+    return await resource_manager.get_vector_store(
+        config.vector_store,
+        collection=event_backend_collection(config.embedder),
+        vector_dimensions=embedder.dimensions,
+        indexed_properties=event_backend_indexed_properties(),
+    )
+
+
+def event_backend_collection(embedder_id: str) -> str:
+    """The collection the event backend keeps for one embedder.
+
+    One cell of the purpose-by-embedder matrix, named so that one backend
+    can hold the collections of several embedders side by side.
+    """
+    collection = f"{_EVENT_BACKEND_PURPOSE}__{embedder_id}"
+    try:
+        validate_collection_name(collection)
+    except ValueError as error:
+        raise ValueError(
+            f"Embedder id {embedder_id!r} cannot name a vector store collection: "
+            f"{error} Rename the embedder in the configuration."
+        ) from error
+    return collection
+
+
+async def _get_or_create_segment_partition(
+    segment_store: SegmentStore,
+    partition_key: str,
+    config: SegmentStorePartitionConfig,
+) -> SegmentStorePartition:
+    # Losing a creation race to a concurrent creator is fine: the winner's
+    # partition is the one returned.
+    partition = await segment_store.get_partition(partition_key)
+    if partition is not None:
+        return partition
+    with contextlib.suppress(SegmentStorePartitionAlreadyExistsError):
+        await segment_store.create_partition(partition_key, config)
+    partition = await segment_store.get_partition(partition_key)
+    if partition is None:
+        raise RuntimeError(
+            f"Segment store partition {partition_key!r} was deleted between its "
+            "creation and this lookup"
+        )
+    return partition
 
 
 def event_backend_indexed_properties() -> dict[str, PropertyType]:

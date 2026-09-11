@@ -22,24 +22,23 @@ from memmachine_server.common.filter import (
     Ordering,
 )
 from memmachine_server.common.metrics_factory import MetricsFactory
+from memmachine_server.common.vector_store import get_or_create_partition
 from memmachine_server.common.vector_store.data_types import (
     Record,
-    VectorStoreCollectionAlreadyExistsError,
-    VectorStoreCollectionConfig,
-    VectorStoreCollectionConfigMismatchError,
+    VectorStorePartitionAlreadyExistsError,
 )
 from memmachine_server.common.vector_store.qdrant_vector_store import (
     _PAYLOAD_PARTITION_KEY,
     QdrantVectorStore,
-    QdrantVectorStoreCollection,
     QdrantVectorStoreParams,
+    QdrantVectorStorePartition,
 )
 from server_tests.memmachine_server.common.filter.nodes import comparison
 from server_tests.memmachine_server.common.vector_store.declared_schema_contract import (
     DeclaredSchemaContract,
 )
 
-NAMESPACE = "test_namespace"
+COLLECTION = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
 
@@ -71,26 +70,24 @@ def any_qdrant_client(request):
 @pytest_asyncio.fixture
 async def store(any_qdrant_client):
     params = QdrantVectorStoreParams(
-        indexed_properties=INDEXED_PROPERTIES, client=any_qdrant_client
+        collection=COLLECTION,
+        vector_dimensions=VECTOR_DIM,
+        indexed_properties=INDEXED_PROPERTIES,
+        client=any_qdrant_client,
     )
     s = QdrantVectorStore(params)
+    await s.provision()
     await s.startup()
     yield s
 
 
 @pytest_asyncio.fixture
 async def collection(store):
-    await store.create_collection(
-        namespace=NAMESPACE,
-        name=NAME,
-        config=VectorStoreCollectionConfig(
-            vector_dimensions=VECTOR_DIM,
-        ),
-    )
-    coll = await store.open_collection(namespace=NAMESPACE, name=NAME)
+    await store.create_partition(NAME)
+    coll = await store.get_partition(NAME)
     assert coll is not None
     yield coll
-    await store.delete_collection(namespace=NAMESPACE, name=NAME)
+    await store.delete_partition(NAME)
 
 
 def _normalize(v: list[float]) -> list[float]:
@@ -111,7 +108,7 @@ async def _present_uuids(collection, record_uuids) -> list[UUID]:
     record_uuids = list(record_uuids)
     if not record_uuids:
         return []
-    dimensions = collection.config.vector_dimensions
+    dimensions = VECTOR_DIM
     probe = [1.0] + [0.0] * (dimensions - 1)
     [result] = await collection.query(query_vectors=[probe], limit=_FETCH_LIMIT)
     present = {match.record_uuid for match in result.matches}
@@ -131,94 +128,58 @@ def _make_record(
     )
 
 
-# ── Collection lifecycle ──
+# ── Partition lifecycle ──
 
 
 class TestCollectionLifecycle:
     @pytest.mark.asyncio
     async def test_create_get_delete(self, store):
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="lifecycle",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        coll = await store.open_collection(namespace=NAMESPACE, name="lifecycle")
-        assert isinstance(coll, QdrantVectorStoreCollection)
-        await store.delete_collection(namespace=NAMESPACE, name="lifecycle")
+        await store.create_partition("lifecycle")
+        coll = await store.get_partition("lifecycle")
+        assert isinstance(coll, QdrantVectorStorePartition)
+        await store.delete_partition("lifecycle")
 
     @pytest.mark.asyncio
     async def test_open_collection_returns_qdrant_collection(self, store, collection):
-        coll = await store.open_collection(namespace=NAMESPACE, name=NAME)
-        assert isinstance(coll, QdrantVectorStoreCollection)
+        coll = await store.get_partition(NAME)
+        assert isinstance(coll, QdrantVectorStorePartition)
 
     @pytest.mark.asyncio
     async def test_duplicate_name_raises(self, store, collection):
-        with pytest.raises(VectorStoreCollectionAlreadyExistsError):
-            await store.create_collection(
-                namespace=NAMESPACE,
-                name=NAME,
-                config=VectorStoreCollectionConfig(
-                    vector_dimensions=VECTOR_DIM,
-                ),
-            )
+        with pytest.raises(VectorStorePartitionAlreadyExistsError):
+            await store.create_partition(NAME)
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent_is_idempotent(self, store):
-        await store.delete_collection(namespace=NAMESPACE, name="nonexistent")
+        await store.delete_partition("nonexistent")
 
     @pytest.mark.asyncio
     async def test_open_or_create_creates_when_missing(self, store):
-        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        coll = await store.open_or_create_collection(
-            namespace=NAMESPACE, name="new", config=config
-        )
-        assert isinstance(coll, QdrantVectorStoreCollection)
-        await store.delete_collection(namespace=NAMESPACE, name="new")
+        coll = await get_or_create_partition(store, "new")
+        assert isinstance(coll, QdrantVectorStorePartition)
+        await store.delete_partition("new")
 
     @pytest.mark.asyncio
     async def test_open_or_create_opens_when_exists(self, store):
-        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        await store.create_collection(
-            namespace=NAMESPACE, name="existing", config=config
-        )
-        coll = await store.open_or_create_collection(
-            namespace=NAMESPACE, name="existing", config=config
-        )
-        assert isinstance(coll, QdrantVectorStoreCollection)
-        await store.delete_collection(namespace=NAMESPACE, name="existing")
+        await store.create_partition("existing")
+        coll = await get_or_create_partition(store, "existing")
+        assert isinstance(coll, QdrantVectorStorePartition)
+        await store.delete_partition("existing")
 
     @pytest.mark.asyncio
-    async def test_open_or_create_raises_on_config_mismatch(self, store):
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="mismatch",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        with pytest.raises(VectorStoreCollectionConfigMismatchError):
-            await store.open_or_create_collection(
-                namespace=NAMESPACE,
-                name="mismatch",
-                config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM + 1),
-            )
-        await store.delete_collection(namespace=NAMESPACE, name="mismatch")
+    async def test_partitions_share_the_native_collection(self, store):
+        """Every partition lives in the store's one native collection."""
+        await store.create_partition("coll_a")
+        await store.create_partition("coll_b")
 
-    @pytest.mark.asyncio
-    async def test_same_config_shares_native_collection(self, store):
-        """Two logical collections with the same config share one native collection."""
-        config = VectorStoreCollectionConfig(
-            vector_dimensions=VECTOR_DIM,
-        )
-        await store.create_collection(namespace=NAMESPACE, name="coll_a", config=config)
-        await store.create_collection(namespace=NAMESPACE, name="coll_b", config=config)
-
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="coll_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="coll_b")
+        coll_a = await store.get_partition("coll_a")
+        coll_b = await store.get_partition("coll_b")
         assert coll_a is not None
         assert coll_b is not None
         assert coll_a._collection_name == coll_b._collection_name
 
-        await store.delete_collection(namespace=NAMESPACE, name="coll_a")
-        await store.delete_collection(namespace=NAMESPACE, name="coll_b")
+        await store.delete_partition("coll_a")
+        await store.delete_partition("coll_b")
 
 
 # ── Upsert + Query ──
@@ -974,24 +935,16 @@ class TestDelete:
         assert results[0] == r2.uuid
 
 
-# ── Partition isolation (via separate logical collections) ──
+# ── Partition isolation ──
 
 
 class TestPartitionIsolation:
     @pytest.mark.asyncio
     async def test_query_only_returns_own_partition(self, store):
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="tenant_a",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="tenant_b",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        await store.create_partition("tenant_a")
+        await store.create_partition("tenant_b")
+        coll_a = await store.get_partition("tenant_a")
+        coll_b = await store.get_partition("tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -1010,23 +963,15 @@ class TestPartitionIsolation:
         assert uuids_a == {r1.uuid}
         assert uuids_b == {r2.uuid}
 
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
+        await store.delete_partition("tenant_a")
+        await store.delete_partition("tenant_b")
 
     @pytest.mark.asyncio
     async def test_get_only_returns_own_partition(self, store):
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="tenant_a",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="tenant_b",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        await store.create_partition("tenant_a")
+        await store.create_partition("tenant_b")
+        coll_a = await store.get_partition("tenant_a")
+        coll_b = await store.get_partition("tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -1041,23 +986,15 @@ class TestPartitionIsolation:
         assert len(results) == 1
         assert results[0] == r1.uuid
 
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
+        await store.delete_partition("tenant_a")
+        await store.delete_partition("tenant_b")
 
     @pytest.mark.asyncio
     async def test_delete_only_affects_own_partition(self, store):
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="tenant_a",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="tenant_b",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        await store.create_partition("tenant_a")
+        await store.create_partition("tenant_b")
+        coll_a = await store.get_partition("tenant_a")
+        coll_b = await store.get_partition("tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -1075,8 +1012,8 @@ class TestPartitionIsolation:
         assert len(results) == 1
         assert results[0] == r2.uuid
 
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
+        await store.delete_partition("tenant_a")
+        await store.delete_partition("tenant_b")
 
 
 # ── Metrics ──
@@ -1091,18 +1028,17 @@ class TestMetrics:
         mock_factory.get_histogram.return_value = mock_histogram
 
         params = QdrantVectorStoreParams(
+            collection=COLLECTION,
+            vector_dimensions=VECTOR_DIM,
             indexed_properties=INDEXED_PROPERTIES,
             client=qdrant_client,
             metrics_factory=mock_factory,
         )
         store = QdrantVectorStore(params)
+        await store.provision()
         await store.startup()
 
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="metrics_test",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
+        await store.create_partition("metrics_test")
 
         assert mock_histogram.observe.called
         call_labels = mock_histogram.observe.call_args
@@ -1111,7 +1047,7 @@ class TestMetrics:
 
         mock_histogram.reset_mock()
 
-        coll = await store.open_collection(namespace=NAMESPACE, name="metrics_test")
+        coll = await store.get_partition("metrics_test")
         assert coll is not None
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1)
@@ -1122,7 +1058,7 @@ class TestMetrics:
         assert call_labels[1]["labels"]["operation"] == "upsert"
         assert call_labels[1]["labels"]["status"] == "ok"
 
-        await store.delete_collection(namespace=NAMESPACE, name="metrics_test")
+        await store.delete_partition("metrics_test")
 
 
 # ── Distributed sharding ──
@@ -1131,11 +1067,14 @@ class TestMetrics:
 @pytest_asyncio.fixture
 async def distributed_store(distributed_qdrant_client):
     params = QdrantVectorStoreParams(
+        collection=COLLECTION,
+        vector_dimensions=VECTOR_DIM,
         indexed_properties=INDEXED_PROPERTIES,
         client=distributed_qdrant_client,
         is_distributed=True,
     )
     s = QdrantVectorStore(params)
+    await s.provision()
     await s.startup()
     yield s
 
@@ -1148,16 +1087,10 @@ class TestDistributedSharding:
     async def test_crud_lifecycle(self, distributed_store):
         """Full create → upsert → query → get → delete records → delete collection."""
         store = distributed_store
-        ns, name = NAMESPACE, "distributed_crud"
+        name = "distributed_crud"
 
-        await store.create_collection(
-            namespace=ns,
-            name=name,
-            config=VectorStoreCollectionConfig(
-                vector_dimensions=VECTOR_DIM,
-            ),
-        )
-        coll = await store.open_collection(namespace=ns, name=name)
+        await store.create_partition(name)
+        coll = await store.get_partition(name)
         assert coll is not None
 
         v1 = _normalize([1.0, 0.0, 0.0])
@@ -1174,21 +1107,16 @@ class TestDistributedSharding:
         got = await _present_uuids(coll, [r1.uuid])
         assert len(got) == 0
 
-        await store.delete_collection(namespace=ns, name=name)
+        await store.delete_partition(name)
 
     async def test_shard_drop_isolates_logical_collections(self, distributed_store):
-        """Dropping one logical collection's shard must not affect another's data."""
+        """Dropping one partition's shard must not affect another's data."""
         store = distributed_store
-        ns = NAMESPACE
-        config = VectorStoreCollectionConfig(
-            vector_dimensions=VECTOR_DIM,
-        )
+        await store.create_partition("tenant_a")
+        await store.create_partition("tenant_b")
 
-        await store.create_collection(namespace=ns, name="tenant_a", config=config)
-        await store.create_collection(namespace=ns, name="tenant_b", config=config)
-
-        coll_a = await store.open_collection(namespace=ns, name="tenant_a")
-        coll_b = await store.open_collection(namespace=ns, name="tenant_b")
+        coll_a = await store.get_partition("tenant_a")
+        coll_b = await store.get_partition("tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -1200,44 +1128,36 @@ class TestDistributedSharding:
         await coll_b.upsert(records=[r_b])
 
         # Delete tenant_a's shard.
-        await store.delete_collection(namespace=ns, name="tenant_a")
+        await store.delete_partition("tenant_a")
 
         # tenant_b data should be untouched.
         assert await _present_uuids(coll_b, [r_b.uuid]) == [r_b.uuid]
 
-        await store.delete_collection(namespace=ns, name="tenant_b")
+        await store.delete_partition("tenant_b")
 
     async def test_idempotent_delete(self, distributed_store):
         """Deleting an already-deleted collection should be a no-op."""
         store = distributed_store
-        ns, name = NAMESPACE, "distributed_idem"
-        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+        name = "distributed_idem"
 
-        await store.create_collection(namespace=ns, name=name, config=config)
-        await store.delete_collection(namespace=ns, name=name)
+        await store.create_partition(name)
+        await store.delete_partition(name)
         # Second delete should not raise.
-        await store.delete_collection(namespace=ns, name=name)
+        await store.delete_partition(name)
 
 
 @pytest.mark.integration
-class TestCollectionLifecycleAcrossWorkers:
-    """Collection creation has to survive more than one creator.
+class TestCollectionProvisioningAcrossWorkers:
+    """Provisioning has to survive more than one provisioner.
 
-    The store serialises creation with an asyncio.Lock keyed on the client
-    object, which serialises callers inside one process and nothing else. Run
-    the server with MEMMACHINE_WORKERS above 1 and each worker gets its own
-    client, its own lock, and no mutual exclusion - so two workers can decide to
-    create the same collection at the same moment.
+    Run the server with MEMMACHINE_WORKERS above 1 and each worker builds its
+    own store over its own client, so two workers can provision the same
+    collection at the same moment, and one can find the collection already
+    there without its indexes.
 
     These need a real server: payload indexes have no effect in local-mode
     Qdrant, so the thing under test is invisible there.
     """
-
-    @staticmethod
-    def _config() -> VectorStoreCollectionConfig:
-        return VectorStoreCollectionConfig(
-            vector_dimensions=VECTOR_DIM,
-        )
 
     @pytest.mark.asyncio
     async def test_indexes_are_created_when_the_collection_already_exists(
@@ -1245,11 +1165,10 @@ class TestCollectionLifecycleAcrossWorkers:
     ):
         """A collection that exists without its indexes must still get them.
 
-        _create_native_collection creates the collection and its payload indexes
-        in one try block and swallows "already exists" for the whole block. So a
-        second creator - another worker, or a retry after one died between the
-        two calls - takes the exception path and never creates an index. Its
-        docstring claims it creates both idempotently; this pins that claim.
+        The collection and its payload indexes are created in separate steps,
+        each swallowing "already exists" on its own, so a provisioner that
+        finds the collection there, left by another worker or by a crash
+        between the two steps, still creates the indexes.
 
         The partition key is declared is_tenant. Verified against Qdrant 1.19:
         filtering stays correct without the index - a filtered query on an
@@ -1257,13 +1176,11 @@ class TestCollectionLifecycleAcrossWorkers:
         is lost is the multitenant storage layout and query speed, not
         isolation.
         """
-        namespace, name = "raced_ns", "raced_name"
-        config = self._config()
-        native = QdrantVectorStore._build_native_collection_name(namespace, config)
+        collection = "raced_collection"
 
-        # Stand in for a creator that got as far as the collection and no further.
+        # Stand in for a provisioner that got as far as the collection and no further.
         await qdrant_client.create_collection(
-            collection_name=native,
+            collection_name=collection,
             vectors_config=models.VectorParams(
                 size=VECTOR_DIM, distance=models.Distance.COSINE
             ),
@@ -1271,15 +1188,16 @@ class TestCollectionLifecycleAcrossWorkers:
 
         store = QdrantVectorStore(
             QdrantVectorStoreParams(
-                indexed_properties=INDEXED_PROPERTIES, client=qdrant_client
+                collection=collection,
+                vector_dimensions=VECTOR_DIM,
+                indexed_properties=INDEXED_PROPERTIES,
+                client=qdrant_client,
             )
         )
-        await store.startup()
         try:
-            await store.open_or_create_collection(
-                namespace=namespace, name=name, config=config
-            )
-            info = await qdrant_client.get_collection(native)
+            await store.provision()
+            await store.startup()
+            info = await qdrant_client.get_collection(collection)
             indexed = set(info.payload_schema or {})
             assert _PAYLOAD_PARTITION_KEY in indexed, (
                 "the tenant partition index is missing: a collection that already "
@@ -1290,64 +1208,71 @@ class TestCollectionLifecycleAcrossWorkers:
                 f"declared property index absent. present: {sorted(indexed)}"
             )
         finally:
-            await store.delete_collection(namespace=namespace, name=name)
+            await qdrant_client.delete_collection(collection)
+            await qdrant_client.delete_collection(store._registry_collection_name)
 
     @pytest.mark.asyncio
-    async def test_two_workers_creating_at_once_both_succeed_and_index(
+    async def test_two_workers_provisioning_at_once_both_succeed_and_index(
         self, qdrant_container
     ):
         """Two clients, no shared lock - the multi-worker shape, in one process.
 
-        The lock is keyed on the client object, so two stores holding separate
-        clients are exactly two workers as far as mutual exclusion goes. Both
-        calls must return a usable handle, and the collection they agree on must
-        end up indexed.
+        Both provisioners must return, and the collection they agree on must
+        end up indexed; then both must be able to create partitions in it.
         """
         client_a = qdrant_container.get_async_client()
         client_b = qdrant_container.get_async_client()
-        namespace, name = "race_two_ns", "race_two_name"
-        config = self._config()
-        native = QdrantVectorStore._build_native_collection_name(namespace, config)
+        collection = "race_two_collection"
 
         store_a = QdrantVectorStore(
             QdrantVectorStoreParams(
-                indexed_properties=INDEXED_PROPERTIES, client=client_a
+                collection=collection,
+                vector_dimensions=VECTOR_DIM,
+                indexed_properties=INDEXED_PROPERTIES,
+                client=client_a,
             )
         )
         store_b = QdrantVectorStore(
             QdrantVectorStoreParams(
-                indexed_properties=INDEXED_PROPERTIES, client=client_b
+                collection=collection,
+                vector_dimensions=VECTOR_DIM,
+                indexed_properties=INDEXED_PROPERTIES,
+                client=client_b,
             )
         )
-        await store_a.startup()
-        await store_b.startup()
 
-        assert store_a._client_name_locks is not store_b._client_name_locks, (
+        assert store_a._client_partition_locks is not store_b._client_partition_locks, (
             "separate clients must not share a lock, or this does not test anything"
         )
 
         try:
             results = await asyncio.gather(
-                store_a.open_or_create_collection(
-                    namespace=namespace, name=name, config=config
-                ),
-                store_b.open_or_create_collection(
-                    namespace=namespace, name=name, config=config
-                ),
-                return_exceptions=True,
+                store_a.provision(), store_b.provision(), return_exceptions=True
             )
             failures = [r for r in results if isinstance(r, BaseException)]
-            assert not failures, f"a concurrent creator raised: {failures!r}"
+            assert not failures, f"a concurrent provisioner raised: {failures!r}"
+            await store_a.startup()
+            await store_b.startup()
 
-            info = await client_a.get_collection(native)
+            info = await client_a.get_collection(collection)
             indexed = set(info.payload_schema or {})
             assert _PAYLOAD_PARTITION_KEY in indexed, (
                 "two workers raced and the tenant partition index was lost: the "
                 "loser skips index creation entirely. present: "
                 f"{sorted(indexed)}"
             )
+
+            results = await asyncio.gather(
+                get_or_create_partition(store_a, "race_two_key"),
+                get_or_create_partition(store_b, "race_two_key"),
+                return_exceptions=True,
+            )
+            failures = [r for r in results if isinstance(r, BaseException)]
+            assert not failures, f"a concurrent creator raised: {failures!r}"
         finally:
-            await store_a.delete_collection(namespace=namespace, name=name)
+            await store_a.delete_partition("race_two_key")
+            await client_a.delete_collection(collection)
+            await client_a.delete_collection(store_a._registry_collection_name)
             await client_a.close()
             await client_b.close()
 
@@ -1363,6 +1288,8 @@ class TestIndexAndQuantizationParams:
         params = QdrantVectorStoreParams.model_validate(
             {
                 "client": in_memory_qdrant_client,
+                "collection": COLLECTION,
+                "vector_dimensions": VECTOR_DIM,
                 "indexed_properties": {"name": "str", "created_at": "datetime"},
                 "hnsw_config": {"ef_construct": 256, "payload_m": 32},
                 "optimizers_config": {"default_segment_number": 4},
@@ -1380,6 +1307,8 @@ class TestIndexAndQuantizationParams:
     @pytest.mark.parametrize("m", [None, 0])
     def test_hnsw_config_zero_or_unset_m_accepted(self, in_memory_qdrant_client, m):
         params = QdrantVectorStoreParams(
+            collection=COLLECTION,
+            vector_dimensions=VECTOR_DIM,
             indexed_properties=INDEXED_PROPERTIES,
             client=in_memory_qdrant_client,
             hnsw_config=models.HnswConfigDiff(m=m, ef_construct=200),
@@ -1391,6 +1320,8 @@ class TestIndexAndQuantizationParams:
         """Native collections require m=0; a positive global m is rejected."""
         with pytest.raises(ValidationError, match="payload_m"):
             QdrantVectorStoreParams(
+                collection=COLLECTION,
+                vector_dimensions=VECTOR_DIM,
                 indexed_properties=INDEXED_PROPERTIES,
                 client=in_memory_qdrant_client,
                 hnsw_config=models.HnswConfigDiff(m=16),
@@ -1402,7 +1333,10 @@ class TestIndexAndQuantizationParams:
         """With no override, the native graph is disabled with a default payload_m."""
         store = QdrantVectorStore(
             QdrantVectorStoreParams(
-                indexed_properties=INDEXED_PROPERTIES, client=in_memory_qdrant_client
+                collection=COLLECTION,
+                vector_dimensions=VECTOR_DIM,
+                indexed_properties=INDEXED_PROPERTIES,
+                client=in_memory_qdrant_client,
             )
         )
         cfg = store._native_hnsw_config()
@@ -1415,6 +1349,8 @@ class TestIndexAndQuantizationParams:
         """Caller fields layer on top, but m stays pinned at 0 for tenant isolation."""
         store = QdrantVectorStore(
             QdrantVectorStoreParams(
+                collection=COLLECTION,
+                vector_dimensions=VECTOR_DIM,
                 indexed_properties=INDEXED_PROPERTIES,
                 client=in_memory_qdrant_client,
                 hnsw_config=models.HnswConfigDiff(ef_construct=222, payload_m=32),
@@ -1437,6 +1373,8 @@ class TestIndexAndQuantizationParams:
             )
         )
         params = QdrantVectorStoreParams(
+            collection=COLLECTION,
+            vector_dimensions=VECTOR_DIM,
             indexed_properties=INDEXED_PROPERTIES,
             client=in_memory_qdrant_client,
             hnsw_config=models.HnswConfigDiff(ef_construct=222, payload_m=32),
@@ -1444,15 +1382,12 @@ class TestIndexAndQuantizationParams:
             quantization_config=quant,
         )
         store = QdrantVectorStore(params)
-        await store.startup()
 
+        # The native collection is created by provisioning, not per partition.
         spy = AsyncMock(wraps=in_memory_qdrant_client.create_collection)
         with patch.object(in_memory_qdrant_client, "create_collection", new=spy):
-            await store.create_collection(
-                namespace=NAMESPACE,
-                name="quant_test",
-                config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-            )
+            await store.provision()
+        await store.startup()
 
         # The registry collection is created without quantization; the native
         # (data) collection is the one carrying the new settings.
@@ -1469,8 +1404,6 @@ class TestIndexAndQuantizationParams:
         assert kwargs["optimizers_config"] == opt
         assert kwargs["quantization_config"] == quant
 
-        await store.delete_collection(namespace=NAMESPACE, name="quant_test")
-
 
 @pytest.mark.integration
 class TestDeclaredPayloadIndexes:
@@ -1480,18 +1413,16 @@ class TestDeclaredPayloadIndexes:
     async def test_every_declared_key_gets_a_payload_index(self, qdrant_client):
         store = QdrantVectorStore(
             QdrantVectorStoreParams(
-                indexed_properties=INDEXED_PROPERTIES, client=qdrant_client
+                collection=COLLECTION,
+                vector_dimensions=VECTOR_DIM,
+                indexed_properties=INDEXED_PROPERTIES,
+                client=qdrant_client,
             )
         )
+        await store.provision()
         await store.startup()
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="declared_indexes",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        collection = await store.open_collection(
-            namespace=NAMESPACE, name="declared_indexes"
-        )
+        await store.create_partition("declared_indexes")
+        collection = await store.get_partition("declared_indexes")
         assert collection is not None
         info = await store._client.get_collection(collection._collection_name)
         indexed = set(info.payload_schema or {})
@@ -1501,4 +1432,4 @@ class TestDeclaredPayloadIndexes:
             == models.PayloadSchemaType.DATETIME
         )
         assert info.payload_schema["age"].data_type == models.PayloadSchemaType.INTEGER
-        await store.delete_collection(namespace=NAMESPACE, name="declared_indexes")
+        await store.delete_partition("declared_indexes")

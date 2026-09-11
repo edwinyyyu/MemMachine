@@ -32,9 +32,6 @@ from memmachine_server.common.filter import (
     Ordering,
 )
 from memmachine_server.common.vector_store import VectorStore
-from memmachine_server.common.vector_store.data_types import (
-    VectorStoreCollectionConfig,
-)
 from memmachine_server.episodic_memory.event_memory.data_types import (
     SearchHit,
     Segment,
@@ -56,8 +53,8 @@ from memmachine_server.episodic_memory.long_term_memory import (
     LongTermMemory,
 )
 from server_tests.memmachine_server.common.reranker.fake_embedder import FakeEmbedder
-from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_collection import (
-    InMemoryVectorStoreCollection,
+from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_partition import (
+    InMemoryVectorStorePartition,
 )
 from server_tests.memmachine_server.episodic_memory.event_memory.conftest import (
     InMemorySegmentStorePartition,
@@ -148,14 +145,14 @@ def fake_embedder() -> FakeEmbedder:
 
 @pytest.fixture
 def vector_store():
-    """Stand-in for the parent VectorStore: only delete_collection is invoked."""
+    """Stand-in for the parent VectorStore: only delete_partition is invoked."""
     return create_autospec(VectorStore, instance=True)
 
 
 @pytest.fixture
-def vector_store_collection(fake_embedder):
-    return InMemoryVectorStoreCollection(
-        VectorStoreCollectionConfig(vector_dimensions=fake_embedder.dimensions),
+def vector_store_partition(fake_embedder):
+    return InMemoryVectorStorePartition(
+        "sess1",
         {
             **EventMemory.expected_vector_store_collection_schema(),
             **EVENT_BACKEND_SYSTEM_FIELDS,
@@ -180,7 +177,7 @@ def segment_store_partition() -> InMemorySegmentStorePartition:
 def long_term_memory(
     fake_embedder,
     vector_store,
-    vector_store_collection,
+    vector_store_partition,
     segment_store,
     segment_store_partition,
     fake_episode_storage,
@@ -189,8 +186,7 @@ def long_term_memory(
         EventBackendParams(
             session_id="sess1",
             vector_store=vector_store,
-            vector_store_collection=vector_store_collection,
-            vector_store_collection_namespace="long_term_memory",
+            vector_store_partition=vector_store_partition,
             segment_store=segment_store,
             segment_store_partition=segment_store_partition,
             partition_key="sess1",
@@ -295,10 +291,7 @@ async def test_drop_session_partition_calls_parent_lifecycle_hooks(
     segment_store,
 ):
     await long_term_memory.drop_session_partition()
-    vector_store.delete_collection.assert_awaited_once_with(
-        namespace="long_term_memory",
-        name="sess1",
-    )
+    vector_store.delete_partition.assert_awaited_once_with("sess1")
     segment_store.delete_partition.assert_awaited_once_with("sess1")
     # Reclamation is the sweeper's; the delete path never purges.
     segment_store.purge_deleted_partitions.assert_not_awaited()
@@ -435,7 +428,7 @@ async def test_unknown_user_metadata_field_passes_when_no_schema(long_term_memor
 async def test_unknown_user_metadata_field_raises_when_schema_configured(
     fake_embedder,
     vector_store,
-    vector_store_collection,
+    vector_store_partition,
     segment_store,
     segment_store_partition,
     fake_episode_storage,
@@ -445,8 +438,7 @@ async def test_unknown_user_metadata_field_raises_when_schema_configured(
         EventBackendParams(
             session_id="sess1",
             vector_store=vector_store,
-            vector_store_collection=vector_store_collection,
-            vector_store_collection_namespace="long_term_memory",
+            vector_store_partition=vector_store_partition,
             segment_store=segment_store,
             segment_store_partition=segment_store_partition,
             partition_key="sess1",
@@ -486,8 +478,8 @@ def _make_ltm(episodes: list[Episode]) -> LongTermMemory:
     No reranker is configured, so scores come straight from the vector store.
     """
     fake_embedder = FakeEmbedder()
-    vector_store_collection = InMemoryVectorStoreCollection(
-        VectorStoreCollectionConfig(vector_dimensions=fake_embedder.dimensions),
+    vector_store_partition = InMemoryVectorStorePartition(
+        "sess1",
         {
             **EventMemory.expected_vector_store_collection_schema(),
             **EVENT_BACKEND_SYSTEM_FIELDS,
@@ -497,8 +489,7 @@ def _make_ltm(episodes: list[Episode]) -> LongTermMemory:
         EventBackendParams(
             session_id="sess1",
             vector_store=create_autospec(VectorStore, instance=True),
-            vector_store_collection=vector_store_collection,
-            vector_store_collection_namespace="long_term_memory",
+            vector_store_partition=vector_store_partition,
             segment_store=create_autospec(SegmentStore, instance=True),
             segment_store_partition=InMemorySegmentStorePartition(),
             partition_key="sess1",
@@ -627,19 +618,18 @@ def timeline_storage(timeline_episodes) -> FakeEpisodeStorage:
 @pytest.fixture
 def timeline_long_term_memory(
     vector_store,
-    vector_store_collection,
+    vector_store_partition,
     segment_store,
     segment_store_partition,
     timeline_storage,
 ) -> LongTermMemory:
     # `RankedEmbedder` shares FakeEmbedder's dimensions, so the shared
-    # `vector_store_collection` config still applies.
+    # `vector_store_partition` config still applies.
     return LongTermMemory(
         EventBackendParams(
             session_id="sess1",
             vector_store=vector_store,
-            vector_store_collection=vector_store_collection,
-            vector_store_collection_namespace="long_term_memory",
+            vector_store_partition=vector_store_partition,
             segment_store=segment_store,
             segment_store_partition=segment_store_partition,
             partition_key="sess1",

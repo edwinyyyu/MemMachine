@@ -9,21 +9,20 @@ import pytest
 from memmachine_server.common.filter.filter_parser import (
     parse_filter,
 )
-from memmachine_server.common.vector_store import VectorStoreCollectionConfig
 from memmachine_server.semantic_memory.storage.storage_base import SemanticStorage
 from memmachine_server.semantic_memory.storage.vector_store_semantic_storage import (
     VectorSemanticFeature,
     VectorStoreSemanticStorage,
 )
-from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_collection import (
-    InMemoryVectorStoreCollection,
+from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_partition import (
+    InMemoryVectorStorePartition,
 )
 
 
 @pytest.fixture
-def vector_collection() -> InMemoryVectorStoreCollection:
-    return InMemoryVectorStoreCollection(
-        VectorStoreCollectionConfig(vector_dimensions=2),
+def vector_collection() -> InMemoryVectorStorePartition:
+    return InMemoryVectorStorePartition(
+        "semantic_memory",
         {"set_id": str, "category": str, "tag": str, "feature_name": str},
     )
 
@@ -39,7 +38,7 @@ async def _vector_uuid(storage: VectorStoreSemanticStorage, feature_id) -> UUID:
 @pytest.mark.asyncio
 async def test_older_than_compares_instants_not_wall_clocks(
     sqlalchemy_sqlite_engine,
-    vector_collection: InMemoryVectorStoreCollection,
+    vector_collection: InMemoryVectorStorePartition,
 ):
     """A non-UTC-offset bound names an instant on SQLite, not a wall clock.
 
@@ -65,7 +64,7 @@ async def test_older_than_compares_instants_not_wall_clocks(
 @pytest.mark.asyncio
 async def test_add_update_delete_feature_keeps_vector_collection_in_sync(
     sqlalchemy_sqlite_engine,
-    vector_collection: InMemoryVectorStoreCollection,
+    vector_collection: InMemoryVectorStorePartition,
 ):
     storage = VectorStoreSemanticStorage(sqlalchemy_sqlite_engine, vector_collection)
     await storage.startup()
@@ -109,7 +108,7 @@ async def test_add_update_delete_feature_keeps_vector_collection_in_sync(
 @pytest.mark.asyncio
 async def test_each_feature_owns_a_distinct_vector_record(
     sqlalchemy_sqlite_engine,
-    vector_collection: InMemoryVectorStoreCollection,
+    vector_collection: InMemoryVectorStorePartition,
 ):
     """`vector_uuid` is minted per feature, so no two features can collide."""
     storage = VectorStoreSemanticStorage(sqlalchemy_sqlite_engine, vector_collection)
@@ -145,7 +144,7 @@ async def test_each_feature_owns_a_distinct_vector_record(
 @pytest.mark.asyncio
 async def test_vector_records_carry_no_properties(
     sqlalchemy_sqlite_engine,
-    vector_collection: InMemoryVectorStoreCollection,
+    vector_collection: InMemoryVectorStorePartition,
 ):
     """The feature row is the authority; the vector record holds only a vector."""
     storage = VectorStoreSemanticStorage(sqlalchemy_sqlite_engine, vector_collection)
@@ -177,7 +176,7 @@ async def test_vector_records_carry_no_properties(
 @pytest.mark.asyncio
 async def test_delete_feature_set_removes_the_vector_records(
     sqlalchemy_sqlite_engine,
-    vector_collection: InMemoryVectorStoreCollection,
+    vector_collection: InMemoryVectorStorePartition,
 ):
     """The uuids must be read before the rows go, or the vectors are orphaned."""
     storage = VectorStoreSemanticStorage(sqlalchemy_sqlite_engine, vector_collection)
@@ -216,7 +215,7 @@ async def test_delete_feature_set_removes_the_vector_records(
 @pytest.mark.asyncio
 async def test_delete_all_removes_the_vector_records(
     sqlalchemy_sqlite_engine,
-    vector_collection: InMemoryVectorStoreCollection,
+    vector_collection: InMemoryVectorStorePartition,
 ):
     storage = VectorStoreSemanticStorage(sqlalchemy_sqlite_engine, vector_collection)
     await storage.startup()
@@ -242,7 +241,7 @@ async def test_delete_all_removes_the_vector_records(
 @pytest.mark.asyncio
 async def test_vector_search_returns_relational_features_in_similarity_order(
     sqlalchemy_sqlite_engine,
-    vector_collection: InMemoryVectorStoreCollection,
+    vector_collection: InMemoryVectorStorePartition,
 ):
     storage = VectorStoreSemanticStorage(sqlalchemy_sqlite_engine, vector_collection)
     await storage.startup()

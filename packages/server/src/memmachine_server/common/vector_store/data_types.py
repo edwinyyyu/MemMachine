@@ -1,5 +1,6 @@
 """Data types for vector store."""
 
+import re
 from collections.abc import Collection, Iterable, Mapping
 from typing import Annotated
 from uuid import UUID
@@ -73,74 +74,76 @@ def indexed_property_names(
     }
 
 
-class VectorStoreCollectionConfig(BaseModel):
-    """
-    Configuration for a logical collection in a vector store.
+COLLECTION_NAME_MAX_BYTES = 64
+"""Bound on a collection name, in bytes; a store's one native name."""
 
-    Attributes:
-        vector_dimensions (int):
-            Dimensionality of vectors stored in the collection.
-    """
-
-    vector_dimensions: int
+_COLLECTION_NAME_RE = re.compile(r"^[a-z0-9_]+$")
 
 
-class VectorStoreCollectionAlreadyExistsError(Exception):
-    """Raised when creating a collection that already exists."""
-
-    def __init__(self, namespace: str, name: str) -> None:
-        """Initialize with the namespace and name of the existing collection."""
-        self.namespace = namespace
-        self.name = name
-        super().__init__(f"Collection ({namespace!r}, {name!r}) already exists.")
-
-
-class VectorStoreCollectionConfigMismatchError(Exception):
-    """Raised when opening a collection with a different configuration than it was created with."""
-
-    def __init__(
-        self,
-        namespace: str,
-        name: str,
-        existing_config: VectorStoreCollectionConfig,
-        requested_config: VectorStoreCollectionConfig,
-    ) -> None:
-        """Initialize with the namespace, name, and configurations."""
-        self.namespace = namespace
-        self.name = name
-        self.existing_config = existing_config
-        self.requested_config = requested_config
-        super().__init__(
-            f"Collection ({namespace!r}, {name!r}) already exists with a different configuration. "
-            f"Existing config: {existing_config.model_dump_json()}, "
-            f"requested config: {requested_config.model_dump_json()}."
+def validate_collection_name(name: str) -> None:
+    """Raise ValueError unless `name` can name a native collection on every backend."""
+    if (
+        not _COLLECTION_NAME_RE.match(name)
+        or len(name.encode()) > COLLECTION_NAME_MAX_BYTES
+    ):
+        raise ValueError(
+            f"Collection name {name!r} must match [a-z0-9_]+ and be at most "
+            f"{COLLECTION_NAME_MAX_BYTES} bytes."
         )
 
 
-class IndexedPropertiesMismatchError(Exception):
+class PartitionSchema(BaseModel):
     """
-    Raised when a collection's stored schema differs from the store's declaration.
+    What a partition was created under: its store's dimensions and schema.
 
-    A store built with one `indexed_properties` schema holds columns and
-    indexes for exactly those keys; a collection created under another
-    schema cannot be served without a migration, which nothing here performs.
+    Recorded beside the partition so a store built with other dimensions or
+    another declared schema fails loudly instead of reading columns or
+    vectors that are not there.
+    """
+
+    vector_dimensions: int
+    indexed_properties: dict[str, str]
+    """The declared schema, each type by its name."""
+
+
+class VectorStorePartitionAlreadyExistsError(Exception):
+    """Raised when creating a partition that already exists."""
+
+    def __init__(self, collection: str, partition_key: str) -> None:
+        """Initialize with the collection and the key of the existing partition."""
+        self.collection = collection
+        self.partition_key = partition_key
+        super().__init__(
+            f"Partition {partition_key!r} of collection {collection!r} already exists."
+        )
+
+
+class VectorStorePartitionSchemaMismatchError(Exception):
+    """
+    Raised when a partition's recorded schema differs from its store's.
+
+    A store built with one dimensionality and one `indexed_properties`
+    schema holds columns and indexes for exactly those; a partition created
+    under others cannot be served without a migration, which nothing here
+    performs.
     """
 
     def __init__(
         self,
-        namespace: str,
-        name: str,
-        stored: Mapping[str, str],
-        declared: Mapping[str, str],
+        collection: str,
+        partition_key: str,
+        stored: PartitionSchema,
+        declared: PartitionSchema,
     ) -> None:
-        """Initialize with the collection and the two schemas, as type names."""
-        self.namespace = namespace
-        self.name = name
-        self.stored = dict(stored)
-        self.declared = dict(declared)
+        """Initialize with the partition and the two schemas."""
+        self.collection = collection
+        self.partition_key = partition_key
+        self.stored = stored
+        self.declared = declared
         super().__init__(
-            f"Collection ({namespace!r}, {name!r}) was created with indexed "
-            f"properties {self.stored}, but the store declares {self.declared}."
+            f"Partition {partition_key!r} of collection {collection!r} was created "
+            f"under {stored.model_dump()}, but the store declares "
+            f"{declared.model_dump()}."
         )
 
 

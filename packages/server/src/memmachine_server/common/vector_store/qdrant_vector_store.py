@@ -1,7 +1,6 @@
 """Qdrant-based vector store implementation."""
 
 import asyncio
-import hashlib
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
@@ -11,7 +10,7 @@ from weakref import WeakKeyDictionary
 
 import grpc
 import grpc.aio
-from pydantic import BaseModel, Field, InstanceOf, model_validator
+from pydantic import BaseModel, Field, InstanceOf, field_validator, model_validator
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
@@ -37,16 +36,18 @@ from memmachine_server.common.utils import ensure_tz_aware
 
 from .data_types import (
     IndexedProperties,
+    PartitionSchema,
     QueryMatch,
     QueryResult,
     Record,
-    VectorStoreCollectionAlreadyExistsError,
-    VectorStoreCollectionConfig,
-    VectorStoreCollectionConfigMismatchError,
+    VectorStorePartitionAlreadyExistsError,
+    VectorStorePartitionSchemaMismatchError,
+    indexed_property_names,
+    validate_collection_name,
 )
 from .declared_properties import require_declared_properties, require_supported_filter
 from .utils import validate_identifier
-from .vector_store import VectorStore, VectorStoreCollection
+from .vector_store import VectorStore, VectorStorePartition
 
 # Point payload keys (stored on every Qdrant point).
 # System keys use _SYSTEM_KEY_PREFIX, which contains a hyphen. Hyphens are valid in
@@ -67,8 +68,8 @@ def _partition_filter(partition_key: str) -> models.Filter:
     )
 
 
-class QdrantVectorStoreCollection(VectorStoreCollection):
-    """A collection backed by Qdrant."""
+class QdrantVectorStorePartition(VectorStorePartition):
+    """A partition backed by Qdrant: one payload value inside the store's collection."""
 
     _RANGE_OPERATORS: ClassVar[dict[OrderingOp, str]] = {
         ">": "gt",
@@ -84,9 +85,9 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     @staticmethod
     def _build_qdrant_filter(expr: FilterExpr) -> models.Filter:
         """Convert a FilterExpr tree into a Qdrant Filter."""
-        build = QdrantVectorStoreCollection._build_qdrant_filter
-        eq_condition = QdrantVectorStoreCollection._eq_condition
-        missing_condition = QdrantVectorStoreCollection._missing_condition
+        build = QdrantVectorStorePartition._build_qdrant_filter
+        eq_condition = QdrantVectorStorePartition._eq_condition
+        missing_condition = QdrantVectorStorePartition._missing_condition
         match expr:
             case Equals(field, value):
                 return models.Filter(must=[eq_condition(field, value)])
@@ -99,10 +100,10 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
             case Ordering(field, op, value):
                 return models.Filter(
                     must=[
-                        QdrantVectorStoreCollection._range_condition(
+                        QdrantVectorStorePartition._range_condition(
                             field,
                             value,
-                            QdrantVectorStoreCollection._RANGE_OPERATORS[op],
+                            QdrantVectorStorePartition._RANGE_OPERATORS[op],
                         )
                     ]
                 )
@@ -164,25 +165,22 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         client: AsyncQdrantClient,
         collection_name: str,
         partition_key: str,
-        config: VectorStoreCollectionConfig,
         indexed_properties: Mapping[str, PropertyType],
         tracker: OperationTracker,
         shard_key: str | None = None,
     ) -> None:
-        """Initialize with a Qdrant client and collection name."""
+        """Initialize with a Qdrant client and the collection and partition it is bound to."""
         self._client = client
         self._tracker = tracker
         self._collection_name = collection_name
         self._partition_key = partition_key
-        self._config = config
         self._indexed_properties = dict(indexed_properties)
         self._shard_key = shard_key
 
     @property
     @override
-    def config(self) -> VectorStoreCollectionConfig:
-        """The configuration for this collection."""
-        return self._config
+    def partition_key(self) -> str:
+        return self._partition_key
 
     @property
     @override
@@ -192,7 +190,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     @property
     @override
     def supported_filter_nodes(self) -> frozenset[type]:
-        return QdrantVectorStoreCollection._SUPPORTED_FILTER_NODES
+        return QdrantVectorStorePartition._SUPPORTED_FILTER_NODES
 
     def _build_payload(
         self,
@@ -265,10 +263,10 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                 require_supported_filter(
                     property_filter,
                     self._indexed_properties,
-                    QdrantVectorStoreCollection._SUPPORTED_FILTER_NODES,
+                    QdrantVectorStorePartition._SUPPORTED_FILTER_NODES,
                 )
                 property_qdrant_filter = (
-                    QdrantVectorStoreCollection._build_qdrant_filter(property_filter)
+                    QdrantVectorStorePartition._build_qdrant_filter(property_filter)
                 )
                 qdrant_filter = models.Filter(
                     must=[partition_key_filter, property_qdrant_filter]
@@ -342,11 +340,16 @@ class QdrantVectorStoreParams(BaseModel):
     Attributes:
         client (AsyncQdrantClient):
             Async Qdrant client instance.
+        collection (str):
+            The collection this store is; the native Qdrant collection's
+            name, so stores of different collections may share the client.
+        vector_dimensions (int):
+            Dimensionality of every vector in the store.
         is_distributed (bool):
             Whether the Qdrant cluster is running in distributed mode.
-            If True, native collections use custom sharding
-            so each logical collection maps to a dedicated shard key.
-            This enables logical collection deletion via shard drop
+            If True, the native collection uses custom sharding
+            so each partition maps to a dedicated shard key.
+            This enables partition deletion via shard drop
             instead of filter-based deletion.
         registry_replication_factor (int):
             Replication factor for registry collections. Write consistency factor is
@@ -354,7 +357,7 @@ class QdrantVectorStoreParams(BaseModel):
             read-your-writes from any available replica
             (default: 1).
         indexed_properties (IndexedProperties):
-            The declared schema every collection of this store carries: each
+            The declared schema every partition of this store carries: each
             key gets a payload index of its declared type, and a record or a
             filter naming any other key is rejected.
         hnsw_config (HnswConfigDiff | None):
@@ -381,13 +384,20 @@ class QdrantVectorStoreParams(BaseModel):
         ...,
         description="Async Qdrant client instance",
     )
+    collection: str = Field(
+        ...,
+        description="The collection this store is; the native Qdrant collection's name",
+    )
+    vector_dimensions: int = Field(
+        ..., gt=0, description="Dimensionality of every vector in the store"
+    )
     is_distributed: bool = Field(
         False,
         description=(
             "Whether the Qdrant cluster is running in distributed mode. "
-            "If True, native collections use custom sharding "
-            "so each logical collection maps to a dedicated shard key. "
-            "This enables logical collection deletion via shard drop "
+            "If True, the native collection uses custom sharding "
+            "so each partition maps to a dedicated shard key. "
+            "This enables partition deletion via shard drop "
             "instead of filter-based deletion"
         ),
     )
@@ -401,7 +411,7 @@ class QdrantVectorStoreParams(BaseModel):
     )
     indexed_properties: IndexedProperties = Field(
         ...,
-        description="The declared schema every collection of this store carries",
+        description="The declared schema every partition of this store carries",
     )
     hnsw_config: models.HnswConfigDiff | None = Field(
         None,
@@ -432,6 +442,12 @@ class QdrantVectorStoreParams(BaseModel):
         description="An instance of MetricsFactory for collecting usage metrics",
     )
 
+    @field_validator("collection")
+    @classmethod
+    def _validate_collection(cls, collection: str) -> str:
+        validate_collection_name(collection)
+        return collection
+
     @model_validator(mode="after")
     def _validate_hnsw_m(self) -> Self:
         if self.hnsw_config is not None and self.hnsw_config.m not in (None, 0):
@@ -444,7 +460,13 @@ class QdrantVectorStoreParams(BaseModel):
 
 
 class QdrantVectorStore(VectorStore):
-    """Asynchronous Qdrant-based implementation of VectorStore."""
+    """Asynchronous Qdrant-based implementation of VectorStore.
+
+    The store is one native Qdrant collection, named at construction, in
+    which every partition is a payload value (and, in distributed mode, a
+    shard key). A registry collection beside it records which partitions
+    exist and what they were created under.
+    """
 
     _QDRANT_DISTANCE: ClassVar[models.Distance] = models.Distance.COSINE
 
@@ -458,10 +480,10 @@ class QdrantVectorStore(VectorStore):
         datetime: models.PayloadSchemaType.DATETIME,
     }
 
-    # Registry collection keys (stored on registry points, one per logical collection)
+    # Registry collection keys (stored on registry points, one per partition)
     _REGISTRY_SUFFIX: ClassVar[str] = "__registry"
-    _REGISTRY_NAME: ClassVar[str] = "name"
-    _REGISTRY_VECTOR_DIMENSIONS: ClassVar[str] = "vector_dimensions"
+    _REGISTRY_PARTITION_KEY: ClassVar[str] = "partition_key"
+    _REGISTRY_SCHEMA: ClassVar[str] = "schema"
 
     # The per-tenant graph size when no override is configured.
     _DEFAULT_NATIVE_PAYLOAD_M: ClassVar[int] = 16
@@ -472,7 +494,7 @@ class QdrantVectorStore(VectorStore):
     )
 
     # Keyed by client so locks are garbage-collected when the client is.
-    _name_locks: ClassVar[
+    _partition_locks: ClassVar[
         WeakKeyDictionary[
             AsyncQdrantClient,
             defaultdict[tuple[str, str], asyncio.Lock],
@@ -502,27 +524,16 @@ class QdrantVectorStore(VectorStore):
         return False
 
     @staticmethod
-    def _registry_collection_name(namespace: str) -> str:
-        """Return the registry collection name for a namespace."""
-        return f"{namespace}{QdrantVectorStore._REGISTRY_SUFFIX}"
-
-    @staticmethod
-    def _registry_point_uuid(name: str) -> UUID:
-        """Return a deterministic UUID for a logical collection name."""
-        return uuid5(QdrantVectorStore._REGISTRY_UUID_NAMESPACE, name)
-
-    @staticmethod
-    def _build_native_collection_name(
-        namespace: str, config: VectorStoreCollectionConfig
-    ) -> str:
-        """Build a deterministic native collection name from namespace and config."""
-        digest = hashlib.sha256(config.model_dump_json().encode()).hexdigest()
-        return f"{namespace}__{digest}"
+    def _registry_point_uuid(partition_key: str) -> UUID:
+        """Return a deterministic UUID for a partition key."""
+        return uuid5(QdrantVectorStore._REGISTRY_UUID_NAMESPACE, partition_key)
 
     def __init__(self, params: QdrantVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
         super().__init__()
         self._client: AsyncQdrantClient = params.client
+        self._collection = params.collection
+        self._vector_dimensions = params.vector_dimensions
         self._is_distributed = params.is_distributed
 
         self._registry_replication_factor = params.registry_replication_factor
@@ -536,28 +547,40 @@ class QdrantVectorStore(VectorStore):
             prefix="vector_store_qdrant",
         )
 
-        self._client_name_locks = QdrantVectorStore._name_locks.setdefault(
+        self._client_partition_locks = QdrantVectorStore._partition_locks.setdefault(
             self._client, defaultdict(asyncio.Lock)
         )
+
+    @property
+    @override
+    def collection(self) -> str:
+        return self._collection
+
+    @property
+    @override
+    def vector_dimensions(self) -> int:
+        return self._vector_dimensions
 
     @property
     @override
     def indexed_properties(self) -> Mapping[str, PropertyType]:
         return self._indexed_properties
 
-    @override
-    async def startup(self) -> None:
-        """No-op; client lifecycle is managed externally."""
+    @property
+    def _registry_collection_name(self) -> str:
+        return f"{self._collection}{QdrantVectorStore._REGISTRY_SUFFIX}"
 
-    @override
-    async def shutdown(self) -> None:
-        """No-op; client lifecycle is managed externally."""
+    def _declared_schema(self) -> PartitionSchema:
+        return PartitionSchema(
+            vector_dimensions=self._vector_dimensions,
+            indexed_properties=indexed_property_names(self._indexed_properties),
+        )
 
     def _native_hnsw_config(self) -> models.HnswConfigDiff:
-        """The HNSW config of a native collection: the overrides, with `m` pinned at 0.
+        """The HNSW config of the native collection: the overrides, with `m` pinned at 0.
 
-        A native collection is multi-tenant, so the global graph is disabled
-        and each tenant gets its own graph of `payload_m` links.
+        The collection is multi-tenant, so the global graph is disabled and
+        each partition gets its own graph of `payload_m` links.
         """
         overrides = self._hnsw_config or models.HnswConfigDiff()
         return overrides.model_copy(
@@ -569,14 +592,25 @@ class QdrantVectorStore(VectorStore):
             }
         )
 
-    async def _ensure_namespace_registry_collection(self, namespace: str) -> None:
-        """Idempotently create the registry collection for a namespace."""
-        registry_collection_name = QdrantVectorStore._registry_collection_name(
-            namespace
-        )
+    @override
+    async def provision(self) -> None:
+        async with self._tracker("provision"):
+            await self._ensure_registry_collection()
+            await self._ensure_native_collection()
+
+    @override
+    async def startup(self) -> None:
+        """No-op; client lifecycle is managed externally."""
+
+    @override
+    async def shutdown(self) -> None:
+        """No-op; client lifecycle is managed externally."""
+
+    async def _ensure_registry_collection(self) -> None:
+        """Idempotently create the registry collection."""
         try:
             await self._client.create_collection(
-                collection_name=registry_collection_name,
+                collection_name=self._registry_collection_name,
                 vectors_config=models.VectorParams(
                     size=1,
                     distance=models.Distance.COSINE,
@@ -591,81 +625,19 @@ class QdrantVectorStore(VectorStore):
             if not QdrantVectorStore._is_already_exists_error(e):
                 raise
 
-    async def _get_registry_entry(
-        self, namespace: str, name: str
-    ) -> dict[str, Any] | None:
-        """
-        Retrieve the registry entry for a logical collection name.
-
-        Verifies the stored name matches
-        to guard against SHA-1 collisions in the uuid5 point ID.
-        """
-        registry_collection_name = QdrantVectorStore._registry_collection_name(
-            namespace
-        )
-        point_uuid = QdrantVectorStore._registry_point_uuid(name)
-        try:
-            points = await self._client.retrieve(
-                collection_name=registry_collection_name,
-                ids=[point_uuid],
-                with_payload=True,
-            )
-        except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
-            if QdrantVectorStore._is_not_found_error(e):
-                return None
-            raise
-
-        if not points:
-            return None
-
-        payload = cast(dict[str, Any], points[0].payload)
-        if payload.get(QdrantVectorStore._REGISTRY_NAME) != name:
-            return None
-
-        return payload
-
-    @staticmethod
-    def _parse_entry(entry: Mapping[str, Any]) -> VectorStoreCollectionConfig:
-        """Parse a VectorStoreCollectionConfig from a registry entry."""
-        return VectorStoreCollectionConfig(
-            vector_dimensions=entry[QdrantVectorStore._REGISTRY_VECTOR_DIMENSIONS],
-        )
-
-    def _build_collection_handle(
-        self, namespace: str, name: str, config: VectorStoreCollectionConfig
-    ) -> QdrantVectorStoreCollection:
-        """Build a QdrantVectorStoreCollection handle."""
-        return QdrantVectorStoreCollection(
-            client=self._client,
-            collection_name=QdrantVectorStore._build_native_collection_name(
-                namespace, config
-            ),
-            partition_key=name,
-            config=config,
-            indexed_properties=self._indexed_properties,
-            tracker=self._tracker,
-            shard_key=name if self._is_distributed else None,
-        )
-
-    async def _create_native_collection(
-        self, namespace: str, config: VectorStoreCollectionConfig
-    ) -> None:
+    async def _ensure_native_collection(self) -> None:
         """Idempotently create the native Qdrant collection and payload indexes."""
-        native_collection_name = QdrantVectorStore._build_native_collection_name(
-            namespace, config
-        )
-        distance = QdrantVectorStore._QDRANT_DISTANCE
         # The collection and its indexes are created under separate guards. Sharing
         # one meant a collection that already existed - a second worker, or a retry
         # after a crash between the two calls - raised on create_collection, took
         # the already-exists path, and left the collection with no payload indexes
-        # at all. The lock above is keyed on the client object, so it serialises
-        # callers within a process and not across uvicorn workers.
+        # at all.
         try:
             await self._client.create_collection(
-                collection_name=native_collection_name,
+                collection_name=self._collection,
                 vectors_config=models.VectorParams(
-                    size=config.vector_dimensions, distance=distance
+                    size=self._vector_dimensions,
+                    distance=QdrantVectorStore._QDRANT_DISTANCE,
                 ),
                 hnsw_config=self._native_hnsw_config(),
                 optimizers_config=self._optimizers_config,
@@ -695,7 +667,7 @@ class QdrantVectorStore(VectorStore):
         for field_name, field_schema in indexes:
             try:
                 await self._client.create_payload_index(
-                    collection_name=native_collection_name,
+                    collection_name=self._collection,
                     field_name=field_name,
                     field_schema=field_schema,
                 )
@@ -703,182 +675,147 @@ class QdrantVectorStore(VectorStore):
                 if not QdrantVectorStore._is_already_exists_error(e):
                     raise
 
-    async def _ensure_shard_key(
-        self, native_collection_name: str, shard_key: str
-    ) -> None:
-        """Idempotently create a shard key on a native collection."""
+    async def _stored_schema(self, partition_key: str) -> PartitionSchema | None:
+        """
+        The schema the partition was created under; raises if it is not this store's.
+
+        Verifies the stored key matches to guard against collisions in the
+        uuid5 point ID.
+        """
+        point_uuid = QdrantVectorStore._registry_point_uuid(partition_key)
         try:
-            await self._client.create_shard_key(
-                native_collection_name, shard_key=shard_key
+            points = await self._client.retrieve(
+                collection_name=self._registry_collection_name,
+                ids=[point_uuid],
+                with_payload=True,
             )
+        except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
+            if QdrantVectorStore._is_not_found_error(e):
+                return None
+            raise
+
+        if not points:
+            return None
+
+        payload = cast(dict[str, Any], points[0].payload)
+        if payload.get(QdrantVectorStore._REGISTRY_PARTITION_KEY) != partition_key:
+            return None
+
+        stored_schema = PartitionSchema.model_validate(
+            payload[QdrantVectorStore._REGISTRY_SCHEMA]
+        )
+        declared_schema = self._declared_schema()
+        if stored_schema != declared_schema:
+            raise VectorStorePartitionSchemaMismatchError(
+                self._collection, partition_key, stored_schema, declared_schema
+            )
+        return stored_schema
+
+    def _partition_handle(self, partition_key: str) -> QdrantVectorStorePartition:
+        return QdrantVectorStorePartition(
+            client=self._client,
+            collection_name=self._collection,
+            partition_key=partition_key,
+            indexed_properties=self._indexed_properties,
+            tracker=self._tracker,
+            shard_key=partition_key if self._is_distributed else None,
+        )
+
+    async def _ensure_shard_key(self, shard_key: str) -> None:
+        """Idempotently create a shard key on the native collection."""
+        try:
+            await self._client.create_shard_key(self._collection, shard_key=shard_key)
         except (UnexpectedResponse, grpc.aio.AioRpcError) as e:
             if "already exists" not in str(e).lower():
                 raise
 
-    async def _register_collection(
-        self, namespace: str, name: str, config: VectorStoreCollectionConfig
-    ) -> None:
-        """Write the logical collection entry to the registry."""
-        registry_name = QdrantVectorStore._registry_collection_name(namespace)
-        point_uuid = QdrantVectorStore._registry_point_uuid(name)
+    async def _register_partition(self, partition_key: str) -> None:
+        """Write the partition's entry to the registry."""
         await self._client.upsert(
-            collection_name=registry_name,
+            collection_name=self._registry_collection_name,
             points=[
                 models.PointStruct(
-                    id=point_uuid,
+                    id=QdrantVectorStore._registry_point_uuid(partition_key),
                     vector=[0.0],
                     payload={
-                        QdrantVectorStore._REGISTRY_NAME: name,
-                        QdrantVectorStore._REGISTRY_VECTOR_DIMENSIONS: config.vector_dimensions,
+                        QdrantVectorStore._REGISTRY_PARTITION_KEY: partition_key,
+                        QdrantVectorStore._REGISTRY_SCHEMA: self._declared_schema().model_dump(
+                            mode="json"
+                        ),
                     },
                 ),
             ],
             wait=True,
         )
 
+    @staticmethod
+    def _require_partition_key(partition_key: str) -> None:
+        if not validate_identifier(partition_key):
+            raise ValueError(
+                f"Partition key {partition_key!r} must match [a-z0-9_]+ and be at "
+                "most 32 bytes"
+            )
+
     @override
-    async def create_collection(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
-    ) -> None:
-        """Create a logical collection in the Qdrant vector store."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
+    async def create_partition(self, partition_key: str) -> None:
+        """Create a partition in the store's collection."""
+        QdrantVectorStore._require_partition_key(partition_key)
+        # The lock is keyed on the client object, so it serialises callers
+        # within a process and not across uvicorn workers.
         async with (
-            self._client_name_locks[(namespace, name)],
-            self._tracker("create_collection"),
+            self._client_partition_locks[(self._collection, partition_key)],
+            self._tracker("create_partition"),
         ):
-            await self._ensure_namespace_registry_collection(namespace)
-            if await self._get_registry_entry(namespace, name) is not None:
-                raise VectorStoreCollectionAlreadyExistsError(namespace, name)
-            await self._create_native_collection(namespace, config)
-            if self._is_distributed:
-                native_collection_name = (
-                    QdrantVectorStore._build_native_collection_name(namespace, config)
+            if await self._stored_schema(partition_key) is not None:
+                raise VectorStorePartitionAlreadyExistsError(
+                    self._collection, partition_key
                 )
-                await self._ensure_shard_key(native_collection_name, name)
-            await self._register_collection(namespace, name, config)
+            if self._is_distributed:
+                await self._ensure_shard_key(partition_key)
+            await self._register_partition(partition_key)
 
     @override
-    async def open_or_create_collection(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
-    ) -> QdrantVectorStoreCollection:
-        """Open the collection if it exists, or create and return it."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        async with (
-            self._client_name_locks[(namespace, name)],
-            self._tracker("open_or_create_collection"),
-        ):
-            entry = await self._get_registry_entry(namespace, name)
-            if entry is not None:
-                existing_config = QdrantVectorStore._parse_entry(entry)
-                if existing_config != config:
-                    raise VectorStoreCollectionConfigMismatchError(
-                        namespace, name, existing_config, config
-                    )
-                return self._build_collection_handle(namespace, name, existing_config)
-
-            await self._ensure_namespace_registry_collection(namespace)
-            await self._create_native_collection(namespace, config)
-            if self._is_distributed:
-                native_collection_name = (
-                    QdrantVectorStore._build_native_collection_name(namespace, config)
-                )
-                await self._ensure_shard_key(native_collection_name, name)
-            await self._register_collection(namespace, name, config)
-            return self._build_collection_handle(namespace, name, config)
-
-    @override
-    async def open_collection(
-        self, *, namespace: str, name: str
-    ) -> QdrantVectorStoreCollection | None:
-        """Get a collection handle from the vector store."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        entry = await self._get_registry_entry(namespace, name)
-        if entry is None:
+    async def get_partition(
+        self, partition_key: str
+    ) -> QdrantVectorStorePartition | None:
+        """Get a handle bound to an existing partition."""
+        QdrantVectorStore._require_partition_key(partition_key)
+        if await self._stored_schema(partition_key) is None:
             return None
-        return self._build_collection_handle(
-            namespace, name, QdrantVectorStore._parse_entry(entry)
-        )
+        return self._partition_handle(partition_key)
 
     @override
-    async def close_collection(self, *, collection: VectorStoreCollection) -> None:
-        """No-op; Qdrant collection handles require no explicit close."""
-
-    @override
-    async def delete_collection(self, *, namespace: str, name: str) -> None:
-        """Delete a logical collection from the Qdrant vector store."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
+    async def delete_partition(self, partition_key: str) -> None:
+        """Delete a partition and its records from the store's collection."""
+        QdrantVectorStore._require_partition_key(partition_key)
         async with (
-            self._client_name_locks[(namespace, name)],
-            self._tracker("delete_collection"),
+            self._client_partition_locks[(self._collection, partition_key)],
+            self._tracker("delete_partition"),
         ):
-            entry = await self._get_registry_entry(namespace, name)
-            if entry is None:
+            if await self._stored_schema(partition_key) is None:
                 return
-
-            config = QdrantVectorStore._parse_entry(entry)
-            native_collection_name = QdrantVectorStore._build_native_collection_name(
-                namespace, config
-            )
 
             # Delete partition data, then registry entry.
             if self._is_distributed:
                 try:
                     await self._client.delete_shard_key(
-                        native_collection_name, shard_key=name
+                        self._collection, shard_key=partition_key
                     )
                 except (UnexpectedResponse, grpc.aio.AioRpcError) as e:
                     if "does not exist" not in str(e).lower():
                         raise
             else:
                 await self._client.delete(
-                    collection_name=native_collection_name,
+                    collection_name=self._collection,
                     points_selector=models.FilterSelector(
-                        filter=_partition_filter(name),
+                        filter=_partition_filter(partition_key),
                     ),
                 )
 
-            registry_name = QdrantVectorStore._registry_collection_name(namespace)
-            point_uuid = QdrantVectorStore._registry_point_uuid(name)
             await self._client.delete(
-                collection_name=registry_name,
+                collection_name=self._registry_collection_name,
                 points_selector=models.PointIdsList(
-                    points=[point_uuid],
+                    points=[QdrantVectorStore._registry_point_uuid(partition_key)],
                 ),
                 wait=True,
             )

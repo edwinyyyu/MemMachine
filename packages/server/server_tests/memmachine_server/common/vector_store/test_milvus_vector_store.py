@@ -26,21 +26,19 @@ from memmachine_server.common.filter import (
 )
 from memmachine_server.common.vector_store.data_types import (
     Record,
-    VectorStoreCollectionAlreadyExistsError,
-    VectorStoreCollectionConfig,
-    VectorStoreCollectionConfigMismatchError,
+    VectorStorePartitionAlreadyExistsError,
 )
 from memmachine_server.common.vector_store.milvus_vector_store import (
     MilvusVectorStore,
-    MilvusVectorStoreCollection,
     MilvusVectorStoreParams,
+    MilvusVectorStorePartition,
 )
 from server_tests.memmachine_server.common.filter.nodes import comparison
 from server_tests.memmachine_server.common.vector_store.declared_schema_contract import (
     DeclaredSchemaContract,
 )
 
-NAMESPACE = "test_namespace"
+COLLECTION = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
 
@@ -71,7 +69,7 @@ async def _present_uuids(collection, record_uuids) -> list[UUID]:
     record_uuids = list(record_uuids)
     if not record_uuids:
         return []
-    dimensions = collection.config.vector_dimensions
+    dimensions = VECTOR_DIM
     probe = [1.0] + [0.0] * (dimensions - 1)
     [result] = await collection.query(query_vectors=[probe], limit=_FETCH_LIMIT)
     present = {match.record_uuid for match in result.matches}
@@ -96,11 +94,14 @@ async def store(tmp_path):
     client = MilvusClient(uri=str(tmp_path / "test_milvus.db"))
     vector_store = MilvusVectorStore(
         MilvusVectorStoreParams(
+            collection=COLLECTION,
+            vector_dimensions=VECTOR_DIM,
             indexed_properties=INDEXED_PROPERTIES,
             client=client,
             consistency_level="Session",
         )
     )
+    await vector_store.provision()
     await vector_store.startup()
     yield vector_store
     await vector_store.shutdown()
@@ -109,38 +110,24 @@ async def store(tmp_path):
 
 @pytest_asyncio.fixture
 async def collection(store):
-    await store.create_collection(
-        namespace=NAMESPACE,
-        name=NAME,
-        config=VectorStoreCollectionConfig(
-            vector_dimensions=VECTOR_DIM,
-        ),
-    )
-    coll = await store.open_collection(namespace=NAMESPACE, name=NAME)
+    await store.create_partition(NAME)
+    coll = await store.get_partition(NAME)
     assert coll is not None
     yield coll
-    await store.delete_collection(namespace=NAMESPACE, name=NAME)
+    await store.delete_partition(NAME)
 
 
 class TestCollectionLifecycle:
     @pytest.mark.asyncio
     async def test_create_open_delete(self, store):
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="lifecycle",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        coll = await store.open_collection(namespace=NAMESPACE, name="lifecycle")
-        assert isinstance(coll, MilvusVectorStoreCollection)
-        await store.delete_collection(namespace=NAMESPACE, name="lifecycle")
+        await store.create_partition("lifecycle")
+        coll = await store.get_partition("lifecycle")
+        assert isinstance(coll, MilvusVectorStorePartition)
+        await store.delete_partition("lifecycle")
 
     @pytest.mark.asyncio
     async def test_registry_lookup_requests_primary_key(self, store, monkeypatch):
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="registry_fields",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
+        await store.create_partition("registry_fields")
 
         captured_output_fields = None
         original_get = MilvusClient.get
@@ -151,67 +138,42 @@ class TestCollectionLifecycle:
             return original_get(self, *args, **kwargs)
 
         monkeypatch.setattr(MilvusClient, "get", tracked_get)
-        coll = await store.open_collection(namespace=NAMESPACE, name="registry_fields")
+        coll = await store.get_partition("registry_fields")
 
         assert coll is not None
         assert captured_output_fields is not None
         assert "id" in captured_output_fields
-        assert "config" in captured_output_fields
-        await store.delete_collection(namespace=NAMESPACE, name="registry_fields")
+        assert "schema" in captured_output_fields
+        await store.delete_partition("registry_fields")
 
     @pytest.mark.asyncio
     async def test_duplicate_name_raises(self, store, collection):
-        with pytest.raises(VectorStoreCollectionAlreadyExistsError):
-            await store.create_collection(
-                namespace=NAMESPACE,
-                name=NAME,
-                config=collection.config,
-            )
+        with pytest.raises(VectorStorePartitionAlreadyExistsError):
+            await store.create_partition(NAME)
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent_is_idempotent(self, store):
-        await store.delete_collection(namespace=NAMESPACE, name="nonexistent")
+        await store.delete_partition("nonexistent")
 
     @pytest.mark.asyncio
-    async def test_open_or_create_raises_on_config_mismatch(self, store):
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="mismatch",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        with pytest.raises(VectorStoreCollectionConfigMismatchError):
-            await store.open_or_create_collection(
-                namespace=NAMESPACE,
-                name="mismatch",
-                config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM + 1),
-            )
-        await store.delete_collection(namespace=NAMESPACE, name="mismatch")
+    async def test_partitions_share_the_native_collection(self, store):
+        """Every partition lives in the store's one native collection."""
+        await store.create_partition("coll_a")
+        await store.create_partition("coll_b")
 
-    @pytest.mark.asyncio
-    async def test_same_config_shares_native_collection(self, store):
-        config = VectorStoreCollectionConfig(
-            vector_dimensions=VECTOR_DIM,
-        )
-        await store.create_collection(namespace=NAMESPACE, name="coll_a", config=config)
-        await store.create_collection(namespace=NAMESPACE, name="coll_b", config=config)
-
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="coll_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="coll_b")
+        coll_a = await store.get_partition("coll_a")
+        coll_b = await store.get_partition("coll_b")
         assert coll_a is not None
         assert coll_b is not None
         assert coll_a._collection_name == coll_b._collection_name
 
-        await store.delete_collection(namespace=NAMESPACE, name="coll_a")
-        await store.delete_collection(namespace=NAMESPACE, name="coll_b")
+        await store.delete_partition("coll_a")
+        await store.delete_partition("coll_b")
 
     @pytest.mark.asyncio
     async def test_native_collection_schema(self, store):
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="schema",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        coll = await store.open_collection(namespace=NAMESPACE, name="schema")
+        await store.create_partition("schema")
+        coll = await store.get_partition("schema")
         assert coll is not None
 
         schema = store._client.describe_collection(coll._collection_name)
@@ -224,7 +186,7 @@ class TestCollectionLifecycle:
         assert fields["vector"]["type"] == DataType.FLOAT_VECTOR
         assert fields["vector"]["params"]["dim"] == VECTOR_DIM
 
-        await store.delete_collection(namespace=NAMESPACE, name="schema")
+        await store.delete_partition("schema")
 
 
 class TestUpsertAndQuery:
@@ -510,15 +472,10 @@ class TestFilters:
 class TestPartitionIsolation:
     @pytest.mark.asyncio
     async def test_same_uuid_can_exist_in_different_logical_collections(self, store):
-        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        await store.create_collection(
-            namespace=NAMESPACE, name="tenant_a", config=config
-        )
-        await store.create_collection(
-            namespace=NAMESPACE, name="tenant_b", config=config
-        )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        await store.create_partition("tenant_a")
+        await store.create_partition("tenant_b")
+        coll_a = await store.get_partition("tenant_a")
+        coll_b = await store.get_partition("tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -546,5 +503,5 @@ class TestPartitionIsolation:
         assert [m.record_uuid for m in only_a.matches] == [record_uuid]
         assert [m.record_uuid for m in only_b.matches] == [record_uuid]
 
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
+        await store.delete_partition("tenant_a")
+        await store.delete_partition("tenant_b")

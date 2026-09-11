@@ -20,10 +20,7 @@ from memmachine_server.common.filter import (
     Ordering,
     filter_fields,
 )
-from memmachine_server.common.vector_store.data_types import (
-    Record,
-    VectorStoreCollectionConfig,
-)
+from memmachine_server.common.vector_store.data_types import Record
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Author,
     Context,
@@ -64,7 +61,7 @@ from .conftest import (
     AngleEmbedder,
     FakeReranker,
     InMemorySegmentStorePartition,
-    InMemoryVectorStoreCollection,
+    InMemoryVectorStorePartition,
     make_collection,
 )
 
@@ -126,13 +123,13 @@ def _build(
     embedder: FakeEmbedder,
     *,
     partition: InMemorySegmentStorePartition | None = None,
-    collection: InMemoryVectorStoreCollection | None = None,
+    collection: InMemoryVectorStorePartition | None = None,
     format_options: FormatOptions | None = None,
     eviction: EvictionOptions | None = None,
 ) -> EventMemory:
     params = {
         "segment_store_partition": partition or InMemorySegmentStorePartition(),
-        "vector_store_collection": collection or make_collection(embedder),
+        "vector_store_partition": collection or make_collection(embedder),
         "segmenter": TextSegmenter(),
         "deriver": WholeTextDeriver(),
         "embedder": embedder,
@@ -173,7 +170,7 @@ class TestEncodeEvents:
         self,
         event_memory: EventMemory,
         fake_segment_store_partition: InMemorySegmentStorePartition,
-        fake_vector_store_collection: InMemoryVectorStoreCollection,
+        fake_vector_store_partition: InMemoryVectorStorePartition,
     ):
         event = _make_event("hello world")
         await event_memory.encode_events([event])
@@ -188,8 +185,8 @@ class TestEncodeEvents:
 
         # One derivative record in vector store, with every filterable
         # system value under its reserved key.
-        assert len(fake_vector_store_collection.records) == 1
-        record = next(iter(fake_vector_store_collection.records.values()))
+        assert len(fake_vector_store_partition.records) == 1
+        record = next(iter(fake_vector_store_partition.records.values()))
         props = _record_properties(record)
         assert props[EVENT_TIMESTAMP_KEY] == event.timestamp
         assert props[BLOCK_KIND_KEY] == "text"
@@ -206,12 +203,12 @@ class TestEncodeEvents:
         self,
         event_memory: EventMemory,
         fake_segment_store_partition: InMemorySegmentStorePartition,
-        fake_vector_store_collection: InMemoryVectorStoreCollection,
+        fake_vector_store_partition: InMemoryVectorStorePartition,
     ):
         event = _make_event("hi", session_id="s1", source_id="alice")
         await event_memory.encode_events([event])
 
-        record = next(iter(fake_vector_store_collection.records.values()))
+        record = next(iter(fake_vector_store_partition.records.values()))
         props = _record_properties(record)
         assert props[EVENT_SESSION_KEY] == "s1"
         assert props[EVENT_SOURCE_KEY] == "alice"
@@ -221,12 +218,12 @@ class TestEncodeEvents:
     async def test_context_is_not_a_property(
         self,
         event_memory: EventMemory,
-        fake_vector_store_collection: InMemoryVectorStoreCollection,
+        fake_vector_store_partition: InMemoryVectorStorePartition,
     ):
         event = _make_event("hi", context=_author("Alice"))
         await event_memory.encode_events([event])
 
-        record = next(iter(fake_vector_store_collection.records.values()))
+        record = next(iter(fake_vector_store_partition.records.values()))
         props = _record_properties(record)
         assert not any("author" in key or "context" in key for key in props)
 
@@ -275,12 +272,12 @@ class TestEncodeEvents:
     async def test_user_properties_propagate(
         self,
         event_memory: EventMemory,
-        fake_vector_store_collection: InMemoryVectorStoreCollection,
+        fake_vector_store_partition: InMemoryVectorStorePartition,
     ):
         event = _make_event("hi", properties={"color": "red"})
         await event_memory.encode_events([event])
 
-        record = next(iter(fake_vector_store_collection.records.values()))
+        record = next(iter(fake_vector_store_partition.records.values()))
         assert _record_properties(record)["color"] == "red"
 
     async def test_reserved_property_key_is_rejected(self, event_memory: EventMemory):
@@ -307,13 +304,11 @@ class TestEncodeEvents:
     async def test_init_raises_on_missing_reserved_field(self, fake_embedder):
         schema = EventMemory.expected_vector_store_collection_schema()
         del schema[EVENT_SESSION_KEY]
-        collection = InMemoryVectorStoreCollection(
-            VectorStoreCollectionConfig(vector_dimensions=2), schema
-        )
+        collection = InMemoryVectorStorePartition("test", schema)
         with pytest.raises(InvalidCollectionSchemaError, match=EVENT_SESSION_KEY):
             EventMemory(
                 EventMemoryParams(
-                    vector_store_collection=collection,
+                    vector_store_partition=collection,
                     segment_store_partition=InMemorySegmentStorePartition(),
                     segmenter=TextSegmenter(),
                     embedder=fake_embedder,
@@ -325,16 +320,16 @@ class TestEncodeEvents:
         self,
         event_memory: EventMemory,
         fake_segment_store_partition: InMemorySegmentStorePartition,
-        fake_vector_store_collection: InMemoryVectorStoreCollection,
+        fake_vector_store_partition: InMemoryVectorStorePartition,
     ):
         await event_memory.encode_events([])
         assert len(fake_segment_store_partition.segments) == 0
-        assert len(fake_vector_store_collection.records) == 0
+        assert len(fake_vector_store_partition.records) == 0
 
     async def test_derive_sentences(
         self,
         event_memory_with_sentences: EventMemory,
-        fake_vector_store_collection: InMemoryVectorStoreCollection,
+        fake_vector_store_partition: InMemoryVectorStorePartition,
         fake_segment_store_partition: InMemorySegmentStorePartition,
     ):
         event = _make_event("Hello there. How are you? I am fine.")
@@ -342,20 +337,20 @@ class TestEncodeEvents:
 
         # One segment, but multiple derivatives (one per sentence).
         assert len(fake_segment_store_partition.segments) == 1
-        assert len(fake_vector_store_collection.records) > 1
+        assert len(fake_vector_store_partition.records) > 1
 
     async def test_repeated_batch_leaves_one_copy(
         self,
         event_memory: EventMemory,
         fake_segment_store_partition: InMemorySegmentStorePartition,
-        fake_vector_store_collection: InMemoryVectorStoreCollection,
+        fake_vector_store_partition: InMemoryVectorStorePartition,
     ):
         event = _make_event("hello world")
         await event_memory.encode_events([event])
         await event_memory.encode_events([event])
 
         assert len(fake_segment_store_partition.segments) == 1
-        assert len(fake_vector_store_collection.records) == 1
+        assert len(fake_vector_store_partition.records) == 1
         assert len(await event_memory.query("hello")) == 1
 
 
@@ -599,14 +594,14 @@ class TestForgetEvents:
         self,
         event_memory: EventMemory,
         fake_segment_store_partition: InMemorySegmentStorePartition,
-        fake_vector_store_collection: InMemoryVectorStoreCollection,
+        fake_vector_store_partition: InMemoryVectorStorePartition,
     ):
         e1 = _make_event("keep me", timestamp=_ts(0))
         e2 = _make_event("forget me", timestamp=_ts(1))
         await event_memory.encode_events([e1, e2])
 
         assert len(fake_segment_store_partition.segments) == 2
-        assert len(fake_vector_store_collection.records) == 2
+        assert len(fake_vector_store_partition.records) == 2
 
         await event_memory.forget_events([e2.uuid])
 
@@ -614,7 +609,7 @@ class TestForgetEvents:
         assert len(fake_segment_store_partition.segments) == 1
         remaining_segment = next(iter(fake_segment_store_partition.segments.values()))
         assert remaining_segment.event_uuid == e1.uuid
-        assert len(fake_vector_store_collection.records) == 1
+        assert len(fake_vector_store_partition.records) == 1
 
     async def test_forget_empty_set(
         self,
@@ -974,14 +969,14 @@ class TestQueryWithFilter:
 
 def _routing_memory(
     embedder: FakeEmbedder,
-    collection: InMemoryVectorStoreCollection,
+    collection: InMemoryVectorStorePartition,
     *,
     max_overfetch_factor: int,
 ) -> EventMemory:
     return EventMemory(
         EventMemoryParams(
             segment_store_partition=InMemorySegmentStorePartition(),
-            vector_store_collection=collection,
+            vector_store_partition=collection,
             segmenter=TextSegmenter(),
             deriver=WholeTextDeriver(),
             embedder=embedder,
@@ -1145,7 +1140,7 @@ class TestQueryDeduplication:
         memory = EventMemory(
             EventMemoryParams(
                 segment_store_partition=InMemorySegmentStorePartition(),
-                vector_store_collection=make_collection(embedder),
+                vector_store_partition=make_collection(embedder),
                 segmenter=TextSegmenter(),
                 deriver=SentenceTextDeriver(),
                 embedder=embedder,
@@ -1228,7 +1223,7 @@ class TestIngestFormatOptions:
 # ===================================================================
 
 
-async def _stored_minutes(collection: InMemoryVectorStoreCollection) -> list[int]:
+async def _stored_minutes(collection: InMemoryVectorStorePartition) -> list[int]:
     """Minute-offsets (from _T0) of every derivative currently in the store."""
     [result] = await collection.query(query_vectors=[[1.0, 0.0]], limit=1000)
     minutes: list[int] = []
@@ -1257,43 +1252,43 @@ class TestEviction:
 
     @_async
     async def test_disabled_keeps_all_and_issues_no_query(
-        self, event_memory, fake_vector_store_collection, monkeypatch
+        self, event_memory, fake_vector_store_partition, monkeypatch
     ):
         queries: list[int] = []
-        original_query = fake_vector_store_collection.query
+        original_query = fake_vector_store_partition.query
 
         async def counting_query(**kwargs):
             queries.append(1)
             return await original_query(**kwargs)
 
-        monkeypatch.setattr(fake_vector_store_collection, "query", counting_query)
+        monkeypatch.setattr(fake_vector_store_partition, "query", counting_query)
         events = [_make_event(f"msg {i}", timestamp=_ts(i)) for i in range(20)]
 
         await event_memory.encode_events(events)
 
-        assert len(await _stored_minutes(fake_vector_store_collection)) == 20
+        assert len(await _stored_minutes(fake_vector_store_partition)) == 20
         assert queries == [1]  # the one query _stored_minutes made
 
     @_async
     async def test_cluster_within_target_keeps_all(
-        self, event_memory_with_eviction, fake_vector_store_collection
+        self, event_memory_with_eviction, fake_vector_store_partition
     ):
         events = [_make_event(f"msg {i}", timestamp=_ts(i)) for i in range(5)]
         await event_memory_with_eviction.encode_events(events)
-        assert await _stored_minutes(fake_vector_store_collection) == [0, 1, 2, 3, 4]
+        assert await _stored_minutes(fake_vector_store_partition) == [0, 1, 2, 3, 4]
 
     @_async
     async def test_intra_batch_caps_and_keeps_temporal_extremes(
-        self, event_memory_with_eviction, fake_vector_store_collection
+        self, event_memory_with_eviction, fake_vector_store_partition
     ):
         events = [_make_event(f"msg {i}", timestamp=_ts(i)) for i in range(20)]
         await event_memory_with_eviction.encode_events(events)
         # target=5 -> keep 2 earliest + 3 latest, evict the middle.
-        assert await _stored_minutes(fake_vector_store_collection) == [0, 1, 17, 18, 19]
+        assert await _stored_minutes(fake_vector_store_partition) == [0, 1, 17, 18, 19]
 
     @_async
     async def test_batch_order_mimics_serial_ingestion(
-        self, fake_vector_store_collection
+        self, fake_vector_store_partition
     ):
         """A batch evicts what encoding its events one at a time would."""
         events = [_make_event(f"msg {i}", timestamp=_ts(i)) for i in range(12)]
@@ -1345,14 +1340,14 @@ class TestEviction:
     async def test_cross_batch_displaces_stored_records_and_their_links(
         self,
         event_memory_with_eviction,
-        fake_vector_store_collection,
+        fake_vector_store_partition,
         fake_segment_store_partition,
     ):
         await event_memory_with_eviction.encode_events(
             [_make_event(f"a{i}", timestamp=_ts(i)) for i in range(5)]
         )
-        assert await _stored_minutes(fake_vector_store_collection) == [0, 1, 2, 3, 4]
-        stored_before = set(fake_vector_store_collection.records)
+        assert await _stored_minutes(fake_vector_store_partition) == [0, 1, 2, 3, 4]
+        stored_before = set(fake_vector_store_partition.records)
 
         # A second batch grows the cluster past target: stored records from the
         # temporal middle are displaced, from the vector store and the links.
@@ -1360,12 +1355,12 @@ class TestEviction:
             [_make_event(f"b{i}", timestamp=_ts(5 + i)) for i in range(5)]
         )
 
-        assert await _stored_minutes(fake_vector_store_collection) == [0, 1, 7, 8, 9]
-        displaced = stored_before - set(fake_vector_store_collection.records)
+        assert await _stored_minutes(fake_vector_store_partition) == [0, 1, 7, 8, 9]
+        displaced = stored_before - set(fake_vector_store_partition.records)
         assert displaced
         assert not (displaced & _linked(fake_segment_store_partition))
         assert _linked(fake_segment_store_partition) == set(
-            fake_vector_store_collection.records
+            fake_vector_store_partition.records
         )
         # Segments are untouched: every event is still expandable.
         assert len(fake_segment_store_partition.segments) == 10

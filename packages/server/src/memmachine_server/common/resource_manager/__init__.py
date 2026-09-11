@@ -47,9 +47,14 @@ class CommonResourceManager(Protocol):
         raise NotImplementedError
 
     async def get_vector_store(
-        self, name: str, *, indexed_properties: Mapping[str, PropertyType]
+        self,
+        backend: str,
+        *,
+        collection: str,
+        vector_dimensions: int,
+        indexed_properties: Mapping[str, PropertyType],
     ) -> VectorStore:
-        """Return the vector store by name, built for the service declaring these keys."""
+        """Return the store for one collection on a configured backend."""
         raise NotImplementedError
 
     async def get_segment_store(self, name: str) -> SegmentStore:
