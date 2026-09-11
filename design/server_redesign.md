@@ -775,7 +775,7 @@ Operations, in the order the stores are touched:
   contexts. Hits are returned in descending score, each a window with
   the matched segment marked; events are not returned, a caller that
   wants one fetches it by id. Scores are cosine similarity throughout;
-  there is no similarity metric option. Reranking is a second stage
+  there is no metric option besides cosine similarity. Reranking is a second stage
   the manager runs over the rendered windows, with its own candidate
   count and threshold, so over-fetching is one limit set above
   another.
@@ -838,7 +838,7 @@ settings.
 
 What a request may vary is not bound into objects at all; it is a
 request parameter, passed as an argument of the call: `limit`,
-`min_similarity`, `expand_context`, the reranking stage (reranker,
+`min_cosine_similarity`, `expand_context`, the reranking stage (reranker,
 candidates, its threshold) and the rendering format. One model,
 `SearchOptions`, is the tenant's `search` section with every field set
 and the request's overrides with every field optional, so there is no
@@ -863,11 +863,11 @@ Tenant configuration section `episodic_memory`, with mutability:
 - `segmenter`, `deriver`: per-kind handler options (`blocks.md`,
   "Processing"); `format`: its options; all mutable, applying to
   events processed after the change.
-- `eviction` (similarity threshold, neighbors consulted, target
+- `eviction` (cosine similarity threshold, neighbors consulted, target
   cluster size, or none): mutable, applying to batches processed after
   the change; the threshold is calibrated per embedder, so a template
   sets it beside its embedder.
-- `search`: default `limit`, `min_similarity`, `expand_context` and
+- `search`: default `limit`, `min_cosine_similarity`, `expand_context` and
   `rerank` (reranker id, candidates, threshold, or none); mutable; each
   overridable per request, the reranker within the ids the deployment
   offers.
@@ -882,7 +882,7 @@ another derivative with nearly the same vector; left alone they grow
 with the corpus and crowd a search with copies of one thing. With
 eviction on, `encode` treats near-duplicates as a cluster: a new
 derivative's cluster is its stored neighbors at or above the
-similarity threshold, the earlier derivatives of its own batch above
+cosine similarity threshold, the earlier derivatives of its own batch above
 it, and itself; a cluster larger than the target size is trimmed from
 the temporal middle, keeping the earliest and the latest, by deleting
 stored derivatives and not writing new ones. Segments and events are
@@ -1335,7 +1335,7 @@ purgeable on a backend that cannot list or reject keys.
   applied; read the row again and raise the not-live error if the key
   is not live. No row before the write: the not-live error, and no
   write creates a collection.
-- Read, on the handle (`query(vectors, limit, min_similarity,
+- Read, on the handle (`query(vectors, limit, min_cosine_similarity,
   filter)`): read the row for
   the address, query, read the row again, raise the not-live error if
   the key is not live. `filter` names declared keys only and raises on
@@ -1678,7 +1678,7 @@ Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 
 | Method and path | Effect | Status |
 | --- | --- | --- |
-| `POST .../search` | body `query`; the search options, each optional with the tenant's default: `limit`, `min_similarity`, `expand_context`, `rerank` (`reranker`, `candidates`, `min_score`, or `null` for none); the system filters `since`, `until`, `session_ids`, `source_ids`, `block_kinds`; `filter` (JSON tree); `format` (dates, times, locale, timezone for `text`) | 200 with up to `limit` hits in descending score |
+| `POST .../search` | body `query`; the search options, each optional with the tenant's default: `limit`, `min_cosine_similarity`, `expand_context`, `rerank` (`reranker`, `candidates`, `min_score`, or `null` for none); the system filters `since`, `until`, `session_ids`, `source_ids`, `block_kinds`; `filter` (JSON tree); `format` (dates, times, locale, timezone for `text`) | 200 with up to `limit` hits in descending score |
 | `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after` (segments), `since`, `until`, `source_ids`, `block_kinds`, `filter`, `format` | 200 with `before` and `after`, the segments on each side in order within the anchor's session, never the anchor itself, and their `text` |
 | `GET ...` | `watermark` and `head`, the lag being their difference | 200 |
 
