@@ -686,7 +686,7 @@ class EventMemory:
         if expand_context > 0 and seed_segments:
             neighborhoods = (
                 await self._segment_store_partition.get_segment_neighborhoods(
-                    seed_segments.values(),
+                    seed_segments.keys(),
                     before=before,
                     after=after,
                     since=since,
@@ -793,18 +793,15 @@ class EventMemory:
             event_segment_uuids = segment_uuids_by_event.get(anchor)
             seed_uuid = event_segment_uuids[0] if event_segment_uuids else anchor
 
-            seed = (
-                await self._segment_store_partition.get_segments(
+            if session_ids is not None:
+                visible = await self._segment_store_partition.get_segments(
                     [seed_uuid], session_ids=session_ids
                 )
-            ).get(seed_uuid)
-            if seed is None:
-                raise LookupError(
-                    f"Anchor {anchor} is neither a segment nor an event of this memory"
-                )
+                if seed_uuid not in visible:
+                    raise LookupError(f"Anchor {anchor} is not in the named sessions")
             neighborhoods = (
                 await self._segment_store_partition.get_segment_neighborhoods(
-                    [seed],
+                    [seed_uuid],
                     before=before,
                     after=after,
                     since=since,
@@ -814,7 +811,12 @@ class EventMemory:
                     property_filter=property_filter,
                 )
             )
-            return neighborhoods[seed_uuid]
+            neighborhood = neighborhoods.get(seed_uuid)
+            if neighborhood is None:
+                raise LookupError(
+                    f"Anchor {anchor} is neither a segment nor an event of this memory"
+                )
+            return neighborhood
 
     @staticmethod
     async def rerank(

@@ -199,7 +199,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
     @override
     async def get_segment_neighborhoods(
         self,
-        segments: Iterable[Segment],
+        seed_segment_uuids: Iterable[UUID],
         *,
         before: int = 0,
         after: int = 0,
@@ -218,8 +218,10 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
             property_filter=property_filter,
         )
         neighborhoods: dict[UUID, Neighborhood] = {}
-        for seed in segments:
-            # The seed is a place in the order, looked up nowhere.
+        for seed_uuid in seed_segment_uuids:
+            seed = self.segments.get(seed_uuid)
+            if seed is None:
+                continue
             key = _order_key(seed)
             walk = [s for s in self._ordered() if s.session_id == seed.session_id]
             backward = [s for s in walk if _order_key(s) < key and passes(s)]
