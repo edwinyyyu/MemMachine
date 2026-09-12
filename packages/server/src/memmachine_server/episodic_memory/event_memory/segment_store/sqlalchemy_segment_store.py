@@ -279,16 +279,16 @@ class _SeedKey:
     session_id: str
 
 
-def _seed_key(segment: Segment) -> _SeedKey:
+def _seed_key(row: SegmentRow) -> _SeedKey:
     # The column holds the UTC instant, and SQLite compares the wall clock
     # it is given, so the key carries the instant in UTC.
     return _SeedKey(
-        uuid=segment.uuid,
-        timestamp=ensure_tz_aware(segment.timestamp).astimezone(UTC),
-        event_uuid=segment.event_uuid,
-        index=segment.index,
-        offset=segment.offset,
-        session_id=segment.session_id,
+        uuid=row.uuid,
+        timestamp=ensure_tz_aware(row.timestamp).astimezone(UTC),
+        event_uuid=row.event_uuid,
+        index=row.index,
+        offset=row.offset,
+        session_id=row.session_id,
     )
 
 
@@ -488,7 +488,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     @override
     async def get_segment_neighborhoods(
         self,
-        segments: Iterable[Segment],
+        seed_segment_uuids: Iterable[UUID],
         *,
         before: int = 0,
         after: int = 0,
@@ -498,8 +498,8 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, Neighborhood]:
-        seeds = {segment.uuid: _seed_key(segment) for segment in segments}
-        if not seeds:
+        seed_segment_uuids = set(seed_segment_uuids)
+        if not seed_segment_uuids:
             return {}
         conditions = SQLAlchemySegmentStorePartition._row_conditions(
             since, until, None, source_ids, block_kinds, property_filter
@@ -509,8 +509,17 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             self._tracker("get_segment_neighborhoods"),
             self._create_session() as session,
         ):
+            # The seed is an address, never part of the answer, so no
+            # filter has anything to say about it.
+            seed_rows_by_uuid = await self._rows_by_uuid(
+                session, seed_segment_uuids, []
+            )
+            if not seed_rows_by_uuid:
+                await self._ensure_partition_live(session)
+                return {}
+            seeds = [_seed_key(row) for row in seed_rows_by_uuid.values()]
             window_rows_by_seed = await self._window_rows(
-                session, list(seeds.values()), before, after, conditions
+                session, seeds, before, after, conditions
             )
             return {
                 seed_uuid: Neighborhood(
@@ -552,9 +561,8 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     ) -> dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]]:
         """The rows before and after each seed in the store's order.
 
-        A seed is a place in the order, looked up nowhere. Within the
-        seed's session and filtered by `conditions`; strictly before and
-        strictly after, so a row at the seed's place is in neither list.
+        Within the seed's session and filtered by `conditions`; strictly
+        before and strictly after, so the seed is in neither list.
         """
         if before <= 0 and after <= 0:
             return {seed.uuid: ([], []) for seed in seeds}

@@ -729,14 +729,14 @@ async def test_expand_context_window_stays_within_the_episode_limit(
     walks: list[tuple[int, int]] = []
     get_segment_neighborhoods = segment_store_partition.get_segment_neighborhoods
 
-    async def recording_get_segment_neighborhoods(segments, **kwargs):
+    async def recording_get_segment_neighborhoods(seed_segment_uuids, **kwargs):
         walks.append(
             (
                 kwargs.get("before", 0),
                 kwargs.get("after", 0),
             )
         )
-        return await get_segment_neighborhoods(segments, **kwargs)
+        return await get_segment_neighborhoods(seed_segment_uuids, **kwargs)
 
     monkeypatch.setattr(
         segment_store_partition,

@@ -37,11 +37,9 @@ class SegmentStorePartition(ABC):
     Segments within a partition are in one total order,
     `(timestamp, event_uuid, index, offset)`. `get_segments` fetches
     segments by uuid, subject to the filters. `get_segment_neighborhoods`
-    walks the order outward from segments the caller already has, within
-    their session, and returns the neighbors that pass the filters. A
-    walk starts from a segment, not a uuid, because a segment already
-    carries the position and session the walk needs: fetch first, then
-    walk.
+    walks the order outward from seeds named by uuid, within their
+    session, and returns the neighbors that pass the filters; the seed
+    itself is located, never filtered, and never returned.
     """
 
     @property
@@ -110,7 +108,7 @@ class SegmentStorePartition(ABC):
     @abstractmethod
     async def get_segment_neighborhoods(
         self,
-        segments: Iterable[Segment],
+        seed_segment_uuids: Iterable[UUID],
         *,
         before: int = 0,
         after: int = 0,
@@ -121,23 +119,20 @@ class SegmentStorePartition(ABC):
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, Neighborhood]:
         """
-        Get the segments around each given segment, never the segment itself.
+        Get the segments around each seed segment, never the seed itself.
 
-        A given segment is a place in the order, not a lookup: the walk
-        starts from the position and the session it carries and reads
-        nothing about it, so a segment the caller holds can be walked from
-        even after it is gone. The walk stays within the segment's session, and the filters
-        select the neighbors. Other segments of the same event are
-        ordinary neighbors.
+        The seed is an address: it is located whether or not it passes any
+        filter, the walk stays within its session, and the filters select
+        the neighbors. Other segments of the seed's own event are ordinary
+        neighbors.
 
         Args:
-            segments (Iterable[Segment]):
-                The segments to gather neighbors around, as the caller
-                holds them.
+            seed_segment_uuids (Iterable[UUID]):
+                The UUIDs of the segments to gather neighbors around.
             before (int):
-                The maximum number of neighbors before each segment (default: 0).
+                The maximum number of neighbors before each seed (default: 0).
             after (int):
-                The maximum number of neighbors after each segment (default: 0).
+                The maximum number of neighbors after each seed (default: 0).
             since (datetime | None):
                 Inclusive lower bound on the neighbors' timestamp (default: None).
             until (datetime | None):
@@ -155,10 +150,10 @@ class SegmentStorePartition(ABC):
 
         Returns:
             dict[UUID, Neighborhood]:
-                A mapping from each given segment's uuid to its neighbors:
-                `before` in order ending just before it, `after` in order
-                starting just after it. Every given segment has an entry;
-                a segment with no neighbors to show maps to two empty lists.
+                A mapping from each known seed to its neighbors: `before`
+                in order ending just before the seed, `after` in order
+                starting just after it. A seed with no neighbors to show
+                maps to two empty lists; an unknown seed is absent.
         """
         raise NotImplementedError
 

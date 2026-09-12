@@ -107,8 +107,10 @@ async def _windows(
     seeds: list[Segment],
     **read_options,
 ) -> dict[UUID, list[Segment]]:
-    """Each seed inside its neighborhood, in the store's order: the walk, flattened."""
-    neighborhoods = await partition.get_segment_neighborhoods(seeds, **read_options)
+    """Each known seed inside its neighborhood, in the store's order: the walk, flattened."""
+    neighborhoods = await partition.get_segment_neighborhoods(
+        [seed.uuid for seed in seeds], **read_options
+    )
     return {
         seed.uuid: [
             *neighborhoods[seed.uuid].before,
@@ -116,6 +118,7 @@ async def _windows(
             *neighborhoods[seed.uuid].after,
         ]
         for seed in seeds
+        if seed.uuid in neighborhoods
     }
 
 
@@ -405,20 +408,11 @@ async def test_contexts_empty_seeds(
 async def test_contexts_unknown_seed(
     partition: SQLAlchemySegmentStorePartition,
 ) -> None:
-    """An unknown uuid is not found; a segment the store never held is still a place to walk from."""
-    earlier = _seg(ts_offset_seconds=0)
-    later = _seg(ts_offset_seconds=2)
-    await partition.add_segments(_links(earlier, later))
+    """An unknown uuid has no entry, in the lookup and in the walk."""
+    await partition.add_segments(_links(_seg()))
 
     assert await partition.get_segments([uuid4()]) == {}
-
-    ghost = _seg(ts_offset_seconds=1)
-    windows = await _windows(partition, [ghost], before=2, after=2)
-    assert [s.uuid for s in windows[ghost.uuid]] == [
-        earlier.uuid,
-        ghost.uuid,
-        later.uuid,
-    ]
+    assert await partition.get_segment_neighborhoods([uuid4()], before=2, after=2) == {}
 
 
 @pytest.mark.asyncio
@@ -611,7 +605,7 @@ async def test_contexts_filter_by_context_producer(
     filt = Comparison(field="context.producer", op="=", value="Alice")
     assert await partition.get_segments([s0.uuid], property_filter=filt) == {}
     neighborhoods = await partition.get_segment_neighborhoods(
-        [s0], before=5, after=5, property_filter=filt
+        [s0.uuid], before=5, after=5, property_filter=filt
     )
     assert neighborhoods == {s0.uuid: Neighborhood(before=[], after=[])}
 
@@ -645,7 +639,7 @@ async def test_contexts_filter_by_context_type(
     filt = Comparison(field="context.context_type", op="=", value="producer")
     assert await partition.get_segments([s0.uuid], property_filter=filt) == {}
     neighborhoods = await partition.get_segment_neighborhoods(
-        [s0], before=5, after=5, property_filter=filt
+        [s0.uuid], before=5, after=5, property_filter=filt
     )
     assert neighborhoods == {s0.uuid: Neighborhood(before=[], after=[])}
 
@@ -2789,7 +2783,9 @@ async def test_segment_neighbors_are_two_lists_without_the_seed(
     segs = [_seg(event_uuid=ep, offset=i, ts_offset_seconds=i) for i in range(5)]
     await partition.add_segments(_links(*segs))
 
-    result = await partition.get_segment_neighborhoods([segs[2]], before=2, after=2)
+    result = await partition.get_segment_neighborhoods(
+        [segs[2].uuid], before=2, after=2
+    )
 
     neighborhood = result[segs[2].uuid]
     # Other chunks of the seed's own event are ordinary neighbors; only the
@@ -2814,7 +2810,7 @@ async def test_the_lookup_drops_a_failing_segment_and_the_walk_keeps_its_neighbo
     only_a = parse_filter("m.tag = 'a'")
 
     neighborhoods_by_seed = await partition.get_segment_neighborhoods(
-        [s1], before=5, after=5, property_filter=only_a
+        [s1.uuid], before=5, after=5, property_filter=only_a
     )
     found = await partition.get_segments([s1.uuid], property_filter=only_a)
 
@@ -2830,25 +2826,9 @@ async def test_segment_neighbors_of_a_lone_seed_are_empty_lists(
     seed = _seg()
     await partition.add_segments(_links(seed))
 
-    result = await partition.get_segment_neighborhoods([seed], before=5, after=5)
+    result = await partition.get_segment_neighborhoods([seed.uuid], before=5, after=5)
 
     assert result == {seed.uuid: Neighborhood(before=[], after=[])}
-
-
-@pytest.mark.asyncio
-async def test_neighborhoods_walk_from_a_segment_the_store_never_held(
-    partition: SQLAlchemySegmentStorePartition,
-) -> None:
-    """A given segment is a place in the order, looked up nowhere."""
-    stored = _seg(ts_offset_seconds=0)
-    await partition.add_segments(_links(stored))
-
-    ghost = _seg(ts_offset_seconds=1)
-    neighborhood = (
-        await partition.get_segment_neighborhoods([ghost], before=1, after=1)
-    )[ghost.uuid]
-    assert [s.uuid for s in neighborhood.before] == [stored.uuid]
-    assert neighborhood.after == []
 
 
 @pytest.mark.asyncio
@@ -2858,7 +2838,7 @@ async def test_segment_neighbors_with_zero_counts_still_locate_the_seed(
     seed = _seg()
     await partition.add_segments(_links(seed, _seg(ts_offset_seconds=1)))
 
-    assert await partition.get_segment_neighborhoods([seed]) == {
+    assert await partition.get_segment_neighborhoods([seed.uuid]) == {
         seed.uuid: Neighborhood(before=[], after=[])
     }
 
@@ -2882,7 +2862,7 @@ async def test_windows_stay_in_the_seeds_session(
 
     contexts = await _windows(partition, [a1], before=5, after=5)
     neighborhoods_by_seed = await partition.get_segment_neighborhoods(
-        [b0], before=5, after=5
+        [b0.uuid], before=5, after=5
     )
 
     assert [s.uuid for s in contexts[a1.uuid]] == [a0.uuid, a1.uuid, a2.uuid]
@@ -2942,7 +2922,7 @@ async def test_since_and_until_meet_without_overlap(
     from_boundary = await _windows(partition, [s1], before=5, after=5, since=boundary)
     to_boundary = await partition.get_segments([s1.uuid], until=boundary)
     around = await partition.get_segment_neighborhoods(
-        [s1], before=5, after=5, since=BASE_TIME, until=boundary
+        [s1.uuid], before=5, after=5, since=BASE_TIME, until=boundary
     )
 
     assert [s.uuid for s in from_boundary[s1.uuid]] == [s1.uuid, s2.uuid]
@@ -2978,7 +2958,7 @@ async def test_time_bounds_compare_instants_not_wall_clocks(
 
     before_bound = await _windows(partition, [early], after=5, until=instant)
     from_bound = await partition.get_segment_neighborhoods(
-        [early], after=5, since=instant
+        [early.uuid], after=5, since=instant
     )
 
     assert [s.uuid for s in before_bound[early.uuid]] == [early.uuid]
@@ -2997,7 +2977,7 @@ async def test_source_ids_select_rows(
 
     alice = await _windows(partition, [s0], after=5, source_ids=["alice"])
     bob_around_alice = await partition.get_segment_neighborhoods(
-        [s0], after=5, source_ids=["bob"]
+        [s0.uuid], after=5, source_ids=["bob"]
     )
     nobody = await partition.get_segments([s0.uuid], source_ids=[])
 
@@ -3035,7 +3015,7 @@ async def test_block_kinds_select_rows(
     text = await _windows(partition, [s0], after=5, block_kinds=["text"])
     image = await partition.get_segments([s0.uuid], block_kinds=["image"])
     around = await partition.get_segment_neighborhoods(
-        [s0], after=5, block_kinds=["image"]
+        [s0.uuid], after=5, block_kinds=["image"]
     )
 
     assert [s.uuid for s in text[s0.uuid]] == [s0.uuid, s1.uuid]
