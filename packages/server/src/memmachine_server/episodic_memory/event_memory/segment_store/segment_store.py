@@ -39,7 +39,9 @@ class SegmentStorePartition(ABC):
     segments by uuid, subject to the filters. `get_segment_neighborhoods`
     walks the order outward from segments the caller already has, within
     their session, and returns the neighbors that pass the filters. A
-    walk starts from a segment, not from a uuid: fetch first, then walk.
+    walk starts from a segment, not a uuid, because a segment already
+    carries the position and session the walk needs: fetch first, then
+    walk.
     """
 
     @property
