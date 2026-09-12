@@ -66,7 +66,7 @@ Worktrees on this machine:
 ```python
 class Event(BaseModel):
     uuid: UUID
-    timestamp: datetime            # aware; keeps the offset it was given
+    timestamp: AwareDatetime       # a naive value is rejected; keeps the offset it was given
     session_id: str                # the stream the event belongs to; required, non-empty
     source_id: str | None = None   # the responsible entity's id; None = null
     context: Context               # a mapping of parts; {} = no context
@@ -100,7 +100,10 @@ class Event(BaseModel):
 - `Segment` and `Derivative` gain the same two fields, copied verbatim
   from the event by the segmenter and the deriver; that copy is a
   clause of both contracts and the segment store depends on it.
-- The timestamp round-trips with its offset: the segment store already
+- Timestamps are timezone-aware everywhere: the model rejects a naive
+  value, and the typed bounds `since` and `until` reject one, since a
+  naive datetime names no instant and a guessed zone would silently
+  shift an event in the order. The timestamp round-trips with its offset: the segment store already
   keeps `timestamp_timezone_offset`; keep writing the UTC instant plus
   the offset and reapplying it on read.
 
