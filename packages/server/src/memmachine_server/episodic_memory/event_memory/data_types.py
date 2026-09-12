@@ -1,7 +1,7 @@
 """Data types for EventMemory."""
 
 from collections.abc import Mapping
-from datetime import datetime, tzinfo
+from datetime import tzinfo
 from typing import (
     Annotated,
     Literal,
@@ -10,6 +10,7 @@ from uuid import UUID
 
 from pydantic import (
     AfterValidator,
+    AwareDatetime,
     BaseModel,
     Field,
     InstanceOf,
@@ -118,8 +119,8 @@ class Event(BaseModel):
     """
 
     uuid: UUID = Field(description="Identity of the event")
-    timestamp: datetime = Field(
-        description="When the event happened; a naive value means UTC"
+    timestamp: AwareDatetime = Field(
+        description="When the event happened, with its zone; a naive value is rejected"
     )
     session_id: _BoundedId = Field(
         description="The conversation or stream the event belongs to"
@@ -170,7 +171,7 @@ class Segment(BaseModel):
     offset: int = Field(
         ge=0, description="Position of the piece among the block's pieces"
     )
-    timestamp: datetime = Field(description="The event's timestamp")
+    timestamp: AwareDatetime = Field(description="The event's timestamp")
     session_id: _BoundedId = Field(description="The event's session id")
     source_id: _BoundedId | None = Field(
         default=None, description="The event's source id"
@@ -210,7 +211,7 @@ class Derivative(BaseModel):
 
     uuid: UUID = Field(description="Identity of the derivative")
     segment_uuid: UUID = Field(description="The segment the content was derived from")
-    timestamp: datetime = Field(description="The segment's timestamp")
+    timestamp: AwareDatetime = Field(description="The segment's timestamp")
     session_id: _BoundedId = Field(description="The segment's session id")
     source_id: _BoundedId | None = Field(
         default=None, description="The segment's source id"

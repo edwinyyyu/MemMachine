@@ -81,10 +81,11 @@ class SegmentStorePartition(ABC):
             segment_uuids (Iterable[UUID]):
                 The uuids to look up.
             since (datetime | None):
-                Inclusive lower bound on the segment timestamp (default: None).
+                Inclusive lower bound on the segment timestamp, timezone-aware
+                (default: None).
             until (datetime | None):
-                Exclusive upper bound on the segment timestamp, so ranges
-                meet without overlap (default: None).
+                Exclusive upper bound on the segment timestamp, timezone-aware,
+                so ranges meet without overlap (default: None).
             session_ids (Iterable[str] | None):
                 Keep only segments whose session id is one of these; an
                 empty list keeps none (default: None, every session).
@@ -102,6 +103,9 @@ class SegmentStorePartition(ABC):
                 A mapping from each uuid found and admitted to its segment.
                 A uuid the partition does not hold, or whose segment fails
                 a filter, is absent.
+
+        Raises:
+            ValueError: If `since` or `until` is naive.
         """
         raise NotImplementedError
 
@@ -134,10 +138,11 @@ class SegmentStorePartition(ABC):
             after (int):
                 The maximum number of neighbors after each seed (default: 0).
             since (datetime | None):
-                Inclusive lower bound on the neighbors' timestamp (default: None).
+                Inclusive lower bound on the neighbors' timestamp, timezone-aware
+                (default: None).
             until (datetime | None):
-                Exclusive upper bound on the neighbors' timestamp, so ranges
-                meet without overlap (default: None).
+                Exclusive upper bound on the neighbors' timestamp, timezone-aware,
+                so ranges meet without overlap (default: None).
             source_ids (Iterable[str] | None):
                 Keep only neighbors whose source id is one of these; an
                 empty list keeps none (default: None, every source).
@@ -154,6 +159,9 @@ class SegmentStorePartition(ABC):
                 in order ending just before the seed, `after` in order
                 starting just after it. A seed with no neighbors to show
                 maps to two empty lists; an unknown seed is absent.
+
+        Raises:
+            ValueError: If `since` or `until` is naive.
         """
         raise NotImplementedError
 
