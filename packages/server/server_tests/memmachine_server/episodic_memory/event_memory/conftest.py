@@ -105,6 +105,9 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         block_kinds: list[str] | None,
         normalized_filter: FilterExpr | None,
     ) -> bool:
+        for name, bound in (("since", since), ("until", until)):
+            if bound is not None and bound.tzinfo is None:
+                raise ValueError(f"{name} must be timezone-aware: {bound!r}")
         if since is not None and segment.timestamp < since:
             return False
         if until is not None and segment.timestamp >= until:

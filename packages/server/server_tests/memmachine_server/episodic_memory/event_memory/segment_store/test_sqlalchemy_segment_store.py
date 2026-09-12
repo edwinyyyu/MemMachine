@@ -2909,6 +2909,21 @@ async def test_multiple_seeds_across_sessions(
 
 
 @pytest.mark.asyncio
+async def test_a_naive_bound_is_rejected(
+    partition: SQLAlchemySegmentStorePartition,
+) -> None:
+    """A naive bound names no instant, so neither read accepts one."""
+    seg = _seg()
+    await partition.add_segments(_links(seg))
+    naive = BASE_TIME.replace(tzinfo=None)
+
+    with pytest.raises(ValueError, match="since must be timezone-aware"):
+        await partition.get_segments([seg.uuid], since=naive)
+    with pytest.raises(ValueError, match="until must be timezone-aware"):
+        await partition.get_segment_neighborhoods([seg.uuid], after=1, until=naive)
+
+
+@pytest.mark.asyncio
 async def test_since_and_until_meet_without_overlap(
     partition: SQLAlchemySegmentStorePartition,
 ) -> None:

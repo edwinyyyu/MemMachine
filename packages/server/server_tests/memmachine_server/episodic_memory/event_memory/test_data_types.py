@@ -122,6 +122,22 @@ class TestSegmentRoundTrip:
         with pytest.raises(ValidationError, match="session_id"):
             Segment.model_validate({**fields, "session_id": ""})
 
+    def test_a_naive_timestamp_is_rejected(self):
+        with pytest.raises(ValidationError, match="timestamp"):
+            Segment.model_validate(
+                {
+                    "uuid": uuid4(),
+                    "event_uuid": uuid4(),
+                    "index": 0,
+                    "offset": 0,
+                    "timestamp": datetime(2026, 1, 15, 10, 30, tzinfo=UTC).replace(
+                        tzinfo=None
+                    ),
+                    "session_id": "s1",
+                    "block": {"block_type": "text", "text": "hello"},
+                }
+            )
+
 
 class TestBounds:
     @pytest.mark.parametrize("field", ["session_id", "source_id"])

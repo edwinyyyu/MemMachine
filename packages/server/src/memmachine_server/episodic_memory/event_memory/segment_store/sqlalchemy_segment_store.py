@@ -414,7 +414,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 "offset": segment.offset,
                 # Store the UTC instant; SQLite does not persist tzinfo, so the
                 # original offset is recorded separately and reapplied on read.
-                "timestamp": ensure_tz_aware(segment.timestamp).astimezone(UTC),
+                "timestamp": segment.timestamp.astimezone(UTC),
                 "timestamp_timezone_offset": utc_offset_seconds(segment.timestamp),
                 "session_id": segment.session_id,
                 "source_id": segment.source_id,
@@ -598,17 +598,17 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         Timestamp bounds are put in UTC before they are bound: the column
         holds the UTC instant, and SQLite compares the wall clock it is
         given, so a bound in another zone would be compared on its digits.
-        An empty id or kind list admits nothing.
+        A naive bound names no instant and is rejected. An empty id or
+        kind list admits nothing.
         """
         conditions: list[ColumnElement[bool]] = []
+        for name, bound in (("since", since), ("until", until)):
+            if bound is not None and bound.tzinfo is None:
+                raise ValueError(f"{name} must be timezone-aware: {bound!r}")
         if since is not None:
-            conditions.append(
-                SegmentRow.timestamp >= ensure_tz_aware(since).astimezone(UTC)
-            )
+            conditions.append(SegmentRow.timestamp >= since.astimezone(UTC))
         if until is not None:
-            conditions.append(
-                SegmentRow.timestamp < ensure_tz_aware(until).astimezone(UTC)
-            )
+            conditions.append(SegmentRow.timestamp < until.astimezone(UTC))
         if session_ids is not None:
             conditions.append(_in_values(SegmentRow.session_id, session_ids))
         if source_ids is not None:
