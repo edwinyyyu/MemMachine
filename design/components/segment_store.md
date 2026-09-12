@@ -56,7 +56,7 @@ class SegmentPartition(ABC):              # data, bound to one key; no method ta
                            source_ids: Iterable[str] | None,
                            block_kinds: Iterable[str] | None,
                            property_filter: FilterExpr | None) -> dict[UUID, Segment]
-    async def get_segment_neighborhoods(self, segments: Iterable[Segment], *,
+    async def get_segment_neighborhoods(self, seed_segment_uuids: Iterable[UUID], *,
                                  before: int, after: int,
                                  since: datetime | None, until: datetime | None,
                                  session_ids: Iterable[str] | None,
@@ -82,15 +82,14 @@ the timestamp, inclusive and exclusive; `source_ids`, `block_kinds` and
 `property_filter` select rows; every walk stays in its seed's session.
 `get_segments` is the filtered lookup: the segments among the given uuids
 that the partition holds and that pass every filter; a uuid that fails has
-no entry. `get_segment_neighborhoods` is the walk: it takes segments the
-caller holds, starts from the position and session each carries without
-looking anything up, applies the filters to the neighbors only, and never
-returns the given segment; the result is two lists in the store's order,
-`Neighborhood(before, after)`, with the segment's place between them, so
-nothing in it can be mistaken for it. The rule for a caller: filters select
-what a read returns, and only a segment obtained first can be walked from;
-a search fetches its seeds with the filters, expansion fetches its anchor
-without them. The order is total
+no entry. `get_segment_neighborhoods` is the walk: it locates each seed by
+uuid whether or not it passes any filter, applies the filters to the
+neighbors only, and never returns the seed; the result is two lists in the
+store's order, `Neighborhood(before, after)`, with the seed's place between
+them, so nothing in it can be mistaken for the seed. Filters select what a
+read returns: a search fetches its seeds with the filters and walks from
+the ones that pass; expansion walks from its anchor and, when sessions are
+named, first checks that the anchor is in one of them. The order is total
 and stable, so a caller walks further by repeating the call from the first of
 `before` or the last of `after`. That is the rule decided for MemMachine #1498:
 during a search a seed that fails the filter is dropped before any window is
@@ -150,7 +149,7 @@ to it.
   one block as a plain column, since the encoded block cannot be
   filtered (`blocks.md`).
 - `get_segment_neighborhoods` is the one walk, over the ordering index,
-  from segments the caller holds (`max_backward_segments` and
+  from seeds named by uuid (`max_backward_segments` and
   `max_forward_segments` become `before` and `after`), confined to the
   given segment's session by the store, returning the neighbors and
   never the segment. It takes no `session_ids`: confinement decides the

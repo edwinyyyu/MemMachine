@@ -265,7 +265,7 @@ async def get_segments(self, segment_uuids: Iterable[UUID], *,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None) -> dict[UUID, Segment]
 
-async def get_segment_neighborhoods(self, segments: Iterable[Segment], *,
+async def get_segment_neighborhoods(self, seed_segment_uuids: Iterable[UUID], *,
         before: int = 0, after: int = 0,
         since: datetime | None = None, until: datetime | None = None,
         session_ids: Iterable[str] | None = None,
@@ -286,15 +286,13 @@ async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
   `property_filter` select rows. A walk is confined to the given
   segment's session by an equality on its session id, or spans every
   session when it has none. The lateral and loop plans serve it, with
-  the seed keys bound as parameters, not read from the table.
+  the located seeds' keys bound as parameters.
 - `get_segments` is the filtered lookup: the segments among the given
   uuids that the partition holds and that pass every filter; a uuid
   that fails has no entry. A search fetches its seeds with it.
-- `get_segment_neighborhoods` is the walk. It takes segments the caller
-  holds and looks nothing up: the walk starts from the position and
-  session each carries, the filters apply to the neighbors only, and
-  the given segment is never in the
-  result. Each seed maps to two lists in the store's order, `before`
+- `get_segment_neighborhoods` is the walk. The seed is an address: it
+  is located by uuid whether or not it passes any filter, the filters
+  apply to the neighbors only, and the seed is never in the result. Each seed maps to two lists in the store's order, `before`
   ending just before the seed and `after` starting just after it, so
   the seed's place is between them and the caller needs nothing but
   the lists. A seed with no neighbors to show maps to two empty lists;
@@ -358,7 +356,7 @@ class EventMemory:
   of `system_predicates(...)` and `property_filter`; resolve seeds
   through the segment store's `get_segment_uuids_by_derivative_uuids`
   (#1598); `get_segments` with the same system values and
-  `property_filter`, then `get_segment_neighborhoods` from the segments
+  `property_filter`, then `get_segment_neighborhoods` from the seeds
   it returned, `expand_context` split as today and no walk when it is
   zero; drop seeds the store did not return; return at most `limit`
   hits in descending cosine similarity, each its seed with the
@@ -372,9 +370,10 @@ class EventMemory:
   reranking that `_query` did inside. Call sites in the server change
   only as far as calling it; nothing else in the server is in scope.
 - `expand`: an event uuid anchor resolves to its first segment via
-  `get_segment_uuids_by_event_uuids`; then `get_segments` for that one
-  uuid, unfiltered, and `get_segment_neighborhoods` from it with the
-  same filters a search takes.
+  `get_segment_uuids_by_event_uuids`; then `get_segment_neighborhoods`
+  from that uuid with the same filters a search takes, after
+  `get_segments` with `session_ids` when sessions are named, so an
+  anchor outside them is not found.
 - `render` replaces `string_from_segment_context` and
   `string_from_segment_contexts` and uses `_immediately_follows` for
   the header decision: a new header when the segment is not the very
