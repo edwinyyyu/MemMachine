@@ -23,12 +23,12 @@ from memmachine_server.common.filter.filter_parser import (
     Not,
     Or,
 )
-from memmachine_server.common.properties_json import decode_properties
 from memmachine_server.common.vector_store.data_types import (
     Record,
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionSchemaMismatchError,
 )
+from memmachine_server.common.vector_store.sql_columns import property_column_name
 from memmachine_server.common.vector_store.sqlite_vector_store import (
     IndexLoadError,
     PendingOperationCorruptError,
@@ -44,6 +44,9 @@ from memmachine_server.common.vector_store.vector_search_engine.usearch_engine i
 )
 from memmachine_server.common.vector_store.vector_search_engine.vector_search_engine import (
     VectorSearchEngine,
+)
+from server_tests.memmachine_server.common.vector_store.declared_schema_contract import (
+    DeclaredSchemaContract,
 )
 from server_tests.memmachine_server.common.vector_store.partition_lifecycle_contract import (
     PartitionLifecycleContract,
@@ -330,6 +333,10 @@ class TestUpsertAndQuery:
 
 
 # ── Filters ──
+
+
+class TestDeclaredSchema(DeclaredSchemaContract):
+    """The declared-schema contract, against this store."""
 
 
 class TestFilters:
@@ -1068,14 +1075,14 @@ async def _all_row_ids(collection) -> set[int]:
 async def _committed_name_is(collection, record_uuid, name: str) -> bool:
     """Whether SQLite currently holds `name` as the record's `name` property."""
     async with collection._create_session() as session:
-        properties = (
+        stored = (
             await session.execute(
-                select(collection._records_table.c.properties).where(
+                select(collection._records_table.c[property_column_name("name")]).where(
                     collection._records_table.c.uuid == record_uuid
                 )
             )
         ).scalar_one_or_none()
-    return properties is not None and decode_properties(properties)["name"] == name
+    return stored == name
 
 
 class TestRowIdReuse:

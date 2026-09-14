@@ -3,8 +3,11 @@
 from .data_types import (
     IndexedProperties,
     PartitionSchema,
+    PropertyTypeMismatchError,
     QueryResult,
     Record,
+    UndeclaredPropertyKeyError,
+    UnsupportedFilterError,
     VectorStoreAttemptsExhaustedError,
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionHandleStaleError,
@@ -16,8 +19,11 @@ from .vector_store import VectorStore, VectorStorePartition
 __all__ = [
     "IndexedProperties",
     "PartitionSchema",
+    "PropertyTypeMismatchError",
     "QueryResult",
     "Record",
+    "UndeclaredPropertyKeyError",
+    "UnsupportedFilterError",
     "VectorStore",
     "VectorStoreAttemptsExhaustedError",
     "VectorStorePartition",

@@ -10,6 +10,7 @@ import pytest
 import pytest_asyncio
 from pydantic import ValidationError
 from qdrant_client import AsyncQdrantClient, models
+from qdrant_client.http.exceptions import UnexpectedResponse
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from memmachine_server.common.data_types import PropertyValue
@@ -31,6 +32,9 @@ from memmachine_server.common.vector_store.qdrant_vector_store import (
     QdrantVectorStore,
     QdrantVectorStoreParams,
     QdrantVectorStorePartition,
+)
+from server_tests.memmachine_server.common.vector_store.declared_schema_contract import (
+    DeclaredSchemaContract,
 )
 from server_tests.memmachine_server.common.vector_store.partition_lifecycle_contract import (
     RemotePartitionLifecycleContract,
@@ -301,6 +305,10 @@ class TestUpsertAndQuery:
 
 
 # ── Filters ──
+
+
+class TestDeclaredSchema(DeclaredSchemaContract):
+    """The declared-schema contract, against this store."""
 
 
 class TestFilters:
@@ -1390,6 +1398,122 @@ class TestDeclaredPayloadIndexes:
         )
         assert info.payload_schema["age"].data_type == models.PayloadSchemaType.INTEGER
         await store.delete_partition("declared_indexes")
+
+
+@pytest.mark.integration
+class TestStrictMode:
+    """The collection is created in strict mode: a filter on an unindexed key is refused."""
+
+    @pytest.mark.asyncio
+    async def test_the_collection_is_strict(self, qdrant_client, registry_engine):
+        store = QdrantVectorStore(
+            QdrantVectorStoreParams(
+                collection=COLLECTION,
+                vector_dimensions=VECTOR_DIM,
+                indexed_properties=INDEXED_PROPERTIES,
+                client=qdrant_client,
+                registry_engine=registry_engine,
+                tombstone_retention_seconds=TOMBSTONE_RETENTION_SECONDS,
+            )
+        )
+        await store.provision()
+        await store.startup()
+        info = await qdrant_client.get_collection(COLLECTION)
+        assert info.config.strict_mode_config is not None
+        assert info.config.strict_mode_config.enabled is True
+        assert info.config.strict_mode_config.unindexed_filtering_retrieve is False
+        # The server enforces it: a filter on a key the store never indexed
+        # is refused rather than scanned for.
+        with pytest.raises(UnexpectedResponse, match=r"(?i)strict mode|index"):
+            await qdrant_client.scroll(
+                collection_name=COLLECTION,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="never_indexed", match=models.MatchValue(value="x")
+                        )
+                    ]
+                ),
+                limit=1,
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_predicate_of_another_type_matches_nothing(
+        self, qdrant_client, registry_engine
+    ):
+        """The store answers a mistyped leaf itself; the server would refuse it."""
+        store = QdrantVectorStore(
+            QdrantVectorStoreParams(
+                collection=COLLECTION,
+                vector_dimensions=VECTOR_DIM,
+                indexed_properties=INDEXED_PROPERTIES,
+                client=qdrant_client,
+                registry_engine=registry_engine,
+                tombstone_retention_seconds=TOMBSTONE_RETENTION_SECONDS,
+            )
+        )
+        await store.provision()
+        await store.startup()
+        await store.delete_partition("mistyped")
+        await store.create_partition("mistyped")
+        partition = await store.get_partition("mistyped")
+        assert partition is not None
+        held = _make_record(vector=_normalize([1.0, 0.0, 0.0]), properties={"age": 5})
+        await partition.upsert(records=[held])
+
+        for property_filter in (
+            Comparison(field="age", op="=", value="5"),
+            Comparison(field="age", op=">", value=1.5),
+            In(field="age", values=["5"]),
+            Comparison(field="name", op="=", value=5),
+        ):
+            [result] = await partition.query(
+                query_vectors=[held.vector], limit=5, property_filter=property_filter
+            )
+            assert result.matches == [], property_filter
+        [result] = await partition.query(
+            query_vectors=[held.vector],
+            limit=5,
+            property_filter=Comparison(field="age", op="=", value=5),
+        )
+        assert [match.record_uuid for match in result.matches] == [held.uuid]
+        await store.delete_partition("mistyped")
+
+
+class TestStrictModeIsRequested:
+    """Local mode does not record strict mode, so the request itself is checked."""
+
+    @pytest.mark.asyncio
+    async def test_provision_creates_the_collection_strict(
+        self, monkeypatch, registry_engine
+    ):
+        client = AsyncQdrantClient(location=":memory:")
+        requested: dict[str, models.StrictModeConfig | None] = {}
+        original = client.create_collection
+
+        async def recording_create_collection(*args, **kwargs):
+            requested[kwargs["collection_name"]] = kwargs.get("strict_mode_config")
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(client, "create_collection", recording_create_collection)
+        store = QdrantVectorStore(
+            QdrantVectorStoreParams(
+                collection=COLLECTION,
+                vector_dimensions=VECTOR_DIM,
+                indexed_properties=INDEXED_PROPERTIES,
+                client=client,
+                registry_engine=registry_engine,
+                tombstone_retention_seconds=TOMBSTONE_RETENTION_SECONDS,
+            )
+        )
+        await store.provision()
+
+        assert set(requested) == {COLLECTION}
+        config = requested[COLLECTION]
+        assert config is not None
+        assert config.enabled is True
+        assert config.unindexed_filtering_retrieve is False
+        assert config.unindexed_filtering_update is False
 
 
 class TestPartitionLifecycle(RemotePartitionLifecycleContract):
