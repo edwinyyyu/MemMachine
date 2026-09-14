@@ -13,12 +13,7 @@ from pydantic import BaseModel, Field, InstanceOf
 
 from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.embedder import Embedder
-from memmachine_server.common.filter.filter_parser import (
-    And,
-    Comparison,
-    FilterExpr,
-    In,
-)
+from memmachine_server.common.filter import And, FilterExpr, In, Ordering
 from memmachine_server.common.metrics_factory import (
     MetricsFactory,
     OperationTracker,
@@ -62,12 +57,12 @@ BLOCK_KIND_KEY: Final[str] = reserved_property_key("em", "block_kind")
 
 def _conjoin(clauses: Iterable[FilterExpr | None]) -> FilterExpr | None:
     """The conjunction of the given clauses; None when there are none."""
-    combined: FilterExpr | None = None
-    for clause in clauses:
-        if clause is None:
-            continue
-        combined = clause if combined is None else And(left=combined, right=clause)
-    return combined
+    operands = tuple(clause for clause in clauses if clause is not None)
+    if not operands:
+        return None
+    if len(operands) == 1:
+        return operands[0]
+    return And(operands)
 
 
 def _system_predicates(
@@ -85,19 +80,19 @@ def _system_predicates(
     admits nothing; a list left `None` admits everything.
     """
     clauses: list[FilterExpr | None] = [
-        Comparison(field=EVENT_TIMESTAMP_KEY, op=">=", value=since)
+        Ordering(field=EVENT_TIMESTAMP_KEY, op=">=", value=since)
         if since is not None
         else None,
-        Comparison(field=EVENT_TIMESTAMP_KEY, op="<", value=until)
+        Ordering(field=EVENT_TIMESTAMP_KEY, op="<", value=until)
         if until is not None
         else None,
-        In(field=EVENT_SESSION_KEY, values=list(session_ids))
+        In(field=EVENT_SESSION_KEY, values=tuple(session_ids))
         if session_ids is not None
         else None,
-        In(field=EVENT_SOURCE_KEY, values=list(source_ids))
+        In(field=EVENT_SOURCE_KEY, values=tuple(source_ids))
         if source_ids is not None
         else None,
-        In(field=BLOCK_KIND_KEY, values=list(block_kinds))
+        In(field=BLOCK_KIND_KEY, values=tuple(block_kinds))
         if block_kinds is not None
         else None,
     ]

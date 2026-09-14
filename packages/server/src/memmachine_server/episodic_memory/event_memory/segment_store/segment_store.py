@@ -9,7 +9,7 @@ from collections.abc import Iterable, Mapping
 from datetime import datetime
 from uuid import UUID
 
-from memmachine_server.common.filter.filter_parser import FilterExpr
+from memmachine_server.common.filter import FilterExpr
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Neighborhood,
     Segment,

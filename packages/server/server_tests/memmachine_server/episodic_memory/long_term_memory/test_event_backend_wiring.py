@@ -27,17 +27,13 @@ from memmachine_server.common.episode_store import (
     EpisodeIdT,
     EpisodeStorage,
 )
-from memmachine_server.common.filter.filter_parser import (
-    And as FilterAnd,
-)
-from memmachine_server.common.filter.filter_parser import (
-    Comparison as FilterComparison,
-)
-from memmachine_server.common.filter.filter_parser import (
-    In as FilterIn,
-)
-from memmachine_server.common.filter.filter_parser import (
-    Or as FilterOr,
+from memmachine_server.common.filter import (
+    And,
+    Equals,
+    In,
+    Not,
+    Or,
+    Ordering,
 )
 from memmachine_server.common.vector_store import VectorStore
 from memmachine_server.episodic_memory.event_memory.data_types import (
@@ -352,7 +348,7 @@ async def test_user_metadata_filter_round_trips(
     scored = await long_term_memory.search_scored(
         "fruit",
         num_episodes_limit=10,
-        property_filter=FilterComparison(field="m.color", op="=", value="red"),
+        property_filter=Equals(field="m.color", value="red"),
     )
     uids = {ep.uid for _, ep in scored}
     assert uids == {"m-1"}
@@ -391,7 +387,7 @@ async def test_system_field_filter_round_trips(
     scored = await long_term_memory.search_scored(
         "msg",
         num_episodes_limit=10,
-        property_filter=FilterComparison(field="producer_id", op="=", value="alice"),
+        property_filter=Equals(field="producer_id", value="alice"),
     )
     uids = {ep.uid for _, ep in scored}
     assert uids == {"s-1"}
@@ -412,9 +408,7 @@ async def test_unknown_bare_filter_field_raises(long_term_memory):
         await long_term_memory.search_scored(
             "msg",
             num_episodes_limit=10,
-            property_filter=FilterComparison(
-                field="producre_id", op="=", value="alice"
-            ),
+            property_filter=Equals(field="producre_id", value="alice"),
         )
 
 
@@ -424,7 +418,7 @@ async def test_any_user_metadata_field_is_accepted(long_term_memory):
     scored = await long_term_memory.search_scored(
         "msg",
         num_episodes_limit=10,
-        property_filter=FilterComparison(field="m.anything", op="=", value="x"),
+        property_filter=Equals(field="m.anything", value="x"),
     )
     assert scored == []
 
@@ -436,10 +430,8 @@ async def test_timestamp_filter_field_is_accepted(long_term_memory, episodes):
     await long_term_memory.search_scored(
         "anything",
         num_episodes_limit=10,
-        property_filter=FilterComparison(
-            field="timestamp",
-            op=">=",
-            value=datetime(2000, 1, 1, tzinfo=UTC),
+        property_filter=Ordering(
+            field="timestamp", op=">=", value=datetime(2000, 1, 1, tzinfo=UTC)
         ),
     )
 
@@ -449,16 +441,17 @@ def test_timestamp_bounds_are_lifted_out_of_the_filter():
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
     t1 = datetime(2026, 1, 2, tzinfo=UTC)
     t2 = datetime(2026, 1, 3, tzinfo=UTC)
-    color = FilterComparison(field="m.color", op="=", value="red")
-    tree = FilterAnd(
-        left=FilterAnd(
-            left=FilterComparison(field="timestamp", op=">=", value=t0),
-            right=color,
-        ),
-        right=FilterAnd(
-            left=FilterComparison(field="created_at", op="<", value=t2),
-            right=FilterComparison(field="timestamp", op=">=", value=t1),
-        ),
+    color = Equals(field="m.color", value="red")
+    tree = And(
+        (
+            And((Ordering(field="timestamp", op=">=", value=t0), color)),
+            And(
+                (
+                    Ordering(field="created_at", op="<", value=t2),
+                    Ordering(field="timestamp", op=">=", value=t1),
+                )
+            ),
+        )
     )
 
     lifted = LongTermMemory._lift_typed_filters(tree)
@@ -467,33 +460,30 @@ def test_timestamp_bounds_are_lifted_out_of_the_filter():
     assert lifted.rest == color
     assert LongTermMemory._lift_typed_filters(None) == (None, None, None, None)
     # Another operator, or a timestamp under a disjunction, is not lifted.
-    later = FilterComparison(field="timestamp", op=">", value=t0)
+    later = Ordering(field="timestamp", op=">", value=t0)
     assert LongTermMemory._lift_typed_filters(later) == (None, None, None, later)
-    either = FilterOr(
-        left=FilterComparison(field="timestamp", op=">=", value=t0), right=color
-    )
+    either = Or((Ordering(field="timestamp", op=">=", value=t0), color))
     assert LongTermMemory._lift_typed_filters(either) == (None, None, None, either)
 
 
 def test_producer_conjuncts_are_lifted_into_source_ids():
     """`producer_id =` and `IN` conjuncts become `source_ids`; their intersection when several."""
-    color = FilterComparison(field="m.color", op="=", value="red")
-    one = FilterComparison(field="producer_id", op="=", value="alice")
+    color = Equals(field="m.color", value="red")
+    one = Equals(field="producer_id", value="alice")
     assert LongTermMemory._lift_typed_filters(one) == (None, None, ["alice"], None)
-    several = FilterAnd(
-        left=FilterIn(field="producer_id", values=["bob", "alice", "carol"]),
-        right=FilterAnd(
-            left=color,
-            right=FilterIn(field="producer_id", values=["alice", "bob"]),
-        ),
+    several = And(
+        (
+            In(field="producer_id", values=("bob", "alice", "carol")),
+            And((color, In(field="producer_id", values=("alice", "bob")))),
+        )
     )
     lifted = LongTermMemory._lift_typed_filters(several)
     assert (lifted.source_ids, lifted.rest) == (["alice", "bob"], color)
     # Contradictory conjuncts admit nothing, which an empty list expresses.
-    nobody = FilterAnd(left=one, right=FilterIn(field="producer_id", values=["bob"]))
+    nobody = And((one, In(field="producer_id", values=("bob",))))
     assert LongTermMemory._lift_typed_filters(nobody).source_ids == []
-    # A negation or another operator stays a post-filter.
-    other = FilterComparison(field="producer_id", op="!=", value="alice")
+    # A negation stays a post-filter.
+    other = Not(Equals(field="producer_id", value="alice"))
     assert LongTermMemory._lift_typed_filters(other) == (None, None, None, other)
 
 
@@ -533,12 +523,12 @@ async def test_a_producer_filter_reaches_the_vector_stage(
     scored = await long_term_memory.search_scored(
         "msg",
         num_episodes_limit=10,
-        property_filter=FilterComparison(field="producer_id", op="=", value="alice"),
+        property_filter=Equals(field="producer_id", value="alice"),
     )
 
     assert {ep.uid for _, ep in scored} == {"p-1"}
     [vector_filter] = seen
-    assert vector_filter == FilterIn(field=EVENT_SOURCE_KEY, values=["alice"])
+    assert vector_filter == In(field=EVENT_SOURCE_KEY, values=("alice",))
 
 
 def _make_ltm(episodes: list[Episode]) -> LongTermMemory:

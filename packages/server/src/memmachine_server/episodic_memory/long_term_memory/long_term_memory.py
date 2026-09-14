@@ -16,14 +16,15 @@ from memmachine_server.common.episode_store import (
     EpisodeStorage,
     EpisodeType,
 )
-from memmachine_server.common.filter.filter_parser import (
+from memmachine_server.common.filter import (
     And,
-    Comparison,
+    Equals,
     FilterExpr,
     In,
+    Ordering,
     map_filter_fields,
-    normalize_filter_field,
 )
+from memmachine_server.common.filter.filter_parser import normalize_filter_field
 from memmachine_server.common.metrics_factory import MetricsFactory
 from memmachine_server.common.reranker import Reranker
 from memmachine_server.common.vector_graph_store import VectorGraphStore
@@ -619,33 +620,35 @@ class LongTermMemory:
         rest: list[FilterExpr] = []
         for conjunct in LongTermMemory._conjuncts(property_filter):
             match conjunct:
-                case Comparison(
+                case Ordering(
                     field="timestamp" | "created_at",
                     op=">=",
                     value=datetime.datetime() as bound,
                 ):
                     since = bound if since is None else max(since, bound)
-                case Comparison(
+                case Ordering(
                     field="timestamp" | "created_at",
                     op="<",
                     value=datetime.datetime() as bound,
                 ):
                     until = bound if until is None else min(until, bound)
-                case Comparison(field="producer_id", op="=", value=str() as source):
+                case Equals(field="producer_id", value=str() as source):
                     sources = {source}
                     source_ids = sources if source_ids is None else source_ids & sources
                 case In(field="producer_id", values=values) if all(
                     isinstance(value, str) for value in values
                 ):
-                    sources = set(cast(list[str], values))
+                    sources = set(cast(tuple[str, ...], values))
                     source_ids = sources if source_ids is None else source_ids & sources
                 case _:
                     rest.append(conjunct)
-        remaining: FilterExpr | None = None
-        for conjunct in rest:
-            remaining = (
-                conjunct if remaining is None else And(left=remaining, right=conjunct)
-            )
+        remaining: FilterExpr | None
+        if not rest:
+            remaining = None
+        elif len(rest) == 1:
+            remaining = rest[0]
+        else:
+            remaining = And(tuple(rest))
         return _LiftedFilters(
             since=since,
             until=until,
@@ -660,8 +663,9 @@ class LongTermMemory:
             return []
         if isinstance(expr, And):
             return [
-                *LongTermMemory._conjuncts(expr.left),
-                *LongTermMemory._conjuncts(expr.right),
+                conjunct
+                for operand in expr.operands
+                for conjunct in LongTermMemory._conjuncts(operand)
             ]
         return [expr]
 
