@@ -38,17 +38,16 @@ from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import 
     WholeTextDeriver,
 )
 from memmachine_server.episodic_memory.event_memory.event_memory import (
-    EventMemory,
-    EventMemoryParams,
-)
-from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter import (
-    TextSegmenter,
-)
-from memmachine_server.episodic_memory.event_memory.utils import (
     BLOCK_KIND_KEY,
     EVENT_SESSION_KEY,
     EVENT_SOURCE_KEY,
     EVENT_TIMESTAMP_KEY,
+    EventMemory,
+    EventMemoryParams,
+    _system_predicates,
+)
+from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter import (
+    TextSegmenter,
 )
 from server_tests.memmachine_server.common.reranker.fake_embedder import (
     FakeEmbedder,
@@ -1099,3 +1098,42 @@ class TestDeriverDatetimeFormat:
 
         (segment,) = partition.segments.values()
         assert segment.block == TextBlock(text="hello world")
+
+
+# ===================================================================
+# system predicates (typed filters as a filter tree)
+# ===================================================================
+
+_T1 = _T0 + datetime.timedelta(days=1)
+
+
+def _conjuncts(expr):
+    if isinstance(expr, And):
+        return [*_conjuncts(expr.left), *_conjuncts(expr.right)]
+    return [expr]
+
+
+def test_no_system_filter_is_no_tree():
+    assert _system_predicates() is None
+
+
+def test_predicates_name_the_reserved_keys():
+    tree = _system_predicates(
+        since=_T0,
+        until=_T1,
+        session_ids=["s1"],
+        source_ids=["alice", "bob"],
+        block_kinds=["text"],
+    )
+    assert _conjuncts(tree) == [
+        Comparison(field=EVENT_TIMESTAMP_KEY, op=">=", value=_T0),
+        Comparison(field=EVENT_TIMESTAMP_KEY, op="<", value=_T1),
+        In(field=EVENT_SESSION_KEY, values=["s1"]),
+        In(field=EVENT_SOURCE_KEY, values=["alice", "bob"]),
+        In(field=BLOCK_KIND_KEY, values=["text"]),
+    ]
+
+
+def test_empty_ids_admit_nothing_and_none_admits_everything():
+    assert _system_predicates(session_ids=None) is None
+    assert _system_predicates(session_ids=[]) == In(field=EVENT_SESSION_KEY, values=[])

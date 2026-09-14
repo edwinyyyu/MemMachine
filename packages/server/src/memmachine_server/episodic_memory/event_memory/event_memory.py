@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from collections.abc import Iterable, Sequence
-from typing import ClassVar, cast
+from typing import ClassVar, Final, cast
 from uuid import UUID
 
 from pydantic import BaseModel, Field, InstanceOf
@@ -14,7 +14,10 @@ from pydantic import BaseModel, Field, InstanceOf
 from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.embedder import Embedder
 from memmachine_server.common.filter.filter_parser import (
+    And,
+    Comparison,
     FilterExpr,
+    In,
     demangle_user_metadata_key,
     map_filter_fields,
     normalize_filter_field,
@@ -23,7 +26,10 @@ from memmachine_server.common.metrics_factory import (
     MetricsFactory,
     OperationTracker,
 )
-from memmachine_server.common.property_keys import validate_caller_property_key
+from memmachine_server.common.property_keys import (
+    reserved_property_key,
+    validate_caller_property_key,
+)
 from memmachine_server.common.reranker import Reranker
 from memmachine_server.common.vector_store import (
     Record,
@@ -46,16 +52,61 @@ from .deriver import Deriver
 from .formatting import format_timestamp
 from .segment_store import SegmentStorePartition
 from .segmenter import Segmenter
-from .utils import (
-    BLOCK_KIND_KEY,
-    EVENT_SESSION_KEY,
-    EVENT_SOURCE_KEY,
-    EVENT_TIMESTAMP_KEY,
-    conjoin,
-    system_predicates,
-)
 
 logger = logging.getLogger(__name__)
+
+# The reserved keys under which the memory writes its fields into a vector
+# record, the fields a search filters on at the vector stage. Built rather
+# than written out so the alphabet and length budget of the vector store's
+# naming contract are checked at import time.
+EVENT_TIMESTAMP_KEY: Final[str] = reserved_property_key("event", "timestamp")
+EVENT_SESSION_KEY: Final[str] = reserved_property_key("event", "session")
+EVENT_SOURCE_KEY: Final[str] = reserved_property_key("event", "source")
+BLOCK_KIND_KEY: Final[str] = reserved_property_key("block", "kind")
+
+
+def _conjoin(clauses: Iterable[FilterExpr | None]) -> FilterExpr | None:
+    """The conjunction of the given clauses; None when there are none."""
+    combined: FilterExpr | None = None
+    for clause in clauses:
+        if clause is None:
+            continue
+        combined = clause if combined is None else And(left=combined, right=clause)
+    return combined
+
+
+def _system_predicates(
+    *,
+    since: datetime.datetime | None = None,
+    until: datetime.datetime | None = None,
+    session_ids: Iterable[str] | None = None,
+    source_ids: Iterable[str] | None = None,
+    block_kinds: Iterable[str] | None = None,
+) -> FilterExpr | None:
+    """The predicates on reserved keys that a vector store evaluates.
+
+    `since` is inclusive and `until` exclusive, so ranges meet without
+    overlap. A list admits its members and nothing else, so an empty list
+    admits nothing; a list left `None` admits everything.
+    """
+    clauses: list[FilterExpr | None] = [
+        Comparison(field=EVENT_TIMESTAMP_KEY, op=">=", value=since)
+        if since is not None
+        else None,
+        Comparison(field=EVENT_TIMESTAMP_KEY, op="<", value=until)
+        if until is not None
+        else None,
+        In(field=EVENT_SESSION_KEY, values=list(session_ids))
+        if session_ids is not None
+        else None,
+        In(field=EVENT_SOURCE_KEY, values=list(source_ids))
+        if source_ids is not None
+        else None,
+        In(field=BLOCK_KIND_KEY, values=list(block_kinds))
+        if block_kinds is not None
+        else None,
+    ]
+    return _conjoin(clauses)
 
 
 # The context part kinds rendering prints, in the order they are printed.
@@ -452,9 +503,9 @@ class EventMemory:
         t_embedding = time.monotonic()
 
         # Translate filter fields for vector store.
-        collection_filter = conjoin(
+        collection_filter = _conjoin(
             [
-                system_predicates(
+                _system_predicates(
                     since=since,
                     until=until,
                     session_ids=session_ids,
