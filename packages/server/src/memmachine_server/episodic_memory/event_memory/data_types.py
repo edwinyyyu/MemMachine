@@ -112,7 +112,7 @@ _BoundedId = Annotated[
 
 
 class Event(BaseModel):
-    """Something that happened at a point in time, and the content it produced.
+    """An entry in a session's timeline, with the content to remember about it.
 
     Immutable once stored: no operation may edit a stored event. A change
     is a forget and a re-encode under the same uuid.
