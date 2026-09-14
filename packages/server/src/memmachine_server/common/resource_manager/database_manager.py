@@ -766,6 +766,9 @@ class DatabaseManager:
                     ),
                     "tombstone_retention_seconds": conf.tombstone_retention_seconds,
                     "indexed_properties": indexed_properties,
+                    "hnsw_config": conf.hnsw_config,
+                    "optimizers_config": conf.optimizers_config,
+                    "quantization_config": conf.quantization_config,
                     "metrics_factory": conf.get_metrics_factory(),
                 }
             )
