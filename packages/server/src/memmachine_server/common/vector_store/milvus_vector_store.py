@@ -37,10 +37,6 @@ from memmachine_server.common.filter.filter_parser import (
     Or as FilterOr,
 )
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
-from memmachine_server.common.properties_json import (
-    PROPERTY_VALUE_KEY,
-    encode_properties,
-)
 from memmachine_server.common.utils import ensure_tz_aware
 
 from .data_types import (
@@ -56,8 +52,9 @@ from .data_types import (
     indexed_property_names,
     validate_vector_store_name,
 )
+from .declared_properties import require_declared_properties, require_supported_filter
 from .partition_registry import RegisteredPartition, VectorStorePartitionRegistry
-from .utils import require_partition_key, validate_filter
+from .utils import require_partition_key
 from .vector_store import VectorStore, VectorStorePartition
 
 _COLLECTION_NAME_PREFIX = "sys_"
@@ -78,8 +75,6 @@ incarnation, and its predecessor's entities are invisible to it while the
 purge reclaims them.
 """
 _VECTOR_FIELD = "vector"
-_PROPERTIES_FIELD = "properties"
-"""A JSON field holding the properties the collection's schema does not declare."""
 _DECLARED_FIELD_PREFIX = "_p_"
 """The prefix of the typed field holding a declared property."""
 
@@ -131,41 +126,23 @@ def _expr_string(value: str) -> str:
 
 
 def _literal(value: PropertyValue) -> str:
-    """Return a Milvus expression literal for a property value."""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        return repr(value)
-    if isinstance(value, datetime):
-        return _expr_string(ensure_tz_aware(value).astimezone(UTC).isoformat())
-    return _expr_string(value)
-
-
-def _declared_literal(value: PropertyValue) -> str:
     """Return a Milvus expression literal for a declared property's value.
 
     A datetime is a TIMESTAMPTZ instant literal, which compares instants
     whatever the offsets.
     """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return repr(value)
     if isinstance(value, datetime):
         return f"ISO '{ensure_tz_aware(value).astimezone(UTC).isoformat()}'"
-    return _literal(value)
+    return _expr_string(value)
 
 
-def _fits(value: PropertyValue, declared_type: type[PropertyValue]) -> bool:
-    """Whether a value can be compared with, or stored in, a declared property."""
-    if isinstance(value, bool):
-        return declared_type is bool
-    if isinstance(value, int | float):
-        return declared_type in (int, float)
-    return isinstance(value, declared_type)
-
-
-def _absent(key: str, declared: Mapping[str, type[PropertyValue]]) -> str:
+def _absent(key: str) -> str:
     """A Milvus expression true exactly where the property has no value."""
-    if key in declared:
-        return f"{_DECLARED_FIELD_PREFIX}{key} is null"
-    return f"not exists {_PROPERTIES_FIELD}[{_expr_string(key)}]"
+    return f"{_DECLARED_FIELD_PREFIX}{key} is null"
 
 
 def _condition(
@@ -174,24 +151,15 @@ def _condition(
 ) -> str:
     """A Milvus expression for one condition; false or null where the property has no value."""
     values = list(expr.values) if isinstance(expr, FilterIn) else [expr.value]
-    declared_type = declared.get(expr.field)
-    if declared_type is None:
-        target = (
-            f"{_PROPERTIES_FIELD}[{_expr_string(expr.field)}]"
-            f"[{_expr_string(PROPERTY_VALUE_KEY)}]"
-        )
-        render = _literal
-    else:
-        # A value of another type never equals or orders against the property.
-        values = [value for value in values if _fits(value, declared_type)]
-        target = f"{_DECLARED_FIELD_PREFIX}{expr.field}"
-        render = _declared_literal
+    # A value of another type never equals or orders against the property.
+    values = [value for value in values if type(value) is declared[expr.field]]
     if not values:
         return _FALSE_EXPR
+    target = f"{_DECLARED_FIELD_PREFIX}{expr.field}"
     if isinstance(expr, FilterIn):
-        return f"{target} in [{', '.join(render(value) for value in values)}]"
+        return f"{target} in [{', '.join(_literal(value) for value in values)}]"
     operator = "==" if expr.op == "=" else expr.op
-    return f"{target} {operator} {render(values[0])}"
+    return f"{target} {operator} {_literal(values[0])}"
 
 
 def _milvus_filter(
@@ -216,7 +184,7 @@ def _milvus_filter(
         operator = "&&" if isinstance(expr, FilterAnd) != negate else "||"
         return f"({left}) {operator} ({right})"
     if isinstance(expr, FilterIsNull):
-        absent = _absent(expr.field, declared)
+        absent = _absent(expr.field)
         return f"not ({absent})" if negate else absent
     if isinstance(expr, FilterComparison) and expr.op == "!=":
         equal = FilterComparison(field=expr.field, op="=", value=expr.value)
@@ -224,7 +192,7 @@ def _milvus_filter(
     if isinstance(expr, FilterComparison | FilterIn):
         condition = _condition(expr, declared)
         if negate:
-            return f"(not ({condition})) || ({_absent(expr.field, declared)})"
+            return f"(not ({condition})) || ({_absent(expr.field)})"
         return condition
     message = f"Unsupported filter expression type: {type(expr)}"
     raise TypeError(message)
@@ -237,6 +205,10 @@ def _incarnation_filter(incarnation: UUID) -> str:
 
 class MilvusVectorStorePartition(VectorStorePartition):
     """A partition backed by Milvus: one partition-key value inside the store's collection."""
+
+    _SUPPORTED_FILTER_NODES: ClassVar[frozenset[type]] = frozenset(
+        {FilterComparison, FilterIn, FilterIsNull, FilterAnd, FilterOr, FilterNot}
+    )
 
     @staticmethod
     def _primary_id(incarnation: UUID, record_uuid: UUID) -> str:
@@ -296,32 +268,26 @@ class MilvusVectorStorePartition(VectorStorePartition):
     def indexed_properties(self) -> Mapping[str, PropertyType]:
         return self._indexed_properties
 
+    @property
+    @override
+    def supported_filter_nodes(self) -> frozenset[type]:
+        return MilvusVectorStorePartition._SUPPORTED_FILTER_NODES
+
     def _build_entity(self, record: Record) -> dict[str, Any]:
         """Build a Milvus entity from a vector store record."""
         properties = record.properties if record.properties is not None else {}
-        declared = self._indexed_properties
         entity: dict[str, Any] = {
             _ID_FIELD: self._primary_id(self._incarnation, record.uuid),
             _RECORD_UUID_FIELD: str(record.uuid),
             _PARTITION_KEY_FIELD: self._incarnation.hex,
             _VECTOR_FIELD: record.vector,
-            _PROPERTIES_FIELD: encode_properties(
-                {key: value for key, value in properties.items() if key not in declared}
-            ),
         }
-        for key, declared_type in declared.items():
+        for key in self._indexed_properties:
             value = properties.get(key)
-            if value is not None and not _fits(value, declared_type):
-                raise TypeError(
-                    f"Property {key!r} is declared {declared_type.__name__}, "
-                    f"got {type(value).__name__}"
-                )
             if isinstance(value, datetime):
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = ensure_tz_aware(
                     value
                 ).isoformat()
-            elif declared_type is float and isinstance(value, int | float):
-                entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = float(value)
             else:
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = value
         return entity
@@ -341,6 +307,8 @@ class MilvusVectorStorePartition(VectorStorePartition):
                 return
 
             await self._fence()
+            for record in records:
+                require_declared_properties(record.properties, self._indexed_properties)
             entities = [self._build_entity(record) for record in records]
 
             def _upsert() -> None:
@@ -372,8 +340,11 @@ class MilvusVectorStorePartition(VectorStorePartition):
             await self._fence()
             filter_expr = self._partition_filter()
             if property_filter is not None:
-                if not validate_filter(property_filter):
-                    raise ValueError("Filter contains an invalid property key")
+                require_supported_filter(
+                    property_filter,
+                    self._indexed_properties,
+                    MilvusVectorStorePartition._SUPPORTED_FILTER_NODES,
+                )
                 property_expr = _milvus_filter(
                     property_filter, self._indexed_properties
                 )
@@ -460,7 +431,8 @@ class MilvusVectorStoreParams(BaseModel):
         indexed_properties (IndexedProperties):
             The declared schema every partition of this store carries: each
             key is a nullable typed field, `_p_<key>`, with a scalar index,
-            which a search filters on.
+            which a search filters on, and a record or a filter naming any
+            other key is rejected.
         consistency_level (str): Consistency level for the collection this store creates.
         request_timeout_seconds (int): Seconds any request to Milvus may take.
         max_varchar_length (int):
@@ -627,10 +599,6 @@ class MilvusVectorStore(VectorStore):
                 field_name=_VECTOR_FIELD,
                 datatype=DataType.FLOAT_VECTOR,
                 dim=self._vector_dimensions,
-            )
-            schema.add_field(
-                field_name=_PROPERTIES_FIELD,
-                datatype=DataType.JSON,
             )
             index_params = self._client.prepare_index_params()
             index_params.add_index(

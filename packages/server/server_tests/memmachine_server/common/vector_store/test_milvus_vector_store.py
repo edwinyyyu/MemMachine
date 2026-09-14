@@ -42,6 +42,9 @@ from memmachine_server.common.vector_store.milvus_vector_store import (
 from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
     SQLAlchemyVectorStorePartitionRegistry,
 )
+from server_tests.memmachine_server.common.vector_store.declared_schema_contract import (
+    DeclaredSchemaContract,
+)
 
 VECTOR_STORE_NAME = "test_vector_store"
 NAME = "test_name"
@@ -297,7 +300,6 @@ class TestPartitionLifecycle:
         assert fields["partition_key"]["is_partition_key"] is True
         assert fields["vector"]["type"] == DataType.FLOAT_VECTOR
         assert fields["vector"]["params"]["dim"] == VECTOR_DIM
-        assert fields["properties"]["type"] == DataType.JSON
         expected = {
             "_p_name": DataType.VARCHAR,
             "_p_age": DataType.INT64,
@@ -455,6 +457,10 @@ class TestUpsertAndQuery:
         # The old vector is still the indexed one.
         results = await collection.query(query_vectors=[old_vector], limit=1)
         assert results[0].matches[0].cosine_similarity == pytest.approx(1.0, abs=0.01)
+
+
+class TestDeclaredSchema(DeclaredSchemaContract):
+    """The declared-schema contract, against this store."""
 
 
 class TestFilters:
@@ -623,28 +629,6 @@ class TestFilters:
         assert await uuids(Not(expr=Not(expr=IsNull(field="name")))) == {bare.uuid}
 
     @pytest.mark.asyncio
-    async def test_filters_on_undeclared_properties(self, collection):
-        """A property the schema does not declare is stored and filtered too."""
-        v1 = _normalize([1.0, 0.0, 0.0])
-        red = _make_record(vector=v1, properties={"color": "red", "size": 3})
-        blue = _make_record(
-            vector=_normalize([1.0, 0.1, 0.0]), properties={"color": "blue"}
-        )
-        await collection.upsert(records=[red, blue])
-
-        async def uuids(expr):
-            [result] = await collection.query(
-                query_vectors=[v1], limit=10, property_filter=expr
-            )
-            return {match.record_uuid for match in result.matches}
-
-        assert await uuids(Comparison(field="color", op="=", value="red")) == {red.uuid}
-        assert await uuids(Comparison(field="size", op=">=", value=3)) == {red.uuid}
-        assert await uuids(In(field="color", values=["blue", "green"])) == {blue.uuid}
-        assert await uuids(IsNull(field="size")) == {blue.uuid}
-        assert await uuids(Comparison(field="size", op="!=", value=3)) == {blue.uuid}
-
-    @pytest.mark.asyncio
     async def test_datetime_filters_compare_instants_across_offsets(self, collection):
         base = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC)
         plus5 = timezone(timedelta(hours=5))
@@ -701,17 +685,6 @@ class TestFilters:
             r2.uuid,
             r3.uuid,
         }
-
-    @pytest.mark.asyncio
-    async def test_a_declared_property_of_another_type_is_refused(self, collection):
-        with pytest.raises(TypeError, match="declared int"):
-            await collection.upsert(
-                records=[
-                    _make_record(
-                        vector=_normalize([1.0, 0.0, 0.0]), properties={"age": "old"}
-                    )
-                ]
-            )
 
 
 class TestScores:

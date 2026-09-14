@@ -35,6 +35,9 @@ from memmachine_server.common.vector_store.sqlite_vector_store import (
 from memmachine_server.common.vector_store.vector_search_engine.usearch_engine import (
     USearchVectorSearchEngine,
 )
+from server_tests.memmachine_server.common.vector_store.declared_schema_contract import (
+    DeclaredSchemaContract,
+)
 
 VECTOR_STORE_NAME = "test_vector_store"
 NAME = "test_name"
@@ -302,6 +305,10 @@ class TestUpsertAndQuery:
 
 
 # ── Filters ──
+
+
+class TestDeclaredSchema(DeclaredSchemaContract):
+    """The declared-schema contract, against this store."""
 
 
 class TestFilters:

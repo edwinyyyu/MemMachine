@@ -408,6 +408,21 @@ def filter_fields(expr: FilterExpr) -> frozenset[str]:
     raise TypeError(f"Unsupported filter expression type: {type(expr)}")
 
 
+def filter_nodes(expr: FilterExpr) -> frozenset[type]:
+    """The node classes a filter tree is built from."""
+    if isinstance(expr, Not):
+        return frozenset((Not,)) | filter_nodes(expr.expr)
+    if isinstance(expr, (And, Or)):
+        return (
+            frozenset((type(expr),))
+            | filter_nodes(expr.left)
+            | filter_nodes(expr.right)
+        )
+    if isinstance(expr, (Comparison, In, IsNull)):
+        return frozenset((type(expr),))
+    raise TypeError(f"Unsupported filter expression type: {type(expr)}")
+
+
 def parse_filter(spec: str | None) -> FilterExpr | None:
     """Parse the given textual filter specification."""
     if spec is None:

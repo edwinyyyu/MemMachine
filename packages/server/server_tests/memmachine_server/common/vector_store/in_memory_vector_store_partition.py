@@ -24,6 +24,10 @@ from memmachine_server.common.vector_store.data_types import (
     QueryResult,
     Record,
 )
+from memmachine_server.common.vector_store.declared_properties import (
+    require_declared_properties,
+    require_supported_filter,
+)
 
 # ---------------------------------------------------------------------------
 # Filter evaluation
@@ -98,17 +102,26 @@ def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
 class InMemoryVectorStorePartition(VectorStorePartition):
     """In-memory VectorStorePartition for testing.
 
-    Scores by cosine similarity and evaluates FilterExpr on record properties.
+    Scores by cosine similarity, evaluates FilterExpr on record properties,
+    and enforces the declared schema the way a real store does.
     """
+
+    _SUPPORTED_FILTER_NODES = frozenset({Comparison, In, IsNull, And, Or, Not})
 
     def __init__(
         self,
         *,
         partition_key: str = "in_memory",
         indexed_properties: Mapping[str, PropertyType] | None = None,
+        supported_filter_nodes: Iterable[type] | None = None,
     ) -> None:
         self._partition_key = partition_key
         self._indexed_properties = dict(indexed_properties or {})
+        self._supported_filter_nodes = (
+            frozenset(supported_filter_nodes)
+            if supported_filter_nodes is not None
+            else InMemoryVectorStorePartition._SUPPORTED_FILTER_NODES
+        )
         self.records: dict[UUID, Record] = {}
 
     @property
@@ -119,7 +132,14 @@ class InMemoryVectorStorePartition(VectorStorePartition):
     def indexed_properties(self) -> Mapping[str, PropertyType]:
         return self._indexed_properties
 
+    @property
+    def supported_filter_nodes(self) -> frozenset[type]:
+        return self._supported_filter_nodes
+
     async def upsert(self, *, records: Iterable[Record]) -> None:
+        records = list(records)
+        for record in records:
+            require_declared_properties(record.properties, self._indexed_properties)
         for record in records:
             self.records[record.uuid] = Record(
                 uuid=record.uuid,
@@ -135,6 +155,10 @@ class InMemoryVectorStorePartition(VectorStorePartition):
         limit: int | None = None,
         property_filter: FilterExpr | None = None,
     ) -> list[QueryResult]:
+        if property_filter is not None:
+            require_supported_filter(
+                property_filter, self._indexed_properties, self._supported_filter_nodes
+            )
         results: list[QueryResult] = []
         for query_vector in query_vectors:
             qv = list(query_vector)

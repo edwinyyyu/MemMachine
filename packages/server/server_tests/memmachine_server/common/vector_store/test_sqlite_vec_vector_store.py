@@ -29,6 +29,9 @@ from memmachine_server.common.vector_store.sqlite_vec_vector_store import (
     SQLiteVecVectorStoreParams,
     SQLiteVecVectorStorePartition,
 )
+from server_tests.memmachine_server.common.vector_store.declared_schema_contract import (
+    DeclaredSchemaContract,
+)
 
 pytestmark = pytest.mark.skipif(
     not hasattr(sqlite3.Connection, "enable_load_extension"),
@@ -296,6 +299,10 @@ class TestUpsertAndQuery:
 
 
 # ── Filters ──
+
+
+class TestDeclaredSchema(DeclaredSchemaContract):
+    """The declared-schema contract, against this store."""
 
 
 class TestFilters:

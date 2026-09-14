@@ -33,12 +33,12 @@ class VectorStorePartition(ABC):
     content from before the deletion. A store that cannot detect a stale
     handle says so in its own contract.
 
-    A partition stores every property of a record and filters on any key;
-    the keys its store declares (`indexed_properties`) are indexed for
-    filtering during a search, and their values are typed. Record
-    properties not declared may have mixed-type values. Neither a vector
-    nor a property is read back out: a query answers with UUIDs and cosine
-    similarities.
+    A partition stores the properties its store declares
+    (`indexed_properties`), typed and indexed for filtering during a
+    search, and no others: a record or a filter naming an undeclared key is
+    rejected, so an undeclared key never exists in the store, neither
+    stored write-only nor scanned for. Neither a vector nor a property is
+    read back out: a query answers with UUIDs and cosine similarities.
     """
 
     @property
@@ -51,6 +51,18 @@ class VectorStorePartition(ABC):
     @abstractmethod
     def indexed_properties(self) -> Mapping[str, PropertyType]:
         """The declared schema: every key this partition indexes for filtering."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def supported_filter_nodes(self) -> frozenset[type]:
+        """
+        The filter node classes the backend evaluates during a search.
+
+        A `query` whose filter uses any other node raises
+        `UnsupportedFilterError`; a caller routes such a predicate to a store
+        that evaluates it afterward.
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -68,9 +80,14 @@ class VectorStorePartition(ABC):
         Args:
             records (Iterable[Record]):
                 Iterable of records to upsert.
-                Records containing properties
-                not in the declared schema
-                are allowed.
+
+        Raises:
+            UndeclaredPropertyKeyError:
+                If a record carries a key the store has not declared;
+                raised before anything is sent.
+            PropertyTypeMismatchError:
+                If a record's value is not of its key's declared type;
+                raised before anything is sent.
         """
         raise NotImplementedError
 
@@ -97,19 +114,27 @@ class VectorStorePartition(ABC):
                 The vectors to compare against.
             limit (int):
                 Maximum number of matching records to return per query vector.
+                A filtered search returns fewer when the filter admits fewer.
             min_cosine_similarity (float | None):
                 If provided, only return matches whose cosine similarity
                 is greater than or equal to this value
                 (default: None).
             property_filter (FilterExpr | None):
-                Filter expression tree.
-                If None or empty, no property filtering is applied
+                Filter expression tree over declared keys, evaluated during
+                the search.
+                If None, no property filtering is applied
                 (default: None).
 
         Returns:
             list[QueryResult]:
                 Results for each query vector,
                 ordered as in the input iterable.
+
+        Raises:
+            UndeclaredPropertyKeyError:
+                If the filter names a key the store has not declared.
+            UnsupportedFilterError:
+                If the filter uses a node outside `supported_filter_nodes`.
         """
         raise NotImplementedError
 

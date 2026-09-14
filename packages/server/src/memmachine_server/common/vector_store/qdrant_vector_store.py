@@ -53,8 +53,9 @@ from .data_types import (
     indexed_property_names,
     validate_vector_store_name,
 )
+from .declared_properties import require_declared_properties, require_supported_filter
 from .partition_registry import RegisteredPartition, VectorStorePartitionRegistry
-from .utils import require_partition_key, validate_filter
+from .utils import require_partition_key
 from .vector_store import VectorStore, VectorStorePartition
 
 # Point payload keys (stored on every Qdrant point).
@@ -90,6 +91,10 @@ def _incarnation_filter(incarnation: UUID) -> models.Filter:
 class QdrantVectorStorePartition(VectorStorePartition):
     """A partition backed by Qdrant: one payload value inside the store's collection."""
 
+    _SUPPORTED_FILTER_NODES: ClassVar[frozenset[type]] = frozenset(
+        {FilterComparison, FilterIn, FilterIsNull, FilterAnd, FilterOr, FilterNot}
+    )
+
     _RANGE_OPERATORS: ClassVar[dict[str, str]] = {
         ">": "gt",
         ">=": "gte",
@@ -97,27 +102,49 @@ class QdrantVectorStorePartition(VectorStorePartition):
         "<=": "lte",
     }
 
+    # A filter no point satisfies. A leaf whose value is of another type
+    # than its key declares matches nothing, as on every backend; sent as
+    # is, the server would refuse it for the field's index (strict mode)
+    # rather than scan for it.
+    _NO_MATCH: ClassVar[models.Filter] = models.Filter(
+        must=[models.HasIdCondition(has_id=[])]
+    )
+
     @staticmethod
-    def _build_qdrant_filter(expr: FilterExpr) -> models.Filter:
-        """Convert a FilterExpr tree into a Qdrant Filter."""
+    def _build_qdrant_filter(
+        expr: FilterExpr, indexed_properties: Mapping[str, PropertyType]
+    ) -> models.Filter:
+        """Convert a FilterExpr tree into a Qdrant Filter over the declared keys."""
+        build = QdrantVectorStorePartition._build_qdrant_filter
         if isinstance(expr, FilterComparison):
+            if type(expr.value) is not indexed_properties[expr.field]:
+                return QdrantVectorStorePartition._NO_MATCH
             return QdrantVectorStorePartition._build_qdrant_comparison(expr)
         if isinstance(expr, FilterIn):
+            if (
+                expr.values
+                and type(expr.values[0]) is not indexed_properties[expr.field]
+            ):
+                return QdrantVectorStorePartition._NO_MATCH
             return QdrantVectorStorePartition._in_filter(expr.field, expr.values)
         if isinstance(expr, FilterIsNull):
             return QdrantVectorStorePartition._null_filter(expr.field, negate=False)
         if isinstance(expr, FilterNot):
-            return models.Filter(
-                must_not=[QdrantVectorStorePartition._build_qdrant_filter(expr.expr)]
-            )
+            return models.Filter(must_not=[build(expr.expr, indexed_properties)])
         if isinstance(expr, FilterAnd):
-            left = QdrantVectorStorePartition._build_qdrant_filter(expr.left)
-            right = QdrantVectorStorePartition._build_qdrant_filter(expr.right)
-            return models.Filter(must=[left, right])
+            return models.Filter(
+                must=[
+                    build(expr.left, indexed_properties),
+                    build(expr.right, indexed_properties),
+                ]
+            )
         if isinstance(expr, FilterOr):
-            left = QdrantVectorStorePartition._build_qdrant_filter(expr.left)
-            right = QdrantVectorStorePartition._build_qdrant_filter(expr.right)
-            return models.Filter(should=[left, right])
+            return models.Filter(
+                should=[
+                    build(expr.left, indexed_properties),
+                    build(expr.right, indexed_properties),
+                ]
+            )
         message = f"Unsupported filter expression type: {type(expr)}"
         raise TypeError(message)
 
@@ -290,6 +317,11 @@ class QdrantVectorStorePartition(VectorStorePartition):
     def indexed_properties(self) -> Mapping[str, PropertyType]:
         return self._indexed_properties
 
+    @property
+    @override
+    def supported_filter_nodes(self) -> frozenset[type]:
+        return QdrantVectorStorePartition._SUPPORTED_FILTER_NODES
+
     def _build_payload(
         self,
         properties: dict[str, PropertyValue] | None,
@@ -318,12 +350,12 @@ class QdrantVectorStorePartition(VectorStorePartition):
             await self._fence()
             points: list[models.PointStruct] = []
             for record in records:
-                properties = record.properties
+                require_declared_properties(record.properties, self._indexed_properties)
                 points.append(
                     models.PointStruct(
                         id=record.uuid,
                         vector=record.vector,
-                        payload=self._build_payload(properties),
+                        payload=self._build_payload(record.properties),
                     )
                 )
             if points:
@@ -361,11 +393,16 @@ class QdrantVectorStorePartition(VectorStorePartition):
 
             await self._fence()
             partition_filter = _incarnation_filter(self._incarnation)
-            if property_filter:
-                if not validate_filter(property_filter):
-                    raise ValueError("Filter contains an invalid property key")
+            if property_filter is not None:
+                require_supported_filter(
+                    property_filter,
+                    self._indexed_properties,
+                    QdrantVectorStorePartition._SUPPORTED_FILTER_NODES,
+                )
                 property_qdrant_filter = (
-                    QdrantVectorStorePartition._build_qdrant_filter(property_filter)
+                    QdrantVectorStorePartition._build_qdrant_filter(
+                        property_filter, self._indexed_properties
+                    )
                 )
                 qdrant_filter = models.Filter(
                     must=[partition_filter, property_qdrant_filter]
@@ -452,7 +489,8 @@ class QdrantVectorStoreParams(BaseModel):
             Dimensionality of every vector in the store.
         indexed_properties (IndexedProperties):
             The declared schema every partition of this store carries: each
-            key gets a payload index of its declared type.
+            key gets a payload index of its declared type, and a record or a
+            filter naming any other key is rejected.
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -502,6 +540,15 @@ class QdrantVectorStore(VectorStore):
     """
 
     _QDRANT_DISTANCE: ClassVar[models.Distance] = models.Distance.COSINE
+
+    # Every key a filter may name is indexed (the declared keys and the
+    # incarnation), so the server may refuse a filter on an unindexed one
+    # instead of scanning the collection for it.
+    _STRICT_MODE: ClassVar[models.StrictModeConfig] = models.StrictModeConfig(
+        enabled=True,
+        unindexed_filtering_retrieve=False,
+        unindexed_filtering_update=False,
+    )
 
     _PROPERTY_TYPE_TO_INDEX_TYPE: ClassVar[
         dict[type[PropertyValue], models.PayloadSchemaType]
@@ -595,6 +642,7 @@ class QdrantVectorStore(VectorStore):
                     m=0,
                     payload_m=self._hnsw_m,
                 ),
+                strict_mode_config=QdrantVectorStore._STRICT_MODE,
             )
         except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
             if not QdrantVectorStore._is_already_exists_error(e):
