@@ -74,7 +74,7 @@ class SegmentStorePartition(ABC):
         Get segments by uuid, subject to the filters.
 
         A uuid the partition does not hold, or whose segment fails a
-        filter, has no entry.
+        filter, is left out of the result.
 
         Args:
             segment_uuids (Iterable[UUID]):
@@ -158,7 +158,8 @@ class SegmentStorePartition(ABC):
                 A mapping from each known seed to its neighbors: `before`
                 in order ending just before the seed, `after` in order
                 starting just after it. A seed with no neighbors to show
-                maps to two empty lists; an unknown seed is absent.
+                maps to two empty lists; an unknown seed is left out of
+                the result.
 
         Raises:
             ValueError:
