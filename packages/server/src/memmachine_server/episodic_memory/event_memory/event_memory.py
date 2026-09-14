@@ -592,7 +592,7 @@ class EventMemory:
 
         Args:
             anchor (UUID):
-                A segment or event uuid.
+                A segment or event UUID.
             before (int):
                 The maximum number of segments before the anchor, nonnegative
                 (default: 0).

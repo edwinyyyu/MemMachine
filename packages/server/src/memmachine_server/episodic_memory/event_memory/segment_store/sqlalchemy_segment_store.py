@@ -116,7 +116,7 @@ _JSON_AUTO = JSON().with_variant(JSONB, "postgresql")
 
 # Consecutive failed mint attempts before the store concludes it
 # is re-attempting a persistent database error rather than losing races: a real
-# uuid collision is a once-in-the-universe event and each race retry
+# UUID collision is a once-in-the-universe event and each race retry
 # requires another actor to have changed the registry in a ~millisecond
 # window, so consecutive failures at this depth mean the IntegrityError
 # has some other, permanent cause.
