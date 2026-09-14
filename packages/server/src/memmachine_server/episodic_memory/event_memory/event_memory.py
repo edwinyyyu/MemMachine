@@ -13,12 +13,14 @@ from pydantic import BaseModel, Field, InstanceOf
 
 from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.embedder import Embedder
-from memmachine_server.common.filter.filter_parser import (
+from memmachine_server.common.filter import (
     And,
     FilterExpr,
-    demangle_user_metadata_key,
     filter_fields,
     map_filter_fields,
+)
+from memmachine_server.common.filter.filter_parser import (
+    demangle_user_metadata_key,
     normalize_filter_field,
 )
 from memmachine_server.common.metrics_factory import (
@@ -840,13 +842,17 @@ class EventMemory:
 def _conjuncts(expr: FilterExpr) -> list[FilterExpr]:
     """The operands of a filter's top-level conjunction; the filter itself when it is not one."""
     if isinstance(expr, And):
-        return [*_conjuncts(expr.left), *_conjuncts(expr.right)]
+        return [
+            conjunct for operand in expr.operands for conjunct in _conjuncts(operand)
+        ]
     return [expr]
 
 
 def _conjoin(conjuncts: Iterable[FilterExpr]) -> FilterExpr | None:
     """The conjunction of the given filters; None when there are none."""
-    combined: FilterExpr | None = None
-    for conjunct in conjuncts:
-        combined = conjunct if combined is None else And(left=combined, right=conjunct)
-    return combined
+    operands = tuple(conjuncts)
+    if not operands:
+        return None
+    if len(operands) == 1:
+        return operands[0]
+    return And(operands)

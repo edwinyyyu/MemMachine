@@ -13,26 +13,16 @@ from pymilvus.exceptions import MilvusException
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from memmachine_server.common.data_types import PropertyType, PropertyValue
-from memmachine_server.common.filter.filter_parser import (
-    And as FilterAnd,
-)
-from memmachine_server.common.filter.filter_parser import (
-    Comparison as FilterComparison,
-)
-from memmachine_server.common.filter.filter_parser import (
+from memmachine_server.common.filter import (
+    And,
+    Equals,
     FilterExpr,
-)
-from memmachine_server.common.filter.filter_parser import (
-    In as FilterIn,
-)
-from memmachine_server.common.filter.filter_parser import (
-    IsNull as FilterIsNull,
-)
-from memmachine_server.common.filter.filter_parser import (
-    Not as FilterNot,
-)
-from memmachine_server.common.filter.filter_parser import (
-    Or as FilterOr,
+    In,
+    IsNull,
+    Not,
+    Or,
+    Ordering,
+    OrderingOp,
 )
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 from memmachine_server.common.utils import compute_cosine_similarity, ensure_tz_aware
@@ -66,11 +56,21 @@ purge reclaims them.
 _VECTOR_FIELD = "vector"
 _PROPERTY_FILTER_PREFIX = "_p_"
 
+_INVERSE_ORDERING: dict[OrderingOp, OrderingOp] = {
+    ">": "<=",
+    ">=": "<",
+    "<": ">=",
+    "<=": ">",
+}
+
 _MAX_UUID_LENGTH = 36
 _MAX_PRIMARY_ID_LENGTH = 128
 _MAX_PARTITION_KEY_LENGTH = 32
 _INCARNATION_HEX_LENGTH = 32
+# Milvus has no boolean literals; a predicate on the primary key that no
+# entity can satisfy, and its inverse, stand in for false and true.
 _FALSE_EXPR = f'{_ID_FIELD} == "__memmachine_no_match__"'
+_TRUE_EXPR = f'{_ID_FIELD} != "__memmachine_no_match__"'
 
 
 def _expr_string(value: str) -> str:
@@ -105,42 +105,69 @@ class MilvusVectorStorePartition(VectorStorePartition):
     """A partition backed by Milvus: one partition-key value inside the store's collection."""
 
     _SUPPORTED_FILTER_NODES: ClassVar[frozenset[type]] = frozenset(
-        {FilterComparison, FilterIn, FilterIsNull, FilterAnd, FilterOr, FilterNot}
+        {Equals, Ordering, In, IsNull, And, Or, Not}
     )
-
-    _RANGE_OPERATORS: ClassVar[set[str]] = {">", ">=", "<", "<="}
 
     @staticmethod
     def _build_milvus_filter(expr: FilterExpr) -> str:
         """Convert a FilterExpr tree into a Milvus filter expression."""
-        if isinstance(expr, FilterComparison):
-            return MilvusVectorStorePartition._build_milvus_comparison(expr)
-        if isinstance(expr, FilterIn):
-            if not expr.values:
-                return _FALSE_EXPR
-            values = ", ".join(_literal(value) for value in expr.values)
-            return f"{_property_field(expr.field)} in [{values}]"
-        if isinstance(expr, FilterIsNull):
-            return f"{_property_field(expr.field)} is null"
-        if isinstance(expr, FilterNot):
-            return f"not ({MilvusVectorStorePartition._build_milvus_filter(expr.expr)})"
-        if isinstance(expr, FilterAnd):
-            left = MilvusVectorStorePartition._build_milvus_filter(expr.left)
-            right = MilvusVectorStorePartition._build_milvus_filter(expr.right)
-            return f"({left}) && ({right})"
-        if isinstance(expr, FilterOr):
-            left = MilvusVectorStorePartition._build_milvus_filter(expr.left)
-            right = MilvusVectorStorePartition._build_milvus_filter(expr.right)
-            return f"({left}) || ({right})"
-        message = f"Unsupported filter expression type: {type(expr)}"
-        raise TypeError(message)
+        build = MilvusVectorStorePartition._build_milvus_filter
+        match expr:
+            case Equals(field, value):
+                return f"{_property_field(field)} == {_literal(value)}"
+            case Ordering(field, op, value):
+                return f"{_property_field(field)} {op} {_literal(value)}"
+            case In(field, values):
+                if not values:
+                    return _FALSE_EXPR
+                literals = ", ".join(_literal(value) for value in values)
+                return f"{_property_field(field)} in [{literals}]"
+            case IsNull(field):
+                return f"{_property_field(field)} is null"
+            case Not(operand):
+                return MilvusVectorStorePartition._negated(operand)
+            case And(operands):
+                return " && ".join(f"({build(o)})" for o in operands)
+            case Or(operands):
+                return " || ".join(f"({build(o)})" for o in operands)
 
     @staticmethod
-    def _build_milvus_comparison(comparison: FilterComparison) -> str:
-        """Convert a Comparison into a Milvus filter expression."""
-        field = _property_field(comparison.field)
-        operator = "==" if comparison.op == "=" else comparison.op
-        return f"{field} {operator} {_literal(comparison.value)}"
+    def _negated(expr: FilterExpr) -> str:
+        """The complement of a tree as a Milvus expression, pushed to the leaves.
+
+        Milvus's own `not` does not admit entities lacking the field, so a
+        negated predicate is rendered as the inverse predicate or the field's
+        absence, which is the complement the filter language defines.
+        """
+        build = MilvusVectorStorePartition._build_milvus_filter
+        negated = MilvusVectorStorePartition._negated
+        match expr:
+            case Equals(field, value):
+                return (
+                    f"({_property_field(field)} != {_literal(value)}) || "
+                    f"({_property_field(field)} is null)"
+                )
+            case Ordering(field, op, value):
+                return (
+                    f"({_property_field(field)} {_INVERSE_ORDERING[op]} {_literal(value)}) || "
+                    f"({_property_field(field)} is null)"
+                )
+            case In(field, values):
+                if not values:
+                    return _TRUE_EXPR
+                literals = ", ".join(_literal(value) for value in values)
+                return (
+                    f"({_property_field(field)} not in [{literals}]) || "
+                    f"({_property_field(field)} is null)"
+                )
+            case IsNull(field):
+                return f"{_property_field(field)} is not null"
+            case Not(operand):
+                return build(operand)
+            case And(operands):
+                return " || ".join(f"({negated(o)})" for o in operands)
+            case Or(operands):
+                return " && ".join(f"({negated(o)})" for o in operands)
 
     @staticmethod
     def _primary_id(incarnation: UUID, record_uuid: UUID) -> str:
