@@ -18,10 +18,7 @@ from memmachine_server.common.filter.filter_parser import (
     Not,
     Or,
 )
-from memmachine_server.common.vector_store.data_types import (
-    Record,
-    VectorStoreCollectionConfig,
-)
+from memmachine_server.common.vector_store.data_types import Record
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Context,
     DateTimeFormat,
@@ -291,11 +288,7 @@ class TestEncodeEvents:
     async def test_init_raises_on_missing_reserved_field(self, fake_embedder):
         schema = EventMemory.expected_vector_store_collection_schema()
         del schema[EVENT_SESSION_KEY]
-        collection = InMemoryVectorStorePartition(
-            VectorStoreCollectionConfig(
-                vector_dimensions=2, indexed_properties_schema=schema
-            )
-        )
+        collection = InMemoryVectorStorePartition("test", schema)
         with pytest.raises(
             ValueError,
             match="Collection schema missing fields required by EventMemory",
@@ -902,7 +895,7 @@ class TestQueryWithFilter:
 
         hits = await event_memory.query(
             "thing",
-            property_filter=Comparison(field="m.color", op="!=", value="red"),
+            property_filter=Not(Comparison(field="m.color", op="=", value="red")),
         )
         assert _texts(hits) == {"blue thing"}
 
@@ -938,7 +931,7 @@ class TestQueryWithFilter:
             "thing",
             property_filter=And(
                 left=Comparison(field="m.color", op="=", value="red"),
-                right=Not(expr=IsNull(field="m.color")),
+                right=Not(IsNull(field="m.color")),
             ),
         )
         assert _texts(hits) == {"red small"}
@@ -965,7 +958,7 @@ class TestQueryWithFilter:
 
         hits = await event_memory.query(
             "thing",
-            property_filter=Not(expr=Comparison(field="m.color", op="=", value="red")),
+            property_filter=Not(Comparison(field="m.color", op="=", value="red")),
         )
         assert _texts(hits) == {"blue thing"}
 

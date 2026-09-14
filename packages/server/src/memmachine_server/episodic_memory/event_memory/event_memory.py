@@ -113,7 +113,7 @@ class EventMemoryParams(BaseModel):
         segment_store_partition (SegmentStorePartition):
             Segment store partition.
         vector_store_partition (VectorStorePartition):
-            Vector store collection.
+            Vector store partition.
         segmenter (Segmenter):
             Segmenter that segments events into segments.
         deriver (Deriver):
@@ -131,7 +131,7 @@ class EventMemoryParams(BaseModel):
     )
     vector_store_partition: InstanceOf[VectorStorePartition] = Field(
         ...,
-        description="Vector store collection",
+        description="Vector store partition",
     )
     segmenter: InstanceOf[Segmenter] = Field(
         ...,
@@ -199,14 +199,20 @@ class EventMemory:
             prefix="event_memory",
         )
 
-        declared_fields = frozenset(
-            params.vector_store_partition.config.indexed_properties_schema
+        # The store declares what it indexes; the reserved keys must be among
+        # them, with the types this memory writes.
+        declared = params.vector_store_partition.indexed_properties
+        missing = sorted(
+            key
+            for key, property_type in (
+                EventMemory.expected_vector_store_collection_schema().items()
+            )
+            if declared.get(key) is not property_type
         )
-        missing_fields = EventMemory._RESERVED_PROPERTY_SCHEMA.keys() - declared_fields
-        if missing_fields:
+        if missing:
             raise ValueError(
                 f"Collection schema missing fields required by EventMemory: "
-                f"{', '.join(sorted(missing_fields))}"
+                f"{', '.join(missing)}"
             )
 
         self._encode_events_phase_seconds: MetricsFactory.Histogram | None = None
