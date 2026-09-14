@@ -39,7 +39,6 @@ from .data_types import (
     Block,
     Derivative,
     Event,
-    FilterOptions,
     FormatOptions,
     NullContext,
     ProducerContext,
@@ -102,9 +101,14 @@ class EventMemoryParams(BaseModel):
             Reranker instance for scoring search results.
             If None, embedding similarity scores are used instead
             (default: None).
-        filter (FilterOptions):
-            How far a search widens to make up for seeds the segment store's
-            post-filter drops (default: `FilterOptions()`).
+        max_overfetch_factor (int):
+            Cap on widening the vector search, as a multiple of the search
+            limit. A predicate on a key the vector store does not declare is
+            applied afterward by the segment store, and a seed it drops
+            leaves the search short; the search is widened until the limit
+            is met or the fetch reaches `limit * max_overfetch_factor`,
+            where it returns what survived. A query with no undeclared part
+            never widens (default: 64).
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -135,9 +139,10 @@ class EventMemoryParams(BaseModel):
         description="Reranker instance for scoring search results. "
         "If None, embedding similarity scores are used instead",
     )
-    filter: FilterOptions = Field(
-        default_factory=FilterOptions,
-        description="How far a search widens over the segment store's post-filter",
+    max_overfetch_factor: int = Field(
+        default=64,
+        ge=1,
+        description="Cap on widening the vector search, as a multiple of the limit",
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
@@ -188,7 +193,7 @@ class EventMemory:
             prefix="event_memory",
         )
 
-        self._filter = params.filter
+        self._max_overfetch_factor = params.max_overfetch_factor
 
         # The store declares what it indexes; the system keys must be among
         # them, with the types this memory writes.
@@ -484,7 +489,7 @@ class EventMemory:
         max_backward_segments = expand_context // 3
         max_forward_segments = expand_context - max_backward_segments
 
-        max_fetch = vector_search_limit * self._filter.max_overfetch_factor
+        max_fetch = vector_search_limit * self._max_overfetch_factor
         fetch_limit = vector_search_limit
         vector_query_seconds = 0.0
         segment_query_seconds = 0.0

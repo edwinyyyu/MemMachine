@@ -23,7 +23,6 @@ from memmachine_server.common.vector_store.data_types import (
 )
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Event,
-    FilterOptions,
     FormatOptions,
     NullContext,
     ProducerContext,
@@ -911,7 +910,7 @@ def _routing_memory(
             segmenter=TextSegmenter(),
             deriver=WholeTextDeriver(),
             embedder=embedder,
-            filter=FilterOptions(max_overfetch_factor=max_overfetch_factor),
+            max_overfetch_factor=max_overfetch_factor,
         )
     )
 
