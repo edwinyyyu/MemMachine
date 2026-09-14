@@ -120,20 +120,18 @@ class Event(BaseModel):
 
     uuid: UUID = Field(description="Identity of the event")
     timestamp: AwareDatetime = Field(
-        description="When the event happened, with its zone; a naive value is rejected"
+        description="When the event happened, timezone-aware"
     )
-    session_id: _BoundedId = Field(
-        description="The conversation or stream the event belongs to"
-    )
+    session_id: _BoundedId = Field(description="The session the event belongs to")
     source_id: _BoundedId | None = Field(
         default=None,
-        description="The entity responsible for the content; None for none",
+        description="The source of the event, if any",
     )
     context: Context = Field(
         default_factory=NullContext,
-        description="The circumstances the content was produced in",
+        description="The context surrounding the event",
     )
-    blocks: list[Block] = Field(description="The content, in order")
+    blocks: list[Block] = Field(description="The blocks of the event, in order")
     properties: dict[str, PropertyValue] = Field(
         default_factory=dict,
         description="Caller-defined values the event can be filtered by",
@@ -267,10 +265,10 @@ class Neighborhood(BaseModel):
     """The segments around an anchor, excluding the anchor itself: its open neighborhood."""
 
     before: list[Segment] = Field(
-        description="In the store's order, ending just before the anchor"
+        description="The segments before the anchor, in the store's order"
     )
     after: list[Segment] = Field(
-        description="In the store's order, starting just after the anchor"
+        description="The segments after the anchor, in the store's order"
     )
 
 
