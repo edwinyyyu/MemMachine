@@ -16,12 +16,13 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from memmachine_server.common.data_types import PropertyValue
-from memmachine_server.common.filter.filter_parser import (
+from memmachine_server.common.filter import (
     And,
-    Comparison,
+    Equals,
     In,
     Not,
     Or,
+    Ordering,
 )
 from memmachine_server.common.vector_store.data_types import (
     Record,
@@ -45,6 +46,7 @@ from memmachine_server.common.vector_store.vector_search_engine.usearch_engine i
 from memmachine_server.common.vector_store.vector_search_engine.vector_search_engine import (
     VectorSearchEngine,
 )
+from server_tests.memmachine_server.common.filter.nodes import comparison
 from server_tests.memmachine_server.common.vector_store.declared_schema_contract import (
     DeclaredSchemaContract,
 )
@@ -258,7 +260,7 @@ class TestUpsertAndQuery:
         [result] = await collection.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=Comparison(field="name", op="=", value="updated"),
+            property_filter=Equals(field="name", value="updated"),
         )
         assert [m.record_uuid for m in result.matches] == [record.uuid]
 
@@ -392,7 +394,7 @@ class TestFilters:
         all_results = await collection.query(
             query_vectors=[query_vector],
             limit=10,
-            property_filter=Comparison(field=field, op=op, value=value),
+            property_filter=comparison(field, op, value),
         )
         return {match.record_uuid for match in all_results[0].matches}
 
@@ -500,7 +502,7 @@ class TestFilters:
         [result] = await collection.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=Comparison(field="created_at", op="=", value=dt),
+            property_filter=Equals(field="created_at", value=dt),
         )
         assert [m.record_uuid for m in result.matches] == [r1.uuid]
 
@@ -565,9 +567,7 @@ class TestFilters:
         [result] = await collection.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=Comparison(
-                field="created_at", op="=", value=dt.astimezone(UTC)
-            ),
+            property_filter=Equals(field="created_at", value=dt.astimezone(UTC)),
         )
         assert [m.record_uuid for m in result.matches] == [r1.uuid]
 
@@ -579,7 +579,7 @@ class TestFilters:
         query_results = await collection.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=In(field="name", values=["alice", "carol"]),
+            property_filter=In(field="name", values=("alice", "carol")),
         )
         uuids = {match.record_uuid for match in query_results[0].matches}
         assert r1.uuid in uuids
@@ -593,8 +593,10 @@ class TestFilters:
             query_vectors=[v1],
             limit=10,
             property_filter=And(
-                left=Comparison(field="active", op="=", value=True),
-                right=Comparison(field="age", op=">", value=30),
+                (
+                    Equals(field="active", value=True),
+                    Ordering(field="age", op=">", value=30),
+                )
             ),
         )
         matches = query_results[0].matches
@@ -608,8 +610,10 @@ class TestFilters:
             query_vectors=[v1],
             limit=10,
             property_filter=Or(
-                left=Comparison(field="name", op="=", value="alice"),
-                right=Comparison(field="name", op="=", value="carol"),
+                (
+                    Equals(field="name", value="alice"),
+                    Equals(field="name", value="carol"),
+                )
             ),
         )
         uuids = {match.record_uuid for match in query_results[0].matches}
@@ -623,7 +627,7 @@ class TestFilters:
         query_results = await collection.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=Not(Comparison(field="age", op=">", value=30)),
+            property_filter=Not(Ordering(field="age", op=">", value=30)),
         )
         uuids = {match.record_uuid for match in query_results[0].matches}
         assert r1.uuid in uuids
@@ -887,7 +891,7 @@ class TestUpsertBehavior:
         [named_bob] = await collection.query(
             query_vectors=[v2],
             limit=10,
-            property_filter=Comparison(field="name", op="=", value="bob"),
+            property_filter=Equals(field="name", value="bob"),
         )
         assert [m.record_uuid for m in named_bob.matches] == [record_uuid]
 
@@ -1239,7 +1243,7 @@ class TestVersionedKeys:
             collection.query(
                 query_vectors=[query_vector],
                 limit=1,
-                property_filter=Comparison(field="name", op="=", value="bob"),
+                property_filter=Equals(field="name", value="bob"),
             )
         )
         try:
@@ -1277,7 +1281,7 @@ class TestVersionedKeys:
         [settled] = await collection.query(
             query_vectors=[query_vector],
             limit=1,
-            property_filter=Comparison(field="name", op="=", value="bob"),
+            property_filter=Equals(field="name", value="bob"),
         )
         assert [m.record_uuid for m in settled.matches] == [record_uuid]
         assert settled.matches[0].cosine_similarity < 0.5
@@ -1531,7 +1535,7 @@ class TestBatchEdges:
         [named_last] = await collection.query(
             query_vectors=[v2],
             limit=5,
-            property_filter=Comparison(field="name", op="=", value="last"),
+            property_filter=Equals(field="name", value="last"),
         )
         assert [m.record_uuid for m in named_last.matches] == [record_uuid]
 

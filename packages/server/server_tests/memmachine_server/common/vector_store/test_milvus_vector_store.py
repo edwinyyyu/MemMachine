@@ -19,13 +19,14 @@ DataType = pymilvus.DataType
 MilvusClient = pymilvus.MilvusClient
 
 from memmachine_server.common.data_types import PropertyValue
-from memmachine_server.common.filter.filter_parser import (
+from memmachine_server.common.filter import (
     And,
-    Comparison,
+    Equals,
     In,
     IsNull,
     Not,
     Or,
+    Ordering,
 )
 from memmachine_server.common.vector_store.data_types import (
     Record,
@@ -36,6 +37,7 @@ from memmachine_server.common.vector_store.milvus_vector_store import (
     MilvusVectorStoreParams,
     MilvusVectorStorePartition,
 )
+from server_tests.memmachine_server.common.filter.nodes import comparison
 from server_tests.memmachine_server.common.vector_store.declared_schema_contract import (
     DeclaredSchemaContract,
 )
@@ -369,7 +371,7 @@ class TestFilters:
         all_results = await collection.query(
             query_vectors=[query_vec],
             limit=10,
-            property_filter=Comparison(field=field, op=op, value=value),
+            property_filter=comparison(field, op, value),
         )
         return {match.record_uuid for match in all_results[0].matches}
 
@@ -445,7 +447,7 @@ class TestFilters:
         in_results = await collection.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=In(field="name", values=["alice", "carol"]),
+            property_filter=In(field="name", values=("alice", "carol")),
         )
         assert {m.record_uuid for m in in_results[0].matches} == {r1.uuid, r3.uuid}
 
@@ -453,8 +455,10 @@ class TestFilters:
             query_vectors=[v1],
             limit=10,
             property_filter=And(
-                left=Comparison(field="active", op="=", value=True),
-                right=Comparison(field="age", op=">", value=30),
+                (
+                    Equals(field="active", value=True),
+                    Ordering(field="age", op=">", value=30),
+                )
             ),
         )
         assert {m.record_uuid for m in and_results[0].matches} == {r3.uuid}
@@ -463,8 +467,7 @@ class TestFilters:
             query_vectors=[v1],
             limit=10,
             property_filter=Or(
-                left=Comparison(field="name", op="=", value="alice"),
-                right=Comparison(field="name", op="=", value="bob"),
+                (Equals(field="name", value="alice"), Equals(field="name", value="bob"))
             ),
         )
         assert {m.record_uuid for m in or_results[0].matches} == {r1.uuid, r2.uuid}
@@ -494,12 +497,12 @@ class TestPartitionIsolation:
         [only_a] = await coll_a.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=Comparison(field="name", op="=", value="a"),
+            property_filter=Equals(field="name", value="a"),
         )
         [only_b] = await coll_b.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=Comparison(field="name", op="=", value="b"),
+            property_filter=Equals(field="name", value="b"),
         )
         assert [m.record_uuid for m in only_a.matches] == [record_uuid]
         assert [m.record_uuid for m in only_b.matches] == [record_uuid]

@@ -10,13 +10,14 @@ from uuid import uuid4
 import pytest
 
 from memmachine_server.common.data_types import PropertyValue
-from memmachine_server.common.filter.filter_parser import (
+from memmachine_server.common.filter import (
     And,
-    Comparison,
+    Equals,
     In,
     IsNull,
     Not,
     Or,
+    Ordering,
 )
 from memmachine_server.common.vector_store.data_types import Record
 from memmachine_server.episodic_memory.event_memory.data_types import (
@@ -481,7 +482,7 @@ class TestQuerySystemFilters:
 
         hits = await event_memory.query(
             "x",
-            property_filter=Comparison(field="timestamp", op=">=", value=_ts(5)),
+            property_filter=Ordering(field="timestamp", op=">=", value=_ts(5)),
             expand_context=6,
         )
 
@@ -506,11 +507,11 @@ class TestQuerySystemFilters:
         hits = await event_memory.query(
             "x",
             session_ids=["s"],
-            property_filter=Comparison(field="m.color", op="=", value="blue"),
+            property_filter=Equals(field="m.color", value="blue"),
         )
 
         assert _texts(hits) == {"blue"}
-        assert seen == [In(field=EVENT_SESSION_KEY, values=["s"])]
+        assert seen == [In(field=EVENT_SESSION_KEY, values=("s",))]
 
 
 # ===================================================================
@@ -555,7 +556,7 @@ class TestExpand:
             seed_uuid,
             before=5,
             after=5,
-            property_filter=Comparison(field="m.color", op="=", value="green"),
+            property_filter=Equals(field="m.color", value="green"),
         )
 
         assert neighborhood.before == []
@@ -884,7 +885,7 @@ class TestQueryWithFilter:
 
         hits = await event_memory.query(
             "thing",
-            property_filter=Comparison(field="m.color", op="=", value="red"),
+            property_filter=Equals(field="m.color", value="red"),
         )
         assert _texts(hits) == {"red thing"}
 
@@ -895,7 +896,7 @@ class TestQueryWithFilter:
 
         hits = await event_memory.query(
             "thing",
-            property_filter=Not(Comparison(field="m.color", op="=", value="red")),
+            property_filter=Not(Equals(field="m.color", value="red")),
         )
         assert _texts(hits) == {"blue thing"}
 
@@ -907,7 +908,7 @@ class TestQueryWithFilter:
 
         hits = await event_memory.query(
             "thing",
-            property_filter=In(field="m.color", values=["red", "green"]),
+            property_filter=In(field="m.color", values=("red", "green")),
         )
         assert _texts(hits) == {"red thing", "green thing"}
 
@@ -930,8 +931,7 @@ class TestQueryWithFilter:
         hits = await event_memory.query(
             "thing",
             property_filter=And(
-                left=Comparison(field="m.color", op="=", value="red"),
-                right=Not(IsNull(field="m.color")),
+                (Equals(field="m.color", value="red"), Not(IsNull(field="m.color")))
             ),
         )
         assert _texts(hits) == {"red small"}
@@ -945,8 +945,10 @@ class TestQueryWithFilter:
         hits = await event_memory.query(
             "thing",
             property_filter=Or(
-                left=Comparison(field="m.color", op="=", value="red"),
-                right=Comparison(field="m.color", op="=", value="blue"),
+                (
+                    Equals(field="m.color", value="red"),
+                    Equals(field="m.color", value="blue"),
+                )
             ),
         )
         assert _texts(hits) == {"red thing", "blue thing"}
@@ -958,7 +960,7 @@ class TestQueryWithFilter:
 
         hits = await event_memory.query(
             "thing",
-            property_filter=Not(Comparison(field="m.color", op="=", value="red")),
+            property_filter=Not(Equals(field="m.color", value="red")),
         )
         assert _texts(hits) == {"blue thing"}
 
@@ -971,7 +973,7 @@ class TestQueryWithFilter:
 
         hits = await event_memory.query(
             "thing",
-            property_filter=Comparison(field="m.color", op="=", value="purple"),
+            property_filter=Equals(field="m.color", value="purple"),
         )
         assert hits == []
 
@@ -981,7 +983,7 @@ class TestQueryWithFilter:
 
         hits = await event_memory.query(
             "hi",
-            property_filter=Comparison(field="context.author", op="=", value="Alice"),
+            property_filter=Equals(field="context.author", value="Alice"),
         )
         assert hits == []
 
@@ -1115,7 +1117,9 @@ _T1 = _T0 + datetime.timedelta(days=1)
 
 def _conjuncts(expr):
     if isinstance(expr, And):
-        return [*_conjuncts(expr.left), *_conjuncts(expr.right)]
+        return [
+            conjunct for operand in expr.operands for conjunct in _conjuncts(operand)
+        ]
     return [expr]
 
 
@@ -1132,14 +1136,23 @@ def test_predicates_name_the_reserved_keys():
         block_kinds=["text"],
     )
     assert _conjuncts(tree) == [
-        Comparison(field=EVENT_TIMESTAMP_KEY, op=">=", value=_T0),
-        Comparison(field=EVENT_TIMESTAMP_KEY, op="<", value=_T1),
-        In(field=EVENT_SESSION_KEY, values=["s1"]),
-        In(field=EVENT_SOURCE_KEY, values=["alice", "bob"]),
-        In(field=BLOCK_KIND_KEY, values=["text"]),
+        Ordering(field=EVENT_TIMESTAMP_KEY, op=">=", value=_T0),
+        Ordering(field=EVENT_TIMESTAMP_KEY, op="<", value=_T1),
+        In(field=EVENT_SESSION_KEY, values=("s1",)),
+        In(field=EVENT_SOURCE_KEY, values=("alice", "bob")),
+        In(field=BLOCK_KIND_KEY, values=("text",)),
     ]
 
 
 def test_empty_ids_admit_nothing_and_none_admits_everything():
     assert _system_predicates(session_ids=None) is None
-    assert _system_predicates(session_ids=[]) == In(field=EVENT_SESSION_KEY, values=[])
+    assert _system_predicates(session_ids=[]) == In(field=EVENT_SESSION_KEY, values=())
+
+
+@_async
+async def test_an_empty_id_list_admits_nothing(event_memory: EventMemory):
+    await event_memory.encode_events([_make_event("hi")])
+
+    assert await event_memory.query("hi", session_ids=[]) == []
+    assert await event_memory.query("hi", source_ids=[]) == []
+    assert await event_memory.query("hi", block_kinds=[]) == []
