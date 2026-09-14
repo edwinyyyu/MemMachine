@@ -26,7 +26,6 @@ from sqlalchemy import (
     LargeBinary,
     Select,
     String,
-    Text,
     Uuid,
     delete,
     false,
@@ -214,7 +213,7 @@ class SegmentRow(BaseSegmentStore):
     session_id: MappedColumn[str] = mapped_column(String(255), nullable=False)
     source_id: MappedColumn[str | None] = mapped_column(String(255), nullable=True)
     context: MappedColumn[bytes] = mapped_column(LargeBinary, nullable=False)
-    block_kind: MappedColumn[str] = mapped_column(Text, nullable=False)
+    block_kind: MappedColumn[str] = mapped_column(String(255), nullable=False)
     block: MappedColumn[bytes] = mapped_column(LargeBinary, nullable=False)
     properties: MappedColumn[dict[str, JsonValue]] = mapped_column(
         _JSON_AUTO, nullable=False, default=dict
