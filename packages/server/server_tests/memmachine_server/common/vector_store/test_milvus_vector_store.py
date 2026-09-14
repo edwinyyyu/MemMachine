@@ -31,7 +31,6 @@ from memmachine_server.common.filter.filter_parser import (
     Or,
 )
 from memmachine_server.common.metrics_factory import OperationTracker
-from memmachine_server.common.properties_json import decode_properties
 from memmachine_server.common.vector_store.data_types import (
     PartitionSchema,
     Record,
@@ -49,6 +48,9 @@ from memmachine_server.common.vector_store.partition_registry import (
 from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
     SQLAlchemyVectorStorePartitionRegistry,
     SQLAlchemyVectorStorePartitionRegistryParams,
+)
+from server_tests.memmachine_server.common.vector_store.declared_schema_contract import (
+    DeclaredSchemaContract,
 )
 
 VECTOR_STORE_NAME = "test_vector_store"
@@ -365,7 +367,6 @@ class TestPartitionLifecycle:
         assert fields["partition_key"]["is_partition_key"] is True
         assert fields["vector"]["type"] == DataType.FLOAT_VECTOR
         assert fields["vector"]["params"]["dim"] == VECTOR_DIM
-        assert fields["properties"]["type"] == DataType.JSON
         expected = {
             "_p_name": DataType.VARCHAR,
             "_p_age": DataType.INT64,
@@ -547,6 +548,12 @@ class TestUpsertAndQuery:
         assert stored["_p_name"] == "old"
 
 
+class TestDeclaredSchema(DeclaredSchemaContract):
+    """The declared-schema contract, against this store."""
+
+    settle = staticmethod(_settle)
+
+
 class TestFilters:
     async def _setup(self, collection):
         v1 = _normalize([1.0, 0.0, 0.0])
@@ -712,34 +719,6 @@ class TestFilters:
             )
         ) == {r1.uuid, r2.uuid, bare.uuid}
         assert await uuids(Not(expr=Not(expr=IsNull(field="name")))) == {bare.uuid}
-
-    @pytest.mark.asyncio
-    async def test_filters_on_undeclared_properties(self, collection):
-        """A property the schema does not declare is stored and filtered too."""
-        v1 = _normalize([1.0, 0.0, 0.0])
-        red = _make_record(vector=v1, properties={"color": "red", "size": 3})
-        blue = _make_record(
-            vector=_normalize([1.0, 0.1, 0.0]), properties={"color": "blue"}
-        )
-        await collection.upsert(records=[red, blue])
-        await _settle(collection)
-
-        async def uuids(expr):
-            [result] = await collection.query(
-                query_vectors=[v1], limit=10, property_filter=expr
-            )
-            return {match.record_uuid for match in result.matches}
-
-        assert await uuids(Comparison(field="color", op="=", value="red")) == {red.uuid}
-        assert await uuids(Comparison(field="size", op=">=", value=3)) == {red.uuid}
-        assert await uuids(In(field="color", values=["blue", "green"])) == {blue.uuid}
-        assert await uuids(IsNull(field="size")) == {blue.uuid}
-        assert await uuids(Comparison(field="size", op="!=", value=3)) == {blue.uuid}
-        stored = await _stored(collection, [red.uuid])
-        assert decode_properties(stored[red.uuid]["properties"]) == {
-            "color": "red",
-            "size": 3,
-        }
 
     @pytest.mark.asyncio
     async def test_a_declared_datetime_is_stored_with_its_offset(self, collection):

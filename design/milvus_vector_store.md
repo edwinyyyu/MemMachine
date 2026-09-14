@@ -12,10 +12,10 @@ registry](vector_store_partition_registry.md),
   Creating a partition creates nothing in Milvus.
 - **Fields:** `id` (VARCHAR primary key, `"{incarnation}:{record_uuid}"`),
   `record_uuid` (VARCHAR), `partition_key` (VARCHAR, the incarnation,
-  `is_partition_key`), `vector` (FLOAT_VECTOR), `properties` (JSON), and one
-  nullable typed field per declared property, `_p_<name>`, plus `_tz_<name>`
-  for a datetime's UTC offset. Dynamic fields are off, so each property is
-  stored once.
+  `is_partition_key`), `vector` (FLOAT_VECTOR), and one nullable typed field
+  per declared property, `_p_<name>`, plus `_tz_<name>` for a datetime's UTC
+  offset. Dynamic fields are off, and a record or a filter naming an
+  undeclared key is refused, so every property is a typed field.
 - **Tenancy:** partition-key multi-tenancy with `partitionkey.isolation`: each
   segment builds its vector index per group of tenants, so a search filtered
   on one incarnation searches only its group. Milvus documents isolation for
@@ -29,18 +29,17 @@ registry](vector_store_partition_registry.md),
   knowhere walks the graph on the 4-bit codes keeping `max(ef, limit x
   refine_k)` candidates, and rescores `limit x refine_k` of them against the
   FP16 vectors. Neither the index nor the search is configurable.
-- **Declared properties:** each has a scalar AUTOINDEX, which Milvus
-  resolves by type (BITMAP for BOOL, STL_SORT for TIMESTAMPTZ, HYBRID
-  otherwise: BITMAP under 100 distinct values, STL_SORT above). A datetime is
-  a TIMESTAMPTZ field. Milvus caps a collection at `proxy.maxFieldNum` fields
-  (64 on 2.6, 256 on 3.0), so a store declares at most 59 properties on 2.6,
-  one fewer per datetime. A TIMESTAMPTZ field holds the instant, which
-  is all a filter compares; the datetime's UTC offset is stored beside it so
-  the stored record is the one written, as the other stores keep it.
-  Undeclared properties go in the JSON field, still filterable by path.
-  Negation is the complement, as on Qdrant: a negated condition holds where
-  the property has no value, which Milvus's SQL-style null evaluation does not
-  give on its own.
+- **Declared properties:** each has a scalar AUTOINDEX, which Milvus resolves
+  by type (BITMAP for BOOL, STL_SORT for TIMESTAMPTZ, HYBRID otherwise: BITMAP
+  under 100 distinct values, STL_SORT above). A datetime is a TIMESTAMPTZ
+  field. Milvus caps a collection at `proxy.maxFieldNum` fields (64 on 2.6,
+  256 on 3.0), so a store declares at most 60 properties on 2.6, one fewer per
+  datetime. A TIMESTAMPTZ field holds the instant, which is all a filter
+  compares; the datetime's UTC offset is stored beside it so the stored record
+  is the one written, as the other stores keep it. A condition whose value is
+  of another type than its key declares matches nothing. Negation is the
+  complement, as on Qdrant: a negated condition holds where the property has
+  no value, which Milvus's SQL-style null evaluation does not give on its own.
 - **Scores** are the server's: a COSINE index answers the cosine similarity
   as a hit's distance.
 - **Server-configured limits stay the server's.** A search `limit` reaches the
