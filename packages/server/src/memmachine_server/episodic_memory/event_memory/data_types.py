@@ -118,7 +118,7 @@ class Event(BaseModel):
     is a forget and a re-encode under the same uuid.
     """
 
-    uuid: UUID = Field(description="Identity of the event")
+    uuid: UUID = Field(description="The uuid of the event")
     timestamp: AwareDatetime = Field(
         description="When the event happened, timezone-aware"
     )
@@ -161,8 +161,10 @@ class Event(BaseModel):
 class Segment(BaseModel):
     """A piece of one of an event's blocks, carrying the event's fields."""
 
-    uuid: UUID = Field(description="Identity of the segment")
-    event_uuid: UUID = Field(description="The event the segment is a piece of")
+    uuid: UUID = Field(description="The uuid of the segment")
+    event_uuid: UUID = Field(
+        description="The uuid of the event the segment is a piece of"
+    )
     index: int = Field(
         ge=0, description="Position of the block among the event's blocks"
     )
@@ -207,8 +209,10 @@ class Segment(BaseModel):
 class Derivative(BaseModel):
     """Content derived from a segment to be embedded in its place, carrying the segment's fields."""
 
-    uuid: UUID = Field(description="Identity of the derivative")
-    segment_uuid: UUID = Field(description="The segment the content was derived from")
+    uuid: UUID = Field(description="The uuid of the derivative")
+    segment_uuid: UUID = Field(
+        description="The uuid of the segment the derivative was derived from"
+    )
     timestamp: AwareDatetime = Field(description="The segment's timestamp")
     session_id: _BoundedId = Field(description="The segment's session id")
     source_id: _BoundedId | None = Field(
