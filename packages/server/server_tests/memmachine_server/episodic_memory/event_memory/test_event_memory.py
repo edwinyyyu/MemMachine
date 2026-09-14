@@ -580,6 +580,20 @@ class TestExpand:
         with pytest.raises(LookupError):
             await event_memory.expand(anchor, after=5, session_ids=["b"])
 
+    async def test_negative_counts_are_rejected(
+        self,
+        event_memory: EventMemory,
+        fake_segment_store_partition: InMemorySegmentStorePartition,
+    ):
+        event = _make_event("x", timestamp=_ts(0))
+        await event_memory.encode_events([event])
+        [anchor] = fake_segment_store_partition.event_to_segments[event.uuid]
+
+        with pytest.raises(ValueError, match="before must be nonnegative"):
+            await event_memory.expand(anchor, before=-1)
+        with pytest.raises(ValueError, match="expand_context must be nonnegative"):
+            await event_memory.query("x", expand_context=-1)
+
     async def test_expand_walks_further_from_an_edge(
         self,
         event_memory: EventMemory,

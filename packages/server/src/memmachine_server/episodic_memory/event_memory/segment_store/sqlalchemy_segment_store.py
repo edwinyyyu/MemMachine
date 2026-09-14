@@ -40,6 +40,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.engine import Dialect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -55,6 +56,7 @@ from sqlalchemy.orm import (
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.selectable import Subquery
+from sqlalchemy.types import TypeDecorator
 
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
@@ -82,7 +84,7 @@ from memmachine_server.common.properties_json import (
     decode_properties,
     encode_properties,
 )
-from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
+from memmachine_server.common.utils import utc_offset_seconds
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Neighborhood,
     NullContext,
@@ -139,6 +141,37 @@ class _RegistryInsertRejectedError(Exception):
 # ORM models
 
 
+class UtcInstant(TypeDecorator[datetime]):
+    """A timezone-aware column that holds a UTC instant.
+
+    Binds an aware datetime as its UTC instant and rejects a naive one,
+    which names no instant. Decodes a naive result as the UTC instant the
+    column holds: SQLite keeps no zone, so it returns every timestamp
+    naive, and PostgreSQL returns it aware.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    @override
+    def process_bind_param(
+        self, value: datetime | None, dialect: Dialect
+    ) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError(f"a timestamp must be timezone-aware: {value!r}")
+        return value.astimezone(UTC)
+
+    @override
+    def process_result_value(
+        self, value: datetime | None, dialect: Dialect
+    ) -> datetime | None:
+        if value is None or value.tzinfo is not None:
+            return value
+        return value.replace(tzinfo=UTC)
+
+
 class BaseSegmentStore(DeclarativeBase):
     """Base class for segment store tables."""
 
@@ -174,9 +207,7 @@ class SegmentRow(BaseSegmentStore):
     event_uuid: MappedColumn[UUID] = mapped_column(Uuid, nullable=False)
     index: MappedColumn[int] = mapped_column(Integer, nullable=False)
     offset: MappedColumn[int] = mapped_column(Integer, nullable=False)
-    timestamp: MappedColumn[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    timestamp: MappedColumn[datetime] = mapped_column(UtcInstant, nullable=False)
     timestamp_timezone_offset: MappedColumn[int] = mapped_column(
         Integer, nullable=False, default=0
     )
@@ -280,11 +311,9 @@ class _SeedKey:
 
 
 def _seed_key(row: SegmentRow) -> _SeedKey:
-    # The column holds the UTC instant, and SQLite compares the wall clock
-    # it is given, so the key carries the instant in UTC.
     return _SeedKey(
         uuid=row.uuid,
-        timestamp=ensure_tz_aware(row.timestamp).astimezone(UTC),
+        timestamp=row.timestamp,
         event_uuid=row.event_uuid,
         index=row.index,
         offset=row.offset,
@@ -414,7 +443,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 "offset": segment.offset,
                 # Store the UTC instant; SQLite does not persist tzinfo, so the
                 # original offset is recorded separately and reapplied on read.
-                "timestamp": segment.timestamp.astimezone(UTC),
+                "timestamp": segment.timestamp,
                 "timestamp_timezone_offset": utc_offset_seconds(segment.timestamp),
                 "session_id": segment.session_id,
                 "source_id": segment.source_id,
@@ -498,6 +527,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, Neighborhood]:
+        _require_nonnegative_counts(before, after)
         seed_segment_uuids = set(seed_segment_uuids)
         if not seed_segment_uuids:
             return {}
@@ -595,20 +625,19 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     ) -> list[ColumnElement[bool]]:
         """The row predicates of a read, on the typed system fields and the properties.
 
-        Timestamp bounds are put in UTC before they are bound: the column
-        holds the UTC instant, and SQLite compares the wall clock it is
-        given, so a bound in another zone would be compared on its digits.
-        A naive bound names no instant and is rejected. An empty id or
-        kind list admits nothing.
+        A naive bound names no instant and is rejected here, before a
+        session is opened; the column type binds an aware bound as its UTC
+        instant, which is what the column holds and what SQLite compares
+        digit by digit. An empty id or kind list admits nothing.
         """
         conditions: list[ColumnElement[bool]] = []
         for name, bound in (("since", since), ("until", until)):
             if bound is not None and bound.tzinfo is None:
                 raise ValueError(f"{name} must be timezone-aware: {bound!r}")
         if since is not None:
-            conditions.append(SegmentRow.timestamp >= since.astimezone(UTC))
+            conditions.append(SegmentRow.timestamp >= since)
         if until is not None:
-            conditions.append(SegmentRow.timestamp < until.astimezone(UTC))
+            conditions.append(SegmentRow.timestamp < until)
         if session_ids is not None:
             conditions.append(_in_values(SegmentRow.session_id, session_ids))
         if source_ids is not None:
@@ -1050,7 +1079,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         block = decode_block(json.loads(self._payload_codec.decode(row.block)))
         properties = decode_properties(row.properties)
         original_timezone = timezone(timedelta(seconds=row.timestamp_timezone_offset))
-        timestamp = ensure_tz_aware(row.timestamp).astimezone(original_timezone)
+        timestamp = row.timestamp.astimezone(original_timezone)
         return Segment(
             uuid=row.uuid,
             event_uuid=row.event_uuid,
@@ -1063,6 +1092,12 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             block=block,
             properties=properties,
         )
+
+
+def _require_nonnegative_counts(before: int, after: int) -> None:
+    for name, count in (("before", before), ("after", after)):
+        if count < 0:
+            raise ValueError(f"{name} must be nonnegative: {count}")
 
 
 def _in_values(

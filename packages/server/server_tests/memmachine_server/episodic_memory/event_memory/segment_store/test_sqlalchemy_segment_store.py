@@ -2924,6 +2924,19 @@ async def test_a_naive_bound_is_rejected(
 
 
 @pytest.mark.asyncio
+async def test_a_negative_count_is_rejected(
+    partition: SQLAlchemySegmentStorePartition,
+) -> None:
+    seg = _seg()
+    await partition.add_segments(_links(seg))
+
+    with pytest.raises(ValueError, match="before must be nonnegative"):
+        await partition.get_segment_neighborhoods([seg.uuid], before=-1)
+    with pytest.raises(ValueError, match="after must be nonnegative"):
+        await partition.get_segment_neighborhoods([seg.uuid], after=-1)
+
+
+@pytest.mark.asyncio
 async def test_since_and_until_meet_without_overlap(
     partition: SQLAlchemySegmentStorePartition,
 ) -> None:

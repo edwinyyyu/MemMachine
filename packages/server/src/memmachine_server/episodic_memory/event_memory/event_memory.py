@@ -560,12 +560,14 @@ class EventMemory:
                 (default: None).
             expand_context (int):
                 The number of additional segments to include
-                around each matched segment for additional context
-                (default: 0).
+                around each matched segment for additional context,
+                nonnegative (default: 0).
             since (datetime | None):
-                Inclusive lower bound on the event timestamp (default: None).
+                Inclusive lower bound on the events' timestamps, timezone-aware
+                (default: None).
             until (datetime | None):
-                Exclusive upper bound on the event timestamp (default: None).
+                Exclusive upper bound on the events' timestamps, timezone-aware
+                (default: None).
             session_ids (Iterable[str] | None):
                 Keep only events of these sessions; an empty list keeps
                 none (default: None, every session).
@@ -585,6 +587,11 @@ class EventMemory:
                 with its seed and the neighborhood around it. Neighborhoods
                 of different hits may overlap; each hit is returned whole.
                 Every count is a maximum.
+
+        Raises:
+            ValueError:
+                If `expand_context` is negative, or `since` or `until` is
+                naive.
 
         """
         async with self._tracker("query"):
@@ -615,6 +622,8 @@ class EventMemory:
         block_kinds: Iterable[str] | None,
         property_filter: FilterExpr | None,
     ) -> list[QueryHit]:
+        if expand_context < 0:
+            raise ValueError(f"expand_context must be nonnegative: {expand_context}")
         t_start = time.monotonic()
         session_ids = list(session_ids) if session_ids is not None else None
         source_ids = list(source_ids) if source_ids is not None else None
@@ -756,13 +765,17 @@ class EventMemory:
             anchor (UUID):
                 A segment or event uuid.
             before (int):
-                The maximum number of segments before the anchor (default: 0).
+                The maximum number of segments before the anchor, nonnegative
+                (default: 0).
             after (int):
-                The maximum number of segments after the anchor (default: 0).
+                The maximum number of segments after the anchor, nonnegative
+                (default: 0).
             since (datetime | None):
-                Inclusive lower bound on the neighbors' timestamp (default: None).
+                Inclusive lower bound on the neighbors' timestamps, timezone-aware
+                (default: None).
             until (datetime | None):
-                Exclusive upper bound on the neighbors' timestamp (default: None).
+                Exclusive upper bound on the neighbors' timestamps, timezone-aware
+                (default: None).
             session_ids (Iterable[str] | None):
                 The sessions the anchor may be in; an anchor in another
                 session is not found (default: None, any session).
@@ -783,6 +796,9 @@ class EventMemory:
             LookupError:
                 If the anchor is neither a segment nor an event of this
                 memory, or its session is not among `session_ids`.
+            ValueError:
+                If `before` or `after` is negative, or `since` or `until`
+                is naive.
         """
         async with self._tracker("expand"):
             segment_uuids_by_event = (

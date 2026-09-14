@@ -77,10 +77,10 @@ class SegmentStorePartition(ABC):
             segment_uuids (Iterable[UUID]):
                 The uuids to look up.
             since (datetime | None):
-                Inclusive lower bound on the segment timestamp, timezone-aware
+                Inclusive lower bound on the segments' timestamps, timezone-aware
                 (default: None).
             until (datetime | None):
-                Exclusive upper bound on the segment timestamp, timezone-aware,
+                Exclusive upper bound on the segments' timestamps, timezone-aware,
                 so ranges meet without overlap (default: None).
             session_ids (Iterable[str] | None):
                 Keep only segments whose session id is one of these; an
@@ -131,14 +131,16 @@ class SegmentStorePartition(ABC):
             seed_segment_uuids (Iterable[UUID]):
                 The UUIDs of the segments to gather neighbors around.
             before (int):
-                The maximum number of neighbors before each seed (default: 0).
+                The maximum number of neighbors before each seed, nonnegative
+                (default: 0).
             after (int):
-                The maximum number of neighbors after each seed (default: 0).
+                The maximum number of neighbors after each seed, nonnegative
+                (default: 0).
             since (datetime | None):
-                Inclusive lower bound on the neighbors' timestamp, timezone-aware
+                Inclusive lower bound on the neighbors' timestamps, timezone-aware
                 (default: None).
             until (datetime | None):
-                Exclusive upper bound on the neighbors' timestamp, timezone-aware,
+                Exclusive upper bound on the neighbors' timestamps, timezone-aware,
                 so ranges meet without overlap (default: None).
             source_ids (Iterable[str] | None):
                 Keep only neighbors whose source id is one of these; an
@@ -158,7 +160,9 @@ class SegmentStorePartition(ABC):
                 maps to two empty lists; an unknown seed is absent.
 
         Raises:
-            ValueError: If `since` or `until` is naive.
+            ValueError:
+                If `before` or `after` is negative, or `since` or `until`
+                is naive.
         """
         raise NotImplementedError
 
