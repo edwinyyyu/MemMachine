@@ -52,7 +52,6 @@ from .data_types import (
     QueryMatch,
     QueryResult,
     Record,
-    VectorStoreAttemptsExhaustedError,
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionHandleStaleError,
     VectorStorePartitionSchemaMismatchError,
@@ -127,11 +126,6 @@ _VECTOR_INDEX_PARAMS: dict[str, Any] = {
 }
 # `refine_k` rescores that many candidates per result.
 _SEARCH_PARAMS: dict[str, Any] = {"ef": 64, "refine_k": 2}
-
-# Consecutive lost creation races before open-or-create gives up: every
-# retry requires another process to have created and then deleted the
-# partition in between, so this depth means something else is wrong.
-_MAX_OPEN_OR_CREATE_ATTEMPTS = 10
 
 
 def _expr_string(value: str) -> str:
@@ -913,35 +907,6 @@ class MilvusVectorStore(VectorStore):
                 raise
 
     @override
-    async def open_or_create_partition(
-        self, partition_key: str
-    ) -> MilvusVectorStorePartition:
-        require_partition_key(partition_key)
-        async with self._tracker("open_or_create_partition"):
-            attempts = 0
-            # Read-then-create, retried: losing the create means a racing
-            # creator won (open its row), and finding no row after losing
-            # means a racing deleter removed the winner (create again).
-            while True:
-                registered = await self._checked_entry(partition_key)
-                if registered is not None:
-                    return self._partition_handle(partition_key, registered.incarnation)
-                try:
-                    incarnation = await self._partition_registry.register(
-                        partition_key, self._declared_schema()
-                    )
-                except VectorStorePartitionAlreadyExistsError as err:
-                    attempts += 1
-                    if attempts >= _MAX_OPEN_OR_CREATE_ATTEMPTS:
-                        raise VectorStoreAttemptsExhaustedError(
-                            f"Opening or creating partition {partition_key!r} of "
-                            f"vector store {self._vector_store_name!r} made no progress after "
-                            f"{_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts"
-                        ) from err
-                    continue
-                return self._partition_handle(partition_key, incarnation)
-
-    @override
     async def get_partition(
         self, partition_key: str
     ) -> MilvusVectorStorePartition | None:
@@ -950,11 +915,6 @@ class MilvusVectorStore(VectorStore):
         if registered is None:
             return None
         return self._partition_handle(partition_key, registered.incarnation)
-
-    @override
-    async def close_partition(self, *, partition: VectorStorePartition) -> None:
-        # Milvus partition handles hold nothing to release.
-        pass
 
     @override
     async def delete_partition(self, partition_key: str) -> None:

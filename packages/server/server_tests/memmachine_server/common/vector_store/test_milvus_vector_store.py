@@ -219,7 +219,7 @@ class TestPartitionLifecycle:
             )
         )
         with pytest.raises(VectorStorePartitionSchemaMismatchError, match="mismatch"):
-            await other_dimensions.open_or_create_partition("mismatch")
+            await other_dimensions.get_partition("mismatch")
         other_keys = MilvusVectorStore(
             await _params(
                 store._client,

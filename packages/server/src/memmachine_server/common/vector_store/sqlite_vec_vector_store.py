@@ -606,28 +606,6 @@ class SQLiteVecVectorStore(VectorStore):
             )
 
     @override
-    async def open_or_create_partition(
-        self, partition_key: str
-    ) -> VectorStorePartition:
-        if not validate_identifier(partition_key):
-            raise ValueError(f"Invalid partition key {partition_key!r}")
-
-        async with self._create_session() as session, session.begin():
-            if await self._stored_schema(session, partition_key) is None:
-                session.add(
-                    _PartitionRow(
-                        vector_store_name=self._vector_store_name,
-                        partition_key=partition_key,
-                        schema=self._declared_schema().model_dump(mode="json"),
-                    )
-                )
-            records_table, vector_table_name = await self._ensure_partition_tables(
-                session, partition_key
-            )
-
-        return self._partition_handle(partition_key, records_table, vector_table_name)
-
-    @override
     async def get_partition(self, partition_key: str) -> VectorStorePartition | None:
         if not validate_identifier(partition_key):
             raise ValueError(f"Invalid partition key {partition_key!r}")
@@ -654,10 +632,6 @@ class SQLiteVecVectorStore(VectorStore):
             records_table=records_table,
             vector_table_name=vector_table_name,
         )
-
-    @override
-    async def close_partition(self, *, partition: VectorStorePartition) -> None:
-        pass  # No resources to release.
 
     @override
     async def delete_partition(self, partition_key: str) -> None:

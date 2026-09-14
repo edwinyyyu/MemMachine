@@ -97,6 +97,16 @@ async def _params(client, registry_engine, **overrides) -> QdrantVectorStorePara
     return QdrantVectorStoreParams(**params)
 
 
+async def _get_or_create_partition(store, partition_key: str):
+    """The partition, created if absent: what a session's creation does, for a test."""
+    partition = await store.get_partition(partition_key)
+    if partition is None:
+        await store.create_partition(partition_key)
+        partition = await store.get_partition(partition_key)
+    assert partition is not None
+    return partition
+
+
 @pytest_asyncio.fixture
 async def store(any_qdrant_client, registry_engine):
     s = QdrantVectorStore(await _params(any_qdrant_client, registry_engine))
@@ -158,19 +168,6 @@ class TestPartitionLifecycle:
         await store.delete_partition("nonexistent")
 
     @pytest.mark.asyncio
-    async def test_open_or_create_creates_when_missing(self, store):
-        coll = await store.open_or_create_partition("new")
-        assert isinstance(coll, QdrantVectorStorePartition)
-        await store.delete_partition("new")
-
-    @pytest.mark.asyncio
-    async def test_open_or_create_opens_when_exists(self, store):
-        await store.create_partition("existing")
-        coll = await store.open_or_create_partition("existing")
-        assert isinstance(coll, QdrantVectorStorePartition)
-        await store.delete_partition("existing")
-
-    @pytest.mark.asyncio
     async def test_a_store_with_another_schema_cannot_open_the_partition(
         self, store, registry_engine
     ):
@@ -182,7 +179,7 @@ class TestPartitionLifecycle:
             )
         )
         with pytest.raises(VectorStorePartitionSchemaMismatchError, match="mismatch"):
-            await other_dimensions.open_or_create_partition("mismatch")
+            await other_dimensions.get_partition("mismatch")
         other_keys = QdrantVectorStore(
             await _params(
                 store._client, registry_engine, indexed_properties={"name": str}
@@ -1181,7 +1178,7 @@ class TestCollectionProvisioningAcrossWorkers:
         await store.provision()
         await store.startup()
         try:
-            await store.open_or_create_partition(name)
+            await _get_or_create_partition(store, name)
             info = await qdrant_client.get_collection(native)
             indexed = set(info.payload_schema or {})
             assert _PAYLOAD_INCARNATION in indexed, (
@@ -1202,9 +1199,9 @@ class TestCollectionProvisioningAcrossWorkers:
     ):
         """Two clients, one registry - the multi-worker shape, in one process.
 
-        Both open-or-creates must return a usable handle bound to the one
-        incarnation, the collection they agree on must end up indexed, and
-        a strict create both issue at once is created once.
+        A strict create both issue at once is created once, both then bind
+        a handle to the one incarnation, and the collection they provisioned
+        at once must end up indexed.
         """
         client_a = qdrant_container.get_async_client()
         client_b = qdrant_container.get_async_client()
@@ -1222,26 +1219,8 @@ class TestCollectionProvisioningAcrossWorkers:
         await store_b.startup()
 
         try:
-            results = await asyncio.gather(
-                store_a.open_or_create_partition(name),
-                store_b.open_or_create_partition(name),
-                return_exceptions=True,
-            )
-            handles = [r for r in results if isinstance(r, QdrantVectorStorePartition)]
-            assert len(handles) == 2, f"a concurrent creator raised: {results!r}"
-            assert handles[0]._incarnation == handles[1]._incarnation
-
-            info = await client_a.get_collection(native)
-            indexed = set(info.payload_schema or {})
-            assert _PAYLOAD_INCARNATION in indexed, (
-                "two workers raced and the tenant incarnation index was lost: the "
-                "loser skips index creation entirely. present: "
-                f"{sorted(indexed)}"
-            )
-
             # The registry's primary key arbitrates a strict create: one
             # creator wins, the other gets AlreadyExists.
-            await store_a.delete_partition(name)
             results = await asyncio.gather(
                 store_a.create_partition(name),
                 store_b.create_partition(name),
@@ -1251,6 +1230,20 @@ class TestCollectionProvisioningAcrossWorkers:
                 "NoneType",
                 "VectorStorePartitionAlreadyExistsError",
             ], results
+
+            handle_a = await store_a.get_partition(name)
+            handle_b = await store_b.get_partition(name)
+            assert handle_a is not None
+            assert handle_b is not None
+            assert handle_a._incarnation == handle_b._incarnation
+
+            info = await client_a.get_collection(native)
+            indexed = set(info.payload_schema or {})
+            assert _PAYLOAD_INCARNATION in indexed, (
+                "two workers raced and the tenant incarnation index was lost: the "
+                "loser skips index creation entirely. present: "
+                f"{sorted(indexed)}"
+            )
         finally:
             await store_a.delete_partition(name)
             await client_a.delete_collection(native)

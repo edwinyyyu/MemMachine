@@ -64,6 +64,16 @@ def _make_record(
     )
 
 
+async def _get_or_create_partition(store, partition_key: str):
+    """The partition, created if absent: what a session's creation does, for a test."""
+    partition = await store.get_partition(partition_key)
+    if partition is None:
+        await store.create_partition(partition_key)
+        partition = await store.get_partition(partition_key)
+    assert partition is not None
+    return partition
+
+
 @pytest_asyncio.fixture
 async def store(tmp_path):
     db_path = tmp_path / "test.db"
@@ -135,19 +145,6 @@ class TestPartitionLifecycle:
         await store.delete_partition("nonexistent")
 
     @pytest.mark.asyncio
-    async def test_open_or_create_creates_when_missing(self, store):
-        coll = await store.open_or_create_partition("new")
-        assert isinstance(coll, SQLiteVecVectorStorePartition)
-        await store.delete_partition("new")
-
-    @pytest.mark.asyncio
-    async def test_open_or_create_opens_when_exists(self, store):
-        await store.create_partition("existing")
-        coll = await store.open_or_create_partition("existing")
-        assert isinstance(coll, SQLiteVecVectorStorePartition)
-        await store.delete_partition("existing")
-
-    @pytest.mark.asyncio
     async def test_a_store_with_another_schema_cannot_open_the_partition(self, store):
         """The schema is the collection's: another store of it must declare the same."""
         await store.create_partition("mismatch")
@@ -155,7 +152,7 @@ class TestPartitionLifecycle:
             store, VECTOR_STORE_NAME, vector_dimensions=VECTOR_DIM + 1
         )
         with pytest.raises(VectorStorePartitionSchemaMismatchError, match="mismatch"):
-            await other_dimensions.open_or_create_partition("mismatch")
+            await other_dimensions.get_partition("mismatch")
         await other_dimensions.shutdown()
         other_keys = await _store_with(
             store, VECTOR_STORE_NAME, indexed_properties={"name": str}
@@ -793,8 +790,8 @@ class TestPartitionIsolation:
     @pytest.mark.asyncio
     async def test_delete_partition_does_not_affect_sibling(self, store):
         """Deleting one collection doesn't break a sibling sharing tables."""
-        coll_a = await store.open_or_create_partition("sibling_a")
-        coll_b = await store.open_or_create_partition("sibling_b")
+        coll_a = await _get_or_create_partition(store, "sibling_a")
+        coll_b = await _get_or_create_partition(store, "sibling_b")
 
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1)
@@ -824,7 +821,7 @@ class TestEuclideanMetric:
             similarity_metric=SimilarityMetric.EUCLIDEAN,
             indexed_properties={},
         )
-        coll = await euclidean.open_or_create_partition("euclidean")
+        coll = await _get_or_create_partition(euclidean, "euclidean")
         r1 = _make_record(vector=[0.0, 0.0])
         r2 = _make_record(vector=[3.0, 4.0])
         await coll.upsert(records=[r1, r2])
@@ -845,7 +842,7 @@ class TestNoProperties:
         bare = await _store_with(
             store, "no_props", vector_dimensions=2, indexed_properties={}
         )
-        coll = await bare.open_or_create_partition("no_props")
+        coll = await _get_or_create_partition(bare, "no_props")
         r1 = _make_record(vector=[1.0, 0.0])
         await coll.upsert(records=[r1])
 
@@ -903,7 +900,7 @@ class TestScoreSemantics:
             similarity_metric=SimilarityMetric.EUCLIDEAN,
             indexed_properties={},
         )
-        coll = await euclidean.open_or_create_partition("euclidean_score")
+        coll = await _get_or_create_partition(euclidean, "euclidean_score")
         r1 = _make_record(vector=[0.0, 0.0])
         r2 = _make_record(vector=[3.0, 4.0])
         await coll.upsert(records=[r1, r2])

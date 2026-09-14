@@ -28,7 +28,6 @@ import pytest
 
 from memmachine_server.common.vector_store import (
     Record,
-    VectorStoreAttemptsExhaustedError,
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionHandleStaleError,
 )
@@ -120,25 +119,6 @@ class PartitionLifecycleContract:
         [still] = await new.query(query_vectors=[new_record.vector], limit=5)
         assert _uuids(still) == {new_record.uuid}
 
-        await store.delete_partition(LIFECYCLE_KEY)
-
-    @pytest.mark.asyncio
-    async def test_open_or_create_adopts_the_live_incarnation(self, store):
-        """Opening an existing collection binds to its life; creating one mints a new life."""
-        await store.delete_partition(LIFECYCLE_KEY)
-        first = await store.open_or_create_partition(LIFECYCLE_KEY)
-        second = await store.open_or_create_partition(LIFECYCLE_KEY)
-        record = _records(1)[0]
-        await first.upsert(records=[record])
-        [seen] = await second.query(query_vectors=[record.vector], limit=5)
-        assert _uuids(seen) == {record.uuid}
-
-        await store.delete_partition(LIFECYCLE_KEY)
-        third = await store.open_or_create_partition(LIFECYCLE_KEY)
-        [empty] = await third.query(query_vectors=[record.vector], limit=5)
-        assert empty.matches == []
-        with pytest.raises(VectorStorePartitionHandleStaleError):
-            await first.query(query_vectors=[record.vector], limit=5)
         await store.delete_partition(LIFECYCLE_KEY)
 
     @pytest.mark.asyncio
@@ -248,62 +228,8 @@ class PartitionLifecycleContract:
         assert checks == 2
 
     @pytest.mark.asyncio
-    async def test_open_or_create_gives_up_after_losing_every_race(
-        self, store, monkeypatch
-    ):
-        """A creator that keeps losing to a winner that keeps vanishing gives
-        up after a bounded number of attempts instead of looping."""
-        registry = store._partition_registry
-
-        async def lost(partition_key, schema):
-            # Yields as a real round trip would, so an unbounded loop fails
-            # the timeout below instead of starving the event loop.
-            await asyncio.sleep(0)
-            raise VectorStorePartitionAlreadyExistsError(
-                store.vector_store_name, partition_key
-            )
-
-        async def vanished(partition_key) -> None:
-            return None
-
-        monkeypatch.setattr(registry, "register", lost)
-        monkeypatch.setattr(registry, "get", vanished)
-
-        with pytest.raises(VectorStoreAttemptsExhaustedError):
-            await asyncio.wait_for(store.open_or_create_partition(LIFECYCLE_KEY), 30)
-
-    @pytest.mark.asyncio
-    async def test_open_or_create_creates_again_when_the_winner_is_gone(
-        self, store, monkeypatch
-    ):
-        """Losing the create to a winner that is deleted before it can be
-        opened is not an error: open-or-create creates the partition again."""
-        await store.delete_partition(LIFECYCLE_KEY)
-        registry = store._partition_registry
-        register = registry.register
-        lost = False
-
-        async def lose_once(partition_key, schema):
-            nonlocal lost
-            if not lost:
-                lost = True
-                raise VectorStorePartitionAlreadyExistsError(
-                    store.vector_store_name, partition_key
-                )
-            return await register(partition_key, schema)
-
-        monkeypatch.setattr(registry, "register", lose_once)
-
-        partition = await store.open_or_create_partition(LIFECYCLE_KEY)
-
-        assert lost
-        record = _records(1)[0]
-        await partition.upsert(records=[record])
-        assert await partition.get(record_uuids=[record.uuid])
-
-    @pytest.mark.asyncio
     async def test_lifecycle_churn_raises_only_domain_errors(self, store):
-        """Concurrent create, open-or-create, get and delete of a few keys
+        """Concurrent create, get and delete of a few keys
         raise nothing but the domain's own outcomes."""
         keys = [f"{LIFECYCLE_KEY}_{index}" for index in range(4)]
 
@@ -311,13 +237,11 @@ class PartitionLifecycleContract:
             rng = random.Random(seed)
             for _ in range(30):
                 key = rng.choice(keys)
-                operation = rng.randrange(4)
+                operation = rng.randrange(3)
                 try:
                     if operation == 0:
                         await store.create_partition(key)
                     elif operation == 1:
-                        await store.open_or_create_partition(key)
-                    elif operation == 2:
                         await store.get_partition(key)
                     else:
                         await store.delete_partition(key)
