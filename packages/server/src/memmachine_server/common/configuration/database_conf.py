@@ -258,6 +258,13 @@ class QdrantConf(YamlSerializableMixin, ApiKeyMixin):
             "is set to match so all replicas confirm writes."
         ),
     )
+    request_timeout: float = Field(
+        ...,
+        description=(
+            "Seconds a request to Qdrant may take before the client gives up. "
+            "Required: every remote write is bounded by it."
+        ),
+    )
 
 
 class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
@@ -286,6 +293,13 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         description=(
             "Milvus consistency level for newly created collections. "
             "Supported values: Strong, Session, Bounded, Eventually."
+        ),
+    )
+    request_timeout: float = Field(
+        ...,
+        description=(
+            "Seconds a request to Milvus may take before the client gives up. "
+            "Required: every remote write is bounded by it."
         ),
     )
 
