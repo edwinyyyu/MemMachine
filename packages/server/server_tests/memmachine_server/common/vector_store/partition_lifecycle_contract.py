@@ -23,8 +23,6 @@ from memmachine_server.common.vector_store import (
     VectorStorePartitionDeletedError,
     VectorStorePartitionHandleStaleError,
     VectorStorePartitionPendingError,
-    VectorStorePartitionSchemaMismatchError,
-    registry_backed_vector_store,
 )
 
 LIFECYCLE_KEY = "lifecycle"
@@ -137,25 +135,6 @@ class PartitionLifecycleContract:
         await store.delete_partition(LIFECYCLE_KEY)
 
     @pytest.mark.asyncio
-    async def test_open_or_create_adopts_the_live_incarnation(self, store):
-        """Opening an existing collection binds to its life; creating one mints a new life."""
-        await store.delete_partition(LIFECYCLE_KEY)
-        first = await store.open_or_create_partition(LIFECYCLE_KEY)
-        second = await store.open_or_create_partition(LIFECYCLE_KEY)
-        record = _records(1)[0]
-        await first.upsert(records=[record])
-        assert await self.stored_uuids(second) == {record.uuid}
-
-        await store.delete_partition(LIFECYCLE_KEY)
-        third = await store.open_or_create_partition(LIFECYCLE_KEY)
-        await self.settle(third)
-        [empty] = await third.query(query_vectors=[record.vector], limit=5)
-        assert empty.matches == []
-        with pytest.raises(VectorStorePartitionHandleStaleError):
-            await first.query(query_vectors=[record.vector], limit=5)
-        await store.delete_partition(LIFECYCLE_KEY)
-
-    @pytest.mark.asyncio
     async def test_deleting_twice_and_deleting_nothing_are_no_ops(self, store):
         await _fresh(store, LIFECYCLE_KEY)
         await store.delete_partition(LIFECYCLE_KEY)
@@ -250,37 +229,8 @@ class PartitionLifecycleContract:
         assert await self.stored_uuids(partition) == {kept.uuid}
 
     @pytest.mark.asyncio
-    async def test_open_or_create_gives_up_after_losing_every_race(
-        self, store, monkeypatch
-    ):
-        """A creator that keeps losing to a winner that keeps vanishing gives
-        up after a bounded number of attempts instead of looping."""
-        registry = store._partition_registry
-
-        async def lost(partition_key, schema):
-            # Yields as a real round trip would, so an unbounded loop fails
-            # the timeout below instead of starving the event loop.
-            await asyncio.sleep(0)
-            raise VectorStorePartitionAlreadyExistsError(
-                store.vector_store_name, partition_key
-            )
-
-        async def vanished(partition_key) -> None:
-            return None
-
-        monkeypatch.setattr(registry, "reserve", lost)
-        monkeypatch.setattr(registry, "resolve", vanished)
-        monkeypatch.setattr(
-            registry_backed_vector_store, "_OPEN_OR_CREATE_RETRY_DELAY_SECONDS", 0
-        )
-
-        with pytest.raises(VectorStoreAttemptsExhaustedError):
-            await asyncio.wait_for(store.open_or_create_partition(LIFECYCLE_KEY), 30)
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("create", ["create_partition", "open_or_create_partition"])
     async def test_a_failed_partition_storage_preparation_frees_the_key(
-        self, store, monkeypatch, create
+        self, store, monkeypatch
     ):
         """A creation whose storage preparation fails unregisters its
         pending partition: nothing opens, and the key is free again."""
@@ -291,7 +241,7 @@ class PartitionLifecycleContract:
 
         monkeypatch.setattr(store, "_prepare_partition_storage", refused)
         with pytest.raises(RuntimeError, match="refused"):
-            await getattr(store, create)(LIFECYCLE_KEY)
+            await store.create_partition(LIFECYCLE_KEY)
         monkeypatch.undo()
 
         assert await store.get_partition(LIFECYCLE_KEY) is None
@@ -299,111 +249,8 @@ class PartitionLifecycleContract:
         await store.delete_partition(LIFECYCLE_KEY)
 
     @pytest.mark.asyncio
-    async def test_open_or_create_opens_the_winner_after_losing_the_create(
-        self, store, monkeypatch
-    ):
-        """A creator whose reservation loses to another process's opens
-        the winner's partition, bound to the winner's life."""
-        await store.delete_partition(LIFECYCLE_KEY)
-        registry = store._partition_registry
-        reserve = registry.reserve
-        lost_reservations = 0
-
-        async def another_process_wins(partition_key, schema):
-            # The other process creates the partition between this caller's
-            # lookup and its own reservation.
-            nonlocal lost_reservations
-            lost_reservations += 1
-            reservation = await reserve(partition_key, schema)
-            await store._prepare_partition_storage(
-                partition_key, reservation.incarnation
-            )
-            await reservation.confirm()
-            raise VectorStorePartitionAlreadyExistsError(
-                store.vector_store_name, partition_key
-            )
-
-        monkeypatch.setattr(registry, "reserve", another_process_wins)
-        partition = await store.open_or_create_partition(LIFECYCLE_KEY)
-        monkeypatch.undo()
-
-        # It lost once, then found the winner instead of registering again.
-        assert lost_reservations == 1
-
-        winner = await registry.resolve(LIFECYCLE_KEY)
-        assert winner is not None
-        assert partition._incarnation == winner.incarnation
-        record = _records(1)[0]
-        await partition.upsert(records=[record])
-        opened = await store.get_partition(LIFECYCLE_KEY)
-        assert opened is not None
-        assert await self.stored_uuids(opened) == {record.uuid}
-        await store.delete_partition(LIFECYCLE_KEY)
-
-    @pytest.mark.asyncio
-    async def test_open_or_create_refuses_a_winner_of_another_schema(
-        self, store, monkeypatch
-    ):
-        """A creator that loses to a winner registered with another schema
-        gets the mismatch, not a handle to the winner's partition."""
-        await store.delete_partition(LIFECYCLE_KEY)
-        registry = store._partition_registry
-        reserve = registry.reserve
-        lost_reservations = 0
-
-        async def another_process_wins(partition_key, schema):
-            nonlocal lost_reservations
-            lost_reservations += 1
-            reservation = await reserve(
-                partition_key,
-                schema.model_copy(
-                    update={"vector_dimensions": schema.vector_dimensions + 1}
-                ),
-            )
-            await reservation.confirm()
-            raise VectorStorePartitionAlreadyExistsError(
-                store.vector_store_name, partition_key
-            )
-
-        monkeypatch.setattr(registry, "reserve", another_process_wins)
-        with pytest.raises(VectorStorePartitionSchemaMismatchError):
-            await store.open_or_create_partition(LIFECYCLE_KEY)
-        monkeypatch.undo()
-        assert lost_reservations == 1
-        await store.delete_partition(LIFECYCLE_KEY)
-
-    @pytest.mark.asyncio
-    async def test_open_or_create_creates_again_when_the_winner_is_gone(
-        self, store, monkeypatch
-    ):
-        """Losing the create to a winner that is deleted before it can be
-        opened is not an error: open-or-create creates the partition again."""
-        await store.delete_partition(LIFECYCLE_KEY)
-        registry = store._partition_registry
-        reserve = registry.reserve
-        lost = False
-
-        async def lose_once(partition_key, schema):
-            nonlocal lost
-            if not lost:
-                lost = True
-                raise VectorStorePartitionAlreadyExistsError(
-                    store.vector_store_name, partition_key
-                )
-            return await reserve(partition_key, schema)
-
-        monkeypatch.setattr(registry, "reserve", lose_once)
-
-        partition = await store.open_or_create_partition(LIFECYCLE_KEY)
-
-        assert lost
-        record = _records(1)[0]
-        await partition.upsert(records=[record])
-        assert await self.stored_uuids(partition) == {record.uuid}
-
-    @pytest.mark.asyncio
     async def test_lifecycle_churn_raises_only_domain_errors(self, store):
-        """Concurrent create, open-or-create, get and delete of a few keys
+        """Concurrent create, get and delete of a few keys
         raise nothing but the domain's own outcomes."""
         keys = [f"{LIFECYCLE_KEY}_{index}" for index in range(4)]
 
@@ -411,13 +258,11 @@ class PartitionLifecycleContract:
             rng = random.Random(seed)
             for _ in range(30):
                 key = rng.choice(keys)
-                operation = rng.randrange(4)
+                operation = rng.randrange(3)
                 try:
                     if operation == 0:
                         await store.create_partition(key)
                     elif operation == 1:
-                        await store.open_or_create_partition(key)
-                    elif operation == 2:
                         await store.get_partition(key)
                     else:
                         await store.delete_partition(key)

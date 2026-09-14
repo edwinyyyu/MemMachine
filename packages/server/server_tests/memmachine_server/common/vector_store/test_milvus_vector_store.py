@@ -528,7 +528,7 @@ class TestPartitionLifecycle:
             )
         )
         with pytest.raises(VectorStorePartitionSchemaMismatchError, match="mismatch"):
-            await other_dimensions.open_or_create_partition("mismatch")
+            await other_dimensions.get_partition("mismatch")
         other_keys = MilvusVectorStore(
             await _params(
                 store._client,
@@ -2187,9 +2187,14 @@ async def _churn_worker(
                 await store.create_partition(step.partition_key)
                 continue
             if step.partition_key not in handles:
-                handles[step.partition_key] = await store.open_or_create_partition(
-                    step.partition_key
-                )
+                handle = await store.get_partition(step.partition_key)
+                if handle is None:
+                    await store.create_partition(step.partition_key)
+                    handle = await store.get_partition(step.partition_key)
+                if handle is None:
+                    # Deleted again between its creation and the lookup.
+                    continue
+                handles[step.partition_key] = handle
             await _churn_on(handles[step.partition_key], step, owner, own, ledger)
         except VectorStorePartitionHandleStaleError:
             handles.pop(step.partition_key, None)

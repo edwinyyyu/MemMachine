@@ -159,6 +159,16 @@ async def _params(client, registry_engine, **overrides) -> QdrantVectorStorePara
     return QdrantVectorStoreParams(**params)
 
 
+async def _get_or_create_partition(store, partition_key: str):
+    """The partition, created if absent: what a session's creation does, for a test."""
+    partition = await store.get_partition(partition_key)
+    if partition is None:
+        await store.create_partition(partition_key)
+        partition = await store.get_partition(partition_key)
+    assert partition is not None
+    return partition
+
+
 @pytest_asyncio.fixture
 async def store(any_qdrant_client, registry_engine):
     s = QdrantVectorStore(await _params(any_qdrant_client, registry_engine))
@@ -219,19 +229,6 @@ class TestPartitionLifecycle:
         await store.delete_partition("nonexistent")
 
     @pytest.mark.asyncio
-    async def test_open_or_create_creates_when_missing(self, store):
-        coll = await store.open_or_create_partition("new")
-        assert isinstance(coll, QdrantVectorStorePartition)
-        await store.delete_partition("new")
-
-    @pytest.mark.asyncio
-    async def test_open_or_create_opens_when_exists(self, store):
-        await store.create_partition("existing")
-        coll = await store.open_or_create_partition("existing")
-        assert isinstance(coll, QdrantVectorStorePartition)
-        await store.delete_partition("existing")
-
-    @pytest.mark.asyncio
     async def test_a_store_with_another_schema_cannot_open_the_partition(
         self, store, registry_engine
     ):
@@ -243,7 +240,7 @@ class TestPartitionLifecycle:
             )
         )
         with pytest.raises(VectorStorePartitionSchemaMismatchError, match="mismatch"):
-            await other_dimensions.open_or_create_partition("mismatch")
+            await other_dimensions.get_partition("mismatch")
         other_keys = QdrantVectorStore(
             await _params(
                 store._client, registry_engine, indexed_properties={"name": str}
@@ -1845,7 +1842,16 @@ class _ChurnWorker:
 
     async def handle(self, key: str) -> QdrantVectorStorePartition:
         if key not in self.handles:
-            self.handles[key] = await self.store.open_or_create_partition(key)
+            handle = await self.store.get_partition(key)
+            if handle is None:
+                await self.store.create_partition(key)
+                handle = await self.store.get_partition(key)
+            if handle is None:
+                # Deleted again between its creation and the lookup.
+                raise VectorStorePartitionDeletedError(
+                    self.store.vector_store_name, key
+                )
+            self.handles[key] = handle
         return self.handles[key]
 
     async def upsert(self, key: str) -> None:
@@ -2131,7 +2137,7 @@ class TestCollectionProvisioningAcrossWorkers:
         )
         await store.startup()
         try:
-            await store.open_or_create_partition(name)
+            await _get_or_create_partition(store, name)
             info = await qdrant_client.get_collection(native)
             indexed = set(info.payload_schema or {})
             assert _PAYLOAD_INCARNATION in indexed, (
@@ -2165,10 +2171,10 @@ class TestCollectionProvisioningAcrossWorkers:
     ):
         """Two clients, one registry - the multi-worker shape, in one process.
 
-        Both workers find the key free and reserve it at once. Both
-        open-or-creates return a handle on the one partition, so a record
-        written through either is read through the other, and of a strict
-        create both issue at once exactly one succeeds.
+        Both workers find the key free and reserve it at once. Of a strict
+        create both issue at once exactly one succeeds, and both then hold a
+        handle on the one partition, so a record written through either is
+        read through the other.
         """
         client_a = new_qdrant_client()
         client_b = new_qdrant_client()
@@ -2189,22 +2195,8 @@ class TestCollectionProvisioningAcrossWorkers:
         )
 
         try:
-            async with asyncio.timeout(60):
-                results = await asyncio.gather(
-                    store_a.open_or_create_partition(name),
-                    store_b.open_or_create_partition(name),
-                    return_exceptions=True,
-                )
-            handles = [r for r in results if isinstance(r, QdrantVectorStorePartition)]
-            assert len(handles) == 2, f"a concurrent creator raised: {results!r}"
-            record = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
-            await handles[0].upsert(records=[record])
-            [result] = await handles[1].query(query_vectors=[record.vector], limit=10)
-            assert [match.record_uuid for match in result.matches] == [record.uuid]
-
             # The registry's primary key arbitrates a strict create: one
             # creator wins, the other gets AlreadyExists.
-            await store_a.delete_partition(name)
             async with asyncio.timeout(60):
                 results = await asyncio.gather(
                     store_a.create_partition(name),
@@ -2215,6 +2207,15 @@ class TestCollectionProvisioningAcrossWorkers:
                 "NoneType",
                 "VectorStorePartitionAlreadyExistsError",
             ], results
+
+            handle_a = await store_a.get_partition(name)
+            handle_b = await store_b.get_partition(name)
+            assert handle_a is not None
+            assert handle_b is not None
+            record = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+            await handle_a.upsert(records=[record])
+            [result] = await handle_b.query(query_vectors=[record.vector], limit=10)
+            assert [match.record_uuid for match in result.matches] == [record.uuid]
         finally:
             await store_a.delete_partition(name)
             await client_a.delete_collection(native)
