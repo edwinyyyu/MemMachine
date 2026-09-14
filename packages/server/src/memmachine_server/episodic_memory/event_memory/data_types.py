@@ -254,16 +254,40 @@ DateTimeStyle = Literal["short", "medium", "long", "full"]
 
 
 class DatetimeFormat(BaseModel):
-    """How a timestamp is written into text: date and time styles, locale and zone.
+    """
+    How a timestamp is written into text.
 
-    A style of None omits that part; both None writes nothing. No zone
-    writes the timestamp in the zone it carries.
+    Attributes:
+        date_style (DateTimeStyle | None):
+            The CLDR style of the date, or None to omit the date
+            (default: "full").
+        time_style (DateTimeStyle | None):
+            The CLDR style of the time, or None to omit the time
+            (default: "long").
+        locale (str):
+            The CLDR locale the date and time are written in
+            (default: "en_US").
+        timezone (tzinfo | None):
+            The zone the timestamp is converted to before it is written,
+            or None to write it in the zone it carries (default: None).
     """
 
-    date_style: DateTimeStyle | None = "full"
-    time_style: DateTimeStyle | None = "long"
-    locale: str = "en_US"
-    timezone: InstanceOf[tzinfo] | None = None
+    date_style: DateTimeStyle | None = Field(
+        "full", description="The CLDR style of the date, or None to omit the date"
+    )
+    time_style: DateTimeStyle | None = Field(
+        "long", description="The CLDR style of the time, or None to omit the time"
+    )
+    locale: str = Field(
+        "en_US", description="The CLDR locale the date and time are written in"
+    )
+    timezone: InstanceOf[tzinfo] | None = Field(
+        None,
+        description=(
+            "The zone the timestamp is converted to before it is written, "
+            "or None to write it in the zone it carries"
+        ),
+    )
 
 
 # Results and options.
