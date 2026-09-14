@@ -92,7 +92,7 @@ class Event(BaseModel):
   operation edits a stored segment or a vector record. The rule is stated
   on `Event`, on `EventMemory` and on the store contract, whose
   `add_segments` rejects a stored uuid, so the vector record's copy of
-  the declared properties is exact by construction and a future update
+  its segment's fields is exact by construction and a future update
   operation has to argue with three docstrings and a test.
 - Both are bounded strings; bound them by the same limit as a property
   string value, and reject longer ones where events are validated
@@ -201,9 +201,15 @@ walking further from a hit composes with `expand`.
   derivative to its segment (#1598), so no uuid is written into a
   record. `expected_vector_store_collection_schema` declares the four
   with their types, so the vector store indexes them through the
-  collection schema mechanism it has today. No central list of
-  reserved keys exists; the prefix is reserved as a whole and each
-  service names its own under it.
+  collection schema mechanism it has today, and a record carries the
+  four and the vector, nothing else: the caller's properties stay with
+  the segment, where `property_filter` reads them, so the collection
+  schema a memory needs is exactly the four and a store that refuses a
+  key it has not declared (`vector_store.md`) takes every record the
+  memory writes. The server's adapter fields (`_episode_uid`,
+  `_producer_id`, ...) are caller properties to the memory and follow
+  the same path. No central list of reserved keys exists; the prefix
+  is reserved as a whole and each service names its own under it.
 - The prefix is reserved whether or not a caller is ever allowed to
   name a system field inside a filter, so both answers to the question
   below stay open.
@@ -237,8 +243,15 @@ Schema (`sqlalchemy_segment_store.py`), keeping the incarnation and
 the partition tables exactly as shipped in #1548 since lifecycle is
 out of scope:
 
-- `segment_store_sg` gains `session_id TEXT NULL`, `source_id TEXT
-  NULL` and `block_kind TEXT NOT NULL`. All three are projections of
+- `segment_store_sg` gains `session_id VARCHAR(255) NOT NULL`,
+  `source_id VARCHAR(255) NULL` and `block_kind VARCHAR(255) NOT NULL`:
+  the type of `partition_key` and of the vector stores' key columns,
+  for every string column the store compares on, so the database
+  enforces the bound the model does and every filter column can be an
+  index key on any SQL database (on PostgreSQL `varchar(n)` is `text`
+  plus the length check and on SQLite both have text affinity; on
+  MySQL, SQL Server and Oracle `text` is not an index key). All three
+  are projections of
   the segment the store already holds, written in the same insert as
   the encoded block, the way `timestamp` and `properties` already are:
   the codec-encoded block is opaque to SQL, so what the store filters
@@ -256,10 +269,11 @@ out of scope:
   equality predicate on the session id. The tie-break
   stays `event_uuid` here; the redesign's event position needs the
   event store, which is out of scope.
-- Migration: an Alembic revision adding the three columns and the
-  indexes, with `block_kind` backfilled to `text` for existing rows and
-  the two id columns left null. Follow the shipped store's migration
-  conventions (`design/segment_store_shared_tables.md`).
+- Migration: none, per the 2026-09-10 decision that migrations wait
+  for the lifecycle/DDL work; `startup()` keeps `create_all`, and a
+  `speedkick` database is recreated. Rows written before the change
+  would not decode anyway (their discriminators were `context_type` /
+  `block_type`).
 
 `SegmentStorePartition` (`segment_store/segment_store.py`):
 
@@ -359,7 +373,7 @@ class EventMemory:
   so a repeated batch leaves one copy; then segment, derive, embed;
   then eviction (below); then `add_segments` with the surviving
   derivatives' links, `upsert` of the surviving records with the
-  reserved keys and the caller's properties, and `delete` of the
+  reserved keys only, and `delete` of the
   displaced records plus `delete_derivatives` of their links. The
   order segments then vectors is unchanged. Drop the branch's
   `serialize_encode` lock.

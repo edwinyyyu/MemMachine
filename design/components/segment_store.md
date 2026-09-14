@@ -17,8 +17,8 @@ store. This file lists what changes; everything not listed stays.
 `segment_store_pt`: `key UUID PK`, `config JSON`, `created_at`.
 `segment_store_sg`: `key UUID`, `uuid UUID`,
 `event_uuid UUID`, `event_position`, `index`, `offset`, `timestamp`,
-`timestamp_timezone_offset`, `session_id TEXT`, `source_id TEXT`,
-`context BLOB`, `block_kind TEXT`, `block BLOB`, `properties JSON`;
+`timestamp_timezone_offset`, `session_id VARCHAR(255)`, `source_id VARCHAR(255)`,
+`context BLOB`, `block_kind VARCHAR(255)`, `block BLOB`, `properties JSON`;
 primary key `(key, uuid)`. `segment_store_dv_ln`: `key UUID`, `uuid
 UUID`, `segment_uuid UUID`, foreign key to the segment row with cascade.
 `segment_store_gc`: `key UUID PK`, `enqueued_at`, the purge queue.
