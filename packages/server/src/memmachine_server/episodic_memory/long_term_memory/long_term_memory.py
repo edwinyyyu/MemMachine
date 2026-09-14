@@ -87,24 +87,29 @@ _EPISODE_TYPE_FIELD = "_episode_type"
 _CONTENT_TYPE_FIELD = "_content_type"
 _CREATED_AT_FIELD = "_created_at"
 
-EVENT_BACKEND_SYSTEM_FIELDS: dict[str, type[PropertyValue]] = {
-    _EPISODE_UID_FIELD: str,
-    _SESSION_KEY_FIELD: str,
-    _PRODUCER_ID_FIELD: str,
-    _PRODUCER_ROLE_FIELD: str,
-    _PRODUCED_FOR_ID_FIELD: str,
-    _SEQUENCE_NUM_FIELD: int,
-    _EPISODE_TYPE_FIELD: str,
-    _CONTENT_TYPE_FIELD: str,
-    _CREATED_AT_FIELD: datetime.datetime,
-}
+# The fields the adapter writes into every event's properties. The segment
+# store holds them with the caller's properties, and `property_filter`
+# selects on them there; the vector store never sees them.
+_EVENT_BACKEND_SYSTEM_FIELDS: frozenset[str] = frozenset(
+    {
+        _EPISODE_UID_FIELD,
+        _SESSION_KEY_FIELD,
+        _PRODUCER_ID_FIELD,
+        _PRODUCER_ROLE_FIELD,
+        _PRODUCED_FOR_ID_FIELD,
+        _SEQUENCE_NUM_FIELD,
+        _EPISODE_TYPE_FIELD,
+        _CONTENT_TYPE_FIELD,
+        _CREATED_AT_FIELD,
+    }
+)
 
 # Bare client-API filter names for the system fields above (e.g. `producer_id`,
 # not `_producer_id`). Used to validate filter expressions on the event backend
 # so a typo'd field name surfaces as a ValueError rather than silently matching
 # nothing in the storage layer.
 _EVENT_BACKEND_SYSTEM_FIELD_CLIENT_NAMES: frozenset[str] = frozenset(
-    key.removeprefix("_") for key in EVENT_BACKEND_SYSTEM_FIELDS
+    key.removeprefix("_") for key in _EVENT_BACKEND_SYSTEM_FIELDS
 ) | {"timestamp"}
 
 # Filterable-metadata sentinel: Episode.filterable_metadata=None vs {} carry

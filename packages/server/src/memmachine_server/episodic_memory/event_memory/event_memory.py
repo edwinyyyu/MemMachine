@@ -159,18 +159,19 @@ class EventMemory:
 
     Stored data is immutable: no operation may edit a stored segment or
     vector record, and none may be added, because a vector record's copy
-    of the declared properties is exact only while it is written once,
-    with its segment, and replaced with it. A change is `forget_events`
+    of its segment's fields is exact only while it is written once, with
+    its segment, and replaced with it. A change is `forget_events`
     and `encode_events` again; `encode_events` replaces an event's
     earlier encoding wholesale, under new segment and derivative uuids.
     """
 
-    # Every system value written into a vector record, under the reserved
-    # keys `utils` owns, with the type the collection declares:
-    # the fields a search filters on at the vector stage, and nothing
-    # else. The derivative's segment and event are not among them: the
-    # segment store owns those mappings, and a copy here could only go
-    # stale.
+    # Every property a vector record carries, under the reserved keys this
+    # module owns, with the type the collection declares: the fields a
+    # search filters on at the vector stage, and nothing else. The caller's
+    # properties are not among them: the segment store holds them, and
+    # `property_filter` selects on them there. The derivative's segment and
+    # event are not among them either: the segment store owns those
+    # mappings, and a copy here could only go stale.
     _RESERVED_PROPERTY_SCHEMA: ClassVar[dict[str, type[PropertyValue]]] = {
         EVENT_TIMESTAMP_KEY: cast(type[PropertyValue], datetime.datetime),
         EVENT_SESSION_KEY: cast(type[PropertyValue], str),
@@ -181,10 +182,10 @@ class EventMemory:
     @classmethod
     def expected_vector_store_collection_schema(cls) -> dict[str, type[PropertyValue]]:
         """
-        Return the vector store collection schema expected by EventMemory.
+        Return the vector store collection schema EventMemory requires.
 
-        Callers should merge this with any user or external system-defined properties
-        when creating the collection so that EventMemory's reserved fields are efficiently filterable.
+        Every key the memory writes into a vector record, with its type; a
+        collection must declare each of them.
         """
         return dict(cls._RESERVED_PROPERTY_SCHEMA)
 
@@ -358,15 +359,13 @@ class EventMemory:
         derivative_embedding: Sequence[float],
     ) -> Record:
         """Build a vector record from a derivative and its embedding."""
-        # Caller properties first: a reserved key cannot reach here
-        # (encode_events validates), and building in this order makes the
-        # merge itself enforce that a system value always wins.
-        properties: dict[str, PropertyValue] = dict(derivative.properties)
-        properties[EVENT_TIMESTAMP_KEY] = derivative.timestamp
-        properties[EVENT_SESSION_KEY] = derivative.session_id
+        properties: dict[str, PropertyValue] = {
+            EVENT_TIMESTAMP_KEY: derivative.timestamp,
+            EVENT_SESSION_KEY: derivative.session_id,
+            BLOCK_KIND_KEY: derivative.block.block_type,
+        }
         if derivative.source_id is not None:
             properties[EVENT_SOURCE_KEY] = derivative.source_id
-        properties[BLOCK_KIND_KEY] = derivative.block.block_type
 
         return Record(
             uuid=derivative.uuid,

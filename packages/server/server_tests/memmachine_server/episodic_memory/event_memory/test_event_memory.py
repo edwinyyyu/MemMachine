@@ -175,18 +175,19 @@ class TestEncodeEvents:
         assert segment.offset == 0
         assert segment.block == TextBlock(text="hello world")
 
-        # One derivative record in vector store, with every filterable
-        # system value under its reserved key.
+        # One derivative record in vector store, carrying every filterable
+        # system value under its reserved key and nothing else.
         assert len(fake_vector_store_collection.records) == 1
         record = next(iter(fake_vector_store_collection.records.values()))
         props = _record_properties(record)
-        assert props[EVENT_TIMESTAMP_KEY] == event.timestamp
-        assert props[BLOCK_KIND_KEY] == "text"
-        assert props[EVENT_SESSION_KEY] == "s"
-        assert props[EVENT_SOURCE_KEY] == "src"
+        assert props == {
+            EVENT_TIMESTAMP_KEY: event.timestamp,
+            BLOCK_KIND_KEY: "text",
+            EVENT_SESSION_KEY: "s",
+            EVENT_SOURCE_KEY: "src",
+        }
         # The derivative's segment is not copied here; the segment store owns
         # that mapping and answers it from the derivative's own row.
-        assert not any("uuid" in key for key in props)
         assert await fake_segment_store_partition.get_segment_uuids_by_derivative_uuids(
             [record.uuid]
         ) == {record.uuid: segment.uuid}
@@ -263,16 +264,19 @@ class TestEncodeEvents:
         assert segments[0].offset == 0
         assert segments[1].offset == 0
 
-    async def test_user_properties_propagate(
+    async def test_caller_properties_stay_with_the_segment(
         self,
         event_memory: EventMemory,
+        fake_segment_store_partition: InMemorySegmentStorePartition,
         fake_vector_store_collection: InMemoryVectorStoreCollection,
     ):
         event = _make_event("hi", properties={"color": "red"})
         await event_memory.encode_events([event])
 
+        segment = next(iter(fake_segment_store_partition.segments.values()))
+        assert segment.properties == {"color": "red"}
         record = next(iter(fake_vector_store_collection.records.values()))
-        assert _record_properties(record)["color"] == "red"
+        assert "color" not in _record_properties(record)
 
     async def test_reserved_property_key_is_rejected(self, event_memory: EventMemory):
         event = _make_event("hi", properties={EVENT_SESSION_KEY: "spoofed"})

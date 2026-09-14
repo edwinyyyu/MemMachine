@@ -57,7 +57,6 @@ from memmachine_server.episodic_memory.event_memory.segmenter.passthrough_segmen
     PassthroughSegmenter,
 )
 from memmachine_server.episodic_memory.long_term_memory import (
-    EVENT_BACKEND_SYSTEM_FIELDS,
     EventBackendParams,
     LongTermMemory,
 )
@@ -162,10 +161,9 @@ def vector_store():
 def vector_store_collection(fake_embedder):
     config = VectorStoreCollectionConfig(
         vector_dimensions=fake_embedder.dimensions,
-        indexed_properties_schema={
-            **EventMemory.expected_vector_store_collection_schema(),
-            **EVENT_BACKEND_SYSTEM_FIELDS,
-        },
+        indexed_properties_schema=(
+            EventMemory.expected_vector_store_collection_schema()
+        ),
     )
     return InMemoryVectorStoreCollection(config)
 
@@ -491,10 +489,9 @@ def _make_ltm(episodes: list[Episode]) -> LongTermMemory:
     vector_store_collection = InMemoryVectorStoreCollection(
         VectorStoreCollectionConfig(
             vector_dimensions=fake_embedder.dimensions,
-            indexed_properties_schema={
-                **EventMemory.expected_vector_store_collection_schema(),
-                **EVENT_BACKEND_SYSTEM_FIELDS,
-            },
+            indexed_properties_schema=(
+                EventMemory.expected_vector_store_collection_schema()
+            ),
         )
     )
     return LongTermMemory(
