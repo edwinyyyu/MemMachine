@@ -8,9 +8,9 @@ from uuid import uuid4
 import pytest
 
 from memmachine_server.common.data_types import PropertyValue
-from memmachine_server.common.filter.filter_parser import (
+from memmachine_server.common.filter import (
     And,
-    Comparison,
+    Equals,
     FilterExpr,
     In,
     IsNull,
@@ -748,12 +748,14 @@ class TestQueryWithFilter:
         result = await event_memory.query(
             "thing",
             property_filter=And(
-                left=Comparison(field="m.color", op="=", value="red"),
-                right=Comparison(field="episode_uid", op="=", value="e1"),
+                (
+                    Equals(field="m.color", value="red"),
+                    Equals(field="episode_uid", value="e1"),
+                )
             ),
         )
 
-        assert seen == [Comparison(field="_episode_uid", op="=", value="e1")]
+        assert seen == [Equals(field="_episode_uid", value="e1")]
         all_texts = {
             seg.block.text
             for scored in result.scored_segment_contexts
@@ -782,8 +784,10 @@ class TestQueryWithFilter:
         await event_memory.query(
             "thing",
             property_filter=Or(
-                left=Comparison(field="m.color", op="=", value="red"),
-                right=Comparison(field="episode_uid", op="=", value="e1"),
+                (
+                    Equals(field="m.color", value="red"),
+                    Equals(field="episode_uid", value="e1"),
+                )
             ),
         )
 
@@ -797,7 +801,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=Comparison(field="m.color", op="=", value="red"),
+            property_filter=Equals(field="m.color", value="red"),
         )
         all_texts = {
             seg.block.text
@@ -816,7 +820,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=Comparison(field="m.color", op="!=", value="red"),
+            property_filter=Not(Equals(field="m.color", value="red")),
         )
         all_texts = {
             seg.block.text
@@ -836,7 +840,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=In(field="m.color", values=["red", "green"]),
+            property_filter=In(field="m.color", values=("red", "green")),
         )
         all_texts = {
             seg.block.text
@@ -876,8 +880,7 @@ class TestQueryWithFilter:
         result = await event_memory.query(
             "thing",
             property_filter=And(
-                left=Comparison(field="m.color", op="=", value="red"),
-                right=Not(expr=IsNull(field="m.color")),
+                (Equals(field="m.color", value="red"), Not(IsNull(field="m.color")))
             ),
         )
         all_texts = {
@@ -899,8 +902,10 @@ class TestQueryWithFilter:
         result = await event_memory.query(
             "thing",
             property_filter=Or(
-                left=Comparison(field="m.color", op="=", value="red"),
-                right=Comparison(field="m.color", op="=", value="blue"),
+                (
+                    Equals(field="m.color", value="red"),
+                    Equals(field="m.color", value="blue"),
+                )
             ),
         )
         all_texts = {
@@ -921,7 +926,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=Not(expr=Comparison(field="m.color", op="=", value="red")),
+            property_filter=Not(Equals(field="m.color", value="red")),
         )
         all_texts = {
             seg.block.text
@@ -941,7 +946,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=Comparison(field="m.color", op="=", value="purple"),
+            property_filter=Equals(field="m.color", value="purple"),
         )
         assert result.scored_segment_contexts == []
 
@@ -952,11 +957,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "hi",
-            property_filter=Comparison(
-                field="context.producer",
-                op="=",
-                value="Alice",
-            ),
+            property_filter=Equals(field="context.producer", value="Alice"),
         )
         assert result.scored_segment_contexts == []
 

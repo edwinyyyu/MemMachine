@@ -26,7 +26,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from memmachine_server.common.filter.filter_parser import Comparison, parse_filter
+from memmachine_server.common.filter import (
+    Equals,
+    Not,
+)
+from memmachine_server.common.filter.filter_parser import (
+    parse_filter,
+)
 from memmachine_server.common.payload_codec.payload_codec_config import (
     PlaintextPayloadCodecConfig,
 )
@@ -582,7 +588,7 @@ async def test_contexts_property_filter(
     s3 = _seg(event_uuid=ep, offset=3, ts_offset_seconds=3, properties={"tag": "a"})
     await partition.add_segments(_links(s0, s1, s2, s3))
 
-    filt = Comparison(field="m.tag", op="=", value="a")
+    filt = Equals(field="m.tag", value="a")
     result = await partition.get_segment_contexts(
         [s2.uuid],
         max_backward_segments=5,
@@ -593,6 +599,30 @@ async def test_contexts_property_filter(
     uuids = [s.uuid for s in ctx]
     # s1 excluded (tag=b); s0 backward, s2 seed, s3 forward
     assert uuids == [s0.uuid, s2.uuid, s3.uuid]
+
+
+@pytest.mark.asyncio
+async def test_contexts_negated_property_filter_keeps_a_segment_without_the_key(
+    partition: SQLAlchemySegmentStorePartition,
+) -> None:
+    """A negated filter is the complement, so a segment holding no tag is kept."""
+    ep = uuid4()
+    s0 = _seg(event_uuid=ep, offset=0, ts_offset_seconds=0, properties={"tag": "a"})
+    s1 = _seg(event_uuid=ep, offset=1, ts_offset_seconds=1, properties={"tag": "b"})
+    s2 = _seg(event_uuid=ep, offset=2, ts_offset_seconds=2)
+    s3 = _seg(event_uuid=ep, offset=3, ts_offset_seconds=3, properties={"tag": "a"})
+    await partition.add_segments(_links(s0, s1, s2, s3))
+
+    result = await partition.get_segment_contexts(
+        [s1.uuid],
+        max_backward_segments=5,
+        max_forward_segments=5,
+        property_filter=Not(Equals(field="m.tag", value="a")),
+    )
+    ctx = result[s1.uuid]
+    uuids = [s.uuid for s in ctx]
+    # s0 and s3 excluded (tag=a); s1 seed, s2 forward and holds no tag at all
+    assert uuids == [s1.uuid, s2.uuid]
 
 
 @pytest.mark.asyncio
@@ -627,7 +657,7 @@ async def test_contexts_filter_by_context_producer(
     )
     await partition.add_segments(_links(s0, s1, s2))
 
-    filt = Comparison(field="context.producer", op="=", value="Alice")
+    filt = Equals(field="context.producer", value="Alice")
     contexts = await partition.get_segment_contexts(
         [s0.uuid],
         max_backward_segments=5,
@@ -663,7 +693,7 @@ async def test_contexts_filter_by_context_type(
     )
     await partition.add_segments(_links(s0, s1, s2))
 
-    filt = Comparison(field="context.context_type", op="=", value="producer")
+    filt = Equals(field="context.context_type", value="producer")
     contexts = await partition.get_segment_contexts(
         [s0.uuid],
         max_backward_segments=5,

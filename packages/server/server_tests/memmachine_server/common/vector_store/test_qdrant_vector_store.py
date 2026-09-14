@@ -14,13 +14,14 @@ from qdrant_client.http.exceptions import UnexpectedResponse
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from memmachine_server.common.data_types import PropertyType
-from memmachine_server.common.filter.filter_parser import (
+from memmachine_server.common.filter import (
     And,
-    Comparison,
+    Equals,
     In,
     IsNull,
     Not,
     Or,
+    Ordering,
 )
 from memmachine_server.common.metrics_factory import MetricsFactory
 from memmachine_server.common.vector_store.data_types import (
@@ -37,6 +38,7 @@ from memmachine_server.common.vector_store.qdrant_vector_store import (
     QdrantVectorStoreParams,
     QdrantVectorStorePartition,
 )
+from server_tests.memmachine_server.common.filter.nodes import comparison
 from server_tests.memmachine_server.common.vector_store.declared_schema_contract import (
     DeclaredSchemaContract,
 )
@@ -373,7 +375,7 @@ class TestFilters:
             await collection.query(
                 query_vectors=[query_vec],
                 limit=10,
-                property_filter=Comparison(field=field, op=op, value=value),
+                property_filter=comparison(field, op, value),
             )
         )
         return {m.record_uuid for m in all_results[0].matches}
@@ -387,7 +389,7 @@ class TestFilters:
             await collection.query(
                 query_vectors=[v1],
                 limit=10,
-                property_filter=Comparison(field="name", op="=", value="alice"),
+                property_filter=Equals(field="name", value="alice"),
             )
         )
         matches = query_results[0].matches
@@ -409,7 +411,7 @@ class TestFilters:
             await collection.query(
                 query_vectors=[v1],
                 limit=10,
-                property_filter=Comparison(field="age", op=">", value=30),
+                property_filter=Ordering(field="age", op=">", value=30),
             )
         )
         matches = query_results[0].matches
@@ -431,7 +433,7 @@ class TestFilters:
             await collection.query(
                 query_vectors=[v1],
                 limit=10,
-                property_filter=Comparison(field="age", op="<", value=30),
+                property_filter=Ordering(field="age", op="<", value=30),
             )
         )
         matches = query_results[0].matches
@@ -589,7 +591,7 @@ class TestFilters:
         [result] = await collection.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=Comparison(field="created_at", op="=", value=dt),
+            property_filter=Equals(field="created_at", value=dt),
         )
         assert [m.record_uuid for m in result.matches] == [r1.uuid]
 
@@ -606,7 +608,7 @@ class TestFilters:
         [result] = await collection.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=Comparison(field="created_at", op="=", value=dt),
+            property_filter=Equals(field="created_at", value=dt),
         )
         assert [m.record_uuid for m in result.matches] == [r1.uuid]
 
@@ -750,10 +752,8 @@ class TestFilters:
         [result] = await collection.query(
             query_vectors=[v1],
             limit=10,
-            property_filter=Comparison(
-                field="created_at",
-                op="=",
-                value=datetime(2024, 6, 15, 12, 30, 0, tzinfo=UTC),
+            property_filter=Equals(
+                field="created_at", value=datetime(2024, 6, 15, 12, 30, 0, tzinfo=UTC)
             ),
         )
         assert [m.record_uuid for m in result.matches] == [r1.uuid]
@@ -864,7 +864,7 @@ class TestFilters:
             await collection.query(
                 query_vectors=[v1],
                 limit=10,
-                property_filter=Not(expr=IsNull(field="name")),
+                property_filter=Not(IsNull(field="name")),
             )
         )
         uuids = {m.record_uuid for m in query_results[0].matches}
@@ -882,7 +882,7 @@ class TestFilters:
             await collection.query(
                 query_vectors=[v1],
                 limit=10,
-                property_filter=In(field="name", values=["alice", "carol"]),
+                property_filter=In(field="name", values=("alice", "carol")),
             )
         )
         matches = query_results[0].matches
@@ -899,8 +899,10 @@ class TestFilters:
                 query_vectors=[v1],
                 limit=10,
                 property_filter=And(
-                    left=Comparison(field="active", op="=", value=True),
-                    right=Comparison(field="age", op=">", value=30),
+                    (
+                        Equals(field="active", value=True),
+                        Ordering(field="age", op=">", value=30),
+                    )
                 ),
             )
         )
@@ -916,8 +918,10 @@ class TestFilters:
                 query_vectors=[v1],
                 limit=10,
                 property_filter=Or(
-                    left=Comparison(field="name", op="=", value="alice"),
-                    right=Comparison(field="name", op="=", value="carol"),
+                    (
+                        Equals(field="name", value="alice"),
+                        Equals(field="name", value="carol"),
+                    )
                 ),
             )
         )
@@ -934,7 +938,7 @@ class TestFilters:
             await collection.query(
                 query_vectors=[v1],
                 limit=10,
-                property_filter=Not(expr=Comparison(field="age", op=">", value=30)),
+                property_filter=Not(Ordering(field="age", op=">", value=30)),
             )
         )
         matches = query_results[0].matches
@@ -1250,10 +1254,10 @@ class TestStrictMode:
         await partition.upsert(records=[held])
 
         for property_filter in (
-            Comparison(field="age", op="=", value="5"),
-            Comparison(field="age", op=">", value=1.5),
-            In(field="age", values=["5"]),
-            Comparison(field="name", op="=", value=5),
+            Equals(field="age", value="5"),
+            Ordering(field="age", op=">", value=1.5),
+            In(field="age", values=("5",)),
+            Equals(field="name", value=5),
         ):
             [result] = await partition.query(
                 query_vectors=[held.vector], limit=5, property_filter=property_filter
@@ -1262,7 +1266,7 @@ class TestStrictMode:
         [result] = await partition.query(
             query_vectors=[held.vector],
             limit=5,
-            property_filter=Comparison(field="age", op="=", value=5),
+            property_filter=Equals(field="age", value=5),
         )
         assert [match.record_uuid for match in result.matches] == [held.uuid]
         await store.delete_partition("mistyped")
