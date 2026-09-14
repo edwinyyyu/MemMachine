@@ -318,11 +318,13 @@ async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
 
 ## EventMemory
 
-`EventMemoryParams`: `reranker` goes; `format_options: FormatOptions`
-and `eviction: EvictionOptions | None` are added. The format the
-deriver embeds with is fixed per memory object because a memory's
-derivatives must be formatted one way; a display format is a call
-argument.
+`EventMemoryParams`: `reranker` goes, and so does the per-call
+`format_options` on `encode_events`; `eviction: EvictionOptions | None`
+is added. The deriver owns the format of what it embeds
+(`TextDeriver(format_options)` here, the handler's options under the
+tables of the second half), since a deriver decides the text it embeds
+and one format per memory would assume every deriver wants the same
+one; a display format is a call argument.
 
 ```python
 class EventMemory:
@@ -416,9 +418,10 @@ from block kind to handler, `BlockSegmenter[B]` and `BlockDeriver[B]`
 the one-kind handler contracts, `Piece` what a segmenter handler
 returns and `list[str]` what a deriver handler returns; the table
 builds every envelope. `Derivative.block` becomes `text` plus
-`block_kind`. `EventMemory` composes the anchor and the rendered header
-in one place, `_header`, ordered by `FormatOptions.parts`
-(`context.md`, "Rendering"); handlers take no format options.
+`block_kind`. `format_header` composes the embedded text and the
+rendered header in one place, ordered by `FormatOptions.parts`
+(`context.md`, "Rendering"); the `Deriver` table composes each
+derivative's text with its handler's `format_options`.
 `TextSegmenter`, `WholeTextDeriver` and `SentenceTextDeriver` become
 `text` handlers; `PassthroughSegmenter` and the `passthrough`
 configuration name go, an omitted `segmenter` meaning one segment per

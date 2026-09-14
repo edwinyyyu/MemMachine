@@ -125,13 +125,15 @@ contract. A segmenter that adds context parts (a temporal one adding
 `TimeRanges`) extends `Piece` when it lands; nothing is built for it
 before. A deriver decides texts, each embedded as one
 derivative: a derivative is always text, whatever kind it came from, so
-every derivative gets the same context processing. The memory, not the
-handler, composes the embedded anchor from the timestamp, the parts
-`format_options.parts` lists and the text, with the same `_header`
-rendering uses (`context.md`, "Rendering"); a handler that formatted
-parts itself would be one more place that knows the order. A handler
+every derivative gets the same context processing. The `Deriver`
+table, not the handler, composes the embedded text from the timestamp,
+the parts `format_options.parts` lists and the text, with the same
+`format_header` rendering uses (`context.md`, "Rendering"); a handler
+that formatted parts itself would be one more place that knows the
+order. The options are the handler's, since it decides what is
+embedded and a kind or a handler may want its own format. A handler
 still sees the whole event or segment, so it reads context with
-`context.get`; no handler takes format options.
+`context.get`.
 
 The built-in handlers, all for `text` and keeping their names:
 `TextSegmenter` (the recursive character splitter, `max_chunk_length`),

@@ -124,10 +124,10 @@ that order (default `("author",)`); a part not named contributes
 nothing, and parts carry no order of their own. So a new kind is
 placed by listing it, a composition that needs a different order
 lists a different one, and the same option governs the embedded
-anchor, where it is the memory's fixed `format_options`, and a
+text, where it is the deriver handler's `format_options`, and a
 rendering for display, where it is the caller's. The one composition
-point is `EpisodicMemory._header`; the anchor is that header over the
-derivative's text (`blocks.md`, "Processing"), so every part kind
+point is `format_header`; the embedded text is that header over the
+derived text (`blocks.md`, "Processing"), so every part kind
 contributes to anchors and renderings by implementing its one method,
 and no step enumerates parts. A source with no good name to render has a `source_id` and no
 `author` part, and its segments render with the timestamp and the

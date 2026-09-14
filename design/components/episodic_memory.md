@@ -17,7 +17,6 @@ EpisodicMemory(
     segmenter: Segmenter,           # table from block kind to BlockSegmenter (blocks.md, "Processing")
     deriver: Deriver,               # table from block kind to BlockDeriver
     embedder: Embedder,
-    format_options: FormatOptions,  # how the deriver renders dates and names into embedded text
     eviction: EvictionOptions | None,   # None: no eviction
     metrics_factory: MetricsFactory | None,
 )
@@ -35,12 +34,13 @@ names a key: the two handles are stateless bindings of the stores to
 the tenant's key (`server_redesign.md`, "Vocabulary"), so past
 construction nothing can route to another tenant, and a handle to a
 deleted tenant raises `KeyNotLiveError` from the store's fence.
-`format_options` is a constructor parameter, not a call argument,
-because it decides what is written: the deriver formats a segment's
-timestamp and author into the text it embeds, and a tenant's
-derivatives must be formatted one way. It is a mutable tenant option
-(`episodic_memory.format`), applying to events processed after a
-change.
+The format of what is embedded belongs to the deriver, not the memory:
+a `BlockDeriver` handler owns its `FormatOptions`, since it decides the
+text it embeds and different kinds or handlers may want different
+formats, and the `Deriver` table composes each derivative's text with
+them. A tenant's deriver options (`episodic_memory_manager.md`) carry
+the format per handler, mutable, applying to events processed after a
+change. Rendering for display takes the caller's options per call.
 
 ## API
 
