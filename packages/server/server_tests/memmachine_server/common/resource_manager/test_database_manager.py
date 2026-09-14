@@ -1,4 +1,5 @@
 import importlib.util
+from datetime import datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -383,6 +384,7 @@ async def test_qdrant_creates_vector_store():
     conf.qdrant_confs["qdrant1"] = QdrantConf(
         is_distributed=True,
         registry_replication_factor=3,
+        indexed_properties={"category": "str"},
     )
 
     mock_client = AsyncMock()
@@ -417,7 +419,11 @@ async def test_qdrant_creates_vector_store():
     assert kwargs["vector_dimensions"] == 3
     assert kwargs["is_distributed"] is True
     assert kwargs["registry_replication_factor"] == 3
-    assert kwargs["indexed_properties"] == {"memmachine_event_session": str}
+    # The configured user keys, typed, plus the service's system keys.
+    assert kwargs["indexed_properties"] == {
+        "category": str,
+        "memmachine_event_session": str,
+    }
     # Asserted as "not None" rather than pinned to a value: OperationTracker
     # accepts None and then discards every timing without error, so passing the
     # keyword is not the property that matters - passing a factory is.
@@ -606,6 +612,7 @@ async def test_milvus_creates_vector_store():
     conf = _milvus_only_conf()
     conf.milvus_confs["milvus1"] = MilvusConf(
         consistency_level="Strong",
+        indexed_properties={"category": "str"},
     )
 
     mock_client = MagicMock()
@@ -635,7 +642,7 @@ async def test_milvus_creates_vector_store():
         collection="c",
         vector_dimensions=3,
         consistency_level="Strong",
-        indexed_properties={"memmachine_event_session": str},
+        indexed_properties={"category": str, "memmachine_event_session": str},
     )
     mock_store_cls.assert_called_once_with(mock_params_cls.return_value)
     mock_store_cls.return_value.startup.assert_awaited_once()
@@ -1088,9 +1095,13 @@ async def test_close_disposes_vector_store_engines_and_shuts_down_stores():
     mock_engine.dispose.assert_awaited()
 
 
-def _sqlite_conf() -> MagicMock:
+def _sqlite_conf_with_properties(indexed_properties: dict[str, str]) -> MagicMock:
     return _sqlite_vector_store_only_conf(
-        sqlite_vector_store_confs={"vs1": SQLiteVectorStoreConf(path="vs.db")}
+        sqlite_vector_store_confs={
+            "vs1": SQLiteVectorStoreConf(
+                path="vs.db", indexed_properties=indexed_properties
+            )
+        }
     )
 
 
@@ -1112,9 +1123,63 @@ def _patched_sqlite_store():
 
 
 @pytest.mark.asyncio
+async def test_get_vector_store_merges_configured_and_system_keys():
+    """The store is built with the configured user keys plus the service's system keys."""
+    conf = _sqlite_conf_with_properties({"category": "str", "score": "float"})
+    engine_patch, params_patch, store_patch = _patched_sqlite_store()
+    with engine_patch, params_patch as mock_params_cls, store_patch as mock_store_cls:
+        mock_store_cls.return_value.provision = AsyncMock()
+        mock_store_cls.return_value.startup = AsyncMock()
+        builder = DatabaseManager(conf)
+        await builder.get_vector_store(
+            "vs1",
+            collection="c",
+            vector_dimensions=3,
+            indexed_properties={"memmachine_event_timestamp": datetime},
+        )
+    assert mock_params_cls.call_args.kwargs["indexed_properties"] == {
+        "category": str,
+        "score": float,
+        "memmachine_event_timestamp": datetime,
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_vector_store_rejects_a_configured_key_of_another_type():
+    """A configured key the service writes with another type is a configuration error."""
+    conf = _sqlite_conf_with_properties({"memmachine_event_timestamp": "str"})
+    engine_patch, params_patch, store_patch = _patched_sqlite_store()
+    with engine_patch, params_patch, store_patch as mock_store_cls:
+        mock_store_cls.return_value.provision = AsyncMock()
+        mock_store_cls.return_value.startup = AsyncMock()
+        builder = DatabaseManager(conf)
+        with pytest.raises(VectorStoreConfigurationError, match="configures"):
+            await builder.get_vector_store(
+                "vs1",
+                collection="c",
+                vector_dimensions=3,
+                indexed_properties={"memmachine_event_timestamp": datetime},
+            )
+
+
+@pytest.mark.asyncio
+async def test_get_vector_store_rejects_an_invalid_configured_key():
+    conf = _sqlite_conf_with_properties({"Bad Key": "str"})
+    engine_patch, params_patch, store_patch = _patched_sqlite_store()
+    with engine_patch, params_patch, store_patch as mock_store_cls:
+        mock_store_cls.return_value.provision = AsyncMock()
+        mock_store_cls.return_value.startup = AsyncMock()
+        builder = DatabaseManager(conf)
+        with pytest.raises(VectorStoreConfigurationError, match="indexed_properties"):
+            await builder.get_vector_store(
+                "vs1", collection="c", vector_dimensions=3, indexed_properties={}
+            )
+
+
+@pytest.mark.asyncio
 async def test_a_collection_is_one_store():
     """The same collection asked for with other dimensions or keys is refused."""
-    conf = _sqlite_conf()
+    conf = _sqlite_conf_with_properties({})
     engine_patch, params_patch, store_patch = _patched_sqlite_store()
     with engine_patch, params_patch, store_patch as mock_store_cls:
         mock_store_cls.return_value.provision = AsyncMock()
@@ -1162,7 +1227,7 @@ async def test_a_collection_is_one_store():
 
 @pytest.mark.asyncio
 async def test_collections_on_one_backend_share_its_engine():
-    conf = _sqlite_conf()
+    conf = _sqlite_conf_with_properties({})
     engine_patch, params_patch, store_patch = _patched_sqlite_store()
     with (
         engine_patch as mock_create,

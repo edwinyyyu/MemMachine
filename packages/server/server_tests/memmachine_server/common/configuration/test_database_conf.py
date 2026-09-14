@@ -122,6 +122,7 @@ def db_conf_dict() -> dict:
                     "api_key": "test-key",
                     "is_distributed": True,
                     "registry_replication_factor": 3,
+                    "indexed_properties": {"category": "str"},
                 },
             },
             "my_milvus": {
@@ -206,6 +207,7 @@ def test_parse_valid_storage_dict(db_conf_dict):
     assert qdrant_conf.api_key == SecretStr("test-key")
     assert qdrant_conf.is_distributed is True
     assert qdrant_conf.registry_replication_factor == 3
+    assert qdrant_conf.indexed_properties == {"category": "str"}
 
     # Milvus check
     milvus_conf = storage_conf.milvus_confs["my_milvus"]

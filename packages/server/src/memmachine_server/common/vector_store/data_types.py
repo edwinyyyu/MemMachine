@@ -57,10 +57,10 @@ IndexedProperties = Annotated[
     AfterValidator(_validate_property_keys),
 ]
 """
-The one schema a store declares for every partition it holds: each key a
+The one schema a store declares for every collection it holds: each key a
 store indexes and filters on, with the type its values hold. Declared once,
-at construction, from the system keys of the consumer the store is built
-for; a record or a filter naming any other key is rejected.
+from deployment configuration merged with the system keys of the consumer the
+store is built for; a record or a filter naming any other key is rejected.
 """
 
 

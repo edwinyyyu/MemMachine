@@ -215,7 +215,7 @@ def event_backend_indexed_properties() -> dict[str, PropertyType]:
     """The system keys the event backend writes into every vector record.
 
     EventMemory's reserved keys and the adapter's own event fields; the
-    vector store is built with these.
+    vector store is built with these plus its configured user keys.
     """
     return {
         **EventMemory.expected_vector_store_collection_schema(),

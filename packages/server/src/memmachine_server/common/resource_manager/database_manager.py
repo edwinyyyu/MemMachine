@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, Self
 
 from neo4j import AsyncDriver, AsyncGraphDatabase
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import event, text
 from sqlalchemy.engine.interfaces import DBAPIConnection
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -23,7 +23,10 @@ from memmachine_server.common.configuration.database_conf import (
     SQLiteVectorStoreEngine,
     SQLiteVecVectorStoreConf,
 )
-from memmachine_server.common.data_types import PropertyType
+from memmachine_server.common.data_types import (
+    PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
+    PropertyType,
+)
 from memmachine_server.common.errors import (
     MilvusConfigurationError,
     Neo4JConfigurationError,
@@ -36,7 +39,7 @@ from memmachine_server.common.vector_graph_store.neo4j_vector_graph_store import
     Neo4jVectorGraphStore,
     Neo4jVectorGraphStoreParams,
 )
-from memmachine_server.common.vector_store import VectorStore
+from memmachine_server.common.vector_store import IndexedProperties, VectorStore
 from memmachine_server.common.vector_store.vector_search_engine import (
     VectorSearchEngine,
 )
@@ -50,6 +53,8 @@ if TYPE_CHECKING:
     from qdrant_client import AsyncQdrantClient
 
 logger = logging.getLogger(__name__)
+
+_INDEXED_PROPERTIES = TypeAdapter(IndexedProperties)
 
 
 def enable_sqlite_foreign_keys(engine: AsyncEngine) -> None:
@@ -583,10 +588,11 @@ class DatabaseManager:
         """Return the store for one collection on a configured backend, building it on first use.
 
         A store is one collection: one native collection with one
-        dimensionality and one declared schema, the keys of the service
-        building it. The collection name keeps stores on one backend apart;
-        asking for the same collection again with other dimensions or keys
-        is a configuration error.
+        dimensionality and one declared schema, the backend's configured user
+        keys plus the system keys of the service building it, merged here.
+        The collection name keeps stores on one backend apart; asking for the
+        same collection again with other dimensions or keys is a
+        configuration error.
         """
         key = (backend, collection)
         if key not in self._vector_store_locks:
@@ -601,16 +607,20 @@ class DatabaseManager:
                 )
                 self.vector_stores[key] = store
                 return store
-            if store.vector_dimensions != vector_dimensions or dict(
-                store.indexed_properties
-            ) != dict(indexed_properties):
+            declared = self._declared_properties(
+                backend, self._vector_store_conf(backend), indexed_properties
+            )
+            if (
+                store.vector_dimensions != vector_dimensions
+                or dict(store.indexed_properties) != declared
+            ):
                 raise VectorStoreConfigurationError(
                     f"VectorStore '{backend}' collection {collection!r} was built "
                     f"with {store.vector_dimensions} dimensions and keys "
                     f"{sorted(store.indexed_properties)}, but is asked for "
-                    f"{vector_dimensions} dimensions and keys "
-                    f"{sorted(indexed_properties)}; one collection is one store, "
-                    "so give the other service its own collection."
+                    f"{vector_dimensions} dimensions and keys {sorted(declared)}; "
+                    "one collection is one store, so give the other service its "
+                    "own collection."
                 )
             return store
 
@@ -632,25 +642,26 @@ class DatabaseManager:
         backend: str,
         collection: str,
         vector_dimensions: int,
-        indexed_properties: Mapping[str, PropertyType],
+        system_properties: Mapping[str, PropertyType],
     ) -> VectorStore:
         conf = self._vector_store_conf(backend)
+        declared = self._declared_properties(backend, conf, system_properties)
         match conf:
             case QdrantConf():
                 store = await self._build_qdrant_store(
-                    backend, conf, collection, vector_dimensions, indexed_properties
+                    backend, conf, collection, vector_dimensions, declared
                 )
             case MilvusConf():
                 store = await self._build_milvus_store(
-                    backend, conf, collection, vector_dimensions, indexed_properties
+                    backend, conf, collection, vector_dimensions, declared
                 )
             case SQLiteVectorStoreConf():
                 store = await self._build_sqlite_vector_store(
-                    backend, conf, collection, vector_dimensions, indexed_properties
+                    backend, conf, collection, vector_dimensions, declared
                 )
             case SQLiteVecVectorStoreConf():
                 store = await self._build_sqlite_vec_vector_store(
-                    backend, conf, collection, vector_dimensions, indexed_properties
+                    backend, conf, collection, vector_dimensions, declared
                 )
         try:
             # Provisioning is the schema command's once it exists; until then
@@ -681,6 +692,34 @@ class DatabaseManager:
             return
         await engine.dispose()
         self.vector_store_sql_engines.pop(backend, None)
+
+    @staticmethod
+    def _declared_properties(
+        name: str,
+        conf: QdrantConf
+        | MilvusConf
+        | SQLiteVectorStoreConf
+        | SQLiteVecVectorStoreConf,
+        system_properties: Mapping[str, PropertyType],
+    ) -> dict[str, PropertyType]:
+        """The configured user keys plus the service's system keys, typed."""
+        try:
+            declared = _INDEXED_PROPERTIES.validate_python(conf.indexed_properties)
+        except ValidationError as e:
+            raise VectorStoreConfigurationError(
+                f"VectorStore '{name}' has invalid indexed_properties: {e}"
+            ) from e
+        for key, property_type in system_properties.items():
+            configured = declared.get(key)
+            if configured is not None and configured is not property_type:
+                raise VectorStoreConfigurationError(
+                    f"VectorStore '{name}' configures {key!r} as "
+                    f"{PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[configured]}, but the "
+                    f"service writes it as "
+                    f"{PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[property_type]}."
+                )
+            declared[key] = property_type
+        return declared
 
     @staticmethod
     async def _shutdown_vector_store(name: str, vector_store: VectorStore) -> None:

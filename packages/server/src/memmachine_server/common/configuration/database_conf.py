@@ -266,6 +266,15 @@ class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
             "is set to match so all replicas confirm writes."
         ),
     )
+    indexed_properties: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "The property keys every collection of this store indexes and filters "
+            "on, each with its type name (str, int, float, bool, datetime). The "
+            "system keys of the service using the store are added to these. A "
+            "record or a filter naming any other key is rejected."
+        ),
+    )
 
 
 class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
@@ -294,6 +303,15 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         description=(
             "Milvus consistency level for newly created collections. "
             "Supported values: Strong, Session, Bounded, Eventually."
+        ),
+    )
+    indexed_properties: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "The property keys every collection of this store indexes and filters "
+            "on, each with its type name (str, int, float, bool, datetime). The "
+            "system keys of the service using the store are added to these. A "
+            "record or a filter naming any other key is rejected."
         ),
     )
 
@@ -366,6 +384,15 @@ class SQLiteVectorStoreConf(YamlSerializableMixin):
             "to `index_directory`. Only relevant when `index_directory` is set."
         ),
     )
+    indexed_properties: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "The property keys every collection of this store indexes and filters "
+            "on, each with its type name (str, int, float, bool, datetime). The "
+            "system keys of the service using the store are added to these. A "
+            "record or a filter naming any other key is rejected."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_path(self) -> Self:
@@ -380,6 +407,15 @@ class SQLiteVecVectorStoreConf(YamlSerializableMixin):
     path: str = Field(
         ...,
         description="SQLite database file path (used as sqlite+aiosqlite:///<path>)",
+    )
+    indexed_properties: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "The property keys every collection of this store indexes and filters "
+            "on, each with its type name (str, int, float, bool, datetime). The "
+            "system keys of the service using the store are added to these. A "
+            "record or a filter naming any other key is rejected."
+        ),
     )
 
     @model_validator(mode="after")
