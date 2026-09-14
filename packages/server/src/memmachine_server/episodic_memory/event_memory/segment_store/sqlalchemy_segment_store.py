@@ -83,12 +83,11 @@ from memmachine_server.common.properties_json import (
 )
 from memmachine_server.common.utils import utc_offset_seconds
 from memmachine_server.episodic_memory.event_memory.data_types import (
+    Context,
     Neighborhood,
     Segment,
     decode_block,
-    decode_context,
     encode_block,
-    encode_context,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.data_types import (
     SegmentStoreAttemptsExhaustedError,
@@ -425,7 +424,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 "session_id": segment.session_id,
                 "source_id": segment.source_id,
                 "context": self._payload_codec.encode(
-                    json.dumps(encode_context(segment.context)).encode("utf-8")
+                    json.dumps(segment.context.encode()).encode("utf-8")
                 ),
                 "block_kind": segment.block.kind,
                 "block": self._payload_codec.encode(
@@ -1052,7 +1051,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
 
     def _segment_from_segment_row(self, row: SegmentRow) -> Segment:
         """Convert a SegmentRow into a Segment."""
-        context = decode_context(json.loads(self._payload_codec.decode(row.context)))
+        context = Context.decode(json.loads(self._payload_codec.decode(row.context)))
         block = decode_block(json.loads(self._payload_codec.decode(row.block)))
         properties = decode_properties(row.properties)
         original_timezone = timezone(timedelta(seconds=row.timestamp_timezone_offset))
