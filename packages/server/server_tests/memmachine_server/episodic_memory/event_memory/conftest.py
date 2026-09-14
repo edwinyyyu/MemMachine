@@ -16,9 +16,6 @@ from memmachine_server.common.filter.filter_parser import (
     normalize_filter_field,
 )
 from memmachine_server.common.reranker import Reranker
-from memmachine_server.common.vector_store.data_types import (
-    VectorStoreCollectionConfig,
-)
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Neighborhood,
     Segment,
@@ -355,13 +352,8 @@ class AngleEmbedder(FakeEmbedder):
 def make_collection(embedder: FakeEmbedder) -> InMemoryVectorStorePartition:
     """A collection declaring EventMemory's reserved keys and a `color` property."""
     return InMemoryVectorStorePartition(
-        VectorStoreCollectionConfig(
-            vector_dimensions=embedder.dimensions,
-            indexed_properties_schema={
-                **EventMemory.expected_vector_store_collection_schema(),
-                "color": str,
-            },
-        )
+        "test",
+        {**EventMemory.expected_vector_store_collection_schema(), "color": str},
     )
 
 

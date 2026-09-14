@@ -40,9 +40,6 @@ from memmachine_server.common.filter.filter_parser import (
     Or as FilterOr,
 )
 from memmachine_server.common.vector_store import VectorStore
-from memmachine_server.common.vector_store.data_types import (
-    VectorStoreCollectionConfig,
-)
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Neighborhood,
     QueryHit,
@@ -165,13 +162,9 @@ def vector_store():
 
 @pytest.fixture
 def vector_store_partition(fake_embedder):
-    config = VectorStoreCollectionConfig(
-        vector_dimensions=fake_embedder.dimensions,
-        indexed_properties_schema=(
-            EventMemory.expected_vector_store_collection_schema()
-        ),
+    return InMemoryVectorStorePartition(
+        "sess1", EventMemory.expected_vector_store_collection_schema()
     )
-    return InMemoryVectorStorePartition(config)
 
 
 @pytest.fixture
@@ -201,7 +194,6 @@ def long_term_memory(
             session_id="sess1",
             vector_store=vector_store,
             vector_store_partition=vector_store_partition,
-            vector_store_collection_namespace="long_term_memory",
             segment_store=segment_store,
             segment_store_partition=segment_store_partition,
             partition_key="sess1",
@@ -306,10 +298,7 @@ async def test_drop_session_partition_calls_parent_lifecycle_hooks(
     segment_store,
 ):
     await long_term_memory.drop_session_partition()
-    vector_store.delete_partition.assert_awaited_once_with(
-        namespace="long_term_memory",
-        name="sess1",
-    )
+    vector_store.delete_partition.assert_awaited_once_with("sess1")
     segment_store.delete_partition.assert_awaited_once_with("sess1")
     # Reclamation is the sweeper's; the delete path never purges.
     segment_store.purge_deleted_partitions.assert_not_awaited()
@@ -559,19 +548,13 @@ def _make_ltm(episodes: list[Episode]) -> LongTermMemory:
     """
     fake_embedder = FakeEmbedder()
     vector_store_partition = InMemoryVectorStorePartition(
-        VectorStoreCollectionConfig(
-            vector_dimensions=fake_embedder.dimensions,
-            indexed_properties_schema=(
-                EventMemory.expected_vector_store_collection_schema()
-            ),
-        )
+        "sess1", EventMemory.expected_vector_store_collection_schema()
     )
     return LongTermMemory(
         EventBackendParams(
             session_id="sess1",
             vector_store=create_autospec(VectorStore, instance=True),
             vector_store_partition=vector_store_partition,
-            vector_store_collection_namespace="long_term_memory",
             segment_store=create_autospec(SegmentStore, instance=True),
             segment_store_partition=InMemorySegmentStorePartition(),
             partition_key="sess1",
@@ -712,7 +695,6 @@ def timeline_long_term_memory(
             session_id="sess1",
             vector_store=vector_store,
             vector_store_partition=vector_store_partition,
-            vector_store_collection_namespace="long_term_memory",
             segment_store=segment_store,
             segment_store_partition=segment_store_partition,
             partition_key="sess1",

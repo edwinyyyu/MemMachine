@@ -17,7 +17,10 @@ from memmachine_server.common.configuration.episodic_config import (
     WholeTextDeriverConf,
 )
 from memmachine_server.common.resource_manager import CommonResourceManager
-from memmachine_server.common.vector_store import VectorStoreCollectionConfig
+from memmachine_server.common.vector_store import (
+    VectorStore,
+    validate_collection_name,
+)
 from memmachine_server.episodic_memory.event_memory.deriver import Deriver
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
@@ -47,7 +50,7 @@ from .long_term_memory import (
 
 logger = logging.getLogger(__name__)
 
-_EVENT_BACKEND_NAMESPACE = "long_term_memory"
+_EVENT_BACKEND_PURPOSE = "long_term_memory"
 
 
 async def long_term_memory_params_from_config(
@@ -103,24 +106,14 @@ async def create_event_backend_partitions(
 ) -> None:
     """Create the session's partition in its segment store and its vector store.
 
-    Strict, like the stores' own create: called once, when the session is
-    created.
+    Strict, like the stores' own `create_partition`: called once, when the
+    session is created.
     """
-    vector_store = await resource_manager.get_vector_store(config.vector_store)
     segment_store = await resource_manager.get_segment_store(config.segment_store)
-    embedder = await resource_manager.get_embedder(config.embedder, validate=True)
+    vector_store = await event_backend_vector_store(config, resource_manager)
     partition_key = partition_key_for_session(config.session_id)
     await segment_store.create_partition(partition_key, SegmentStorePartitionConfig())
-    await vector_store.create_partition(
-        namespace=_EVENT_BACKEND_NAMESPACE,
-        name=partition_key,
-        config=VectorStoreCollectionConfig(
-            vector_dimensions=embedder.dimensions,
-            indexed_properties_schema=(
-                EventMemory.expected_vector_store_collection_schema()
-            ),
-        ),
-    )
+    await vector_store.create_partition(partition_key)
 
 
 async def delete_event_backend_partitions(
@@ -128,12 +121,10 @@ async def delete_event_backend_partitions(
     resource_manager: InstanceOf[CommonResourceManager],
 ) -> None:
     """Delete the session's partitions by key, whether or not both exist."""
-    vector_store = await resource_manager.get_vector_store(config.vector_store)
     segment_store = await resource_manager.get_segment_store(config.segment_store)
+    vector_store = await event_backend_vector_store(config, resource_manager)
     partition_key = partition_key_for_session(config.session_id)
-    await vector_store.delete_partition(
-        namespace=_EVENT_BACKEND_NAMESPACE, name=partition_key
-    )
+    await vector_store.delete_partition(partition_key)
     await segment_store.delete_partition(partition_key)
 
 
@@ -141,9 +132,9 @@ async def _event_params(
     config: EventLongTermMemoryConf,
     resource_manager: InstanceOf[CommonResourceManager],
 ) -> EventBackendParams:
-    vector_store = await resource_manager.get_vector_store(config.vector_store)
     segment_store = await resource_manager.get_segment_store(config.segment_store)
     embedder = await resource_manager.get_embedder(config.embedder, validate=True)
+    vector_store = await event_backend_vector_store(config, resource_manager)
     reranker = (
         await resource_manager.get_reranker(config.reranker, validate=True)
         if config.reranker is not None
@@ -155,15 +146,10 @@ async def _event_params(
 
     # No memory request creates storage: the session's partitions were created
     # with the session, and a session without them is broken, not new.
-    collection = await vector_store.get_partition(
-        namespace=_EVENT_BACKEND_NAMESPACE,
-        name=partition_key,
-    )
-    if collection is None:
+    vector_store_partition = await vector_store.get_partition(partition_key)
+    if vector_store_partition is None:
         raise SessionPartitionMissingError(
-            config.session_id,
-            partition_key,
-            f"namespace {_EVENT_BACKEND_NAMESPACE!r} of the vector store",
+            config.session_id, partition_key, f"collection {vector_store.collection!r}"
         )
     partition = await segment_store.get_partition(partition_key)
     if partition is None:
@@ -177,8 +163,7 @@ async def _event_params(
     return EventBackendParams(
         session_id=config.session_id,
         vector_store=vector_store,
-        vector_store_partition=collection,
-        vector_store_collection_namespace=_EVENT_BACKEND_NAMESPACE,
+        vector_store_partition=vector_store_partition,
         segment_store=segment_store,
         segment_store_partition=partition,
         partition_key=partition_key,
@@ -189,6 +174,37 @@ async def _event_params(
         deriver=deriver,
         metrics_factory=await resource_manager.get_metrics_factory("prometheus"),
     )
+
+
+async def event_backend_vector_store(
+    config: EventLongTermMemoryConf,
+    resource_manager: InstanceOf[CommonResourceManager],
+) -> VectorStore:
+    """The event backend's vector store: the collection of its embedder, built for it."""
+    embedder = await resource_manager.get_embedder(config.embedder, validate=True)
+    return await resource_manager.get_vector_store(
+        config.vector_store,
+        collection=event_backend_collection(config.embedder),
+        vector_dimensions=embedder.dimensions,
+        indexed_properties=EventMemory.expected_vector_store_collection_schema(),
+    )
+
+
+def event_backend_collection(embedder_id: str) -> str:
+    """The collection the event backend keeps for one embedder.
+
+    One cell of the purpose-by-embedder matrix, named so that one backend
+    can hold the collections of several embedders side by side.
+    """
+    collection = f"{_EVENT_BACKEND_PURPOSE}__{embedder_id}"
+    try:
+        validate_collection_name(collection)
+    except ValueError as error:
+        raise ValueError(
+            f"Embedder id {embedder_id!r} cannot name a vector store collection: "
+            f"{error} Rename the embedder in the configuration."
+        ) from error
+    return collection
 
 
 def partition_key_for_session(session_id: str) -> str:

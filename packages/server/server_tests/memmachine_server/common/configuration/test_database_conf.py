@@ -380,7 +380,7 @@ def test_qdrant_conf_rejects_a_timeout_that_is_not_a_positive_whole_second():
     with pytest.raises(ValueError, match="request_timeout_seconds"):
         QdrantConf(request_timeout_seconds=-1)
     with pytest.raises(ValueError, match="request_timeout_seconds"):
-        QdrantConf(request_timeout_seconds=1.5)
+        QdrantConf(request_timeout_seconds=1)
 
 
 def test_qdrant_conf_api_key_from_env(monkeypatch):

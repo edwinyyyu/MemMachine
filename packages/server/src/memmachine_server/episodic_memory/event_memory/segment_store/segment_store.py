@@ -293,7 +293,11 @@ class SegmentStore(ABC):
     @abstractmethod
     async def get_partition(self, partition_key: str) -> SegmentStorePartition | None:
         """
-        Open a partition-scoped handle for an existing partition.
+        Get a handle bound to an existing partition.
+
+        The handle owns nothing: a caller builds one here, drops it, and
+        builds another at will. Staleness is a property of a handle already
+        held, raised by its operations, never of this lookup.
 
         Args:
             partition_key (str):
@@ -301,7 +305,8 @@ class SegmentStore(ABC):
 
         Returns:
             SegmentStorePartition | None:
-                A partition-scoped handle, or None if the partition does not exist.
+                A handle bound to the partition, or None if the partition
+                does not exist.
         """
         raise NotImplementedError
 
@@ -310,9 +315,9 @@ class SegmentStore(ABC):
         """
         Delete a partition.
 
-        The partition becomes unreachable immediately: it can no longer be
-        opened, and handles opened on it raise from then on.
-        Implementations may defer physically reclaiming its storage to
+        The partition becomes unreachable immediately: `get_partition`
+        returns None for it, and handles bound to it raise from then on.
+        Implementations may defer physically reclaiming its rows to
         `purge_deleted_partitions`. Idempotent.
 
         Args:
