@@ -274,6 +274,13 @@ class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
             "above the longest a request to Qdrant can be in flight."
         ),
     )
+    request_timeout: float = Field(
+        ...,
+        description=(
+            "Seconds a request to Qdrant may take before the client gives up. "
+            "Required: every remote write is bounded by it."
+        ),
+    )
 
 
 class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
@@ -324,6 +331,13 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
             "round that finds nothing under it, so a write to Milvus that landed "
             "after that round is still reclaimed; keep it orders of magnitude "
             "above the longest a request to Milvus can be in flight."
+        ),
+    )
+    request_timeout: float = Field(
+        ...,
+        description=(
+            "Seconds a request to Milvus may take before the client gives up. "
+            "Required: every remote write is bounded by it."
         ),
     )
 
