@@ -82,10 +82,10 @@ class Event(BaseModel):
   implements `IS NULL`. A typed id list (`session_ids`, `source_ids`)
   holds ids only, and a filter that names no session means every
   session. Property values are never `None`: absence is the one no-value
-  state. Session ids beginning with `memmachine_` are reserved for the
-  server; `memmachine_default` is the stream of events the API ingests
-  without a conversation id, a stop-gap until the API requires one
-  (below, "Translation layers").
+  state. One session name is reserved, `memmachine_default`: the stream
+  of events the API ingests without a conversation id, a stop-gap until
+  the API requires one (below, "Translation layers"). Any other name,
+  `memmachine_`-prefixed or not, is a caller's to use.
 - Stored events are immutable (`server_redesign.md`, "Propagation"):
   `encode_events` replaces an event's earlier encoding wholesale under
   new segment and derivative uuids, `forget_events` removes one, and no

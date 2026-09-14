@@ -147,10 +147,10 @@ Named so the redesign can be checked against it.
 - Session id: the stream an event belongs to, a conversation or an
   interaction the application delimits, a bounded non-empty string it
   owns, required; events with the same session id form one ordered
-  stream. Ids beginning with `memmachine_` are reserved for the server:
-  `memmachine_default` is the stream of events the legacy API ingests
-  without a conversation id, a stop-gap, since the new API requires a
-  session.
+  stream. One name is reserved, `memmachine_default`: the stream of
+  events the legacy API ingests without a conversation id, a stop-gap,
+  since the new API requires a session. Any other name is a caller's to
+  use.
   A system field beside `timestamp`, indexed, filtered by
   `session_ids`, and the field the server's own semantics depend on:
   expansion and segment windows walk the one total order confined to
