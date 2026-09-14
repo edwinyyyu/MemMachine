@@ -37,15 +37,13 @@ def _format_with_context(context: Context, text: str) -> str:
 def _format_for_embedding(
     segment: Segment,
     text: str,
-    format_options: FormatOptions | None,
+    format_options: FormatOptions,
 ) -> str:
     """Format a segment's text as an embedding anchor."""
     # Mirror the query result formatters: the message text is JSON-dumped
     # (ensure_ascii=False) so it is a single escaped token, while the
     # producer prefix stays outside the quotes.
     body = _format_with_context(segment.context, json.dumps(text, ensure_ascii=False))
-    if format_options is None:
-        format_options = FormatOptions(time_style=None)
 
     formatted_timestamp = format_timestamp(segment.timestamp, format_options)
     if not formatted_timestamp:
@@ -70,44 +68,50 @@ def _build_text_derivatives(segment: Segment, texts: Iterable[str]) -> list[Deri
     ]
 
 
-class WholeTextDeriver(Deriver):
+class TextDeriver(Deriver):
+    """A deriver of text blocks that formats each text it embeds in the segment's context.
+
+    `format_options` decides how the timestamp and the author are written
+    into the embedded text; the default is a full date and no time.
+    """
+
+    def __init__(self, format_options: FormatOptions | None = None) -> None:
+        """Take the format of the text this deriver embeds; None is the default."""
+        self._format_options = (
+            format_options
+            if format_options is not None
+            else FormatOptions(time_style=None)
+        )
+
+    def _anchor(self, segment: Segment, text: str) -> str:
+        return _format_for_embedding(segment, text, self._format_options)
+
+
+class WholeTextDeriver(TextDeriver):
     """Emits one derivative with the segment's whole text formatted in context."""
 
     @override
-    async def derive(
-        self,
-        segment: Segment,
-        *,
-        format_options: FormatOptions | None = None,
-    ) -> list[Derivative]:
+    async def derive(self, segment: Segment) -> list[Derivative]:
         match segment.block:
             case TextBlock(text=text):
-                return _build_text_derivatives(
-                    segment,
-                    [_format_for_embedding(segment, text, format_options)],
-                )
+                return _build_text_derivatives(segment, [self._anchor(segment, text)])
             case _:
                 raise NotImplementedError(
                     f"Unsupported block type: {type(segment.block).__name__}"
                 )
 
 
-class SentenceTextDeriver(Deriver):
+class SentenceTextDeriver(TextDeriver):
     """Emits one derivative per sentence in the segment's text, formatted in context."""
 
     @override
-    async def derive(
-        self,
-        segment: Segment,
-        *,
-        format_options: FormatOptions | None = None,
-    ) -> list[Derivative]:
+    async def derive(self, segment: Segment) -> list[Derivative]:
         match segment.block:
             case TextBlock(text=text):
                 return _build_text_derivatives(
                     segment,
                     [
-                        _format_for_embedding(segment, sentence, format_options)
+                        self._anchor(segment, sentence)
                         for sentence in extract_sentences(text)
                     ],
                 )

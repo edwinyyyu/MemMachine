@@ -74,11 +74,6 @@ class EventMemoryParams(BaseModel):
             Deriver that derives derivatives from segments.
         embedder (Embedder):
             Embedder instance for creating embeddings.
-        format_options (FormatOptions):
-            How the deriver formats a segment's timestamp and author into
-            the text it embeds. Fixed per memory because a memory's
-            derivatives must be formatted one way; a display format is a
-            call argument (default: a full date and no time).
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -103,10 +98,6 @@ class EventMemoryParams(BaseModel):
     embedder: InstanceOf[Embedder] = Field(
         ...,
         description="Embedder instance for creating embeddings",
-    )
-    format_options: FormatOptions = Field(
-        default_factory=lambda: FormatOptions(time_style=None),
-        description="How the deriver formats the text it embeds",
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
@@ -162,7 +153,6 @@ class EventMemory:
         self._segmenter = params.segmenter
         self._deriver = params.deriver
         self._embedder = params.embedder
-        self._format_options = params.format_options
 
         self._tracker = OperationTracker(
             params.metrics_factory,
@@ -232,10 +222,7 @@ class EventMemory:
         await self._forget_events({event.uuid for event in events})
 
         segment_lists = await asyncio.gather(
-            *(
-                self._segmenter.segment(event, format_options=self._format_options)
-                for event in events
-            )
+            *(self._segmenter.segment(event) for event in events)
         )
         segments = [
             segment for segment_list in segment_lists for segment in segment_list
@@ -243,10 +230,7 @@ class EventMemory:
         t_segmentation = time.monotonic()
 
         derivative_lists = await asyncio.gather(
-            *(
-                self._deriver.derive(segment, format_options=self._format_options)
-                for segment in segments
-            )
+            *(self._deriver.derive(segment) for segment in segments)
         )
         segments_to_derivatives: dict[Segment, list[Derivative]] = dict(
             zip(segments, derivative_lists, strict=True)

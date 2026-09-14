@@ -73,9 +73,9 @@ class TestWholeTextDeriver:
     async def test_none_prepends_full_date_by_default(self):
         seg = _make_segment(block=TextBlock(text="hello world"))
 
-        # No format_options -> the deriver picks its nonempty default
+        # No format options: the deriver's default, a full date and no time
         # (full date, no time); the prefix is NOT omitted.
-        result = await WholeTextDeriver().derive(seg, format_options=None)
+        result = await WholeTextDeriver().derive(seg)
 
         assert len(result) == 1
         derivative = result[0]
@@ -105,9 +105,7 @@ class TestWholeTextDeriver:
             context=ProducerContext(producer="Alice"),
         )
 
-        result = await WholeTextDeriver().derive(
-            seg, format_options=FormatOptions(time_style="short")
-        )
+        result = await WholeTextDeriver(FormatOptions(time_style="short")).derive(seg)
 
         text = _block_text(result[0].block)
         assert text.startswith("[Thursday, January 15, 2026")
@@ -119,9 +117,9 @@ class TestWholeTextDeriver:
 
         # The prefix is dropped ONLY when both styles are explicitly None;
         # the message text is still JSON-dumped.
-        result = await WholeTextDeriver().derive(
-            seg, format_options=FormatOptions(date_style=None, time_style=None)
-        )
+        result = await WholeTextDeriver(
+            FormatOptions(date_style=None, time_style=None)
+        ).derive(seg)
 
         assert result[0].block == TextBlock(text='"hello world"')
 

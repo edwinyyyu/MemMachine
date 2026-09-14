@@ -32,6 +32,7 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     Segment,
     TextBlock,
 )
+from memmachine_server.episodic_memory.event_memory.deriver import Deriver
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
     WholeTextDeriver,
@@ -120,17 +121,15 @@ def _build(
     *,
     partition: InMemorySegmentStorePartition | None = None,
     collection: InMemoryVectorStoreCollection | None = None,
-    format_options: FormatOptions | None = None,
+    deriver: Deriver | None = None,
 ) -> EventMemory:
     params: dict[str, Any] = {
         "segment_store_partition": partition or InMemorySegmentStorePartition(),
         "vector_store_collection": collection or make_collection(embedder),
         "segmenter": TextSegmenter(),
-        "deriver": WholeTextDeriver(),
+        "deriver": deriver or WholeTextDeriver(),
         "embedder": embedder,
     }
-    if format_options is not None:
-        params["format_options"] = format_options
     return EventMemory(EventMemoryParams(**params))
 
 
@@ -1038,7 +1037,7 @@ class TestQueryDeduplication:
 
 
 # ===================================================================
-# Ingest-side format options (timestamp baked into the embedding)
+# The deriver's format options (timestamp baked into the embedding)
 # ===================================================================
 
 
@@ -1055,7 +1054,7 @@ class _RecordingEmbedder(FakeEmbedder):
 
 
 @_async
-class TestIngestFormatOptions:
+class TestDeriverFormatOptions:
     async def test_default_bakes_full_date_into_embedding(self):
         embedder = _RecordingEmbedder()
         event_memory = _build(embedder)
@@ -1066,10 +1065,11 @@ class TestIngestFormatOptions:
         # and the message text is JSON-dumped (ensure_ascii=False).
         assert embedder.ingested == ['[Sunday, June 1, 2025] "hello world"']
 
-    async def test_format_options_are_fixed_per_memory(self):
+    async def test_the_deriver_decides_the_format(self):
         embedder = _RecordingEmbedder()
         event_memory = _build(
-            embedder, format_options=FormatOptions(date_style=None, time_style=None)
+            embedder,
+            deriver=WholeTextDeriver(FormatOptions(date_style=None, time_style=None)),
         )
 
         await event_memory.encode_events([_make_event("hello world")])
@@ -1079,7 +1079,8 @@ class TestIngestFormatOptions:
     async def test_author_is_embedded_by_name(self):
         embedder = _RecordingEmbedder()
         event_memory = _build(
-            embedder, format_options=FormatOptions(date_style=None, time_style=None)
+            embedder,
+            deriver=WholeTextDeriver(FormatOptions(date_style=None, time_style=None)),
         )
 
         await event_memory.encode_events(
