@@ -69,9 +69,9 @@ class EventMemoryParams(BaseModel):
         vector_store_collection (VectorStoreCollection):
             Vector store collection.
         segmenter (Segmenter):
-            The table from block kind to handler that segments events.
+            Segmenter that segments events into segments.
         deriver (Deriver):
-            The table from block kind to handler that derives from segments.
+            Deriver that derives derivatives from segments.
         embedder (Embedder):
             Embedder instance for creating embeddings.
         format_options (FormatOptions):
@@ -94,11 +94,11 @@ class EventMemoryParams(BaseModel):
     )
     segmenter: InstanceOf[Segmenter] = Field(
         ...,
-        description="The table from block kind to handler that segments events",
+        description="Segmenter that segments events into segments",
     )
     deriver: InstanceOf[Deriver] = Field(
         ...,
-        description="The table from block kind to handler that derives from segments",
+        description="Deriver that derives derivatives from segments",
     )
     embedder: InstanceOf[Embedder] = Field(
         ...,
