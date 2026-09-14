@@ -176,7 +176,7 @@ a deployment calibrates it per embedder; the design gives no number.
 ## Context
 
 Specified in `context.md`: a mapping from part kind to one registered
-part, never `None`, composed by `with_part`, read by `get_part`, never
+part, never `None`, composed by `with_part`, read by `get`, never
 filtered. The deriver reads `Author` to format text, and the temporal
 scorer reads `TimeRanges`.
 

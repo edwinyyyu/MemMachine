@@ -167,7 +167,7 @@ Named so the redesign can be checked against it.
   steps that process it and for rendering, never for filtering. A
   context is a mapping from part kind to one part, each part a Pydantic
   model registered under its kind, so parts compose by merging and any
-  step reads the one it needs by kind (`get_part(context, Author)`) without
+  step reads the one it needs by kind (`context.get("author")`) without
   an order to agree on. `Event.context` is never `None`: no context is
   the empty mapping; a source with
   no good name to render has a `source_id` and no `author` part, and a

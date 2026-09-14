@@ -46,20 +46,23 @@ class UnknownPart(ContextPart):              # never registered; see below
     kind_name: str
     data: dict[str, JsonValue]
 
-type Context = Mapping[str, ContextPart]
-    # part kind -> the one part of that kind
-
-def get_part[P: ContextPart](context: Context, part: type[P]) -> P | None
-def with_part(context: Context, part: ContextPart) -> Context
-    # replaces the part of that kind
+class Context:                               # at most one part of each kind
+    def __init__(self, *parts: ContextPart)  # two parts of one kind are rejected
+    def get(self, kind: str) -> ContextPart | None
+    def with_part(self, part: ContextPart) -> Context   # replaces the part of its kind
+    def encode(self) -> dict[str, JsonValue]            # {kind: fields}
+    @classmethod
+    def decode(cls, encoded: Mapping[str, JsonValue]) -> Context
 ```
 
 `Event.context: Context`, `Segment.context: Context`,
-`Derivative.context: Context`. Never `None`: no context is the empty
-mapping, which is what a caller omitting the field gets, what a
-segment of such an event carries, and what every accessor handles
-without a branch. That answers want 5 and the question "what goes
-there without an author part": nothing, and `get_part(context, Author)`
+`Derivative.context: Context`. Never `None`: no context is `Context()`,
+which is what a caller omitting the field gets, what a segment of such
+an event carries, and what every accessor handles without a branch. A
+context is built from parts and keyed by their kinds internally, so a
+caller never writes a key and cannot write a wrong one. That answers
+want 5 and the question "what goes there without an author part":
+nothing, and `context.get("author")`
 is `None`. A `NullContext` class would be a second spelling of the
 same absence that every reader would have to test for, and a nullable
 field would be a third; the empty mapping is the one.
@@ -78,15 +81,16 @@ The table is the only registration point, and the API's `context`
 schema is generated from it as an object whose keys are the registered
 kinds and whose values are the corresponding models. A library user
 therefore adds a kind by writing the class, registering it, and reading
-it in their own segmenter, deriver or scorer with `get_part`; nothing
+it in their own segmenter, deriver or scorer with `context.get`; nothing
 in the core changes (want 3).
 
 ## Composition
 
 `with_part` returns a context with the part set under its kind,
 replacing any part of that kind. A
-segmenter that extracts time ranges does `with_part(event.context,
-TimeRanges(...))` for each segment, and what the event carried stays.
+segmenter that extracts time ranges does
+`event.context.with_part(TimeRanges(...))` for each segment, and what
+the event carried stays.
 Because a context is keyed, there is no order to agree on and no
 nesting to search: #1436's `CompositeContext` was an ordered list whose
 order was load-bearing but expressed nowhere, and whose readers walked
@@ -165,11 +169,14 @@ the server itself no longer knows, never from a caller.
 
 - `NullContext`, `ProducerContext` and the `Context` discriminated
   union (`data_types.py:49`, `:56`, `:64`) go; `Event.context`,
-  `Segment.context` and `Derivative.context` become the mapping.
-- `encode_context` and `decode_context` encode the mapping and produce
-  `UnknownPart` for unregistered kinds.
+  `Segment.context` and `Derivative.context` become the class.
+- `Context.encode` and `Context.decode` encode the parts as `{kind:
+  fields}` and produce `UnknownPart` for unregistered kinds; a
+  Pydantic core schema on the class makes a model field of the type
+  accept an instance or the encoded form and serialize to the encoded
+  form.
 - #1436's `TimeRangesContext` becomes the `TimeRanges` part, its
   `CompositeContext` and `find_contexts` become `with_part` and
-  `get_part`, and its temporal segmenter merges instead of nesting.
+  `get`, and its temporal segmenter merges instead of nesting.
 - `EpisodicMemory.render` renders from parts; the deriver's
   `_format_with_context` reads `Author` by kind.

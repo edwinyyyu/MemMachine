@@ -131,7 +131,7 @@ handler, composes the embedded anchor from the timestamp, the parts
 rendering uses (`context.md`, "Rendering"); a handler that formatted
 parts itself would be one more place that knows the order. A handler
 still sees the whole event or segment, so it reads context with
-`get_part`; no handler takes format options.
+`context.get`; no handler takes format options.
 
 The built-in handlers, all for `text` and keeping their names:
 `TextSegmenter` (the recursive character splitter, `max_chunk_length`),

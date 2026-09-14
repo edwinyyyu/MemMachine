@@ -139,19 +139,24 @@ class Author(ContextPart):          # kind = "author"
 class UnknownPart(ContextPart):     # produced only by decode
     kind_name: str
     data: dict[str, JsonValue]
-type Context = Mapping[str, ContextPart]
-def get_part[P: ContextPart](context: Context, part: type[P]) -> P | None
-def with_part(context: Context, part: ContextPart) -> Context
+class Context:                               # at most one part of each kind
+    def __init__(self, *parts: ContextPart)
+    def get(self, kind: str) -> ContextPart | None
+    def with_part(self, part: ContextPart) -> Context
+    def encode(self) -> dict[str, JsonValue]
+    @classmethod
+    def decode(cls, encoded: Mapping[str, JsonValue]) -> Context
 ```
 
 - Replaces `ProducerContext`, `NullContext` and the discriminated
-  union. No context is the empty mapping, never `None`. A part is
-  registered under its kind in a table (by import for `Author`; the
-  entry-point group `memmachine.context_parts` may wait). `encode_context`
-  and `decode_context` encode the mapping as `{kind: fields}` and
-  decode an unregistered kind to `UnknownPart`, which round-trips
-  unchanged and renders nothing.
-- The deriver reads `get_part(context, Author)` where it read
+  union. No context is `Context()`, never `None`; a context is built
+  from parts and keyed by their kinds internally, so a caller never
+  writes a key. A part is registered under its kind in a table (by
+  import for `Author`; the entry-point group `memmachine.context_parts`
+  may wait). `Context.encode` and `Context.decode` encode the parts as
+  `{kind: fields}` and decode an unregistered kind to `UnknownPart`,
+  which round-trips unchanged and renders nothing.
+- The deriver reads `context.get("author")` where it read
   `ProducerContext.producer`; rendering prints the author's name.
 - Do not port `AnnotationContext`, `CompositeContext` or
   `find_contexts` from the branch: annotate is out of scope, and keyed
