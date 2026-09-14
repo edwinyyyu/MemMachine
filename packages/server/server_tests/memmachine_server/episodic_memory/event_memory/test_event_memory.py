@@ -474,10 +474,10 @@ class TestQuerySystemFilters:
         assert len(await event_memory.query("hi", block_kinds=["text"])) == 1
         assert await event_memory.query("hi", block_kinds=["image"]) == []
 
-    async def test_timestamp_filter_field_reaches_the_reserved_key(
+    async def test_timestamp_filter_field_is_the_segment_store_column(
         self, event_memory: EventMemory
     ):
-        """A caller's bare `timestamp` names the event timestamp on both stores."""
+        """A caller's bare `timestamp` names the event timestamp at the segment store."""
         early = _make_event("early", timestamp=_ts(0))
         late = _make_event("late", timestamp=_ts(10))
         await event_memory.encode_events([early, late])
@@ -489,6 +489,31 @@ class TestQuerySystemFilters:
         )
 
         assert _texts(hits) == {"late"}
+
+    async def test_the_property_filter_never_reaches_the_vector_store(
+        self, event_memory: EventMemory, fake_vector_store_collection, monkeypatch
+    ):
+        """The vector stage evaluates the typed filters only; the property filter is the store's."""
+        red = _make_event("red", timestamp=_ts(0), properties={"color": "red"})
+        blue = _make_event("blue", timestamp=_ts(1), properties={"color": "blue"})
+        await event_memory.encode_events([red, blue])
+        seen: list[object] = []
+        original_query = fake_vector_store_collection.query
+
+        async def recording_query(**kwargs):
+            seen.append(kwargs.get("property_filter"))
+            return await original_query(**kwargs)
+
+        monkeypatch.setattr(fake_vector_store_collection, "query", recording_query)
+
+        hits = await event_memory.query(
+            "x",
+            session_ids=["s"],
+            property_filter=Comparison(field="m.color", op="=", value="blue"),
+        )
+
+        assert _texts(hits) == {"blue"}
+        assert seen == [In(field=EVENT_SESSION_KEY, values=["s"])]
 
 
 # ===================================================================

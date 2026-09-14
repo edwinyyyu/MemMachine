@@ -17,6 +17,8 @@ from memmachine_server.common.episode_store import (
     EpisodeType,
 )
 from memmachine_server.common.filter.filter_parser import (
+    And,
+    Comparison,
     FilterExpr,
     map_filter_fields,
     normalize_filter_field,
@@ -323,10 +325,17 @@ class LongTermMemory:
             num_episodes_limit * _EVENT_BACKEND_DEDUP_OVERFETCH,
             num_episodes_limit,
         )
+        # The API carries the event timestamp in the filter tree; the
+        # memory takes it typed, so the vector stage bounds by it.
+        since, until, property_filter = LongTermMemory._split_timestamp_bounds(
+            property_filter
+        )
         hits = await event_memory.query(
             query,
             vector_search_limit=vector_search_limit,
             expand_context=expand_context,
+            since=since,
+            until=until,
             property_filter=property_filter,
         )
         if self._reranker is not None:
@@ -585,6 +594,51 @@ class LongTermMemory:
         )
 
     # --- Episode <-> Event translation (event backend) ---
+
+    @staticmethod
+    def _split_timestamp_bounds(
+        property_filter: FilterExpr | None,
+    ) -> tuple[datetime.datetime | None, datetime.datetime | None, FilterExpr | None]:
+        """Lift `timestamp >= x` and `timestamp < x` conjuncts out of a filter tree.
+
+        Returns the tightest such bounds as `since` and `until`, and the
+        tree of the remaining conjuncts, or None when nothing remains. A
+        `timestamp` predicate of another operator, or one under a
+        disjunction or a negation, stays in the tree as a post-filter.
+        """
+        since: datetime.datetime | None = None
+        until: datetime.datetime | None = None
+        rest: list[FilterExpr] = []
+        for conjunct in LongTermMemory._conjuncts(property_filter):
+            match conjunct:
+                case Comparison(
+                    field="timestamp", op=">=", value=datetime.datetime() as bound
+                ):
+                    since = bound if since is None else max(since, bound)
+                case Comparison(
+                    field="timestamp", op="<", value=datetime.datetime() as bound
+                ):
+                    until = bound if until is None else min(until, bound)
+                case _:
+                    rest.append(conjunct)
+        remaining: FilterExpr | None = None
+        for conjunct in rest:
+            remaining = (
+                conjunct if remaining is None else And(left=remaining, right=conjunct)
+            )
+        return since, until, remaining
+
+    @staticmethod
+    def _conjuncts(expr: FilterExpr | None) -> list[FilterExpr]:
+        """The top-level conjuncts of a tree, nested conjunctions flattened."""
+        if expr is None:
+            return []
+        if isinstance(expr, And):
+            return [
+                *LongTermMemory._conjuncts(expr.left),
+                *LongTermMemory._conjuncts(expr.right),
+            ]
+        return [expr]
 
     def _validate_event_backend_filter(
         self,

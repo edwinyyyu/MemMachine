@@ -18,9 +18,6 @@ from memmachine_server.common.filter.filter_parser import (
     Comparison,
     FilterExpr,
     In,
-    demangle_user_metadata_key,
-    map_filter_fields,
-    normalize_filter_field,
 )
 from memmachine_server.common.metrics_factory import (
     MetricsFactory,
@@ -377,23 +374,6 @@ class EventMemory:
             properties=properties,
         )
 
-    @staticmethod
-    def _to_vector_record_property(field: str) -> str:
-        """
-        Translate a caller's filter field name to a vector record property.
-
-        User-defined properties (`m.foo` / `metadata.foo`) translate to `foo`.
-        `timestamp` is the event timestamp, under its reserved key. Any
-        other bare name (`foo`) translates to `_foo`, the layout the server
-        writes its own fields in.
-        """
-        internal_name, is_user_metadata = normalize_filter_field(field)
-        if is_user_metadata:
-            return demangle_user_metadata_key(internal_name)
-        if field == "timestamp":
-            return EVENT_TIMESTAMP_KEY
-        return f"_{field}"
-
     async def query(
         self,
         query: str,
@@ -412,7 +392,9 @@ class EventMemory:
         Query event memory for segments relevant to the query.
 
         The vector stage: `rerank` is the second stage, for a caller that
-        has a reranker.
+        has a reranker. The typed filters are evaluated by the vector store
+        during the search; `property_filter` is evaluated by the segment
+        store afterwards, on the seeds and their neighbors.
 
         Args:
             query (str):
@@ -444,8 +426,11 @@ class EventMemory:
                 Keep only segments whose block is of these kinds; an empty
                 list keeps none, and None keeps every kind (default: None).
             property_filter (FilterExpr | None):
-                Property fields and values
-                to use for filtering segments
+                A filter over the segments' properties, applied by the
+                segment store to the seeds the vector stage returns and to
+                the neighbors around them; it never reaches the vector
+                store, so a selective filter returns fewer than
+                `vector_search_limit` hits rather than more work
                 (default: None).
 
         Returns:
@@ -503,22 +488,14 @@ class EventMemory:
         )[0]
         t_embedding = time.monotonic()
 
-        # Translate filter fields for vector store.
-        collection_filter = _conjoin(
-            [
-                _system_predicates(
-                    since=since,
-                    until=until,
-                    session_ids=session_ids,
-                    source_ids=source_ids,
-                    block_kinds=block_kinds,
-                ),
-                map_filter_fields(
-                    property_filter, EventMemory._to_vector_record_property
-                )
-                if property_filter is not None
-                else None,
-            ]
+        # The vector stage evaluates the system fields only; the caller's
+        # property filter is the segment store's, applied to the seeds.
+        collection_filter = _system_predicates(
+            since=since,
+            until=until,
+            session_ids=session_ids,
+            source_ids=source_ids,
+            block_kinds=block_kinds,
         )
 
         # Search derivative collection for matches.

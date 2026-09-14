@@ -28,7 +28,13 @@ from memmachine_server.common.episode_store import (
     EpisodeStorage,
 )
 from memmachine_server.common.filter.filter_parser import (
+    And as FilterAnd,
+)
+from memmachine_server.common.filter.filter_parser import (
     Comparison as FilterComparison,
+)
+from memmachine_server.common.filter.filter_parser import (
+    Or as FilterOr,
 )
 from memmachine_server.common.vector_store import VectorStore
 from memmachine_server.common.vector_store.data_types import (
@@ -443,6 +449,37 @@ async def test_timestamp_filter_field_is_accepted(long_term_memory, episodes):
             value=datetime(2000, 1, 1, tzinfo=UTC),
         ),
     )
+
+
+def test_timestamp_bounds_are_lifted_out_of_the_filter():
+    """`timestamp >=` and `<` conjuncts become the memory's typed bounds; the rest stays."""
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    t1 = datetime(2026, 1, 2, tzinfo=UTC)
+    t2 = datetime(2026, 1, 3, tzinfo=UTC)
+    color = FilterComparison(field="m.color", op="=", value="red")
+    tree = FilterAnd(
+        left=FilterAnd(
+            left=FilterComparison(field="timestamp", op=">=", value=t0),
+            right=color,
+        ),
+        right=FilterAnd(
+            left=FilterComparison(field="timestamp", op="<", value=t2),
+            right=FilterComparison(field="timestamp", op=">=", value=t1),
+        ),
+    )
+
+    since, until, rest = LongTermMemory._split_timestamp_bounds(tree)
+
+    assert (since, until) == (t1, t2)
+    assert rest == color
+    assert LongTermMemory._split_timestamp_bounds(None) == (None, None, None)
+    # Another operator, or a timestamp under a disjunction, is not lifted.
+    later = FilterComparison(field="timestamp", op=">", value=t0)
+    assert LongTermMemory._split_timestamp_bounds(later) == (None, None, later)
+    either = FilterOr(
+        left=FilterComparison(field="timestamp", op=">=", value=t0), right=color
+    )
+    assert LongTermMemory._split_timestamp_bounds(either) == (None, None, either)
 
 
 def _make_ltm(episodes: list[Episode]) -> LongTermMemory:
