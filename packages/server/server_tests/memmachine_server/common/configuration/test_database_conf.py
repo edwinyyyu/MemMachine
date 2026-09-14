@@ -122,6 +122,11 @@ def db_conf_dict() -> dict:
                     "api_key": "test-key",
                     "registry_replication_factor": 3,
                     "request_timeout": 12.5,
+                    "hnsw_config": {"ef_construct": 256, "payload_m": 32},
+                    "optimizers_config": {"default_segment_number": 4},
+                    "quantization_config": {
+                        "turbo": {"always_ram": True, "bits": "bits2"}
+                    },
                 },
             },
             "my_milvus": {
@@ -207,6 +212,11 @@ def test_parse_valid_storage_dict(db_conf_dict):
     assert qdrant_conf.api_key == SecretStr("test-key")
     assert qdrant_conf.registry_replication_factor == 3
     assert qdrant_conf.request_timeout == 12.5
+    assert qdrant_conf.hnsw_config == {"ef_construct": 256, "payload_m": 32}
+    assert qdrant_conf.optimizers_config == {"default_segment_number": 4}
+    assert qdrant_conf.quantization_config == {
+        "turbo": {"always_ram": True, "bits": "bits2"}
+    }
 
     # Milvus check
     milvus_conf = storage_conf.milvus_confs["my_milvus"]

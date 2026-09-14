@@ -763,6 +763,9 @@ class DatabaseManager:
                     "vector_dimensions": vector_dimensions,
                     "registry_replication_factor": conf.registry_replication_factor,
                     "indexed_properties": indexed_properties,
+                    "hnsw_config": conf.hnsw_config,
+                    "optimizers_config": conf.optimizers_config,
+                    "quantization_config": conf.quantization_config,
                     "metrics_factory": conf.get_metrics_factory(),
                 }
             )
