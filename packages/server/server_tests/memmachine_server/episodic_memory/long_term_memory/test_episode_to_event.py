@@ -62,8 +62,8 @@ def test_producer_is_the_source_and_the_session_is_the_default_stream():
     """The producer id is the event's source; the session is the reserved default.
 
     A message carries a `ProducerContext`, as before. The server has no
-    conversation id to give, so the events are one stream under a name a
-    caller cannot use.
+    conversation id to give, so the events are one stream under the one
+    reserved session name.
     """
     episode = _episode(producer_id="alice")
     event = LongTermMemory._episode_to_event(episode)

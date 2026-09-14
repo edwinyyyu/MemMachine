@@ -71,8 +71,8 @@ DEFAULT_SESSION_ID: Final[str] = "memmachine_default"
 """The session of every event this API ingests.
 
 The API carries no conversation id, so a partition's events are one
-stream. The name is reserved: a caller-named session never begins with
-`memmachine_`.
+stream. This one name is reserved for it; a caller may name a session
+anything else.
 """
 
 _EPISODE_UID_FIELD = "_episode_uid"
@@ -746,8 +746,8 @@ class LongTermMemory:
         - Event.source_id = producer_id, the one source an episode has.
           Event.session_id = DEFAULT_SESSION_ID: the API carries no
           conversation id, so a partition's events are one stream, under
-          a reserved name a caller cannot use; when the API carries one,
-          it goes here.
+          the one reserved session name; when the API carries one, it
+          goes here.
           Context: ProducerContext for messages; NullContext otherwise.
         - One TextBlock per event (Episode.content is a string today).
         - Properties: system fields stored with `_` prefix, user filterable
