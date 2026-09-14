@@ -51,6 +51,13 @@ def _format_for_embedding(
     return f"[{formatted_timestamp}] {body}"
 
 
+def _format_options_or_default(format_options: FormatOptions | None) -> FormatOptions:
+    """The given options, or a full date and no time."""
+    if format_options is not None:
+        return format_options
+    return FormatOptions(time_style=None)
+
+
 def _build_text_derivatives(segment: Segment, texts: Iterable[str]) -> list[Derivative]:
     """Build derivatives from a segment and text strings."""
     return [
@@ -68,41 +75,41 @@ def _build_text_derivatives(segment: Segment, texts: Iterable[str]) -> list[Deri
     ]
 
 
-class TextDeriver(Deriver):
-    """A deriver of text blocks that formats each text it embeds in the segment's context.
+class WholeTextDeriver(Deriver):
+    """Emits one derivative with the segment's whole text formatted in context.
 
     `format_options` decides how the timestamp and the author are written
-    into the embedded text; the default is a full date and no time.
+    into the derived text; None is a full date and no time.
     """
 
     def __init__(self, format_options: FormatOptions | None = None) -> None:
-        """Take the format of the text this deriver embeds; None is the default."""
-        self._format_options = (
-            format_options
-            if format_options is not None
-            else FormatOptions(time_style=None)
-        )
-
-    def _anchor(self, segment: Segment, text: str) -> str:
-        return _format_for_embedding(segment, text, self._format_options)
-
-
-class WholeTextDeriver(TextDeriver):
-    """Emits one derivative with the segment's whole text formatted in context."""
+        """Take the format of the derived text."""
+        self._format_options = _format_options_or_default(format_options)
 
     @override
     async def derive(self, segment: Segment) -> list[Derivative]:
         match segment.block:
             case TextBlock(text=text):
-                return _build_text_derivatives(segment, [self._anchor(segment, text)])
+                return _build_text_derivatives(
+                    segment,
+                    [_format_for_embedding(segment, text, self._format_options)],
+                )
             case _:
                 raise NotImplementedError(
                     f"Unsupported block type: {type(segment.block).__name__}"
                 )
 
 
-class SentenceTextDeriver(TextDeriver):
-    """Emits one derivative per sentence in the segment's text, formatted in context."""
+class SentenceTextDeriver(Deriver):
+    """Emits one derivative per sentence in the segment's text, formatted in context.
+
+    `format_options` decides how the timestamp and the author are written
+    into the derived text; None is a full date and no time.
+    """
+
+    def __init__(self, format_options: FormatOptions | None = None) -> None:
+        """Take the format of the derived text."""
+        self._format_options = _format_options_or_default(format_options)
 
     @override
     async def derive(self, segment: Segment) -> list[Derivative]:
@@ -111,7 +118,7 @@ class SentenceTextDeriver(TextDeriver):
                 return _build_text_derivatives(
                     segment,
                     [
-                        self._anchor(segment, sentence)
+                        _format_for_embedding(segment, sentence, self._format_options)
                         for sentence in extract_sentences(text)
                     ],
                 )

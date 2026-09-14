@@ -16,8 +16,6 @@ class Deriver(ABC):
         """
         Derive derivatives from a segment.
 
-        A deriver decides the text it embeds, formatting included.
-
         Args:
             segment (Segment): The segment to derive from.
         """
