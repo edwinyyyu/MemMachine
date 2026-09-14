@@ -18,7 +18,6 @@ from memmachine_server.common.episode_store import (
 )
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
-    demangle_user_metadata_key,
     map_filter_fields,
     normalize_filter_field,
 )
@@ -149,15 +148,6 @@ class EventBackendParams(BaseModel):
     reranker: InstanceOf[Reranker] | None = Field(default=None)
     segmenter: InstanceOf[Segmenter] = Field(...)
     deriver: InstanceOf[Deriver] = Field(...)
-    user_property_keys: frozenset[str] = Field(
-        default_factory=frozenset,
-        description=(
-            "Configured user-property names (from properties_schema). When "
-            "non-empty, filter expressions on `m.<key>` are validated against "
-            "this set; empty means no validation (any user-metadata key "
-            "accepted)."
-        ),
-    )
 
 
 LongTermMemoryParams = Annotated[
@@ -184,11 +174,6 @@ class LongTermMemory:
         self._segment_store: SegmentStore | None = None
         self._partition_key: str | None = None
         self._episode_storage: EpisodeStorage | None = None
-        # Event backend only: configured user-property names from
-        # properties_schema. Empty means "no validation"; non-empty means the
-        # set is closed and filter expressions referencing `m.<unknown>` raise
-        # ValueError at the LongTermMemory layer.
-        self._user_property_keys: frozenset[str] = frozenset()
         self._session_id: str = params.session_id
 
         match params:
@@ -218,7 +203,6 @@ class LongTermMemory:
                 self._segment_store = params.segment_store
                 self._partition_key = params.partition_key
                 self._episode_storage = params.episode_storage
-                self._user_property_keys = params.user_property_keys
 
     async def add_episodes(self, episodes: Iterable[Episode]) -> None:
         episodes = list(episodes)
@@ -578,32 +562,17 @@ class LongTermMemory:
         self,
         property_filter: FilterExpr | None,
     ) -> None:
-        """Reject filter fields not known to the event-backend schema.
+        """Reject bare filter fields that name no system field.
 
-        Bare names are matched against system-defined fields
-        (`_EVENT_BACKEND_SYSTEM_FIELD_CLIENT_NAMES`); `m.<key>` / `metadata.<key>`
-        names are matched against `user_property_keys`, if non-empty.
-
-        Validation lives here rather than in the segment store / vector store
-        because this is the only layer that knows both the system field set
-        and the configured user `properties_schema`. The stores themselves
-        treat unknown property keys as empty matches (correct generic JSON
-        semantics) — without this check a typo'd filter field would silently
-        return zero results.
+        A `m.<key>` / `metadata.<key>` name may be any caller key; a bare
+        name is a system field or a mistake.
         """
         if property_filter is None:
             return
 
         def _check(field: str) -> str:
-            internal_name, is_user_metadata = normalize_filter_field(field)
+            _internal_name, is_user_metadata = normalize_filter_field(field)
             if is_user_metadata:
-                key = demangle_user_metadata_key(internal_name)
-                if self._user_property_keys and key not in self._user_property_keys:
-                    raise ValueError(
-                        f"Unknown user-metadata filter field {field!r}. "
-                        "Configured user properties: "
-                        f"{sorted(self._user_property_keys)}"
-                    )
                 return field
             if field not in _EVENT_BACKEND_SYSTEM_FIELD_CLIENT_NAMES:
                 raise ValueError(
