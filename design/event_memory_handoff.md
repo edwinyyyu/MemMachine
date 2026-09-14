@@ -418,8 +418,8 @@ in one place, `_header`, ordered by `FormatOptions.parts`
 `text` handlers; `PassthroughSegmenter` and the `passthrough`
 configuration name go, an omitted `segmenter` meaning one segment per
 block. The base-from-defaults and per-kind options of `blocks.md` are
-not in this change. This is the second PR of the split; the first
-carries session, source, expansion and eviction.
+not in this change. This is the third PR of the split; the first
+carries session, source and expansion, the second eviction.
 
 ## Translation layers
 
