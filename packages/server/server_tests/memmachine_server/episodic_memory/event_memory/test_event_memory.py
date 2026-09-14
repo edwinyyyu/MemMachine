@@ -17,10 +17,7 @@ from memmachine_server.common.filter.filter_parser import (
     Or,
     filter_fields,
 )
-from memmachine_server.common.vector_store.data_types import (
-    Record,
-    VectorStoreCollectionConfig,
-)
+from memmachine_server.common.vector_store.data_types import Record
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Event,
     FormatOptions,
@@ -219,14 +216,9 @@ class TestEncodeEvents:
         self, fake_embedder
     ):
         # Collection without context fields.
-        config = VectorStoreCollectionConfig(
-            vector_dimensions=2,
-            indexed_properties_schema={
-                "_segment_uuid": str,
-                "_timestamp": datetime.datetime,
-            },
+        collection = InMemoryVectorStorePartition(
+            "test", {"_segment_uuid": str, "_timestamp": datetime.datetime}
         )
-        collection = InMemoryVectorStorePartition(config)
         partition = InMemorySegmentStorePartition()
         em = EventMemory(
             EventMemoryParams(
@@ -247,14 +239,8 @@ class TestEncodeEvents:
         assert "_context_producer" not in props
 
     async def test_init_raises_on_missing_base_field(self, fake_embedder):
-        # Collection without _timestamp — base field required at init.
-        config = VectorStoreCollectionConfig(
-            vector_dimensions=2,
-            indexed_properties_schema={
-                "_segment_uuid": str,
-            },
-        )
-        collection = InMemoryVectorStorePartition(config)
+        # Collection without _timestamp: a base field, required at init.
+        collection = InMemoryVectorStorePartition("test", {"_segment_uuid": str})
         partition = InMemorySegmentStorePartition()
         with pytest.raises(InvalidCollectionSchemaError, match="_timestamp"):
             EventMemory(
@@ -747,7 +733,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=Comparison(field="m.color", op="!=", value="red"),
+            property_filter=Not(Comparison(field="m.color", op="=", value="red")),
         )
         all_texts = {
             seg.block.text
@@ -808,7 +794,7 @@ class TestQueryWithFilter:
             "thing",
             property_filter=And(
                 left=Comparison(field="m.color", op="=", value="red"),
-                right=Not(expr=IsNull(field="m.color")),
+                right=Not(IsNull(field="m.color")),
             ),
         )
         all_texts = {
@@ -852,7 +838,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "thing",
-            property_filter=Not(expr=Comparison(field="m.color", op="=", value="red")),
+            property_filter=Not(Comparison(field="m.color", op="=", value="red")),
         )
         all_texts = {
             seg.block.text
@@ -883,11 +869,7 @@ class TestQueryWithFilter:
 
         result = await event_memory.query(
             "hi",
-            property_filter=Comparison(
-                field="context.producer",
-                op="=",
-                value="Alice",
-            ),
+            property_filter=Comparison(field="context.author", op="=", value="Alice"),
         )
         assert result.scored_segment_contexts == []
 
@@ -1101,16 +1083,10 @@ class _RecordingEmbedder(FakeEmbedder):
 class TestIngestFormatOptions:
     @staticmethod
     def _build(embedder: FakeEmbedder) -> EventMemory:
-        config = VectorStoreCollectionConfig(
-            vector_dimensions=embedder.dimensions,
-            indexed_properties_schema=(
-                EventMemory.expected_vector_store_collection_schema()
-            ),
-        )
         return EventMemory(
             EventMemoryParams(
                 segment_store_partition=InMemorySegmentStorePartition(),
-                vector_store_partition=InMemoryVectorStorePartition(config),
+                vector_store_partition=make_collection(embedder),
                 segmenter=TextSegmenter(),
                 deriver=WholeTextDeriver(),
                 embedder=embedder,
@@ -1142,16 +1118,10 @@ class TestIngestFormatOptions:
         """The baked timestamp lives only in the embedding, not the segment."""
         embedder = _RecordingEmbedder()
         partition = InMemorySegmentStorePartition()
-        config = VectorStoreCollectionConfig(
-            vector_dimensions=embedder.dimensions,
-            indexed_properties_schema=(
-                EventMemory.expected_vector_store_collection_schema()
-            ),
-        )
         event_memory = EventMemory(
             EventMemoryParams(
                 segment_store_partition=partition,
-                vector_store_partition=InMemoryVectorStorePartition(config),
+                vector_store_partition=make_collection(embedder),
                 segmenter=TextSegmenter(),
                 deriver=WholeTextDeriver(),
                 embedder=embedder,

@@ -86,7 +86,7 @@ class EventMemoryParams(BaseModel):
         segment_store_partition (SegmentStorePartition):
             Segment store partition.
         vector_store_partition (VectorStorePartition):
-            Vector store collection.
+            Vector store partition.
         segmenter (Segmenter):
             Segmenter that segments events into segments.
         deriver (Deriver):
@@ -108,7 +108,7 @@ class EventMemoryParams(BaseModel):
     )
     vector_store_partition: InstanceOf[VectorStorePartition] = Field(
         ...,
-        description="Vector store collection",
+        description="Vector store partition",
     )
     segmenter: InstanceOf[Segmenter] = Field(
         ...,
@@ -178,7 +178,7 @@ class EventMemory:
 
         # The store declares what it indexes; the system keys must be among
         # them, with the types this memory writes.
-        declared = dict(params.vector_store_partition.config.indexed_properties_schema)
+        declared = dict(params.vector_store_partition.indexed_properties)
         missing = {
             key: property_type
             for key, property_type in (
