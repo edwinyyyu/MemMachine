@@ -39,8 +39,8 @@ from memmachine_server.episodic_memory.declarative_memory.data_types import (
     Episode as DeclarativeMemoryEpisode,
 )
 from memmachine_server.episodic_memory.event_memory.data_types import (
+    DatetimeFormat,
     Event,
-    FormatOptions,
     NullContext,
     ProducerContext,
     QueryHit,
@@ -334,7 +334,7 @@ class LongTermMemory:
                 query,
                 hits,
                 reranker=self._reranker,
-                format_options=FormatOptions(time_style="short"),
+                datetime_format=DatetimeFormat(time_style="short"),
             )
 
         if expand_context > 0:

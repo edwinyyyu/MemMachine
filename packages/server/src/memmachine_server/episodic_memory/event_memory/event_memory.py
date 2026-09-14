@@ -32,9 +32,9 @@ from memmachine_server.common.vector_store import (
 
 from .data_types import (
     Block,
+    DatetimeFormat,
     Derivative,
     Event,
-    FormatOptions,
     Neighborhood,
     NullContext,
     ProducerContext,
@@ -657,13 +657,13 @@ class EventMemory:
         hits: Sequence[QueryHit],
         *,
         reranker: Reranker,
-        format_options: FormatOptions,
+        datetime_format: DatetimeFormat,
     ) -> list[QueryHit]:
         """
         Rerank hits by a reranker's score of their rendered windows.
 
         The second stage after `query`, for a caller that has a reranker:
-        each hit's window is rendered with `format_options` and scored
+        each hit's window is rendered with `datetime_format` and scored
         against the query, and every hit is returned in descending score
         with its score replaced by the reranker's. Cutting and
         thresholding are the caller's.
@@ -674,7 +674,7 @@ class EventMemory:
         scores = await reranker.score(
             query,
             [
-                EventMemory.render(hit.window(), format_options=format_options)
+                EventMemory.render(hit.window(), datetime_format=datetime_format)
                 for hit in hits
             ],
         )
@@ -708,12 +708,12 @@ class EventMemory:
     def render(
         segments: Iterable[Segment],
         *,
-        format_options: FormatOptions,
+        datetime_format: DatetimeFormat,
     ) -> str:
         """
         The reader's text for a run of segments, in their order.
 
-        A header (the timestamp formatted by `format_options`, then the
+        A header (the timestamp formatted by `datetime_format`, then the
         context parts' contributions) starts each run of adjacent pieces
         of one event; the pieces' block renderings are joined under it.
         """
@@ -732,7 +732,7 @@ class EventMemory:
                         json.dumps(accumulated_text, ensure_ascii=False) + "\n"
                     )
                 accumulated_text = ""
-                context_string += EventMemory._segment_header(segment, format_options)
+                context_string += EventMemory._segment_header(segment, datetime_format)
 
             text = EventMemory._extract_text(segment.block)
             if text is not None:
@@ -748,9 +748,9 @@ class EventMemory:
         return context_string.strip()
 
     @staticmethod
-    def _segment_header(segment: Segment, format_options: FormatOptions) -> str:
+    def _segment_header(segment: Segment, datetime_format: DatetimeFormat) -> str:
         """Build the header emitted before a segment."""
-        formatted_timestamp = format_timestamp(segment.timestamp, format_options)
+        formatted_timestamp = format_timestamp(segment.timestamp, datetime_format)
         timestamp_prefix = f"[{formatted_timestamp}] " if formatted_timestamp else ""
 
         match segment.context:

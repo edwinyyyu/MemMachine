@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Block,
-    FormatOptions,
+    DatetimeFormat,
     NullContext,
     ProducerContext,
     Segment,
@@ -99,13 +99,13 @@ class TestWholeTextDeriver:
             text='[Thursday, January 15, 2026] Alice: "hi there"'
         )
 
-    async def test_format_options_with_time_includes_time(self):
+    async def test_datetime_format_with_time_includes_time(self):
         seg = _make_segment(
             block=TextBlock(text="hi there"),
             context=ProducerContext(producer="Alice"),
         )
 
-        result = await WholeTextDeriver(FormatOptions(time_style="short")).derive(seg)
+        result = await WholeTextDeriver(DatetimeFormat(time_style="short")).derive(seg)
 
         text = _block_text(result[0].block)
         assert text.startswith("[Thursday, January 15, 2026")
@@ -118,7 +118,7 @@ class TestWholeTextDeriver:
         # The prefix is dropped ONLY when both styles are explicitly None;
         # the message text is still JSON-dumped.
         result = await WholeTextDeriver(
-            FormatOptions(date_style=None, time_style=None)
+            DatetimeFormat(date_style=None, time_style=None)
         ).derive(seg)
 
         assert result[0].block == TextBlock(text='"hello world"')

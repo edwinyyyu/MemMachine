@@ -247,14 +247,18 @@ class Derivative(BaseModel):
         return hash(self.uuid)
 
 
-# FormatOptions: options for formatting query result.
+# DatetimeFormat: how a timestamp is written into text.
 
 # CLDR datetime style. Ordered from compact to verbose.
 DateTimeStyle = Literal["short", "medium", "long", "full"]
 
 
-class FormatOptions(BaseModel):
-    """Options for formatting."""
+class DatetimeFormat(BaseModel):
+    """How a timestamp is written into text: date and time styles, locale and zone.
+
+    A style of None omits that part; both None writes nothing. No zone
+    writes the timestamp in the zone it carries.
+    """
 
     date_style: DateTimeStyle | None = "full"
     time_style: DateTimeStyle | None = "long"

@@ -7,7 +7,6 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Event,
-    FormatOptions,
     Segment,
     TextBlock,
 )
@@ -67,12 +66,7 @@ class TextSegmenter(Segmenter):
         )
 
     @override
-    async def segment(
-        self,
-        event: Event,
-        *,
-        format_options: FormatOptions | None = None,
-    ) -> list[Segment]:
+    async def segment(self, event: Event) -> list[Segment]:
         segments: list[Segment] = []
         for index, block in enumerate(event.blocks):
             match block:

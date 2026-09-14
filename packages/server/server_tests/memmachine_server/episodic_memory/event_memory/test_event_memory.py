@@ -24,8 +24,8 @@ from memmachine_server.common.vector_store.data_types import (
 )
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Context,
+    DatetimeFormat,
     Event,
-    FormatOptions,
     NullContext,
     ProducerContext,
     QueryHit,
@@ -69,7 +69,7 @@ _async = pytest.mark.asyncio
 # ---------------------------------------------------------------------------
 
 _T0 = datetime.datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
-_SHORT_TIME = FormatOptions(time_style="short")
+_SHORT_TIME = DatetimeFormat(time_style="short")
 
 
 def _record_properties(record: Record) -> dict[str, PropertyValue]:
@@ -688,13 +688,13 @@ def _make_segment(
 class TestRender:
     def test_no_context(self):
         segment = _make_segment(text="hello world")
-        result = EventMemory.render([segment], format_options=_SHORT_TIME)
+        result = EventMemory.render([segment], datetime_format=_SHORT_TIME)
         assert json.dumps("hello world") in result
         assert "[" in result  # Timestamp bracket.
 
     def test_producer_renders_its_name(self):
         segment = _make_segment(text="hi", context=_author("Alice"))
-        result = EventMemory.render([segment], format_options=_SHORT_TIME)
+        result = EventMemory.render([segment], datetime_format=_SHORT_TIME)
         assert "Alice:" in result
         assert json.dumps("hi") in result
 
@@ -703,7 +703,7 @@ class TestRender:
         s1 = _make_segment(event_uuid=event_uuid, index=0, offset=0, text="part1")
         s2 = _make_segment(event_uuid=event_uuid, index=0, offset=1, text="part2")
         s3 = _make_segment(event_uuid=event_uuid, index=1, offset=0, text="part3")
-        result = EventMemory.render([s1, s2, s3], format_options=_SHORT_TIME)
+        result = EventMemory.render([s1, s2, s3], datetime_format=_SHORT_TIME)
         # Text content is accumulated into one JSON string.
         assert json.dumps("part1part2part3") in result
         # Only one timestamp line.
@@ -713,19 +713,19 @@ class TestRender:
         event_uuid = uuid4()
         first = _make_segment(event_uuid=event_uuid, index=0, offset=0, text="A")
         third = _make_segment(event_uuid=event_uuid, index=2, offset=0, text="C")
-        result = EventMemory.render([first, third], format_options=_SHORT_TIME)
+        result = EventMemory.render([first, third], datetime_format=_SHORT_TIME)
         assert result.count("[") == 2
         assert json.dumps("AC") not in result
 
     def test_no_timestamp_when_both_styles_are_off(self):
         segment = _make_segment(text="hi", context=_author("Alice"))
         result = EventMemory.render(
-            [segment], format_options=FormatOptions(date_style=None, time_style=None)
+            [segment], datetime_format=DatetimeFormat(date_style=None, time_style=None)
         )
         assert result == 'Alice: "hi"'
 
     def test_empty_list(self):
-        assert EventMemory.render([], format_options=_SHORT_TIME) == ""
+        assert EventMemory.render([], datetime_format=_SHORT_TIME) == ""
 
 
 # ===================================================================
@@ -745,7 +745,7 @@ class TestRerank:
             "anything",
             hits,
             reranker=FakeReranker(),
-            format_options=_SHORT_TIME,
+            datetime_format=_SHORT_TIME,
         )
 
         # FakeReranker scores by rendered length: the longer text first.
@@ -763,7 +763,7 @@ class TestRerank:
         hits = await event_memory.query("anything")
 
         reranked = await EventMemory.rerank(
-            "anything", hits, reranker=FakeReranker(), format_options=_SHORT_TIME
+            "anything", hits, reranker=FakeReranker(), datetime_format=_SHORT_TIME
         )
 
         assert len(reranked) == len(hits) == 4
@@ -773,7 +773,7 @@ class TestRerank:
     async def test_empty(self):
         assert (
             await EventMemory.rerank(
-                "q", [], reranker=FakeReranker(), format_options=_SHORT_TIME
+                "q", [], reranker=FakeReranker(), datetime_format=_SHORT_TIME
             )
             == []
         )
@@ -859,7 +859,7 @@ class TestRoundTrips:
         await event_memory.encode_events([event])
 
         [hit] = await event_memory.query("biology")
-        context_string = EventMemory.render(hit.window(), format_options=_SHORT_TIME)
+        context_string = EventMemory.render(hit.window(), datetime_format=_SHORT_TIME)
 
         assert "textbook:" in context_string
         assert "The mitochondria is the powerhouse of the cell." in context_string
@@ -1054,7 +1054,7 @@ class _RecordingEmbedder(FakeEmbedder):
 
 
 @_async
-class TestDeriverFormatOptions:
+class TestDeriverDatetimeFormat:
     async def test_default_bakes_full_date_into_embedding(self):
         embedder = _RecordingEmbedder()
         event_memory = _build(embedder)
@@ -1069,7 +1069,7 @@ class TestDeriverFormatOptions:
         embedder = _RecordingEmbedder()
         event_memory = _build(
             embedder,
-            deriver=WholeTextDeriver(FormatOptions(date_style=None, time_style=None)),
+            deriver=WholeTextDeriver(DatetimeFormat(date_style=None, time_style=None)),
         )
 
         await event_memory.encode_events([_make_event("hello world")])
@@ -1080,7 +1080,7 @@ class TestDeriverFormatOptions:
         embedder = _RecordingEmbedder()
         event_memory = _build(
             embedder,
-            deriver=WholeTextDeriver(FormatOptions(date_style=None, time_style=None)),
+            deriver=WholeTextDeriver(DatetimeFormat(date_style=None, time_style=None)),
         )
 
         await event_memory.encode_events(
