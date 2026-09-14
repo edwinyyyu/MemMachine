@@ -195,8 +195,8 @@ walking further from a hit composes with `expand`.
   current `_BASE_EVENT_MEMORY_FIELD_NAMES` check becomes the prefix
   check.
 - Every system value written into a vector record uses a reserved key:
-  `memmachine_event_timestamp`, `memmachine_event_session`,
-  `memmachine_event_source`, `memmachine_block_kind`. The current
+  `memmachine_em_timestamp`, `memmachine_em_session`,
+  `memmachine_em_source`, `memmachine_em_block_kind`. The current
   `_segment_uuid` and `_timestamp` keys go: the segment store maps a
   derivative to its segment (#1598), so no uuid is written into a
   record. `expected_vector_store_collection_schema` declares the four
@@ -212,7 +212,7 @@ Typed parameters, and the point of contention. The accepted design
 passes the system filters as typed parameters (`since`, `until`,
 `session_ids`, `source_ids`, `block_kinds`) beside the caller's
 `property_filter`, and a caller never names a system field in a tree.
-Whether that stays, or a caller may instead write `memmachine_event_session`
+Whether that stays, or a caller may instead write `memmachine_em_session`
 inside the tree, is undecided. Implement so that either is a small
 change:
 

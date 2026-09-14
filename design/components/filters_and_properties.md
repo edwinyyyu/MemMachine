@@ -11,7 +11,10 @@ string parsing.
 RESERVED_PROPERTY_KEY_PREFIX = "memmachine_"
 
 def reserved_property_key(system: str, field: str) -> str
-    # validated against the naming contract at import time
+    # <prefix><system>_<field>; `system` names the component that writes
+    # the key, kept short since the keys share a small identifier budget
+    # ("em" for the event memory); validated against the naming contract
+    # at import time
 def validate_caller_property_key(key: str) -> None
     # [a-z0-9_], bounded, not reserved
 def validate_property_value(value: object,
@@ -21,9 +24,9 @@ def validate_property_value(value: object,
 - `PropertyValue = bool | int | float | str | datetime`; no lists, no
   nesting, no `None`.
 - Episodic memory's system fields are stored under reserved keys:
-  `memmachine_event_timestamp`, `memmachine_event_session`,
-  `memmachine_event_source` (the source id; a rendered name is never
-  stored in a vector record), `memmachine_block_kind` (the segment's
+  `memmachine_em_timestamp`, `memmachine_em_session`,
+  `memmachine_em_source` (the source id; a rendered name is never
+  stored in a vector record), `memmachine_em_block_kind` (the segment's
   one block's kind). The derivative-to-segment mapping is the segment
   store's, so no uuid is written into a record. The prefix is reserved
   as a whole; another service names its own keys under it, on its own

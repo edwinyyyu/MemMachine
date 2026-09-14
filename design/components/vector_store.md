@@ -214,14 +214,14 @@ pgvector, one table per container, created by `provision_containers`:
 | `key` | `Uuid` | primary key part |
 | `uuid` | `Uuid` | primary key part |
 | `vector` | `VECTOR(<dimensions>)` (the `pgvector` SQLAlchemy type) | not null |
-| `memmachine_event_timestamp` | `DateTime(timezone=True)` | not null |
-| `memmachine_event_session` | `Text` | null |
-| `memmachine_event_source` | `Text` | null |
-| `memmachine_block_kind` | `Text` | not null |
+| `memmachine_em_timestamp` | `DateTime(timezone=True)` | not null |
+| `memmachine_em_session` | `Text` | null |
+| `memmachine_em_source` | `Text` | null |
+| `memmachine_em_block_kind` | `Text` | not null |
 | one column per declared user key | by declared type: `Text`, `BigInteger`, `Float`, `Boolean`, `DateTime(timezone=True)` | null |
 
 Indexes: `vec_<container>__vector`, HNSW with `vector_cosine_ops`;
-`vec_<container>__key_timestamp (key, memmachine_event_timestamp)`;
+`vec_<container>__key_timestamp (key, memmachine_em_timestamp)`;
 `vec_<container>__key_<field>` for each declared user key. Filtered
 search is `WHERE key = ? AND ...` with pgvector's iterative index
 scans, and the registry row for this store is `vector_store_pt` beside
@@ -234,10 +234,10 @@ table:
 CREATE VIRTUAL TABLE vec_<container> USING vec0(
     key TEXT PARTITION KEY,          -- 32 hex characters
     vector FLOAT[<dimensions>] distance_metric=cosine,
-    memmachine_event_timestamp INTEGER,      -- metadata column, epoch microseconds
-    memmachine_event_session TEXT,
-    memmachine_event_source TEXT,
-    memmachine_block_kind TEXT,
+    memmachine_em_timestamp INTEGER,      -- metadata column, epoch microseconds
+    memmachine_em_session TEXT,
+    memmachine_em_source TEXT,
+    memmachine_em_block_kind TEXT,
     <declared user key> <TEXT|INTEGER|FLOAT|BOOLEAN>, ...   -- datetime as INTEGER
     chunk_size=<settings.chunk_size>
 );

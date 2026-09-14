@@ -100,8 +100,8 @@ configuration, with no owner and no migration.
 - The system keys are always declared, by the consumer that writes
   them. `EventMemory.expected_vector_store_collection_schema` stays as
   that declaration (the four reserved keys #1597 writes:
-  `memmachine_event_timestamp: datetime`, `memmachine_event_session:
-  str`, `memmachine_event_source: str`, `memmachine_block_kind: str`),
+  `memmachine_em_timestamp: datetime`, `memmachine_em_session:
+  str`, `memmachine_em_source: str`, `memmachine_em_block_kind: str`),
   and the schema a store is built with is the configured user keys
   plus its consumer's system keys, merged where the store is
   constructed for that consumer. There is no central list of reserved

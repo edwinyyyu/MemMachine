@@ -171,7 +171,7 @@ The kind is a system field of the segment: `block_kinds` on
 episodic-memory search and expansion restricts hits, segment windows,
 the selectivity probe and neighborhoods to segments of those kinds
 (`episodic_memory.md`), evaluated on the vector record under the
-reserved key `memmachine_block_kind` and on the segment row's
+reserved key `memmachine_em_block_kind` and on the segment row's
 `block_kind` column. Event listing has no kind filter: an event has
 several blocks, and "an event with a text block" is not a question the
 server answers (want 3). The kind meets the criterion of "Properties
@@ -220,5 +220,5 @@ caller.
   `service_locator.py` builds a table per configured option. Done in
   #1597.
 - `Segment` rows gain `block_kind` (`segment_store.md`); vector records
-  gain `memmachine_block_kind` (`vector_store.md`); search and expansion
+  gain `memmachine_em_block_kind` (`vector_store.md`); search and expansion
   gain `block_kinds` (`episodic_memory.md`).
