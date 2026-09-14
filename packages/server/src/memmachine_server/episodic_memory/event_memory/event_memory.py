@@ -56,13 +56,14 @@ from .segmenter import Segmenter
 logger = logging.getLogger(__name__)
 
 # The reserved keys under which the memory writes its fields into a vector
-# record, the fields a search filters on at the vector stage. Built rather
-# than written out so the alphabet and length budget of the vector store's
-# naming contract are checked at import time.
-EVENT_TIMESTAMP_KEY: Final[str] = reserved_property_key("event", "timestamp")
-EVENT_SESSION_KEY: Final[str] = reserved_property_key("event", "session")
-EVENT_SOURCE_KEY: Final[str] = reserved_property_key("event", "source")
-BLOCK_KIND_KEY: Final[str] = reserved_property_key("block", "kind")
+# record, the fields a search filters on at the vector stage; `em` names
+# this memory, kept short because the keys share a small identifier
+# budget. Built rather than written out so the alphabet and length
+# budget of the vector store's naming contract are checked at import time.
+EVENT_TIMESTAMP_KEY: Final[str] = reserved_property_key("em", "timestamp")
+EVENT_SESSION_KEY: Final[str] = reserved_property_key("em", "session")
+EVENT_SOURCE_KEY: Final[str] = reserved_property_key("em", "source")
+BLOCK_KIND_KEY: Final[str] = reserved_property_key("em", "block_kind")
 
 
 def _conjoin(clauses: Iterable[FilterExpr | None]) -> FilterExpr | None:

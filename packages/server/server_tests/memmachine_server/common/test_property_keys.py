@@ -11,8 +11,8 @@ from memmachine_server.common.property_keys import (
 
 
 def test_reserved_key_is_prefix_system_field():
-    assert reserved_property_key("event", "timestamp") == "memmachine_event_timestamp"
-    assert is_reserved_property_key("memmachine_event_timestamp")
+    assert reserved_property_key("em", "timestamp") == "memmachine_em_timestamp"
+    assert is_reserved_property_key("memmachine_em_timestamp")
     assert not is_reserved_property_key("timestamp")
 
 

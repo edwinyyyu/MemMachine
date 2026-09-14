@@ -2,8 +2,9 @@
 The MemMachine property key namespace.
 
 Keys beginning with `RESERVED_PROPERTY_KEY_PREFIX` belong to MemMachine and are
-built by `reserved_property_key` as `<prefix><system>_<field>`; every other key
-belongs to the caller. The prefix is the distribution name, so its uniqueness
+built by `reserved_property_key` as `<prefix><system>_<field>`, where `system`
+names the component that writes the key; every other key belongs to the
+caller. The prefix is the distribution name, so its uniqueness
 is the package registry's. Every key is bounded by `validate_identifier`, the
 vector store's naming contract.
 """
