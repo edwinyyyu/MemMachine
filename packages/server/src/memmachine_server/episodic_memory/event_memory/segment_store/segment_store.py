@@ -35,11 +35,7 @@ class SegmentStorePartition(ABC):
     event is forgotten and encoded again.
 
     Segments within a partition are in one total order,
-    `(timestamp, event_uuid, index, offset)`. `get_segments` fetches
-    segments by uuid, subject to the filters. `get_segment_neighborhoods`
-    walks the order outward from seeds named by uuid, within their
-    session, and returns the neighbors that pass the filters; the seed
-    itself is located, never filtered, and never returned.
+    `(timestamp, event_uuid, index, offset)`.
     """
 
     @property
@@ -125,9 +121,10 @@ class SegmentStorePartition(ABC):
         """
         Get the segments around each seed segment, never the seed itself.
 
-        The seed is an address: it is located whether or not it passes any
-        filter, the walk stays within its session, and the filters select
-        the neighbors. Other segments of the seed's own event are ordinary
+        A walk outward from the seed in the partition's total order,
+        within the seed's session. The seed is an address: it is located
+        whether or not it passes any filter, and the filters select the
+        neighbors. Other segments of the seed's own event are ordinary
         neighbors.
 
         Args:
