@@ -31,7 +31,7 @@ from memmachine_server.common.metrics_factory import (
 from memmachine_server.common.reranker import Reranker
 from memmachine_server.common.vector_store import (
     Record,
-    VectorStoreCollection,
+    VectorStorePartition,
 )
 
 from .data_types import (
@@ -85,7 +85,7 @@ class EventMemoryParams(BaseModel):
     Attributes:
         segment_store_partition (SegmentStorePartition):
             Segment store partition.
-        vector_store_collection (VectorStoreCollection):
+        vector_store_partition (VectorStorePartition):
             Vector store collection.
         segmenter (Segmenter):
             Segmenter that segments events into segments.
@@ -106,7 +106,7 @@ class EventMemoryParams(BaseModel):
         ...,
         description="Segment store partition",
     )
-    vector_store_collection: InstanceOf[VectorStoreCollection] = Field(
+    vector_store_partition: InstanceOf[VectorStorePartition] = Field(
         ...,
         description="Vector store collection",
     )
@@ -165,7 +165,7 @@ class EventMemory:
 
         """
         self._segment_store_partition = params.segment_store_partition
-        self._vector_store_collection = params.vector_store_collection
+        self._vector_store_partition = params.vector_store_partition
         self._segmenter = params.segmenter
         self._deriver = params.deriver
         self._embedder = params.embedder
@@ -178,7 +178,7 @@ class EventMemory:
 
         # The store declares what it indexes; the system keys must be among
         # them, with the types this memory writes.
-        declared = dict(params.vector_store_collection.config.indexed_properties_schema)
+        declared = dict(params.vector_store_partition.config.indexed_properties_schema)
         missing = {
             key: property_type
             for key, property_type in (
@@ -328,7 +328,7 @@ class EventMemory:
         ]
 
         if derivative_records:
-            await self._vector_store_collection.upsert(records=derivative_records)
+            await self._vector_store_partition.upsert(records=derivative_records)
         t_vector_store = time.monotonic()
 
         phase_durations = {
@@ -474,7 +474,7 @@ class EventMemory:
             self._declared_properties,
         )
 
-        [query_result] = await self._vector_store_collection.query(
+        [query_result] = await self._vector_store_partition.query(
             query_vectors=[query_embedding],
             limit=vector_search_limit,
             property_filter=collection_filter,
@@ -765,7 +765,7 @@ class EventMemory:
 
         # Delete from vector DB first, then segment store.
         if derivative_uuids:
-            await self._vector_store_collection.delete(record_uuids=derivative_uuids)
+            await self._vector_store_partition.delete(record_uuids=derivative_uuids)
 
         await self._segment_store_partition.delete_segments(
             segment_uuids=segment_uuids,
