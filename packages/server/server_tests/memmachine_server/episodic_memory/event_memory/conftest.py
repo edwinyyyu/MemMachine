@@ -207,16 +207,22 @@ def fake_segment_store_partition():
     return InMemorySegmentStorePartition()
 
 
+def make_collection(embedder: FakeEmbedder) -> InMemoryVectorStoreCollection:
+    """A collection declaring EventMemory's reserved keys and a `color` property."""
+    return InMemoryVectorStoreCollection(
+        VectorStoreCollectionConfig(
+            vector_dimensions=embedder.dimensions,
+            indexed_properties_schema={
+                **EventMemory.expected_vector_store_collection_schema(),
+                "color": str,
+            },
+        )
+    )
+
+
 @pytest.fixture
 def fake_vector_store_collection(fake_embedder):
-    config = VectorStoreCollectionConfig(
-        vector_dimensions=fake_embedder.dimensions,
-        indexed_properties_schema={
-            **EventMemory.expected_vector_store_collection_schema(),
-            "color": str,
-        },
-    )
-    return InMemoryVectorStoreCollection(config)
+    return make_collection(fake_embedder)
 
 
 @pytest.fixture

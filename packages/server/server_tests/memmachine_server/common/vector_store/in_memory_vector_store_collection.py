@@ -102,6 +102,8 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
     def __init__(self, collection_config: VectorStoreCollectionConfig) -> None:
         self.collection_config = collection_config
         self.records: dict[UUID, Record] = {}
+        self.queries: list[FilterExpr | None] = []
+        """The property filter of each query, in order, for tests that assert routing."""
 
     @property
     def config(self) -> VectorStoreCollectionConfig:
@@ -123,6 +125,7 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
         limit: int | None = None,
         property_filter: FilterExpr | None = None,
     ) -> list[QueryResult]:
+        self.queries.append(property_filter)
         results: list[QueryResult] = []
         for query_vector in query_vectors:
             qv = list(query_vector)

@@ -5,25 +5,31 @@ import datetime
 import json
 import logging
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import ClassVar, cast
 from uuid import UUID
 
 from pydantic import BaseModel, Field, InstanceOf
 
-from memmachine_server.common.data_types import PropertyValue
+from memmachine_server.common.data_types import (
+    PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
+    PropertyType,
+    PropertyValue,
+)
 from memmachine_server.common.embedder import Embedder
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
     demangle_user_metadata_key,
     map_filter_fields,
     normalize_filter_field,
+    split_declared,
 )
 from memmachine_server.common.metrics_factory import (
     MetricsFactory,
     OperationTracker,
 )
 from memmachine_server.common.reranker import Reranker
+from memmachine_server.common.vector_store import QueryResult as VectorQueryResult
 from memmachine_server.common.vector_store import (
     Record,
     VectorStoreCollection,
@@ -33,6 +39,7 @@ from .data_types import (
     Block,
     Derivative,
     Event,
+    FilterOptions,
     FormatOptions,
     NullContext,
     ProducerContext,
@@ -47,6 +54,33 @@ from .segment_store import SegmentStorePartition
 from .segmenter import Segmenter
 
 logger = logging.getLogger(__name__)
+
+# Each widening step multiplies the vector fetch by this.
+_OVERFETCH_BASE = 4
+
+
+class InvalidCollectionSchemaError(ValueError):
+    """Raised when a vector store's collection does not declare EventMemory's system keys."""
+
+    def __init__(
+        self,
+        missing: Mapping[str, PropertyType],
+        declared: Mapping[str, PropertyType],
+    ) -> None:
+        """Initialize with the keys the collection lacks and the ones it declares."""
+        self.missing = dict(missing)
+        self.declared = dict(declared)
+        super().__init__(
+            "The vector store's collection does not declare the system keys EventMemory "
+            f"writes: missing {_schema_names(missing)}, declared {_schema_names(declared)}."
+        )
+
+
+def _schema_names(schema: Mapping[str, PropertyType]) -> dict[str, str]:
+    return {
+        key: PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[property_type]
+        for key, property_type in sorted(schema.items())
+    }
 
 
 class EventMemoryParams(BaseModel):
@@ -68,6 +102,9 @@ class EventMemoryParams(BaseModel):
             Reranker instance for scoring search results.
             If None, embedding similarity scores are used instead
             (default: None).
+        filter (FilterOptions):
+            How far a search widens to make up for seeds the segment store's
+            post-filter drops (default: `FilterOptions()`).
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -97,6 +134,10 @@ class EventMemoryParams(BaseModel):
         None,
         description="Reranker instance for scoring search results. "
         "If None, embedding similarity scores are used instead",
+    )
+    filter: FilterOptions = Field(
+        default_factory=FilterOptions,
+        description="How far a search widens over the segment store's post-filter",
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
@@ -147,18 +188,21 @@ class EventMemory:
             prefix="event_memory",
         )
 
-        self._schema_fields = frozenset(
-            params.vector_store_collection.config.indexed_properties_schema
-        )
+        self._filter = params.filter
 
-        missing_base_fields = (
-            EventMemory._BASE_EVENT_MEMORY_FIELD_NAMES - self._schema_fields
-        )
-        if missing_base_fields:
-            raise ValueError(
-                f"Collection schema missing fields required by EventMemory: "
-                f"{', '.join(sorted(missing_base_fields))}"
+        # The store declares what it indexes; the system keys must be among
+        # them, with the types this memory writes.
+        declared = dict(params.vector_store_collection.config.indexed_properties_schema)
+        missing = {
+            key: property_type
+            for key, property_type in (
+                EventMemory.expected_vector_store_collection_schema().items()
             )
+            if declared.get(key) is not property_type
+        }
+        if missing:
+            raise InvalidCollectionSchemaError(missing, declared)
+        self._declared_properties = declared
 
         self._encode_events_phase_seconds: MetricsFactory.Histogram | None = None
         self._query_phase_seconds: MetricsFactory.Histogram | None = None
@@ -178,8 +222,9 @@ class EventMemory:
         """
         Validate a batch of events before encoding.
 
-        Raises ValueError if any event supplies a reserved field name in its properties,
-        or if the collection schema is missing fields required by EventMemory.
+        Raises ValueError if any event supplies a reserved field name in its
+        properties, or a value of another type than the vector store declares
+        for its key.
         """
         events = list(events)
 
@@ -194,6 +239,16 @@ class EventMemory:
                 f"Event properties must not contain reserved fields: "
                 f"{', '.join(sorted(reserved_fields))}"
             )
+
+        for event in events:
+            for key, value in event.properties.items():
+                declared = self._declared_properties.get(key)
+                if declared is not None and type(value) is not declared:
+                    raise ValueError(
+                        f"Event {event.uuid} property {key!r} is a "
+                        f"{type(value).__name__}; the vector store declares it as "
+                        f"{PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[declared]}."
+                    )
 
     async def encode_events(
         self,
@@ -278,7 +333,7 @@ class EventMemory:
         t_segment_store = time.monotonic()
 
         derivative_records = [
-            EventMemory._build_derivative_record(derivative, derivative_embedding)
+            self._build_derivative_record(derivative, derivative_embedding)
             for derivative, derivative_embedding in zip(
                 derivatives,
                 derivative_embeddings,
@@ -313,20 +368,26 @@ class EventMemory:
                     duration, labels={"phase": phase}
                 )
 
-    @classmethod
     def _build_derivative_record(
-        cls,
+        self,
         derivative: Derivative,
         derivative_embedding: Sequence[float],
     ) -> Record:
-        """Build a vector record from a derivative and its embedding."""
-        properties: dict[str, PropertyValue] = {}
+        """Build a vector record from a derivative and its embedding.
 
-        # System-defined metadata (underscore-prefixed).
-        properties[cls._TIMESTAMP_FIELD_NAME] = derivative.timestamp
-
-        # User-defined properties.
-        properties.update(derivative.properties)
+        Only the caller properties the store declares go in: an undeclared
+        key never exists in the vector store, and the segment store holds
+        every property for the filtering the vector store does not do.
+        """
+        # Caller properties first: a reserved key cannot reach here
+        # (_validate_events rejects it), and building in this order makes
+        # the merge itself enforce that a system value always wins.
+        properties: dict[str, PropertyValue] = {
+            key: value
+            for key, value in derivative.properties.items()
+            if key in self._declared_properties
+        }
+        properties[EventMemory._TIMESTAMP_FIELD_NAME] = derivative.timestamp
 
         return Record(
             uuid=derivative.uuid,
@@ -409,59 +470,63 @@ class EventMemory:
         )[0]
         t_embedding = time.monotonic()
 
-        # Translate filter fields for vector store.
-        collection_filter = (
+        # One plan. The vector store gets the part of the caller's filter
+        # naming keys it declares, evaluated during the search; the rest is
+        # the segment store's, applied to the seeds afterward, and the search
+        # is widened to make up for what it drops.
+        collection_filter, undeclared_part = split_declared(
             map_filter_fields(property_filter, EventMemory._to_vector_record_property)
             if property_filter is not None
-            else None
+            else None,
+            self._declared_properties,
         )
-
-        # Search derivative collection for matches.
-        [query_result] = await self._vector_store_collection.query(
-            query_vectors=[query_embedding],
-            limit=vector_search_limit,
-            property_filter=collection_filter,
-        )
-        t_vector_query = time.monotonic()
-
-        segment_by_derivative = (
-            await self._segment_store_partition.get_segment_uuids_by_derivative_uuids(
-                match.record_uuid for match in query_result.matches
-            )
-        )
-
-        # Deduplicate by first occurrence (multiple derivatives can map to the same segment).
-        # First occurrence has the best score since matches are ordered best-to-worst.
-        seed_cosine_similarities: dict[UUID, float] = {}
-        for match in query_result.matches:
-            segment_uuid = segment_by_derivative.get(match.record_uuid)
-            if segment_uuid is None:
-                # The derivative's segment is gone; its vector outlived it.
-                continue
-            if segment_uuid not in seed_cosine_similarities:
-                seed_cosine_similarities[segment_uuid] = match.cosine_similarity
-
-        seed_segment_uuids = list(seed_cosine_similarities)
 
         max_backward_segments = expand_context // 3
         max_forward_segments = expand_context - max_backward_segments
 
-        segment_contexts_by_seed = (
-            await self._segment_store_partition.get_segment_contexts(
-                seed_segment_uuids=seed_segment_uuids,
+        max_fetch = vector_search_limit * self._filter.max_overfetch_factor
+        fetch_limit = vector_search_limit
+        vector_query_seconds = 0.0
+        segment_query_seconds = 0.0
+        while True:
+            t_vector_start = time.monotonic()
+            [query_result] = await self._vector_store_collection.query(
+                query_vectors=[query_embedding],
+                limit=fetch_limit,
+                property_filter=collection_filter,
+            )
+            t_vector_query = time.monotonic()
+            vector_query_seconds += t_vector_query - t_vector_start
+
+            (
+                seed_cosine_similarities,
+                segment_contexts_by_seed,
+            ) = await self._seed_contexts(
+                query_result,
                 max_backward_segments=max_backward_segments,
                 max_forward_segments=max_forward_segments,
                 property_filter=property_filter,
             )
-        )
+            segment_query_seconds += time.monotonic() - t_vector_query
+
+            # Seeds the store did not return are dropped; similarity order is kept.
+            kept_seed_segment_uuids = [
+                seed_segment_uuid
+                for seed_segment_uuid in seed_cosine_similarities
+                if seed_segment_uuid in segment_contexts_by_seed
+            ]
+            exhausted = len(query_result.matches) < fetch_limit
+            if (
+                undeclared_part is None
+                or len(kept_seed_segment_uuids) >= vector_search_limit
+                or exhausted
+                or fetch_limit >= max_fetch
+            ):
+                break
+            fetch_limit = min(fetch_limit * _OVERFETCH_BASE, max_fetch)
         t_segment_query = time.monotonic()
 
-        # Filter to seeds with results, preserving similarity order.
-        kept_seed_segment_uuids = [
-            seed_segment_uuid
-            for seed_segment_uuid in seed_segment_uuids
-            if seed_segment_uuid in segment_contexts_by_seed
-        ]
+        kept_seed_segment_uuids = kept_seed_segment_uuids[:vector_search_limit]
         segment_contexts: list[list[Segment]] = [
             segment_contexts_by_seed[seed_segment_uuid]
             for seed_segment_uuid in kept_seed_segment_uuids
@@ -501,8 +566,8 @@ class EventMemory:
 
         phase_durations = {
             "embedding": t_embedding - t_start,
-            "vector_query": t_vector_query - t_embedding,
-            "segment_query": t_segment_query - t_vector_query,
+            "vector_query": vector_query_seconds,
+            "segment_query": segment_query_seconds,
             "scoring": t_scoring - t_segment_query,
         }
 
@@ -520,6 +585,47 @@ class EventMemory:
                 self._query_phase_seconds.observe(duration, labels={"phase": phase})
 
         return QueryResult(scored_segment_contexts=scored_segment_contexts)
+
+    async def _seed_contexts(
+        self,
+        query_result: VectorQueryResult,
+        *,
+        max_backward_segments: int,
+        max_forward_segments: int,
+        property_filter: FilterExpr | None,
+    ) -> tuple[dict[UUID, float], dict[UUID, list[Segment]]]:
+        """Each match's seed segment with its similarity, and the seeds' windows.
+
+        The segment store applies the whole caller filter to the seed and its
+        window, so a neighbor satisfies what the seed satisfies; a seed the
+        store does not return has no window.
+        """
+        segment_by_derivative = (
+            await self._segment_store_partition.get_segment_uuids_by_derivative_uuids(
+                match.record_uuid for match in query_result.matches
+            )
+        )
+
+        # Deduplicate by first occurrence (multiple derivatives can map to the same segment).
+        # First occurrence has the best score since matches are ordered best-to-worst.
+        seed_cosine_similarities: dict[UUID, float] = {}
+        for match in query_result.matches:
+            segment_uuid = segment_by_derivative.get(match.record_uuid)
+            if segment_uuid is None:
+                # The derivative's segment is gone; its vector outlived it.
+                continue
+            if segment_uuid not in seed_cosine_similarities:
+                seed_cosine_similarities[segment_uuid] = match.cosine_similarity
+
+        segment_contexts_by_seed = (
+            await self._segment_store_partition.get_segment_contexts(
+                seed_segment_uuids=list(seed_cosine_similarities),
+                max_backward_segments=max_backward_segments,
+                max_forward_segments=max_forward_segments,
+                property_filter=property_filter,
+            )
+        )
+        return seed_cosine_similarities, segment_contexts_by_seed
 
     async def _score_segment_contexts(
         self,

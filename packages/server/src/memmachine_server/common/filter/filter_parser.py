@@ -1,7 +1,7 @@
 """Module for parsing filter strings into dictionaries."""
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, NamedTuple, Protocol, cast, runtime_checkable
@@ -440,3 +440,69 @@ def _flatten_conjunction(expr: FilterExpr) -> list[Comparison]:
     raise TypeError(
         "Legacy property filters only support AND expressions made of simple comparisons",
     )
+
+
+def filter_fields(expr: FilterExpr) -> frozenset[str]:
+    """Every field name a filter tree addresses."""
+    if isinstance(expr, (Comparison, In, IsNull)):
+        return frozenset((expr.field,))
+    if isinstance(expr, Not):
+        return filter_fields(expr.expr)
+    if isinstance(expr, (And, Or)):
+        return filter_fields(expr.left) | filter_fields(expr.right)
+    raise TypeError(f"Unsupported filter expression type: {type(expr)}")
+
+
+def filter_nodes(expr: FilterExpr) -> frozenset[type]:
+    """The node classes a filter tree is built from."""
+    if isinstance(expr, Not):
+        return frozenset((Not,)) | filter_nodes(expr.expr)
+    if isinstance(expr, (And, Or)):
+        return (
+            frozenset((type(expr),))
+            | filter_nodes(expr.left)
+            | filter_nodes(expr.right)
+        )
+    if isinstance(expr, (Comparison, In, IsNull)):
+        return frozenset((type(expr),))
+    raise TypeError(f"Unsupported filter expression type: {type(expr)}")
+
+
+def _conjoin(clauses: Iterable[FilterExpr | None]) -> FilterExpr | None:
+    """The conjunction of the given clauses; None when there are none."""
+    operands = [clause for clause in clauses if clause is not None]
+    if not operands:
+        return None
+    conjunction = operands[0]
+    for operand in operands[1:]:
+        conjunction = And(left=conjunction, right=operand)
+    return conjunction
+
+
+def _conjuncts(expr: FilterExpr | None) -> list[FilterExpr]:
+    """The top-level conjuncts of a tree, with nested conjunctions flattened."""
+    if expr is None:
+        return []
+    if isinstance(expr, And):
+        return [*_conjuncts(expr.left), *_conjuncts(expr.right)]
+    return [expr]
+
+
+def split_declared(
+    expr: FilterExpr | None, declared: Collection[str]
+) -> tuple[FilterExpr | None, FilterExpr | None]:
+    """
+    Split a tree into the conjuncts naming declared fields only, and the rest.
+
+    A conjunct is declared when every field it names is in `declared`; a
+    disjunction or negation that mixes declared and undeclared fields is
+    undeclared as a whole, since no part of it can be evaluated alone.
+    """
+    declared_part: list[FilterExpr] = []
+    undeclared_part: list[FilterExpr] = []
+    for conjunct in _conjuncts(expr):
+        if filter_fields(conjunct) <= frozenset(declared):
+            declared_part.append(conjunct)
+        else:
+            undeclared_part.append(conjunct)
+    return _conjoin(declared_part), _conjoin(undeclared_part)
