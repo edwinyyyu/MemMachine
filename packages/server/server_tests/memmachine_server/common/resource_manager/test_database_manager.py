@@ -389,7 +389,10 @@ async def test_qdrant_api_key_omitted_when_empty():
 async def test_qdrant_creates_vector_store():
     """get_vector_store creates a QdrantVectorStore built for the service's keys."""
     conf = _qdrant_only_conf()
-    conf.qdrant_confs["qdrant1"] = QdrantConf(registry_database="registry")
+    conf.qdrant_confs["qdrant1"] = QdrantConf(
+        registry_database="registry",
+        hnsw_config={"ef_construct": 256, "payload_m": 32},
+    )
 
     mock_client = AsyncMock()
     mock_client.close = AsyncMock()
@@ -424,6 +427,9 @@ async def test_qdrant_creates_vector_store():
     assert kwargs["registry_engine"] is builder.sql_engines["registry"]
     assert kwargs["tombstone_retention_seconds"] == 86400
     assert kwargs["indexed_properties"] == {"memmachine_event_session": str}
+    assert kwargs["hnsw_config"] == {"ef_construct": 256, "payload_m": 32}
+    assert kwargs["optimizers_config"] is None
+    assert kwargs["quantization_config"] is None
     mock_store_cls.assert_called_once_with(mock_params_cls.model_validate.return_value)
     mock_store_cls.return_value.startup.assert_awaited_once()
     assert ("qdrant1", "c") in builder.vector_stores

@@ -2,12 +2,12 @@
 
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timedelta
-from typing import ClassVar, override
+from typing import ClassVar, Self, override
 from uuid import UUID
 
 import grpc
 import grpc.aio
-from pydantic import BaseModel, Field, InstanceOf, field_validator
+from pydantic import BaseModel, Field, InstanceOf, field_validator, model_validator
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -449,6 +449,21 @@ class QdrantVectorStoreParams(BaseModel):
         indexed_properties (IndexedProperties):
             The declared schema every partition of this store carries: each
             key gets a payload index of its declared type.
+        hnsw_config (HnswConfigDiff | None):
+            Optional HNSW index tuning applied to native collections.
+            `m` must be 0 or unset: native collections are multi-tenant
+            and disable the global graph in favor of per-tenant payload indexing,
+            so tune `payload_m` rather than `m`.
+            Does not apply to registry collections
+            (default: None).
+        optimizers_config (OptimizersConfigDiff | None):
+            Optional optimizer tuning applied to native collections.
+            Does not apply to registry collections
+            (default: None).
+        quantization_config (QuantizationConfig | None):
+            Optional quantization applied to native collections.
+            Does not apply to registry collections
+            (default: None).
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -481,6 +496,30 @@ class QdrantVectorStoreParams(BaseModel):
         ...,
         description="The declared schema every partition of this store carries",
     )
+    hnsw_config: models.HnswConfigDiff | None = Field(
+        None,
+        description=(
+            "Optional HNSW index tuning applied to native collections. "
+            "`m` must be 0 or unset: native collections are multi-tenant "
+            "and disable the global graph in favor of per-tenant payload indexing, "
+            "so tune `payload_m` rather than `m`. "
+            "Does not apply to registry collections"
+        ),
+    )
+    optimizers_config: models.OptimizersConfigDiff | None = Field(
+        None,
+        description=(
+            "Optional optimizer tuning applied to native collections. "
+            "Does not apply to registry collections"
+        ),
+    )
+    quantization_config: models.QuantizationConfig | None = Field(
+        None,
+        description=(
+            "Optional quantization applied to native collections. "
+            "Does not apply to registry collections"
+        ),
+    )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
         description="An instance of MetricsFactory for collecting usage metrics",
@@ -491,6 +530,16 @@ class QdrantVectorStoreParams(BaseModel):
     def _validate_collection(cls, collection: str) -> str:
         validate_collection_name(collection)
         return collection
+
+    @model_validator(mode="after")
+    def _validate_hnsw_m(self) -> Self:
+        if self.hnsw_config is not None and self.hnsw_config.m not in (None, 0):
+            raise ValueError(
+                "hnsw_config.m must be 0 or unset: native collections are "
+                "multi-tenant and disable the global graph in favor of per-tenant "
+                "payload indexing, so tune payload_m rather than m"
+            )
+        return self
 
 
 class QdrantVectorStore(VectorStore):
@@ -519,6 +568,9 @@ class QdrantVectorStore(VectorStore):
         datetime: models.PayloadSchemaType.DATETIME,
     }
 
+    # The per-tenant graph size when no override is configured.
+    _DEFAULT_NATIVE_PAYLOAD_M: ClassVar[int] = 16
+
     @staticmethod
     def _is_already_exists_error(error: Exception) -> bool:
         """Check if an exception indicates a resource already exists."""
@@ -544,7 +596,9 @@ class QdrantVectorStore(VectorStore):
             tombstone_retention=timedelta(seconds=params.tombstone_retention_seconds),
         )
         self._indexed_properties = params.indexed_properties
-        self._hnsw_m = 16
+        self._hnsw_config = params.hnsw_config
+        self._optimizers_config = params.optimizers_config
+        self._quantization_config = params.quantization_config
 
         self._tracker = OperationTracker(
             params.metrics_factory,
@@ -572,6 +626,22 @@ class QdrantVectorStore(VectorStore):
             indexed_properties=indexed_property_names(self._indexed_properties),
         )
 
+    def _native_hnsw_config(self) -> models.HnswConfigDiff:
+        """The HNSW config of the native collection: the overrides, with `m` pinned at 0.
+
+        The collection is multi-tenant, so the global graph is disabled and
+        each partition gets its own graph of `payload_m` links.
+        """
+        overrides = self._hnsw_config or models.HnswConfigDiff()
+        return overrides.model_copy(
+            update={
+                "m": 0,
+                "payload_m": overrides.payload_m
+                if overrides.payload_m is not None
+                else QdrantVectorStore._DEFAULT_NATIVE_PAYLOAD_M,
+            }
+        )
+
     @override
     async def provision(self) -> None:
         async with self._tracker("provision"):
@@ -595,10 +665,9 @@ class QdrantVectorStore(VectorStore):
                     size=self._vector_dimensions,
                     distance=QdrantVectorStore._QDRANT_DISTANCE,
                 ),
-                hnsw_config=models.HnswConfigDiff(
-                    m=0,
-                    payload_m=self._hnsw_m,
-                ),
+                hnsw_config=self._native_hnsw_config(),
+                optimizers_config=self._optimizers_config,
+                quantization_config=self._quantization_config,
             )
             await self._client.create_payload_index(
                 collection_name=self._collection,

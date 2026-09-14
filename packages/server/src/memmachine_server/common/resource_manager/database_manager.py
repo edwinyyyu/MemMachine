@@ -735,6 +735,9 @@ class DatabaseManager:
             QdrantVectorStoreParams,
         )
 
+        # QdrantConf carries the native index and quantization settings as
+        # plain mappings, so qdrant-client stays optional for config parsing;
+        # the params model validates them against qdrant's own models.
         try:
             params = QdrantVectorStoreParams.model_validate(
                 {
@@ -746,6 +749,9 @@ class DatabaseManager:
                     ),
                     "tombstone_retention_seconds": conf.tombstone_retention_seconds,
                     "indexed_properties": indexed_properties,
+                    "hnsw_config": conf.hnsw_config,
+                    "optimizers_config": conf.optimizers_config,
+                    "quantization_config": conf.quantization_config,
                 }
             )
         except ValidationError as e:
