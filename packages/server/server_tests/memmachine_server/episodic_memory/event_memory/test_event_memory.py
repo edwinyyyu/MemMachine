@@ -34,7 +34,6 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     QueryHit,
     Segment,
     TextBlock,
-    with_part,
 )
 from memmachine_server.episodic_memory.event_memory.deriver import Deriver
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
@@ -105,7 +104,7 @@ def _record_query_filters(
 
 
 def _author(name: str) -> Context:
-    return with_part({}, Author(name=name))
+    return Context(Author(name=name))
 
 
 def _make_event(
@@ -120,7 +119,7 @@ def _make_event(
         uuid=uuid4(),
         timestamp=timestamp,
         source_id=source_id,
-        context=context if context is not None else {},
+        context=context if context is not None else Context(),
         blocks=[TextBlock(text=text)],
         properties=properties or {},
     )
@@ -698,7 +697,7 @@ def _make_segment(
         offset=offset,
         timestamp=timestamp,
         block=TextBlock(text=text),
-        context=context if context is not None else {},
+        context=context if context is not None else Context(),
     )
 
 
@@ -1806,7 +1805,7 @@ class TestComposition:
         )
 
     def test_default_order_is_timestamp_then_author_then_content(self):
-        segment = self._segment({"author": Author(name="Alice")})
+        segment = self._segment(Context(Author(name="Alice")))
         rendered = EventMemory.render_segments([segment], datetime_format=_SHORT_TIME)
         # Babel puts a narrow no-break space before the meridiem.
         assert rendered.replace("\u202f", " ") == (
@@ -1814,7 +1813,7 @@ class TestComposition:
         )
 
     def test_listed_parts_render_in_the_listed_order(self):
-        context = {"author": Author(name="Alice"), "mood": _Mood(word="happy")}
+        context = Context(Author(name="Alice"), _Mood(word="happy"))
         no_time = DateTimeFormat(time_style=None)
         assert (
             EventMemory.render_segments(
@@ -1834,7 +1833,7 @@ class TestComposition:
         )
 
     def test_a_part_not_listed_contributes_nothing(self):
-        context = {"author": Author(name="Alice"), "mood": _Mood(word="happy")}
+        context = Context(Author(name="Alice"), _Mood(word="happy"))
         no_time = DateTimeFormat(time_style=None)
         assert (
             EventMemory.render_segments(
@@ -1858,7 +1857,7 @@ class TestComposition:
             WholeTextDeriver(parts=("Not A Kind",))
 
     async def test_the_handler_composes_the_parts_it_names(self):
-        context = {"author": Author(name="Alice"), "mood": _Mood(word="happy")}
+        context = Context(Author(name="Alice"), _Mood(word="happy"))
         handler = WholeTextDeriver(
             DateTimeFormat(date_style=None, time_style=None), parts=("mood",)
         )
@@ -1868,13 +1867,13 @@ class TestComposition:
     async def test_the_embedded_text_is_the_same_composition_over_the_derived_text(
         self,
     ):
-        segment = self._segment({"author": Author(name="Alice")})
+        segment = self._segment(Context(Author(name="Alice")))
         [derivative] = await Deriver([WholeTextDeriver()]).derive(segment)
         # The handler's default format: a full date and no time.
         assert derivative.text == '[Thursday, January 15, 2026] Alice: "hi"'
 
     async def test_embedded_text_without_author_or_timestamp(self):
-        segment = self._segment({})
+        segment = self._segment(Context())
         bare = WholeTextDeriver(DateTimeFormat(date_style=None, time_style=None))
         [derivative] = await Deriver([bare]).derive(segment)
         assert derivative.text == '"hi"'
