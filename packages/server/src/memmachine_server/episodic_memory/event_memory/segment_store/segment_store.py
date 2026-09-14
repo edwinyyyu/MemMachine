@@ -71,11 +71,14 @@ class SegmentStorePartition(ABC):
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, Segment]:
         """
-        Get the segments among these that the partition holds and that pass the filters.
+        Get segments by uuid, subject to the filters.
+
+        A uuid the partition does not hold, or whose segment fails a
+        filter, has no entry.
 
         Args:
             segment_uuids (Iterable[UUID]):
-                The uuids to look up.
+                The uuids of the segments to get.
             since (datetime | None):
                 Inclusive lower bound on the segments' timestamps, timezone-aware
                 (default: None).
@@ -97,8 +100,6 @@ class SegmentStorePartition(ABC):
         Returns:
             dict[UUID, Segment]:
                 A mapping from each uuid found and admitted to its segment.
-                A uuid the partition does not hold, or whose segment fails
-                a filter, is absent.
 
         Raises:
             ValueError: If `since` or `until` is naive.
