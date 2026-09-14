@@ -38,19 +38,18 @@ from .data_types import (
     indexed_property_names,
     validate_vector_store_name,
 )
+from .declared_properties import require_declared_properties, require_supported_filter
 from .partition_registry import (
     Registration,
     Reservation,
     VectorStorePartitionRegistry,
 )
 from .utils import (
-    require_declared_types,
     require_dimensions,
     require_partition_key,
     require_valid_limit,
     require_valid_min_cosine_similarity,
     require_valid_query_vector,
-    validate_filter,
 )
 from .vector_store import VectorStore, VectorStorePartition
 
@@ -76,7 +75,9 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
 
     For subclasses: `_vector_store_name` is the store's name and
     `_incarnation` the incarnation the handle is bound to, and a subclass
-    implements the backend calls `_upsert`, `_query`, and `_delete`.
+    implements `supported_filter_nodes`, the filter nodes its backend
+    evaluates during a search, and the backend calls `_upsert`, `_query`,
+    and `_delete`.
     """
 
     def __init__(
@@ -112,7 +113,7 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         async with self._tracker("upsert"):
             records = list(records)
             for record in records:
-                require_declared_types(record.properties, self._indexed_properties)
+                require_declared_properties(record.properties, self._indexed_properties)
                 require_dimensions(record.vector, self._vector_dimensions)
             await self._registration.require_current()
             if not records:
@@ -135,8 +136,12 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
                 require_valid_query_vector(query_vector, self._vector_dimensions)
             require_valid_min_cosine_similarity(min_cosine_similarity)
             require_valid_limit(limit)
-            if property_filter is not None and not validate_filter(property_filter):
-                raise ValueError("Filter contains an invalid property key")
+            if property_filter is not None:
+                require_supported_filter(
+                    property_filter,
+                    self._indexed_properties,
+                    self.supported_filter_nodes,
+                )
             await self._registration.require_current()
             if not query_vectors:
                 return []
@@ -163,7 +168,8 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         Write records to the backend under the handle's incarnation.
 
         Called between two liveness checks, with at least one record, each
-        already checked against the store's declared schema and dimensions.
+        already checked: its keys are declared, each value is of its key's
+        declared type, and its vector has the store's dimensions.
         A record replaces the one with its UUID. The records are durable when
         it returns; a call that raises may have written some of them.
 
@@ -188,7 +194,9 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         Search the handle's incarnation's records for each query vector.
 
         Called after a liveness check, with at least one query vector and a
-        positive limit, the vectors, minimum, and filter already checked.
+        positive limit, the vectors, minimum, and filter already checked: the
+        filter names declared keys only and is built from
+        `supported_filter_nodes` only.
 
         Args:
             query_vectors (list[list[float]]): The vectors to search for.
@@ -243,7 +251,8 @@ class RegistryBackedVectorStoreParams(BaseModel):
             Dimensionality of every vector in the store.
         indexed_properties (IndexedProperties):
             The declared schema every partition of this store carries: each
-            key is indexed by its declared type, which a search filters on.
+            key is indexed by its declared type, which a search filters on,
+            and a record or a filter naming any other key is rejected.
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -270,7 +279,8 @@ class RegistryBackedVectorStoreParams(BaseModel):
         ...,
         description=(
             "The declared schema every partition of this store carries: each key "
-            "is indexed by its declared type, which a search filters on"
+            "is indexed by its declared type, which a search filters on, and a "
+            "record or a filter naming any other key is rejected"
         ),
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(

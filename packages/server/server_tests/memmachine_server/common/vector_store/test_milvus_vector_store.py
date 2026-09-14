@@ -39,7 +39,6 @@ from memmachine_server.common.filter.filter_parser import (
     Or,
 )
 from memmachine_server.common.metrics_factory import OperationTracker
-from memmachine_server.common.properties_json import decode_properties
 from memmachine_server.common.vector_store.data_types import (
     PartitionSchema,
     Record,
@@ -62,6 +61,9 @@ from memmachine_server.common.vector_store.partition_registry import (
 from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
     SQLAlchemyVectorStorePartitionRegistry,
     SQLAlchemyVectorStorePartitionRegistryParams,
+)
+from server_tests.memmachine_server.common.vector_store.declared_schema_contract import (
+    DeclaredSchemaContract,
 )
 
 VECTOR_STORE_NAME = "test_vector_store"
@@ -204,21 +206,13 @@ def _with_purge_batch_size(
     )
 
 
-# Properties of every type, declared and not, for the tests against a model.
+# A property of every type, for the tests against a model.
 _MODEL_DECLARED: dict[str, PropertyType] = {
     "d_bool": bool,
     "d_int": int,
     "d_float": float,
     "d_str": str,
     "d_datetime": datetime,
-}
-_MODEL_PROPERTY_TYPES: dict[str, PropertyType] = {
-    **_MODEL_DECLARED,
-    "u_bool": bool,
-    "u_int": int,
-    "u_float": float,
-    "u_str": str,
-    "u_datetime": datetime,
 }
 _MODEL_INTS = [-7, -1, 0, 1, 2, 3, 1 << 40]
 _MODEL_FLOATS = [-2.5, -0.5, 0.0, 0.25, 1.0, 3.75]
@@ -266,7 +260,7 @@ def _model_properties(rng: random.Random) -> dict[str, PropertyValue]:
     """Properties of every type, each missing a quarter of the time."""
     return {
         key: _model_value(rng, value_type)
-        for key, value_type in _MODEL_PROPERTY_TYPES.items()
+        for key, value_type in _MODEL_DECLARED.items()
         if rng.random() < 0.75
     }
 
@@ -292,8 +286,8 @@ def _model_filter(rng: random.Random, depth: int = 3) -> FilterExpr:
                     left=_model_filter(rng, depth - 1),
                     right=_model_filter(rng, depth - 1),
                 )
-    key = rng.choice(list(_MODEL_PROPERTY_TYPES))
-    value_type = _MODEL_PROPERTY_TYPES[key]
+    key = rng.choice(list(_MODEL_DECLARED))
+    value_type = _MODEL_DECLARED[key]
     match rng.choice(("is_null", "comparison", "in")):
         case "is_null":
             return IsNull(field=key)
@@ -582,7 +576,6 @@ class TestPartitionLifecycle:
         assert fields["partition_key"]["is_partition_key"] is True
         assert fields["vector"]["type"] == DataType.FLOAT_VECTOR
         assert fields["vector"]["params"]["dim"] == VECTOR_DIM
-        assert fields["properties"]["type"] == DataType.JSON
         expected = {
             "_p_name": DataType.VARCHAR,
             "_p_age": DataType.INT64,
@@ -863,6 +856,12 @@ class TestUpsertAndQuery:
         assert stored["_p_name"] == "old"
 
 
+class TestDeclaredSchema(DeclaredSchemaContract):
+    """The declared-schema contract, against this store."""
+
+    settle = staticmethod(_settle)
+
+
 class TestFilters:
     async def _setup(self, collection):
         v1 = _normalize([1.0, 0.0, 0.0])
@@ -1030,34 +1029,6 @@ class TestFilters:
         assert await uuids(Not(expr=Not(expr=IsNull(field="name")))) == {bare.uuid}
 
     @pytest.mark.asyncio
-    async def test_filters_on_undeclared_properties(self, collection):
-        """A property the schema does not declare is stored and filtered too."""
-        v1 = _normalize([1.0, 0.0, 0.0])
-        red = _make_record(vector=v1, properties={"color": "red", "size": 3})
-        blue = _make_record(
-            vector=_normalize([1.0, 0.1, 0.0]), properties={"color": "blue"}
-        )
-        await collection.upsert(records=[red, blue])
-        await _settle(collection)
-
-        async def uuids(expr):
-            [result] = await collection.query(
-                query_vectors=[v1], limit=10, property_filter=expr
-            )
-            return {match.record_uuid for match in result.matches}
-
-        assert await uuids(Comparison(field="color", op="=", value="red")) == {red.uuid}
-        assert await uuids(Comparison(field="size", op=">=", value=3)) == {red.uuid}
-        assert await uuids(In(field="color", values=["blue", "green"])) == {blue.uuid}
-        assert await uuids(IsNull(field="size")) == {blue.uuid}
-        assert await uuids(Comparison(field="size", op="!=", value=3)) == {blue.uuid}
-        stored = await _stored(collection, [red.uuid])
-        assert decode_properties(stored[red.uuid]["properties"]) == {
-            "color": "red",
-            "size": 3,
-        }
-
-    @pytest.mark.asyncio
     async def test_a_declared_datetime_is_stored_with_its_offset(self, collection):
         written = datetime(
             2024, 6, 15, 17, 30, tzinfo=timezone(timedelta(hours=5, minutes=30))
@@ -1192,9 +1163,9 @@ class TestFilters:
 class TestFilterModel:
     @pytest.mark.asyncio
     async def test_random_filters_agree_with_the_model(self, store):
-        """Seeded filter trees over properties of every type, declared and not,
-        datetimes at varied offsets and missing values included, select the
-        records the in-memory evaluator selects."""
+        """Seeded filter trees over properties of every type, datetimes at
+        varied offsets and missing values included, select the records the
+        in-memory evaluator selects."""
         rng = random.Random(1736)
         # A store of its own, declaring the model's properties.
         modeled = await _started_store(
@@ -1625,11 +1596,18 @@ class TestPartitionIsolation:
     async def test_a_query_returns_only_its_own_partitions_records(self, store):
         """Partitions of one store answer with their own records alone,
         filtered or not, though the other's records match too."""
+        # A store of its own, declaring `color` beside the shared keys.
+        isolated = await _started_store(
+            store._client,
+            store._partition_registry._engine,
+            vector_store_name="query_isolation",
+            indexed_properties={**INDEXED_PROPERTIES, "color": str},
+        )
         vector = _normalize([1.0, 0.0, 0.0])
         own_records = {}
         for partition_key in ("query_a", "query_b"):
-            await store.create_partition(partition_key)
-            partition = await store.get_partition(partition_key)
+            await isolated.create_partition(partition_key)
+            partition = await isolated.get_partition(partition_key)
             assert partition is not None
             records = [
                 _make_record(
@@ -1645,7 +1623,6 @@ class TestPartitionIsolation:
 
         for partition, own in own_records.values():
             await _settle(partition)
-            # `name` is declared and `color` is not.
             for property_filter in (
                 None,
                 Comparison(field="name", op="=", value="shared"),
@@ -1660,7 +1637,7 @@ class TestPartitionIsolation:
                 )
 
         for partition_key in own_records:
-            await store.delete_partition(partition_key)
+            await isolated.delete_partition(partition_key)
 
 
 class TestPurgeBatches:
@@ -1781,7 +1758,11 @@ class TestPurge:
 
 _CHURN_VECTOR_STORE_NAME = "churn"
 _CHURN_PARTITION_KEYS = ("churn_0", "churn_1", "churn_2")
-_CHURN_DECLARED: dict[str, PropertyType] = {"owner": str, "tag": str}
+_CHURN_DECLARED: dict[str, PropertyType] = {
+    "owner": str,
+    "tag": str,
+    "version": int,
+}
 _CHURN_TAGS = ("red", "green", "blue")
 # The outcomes the store documents for an operation that loses a race.
 _DOMAIN_ERRORS = (
@@ -1957,10 +1938,7 @@ async def _check_live_partition(
     )
     assert sorted(stored) == sorted(held)
     rows = await _stored(handle, list(held)) if held else {}
-    assert {
-        record_uuid: decode_properties(row["properties"])["version"]
-        for record_uuid, row in rows.items()
-    } == {
+    assert {record_uuid: row["_p_version"] for record_uuid, row in rows.items()} == {
         record_uuid: record.properties["version"]
         for record_uuid, record in held.items()
     }
