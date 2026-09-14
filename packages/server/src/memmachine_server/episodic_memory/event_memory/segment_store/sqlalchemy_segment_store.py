@@ -211,8 +211,8 @@ class SegmentRow(BaseSegmentStore):
     timestamp_timezone_offset: MappedColumn[int] = mapped_column(
         Integer, nullable=False, default=0
     )
-    session_id: MappedColumn[str] = mapped_column(Text, nullable=False)
-    source_id: MappedColumn[str | None] = mapped_column(Text, nullable=True)
+    session_id: MappedColumn[str] = mapped_column(String(255), nullable=False)
+    source_id: MappedColumn[str | None] = mapped_column(String(255), nullable=True)
     context: MappedColumn[bytes] = mapped_column(LargeBinary, nullable=False)
     block_kind: MappedColumn[str] = mapped_column(Text, nullable=False)
     block: MappedColumn[bytes] = mapped_column(LargeBinary, nullable=False)

@@ -96,7 +96,7 @@ def decode_block(encoded: Mapping[str, JsonValue]) -> Block:
 # Event, Segment, Derivative: core data models for EventMemory.
 
 ID_MAX_BYTES = 255
-"""Bound on a session id and a source id, in bytes: the width of the store's key columns."""
+"""Bound on a session id and a source id, in bytes, fitting the store's 255-character key columns."""
 
 
 def _bounded_id(value: str) -> str:
