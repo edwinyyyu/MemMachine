@@ -120,7 +120,7 @@ class SegmentStorePartition(ABC):
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, Neighborhood]:
         """
-        Get the segments around each seed segment, never the seed itself.
+        Get the segments around each seed segment, excluding the seed itself.
 
         A walk outward from the seed in the partition's total order,
         within the seed's session. The seed is an address: it is located

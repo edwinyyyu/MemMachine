@@ -264,7 +264,7 @@ class FormatOptions(BaseModel):
 
 
 class Neighborhood(BaseModel):
-    """The segments around an anchor, never the anchor itself: its open neighborhood."""
+    """The segments around an anchor, excluding the anchor itself: its open neighborhood."""
 
     before: list[Segment] = Field(
         description="In the store's order, ending just before the anchor"
