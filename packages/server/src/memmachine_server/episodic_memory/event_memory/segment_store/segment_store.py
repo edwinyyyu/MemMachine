@@ -87,13 +87,16 @@ class SegmentStorePartition(ABC):
                 so ranges meet without overlap (default: None).
             session_ids (Iterable[str] | None):
                 Keep only segments whose session id is one of these; an
-                empty list keeps none (default: None, every session).
+                empty list keeps none, and None keeps every session
+                (default: None).
             source_ids (Iterable[str] | None):
                 Keep only segments whose source id is one of these; an
-                empty list keeps none (default: None, every source).
+                empty list keeps none, and None keeps every source
+                (default: None).
             block_kinds (Iterable[str] | None):
                 Keep only segments whose block is of one of these kinds;
-                an empty list keeps none (default: None, every kind).
+                an empty list keeps none, and None keeps every kind
+                (default: None).
             property_filter (FilterExpr | None):
                 A filter expression over segment properties (default: None).
 
@@ -145,10 +148,12 @@ class SegmentStorePartition(ABC):
                 so ranges meet without overlap (default: None).
             source_ids (Iterable[str] | None):
                 Keep only neighbors whose source id is one of these; an
-                empty list keeps none (default: None, every source).
+                empty list keeps none, and None keeps every source
+                (default: None).
             block_kinds (Iterable[str] | None):
                 Keep only neighbors whose block is of one of these kinds;
-                an empty list keeps none (default: None, every kind).
+                an empty list keeps none, and None keeps every kind
+                (default: None).
             property_filter (FilterExpr | None):
                 A filter expression over the neighbors' properties
                 (default: None).

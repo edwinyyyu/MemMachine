@@ -398,12 +398,13 @@ class EventMemory:
                 (default: None).
             session_ids (Iterable[str] | None):
                 Keep only events of these sessions; an empty list keeps
-                none (default: None, every session).
+                none, and None keeps every session (default: None).
             source_ids (Iterable[str] | None):
                 Keep only events of these sources; an empty list keeps
-                none (default: None, every source).
+                none, and None keeps every source (default: None).
             block_kinds (Iterable[str] | None):
-                Keep only segments whose block is of these kinds (default: None).
+                Keep only segments whose block is of these kinds; an empty
+                list keeps none, and None keeps every kind (default: None).
             property_filter (FilterExpr | None):
                 Property fields and values
                 to use for filtering segments
@@ -606,12 +607,14 @@ class EventMemory:
                 (default: None).
             session_ids (Iterable[str] | None):
                 The sessions the anchor may be in; an anchor in another
-                session is not found (default: None, any session).
+                session is not found, and None allows any session
+                (default: None).
             source_ids (Iterable[str] | None):
                 Keep only neighbors of these sources; an empty list keeps
-                none (default: None, every source).
+                none, and None keeps every source (default: None).
             block_kinds (Iterable[str] | None):
-                Keep only neighbors whose block is of these kinds (default: None).
+                Keep only neighbors whose block is of these kinds; an empty
+                list keeps none, and None keeps every kind (default: None).
             property_filter (FilterExpr | None):
                 Property fields and values to filter the neighbors by
                 (default: None).
