@@ -244,6 +244,20 @@ class SegmentStorePartition(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    async def delete_derivatives(
+        self,
+        derivative_uuids: Iterable[UUID],
+    ) -> None:
+        """
+        Delete derivative links by derivative UUID, leaving their segments.
+
+        Args:
+            derivative_uuids (Iterable[UUID]):
+                The UUIDs of the derivatives to unlink.
+        """
+        raise NotImplementedError
+
 
 class SegmentStore(ABC):
     """

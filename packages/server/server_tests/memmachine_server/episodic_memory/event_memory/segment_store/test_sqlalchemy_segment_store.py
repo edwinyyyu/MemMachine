@@ -3066,3 +3066,47 @@ async def test_row_projections_are_derived_from_the_segment(
 
     returned = (await partition.get_segments([seg.uuid]))[seg.uuid]
     assert (returned.session_id, returned.source_id) == ("s1", "alice")
+
+
+# ===================================================================
+# delete_derivatives
+# ===================================================================
+
+
+@pytest.mark.asyncio
+async def test_delete_derivatives_unlinks_and_keeps_the_segment(
+    partition: SQLAlchemySegmentStorePartition,
+) -> None:
+    seg = _seg()
+    d1, d2 = uuid4(), uuid4()
+    await partition.add_segments({seg: [d1, d2]})
+
+    await partition.delete_derivatives([d1, uuid4()])
+
+    assert await partition.get_derivative_uuids_by_segment_uuids([seg.uuid]) == {
+        seg.uuid: [d2]
+    }
+    assert seg.uuid in await partition.get_segments([seg.uuid])
+
+
+@pytest.mark.asyncio
+async def test_delete_derivatives_empty(
+    partition: SQLAlchemySegmentStorePartition,
+) -> None:
+    await partition.delete_derivatives([])
+
+
+@pytest.mark.asyncio
+async def test_delete_derivatives_on_a_stale_handle_raises(
+    store: SQLAlchemySegmentStore,
+) -> None:
+    partition = await store.open_or_create_partition(
+        "unlink_fenced", _plaintext_partition_config()
+    )
+    seg = _seg()
+    derivative = uuid4()
+    await partition.add_segments({seg: [derivative]})
+    await store.delete_partition("unlink_fenced")
+
+    with pytest.raises(SegmentStorePartitionHandleStaleError):
+        await partition.delete_derivatives([derivative])
