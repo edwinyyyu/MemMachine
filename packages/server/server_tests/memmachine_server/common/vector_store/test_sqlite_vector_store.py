@@ -1,5 +1,7 @@
 """Tests for SQLiteVectorStore."""
 
+import asyncio
+import contextlib
 import math
 from datetime import UTC, datetime, timedelta, timezone
 from uuid import UUID, uuid4
@@ -21,7 +23,6 @@ from memmachine_server.common.vector_store.data_types import (
     Record,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
-    VectorStoreCollectionConfigMismatchError,
 )
 from memmachine_server.common.vector_store.sqlite_vector_store import (
     IndexLoadError,
@@ -34,6 +35,22 @@ from memmachine_server.common.vector_store.sqlite_vector_store import (
 from memmachine_server.common.vector_store.vector_search_engine.usearch_engine import (
     USearchVectorSearchEngine,
 )
+
+
+async def _open_or_create(store, *, namespace, name, config):
+    """Create the collection if absent, then open it, as a store's owner does.
+
+    Losing a creation race to another creator of the same collection is the
+    collection existing, which is the state asked for.
+    """
+    collection = await store.open_collection(namespace=namespace, name=name)
+    if collection is None:
+        with contextlib.suppress(VectorStoreCollectionAlreadyExistsError):
+            await store.create_collection(namespace=namespace, name=name, config=config)
+        collection = await store.open_collection(namespace=namespace, name=name)
+    assert collection is not None
+    return collection
+
 
 NAMESPACE = "test_namespace"
 NAME = "test_name"
@@ -158,42 +175,6 @@ class TestCollectionLifecycle:
     @pytest.mark.asyncio
     async def test_delete_nonexistent_is_idempotent(self, store):
         await store.delete_collection(namespace=NAMESPACE, name="nonexistent")
-
-    @pytest.mark.asyncio
-    async def test_open_or_create_creates_when_missing(self, store):
-        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        coll = await store.open_or_create_collection(
-            namespace=NAMESPACE, name="new", config=config
-        )
-        assert isinstance(coll, SQLiteVectorStoreCollection)
-        await store.delete_collection(namespace=NAMESPACE, name="new")
-
-    @pytest.mark.asyncio
-    async def test_open_or_create_opens_when_exists(self, store):
-        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        await store.create_collection(
-            namespace=NAMESPACE, name="existing", config=config
-        )
-        coll = await store.open_or_create_collection(
-            namespace=NAMESPACE, name="existing", config=config
-        )
-        assert isinstance(coll, SQLiteVectorStoreCollection)
-        await store.delete_collection(namespace=NAMESPACE, name="existing")
-
-    @pytest.mark.asyncio
-    async def test_open_or_create_raises_on_config_mismatch(self, store):
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="mismatch",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        with pytest.raises(VectorStoreCollectionConfigMismatchError):
-            await store.open_or_create_collection(
-                namespace=NAMESPACE,
-                name="mismatch",
-                config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM + 1),
-            )
-        await store.delete_collection(namespace=NAMESPACE, name="mismatch")
 
     @pytest.mark.asyncio
     async def test_open_nonexistent_returns_none(self, store):
@@ -795,11 +776,11 @@ class TestPartitionIsolation:
     async def test_delete_collection_does_not_affect_sibling(self, store):
         """Deleting one collection doesn't break a sibling sharing tables."""
         config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        coll_a = await store.open_or_create_collection(
-            namespace=NAMESPACE, name="sibling_a", config=config
+        coll_a = await _open_or_create(
+            store, namespace=NAMESPACE, name="sibling_a", config=config
         )
-        coll_b = await store.open_or_create_collection(
-            namespace=NAMESPACE, name="sibling_b", config=config
+        coll_b = await _open_or_create(
+            store, namespace=NAMESPACE, name="sibling_b", config=config
         )
 
         v1 = _normalize([1.0, 0.0, 0.0])
@@ -824,8 +805,8 @@ class TestNoProperties:
     @pytest.mark.asyncio
     async def test_collection_without_properties(self, store):
         config = VectorStoreCollectionConfig(vector_dimensions=2)
-        coll = await store.open_or_create_collection(
-            namespace=NAMESPACE, name="no_props", config=config
+        coll = await _open_or_create(
+            store, namespace=NAMESPACE, name="no_props", config=config
         )
         r1 = _make_record(vector=[1.0, 0.0])
         await coll.upsert(records=[r1])
@@ -915,7 +896,6 @@ class TestConcurrentAsync:
     @pytest.mark.asyncio
     async def test_concurrent_upserts(self, collection):
         """Multiple concurrent upserts should not error and all records should be persisted."""
-        import asyncio
 
         all_uuids: list[UUID] = []
 
@@ -940,7 +920,6 @@ class TestConcurrentAsync:
     @pytest.mark.asyncio
     async def test_concurrent_upsert_and_query(self, collection):
         """Query during upsert should not error (eventual consistency)."""
-        import asyncio
 
         records = [
             _make_record(vector=_normalize([float(i), 1.0, 0.0])) for i in range(20)
@@ -1029,8 +1008,8 @@ class TestCrashRecovery:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path)
 
-        coll = await store1.open_or_create_collection(
-            namespace=NAMESPACE, name=NAME, config=CONFIG
+        coll = await _open_or_create(
+            store1, namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         records = [
             _make_record(vector=_normalize([1.0, 0.0, 0.0])),
@@ -1060,8 +1039,8 @@ class TestCrashRecovery:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path)
 
-        coll = await store1.open_or_create_collection(
-            namespace=NAMESPACE, name=NAME, config=CONFIG
+        coll = await _open_or_create(
+            store1, namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         records = [
             _make_record(vector=_normalize([1.0, 0.0, 0.0])),
@@ -1093,8 +1072,8 @@ class TestCrashRecovery:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path)
 
-        coll = await store1.open_or_create_collection(
-            namespace=NAMESPACE, name=NAME, config=CONFIG
+        coll = await _open_or_create(
+            store1, namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         r1 = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
         r2 = _make_record(vector=_normalize([0.0, 1.0, 0.0]))
@@ -1125,8 +1104,8 @@ class TestCrashRecovery:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path)
 
-        coll = await store1.open_or_create_collection(
-            namespace=NAMESPACE, name=NAME, config=CONFIG
+        coll = await _open_or_create(
+            store1, namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         r1 = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
         r2 = _make_record(vector=_normalize([0.0, 1.0, 0.0]))
@@ -1161,8 +1140,8 @@ class TestCrashRecovery:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path, save_threshold=2)
 
-        coll = await store1.open_or_create_collection(
-            namespace=NAMESPACE, name=NAME, config=CONFIG
+        coll = await _open_or_create(
+            store1, namespace=NAMESPACE, name=NAME, config=CONFIG
         )
 
         # Upsert 1 record: below threshold, pending op should remain.
@@ -1184,8 +1163,8 @@ class TestCrashRecovery:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path)
 
-        coll = await store1.open_or_create_collection(
-            namespace=NAMESPACE, name=NAME, config=CONFIG
+        coll = await _open_or_create(
+            store1, namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         records = [
             _make_record(vector=_normalize([1.0, 0.0, 0.0])),
@@ -1248,9 +1227,7 @@ class TestIndexFileDurability:
         """A freshly created collection has index_saved=False."""
         db_path = tmp_path / "test.db"
         store, engine = await _fresh_store(db_path, tmp_path)
-        await store.open_or_create_collection(
-            namespace=NAMESPACE, name=NAME, config=CONFIG
-        )
+        await _open_or_create(store, namespace=NAMESPACE, name=NAME, config=CONFIG)
 
         assert await _get_index_saved(engine, NAMESPACE, NAME) is False
 
@@ -1263,8 +1240,8 @@ class TestIndexFileDurability:
         db_path = tmp_path / "test.db"
         store, engine = await _fresh_store(db_path, tmp_path, save_threshold=1)
 
-        coll = await store.open_or_create_collection(
-            namespace=NAMESPACE, name=NAME, config=CONFIG
+        coll = await _open_or_create(
+            store, namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         await coll.upsert(records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))])
 
@@ -1279,8 +1256,8 @@ class TestIndexFileDurability:
         db_path = tmp_path / "test.db"
         store, engine = await _fresh_store(db_path, tmp_path, save_threshold=1000)
 
-        coll = await store.open_or_create_collection(
-            namespace=NAMESPACE, name=NAME, config=CONFIG
+        coll = await _open_or_create(
+            store, namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         await coll.upsert(records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))])
 
@@ -1298,8 +1275,8 @@ class TestIndexFileDurability:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path)
 
-        coll = await store1.open_or_create_collection(
-            namespace=NAMESPACE, name=NAME, config=CONFIG
+        coll = await _open_or_create(
+            store1, namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         await coll.upsert(records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))])
         await store1.shutdown()
@@ -1329,8 +1306,8 @@ class TestIndexFileDurability:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path)
 
-        coll = await store1.open_or_create_collection(
-            namespace=NAMESPACE, name=NAME, config=CONFIG
+        coll = await _open_or_create(
+            store1, namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         await coll.upsert(records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))])
         await store1.shutdown()
@@ -1357,8 +1334,8 @@ class TestIndexFileDurability:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path, save_threshold=1000)
 
-        coll = await store1.open_or_create_collection(
-            namespace=NAMESPACE, name=NAME, config=CONFIG
+        coll = await _open_or_create(
+            store1, namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         await coll.upsert(
             records=[
@@ -1403,8 +1380,8 @@ class TestIndexFileDurability:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path, save_threshold=1)
 
-        coll = await store1.open_or_create_collection(
-            namespace=NAMESPACE, name=NAME, config=CONFIG
+        coll = await _open_or_create(
+            store1, namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         r1 = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
         await coll.upsert(records=[r1])
