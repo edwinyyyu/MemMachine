@@ -9,6 +9,7 @@ import pytest
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Author,
     Block,
+    Context,
     Event,
     TextBlock,
 )
@@ -34,7 +35,7 @@ def _event(*texts: str, context=None, properties=None) -> Event:
         timestamp=_TS,
         session_id="s1",
         source_id="chat",
-        context=context if context is not None else {},
+        context=context if context is not None else Context(),
         blocks=[TextBlock(text=text) for text in texts],
         properties=properties or {},
     )
@@ -77,7 +78,7 @@ async def test_no_handler_passes_each_block_through_unchanged():
         "first block",
         "second block",
         "third block",
-        context={"author": Author(name="alice")},
+        context=Context(Author(name="alice")),
         properties={"my_field": "value"},
     )
     segments = await Segmenter().segment(event)
