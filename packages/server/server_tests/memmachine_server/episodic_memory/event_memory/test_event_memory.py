@@ -368,13 +368,15 @@ class TestQuery:
         events = [_make_event(f"event {i}", timestamp=_ts(i)) for i in range(10)]
         await event_memory.encode_events(events)
 
-        assert len(await event_memory.query("test", limit=2)) <= 2
+        assert len(await event_memory.query("test", vector_search_limit=2)) <= 2
 
     async def test_expand_context_marks_the_seed(self, event_memory: EventMemory):
         events = [_make_event(f"event {i}", timestamp=_ts(i)) for i in range(5)]
         await event_memory.encode_events(events)
 
-        hits = await event_memory.query("test query", limit=1, expand_context=6)
+        hits = await event_memory.query(
+            "test query", vector_search_limit=1, expand_context=6
+        )
 
         # With expand_context=6: before=2, after=4.
         [hit] = hits
@@ -420,7 +422,7 @@ class TestQuery:
         match = _make_event("match", timestamp=_ts(1))
         await memory.encode_events([other, match])
 
-        hits = await memory.query("query", limit=1, expand_context=3)
+        hits = await memory.query("query", vector_search_limit=1, expand_context=3)
 
         [hit] = hits
         assert hit.seed.event_uuid == match.uuid

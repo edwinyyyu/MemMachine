@@ -362,7 +362,7 @@ class EventMemory:
         self,
         query: str,
         *,
-        limit: int = 20,
+        vector_search_limit: int = 20,
         min_cosine_similarity: float | None = None,
         expand_context: int = 0,
         since: datetime.datetime | None = None,
@@ -381,8 +381,10 @@ class EventMemory:
         Args:
             query (str):
                 The search query.
-            limit (int):
-                The maximum number of hits (default: 20).
+            vector_search_limit (int):
+                The maximum number of derivatives the vector search
+                returns; the hits are the distinct segments among them
+                that the store admits, so at most this many (default: 20).
             min_cosine_similarity (float | None):
                 Drop matches whose cosine similarity is below this
                 (default: None).
@@ -412,7 +414,7 @@ class EventMemory:
 
         Returns:
             list[QueryHit]:
-                At most `limit` hits in descending cosine similarity, each
+                At most `vector_search_limit` hits in descending cosine similarity, each
                 with its seed and the neighborhood around it. Neighborhoods
                 of different hits may overlap; each hit is returned whole.
                 Every count is a maximum.
@@ -426,7 +428,7 @@ class EventMemory:
         async with self._tracker("query"):
             return await self._query(
                 query,
-                limit=limit,
+                vector_search_limit=vector_search_limit,
                 min_cosine_similarity=min_cosine_similarity,
                 expand_context=expand_context,
                 since=since,
@@ -441,7 +443,7 @@ class EventMemory:
         self,
         query: str,
         *,
-        limit: int,
+        vector_search_limit: int,
         min_cosine_similarity: float | None,
         expand_context: int,
         since: datetime.datetime | None,
@@ -486,7 +488,7 @@ class EventMemory:
         # Search derivative collection for matches.
         [query_result] = await self._vector_store_collection.query(
             query_vectors=[query_embedding],
-            limit=limit,
+            limit=vector_search_limit,
             min_cosine_similarity=min_cosine_similarity,
             property_filter=collection_filter,
         )

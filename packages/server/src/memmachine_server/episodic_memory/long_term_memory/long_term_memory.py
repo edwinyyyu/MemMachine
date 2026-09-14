@@ -325,7 +325,7 @@ class LongTermMemory:
         )
         hits = await event_memory.query(
             query,
-            limit=vector_search_limit,
+            vector_search_limit=vector_search_limit,
             expand_context=expand_context,
             property_filter=property_filter,
         )
