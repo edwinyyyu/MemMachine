@@ -208,24 +208,22 @@ walking further from a hit composes with `expand`.
   name a system field inside a filter, so both answers to the question
   below stay open.
 
-Typed parameters, and the point of contention. The accepted design
-passes the system filters as typed parameters (`since`, `until`,
-`session_ids`, `source_ids`, `block_kinds`) beside the caller's
-`property_filter`, and a caller never names a system field in a tree.
-Whether that stays, or a caller may instead write `memmachine_em_session`
-inside the tree, is undecided. Implement so that either is a small
-change:
+Typed parameters. The memory takes the system filters as typed
+parameters (`since`, `until`, `session_ids`, `source_ids`,
+`block_kinds`) beside the caller's `property_filter`, and a caller
+never names a system field in a tree the memory sees: the split
+between the two is the API's, made at the boundary where a request is
+read, and hoisted at least to `LongTermMemory` for the legacy API,
+which carries the event timestamp in its filter tree (it lifts
+`timestamp >=` and `<` conjuncts into `since` and `until`; any other
+timestamp predicate stays a post-filter).
 
-- One module, `event_memory/system_filters.py`, owns the translation.
-  `system_predicates(since, until, session_ids, source_ids,
-  block_kinds) -> FilterExpr | None` builds the tree the vector store
-  gets, on reserved keys. The inverse, pulling the conjuncts that name
-  reserved keys out of a tree into the typed values, is not built until
-  an API boundary makes the other choice; nothing calls it. The segment
-  store never sees the tree for system fields: it gets the typed values
-  and compares columns.
-- `EventMemory.query` and `expand` take the typed parameters. Nothing
-  else in `EventMemory` knows which choice was made.
+- `EventMemory` owns `_system_predicates(since, until, session_ids,
+  source_ids, block_kinds) -> FilterExpr | None`, which builds the tree
+  the vector store gets, on reserved keys. The segment store never sees
+  a tree for system fields: it gets the typed values and compares
+  columns. `property_filter` is the segment store's alone.
+- `EventMemory.query` and `expand` take the typed parameters.
 
 Optional: the closed filter union from `822ccb6b` (`Equals`,
 `NotEquals`, `Ordering`, `In`, `IsMissing`, `And`, `Or`, `Not`), which
@@ -366,11 +364,13 @@ class EventMemory:
   order segments then vectors is unchanged. Drop the branch's
   `serialize_encode` lock.
 - `query` is the vector stage only: embed the query; `query` the
-  collection with `vector_search_limit`, `min_cosine_similarity` and the conjunction
-  of `system_predicates(...)` and `property_filter`; resolve seeds
+  collection with `vector_search_limit`, `min_cosine_similarity` and
+  `system_predicates(...)` alone, since `property_filter` is the
+  caller's, over properties the vector store does not index, and it
+  never reaches the vector store; resolve seeds
   through the segment store's `get_segment_uuids_by_derivative_uuids`
   (#1598); `get_segments` with the same system values and
-  `property_filter`, then `get_segment_neighborhoods` from the seeds
+  `property_filter`, the post-filter, then `get_segment_neighborhoods` from the seeds
   it returned, `expand_context` split as today and no walk when it is
   zero; drop seeds the store did not return; return at most `vector_search_limit`
   hits in descending cosine similarity, each its seed with the

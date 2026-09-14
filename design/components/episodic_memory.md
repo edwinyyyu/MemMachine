@@ -91,23 +91,26 @@ class EpisodicMemory:
   returns; the manager advances the watermark only then.
 - `forget`: look up segments by event uuids and derivatives by segment
   uuids; delete vector records; delete segments.
-- `query`: one stage, vector search. Embed the query; split `filter`
-  into the declared part and the rest (`filters_and_properties.md`).
-  `collection.query` with the declared part and the system filters
-  (`since`, `until`, `session_ids`, `source_ids`, `block_kinds`) as
-  predicates on reserved keys, evaluated during the search. Then
-  `get_segments` for the seeds, then `get_segment_neighborhoods` from
-  them with `expand_context` split as
-  today (`event_memory.py:450`), the same system filters, and the
-  undeclared part as `property_filter`, which bounds the window rows
-  and is the post-filter for the seeds: a seed the store does not
-  return is dropped. When seeds are dropped `vector_search_limit` is
-  widened, up to `filter.max_overfetch_factor`, and at the cap the search
-  returns what survived. Returns at most `vector_search_limit` hits in descending
-  score, one per matched derivative, each carrying its window and the
-  index of the matched segment in it; windows of different hits may
-  overlap, and each hit is returned whole. Every count is a maximum:
-  a filtered search returns fewer when the filter admits fewer.
+- `query`: one stage, vector search. Embed the query; `collection.query`
+  with the system filters (`since`, `until`, `session_ids`, `source_ids`,
+  `block_kinds`) as predicates on reserved keys, evaluated during the
+  search, and nothing else: `filter` is the caller's, over the
+  user-defined properties, which the vector store does not index, and
+  it never reaches the vector store. Then `get_segments` for the seeds
+  with the same system filters and `filter`, which is the post-filter
+  for the seeds, a seed the store does not return being dropped; then
+  `get_segment_neighborhoods` from the seeds that passed, with
+  `expand_context` split as today (`event_memory.py:450`) and the same
+  filters on the neighbors. There is no widening: `vector_search_limit`
+  bounds the vector stage, and a selective `filter` returns fewer hits
+  rather than costing more work, which is what makes a search's cost
+  predictable. Returns at most `vector_search_limit` hits in descending
+  score, one per matched derivative, each its seed with the neighborhood
+  around it; neighborhoods of different hits may overlap, and each hit
+  is returned whole. Every count is a maximum: a filtered search returns
+  fewer when the filter admits fewer. The split between system filters
+  and `filter` is the API's, at the boundary where a request is read:
+  the memory never splits a tree.
 - `expand`: the neighborhood of an anchor in its session's one total order
   (`segment_store.md`), as claude-memory's `memory_expand` walks a conversation
   around a memory. The anchor is a segment uuid (from a hit) or an event uuid
