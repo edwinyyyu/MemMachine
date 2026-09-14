@@ -989,6 +989,42 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 )
             )
 
+    @override
+    async def delete_derivatives(
+        self,
+        derivative_uuids: Iterable[UUID],
+    ) -> None:
+        derivative_uuids = set(derivative_uuids)
+        if not derivative_uuids:
+            return
+
+        async with (
+            self._tracker("delete_derivatives"),
+            self._create_session() as session,
+            session.begin(),
+        ):
+            await self._lock_partition_for_write(session)
+            if not self._is_sqlite:
+                # Same deterministic lock order as delete_segments.
+                await session.execute(
+                    select(DerivativeLinkRow.uuid)
+                    .where(
+                        DerivativeLinkRow.incarnation == self._incarnation,
+                        DerivativeLinkRow.uuid.in_(derivative_uuids),
+                    )
+                    .order_by(DerivativeLinkRow.uuid)
+                    .with_for_update()
+                )
+
+            await session.execute(
+                delete(DerivativeLinkRow).where(
+                    DerivativeLinkRow.incarnation == self._incarnation,
+                    DerivativeLinkRow.uuid.in_(derivative_uuids),
+                )
+            )
+
+    # Helpers
+
     @staticmethod
     def _resolve_segment_field(
         field: str,

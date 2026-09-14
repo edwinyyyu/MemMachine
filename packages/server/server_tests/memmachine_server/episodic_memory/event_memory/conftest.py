@@ -20,6 +20,7 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStoreCollectionConfig,
 )
 from memmachine_server.episodic_memory.event_memory.data_types import (
+    EvictionOptions,
     Neighborhood,
     Segment,
 )
@@ -291,6 +292,17 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
                     del self.event_to_segments[segment.event_uuid]
             self.segment_to_derivatives.pop(segment_uuid, None)
 
+    @override
+    async def delete_derivatives(
+        self,
+        derivative_uuids: Iterable[UUID],
+    ) -> None:
+        derivative_uuids = set(derivative_uuids)
+        for segment_uuid, linked in self.segment_to_derivatives.items():
+            self.segment_to_derivatives[segment_uuid] = [
+                uid for uid in linked if uid not in derivative_uuids
+            ]
+
 
 class FakeReranker(Reranker):
     """Reranker that scores by candidate string length."""
@@ -410,5 +422,27 @@ def event_memory_with_sentences(
             segmenter=TextSegmenter(),
             deriver=SentenceTextDeriver(),
             embedder=fake_embedder,
+        )
+    )
+
+
+@pytest.fixture
+def event_memory_with_eviction(
+    fake_vector_store_collection,
+    fake_segment_store_partition,
+    fake_embedder,
+):
+    # FakeEmbedder maps every text onto one direction, so all derivatives
+    # are cosine-similar (1.0): any batch forms a single eviction cluster.
+    return EventMemory(
+        EventMemoryParams(
+            segment_store_partition=fake_segment_store_partition,
+            vector_store_collection=fake_vector_store_collection,
+            segmenter=TextSegmenter(),
+            deriver=WholeTextDeriver(),
+            embedder=fake_embedder,
+            eviction=EvictionOptions(
+                cosine_similarity_threshold=0.5, search_limit=100, target_size=5
+            ),
         )
     )
