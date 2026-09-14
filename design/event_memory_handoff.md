@@ -329,7 +329,7 @@ class EventMemory:
     async def encode_events(self, events: Iterable[Event]) -> None
     async def forget_events(self, event_uuids: Iterable[UUID]) -> None
     async def query(self, query: str, *,
-                    limit: int, min_cosine_similarity: float | None,
+                    vector_search_limit: int, min_cosine_similarity: float | None,
                     expand_context: int,
                     since: datetime | None, until: datetime | None,
                     session_ids: Iterable[str] | None,
@@ -360,13 +360,13 @@ class EventMemory:
   order segments then vectors is unchanged. Drop the branch's
   `serialize_encode` lock.
 - `query` is the vector stage only: embed the query; `query` the
-  collection with `limit`, `min_cosine_similarity` and the conjunction
+  collection with `vector_search_limit`, `min_cosine_similarity` and the conjunction
   of `system_predicates(...)` and `property_filter`; resolve seeds
   through the segment store's `get_segment_uuids_by_derivative_uuids`
   (#1598); `get_segments` with the same system values and
   `property_filter`, then `get_segment_neighborhoods` from the seeds
   it returned, `expand_context` split as today and no walk when it is
-  zero; drop seeds the store did not return; return at most `limit`
+  zero; drop seeds the store did not return; return at most `vector_search_limit`
   hits in descending cosine similarity, each its seed with the
   neighborhood around it. Neighborhoods of different hits may overlap
   and each hit is returned whole. Every count is a maximum.
