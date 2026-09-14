@@ -36,9 +36,6 @@ from memmachine_server.common.filter.filter_parser import (
     Or as FilterOr,
 )
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
-from memmachine_server.common.properties_json import (
-    encode_properties,
-)
 from memmachine_server.common.utils import compute_cosine_similarity, ensure_tz_aware
 
 from .data_types import (
@@ -53,7 +50,8 @@ from .data_types import (
     indexed_property_names,
     validate_collection_name,
 )
-from .utils import validate_filter, validate_identifier
+from .declared_properties import require_declared_properties, require_supported_filter
+from .utils import validate_identifier
 from .vector_store import VectorStore, VectorStorePartition
 
 _ID_FIELD = "id"
@@ -66,7 +64,6 @@ incarnation, and its predecessor's entities are invisible to it while the
 purge reclaims them.
 """
 _VECTOR_FIELD = "vector"
-_PROPERTIES_FIELD = "properties"
 _PROPERTY_FILTER_PREFIX = "_p_"
 
 _MAX_UUID_LENGTH = 36
@@ -107,6 +104,10 @@ def _normalize_property_filter_value(value: PropertyValue) -> PropertyValue:
 
 class MilvusVectorStorePartition(VectorStorePartition):
     """A partition backed by Milvus: one partition-key value inside the store's collection."""
+
+    _SUPPORTED_FILTER_NODES: ClassVar[frozenset[type]] = frozenset(
+        {FilterComparison, FilterIn, FilterIsNull, FilterAnd, FilterOr, FilterNot}
+    )
 
     _RANGE_OPERATORS: ClassVar[set[str]] = {">", ">=", "<", "<="}
 
@@ -189,6 +190,11 @@ class MilvusVectorStorePartition(VectorStorePartition):
     def indexed_properties(self) -> Mapping[str, PropertyType]:
         return self._indexed_properties
 
+    @property
+    @override
+    def supported_filter_nodes(self) -> frozenset[type]:
+        return MilvusVectorStorePartition._SUPPORTED_FILTER_NODES
+
     def _build_entity(self, record: Record) -> dict[str, Any]:
         """Build a Milvus entity from a vector store record."""
         entity: dict[str, Any] = {
@@ -196,7 +202,6 @@ class MilvusVectorStorePartition(VectorStorePartition):
             _RECORD_UUID_FIELD: str(record.uuid),
             _PARTITION_KEY_FIELD: self._incarnation.hex,
             _VECTOR_FIELD: record.vector,
-            _PROPERTIES_FIELD: encode_properties(record.properties),
         }
         # Explicit nulls clear stale dynamic fields during native Milvus upserts.
         for key in self._indexed_properties:
@@ -238,6 +243,8 @@ class MilvusVectorStorePartition(VectorStorePartition):
                 return
 
             await self._fence()
+            for record in records:
+                require_declared_properties(record.properties, self._indexed_properties)
             entities = [self._build_entity(record) for record in records]
 
             def _upsert() -> None:
@@ -268,8 +275,11 @@ class MilvusVectorStorePartition(VectorStorePartition):
             await self._fence()
             filter_expr = self._partition_filter()
             if property_filter is not None:
-                if not validate_filter(property_filter):
-                    raise ValueError("Filter contains an invalid property key")
+                require_supported_filter(
+                    property_filter,
+                    self._indexed_properties,
+                    MilvusVectorStorePartition._SUPPORTED_FILTER_NODES,
+                )
                 property_expr = self._build_milvus_filter(property_filter)
                 filter_expr = f"({filter_expr}) && ({property_expr})"
 
@@ -351,7 +361,8 @@ class MilvusVectorStoreParams(BaseModel):
         consistency_level (str): Consistency level for the collections this store creates.
         indexed_properties (IndexedProperties):
             The declared schema every partition of this store carries: each
-            key is a dynamic field a search filters on.
+            key is a dynamic field a search filters on, and a record or a
+            filter naming any other key is rejected.
         metrics_factory (MetricsFactory | None): Metrics factory for collecting usage metrics.
     """
 
@@ -581,10 +592,6 @@ class MilvusVectorStore(VectorStore):
                 field_name=_VECTOR_FIELD,
                 datatype=DataType.FLOAT_VECTOR,
                 dim=self._vector_dimensions,
-            )
-            schema.add_field(
-                field_name=_PROPERTIES_FIELD,
-                datatype=DataType.JSON,
             )
 
             index_params = self._client.prepare_index_params()
