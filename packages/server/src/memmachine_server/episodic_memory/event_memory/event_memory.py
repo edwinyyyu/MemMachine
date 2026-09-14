@@ -29,7 +29,6 @@ from memmachine_server.common.metrics_factory import (
     OperationTracker,
 )
 from memmachine_server.common.reranker import Reranker
-from memmachine_server.common.vector_store import QueryResult as VectorQueryResult
 from memmachine_server.common.vector_store import (
     Record,
     VectorStoreCollection,
@@ -53,9 +52,6 @@ from .segment_store import SegmentStorePartition
 from .segmenter import Segmenter
 
 logger = logging.getLogger(__name__)
-
-# Each widening step multiplies the vector fetch by this.
-_OVERFETCH_BASE = 4
 
 
 class InvalidCollectionSchemaError(ValueError):
@@ -101,14 +97,6 @@ class EventMemoryParams(BaseModel):
             Reranker instance for scoring search results.
             If None, embedding similarity scores are used instead
             (default: None).
-        max_overfetch_factor (int):
-            Cap on widening the vector search, as a multiple of the search
-            limit. A predicate on a key the vector store does not declare is
-            applied afterward by the segment store, and a seed it drops
-            leaves the search short; the search is widened until the limit
-            is met or the fetch reaches `limit * max_overfetch_factor`,
-            where it returns what survived. A query with no undeclared part
-            never widens (default: 64).
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -138,11 +126,6 @@ class EventMemoryParams(BaseModel):
         None,
         description="Reranker instance for scoring search results. "
         "If None, embedding similarity scores are used instead",
-    )
-    max_overfetch_factor: int = Field(
-        default=64,
-        ge=1,
-        description="Cap on widening the vector search, as a multiple of the limit",
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
@@ -192,8 +175,6 @@ class EventMemory:
             params.metrics_factory,
             prefix="event_memory",
         )
-
-        self._max_overfetch_factor = params.max_overfetch_factor
 
         # The store declares what it indexes; the system keys must be among
         # them, with the types this memory writes.
@@ -430,7 +411,8 @@ class EventMemory:
                 The search query.
             vector_search_limit (int):
                 The maximum number of seed segments
-                to retrieve from the vector search
+                to retrieve from the vector search; the one fetch a
+                query makes, so it bounds the query's cost
                 (default: 20).
             expand_context (int):
                 The number of additional segments to include
@@ -438,7 +420,11 @@ class EventMemory:
                 (default: 0).
             property_filter (FilterExpr | None):
                 Property fields and values
-                to use for filtering segments
+                to use for filtering segments. A predicate on a key the
+                vector store declares is evaluated during the search; one
+                on any other key is applied to the seeds afterward, so the
+                result holds the seeds it admits, fewer than the limit when
+                it drops some
                 (default: None).
             format_options (FormatOptions | None):
                 Options for formatting.
@@ -475,63 +461,67 @@ class EventMemory:
         )[0]
         t_embedding = time.monotonic()
 
-        # One plan. The vector store gets the part of the caller's filter
-        # naming keys it declares, evaluated during the search; the rest is
-        # the segment store's, applied to the seeds afterward, and the search
-        # is widened to make up for what it drops.
-        collection_filter, undeclared_part = split_declared(
+        # The vector store gets the part of the caller's filter naming keys it
+        # declares, evaluated during the search; the rest is the segment
+        # store's, applied to the seeds afterward. The vector search is one
+        # fetch of `vector_search_limit`, so a search with an undeclared
+        # predicate answers with the seeds that survive it, fewer than the
+        # limit when the predicate drops some.
+        collection_filter, _undeclared_part = split_declared(
             map_filter_fields(property_filter, EventMemory._to_vector_record_property)
             if property_filter is not None
             else None,
             self._declared_properties,
         )
 
+        [query_result] = await self._vector_store_collection.query(
+            query_vectors=[query_embedding],
+            limit=vector_search_limit,
+            property_filter=collection_filter,
+        )
+        t_vector_query = time.monotonic()
+
+        segment_by_derivative = (
+            await self._segment_store_partition.get_segment_uuids_by_derivative_uuids(
+                match.record_uuid for match in query_result.matches
+            )
+        )
+
+        # Deduplicate by first occurrence (multiple derivatives can map to the same segment).
+        # First occurrence has the best score since matches are ordered best-to-worst.
+        seed_cosine_similarities: dict[UUID, float] = {}
+        for match in query_result.matches:
+            segment_uuid = segment_by_derivative.get(match.record_uuid)
+            if segment_uuid is None:
+                # The derivative's segment is gone; its vector outlived it.
+                continue
+            if segment_uuid not in seed_cosine_similarities:
+                seed_cosine_similarities[segment_uuid] = match.cosine_similarity
+
+        seed_segment_uuids = list(seed_cosine_similarities)
+
         max_backward_segments = expand_context // 3
         max_forward_segments = expand_context - max_backward_segments
 
-        max_fetch = vector_search_limit * self._max_overfetch_factor
-        fetch_limit = vector_search_limit
-        vector_query_seconds = 0.0
-        segment_query_seconds = 0.0
-        while True:
-            t_vector_start = time.monotonic()
-            [query_result] = await self._vector_store_collection.query(
-                query_vectors=[query_embedding],
-                limit=fetch_limit,
-                property_filter=collection_filter,
-            )
-            t_vector_query = time.monotonic()
-            vector_query_seconds += t_vector_query - t_vector_start
-
-            (
-                seed_cosine_similarities,
-                segment_contexts_by_seed,
-            ) = await self._seed_contexts(
-                query_result,
+        # The segment store applies the whole caller filter to the seed and
+        # its window, so a neighbor satisfies what the seed satisfies; a seed
+        # the store does not return has no window.
+        segment_contexts_by_seed = (
+            await self._segment_store_partition.get_segment_contexts(
+                seed_segment_uuids=seed_segment_uuids,
                 max_backward_segments=max_backward_segments,
                 max_forward_segments=max_forward_segments,
                 property_filter=property_filter,
             )
-            segment_query_seconds += time.monotonic() - t_vector_query
-
-            # Seeds the store did not return are dropped; similarity order is kept.
-            kept_seed_segment_uuids = [
-                seed_segment_uuid
-                for seed_segment_uuid in seed_cosine_similarities
-                if seed_segment_uuid in segment_contexts_by_seed
-            ]
-            exhausted = len(query_result.matches) < fetch_limit
-            if (
-                undeclared_part is None
-                or len(kept_seed_segment_uuids) >= vector_search_limit
-                or exhausted
-                or fetch_limit >= max_fetch
-            ):
-                break
-            fetch_limit = min(fetch_limit * _OVERFETCH_BASE, max_fetch)
+        )
         t_segment_query = time.monotonic()
 
-        kept_seed_segment_uuids = kept_seed_segment_uuids[:vector_search_limit]
+        # Filter to seeds with results, preserving similarity order.
+        kept_seed_segment_uuids = [
+            seed_segment_uuid
+            for seed_segment_uuid in seed_segment_uuids
+            if seed_segment_uuid in segment_contexts_by_seed
+        ]
         segment_contexts: list[list[Segment]] = [
             segment_contexts_by_seed[seed_segment_uuid]
             for seed_segment_uuid in kept_seed_segment_uuids
@@ -571,8 +561,8 @@ class EventMemory:
 
         phase_durations = {
             "embedding": t_embedding - t_start,
-            "vector_query": vector_query_seconds,
-            "segment_query": segment_query_seconds,
+            "vector_query": t_vector_query - t_embedding,
+            "segment_query": t_segment_query - t_vector_query,
             "scoring": t_scoring - t_segment_query,
         }
 
@@ -590,47 +580,6 @@ class EventMemory:
                 self._query_phase_seconds.observe(duration, labels={"phase": phase})
 
         return QueryResult(scored_segment_contexts=scored_segment_contexts)
-
-    async def _seed_contexts(
-        self,
-        query_result: VectorQueryResult,
-        *,
-        max_backward_segments: int,
-        max_forward_segments: int,
-        property_filter: FilterExpr | None,
-    ) -> tuple[dict[UUID, float], dict[UUID, list[Segment]]]:
-        """Each match's seed segment with its similarity, and the seeds' windows.
-
-        The segment store applies the whole caller filter to the seed and its
-        window, so a neighbor satisfies what the seed satisfies; a seed the
-        store does not return has no window.
-        """
-        segment_by_derivative = (
-            await self._segment_store_partition.get_segment_uuids_by_derivative_uuids(
-                match.record_uuid for match in query_result.matches
-            )
-        )
-
-        # Deduplicate by first occurrence (multiple derivatives can map to the same segment).
-        # First occurrence has the best score since matches are ordered best-to-worst.
-        seed_cosine_similarities: dict[UUID, float] = {}
-        for match in query_result.matches:
-            segment_uuid = segment_by_derivative.get(match.record_uuid)
-            if segment_uuid is None:
-                # The derivative's segment is gone; its vector outlived it.
-                continue
-            if segment_uuid not in seed_cosine_similarities:
-                seed_cosine_similarities[segment_uuid] = match.cosine_similarity
-
-        segment_contexts_by_seed = (
-            await self._segment_store_partition.get_segment_contexts(
-                seed_segment_uuids=list(seed_cosine_similarities),
-                max_backward_segments=max_backward_segments,
-                max_forward_segments=max_forward_segments,
-                property_filter=property_filter,
-            )
-        )
-        return seed_cosine_similarities, segment_contexts_by_seed
 
     async def _score_segment_contexts(
         self,

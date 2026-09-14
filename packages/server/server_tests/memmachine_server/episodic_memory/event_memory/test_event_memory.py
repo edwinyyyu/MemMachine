@@ -898,10 +898,7 @@ class TestQueryWithFilter:
 
 
 def _routing_memory(
-    embedder: FakeEmbedder,
-    collection: InMemoryVectorStoreCollection,
-    *,
-    max_overfetch_factor: int,
+    embedder: FakeEmbedder, collection: InMemoryVectorStoreCollection
 ) -> EventMemory:
     return EventMemory(
         EventMemoryParams(
@@ -910,7 +907,6 @@ def _routing_memory(
             segmenter=TextSegmenter(),
             deriver=WholeTextDeriver(),
             embedder=embedder,
-            max_overfetch_factor=max_overfetch_factor,
         )
     )
 
@@ -946,7 +942,7 @@ class TestFilterRouting:
         self, fake_embedder
     ):
         collection = make_collection(fake_embedder)
-        memory = _routing_memory(fake_embedder, collection, max_overfetch_factor=4)
+        memory = _routing_memory(fake_embedder, collection)
         await memory.encode_events([_sized(0, "big"), _sized(1, "small")])
 
         result = await memory.query(
@@ -967,7 +963,7 @@ class TestFilterRouting:
 
     async def test_a_fully_declared_filter_issues_one_query(self, fake_embedder):
         collection = make_collection(fake_embedder)
-        memory = _routing_memory(fake_embedder, collection, max_overfetch_factor=4)
+        memory = _routing_memory(fake_embedder, collection)
         await memory.encode_events([_sized(index, "big") for index in range(8)])
 
         result = await memory.query(
@@ -979,30 +975,12 @@ class TestFilterRouting:
         assert len(result.scored_segment_contexts) == 2
         assert len(collection.queries) == 1
 
-    async def test_the_search_widens_to_make_up_for_dropped_seeds(self, fake_embedder):
-        collection = make_collection(fake_embedder)
-        memory = _routing_memory(fake_embedder, collection, max_overfetch_factor=4)
-        sizes = ["big", "small", "small", "small", "big", "small", "small", "big"]
-        await memory.encode_events([_sized(i, size) for i, size in enumerate(sizes)])
-
-        result = await memory.query(
-            "thing",
-            vector_search_limit=2,
-            property_filter=Comparison(field="m.size", op="=", value="big"),
-        )
-
-        # Two seeds fetched, one survived, so the fetch widened once to the
-        # cap of eight, where three survive and the limit is met.
-        assert len(result.scored_segment_contexts) == 2
-        assert _seed_texts(result) <= {"big thing 0", "big thing 4", "big thing 7"}
-        assert len(collection.queries) == 2
-
-    async def test_widening_stops_at_the_cap_and_returns_what_survived(
+    async def test_an_undeclared_predicate_post_filters_one_fetch_of_the_limit(
         self, fake_embedder
     ):
         collection = make_collection(fake_embedder)
-        memory = _routing_memory(fake_embedder, collection, max_overfetch_factor=2)
-        sizes = ["small", "small", "small", "big", "small", "small", "small", "small"]
+        memory = _routing_memory(fake_embedder, collection)
+        sizes = ["small", "small", "small", "big", "small", "small", "small", "big"]
         await memory.encode_events([_sized(i, size) for i, size in enumerate(sizes)])
 
         result = await memory.query(
@@ -1011,14 +989,15 @@ class TestFilterRouting:
             property_filter=Comparison(field="m.size", op="=", value="big"),
         )
 
-        # limit * max_overfetch_factor is four: the fetch of two found no
-        # survivor, the fetch of four found one, and the cap ends the search.
-        assert _seed_texts(result) == {"big thing 3"}
-        assert len(collection.queries) == 2
+        # One fetch of two seeds, post-filtered: the cost is the limit, and
+        # the result is what survived of those two, not two survivors.
+        assert len(collection.queries) == 1
+        assert len(result.scored_segment_contexts) <= 2
+        assert _seed_texts(result) <= {"big thing 3", "big thing 7"}
 
     async def test_every_count_is_a_maximum(self, fake_embedder):
         collection = make_collection(fake_embedder)
-        memory = _routing_memory(fake_embedder, collection, max_overfetch_factor=4)
+        memory = _routing_memory(fake_embedder, collection)
         await memory.encode_events([_sized(0, "big"), _sized(1, "small")])
 
         result = await memory.query(
@@ -1032,7 +1011,7 @@ class TestFilterRouting:
         self, fake_embedder
     ):
         collection = make_collection(fake_embedder)
-        memory = _routing_memory(fake_embedder, collection, max_overfetch_factor=4)
+        memory = _routing_memory(fake_embedder, collection)
         with pytest.raises(ValueError, match="declares it as str"):
             await memory.encode_events([_make_event("hi", properties={"color": 7})])
 
