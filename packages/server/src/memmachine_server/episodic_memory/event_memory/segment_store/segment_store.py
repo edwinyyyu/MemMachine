@@ -71,7 +71,7 @@ class SegmentStorePartition(ABC):
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, Segment]:
         """
-        Get segments by uuid, subject to the filters.
+        Get segments by uuid.
 
         A uuid the partition does not hold, or whose segment fails a
         filter, is excluded from the result.
@@ -128,7 +128,6 @@ class SegmentStorePartition(ABC):
         A walk outward from the seed in the partition's total order,
         within the seed's session. The seed is an address: it is located
         whether or not it passes any filter, and the filters select the
-        neighbors. Other segments of the seed's own event are ordinary
         neighbors.
 
         Args:
