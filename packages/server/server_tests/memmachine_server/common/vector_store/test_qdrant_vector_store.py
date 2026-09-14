@@ -30,6 +30,9 @@ from memmachine_server.common.vector_store.qdrant_vector_store import (
     QdrantVectorStoreParams,
     QdrantVectorStorePartition,
 )
+from server_tests.memmachine_server.common.vector_store.declared_schema_contract import (
+    DeclaredSchemaContract,
+)
 
 COLLECTION = "test_namespace"
 NAME = "test_name"
@@ -285,6 +288,10 @@ class TestUpsertAndQuery:
 
 
 # ── Filters ──
+
+
+class TestDeclaredSchema(DeclaredSchemaContract):
+    """The declared-schema contract, against this store."""
 
 
 class TestFilters:

@@ -32,6 +32,9 @@ from memmachine_server.common.vector_store.milvus_vector_store import (
     MilvusVectorStoreParams,
     MilvusVectorStorePartition,
 )
+from server_tests.memmachine_server.common.vector_store.declared_schema_contract import (
+    DeclaredSchemaContract,
+)
 
 COLLECTION = "test_namespace"
 NAME = "test_name"
@@ -332,6 +335,10 @@ class TestUpsertAndQuery:
         # The old vector is still the indexed one.
         results = await collection.query(query_vectors=[old_vector], limit=1)
         assert results[0].matches[0].cosine_similarity == pytest.approx(1.0, abs=0.01)
+
+
+class TestDeclaredSchema(DeclaredSchemaContract):
+    """The declared-schema contract, against this store."""
 
 
 class TestFilters:

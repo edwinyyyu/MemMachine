@@ -30,7 +30,7 @@ import logging
 from collections import defaultdict
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import override
+from typing import ClassVar, override
 from uuid import UUID
 
 import numpy as np
@@ -63,11 +63,25 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from memmachine_server.common.data_types import PropertyType
 from memmachine_server.common.filter.filter_parser import (
+    And as FilterAnd,
+)
+from memmachine_server.common.filter.filter_parser import (
+    Comparison as FilterComparison,
+)
+from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
 )
-from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
-from memmachine_server.common.properties_json import (
-    encode_properties,
+from memmachine_server.common.filter.filter_parser import (
+    In as FilterIn,
+)
+from memmachine_server.common.filter.filter_parser import (
+    IsNull as FilterIsNull,
+)
+from memmachine_server.common.filter.filter_parser import (
+    Not as FilterNot,
+)
+from memmachine_server.common.filter.filter_parser import (
+    Or as FilterOr,
 )
 from memmachine_server.common.rw_locks import AsyncRWLock
 
@@ -83,7 +97,14 @@ from .data_types import (
     indexed_property_names,
     validate_collection_name,
 )
-from .utils import validate_filter, validate_identifier
+from .declared_properties import require_declared_properties, require_supported_filter
+from .sql_columns import (
+    compile_property_filter,
+    property_column_values,
+    property_columns,
+    property_indexes,
+)
+from .utils import validate_identifier
 from .vector_search_engine import VectorSearchEngine
 from .vector_store import VectorStore, VectorStorePartition
 
@@ -391,6 +412,10 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         self._index_path = index_path
         self._save_threshold = save_threshold
 
+    _SUPPORTED_FILTER_NODES: ClassVar[frozenset[type]] = frozenset(
+        {FilterComparison, FilterIn, FilterIsNull, FilterAnd, FilterOr, FilterNot}
+    )
+
     @property
     @override
     def partition_key(self) -> str:
@@ -400,6 +425,11 @@ class SQLiteVectorStorePartition(VectorStorePartition):
     @override
     def indexed_properties(self) -> Mapping[str, PropertyType]:
         return self._indexed_properties
+
+    @property
+    @override
+    def supported_filter_nodes(self) -> frozenset[type]:
+        return SQLiteVectorStorePartition._SUPPORTED_FILTER_NODES
 
     async def _maybe_save_index(self) -> None:
         """Save the index to disk if applied pending operations exceed the threshold.
@@ -439,6 +469,8 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         records = list({record.uuid: record for record in records}.values())
         if not records:
             return
+        for record in records:
+            require_declared_properties(record.properties, self._indexed_properties)
 
         async with self._write_lock:
             async with _write_transaction(self._create_session) as session:
@@ -467,7 +499,9 @@ class SQLiteVectorStorePartition(VectorStorePartition):
                         [
                             {
                                 "uuid": record.uuid,
-                                "properties": encode_properties(record.properties),
+                                **property_column_values(
+                                    record.properties, self._indexed_properties
+                                ),
                             }
                             for record in records
                         ],
@@ -564,8 +598,12 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         if limit <= 0:
             return [QueryResult(matches=[]) for _ in query_vectors]
 
-        if property_filter is not None and not validate_filter(property_filter):
-            raise ValueError("Filter contains invalid field names")
+        if property_filter is not None:
+            require_supported_filter(
+                property_filter,
+                self._indexed_properties,
+                SQLiteVectorStorePartition._SUPPORTED_FILTER_NODES,
+            )
 
         key_filter = self._build_key_filter(property_filter)
 
@@ -598,12 +636,8 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         return SQLiteVectorStorePartition._KeyFilter(
             sync_sqlalchemy_engine=self._sync_sqlalchemy_engine,
             records_table=self._records_table,
-            filter_expression=compile_sql_filter(
-                property_filter,
-                lambda field: (
-                    self._records_table.c.properties[field],
-                    "properties_json",
-                ),
+            filter_expression=compile_property_filter(
+                property_filter, self._records_table, self._indexed_properties
             ),
         )
 
@@ -727,7 +761,8 @@ class SQLiteVectorStoreParams(BaseModel):
             Dimensionality of every vector in the store.
         indexed_properties (IndexedProperties):
             The declared schema every partition of this store carries: each
-            key is indexed for filtering, and its values are typed.
+            key is a typed, indexed column of the partition's records table,
+            and a record or a filter naming any other key is rejected.
         vector_search_engine_factory (Callable[[int], VectorSearchEngine]):
             Factory for creating :class:`VectorSearchEngine` instances.
             Receives the number of dimensions and returns a search engine.
@@ -1100,18 +1135,21 @@ class SQLiteVectorStore(VectorStore):
 
     def _records_table(self, partition_key: str) -> Table:
         """Get or create a SQLAlchemy Table for a per-partition records table."""
-        return Table(
+        records_table = Table(
             f"{self._partition_prefix(partition_key)}_rc",
             self._sa_metadata,
             Column("row_id", Integer, primary_key=True, autoincrement=True),
             Column("uuid", Uuid, nullable=False, unique=True),
-            Column("properties", JSON, nullable=False, default=dict),
+            *property_columns(self._indexed_properties),
             extend_existing=True,
             # A plain rowid is reused once the highest row is deleted. query()
             # resolves scored keys to rows without a lock, so a scored key could
             # resolve to a record other than the one the engine scored.
             sqlite_autoincrement=True,
         )
+        if not records_table.indexes:
+            property_indexes(records_table, self._indexed_properties)
+        return records_table
 
     def _declared_schema(self) -> PartitionSchema:
         return PartitionSchema(
