@@ -112,7 +112,7 @@ class Event(BaseModel):
 ```python
 class Block(BaseModel, ABC):
     kind: str                                # a Literal on each subclass
-    def render(self, options: FormatOptions) -> str | None: ...
+    def render(self, datetime_format: DatetimeFormat) -> str | None: ...
 
 class TextBlock(Block):
     kind: Literal["text"] = "text"
@@ -319,9 +319,12 @@ async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
 ## EventMemory
 
 `EventMemoryParams`: `reranker` goes, and so does the per-call
-`format_options` on `encode_events`; `eviction: EvictionOptions | None`
+`format_options` on `encode_events`; `FormatOptions` is `DatetimeFormat`,
+date and time styles, locale and zone, and nothing else; `eviction:
+EvictionOptions | None`
 is added. The deriver owns the format of what it embeds
-(`TextDeriver(format_options)` here, the handler's options under the
+(`WholeTextDeriver(datetime_format)` here, the handler's `datetime_format`
+and `parts` under the
 tables of the second half), since a deriver decides the text it embeds
 and one format per memory would assume every deriver wants the same
 one; a display format is a call argument.
@@ -346,11 +349,12 @@ class EventMemory:
                      property_filter: FilterExpr | None) -> Neighborhood
     @staticmethod
     def render(segments: Iterable[Segment], *,
-               format_options: FormatOptions) -> str
+               datetime_format: DatetimeFormat,
+               parts: Iterable[str] = ("author",)) -> str
     @staticmethod
     async def rerank(query: str, hits: Sequence[QueryHit], *,
                      reranker: Reranker,
-                     format_options: FormatOptions) -> list[QueryHit]
+                     datetime_format: DatetimeFormat) -> list[QueryHit]
 ```
 
 - `encode_events`: first `forget_events` for the batch's event uuids,
@@ -419,9 +423,9 @@ the one-kind handler contracts, `Piece` what a segmenter handler
 returns and `list[str]` what a deriver handler returns; the table
 builds every envelope. `Derivative.block` becomes `text` plus
 `block_kind`. `format_header` composes the embedded text and the
-rendered header in one place, ordered by `FormatOptions.parts`
+rendered header in one place, ordered by the composer's `parts`
 (`context.md`, "Rendering"); the `Deriver` table composes each
-derivative's text with its handler's `format_options`.
+derivative's text with its handler's `datetime_format` and `parts`.
 `TextSegmenter`, `WholeTextDeriver` and `SentenceTextDeriver` become
 `text` handlers; `PassthroughSegmenter` and the `passthrough`
 configuration name go, an omitted `segmenter` meaning one segment per

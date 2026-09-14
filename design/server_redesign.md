@@ -190,8 +190,8 @@ Named so the redesign can be checked against it.
   source's current name, or wants the id shown beside it so a reader can tell
   two names are one entity, renders that itself. The server's text rendering
   (`EpisodicMemory.render`, the `text` of a hit) is a convenience that prints
-  what was recorded, formatted by `FormatOptions`, which stays what it is:
-  dates, times, locale, timezone. The application holds the directory; the
+  what was recorded, its timestamps written per a `DatetimeFormat`, which
+  is dates, times, locale and zone and nothing else. The application holds the directory; the
   server keeps none.
 - Event store: the component that records a tenant's events, in the
   order they were ingested. The system of record.
@@ -864,7 +864,8 @@ Tenant configuration section `episodic_memory`, with mutability:
 - `embedder` (provider id): immutable; a different embedder is a new
   tenant and a new ingestion.
 - `segmenter`, `deriver`: per-kind handler options (`blocks.md`,
-  "Processing"); `format`: its options; all mutable, applying to
+  "Processing"), each handler's `datetime_format` and `parts` among
+  them; all mutable, applying to
   events processed after the change.
 - `eviction` (cosine similarity threshold, neighbors consulted, target
   cluster size, or none): mutable, applying to batches processed after
@@ -1681,8 +1682,8 @@ Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 
 | Method and path | Effect | Status |
 | --- | --- | --- |
-| `POST .../search` | body `query`; the search options, each optional with the tenant's default: `limit`, `min_cosine_similarity`, `expand_context`, `rerank` (`reranker`, `candidates`, `min_score`, or `null` for none); the system filters `since`, `until`, `session_ids`, `source_ids`, `block_kinds`; `filter` (JSON tree); `format` (dates, times, locale, timezone for `text`) | 200 with up to `limit` hits in descending score |
-| `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after` (segments), `since`, `until`, `source_ids`, `block_kinds`, `filter`, `format` | 200 with `before` and `after`, the segments on each side in order within the anchor's session, never the anchor itself, and their `text` |
+| `POST .../search` | body `query`; the search options, each optional with the tenant's default: `limit`, `min_cosine_similarity`, `expand_context`, `rerank` (`reranker`, `candidates`, `min_score`, or `null` for none); the system filters `since`, `until`, `session_ids`, `source_ids`, `block_kinds`; `filter` (JSON tree); `datetime_format` (dates, times, locale, zone) and `parts` (the context part kinds composed into `text`, in order) | 200 with up to `limit` hits in descending score |
+| `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after` (segments), `since`, `until`, `source_ids`, `block_kinds`, `filter`, `datetime_format`, `parts` | 200 with `before` and `after`, the segments on each side in order within the anchor's session, never the anchor itself, and their `text` |
 | `GET ...` | `watermark` and `head`, the lag being their difference | 200 |
 
 Event body: `id` (optional UUID; a caller that retries a request
@@ -1698,7 +1699,7 @@ Search hit: `score`, `seed` (the index in `segments` of the matched
 segment), `segments` (each with `uuid`, `event_id`, `position`,
 `index`, `offset`, `timestamp` with offset, `session_id`, `source_id`,
 `context`, `block`, `properties`), `text` (the window rendered with
-`format`). An expansion returns `before` and `after`, each a list of the
+`datetime_format` and `parts`). An expansion returns `before` and `after`, each a list of the
 same segment shape, and their `text`.
 
 Errors: one handler for the domain error hierarchy maps to a status and

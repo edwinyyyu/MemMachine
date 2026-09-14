@@ -47,7 +47,6 @@ class EpisodicMemoryTenantConfig(BaseModel):
     embedder: str                       # immutable; an offered id
     segmenter: SegmenterOptions         # mutable; later events; per block kind (blocks.md)
     deriver: DeriverOptions             # mutable; later events; per block kind
-    format: FormatOptions               # mutable; later events
     eviction: EvictionOptions | None    # mutable; later batches; None: off
     search: SearchOptions               # mutable; defaults for a search
 ```
@@ -59,7 +58,7 @@ no value, since the design gives none.
 `SearchOptions` is one model with two uses: in the tenant section every
 field is set and is the default; in a search request every field is
 optional and overrides the default. The request adds `query`, the
-system filters, `filter` and `format`. There is no second list of
+system filters, `filter`, `datetime_format` and `parts`. There is no second list of
 parameters to keep in step.
 
 ## Schema
@@ -107,7 +106,7 @@ Each reads the per-tenant row (absent: `ComponentNotEnabledError`,
 which the router turns into 404 or 409 by asking the tenant service),
 builds the tenant's `EpisodicMemory` in one constructor call from
 `segment_store.partition(tenant_id)`, `vector_store.collection(tenant_id,
-e)`, `embedders[e]`, the row's `format` and `eviction`, and the
+e)`, `embedders[e]`, the row's `eviction`, and the
 segmenter and deriver objects for the row's options, taken from the
 cache, and makes one call.
 
@@ -115,13 +114,13 @@ cache, and makes one call.
 omits from the row's defaults. Without `rerank`, it calls `query` with
 `limit` and `min_cosine_similarity` and returns the hits. With `rerank`, it
 calls `query` with `limit = candidates` and `min_cosine_similarity`, renders
-each hit's window with the request's or the row's `format`, scores the
+each hit's window with the request's or the row's `datetime_format` and `parts`, scores the
 renderings with `rerankers[rerank.reranker].score`, drops those below
 `rerank.min_score`, and returns the best `limit` in descending reranker
 score with `score` replaced by it. Over-fetching is one limit set above
 another, and each stage has its own threshold on its own scale; an id
 not offered raises `InvalidTenantConfigError`. The router renders
-`text` per hit with the same `format`.
+`text` per hit with the same `datetime_format` and `parts`.
 
 `replay` reads the log after the watermark in batches, calls `encode`
 with the `added` entries' events and `forget` with the `deleted`

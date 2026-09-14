@@ -35,7 +35,7 @@ context parts, and makes the kind a system field of the segment.
 class Block(BaseModel, ABC):
     kind: str                                # a Literal on each subclass
 
-    def render(self, options: FormatOptions) -> str | None: ...
+    def render(self, datetime_format: DatetimeFormat) -> str | None: ...
         # the reader's text for this block; None renders nothing
 
 class TextBlock(Block):                      # kind = "text"
@@ -127,7 +127,7 @@ before. A deriver decides texts, each embedded as one
 derivative: a derivative is always text, whatever kind it came from, so
 every derivative gets the same context processing. The `Deriver`
 table, not the handler, composes the embedded text from the timestamp,
-the parts `format_options.parts` lists and the text, with the same
+the parts its `parts` lists and the text, with the same
 `format_header` rendering uses (`context.md`, "Rendering"); a handler
 that formatted parts itself would be one more place that knows the
 order. The options are the handler's, since it decides what is

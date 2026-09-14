@@ -112,19 +112,20 @@ it depth-first (want 4).
 ## Rendering
 
 Rendering assembles a segment's text for a reader from the segment's
-own fields and its parts: the timestamp, formatted by `FormatOptions`;
+own fields and its parts: the timestamp, written per a `DatetimeFormat`;
 then each part's contribution; then the block's own rendering,
 `block.render(options)` (`blocks.md`). A kind contributes by
-implementing `render(self, options: FormatOptions) -> str | None`;
+implementing `render(self, datetime_format: DatetimeFormat) -> str | None`;
 `Author` renders its name, `TimeRanges` renders nothing.
 
 Order. The timestamp is always first and the content always last.
-Between them come the parts `FormatOptions.parts` names, by kind, in
+Between them come the parts the composer's `parts` names, by kind, in
 that order (default `("author",)`); a part not named contributes
 nothing, and parts carry no order of their own. So a new kind is
 placed by listing it, a composition that needs a different order
 lists a different one, and the same option governs the embedded
-text, where it is the deriver handler's `format_options`, and a
+text, where `parts` and the `DatetimeFormat` are the deriver
+handler's, and a
 rendering for display, where it is the caller's. The one composition
 point is `format_header`; the embedded text is that header over the
 derived text (`blocks.md`, "Processing"), so every part kind

@@ -35,7 +35,7 @@ the tenant's key (`server_redesign.md`, "Vocabulary"), so past
 construction nothing can route to another tenant, and a handle to a
 deleted tenant raises `KeyNotLiveError` from the store's fence.
 The format of what is embedded belongs to the deriver, not the memory:
-a `BlockDeriver` handler owns its `FormatOptions`, since it decides the
+a `BlockDeriver` handler owns its `DatetimeFormat` and `parts`, since it decides the
 text it embeds and different kinds or handlers may want different
 formats, and the `Deriver` table composes each derivative's text with
 them. A tenant's deriver options (`episodic_memory_manager.md`) carry
@@ -75,7 +75,8 @@ class EpisodicMemory:
                      filter: FilterExpr | None) -> Neighborhood
     @staticmethod
     def render(segments: Iterable[Segment], *,
-               format_options: FormatOptions) -> str
+               datetime_format: DatetimeFormat,
+               parts: Iterable[str] = ("author",)) -> str
 ```
 
 - `encode`: for each event, first `forget` its derived rows (so a
@@ -122,7 +123,7 @@ class EpisodicMemory:
   zero. Backed by `SegmentPartition.get_segment_neighborhoods` over the ordering
   index; no vector search and no embedding, so it is one indexed read.
 - `render`: the reader's text for a run of segments, in their order:
-  each segment's timestamp formatted by `format_options`, its context
+  each segment's timestamp written per `datetime_format`, its context
   parts' contributions, and its block's rendering (`context.md`,
   `blocks.md`). What the API returns as `text`, and what a reranker
   scores.
@@ -221,8 +222,9 @@ filtered by `block_kinds`; rendering calls `block.render`.
   with `Author` and `TimeRanges` as the first kinds. `Segment` and
   `Derivative` carry both. Rendering prints the recorded name; a caller
   that wants current names or ids shown renders from the returned
-  `source_id` and context itself. `FormatOptions` stays dates, times,
-  locale and timezone. `produced_for` and the producer roles of the old
+  `source_id` and context itself. `DatetimeFormat` is dates, times,
+  locale and zone, and nothing else; which parts are composed is the
+  composer's `parts`. `produced_for` and the producer roles of the old
   episode model are not carried over and nothing replaces them.
 - `expand` is added, with `get_segment_neighborhoods` on the segment store, on
   the rule of MemMachine #1498 and `agentic_expansion` commit 0c19942a:
