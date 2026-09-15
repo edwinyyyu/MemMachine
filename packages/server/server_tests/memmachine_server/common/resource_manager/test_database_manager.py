@@ -380,10 +380,7 @@ async def test_qdrant_api_key_omitted_when_empty():
 async def test_qdrant_creates_vector_store():
     """get_vector_store creates a QdrantVectorStore built for the service's keys."""
     conf = _qdrant_only_conf()
-    conf.qdrant_confs["qdrant1"] = QdrantConf(
-        is_distributed=True,
-        registry_replication_factor=3,
-    )
+    conf.qdrant_confs["qdrant1"] = QdrantConf(registry_replication_factor=3)
 
     mock_client = AsyncMock()
     mock_client.close = AsyncMock()
@@ -415,7 +412,6 @@ async def test_qdrant_creates_vector_store():
     assert kwargs["client"] is mock_client
     assert kwargs["collection"] == "c"
     assert kwargs["vector_dimensions"] == 3
-    assert kwargs["is_distributed"] is True
     assert kwargs["registry_replication_factor"] == 3
     assert kwargs["indexed_properties"] == {"memmachine_event_session": str}
     # Asserted as "not None" rather than pinned to a value: OperationTracker

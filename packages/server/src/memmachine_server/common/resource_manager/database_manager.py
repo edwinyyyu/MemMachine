@@ -760,7 +760,6 @@ class DatabaseManager:
                     "client": client,
                     "collection": collection,
                     "vector_dimensions": vector_dimensions,
-                    "is_distributed": conf.is_distributed,
                     "registry_replication_factor": conf.registry_replication_factor,
                     "indexed_properties": indexed_properties,
                     "metrics_factory": conf.get_metrics_factory(),

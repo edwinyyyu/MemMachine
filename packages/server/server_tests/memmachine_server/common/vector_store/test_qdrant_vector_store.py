@@ -25,10 +25,13 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStorePartitionAlreadyExistsError,
 )
 from memmachine_server.common.vector_store.qdrant_vector_store import (
-    _PAYLOAD_PARTITION_KEY,
+    _PAYLOAD_INCARNATION,
     QdrantVectorStore,
     QdrantVectorStoreParams,
     QdrantVectorStorePartition,
+)
+from server_tests.memmachine_server.common.vector_store.partition_lifecycle_contract import (
+    PartitionLifecycleContract,
 )
 
 COLLECTION = "test_namespace"
@@ -1058,91 +1061,6 @@ class TestMetrics:
         await store.delete_partition("metrics_test")
 
 
-# ── Distributed sharding ──
-
-
-@pytest_asyncio.fixture
-async def distributed_store(distributed_qdrant_client):
-    params = QdrantVectorStoreParams(
-        collection=COLLECTION,
-        vector_dimensions=VECTOR_DIM,
-        indexed_properties=INDEXED_PROPERTIES,
-        client=distributed_qdrant_client,
-        is_distributed=True,
-    )
-    s = QdrantVectorStore(params)
-    await s.provision()
-    await s.startup()
-    yield s
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-class TestDistributedSharding:
-    """Tests for custom-sharding behaviour when is_distributed=True."""
-
-    async def test_crud_lifecycle(self, distributed_store):
-        """Full create → upsert → query → get → delete records → delete collection."""
-        store = distributed_store
-        name = "distributed_crud"
-
-        await store.create_partition(name)
-        coll = await store.get_partition(name)
-        assert coll is not None
-
-        v1 = _normalize([1.0, 0.0, 0.0])
-        r1 = _make_record(vector=v1, properties={"name": "alice"})
-        await coll.upsert(records=[r1])
-
-        results = await coll.query(query_vectors=[v1], limit=1)
-        assert len(results) == 1
-        assert results[0].matches[0].record_uuid == r1.uuid
-
-        assert await _present_uuids(coll, [r1.uuid]) == [r1.uuid]
-
-        await coll.delete(record_uuids=[r1.uuid])
-        got = await _present_uuids(coll, [r1.uuid])
-        assert len(got) == 0
-
-        await store.delete_partition(name)
-
-    async def test_shard_drop_isolates_logical_collections(self, distributed_store):
-        """Dropping one partition's shard must not affect another's data."""
-        store = distributed_store
-        await store.create_partition("tenant_a")
-        await store.create_partition("tenant_b")
-
-        coll_a = await store.get_partition("tenant_a")
-        coll_b = await store.get_partition("tenant_b")
-        assert coll_a is not None
-        assert coll_b is not None
-
-        v1 = _normalize([1.0, 0.0, 0.0])
-        v2 = _normalize([0.0, 1.0, 0.0])
-        r_a = _make_record(vector=v1)
-        r_b = _make_record(vector=v2)
-        await coll_a.upsert(records=[r_a])
-        await coll_b.upsert(records=[r_b])
-
-        # Delete tenant_a's shard.
-        await store.delete_partition("tenant_a")
-
-        # tenant_b data should be untouched.
-        assert await _present_uuids(coll_b, [r_b.uuid]) == [r_b.uuid]
-
-        await store.delete_partition("tenant_b")
-
-    async def test_idempotent_delete(self, distributed_store):
-        """Deleting an already-deleted collection should be a no-op."""
-        store = distributed_store
-        name = "distributed_idem"
-
-        await store.create_partition(name)
-        await store.delete_partition(name)
-        # Second delete should not raise.
-        await store.delete_partition(name)
-
-
 @pytest.mark.integration
 class TestCollectionProvisioningAcrossWorkers:
     """Provisioning has to survive more than one provisioner.
@@ -1196,7 +1114,7 @@ class TestCollectionProvisioningAcrossWorkers:
             await store.startup()
             info = await qdrant_client.get_collection(collection)
             indexed = set(info.payload_schema or {})
-            assert _PAYLOAD_PARTITION_KEY in indexed, (
+            assert _PAYLOAD_INCARNATION in indexed, (
                 "the tenant partition index is missing: a collection that already "
                 "existed never had its payload indexes created, so tenant "
                 f"filtering is unindexed. present: {sorted(indexed)}"
@@ -1253,7 +1171,7 @@ class TestCollectionProvisioningAcrossWorkers:
 
             info = await client_a.get_collection(collection)
             indexed = set(info.payload_schema or {})
-            assert _PAYLOAD_PARTITION_KEY in indexed, (
+            assert _PAYLOAD_INCARNATION in indexed, (
                 "two workers raced and the tenant partition index was lost: the "
                 "loser skips index creation entirely. present: "
                 f"{sorted(indexed)}"
@@ -1302,3 +1220,12 @@ class TestDeclaredPayloadIndexes:
         )
         assert info.payload_schema["age"].data_type == models.PayloadSchemaType.INTEGER
         await store.delete_partition("declared_indexes")
+
+
+class TestPartitionLifecycle(PartitionLifecycleContract):
+    """The partition lifecycle contract, against this store."""
+
+    @staticmethod
+    async def count_stored(store) -> int:
+        result = await store._client.count(collection_name=COLLECTION, exact=True)
+        return result.count
