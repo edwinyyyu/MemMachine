@@ -672,22 +672,6 @@ class EventMemory:
         return reranked
 
     @staticmethod
-    def _is_continuation(previous: Segment, segment: Segment) -> bool:
-        """Whether `segment` continues `previous`: the next piece of the same event.
-
-        The next chunk of the same block, or the first chunk of the next
-        block; a block's chunk count is not known here, so the end of a
-        block is recognized by the next block starting at its beginning.
-        """
-        if segment.event_uuid != previous.event_uuid:
-            return False
-        if segment.index == previous.index:
-            return segment.offset == previous.offset + 1
-        if segment.index == previous.index + 1:
-            return segment.offset == 0
-        return False
-
-    @staticmethod
     def render_segments(
         segments: Iterable[Segment],
         *,
@@ -729,6 +713,22 @@ class EventMemory:
             context_string += json.dumps(accumulated_text, ensure_ascii=False) + "\n"
 
         return context_string.strip()
+
+    @staticmethod
+    def _is_continuation(previous: Segment, segment: Segment) -> bool:
+        """Whether `segment` continues `previous`: the next piece of the same event.
+
+        The next chunk of the same block, or the first chunk of the next
+        block; a block's chunk count is not known here, so the end of a
+        block is recognized by the next block starting at its beginning.
+        """
+        if segment.event_uuid != previous.event_uuid:
+            return False
+        if segment.index == previous.index:
+            return segment.offset == previous.offset + 1
+        if segment.index == previous.index + 1:
+            return segment.offset == 0
+        return False
 
     @staticmethod
     def _segment_header(segment: Segment, datetime_format: DateTimeFormat) -> str:
