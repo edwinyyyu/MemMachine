@@ -490,7 +490,8 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         ):
             rows_by_uuid = await self._rows_by_uuid(session, segment_uuids, conditions)
             if not rows_by_uuid:
-                # Rows prove the partition live; an empty result does not.
+                # Nothing matched, or the partition is gone: the registry
+                # read tells which, and raises for the latter.
                 await self._ensure_partition_live(session)
             return {
                 segment_uuid: self._segment_from_segment_row(row)
@@ -510,7 +511,10 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, Neighborhood]:
-        _require_nonnegative_counts(before, after)
+        if before < 0:
+            raise ValueError(f"before must be nonnegative: {before}")
+        if after < 0:
+            raise ValueError(f"after must be nonnegative: {after}")
         seed_uuids = set(seed_uuids)
         if not seed_uuids:
             return {}
@@ -619,11 +623,23 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         if until is not None:
             conditions.append(SegmentRow.timestamp < until)
         if session_ids is not None:
-            conditions.append(_in_values(SegmentRow.session_id, session_ids))
+            conditions.append(
+                SQLAlchemySegmentStorePartition._in_values(
+                    SegmentRow.session_id, session_ids
+                )
+            )
         if source_ids is not None:
-            conditions.append(_in_values(SegmentRow.source_id, source_ids))
+            conditions.append(
+                SQLAlchemySegmentStorePartition._in_values(
+                    SegmentRow.source_id, source_ids
+                )
+            )
         if block_kinds is not None:
-            conditions.append(_in_values(SegmentRow.block_kind, block_kinds))
+            conditions.append(
+                SQLAlchemySegmentStorePartition._in_values(
+                    SegmentRow.block_kind, block_kinds
+                )
+            )
         if property_filter is not None:
             conditions.append(
                 compile_sql_filter(
@@ -632,6 +648,17 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 )
             )
         return conditions
+
+    @staticmethod
+    def _in_values(
+        column: InstrumentedAttribute[str] | InstrumentedAttribute[str | None],
+        values: Iterable[str],
+    ) -> ColumnElement[bool]:
+        """`column IN values`; an empty list admits nothing."""
+        values = list(values)
+        if not values:
+            return false()
+        return column.in_(values)
 
     async def _get_window_rows_lateral(
         self,
@@ -1015,23 +1042,6 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             block=block,
             properties=properties,
         )
-
-
-def _require_nonnegative_counts(before: int, after: int) -> None:
-    for name, count in (("before", before), ("after", after)):
-        if count < 0:
-            raise ValueError(f"{name} must be nonnegative: {count}")
-
-
-def _in_values(
-    column: InstrumentedAttribute[str] | InstrumentedAttribute[str | None],
-    values: Iterable[str],
-) -> ColumnElement[bool]:
-    """`column IN values`; an empty list admits nothing."""
-    values = list(values)
-    if not values:
-        return false()
-    return column.in_(values)
 
 
 class SQLAlchemySegmentStoreParams(BaseModel):

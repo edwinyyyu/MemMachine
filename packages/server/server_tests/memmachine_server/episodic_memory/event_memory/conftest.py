@@ -211,9 +211,10 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, Neighborhood]:
-        for name, count in (("before", before), ("after", after)):
-            if count < 0:
-                raise ValueError(f"{name} must be nonnegative: {count}")
+        if before < 0:
+            raise ValueError(f"before must be nonnegative: {before}")
+        if after < 0:
+            raise ValueError(f"after must be nonnegative: {after}")
         passes = self._admits(
             since=since,
             until=until,
