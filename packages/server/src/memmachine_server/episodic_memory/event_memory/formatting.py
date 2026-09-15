@@ -4,7 +4,7 @@ import datetime
 
 from babel.dates import format_date, format_time, get_datetime_format
 
-from .data_types import DatetimeFormat, DateTimeStyle
+from .data_types import DateTimeFormat, DateTimeStyle
 
 # CLDR datetime style levels, ordered from compact to verbose.
 _DATETIME_STYLE_LEVELS: tuple[DateTimeStyle, ...] = ("short", "medium", "long", "full")
@@ -12,7 +12,7 @@ _DATETIME_STYLE_LEVELS: tuple[DateTimeStyle, ...] = ("short", "medium", "long", 
 
 def format_timestamp(
     timestamp: datetime.datetime,
-    datetime_format: DatetimeFormat,
+    datetime_format: DateTimeFormat,
 ) -> str:
     """
     Write a timestamp per the given format.

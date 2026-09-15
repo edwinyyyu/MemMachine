@@ -226,16 +226,17 @@ class Derivative(BaseModel):
         return hash(self.uuid)
 
 
-# DatetimeFormat: how a timestamp is written into text.
+# DateTimeFormat: how a timestamp is written into text.
 
 # The CLDR format length of a date or of a time (`dateFormatLength`,
-# `timeFormatLength`), spelled as CLDR spells `dateTime`; `DatetimeFormat`
-# is the format of a datetime, one noun, as in `AwareDatetime`. Ordered
-# from compact to verbose.
+# `timeFormatLength`). A date and a time are two words in CamelCase, as
+# CLDR spells `dateTime`, and one in snake_case, as Python spells
+# `datetime`: `DateTimeFormat`, `datetime_format`. Ordered from compact
+# to verbose.
 DateTimeStyle = Literal["short", "medium", "long", "full"]
 
 
-class DatetimeFormat(BaseModel):
+class DateTimeFormat(BaseModel):
     """
     How a timestamp is written into text.
 

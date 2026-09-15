@@ -35,7 +35,7 @@ from memmachine_server.common.vector_store import (
 
 from .data_types import (
     Block,
-    DatetimeFormat,
+    DateTimeFormat,
     Derivative,
     Event,
     Neighborhood,
@@ -685,7 +685,7 @@ class EventMemory:
         hits: Sequence[QueryHit],
         *,
         reranker: Reranker,
-        datetime_format: DatetimeFormat,
+        datetime_format: DateTimeFormat,
     ) -> list[QueryHit]:
         """
         Rerank hits by a reranker's score of their rendered windows.
@@ -736,7 +736,7 @@ class EventMemory:
     def render(
         segments: Iterable[Segment],
         *,
-        datetime_format: DatetimeFormat,
+        datetime_format: DateTimeFormat,
     ) -> str:
         """
         The reader's text for a run of segments, in their order.
@@ -776,7 +776,7 @@ class EventMemory:
         return context_string.strip()
 
     @staticmethod
-    def _segment_header(segment: Segment, datetime_format: DatetimeFormat) -> str:
+    def _segment_header(segment: Segment, datetime_format: DateTimeFormat) -> str:
         """Build the header emitted before a segment."""
         formatted_timestamp = format_timestamp(segment.timestamp, datetime_format)
         timestamp_prefix = f"[{formatted_timestamp}] " if formatted_timestamp else ""

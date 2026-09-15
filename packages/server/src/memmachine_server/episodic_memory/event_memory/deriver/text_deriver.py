@@ -8,7 +8,7 @@ from uuid import uuid4
 from memmachine_server.common.utils import extract_sentences
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Context,
-    DatetimeFormat,
+    DateTimeFormat,
     Derivative,
     NullContext,
     ProducerContext,
@@ -37,7 +37,7 @@ def _format_with_context(context: Context, text: str) -> str:
 def _format_for_embedding(
     segment: Segment,
     text: str,
-    datetime_format: DatetimeFormat,
+    datetime_format: DateTimeFormat,
 ) -> str:
     """Format a segment's text as an embedding anchor."""
     # Mirror the query result formatters: the message text is JSON-dumped
@@ -53,7 +53,7 @@ def _format_for_embedding(
 
 # A full date and no time, the format of the derived text unless a
 # deriver is given another.
-_DATE_ONLY = DatetimeFormat(time_style=None)
+_DATE_ONLY = DateTimeFormat(time_style=None)
 
 
 def _build_text_derivatives(segment: Segment, texts: Iterable[str]) -> list[Derivative]:
@@ -78,7 +78,7 @@ class WholeTextDeriver(Deriver):
     into the derived text; by default a full date and no time.
     """
 
-    def __init__(self, datetime_format: DatetimeFormat = _DATE_ONLY) -> None:
+    def __init__(self, datetime_format: DateTimeFormat = _DATE_ONLY) -> None:
         """Take the format of the derived text."""
         self._datetime_format = datetime_format
 
@@ -103,7 +103,7 @@ class SentenceTextDeriver(Deriver):
     into the derived text; by default a full date and no time.
     """
 
-    def __init__(self, datetime_format: DatetimeFormat = _DATE_ONLY) -> None:
+    def __init__(self, datetime_format: DateTimeFormat = _DATE_ONLY) -> None:
         """Take the format of the derived text."""
         self._datetime_format = datetime_format
 

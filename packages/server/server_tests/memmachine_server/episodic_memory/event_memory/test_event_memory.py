@@ -24,7 +24,7 @@ from memmachine_server.common.vector_store.data_types import (
 )
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Context,
-    DatetimeFormat,
+    DateTimeFormat,
     Event,
     NullContext,
     ProducerContext,
@@ -68,7 +68,7 @@ _async = pytest.mark.asyncio
 # ---------------------------------------------------------------------------
 
 _T0 = datetime.datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
-_SHORT_TIME = DatetimeFormat(time_style="short")
+_SHORT_TIME = DateTimeFormat(time_style="short")
 
 
 def _record_properties(record: Record) -> dict[str, PropertyValue]:
@@ -748,7 +748,7 @@ class TestRender:
     def test_no_timestamp_when_both_styles_are_off(self):
         segment = _make_segment(text="hi", context=_author("Alice"))
         result = EventMemory.render(
-            [segment], datetime_format=DatetimeFormat(date_style=None, time_style=None)
+            [segment], datetime_format=DateTimeFormat(date_style=None, time_style=None)
         )
         assert result == 'Alice: "hi"'
 
@@ -1082,7 +1082,7 @@ class _RecordingEmbedder(FakeEmbedder):
 
 
 @_async
-class TestDeriverDatetimeFormat:
+class TestDeriverDateTimeFormat:
     async def test_default_bakes_full_date_into_embedding(self):
         embedder = _RecordingEmbedder()
         event_memory = _build(embedder)
@@ -1097,7 +1097,7 @@ class TestDeriverDatetimeFormat:
         embedder = _RecordingEmbedder()
         event_memory = _build(
             embedder,
-            deriver=WholeTextDeriver(DatetimeFormat(date_style=None, time_style=None)),
+            deriver=WholeTextDeriver(DateTimeFormat(date_style=None, time_style=None)),
         )
 
         await event_memory.encode_events([_make_event("hello world")])
@@ -1108,7 +1108,7 @@ class TestDeriverDatetimeFormat:
         embedder = _RecordingEmbedder()
         event_memory = _build(
             embedder,
-            deriver=WholeTextDeriver(DatetimeFormat(date_style=None, time_style=None)),
+            deriver=WholeTextDeriver(DateTimeFormat(date_style=None, time_style=None)),
         )
 
         await event_memory.encode_events(
