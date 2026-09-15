@@ -228,6 +228,16 @@ class EventLongTermMemoryConf(BaseModel):
             "are used for ordering."
         ),
     )
+    properties_schema: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "User-defined filterable properties and their type names "
+            '(e.g. {"my_field": "str"}). Type names: bool, int, float, str, datetime.'
+            " Fixed for the life of a project; each key creates database resources"
+            " shared by every project declaring the same schema (see the"
+            " configuration docs)."
+        ),
+    )
     segmenter: SegmenterConf = Field(
         default_factory=PassthroughSegmenterConf,
         description="Segmenter sub-configuration (default: passthrough)",
@@ -285,6 +295,10 @@ class LongTermMemoryConfPartial(BaseModel):
     segment_store: str | None = Field(
         default=None,
         description="ID of the SQL engine resource for the segment store (event backend only)",
+    )
+    properties_schema: dict[str, str] | None = Field(
+        default=None,
+        description="User-defined filterable properties (event backend only)",
     )
     segmenter: SegmenterConf | None = Field(
         default=None,

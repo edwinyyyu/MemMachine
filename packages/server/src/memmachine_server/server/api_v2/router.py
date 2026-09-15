@@ -119,6 +119,7 @@ def _ltm_partial_from_project_config(
         vector_graph_store=config.vector_graph_store or None,
         vector_store=config.vector_store or None,
         segment_store=config.segment_store or None,
+        properties_schema=config.properties_schema or None,
     )
 
 
@@ -134,6 +135,7 @@ def _project_config_from_ltm(
             vector_graph_store="",
             vector_store="",
             segment_store="",
+            properties_schema={},
         )
     if isinstance(ltm, EventLongTermMemoryConf):
         return ProjectConfig(
@@ -143,6 +145,7 @@ def _project_config_from_ltm(
             vector_graph_store="",
             vector_store=ltm.vector_store,
             segment_store=ltm.segment_store,
+            properties_schema=dict(ltm.properties_schema),
         )
     return ProjectConfig(
         backend="declarative",
@@ -151,6 +154,7 @@ def _project_config_from_ltm(
         vector_graph_store=ltm.vector_graph_store,
         vector_store="",
         segment_store="",
+        properties_schema={},
     )
 
 

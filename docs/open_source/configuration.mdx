@@ -82,6 +82,8 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
           segment_store: profile_storage
           embedder: my-openai-embedder
           reranker: my-rrf-reranker
+          properties_schema:
+            source_role: str
         short_term_memory:
           session_key: user-session-id
           llm_model: my-summarization-llm
@@ -105,6 +107,8 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
           segment_store: profile_storage # ID of the SQL database used by SegmentStore
           embedder: my-openai-embedder # ID of the Embedder from 'resources.embedders'
           reranker: my-rrf-reranker # ID of the Reranker from 'resources.rerankers'
+          properties_schema: # Optional filterable event-memory properties
+            source_role: str
         short_term_memory: # Configuration for short-term memory
           session_key: user-session-id # Reuses parent session_key
           llm_model: my-summarization-llm # ID of the Language Model from 'resources.language_models'
@@ -133,11 +137,56 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
     | `long_term_memory.embedder`     | The ID of an embedder defined in `resources.embedders` for creating embeddings. | *Required* |
     | `long_term_memory.reranker`     | The ID of a reranker defined in `resources.rerankers` for search result re-ranking. Event backend can omit it to use embedding scores directly. | Depends on backend |
     | `long_term_memory.session_id`   | The same `session_key` used for long-term memory operations.               | *Inherited from `session_key`* |
+    | `long_term_memory.properties_schema` | Event backend only: user-defined filterable properties and their type names. | `{}` |
     | `short_term_memory.session_key` | Session key for short-term memory summarization.                           | *Inherited from `session_key`* |
     | `short_term_memory.llm_model`   | The ID of a language model defined in `resources.language_models` for summarization. | *Required* |
     | `short_term_memory.summary_prompt_system` | System prompt ID for short-term summarization. | *Required* |
     | `short_term_memory.summary_prompt_user` | User prompt ID for short-term summarization. | *Required* |
     | `short_term_memory.message_capacity` | The maximum character capacity for short-term memory.                     | `64000`      |
+
+    <Warning>
+    **`properties_schema` creates database resources, and tenants share them.**
+    Every project (tenant) declares its own `properties_schema`, and the schema
+    is fixed for the life of the project: to change it, delete the project and
+    create it again (its memories start empty). Filters may name any `m.<key>`;
+    a declared key is indexed where the backend supports it, an undeclared key
+    is evaluated without an index. On Qdrant and Milvus the vector store maps
+    every distinct `(vector dimensions, properties_schema)` to one **physical
+    collection** that all projects declaring that schema share, created the
+    first time a project declares it and never dropped. One tenant's choices
+    therefore change what other tenants get:
+
+    - **Physical collections grow with distinct schemas.** A project declaring
+      a schema nobody else uses creates a physical collection for the whole
+      deployment. Qdrant Cloud allows 1000 collections per cluster by default
+      and every collection carries its own resource overhead; Milvus allows
+      65,536 collections per instance.
+    - **Qdrant indexes every declared key** as a payload index on the shared
+      physical collection, next to the system keys MemMachine indexes itself.
+      Each index costs memory for every tenant's points, and Qdrant degrades
+      with large index counts. MemMachine creates its Qdrant collections with
+      strict mode disabled, so Qdrant Cloud's default caps (100 payload
+      indexes, rejection of unindexed filters) do not apply to them;
+      collections created by an earlier MemMachine keep their own setting.
+    - **Qdrant evaluates an undeclared key per point, within the project.**
+      Every query carries the project's indexed tenant key, so an undeclared
+      `m.<key>` condition is checked against the payload of the project's own
+      candidate points, read from disk by default. A selective undeclared
+      filter either scans all of the project's points or fragments the graph
+      traversal and returns fewer results. The cost lands on the querying
+      project; other tenants feel it only as load on the shared node.
+    - **Milvus indexes nothing.** Declared and undeclared keys are both stored
+      as dynamic fields (65,536 bytes per row, all keys together), and the
+      filter, tenant term included, is evaluated per row over the project's
+      hash partition, which holds every tenant hashing there (1 of 16 by
+      default). Milvus allows 64 fields and 1,024 partitions per collection.
+    - **SQLite stores share nothing.** Each project gets its own tables (and,
+      for the search-engine store, its own index file). `sqlite_vec` applies
+      any filter after taking the `limit` nearest neighbors, so a selective
+      filter returns fewer results than `limit`; the search-engine store
+      evaluates the filter per visited candidate with one SQL statement each.
+      Neither indexes a declared key in a way that changes this.
+    </Warning>
   </Accordion>
 
   <Accordion title="Retrieval Agent">

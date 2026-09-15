@@ -3,9 +3,10 @@
 from enum import Enum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from memmachine_common.api.doc import SpecDoc
+from memmachine_common.api.spec import validate_properties_schema_types
 
 
 class ResourceStatus(str, Enum):
@@ -101,10 +102,32 @@ class LongTermMemoryConfigResponse(BaseModel):
             ),
         ),
     ]
+    properties_schema: Annotated[
+        dict[str, str] | None,
+        Field(
+            default=None,
+            description=(
+                "User-defined filterable properties (event backend only). Maps "
+                'name to type ("bool", "int", "float", "str", "datetime"). '
+                "Fixed for the life of a project; each key creates database "
+                "resources shared by every project declaring the same schema "
+                "(see the configuration docs)."
+            ),
+        ),
+    ]
     enabled: Annotated[
         bool,
         Field(default=True, description=SpecDoc.LTM_CONFIG_ENABLED),
     ]
+
+    @field_validator("properties_schema")
+    @classmethod
+    def _validate_properties_schema_types(
+        cls, value: dict[str, str] | None
+    ) -> dict[str, str] | None:
+        if value is None:
+            return value
+        return validate_properties_schema_types(value)
 
 
 class ShortTermMemoryConfigResponse(BaseModel):
@@ -448,6 +471,27 @@ class UpdateLongTermMemorySpec(BaseModel):
             ),
         ),
     ]
+    properties_schema: Annotated[
+        dict[str, str] | None,
+        Field(
+            default=None,
+            description=(
+                "User-defined filterable properties (event backend only) for "
+                "projects created after the update; each key creates database "
+                "resources shared by every project declaring the same schema "
+                "(see the configuration docs)."
+            ),
+        ),
+    ]
+
+    @field_validator("properties_schema")
+    @classmethod
+    def _validate_properties_schema_types(
+        cls, value: dict[str, str] | None
+    ) -> dict[str, str] | None:
+        if value is None:
+            return value
+        return validate_properties_schema_types(value)
 
 
 class UpdateShortTermMemorySpec(BaseModel):
