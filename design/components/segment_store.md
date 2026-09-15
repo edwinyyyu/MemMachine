@@ -71,7 +71,7 @@ The one total order. Segments within a key are ordered by
 the event's position in the event store, which is the order the events
 were ingested in, and a segment's place within its event by index and
 offset. Segment windows and expansion walk this order confined to the
-seed's or anchor's session by an equality predicate on its session id,
+seed's session by an equality predicate on its session id,
 so they never cross into another conversation interleaved in time.
 Every segment has a session, so every walk pins one. A session list
 holds ids only, and a filter that names no session means every session.
@@ -88,10 +88,9 @@ neighbors only, and never returns the seed; the result is two lists in the
 store's order, `Neighborhood(before, after)`, with the seed's place between
 them, so nothing in it can be mistaken for the seed. Filters select what a
 read returns: a search fetches its seeds with the filters and walks from
-the ones that pass; expansion walks from its anchor and, when sessions are
-named, first checks that the anchor is in one of them. The order is total
-and stable, so a caller walks further by repeating the call from the first of
-`before` or the last of `after`. That is the rule decided for MemMachine #1498:
+the ones that pass; expansion walks from its seed segment and, when
+sessions are named, first checks that the seed is in one of them. The
+order is total and stable. That is the rule decided for MemMachine #1498:
 during a search a seed that fails the filter is dropped before any window is
 built, and after a search the neighborhood is kept even when its seed would
 fail, in which case the seed is never returned. Both apply `since`, `until`,
@@ -206,12 +205,12 @@ to it.
 | `block` | `LargeBinary` | not null, codec-encoded |
 | `properties` | `JSON` (`JSONB` on PostgreSQL) | not null |
 
-Indexes: `segment_store_sg__key_event (key, event_uuid, index, offset)`
-for lookup by event; `segment_store_sg__key_source (key, source_id)` for
-`source_ids` on segment windows and expansion; `segment_store_sg__key_order
-(key, session_id, timestamp, event_position, index, offset)` for context
-windows, expansion and `since` and `until`, which is the one total order
-the store exposes; expression indexes on `properties` for the keys a
+Indexes: `segment_store_sg__key_event (key, event_uuid)` for lookup by
+event; `segment_store_sg__key_order (key, session_id, timestamp,
+event_position, index, offset)` for context windows, expansion and
+`since` and `until`, which is the one total order the store exposes, and
+the same order with `source_id` pinned after `session_id` for a walk
+filtered by one source; expression indexes on `properties` for the keys a
 deployment names in `segment_store.property_indexes`, created by the
 schema command.
 

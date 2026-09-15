@@ -177,7 +177,7 @@ class QueryHit(BaseModel):
     def window(self) -> list[Segment]   # before, seed, after
 
 class Neighborhood(BaseModel):
-    before: list[Segment]           # in order, ending just before the anchor
+    before: list[Segment]           # in order, ending just before the seed
     after: list[Segment]            # in order, starting just after it
 
 class EvictionOptions(BaseModel):
@@ -195,8 +195,8 @@ walking further from a hit composes with `expand`.
 
 - Take `property_keys.py` from `default` (`27b3279b`):
   `RESERVED_PROPERTY_KEY_PREFIX = "memmachine_"`,
-  `reserved_property_key(system, field)`, `validate_caller_property_key`.
-  A caller key with the prefix is rejected at `_validate_events`; the
+  `reserved_property_key(system, field)`, `validate_user_property_key`.
+  A user key with the prefix is rejected at `_validate_events`; the
   current `_BASE_EVENT_MEMORY_FIELD_NAMES` check becomes the prefix
   check.
 - Every system value written into a vector record uses a reserved key:
@@ -266,8 +266,8 @@ out of scope:
   still carries one `block` with its `kind` inside. The store derives
   `block_kind` from `segment.block.kind` and never accepts it as a
   separate input, so the column cannot disagree with the block.
-- Indexes: keep `(incarnation, event_uuid, index, offset)` for lookup
-  by event; replace the timestamp ordering index with
+- Indexes: keep `(incarnation, event_uuid)` for lookup by event;
+  replace the timestamp ordering index with
   `segment_store_sg__in_se_ts_ev_ix_of (incarnation, session_id, timestamp,
   event_uuid, index, offset)`, which serves every walk since every walk
   pins a session; add `segment_store_sg__in_se_so_ts_ev_ix_of (incarnation,
@@ -326,9 +326,8 @@ async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
 - `get_segment_neighborhoods` is the walk. The seed is an address: it
   is located by uuid whether or not it passes any filter, the filters
   apply to the neighbors only, and the seed is never in the result. Each seed maps to two lists in the store's order, `before`
-  ending just before the seed and `after` starting just after it, so
-  the seed's place is between them and the caller needs nothing but
-  the lists. A seed with no neighbors to show maps to two empty lists;
+  ending just before the seed and `after` starting just after it. A
+  seed with no neighbors to show maps to two empty lists;
   an unknown seed is absent from the mapping. Port the branch's
   `get_neighbor_segments` and split its one list at the seed's position
   in the order. This is the rule of #1498: during a search a seed that
@@ -366,7 +365,7 @@ class EventMemory:
                     source_ids: Iterable[str] | None,
                     block_kinds: Iterable[str] | None,
                     property_filter: FilterExpr | None) -> list[QueryHit]
-    async def expand(self, anchor: UUID, *, before: int, after: int,
+    async def expand(self, seed: UUID, *, before: int, after: int,
                      since: datetime | None, until: datetime | None,
                      session_ids: Iterable[str] | None,
                      source_ids: Iterable[str] | None,
@@ -410,11 +409,10 @@ class EventMemory:
   since the memory makes no use of either bound. It replaces the
   reranking that `_query` did inside. Call sites in the server change
   only as far as calling it; nothing else in the server is in scope.
-- `expand`: an event uuid anchor resolves to its first segment via
-  `get_segment_uuids_by_event_uuids`; then `get_segment_neighborhoods`
-  from that uuid with the same filters a search takes, after
-  `get_segments` with `session_ids` when sessions are named, so an
-  anchor outside them is not found.
+- `expand`: `get_segment_neighborhoods` from the seed segment's uuid
+  with the same filters a search takes, after `get_segments` with
+  `session_ids` when sessions are named, so a seed outside them is not
+  found. Expansion is by segment only; an event is never a seed.
 - `render` replaces `string_from_segment_context` and
   `string_from_segment_contexts` and uses `_immediately_follows` for
   the header decision: a new header when the segment is not the very
@@ -478,7 +476,7 @@ fields and keeps the rest of its properties as they are.
 - Port the branch's neighbor tests
   (`server_tests/.../segment_store/test_sqlalchemy_segment_store.py`
   on `agentic_expansion`) to the two-list shape, on both dialects, and
-  add: the anchor is absent from both lists; an anchor that fails the
+  add: the seed is absent from both lists; a seed that fails the
   filter still yields its neighbors; `since`/`until` meet
   without overlap on a boundary timestamp; a non-UTC bound compares as
   an instant on SQLite.
