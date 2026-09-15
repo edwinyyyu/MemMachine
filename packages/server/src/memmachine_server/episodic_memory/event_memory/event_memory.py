@@ -695,8 +695,8 @@ class EventMemory:
         The reader's text for a run of segments, in their order.
 
         A header (the timestamp formatted by `datetime_format`, then the
-        context parts' contributions) starts each run of adjacent pieces
-        of one event; the pieces' block renderings are joined under it.
+        producer's name) starts each run of adjacent pieces of one event;
+        the pieces' text is joined under it.
         """
         context_string = ""
         previous: Segment | None = None
