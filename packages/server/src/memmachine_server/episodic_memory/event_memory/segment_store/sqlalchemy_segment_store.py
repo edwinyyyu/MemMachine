@@ -219,23 +219,17 @@ class SegmentRow(BaseSegmentStore):
     # deliberately decoupled so that partition deletion is a registry write
     # (O(1)) and the purge queue reclaims data rows asynchronously.
     __table_args__ = (
-        # Secondary indexes put the incarnation second. Every read names
-        # it with the leading key, so the order costs nothing; and an
-        # index led by the incarnation could serve the link table's
-        # foreign-key lookup `(incarnation, uuid)` with a filter, which
-        # PostgreSQL chose over the primary key on a table without
-        # statistics. Led by another key, none can.
         Index(
-            "segment_store_sg__ev_in",
-            "event_uuid",
+            "segment_store_sg__in_ev",
             "incarnation",
+            "event_uuid",
         ),
         # The one total order the store exposes, within a session: a walk
         # pins the session and follows it.
         Index(
-            "segment_store_sg__se_in_ts_ev_ix_of",
-            "session_id",
+            "segment_store_sg__in_se_ts_ev_ix_of",
             "incarnation",
+            "session_id",
             "timestamp",
             "event_uuid",
             "index",
@@ -246,10 +240,10 @@ class SegmentRow(BaseSegmentStore):
         # removes no rows; a walk naming several sources, or none, follows
         # the index above and filters.
         Index(
-            "segment_store_sg__se_so_in_ts_ev_ix_of",
+            "segment_store_sg__in_se_so_ts_ev_ix_of",
+            "incarnation",
             "session_id",
             "source_id",
-            "incarnation",
             "timestamp",
             "event_uuid",
             "index",
