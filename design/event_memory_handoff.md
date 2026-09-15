@@ -117,7 +117,7 @@ class Event(BaseModel):
 ```python
 class Block(BaseModel, ABC):
     kind: str                                # a Literal on each subclass
-    def render(self, datetime_format: DatetimeFormat) -> str | None: ...
+    def render(self, datetime_format: DateTimeFormat) -> str | None: ...
 
 class TextBlock(Block):
     kind: Literal["text"] = "text"
@@ -344,7 +344,7 @@ async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
 ## EventMemory
 
 `EventMemoryParams`: `reranker` goes, and so does the per-call
-`format_options` on `encode_events`; `FormatOptions` is `DatetimeFormat`,
+`format_options` on `encode_events`; `FormatOptions` is `DateTimeFormat`,
 date and time styles, locale and zone, and nothing else; `eviction:
 EvictionOptions | None`
 is added. The deriver owns the format of what it embeds
@@ -374,12 +374,12 @@ class EventMemory:
                      property_filter: FilterExpr | None) -> Neighborhood
     @staticmethod
     def render(segments: Iterable[Segment], *,
-               datetime_format: DatetimeFormat,
+               datetime_format: DateTimeFormat,
                parts: Iterable[str] = ("author",)) -> str
     @staticmethod
     async def rerank(query: str, hits: Sequence[QueryHit], *,
                      reranker: Reranker,
-                     datetime_format: DatetimeFormat) -> list[QueryHit]
+                     datetime_format: DateTimeFormat) -> list[QueryHit]
 ```
 
 - `encode_events`: first `forget_events` for the batch's event uuids,

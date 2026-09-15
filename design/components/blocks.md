@@ -35,7 +35,7 @@ context parts, and makes the kind a system field of the segment.
 class Block(BaseModel, ABC):
     kind: str                                # a Literal on each subclass
 
-    def render(self, datetime_format: DatetimeFormat) -> str | None: ...
+    def render(self, datetime_format: DateTimeFormat) -> str | None: ...
         # the reader's text for this block; None renders nothing
 
 class TextBlock(Block):                      # kind = "text"

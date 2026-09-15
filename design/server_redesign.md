@@ -190,7 +190,7 @@ Named so the redesign can be checked against it.
   source's current name, or wants the id shown beside it so a reader can tell
   two names are one entity, renders that itself. The server's text rendering
   (`EpisodicMemory.render`, the `text` of a hit) is a convenience that prints
-  what was recorded, its timestamps written per a `DatetimeFormat`, which
+  what was recorded, its timestamps written per a `DateTimeFormat`, which
   is dates, times, locale and zone and nothing else. The application holds the directory; the
   server keeps none.
 - Event store: the component that records a tenant's events, in the
