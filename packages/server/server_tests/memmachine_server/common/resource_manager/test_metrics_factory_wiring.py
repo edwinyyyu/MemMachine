@@ -73,6 +73,9 @@ def test_get_segment_store_supplies_a_factory(monkeypatch, mock_metrics_factory)
         async def startup(self):
             return None
 
+        async def purge_deleted_partitions(self):
+            return False
+
     monkeypatch.setattr(rm, "SQLAlchemySegmentStore", CapturingStore)
     monkeypatch.setattr(
         rm.ResourceManagerImpl,

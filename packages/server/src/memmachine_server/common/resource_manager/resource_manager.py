@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from asyncio import Lock
+from collections.abc import Awaitable, Callable
 
 from neo4j import AsyncDriver
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -56,38 +57,36 @@ from memmachine_server.semantic_memory.semantic_session_manager import (
 
 logger = logging.getLogger(__name__)
 
-_SEGMENT_STORE_PURGE_INTERVAL_SECONDS = 60.0
-_SEGMENT_STORE_PURGE_BUSY_PAUSE_SECONDS = 1.0
+_PURGE_INTERVAL_SECONDS = 60.0
+_PURGE_BUSY_PAUSE_SECONDS = 1.0
 
 
-async def _purge_deleted_partitions_forever(store: SegmentStore) -> None:
-    """Drive the store's bounded purge, paced by its backlog signal.
+async def _purge_forever(purge: Callable[[], Awaitable[bool]], label: str) -> None:
+    """Drive a store's bounded purge, paced by its backlog signal.
 
-    The store never schedules reclamation itself; this loop is the
+    A store never schedules reclamation itself; this loop is the
     deployment's scheduler. Each call is bounded, and a True return
     means more work remains, so a backlog drains at one bounded call
     per short pause -- the pause yields the database (and SQLite's
     single write lock) to request serving between calls -- while an
-    idle store costs one call per tick. A failed call is logged and
-    retried a tick later, and concurrent purgers are safe by the
-    store's contract.
+    idle store costs one call per tick. A failed call is logged under
+    `label` and retried a tick later, and concurrent purgers are safe by
+    the store's contract.
 
     A module-level coroutine on purpose: the event loop keeps a pending
     task alive while it sleeps, so the task pins whatever its frame
-    references. Referencing only the store lets a manager dropped
-    without close() be collected instead of pinned, with its loop
+    references. Referencing only the store's bound purge lets a manager
+    dropped without close() be collected instead of pinned, with its loop
     querying the engine, for the process lifetime.
     """
     while True:
         try:
-            more = await store.purge_deleted_partitions()
+            more = await purge()
         except Exception:
-            logger.exception("Segment store purge failed; retrying next tick")
+            logger.exception("%s purge failed; retrying next tick", label)
             more = False
         await asyncio.sleep(
-            _SEGMENT_STORE_PURGE_BUSY_PAUSE_SECONDS
-            if more
-            else _SEGMENT_STORE_PURGE_INTERVAL_SECONDS
+            _PURGE_BUSY_PAUSE_SECONDS if more else _PURGE_INTERVAL_SECONDS
         )
 
 
@@ -119,6 +118,8 @@ class ResourceManagerImpl:
         self._semantic_manager: SemanticResourceManager | None = None
         self._segment_stores: dict[str, SegmentStore] = {}
         self._segment_store_purge_tasks: list[asyncio.Task[None]] = []
+        # Keyed by store name, as the database manager keys the stores.
+        self._vector_store_purge_tasks: dict[str, asyncio.Task[None]] = {}
 
         self._closed = False
         self._session_data_manager_lock = Lock()
@@ -126,6 +127,7 @@ class ResourceManagerImpl:
         self._episode_storage_lock = Lock()
         self._semantic_manager_lock = Lock()
         self._segment_store_lock = Lock()
+        self._vector_store_lock = Lock()
 
     async def build(self) -> None:
         """Build all configured resources in parallel."""
@@ -142,14 +144,17 @@ class ResourceManagerImpl:
 
     async def close(self) -> None:
         """Close resources and clean up state."""
-        # The closed flag and the snapshots share the store lock with
-        # get_segment_store, so a racing get either completes before the
-        # flag flips or observes it and refuses -- no store or purge task
-        # can be created into the cleared containers.
-        async with self._segment_store_lock:
+        # The closed flag and the snapshots share the store locks with
+        # get_segment_store and get_vector_store, so a racing get either
+        # completes before the flag flips or observes it and refuses -- no
+        # store or purge task can be created into the cleared containers.
+        async with self._segment_store_lock, self._vector_store_lock:
             self._closed = True
-            purge_tasks = list(self._segment_store_purge_tasks)
+            purge_tasks = list(self._segment_store_purge_tasks) + list(
+                self._vector_store_purge_tasks.values()
+            )
             self._segment_store_purge_tasks.clear()
+            self._vector_store_purge_tasks.clear()
             segment_stores = list(self._segment_stores.values())
             self._segment_stores.clear()
 
@@ -184,8 +189,21 @@ class ResourceManagerImpl:
         return await self._database_manager.get_vector_graph_store(name)
 
     async def get_vector_store(self, name: str) -> VectorStore:
-        """Return a vector store by name."""
-        return await self._database_manager.get_vector_store(name)
+        """Return a vector store by name, with its purge loop running."""
+        store = await self._database_manager.get_vector_store(name)
+        if name not in self._vector_store_purge_tasks:
+            async with self._vector_store_lock:
+                if self._closed:
+                    raise ResourceManagerClosedError(
+                        "Resource manager is closed; no new vector stores can be handed out"
+                    )
+                if name not in self._vector_store_purge_tasks:
+                    self._vector_store_purge_tasks[name] = asyncio.create_task(
+                        _purge_forever(
+                            store.purge_deleted_collections, f"Vector store {name}"
+                        )
+                    )
+        return store
 
     async def get_segment_store(self, name: str) -> SegmentStore:
         """Return a segment store by name, constructing it on first access."""
@@ -210,7 +228,11 @@ class ResourceManagerImpl:
                     await store.startup()
                     self._segment_stores[name] = store
                     self._segment_store_purge_tasks.append(
-                        asyncio.create_task(_purge_deleted_partitions_forever(store))
+                        asyncio.create_task(
+                            _purge_forever(
+                                store.purge_deleted_partitions, f"Segment store {name}"
+                            )
+                        )
                     )
         return self._segment_stores[name]
 
