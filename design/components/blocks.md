@@ -207,7 +207,7 @@ caller.
   every registered family uses; the closed `Block` union (`:40`)
   becomes the union built from the kind table; `encode_block` and
   `decode_block` go through it and produce `UnknownBlock`.
-- `TextBlock` gains `render`; `EpisodicMemory.render` calls it instead
+- `TextBlock` gains `render`; `EpisodicMemory.render_segments` calls it instead
   of reading `.text`.
 - `Segmenter` and `Deriver` (`segmenter/segmenter.py`,
   `deriver/deriver.py`) stop being the ABCs a whole policy implements

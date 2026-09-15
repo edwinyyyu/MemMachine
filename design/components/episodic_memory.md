@@ -74,7 +74,7 @@ class EpisodicMemory:
                      block_kinds: Iterable[str] | None,
                      filter: FilterExpr | None) -> Neighborhood
     @staticmethod
-    def render(segments: Iterable[Segment], *,
+    def render_segments(segments: Iterable[Segment], *,
                datetime_format: DateTimeFormat,
                parts: Iterable[str] = ("author",),
                ids: Iterable[Literal["session", "segment"]] = ()) -> str
@@ -126,7 +126,7 @@ class EpisodicMemory:
   with the first of `before` or the last of `after` as the anchor and one side
   zero. Backed by `SegmentPartition.get_segment_neighborhoods` over the ordering
   index; no vector search and no embedding, so it is one indexed read.
-- `render`: the reader's text for any segments, a segment given twice
+- `render_segments`: the reader's text for any segments, a segment given twice
   rendered once: a block per session, the sessions in the order of
   their latest timestamps with the latest last and a blank line
   between; each block in the store's order, one line per run of
@@ -258,7 +258,7 @@ filtered by `block_kinds`; rendering calls `block.render`.
 - `expand` is added, with `get_segment_neighborhoods` on the segment store, on
   the rule of MemMachine #1498 and `agentic_expansion` commit 0c19942a:
   the neighbors, never the anchor; `string_from_segment_context` and
-  `string_from_segment_contexts` become `render`.
+  `string_from_segment_contexts` become `render_segments`.
 - Eviction comes from `agentic_expansion` (commit ed2c5702):
   `_compute_batch_predecessors` and `_select_eviction_targets` as they
   are, cosine only; the three parameters become `EvictionOptions`; the

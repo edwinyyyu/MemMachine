@@ -372,7 +372,7 @@ class EventMemory:
                      block_kinds: Iterable[str] | None,
                      property_filter: FilterExpr | None) -> Neighborhood
     @staticmethod
-    def render(segments: Iterable[Segment], *,
+    def render_segments(segments: Iterable[Segment], *,
                datetime_format: DateTimeFormat,
                parts: Iterable[str] = ("author",),
                ids: Iterable[Literal["session", "segment"]] = ()) -> str
@@ -405,7 +405,7 @@ class EventMemory:
   and each hit is returned whole. Every count is a maximum.
 - `rerank` is the second stage, a static helper so a caller that has a
   reranker (the server's `LongTermMemory`, the claude-memory engine)
-  runs it after `query` over `render(hit.window())`; it returns every
+  runs it after `query` over `render_segments(hit.window())`; it returns every
   hit rescored in descending score, and the caller cuts and thresholds,
   since the memory makes no use of either bound. It replaces the
   reranking that `_query` did inside. Call sites in the server change
@@ -414,7 +414,7 @@ class EventMemory:
   with the same filters a search takes, after `get_segments` with
   `session_ids` when sessions are named, so a seed outside them is not
   found. Expansion is by segment only; an event is never a seed.
-- `render` replaces `string_from_segment_context` and
+- `render_segments` replaces `string_from_segment_context` and
   `string_from_segment_contexts` and uses `_is_continuation` (the
   branch's `_immediately_follows`) for the header decision: a new
   header when the segment does not continue the previous one, the next
