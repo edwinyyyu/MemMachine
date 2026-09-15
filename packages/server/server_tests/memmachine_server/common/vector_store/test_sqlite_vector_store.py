@@ -52,11 +52,11 @@ async def _open_or_create(store, *, namespace, name, config):
     Losing a creation race to another creator of the same collection is the
     collection existing, which is the state asked for.
     """
-    collection = await store.open_collection(namespace=namespace, name=name)
+    collection = await store.get_collection(namespace=namespace, name=name)
     if collection is None:
         with contextlib.suppress(VectorStoreCollectionAlreadyExistsError):
             await store.create_collection(namespace=namespace, name=name, config=config)
-        collection = await store.open_collection(namespace=namespace, name=name)
+        collection = await store.get_collection(namespace=namespace, name=name)
     assert collection is not None
     return collection
 
@@ -159,7 +159,7 @@ async def collection(store):
             },
         ),
     )
-    coll = await store.open_collection(namespace=NAMESPACE, name=NAME)
+    coll = await store.get_collection(namespace=NAMESPACE, name=NAME)
     assert coll is not None
     yield coll
     await store.delete_collection(namespace=NAMESPACE, name=NAME)
@@ -176,13 +176,13 @@ class TestCollectionLifecycle:
             name="lifecycle",
             config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
         )
-        coll = await store.open_collection(namespace=NAMESPACE, name="lifecycle")
+        coll = await store.get_collection(namespace=NAMESPACE, name="lifecycle")
         assert isinstance(coll, SQLiteVectorStoreCollection)
         await store.delete_collection(namespace=NAMESPACE, name="lifecycle")
 
     @pytest.mark.asyncio
     async def test_open_returns_correct_type(self, store, collection):
-        coll = await store.open_collection(namespace=NAMESPACE, name=NAME)
+        coll = await store.get_collection(namespace=NAMESPACE, name=NAME)
         assert isinstance(coll, SQLiteVectorStoreCollection)
 
     @pytest.mark.asyncio
@@ -209,7 +209,7 @@ class TestCollectionLifecycle:
 
     @pytest.mark.asyncio
     async def test_open_nonexistent_returns_none(self, store):
-        assert await store.open_collection(namespace=NAMESPACE, name="nope") is None
+        assert await store.get_collection(namespace=NAMESPACE, name="nope") is None
 
     @pytest.mark.asyncio
     async def test_invalid_namespace_raises(self, store):
@@ -695,8 +695,8 @@ class TestPartitionIsolation:
         await store.create_collection(
             namespace=NAMESPACE, name="tenant_b", config=config
         )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        coll_a = await store.get_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.get_collection(namespace=NAMESPACE, name="tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -727,8 +727,8 @@ class TestPartitionIsolation:
         await store.create_collection(
             namespace=NAMESPACE, name="tenant_b", config=config
         )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        coll_a = await store.get_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.get_collection(namespace=NAMESPACE, name="tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -755,8 +755,8 @@ class TestPartitionIsolation:
         await store.create_collection(
             namespace=NAMESPACE, name="tenant_b", config=config
         )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        coll_a = await store.get_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.get_collection(namespace=NAMESPACE, name="tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -785,8 +785,8 @@ class TestPartitionIsolation:
         await store.create_collection(
             namespace="namespace_b", name="coll", config=config
         )
-        coll_a = await store.open_collection(namespace="namespace_a", name="coll")
-        coll_b = await store.open_collection(namespace="namespace_b", name="coll")
+        coll_a = await store.get_collection(namespace="namespace_a", name="coll")
+        coll_b = await store.get_collection(namespace="namespace_b", name="coll")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -1431,7 +1431,7 @@ class TestPendingLogStates:
         await engine1.dispose()
 
         store2, engine2 = await _fresh_store(db_path, tmp_path)
-        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        coll2 = await store2.get_collection(namespace=NAMESPACE, name=NAME)
         assert coll2 is not None
 
         results = await coll2.query(query_vectors=[second], limit=1)
@@ -1460,7 +1460,7 @@ class TestPendingLogStates:
         await engine1.dispose()
 
         store2, engine2 = await _fresh_store(db_path, tmp_path)
-        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        coll2 = await store2.get_collection(namespace=NAMESPACE, name=NAME)
         assert coll2 is not None
         results = await coll2.query(query_vectors=[vector], limit=5)
         assert results[0].matches == []
@@ -1497,7 +1497,7 @@ class TestPendingLogStates:
         await engine1.dispose()
 
         store2, engine2 = await _fresh_store(db_path, tmp_path)
-        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        coll2 = await store2.get_collection(namespace=NAMESPACE, name=NAME)
         assert coll2 is not None
         results = await coll2.query(query_vectors=[vector], limit=1)
         assert results[0].matches[0].record_uuid == record.uuid
@@ -1597,7 +1597,7 @@ class TestBatchEdges:
 class TestOneLockPerCollection:
     """The lock belongs to the store, not to a handle.
 
-    A handle is constructed per `open_collection` call, so a per-handle lock
+    A handle is constructed per `get_collection` call, so a per-handle lock
     would serialize nothing across handles.
     """
 
@@ -1617,7 +1617,7 @@ class TestOneLockPerCollection:
             writer = await _open_or_create(
                 store, namespace=NAMESPACE, name=NAME, config=CONFIG
             )
-            deleter = await store.open_collection(namespace=NAMESPACE, name=NAME)
+            deleter = await store.get_collection(namespace=NAMESPACE, name=NAME)
             assert deleter is not None
             assert deleter is not writer
             (gated_engine,) = wrapped
@@ -1707,7 +1707,7 @@ class TestConcurrentWrites:
         await engine.dispose()
 
         store2, engine2 = await _fresh_store(db_path, tmp_path)
-        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        coll2 = await store2.get_collection(namespace=NAMESPACE, name=NAME)
         assert coll2 is not None
         found = set(await _present_uuids(coll2, [record.uuid for record in records]))
         assert found == {record.uuid for record in records}
@@ -1858,7 +1858,7 @@ class TestCrashRecovery:
 
         # Restart with fresh in-memory engines.
         store2, engine2 = await _fresh_store(db_path, tmp_path)
-        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        coll2 = await store2.get_collection(namespace=NAMESPACE, name=NAME)
         assert coll2 is not None
 
         results = await coll2.query(
@@ -1891,7 +1891,7 @@ class TestCrashRecovery:
 
         # Restart: replay should re-apply unapplied ops to the engine.
         store2, engine2 = await _fresh_store(db_path, tmp_path)
-        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        coll2 = await store2.get_collection(namespace=NAMESPACE, name=NAME)
         assert coll2 is not None
 
         results = await coll2.query(
@@ -1920,7 +1920,7 @@ class TestCrashRecovery:
         await engine1.dispose()
 
         store2, engine2 = await _fresh_store(db_path, tmp_path)
-        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        coll2 = await store2.get_collection(namespace=NAMESPACE, name=NAME)
         assert coll2 is not None
 
         results = await coll2.query(
@@ -1953,7 +1953,7 @@ class TestCrashRecovery:
         await engine1.dispose()
 
         store2, engine2 = await _fresh_store(db_path, tmp_path)
-        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        coll2 = await store2.get_collection(namespace=NAMESPACE, name=NAME)
         assert coll2 is not None
 
         results = await coll2.query(
@@ -2028,7 +2028,7 @@ class TestCrashRecovery:
         )
 
         with pytest.raises(RuntimeError, match="startup"):
-            await store.open_collection(namespace=NAMESPACE, name=NAME)
+            await store.get_collection(namespace=NAMESPACE, name=NAME)
 
         with pytest.raises(RuntimeError, match="startup"):
             await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
@@ -2338,7 +2338,7 @@ class TestConcurrentWriteOrdering:
 
         store2, engine2 = await _fresh_store(db_path, tmp_path)
         try:
-            coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+            coll2 = await store2.get_collection(namespace=NAMESPACE, name=NAME)
             assert coll2 is not None
 
             # The record is still a row.
@@ -2440,11 +2440,11 @@ class TestIndexFileDurability:
         assert len(idx_files) == 1
         idx_files[0].unlink()
 
-        # Restart: open_collection must surface the failure, not return an
+        # Restart: get_collection must surface the failure, not return an
         # engine silently rebuilt empty.
         store2, engine2 = await _fresh_store(db_path, tmp_path)
         with pytest.raises(IndexLoadError) as exc_info:
-            await store2.open_collection(namespace=NAMESPACE, name=NAME)
+            await store2.get_collection(namespace=NAMESPACE, name=NAME)
         assert exc_info.value.namespace == NAMESPACE
         assert exc_info.value.name == NAME
         assert exc_info.value.__cause__ is not None
@@ -2472,7 +2472,7 @@ class TestIndexFileDurability:
 
         store2, engine2 = await _fresh_store(db_path, tmp_path)
         with pytest.raises(IndexLoadError) as exc_info:
-            await store2.open_collection(namespace=NAMESPACE, name=NAME)
+            await store2.get_collection(namespace=NAMESPACE, name=NAME)
         assert exc_info.value.namespace == NAMESPACE
         assert exc_info.value.name == NAME
         assert exc_info.value.__cause__ is not None
@@ -2503,7 +2503,7 @@ class TestIndexFileDurability:
         )
 
         store2, engine2 = await _fresh_store(db_path, tmp_path)
-        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        coll2 = await store2.get_collection(namespace=NAMESPACE, name=NAME)
         assert coll2 is not None
 
         results = await coll2.query(
@@ -2555,7 +2555,7 @@ class TestIndexFileDurability:
         idx_files[0].write_bytes(published_without_r2)
 
         store2, engine2 = await _fresh_store(db_path, tmp_path)
-        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        coll2 = await store2.get_collection(namespace=NAMESPACE, name=NAME)
         assert coll2 is not None
 
         # The record is still a row.

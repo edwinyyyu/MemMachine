@@ -173,7 +173,7 @@ class VectorStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def open_collection(
+    async def get_collection(
         self, *, namespace: str, name: str
     ) -> VectorStoreCollection | None:
         """
@@ -187,7 +187,7 @@ class VectorStore(ABC):
 
         Returns:
             VectorStoreCollection | None:
-                A handle to the opened collection, or None if it does not exist.
+                A handle to the collection, or None if it does not exist.
         """
         raise NotImplementedError
 

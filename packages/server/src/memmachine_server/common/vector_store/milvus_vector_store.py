@@ -627,7 +627,7 @@ class MilvusVectorStore(VectorStore):
             await self._register_collection(namespace, name, config)
 
     @override
-    async def open_collection(
+    async def get_collection(
         self, *, namespace: str, name: str
     ) -> MilvusVectorStoreCollection | None:
         """Get a collection handle from the vector store."""

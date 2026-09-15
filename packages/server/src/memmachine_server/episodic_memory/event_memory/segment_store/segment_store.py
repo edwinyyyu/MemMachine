@@ -195,9 +195,9 @@ class SegmentStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def open_partition(self, partition_key: str) -> SegmentStorePartition | None:
+    async def get_partition(self, partition_key: str) -> SegmentStorePartition | None:
         """
-        Open a partition-scoped handle for an existing partition.
+        Get a partition-scoped handle for an existing partition.
 
         Args:
             partition_key (str):

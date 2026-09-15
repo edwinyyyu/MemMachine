@@ -771,7 +771,7 @@ class QdrantVectorStore(VectorStore):
             await self._register_collection(namespace, name, config)
 
     @override
-    async def open_collection(
+    async def get_collection(
         self, *, namespace: str, name: str
     ) -> QdrantVectorStoreCollection | None:
         """Get a collection handle from the vector store."""

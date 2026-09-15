@@ -40,11 +40,11 @@ async def _open_or_create(store, *, namespace, name, config):
     Losing a creation race to another creator of the same collection is the
     collection existing, which is the state asked for.
     """
-    collection = await store.open_collection(namespace=namespace, name=name)
+    collection = await store.get_collection(namespace=namespace, name=name)
     if collection is None:
         with contextlib.suppress(VectorStoreCollectionAlreadyExistsError):
             await store.create_collection(namespace=namespace, name=name, config=config)
-        collection = await store.open_collection(namespace=namespace, name=name)
+        collection = await store.get_collection(namespace=namespace, name=name)
     assert collection is not None
     return collection
 
@@ -94,7 +94,7 @@ async def collection(store):
             },
         ),
     )
-    coll = await store.open_collection(namespace=NAMESPACE, name=NAME)
+    coll = await store.get_collection(namespace=NAMESPACE, name=NAME)
     assert coll is not None
     yield coll
     await store.delete_collection(namespace=NAMESPACE, name=NAME)
@@ -149,13 +149,13 @@ class TestCollectionLifecycle:
             name="lifecycle",
             config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
         )
-        coll = await store.open_collection(namespace=NAMESPACE, name="lifecycle")
+        coll = await store.get_collection(namespace=NAMESPACE, name="lifecycle")
         assert isinstance(coll, QdrantVectorStoreCollection)
         await store.delete_collection(namespace=NAMESPACE, name="lifecycle")
 
     @pytest.mark.asyncio
     async def test_open_collection_returns_qdrant_collection(self, store, collection):
-        coll = await store.open_collection(namespace=NAMESPACE, name=NAME)
+        coll = await store.get_collection(namespace=NAMESPACE, name=NAME)
         assert isinstance(coll, QdrantVectorStoreCollection)
 
     @pytest.mark.asyncio
@@ -191,8 +191,8 @@ class TestCollectionLifecycle:
         await store.create_collection(namespace=NAMESPACE, name="coll_a", config=config)
         await store.create_collection(namespace=NAMESPACE, name="coll_b", config=config)
 
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="coll_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="coll_b")
+        coll_a = await store.get_collection(namespace=NAMESPACE, name="coll_a")
+        coll_b = await store.get_collection(namespace=NAMESPACE, name="coll_b")
         assert coll_a is not None
         assert coll_b is not None
         assert coll_a._collection_name == coll_b._collection_name
@@ -964,8 +964,8 @@ class TestPartitionIsolation:
             name="tenant_b",
             config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
         )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        coll_a = await store.get_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.get_collection(namespace=NAMESPACE, name="tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -999,8 +999,8 @@ class TestPartitionIsolation:
             name="tenant_b",
             config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
         )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        coll_a = await store.get_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.get_collection(namespace=NAMESPACE, name="tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -1030,8 +1030,8 @@ class TestPartitionIsolation:
             name="tenant_b",
             config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
         )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        coll_a = await store.get_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.get_collection(namespace=NAMESPACE, name="tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -1084,7 +1084,7 @@ class TestMetrics:
 
         mock_histogram.reset_mock()
 
-        coll = await store.open_collection(namespace=NAMESPACE, name="metrics_test")
+        coll = await store.get_collection(namespace=NAMESPACE, name="metrics_test")
         assert coll is not None
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1)
@@ -1129,7 +1129,7 @@ class TestDistributedSharding:
                 indexed_properties_schema={"name": str},
             ),
         )
-        coll = await store.open_collection(namespace=ns, name=name)
+        coll = await store.get_collection(namespace=ns, name=name)
         assert coll is not None
 
         v1 = _normalize([1.0, 0.0, 0.0])
@@ -1159,8 +1159,8 @@ class TestDistributedSharding:
         await store.create_collection(namespace=ns, name="tenant_a", config=config)
         await store.create_collection(namespace=ns, name="tenant_b", config=config)
 
-        coll_a = await store.open_collection(namespace=ns, name="tenant_a")
-        coll_b = await store.open_collection(namespace=ns, name="tenant_b")
+        coll_a = await store.get_collection(namespace=ns, name="tenant_a")
+        coll_b = await store.get_collection(namespace=ns, name="tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 

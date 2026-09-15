@@ -149,7 +149,7 @@ class SemanticResourceManager:
 
         # The manager owns this collection, so creating it here, once, at the
         # storage's first use is the owner's provisioning, not a request's.
-        collection = await vector_store.open_collection(
+        collection = await vector_store.get_collection(
             namespace=_VECTOR_STORE_NAMESPACE, name=_VECTOR_STORE_COLLECTION_NAME
         )
         if collection is None:
@@ -173,7 +173,7 @@ class SemanticResourceManager:
                     },
                 ),
             )
-            collection = await vector_store.open_collection(
+            collection = await vector_store.get_collection(
                 namespace=_VECTOR_STORE_NAMESPACE, name=_VECTOR_STORE_COLLECTION_NAME
             )
             if collection is None:

@@ -185,10 +185,10 @@ async def test_a_request_never_creates_a_partition(stores, resource_manager):
 
     key = partition_key_for_session("sess_1")
     assert (
-        await vector_store.open_collection(namespace=_EVENT_BACKEND_NAMESPACE, name=key)
+        await vector_store.get_collection(namespace=_EVENT_BACKEND_NAMESPACE, name=key)
         is None
     )
-    assert await segment_store.open_partition(key) is None
+    assert await segment_store.get_partition(key) is None
 
 
 @pytest.mark.asyncio
@@ -222,10 +222,10 @@ async def test_deleting_partitions_needs_none_to_exist(stores, resource_manager)
     await delete_event_backend_partitions(_EVENT_CONF, resource_manager)
 
     assert (
-        await vector_store.open_collection(namespace=_EVENT_BACKEND_NAMESPACE, name=key)
+        await vector_store.get_collection(namespace=_EVENT_BACKEND_NAMESPACE, name=key)
         is None
     )
-    assert await segment_store.open_partition(key) is None
+    assert await segment_store.get_partition(key) is None
 
 
 @pytest.mark.asyncio
@@ -242,7 +242,7 @@ async def test_the_projects_properties_schema_is_declared_on_its_collection(
     await create_event_backend_partitions(conf, resource_manager)
     params = await long_term_memory_params_from_config(conf, resource_manager)
 
-    collection = await vector_store.open_collection(
+    collection = await vector_store.get_collection(
         namespace=_EVENT_BACKEND_NAMESPACE, name=key
     )
     assert collection is not None

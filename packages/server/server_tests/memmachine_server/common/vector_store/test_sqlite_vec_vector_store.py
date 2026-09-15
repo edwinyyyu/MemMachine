@@ -41,11 +41,11 @@ async def _open_or_create(store, *, namespace, name, config):
     Losing a creation race to another creator of the same collection is the
     collection existing, which is the state asked for.
     """
-    collection = await store.open_collection(namespace=namespace, name=name)
+    collection = await store.get_collection(namespace=namespace, name=name)
     if collection is None:
         with contextlib.suppress(VectorStoreCollectionAlreadyExistsError):
             await store.create_collection(namespace=namespace, name=name, config=config)
-        collection = await store.open_collection(namespace=namespace, name=name)
+        collection = await store.get_collection(namespace=namespace, name=name)
     assert collection is not None
     return collection
 
@@ -121,7 +121,7 @@ async def collection(store):
             },
         ),
     )
-    coll = await store.open_collection(namespace=NAMESPACE, name=NAME)
+    coll = await store.get_collection(namespace=NAMESPACE, name=NAME)
     assert coll is not None
     yield coll
     await store.delete_collection(namespace=NAMESPACE, name=NAME)
@@ -138,13 +138,13 @@ class TestCollectionLifecycle:
             name="lifecycle",
             config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
         )
-        coll = await store.open_collection(namespace=NAMESPACE, name="lifecycle")
+        coll = await store.get_collection(namespace=NAMESPACE, name="lifecycle")
         assert isinstance(coll, SQLiteVecVectorStoreCollection)
         await store.delete_collection(namespace=NAMESPACE, name="lifecycle")
 
     @pytest.mark.asyncio
     async def test_open_returns_correct_type(self, store, collection):
-        coll = await store.open_collection(namespace=NAMESPACE, name=NAME)
+        coll = await store.get_collection(namespace=NAMESPACE, name=NAME)
         assert isinstance(coll, SQLiteVecVectorStoreCollection)
 
     @pytest.mark.asyncio
@@ -171,7 +171,7 @@ class TestCollectionLifecycle:
 
     @pytest.mark.asyncio
     async def test_open_nonexistent_returns_none(self, store):
-        assert await store.open_collection(namespace=NAMESPACE, name="nope") is None
+        assert await store.get_collection(namespace=NAMESPACE, name="nope") is None
 
     @pytest.mark.asyncio
     async def test_invalid_namespace_raises(self, store):
@@ -657,8 +657,8 @@ class TestPartitionIsolation:
         await store.create_collection(
             namespace=NAMESPACE, name="tenant_b", config=config
         )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        coll_a = await store.get_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.get_collection(namespace=NAMESPACE, name="tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -689,8 +689,8 @@ class TestPartitionIsolation:
         await store.create_collection(
             namespace=NAMESPACE, name="tenant_b", config=config
         )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        coll_a = await store.get_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.get_collection(namespace=NAMESPACE, name="tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -717,8 +717,8 @@ class TestPartitionIsolation:
         await store.create_collection(
             namespace=NAMESPACE, name="tenant_b", config=config
         )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        coll_a = await store.get_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.get_collection(namespace=NAMESPACE, name="tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -747,8 +747,8 @@ class TestPartitionIsolation:
         await store.create_collection(
             namespace="namespace_b", name="coll", config=config
         )
-        coll_a = await store.open_collection(namespace="namespace_a", name="coll")
-        coll_b = await store.open_collection(namespace="namespace_b", name="coll")
+        coll_a = await store.get_collection(namespace="namespace_a", name="coll")
+        coll_b = await store.get_collection(namespace="namespace_b", name="coll")
         assert coll_a is not None
         assert coll_b is not None
 
