@@ -696,13 +696,13 @@ def _make_segment(
 class TestRender:
     def test_no_context(self):
         segment = _make_segment(text="hello world")
-        result = EventMemory.render([segment], datetime_format=_SHORT_TIME)
+        result = EventMemory.render_segments([segment], datetime_format=_SHORT_TIME)
         assert json.dumps("hello world") in result
         assert "[" in result  # Timestamp bracket.
 
     def test_producer_renders_its_name(self):
         segment = _make_segment(text="hi", context=_author("Alice"))
-        result = EventMemory.render([segment], datetime_format=_SHORT_TIME)
+        result = EventMemory.render_segments([segment], datetime_format=_SHORT_TIME)
         assert "Alice:" in result
         assert json.dumps("hi") in result
 
@@ -711,7 +711,7 @@ class TestRender:
         s1 = _make_segment(event_uuid=event_uuid, index=0, offset=0, text="part1")
         s2 = _make_segment(event_uuid=event_uuid, index=0, offset=1, text="part2")
         s3 = _make_segment(event_uuid=event_uuid, index=1, offset=0, text="part3")
-        result = EventMemory.render([s1, s2, s3], datetime_format=_SHORT_TIME)
+        result = EventMemory.render_segments([s1, s2, s3], datetime_format=_SHORT_TIME)
         # Text content is accumulated into one JSON string.
         assert json.dumps("part1part2part3") in result
         # Only one timestamp line.
@@ -721,19 +721,21 @@ class TestRender:
         event_uuid = uuid4()
         first = _make_segment(event_uuid=event_uuid, index=0, offset=0, text="A")
         third = _make_segment(event_uuid=event_uuid, index=2, offset=0, text="C")
-        result = EventMemory.render([first, third], datetime_format=_SHORT_TIME)
+        result = EventMemory.render_segments(
+            [first, third], datetime_format=_SHORT_TIME
+        )
         assert result.count("[") == 2
         assert json.dumps("AC") not in result
 
     def test_no_timestamp_when_both_styles_are_off(self):
         segment = _make_segment(text="hi", context=_author("Alice"))
-        result = EventMemory.render(
+        result = EventMemory.render_segments(
             [segment], datetime_format=DateTimeFormat(date_style=None, time_style=None)
         )
         assert result == 'Alice: "hi"'
 
     def test_empty_list(self):
-        assert EventMemory.render([], datetime_format=_SHORT_TIME) == ""
+        assert EventMemory.render_segments([], datetime_format=_SHORT_TIME) == ""
 
 
 # ===================================================================
@@ -867,7 +869,9 @@ class TestRoundTrips:
         await event_memory.encode_events([event])
 
         [hit] = await event_memory.query("biology")
-        context_string = EventMemory.render(hit.window(), datetime_format=_SHORT_TIME)
+        context_string = EventMemory.render_segments(
+            hit.window(), datetime_format=_SHORT_TIME
+        )
 
         assert "textbook:" in context_string
         assert "The mitochondria is the powerhouse of the cell." in context_string

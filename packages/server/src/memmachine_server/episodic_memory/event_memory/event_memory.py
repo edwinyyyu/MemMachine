@@ -658,7 +658,9 @@ class EventMemory:
         scores = await reranker.score(
             query,
             [
-                EventMemory.render(hit.window(), datetime_format=datetime_format)
+                EventMemory.render_segments(
+                    hit.window(), datetime_format=datetime_format
+                )
                 for hit in hits
             ],
         )
@@ -686,7 +688,7 @@ class EventMemory:
         return False
 
     @staticmethod
-    def render(
+    def render_segments(
         segments: Iterable[Segment],
         *,
         datetime_format: DateTimeFormat,
