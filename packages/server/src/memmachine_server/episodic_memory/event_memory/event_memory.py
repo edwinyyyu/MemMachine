@@ -649,11 +649,8 @@ class EventMemory:
         """
         Rerank hits by a reranker's score of their rendered windows.
 
-        The second stage after `query`, for a caller that has a reranker:
-        each hit's window is rendered with `datetime_format` and scored
-        against the query, and every hit is returned in descending score
-        with its score replaced by the reranker's. Cutting and
-        thresholding are the caller's.
+        Every hit is returned, in descending score, with its score
+        replaced by the reranker's.
         """
         hits = list(hits)
         if not hits:
@@ -673,15 +670,12 @@ class EventMemory:
         return reranked
 
     @staticmethod
-    def _immediately_follows(previous: Segment, segment: Segment) -> bool:
-        """Whether `segment` is the very next piece of the same event as `previous`.
+    def _is_continuation(previous: Segment, segment: Segment) -> bool:
+        """Whether `segment` continues `previous`: the next piece of the same event.
 
-        Two pieces are adjacent either within a block (the next chunk of it)
-        or across blocks (the first chunk of the next one). Anything else
-        means something between them is not being shown. A block's chunk
-        count is not known here, so the end of one block is recognized by
-        the next block starting at its own beginning rather than by
-        counting up to it.
+        The next chunk of the same block, or the first chunk of the next
+        block; a block's chunk count is not known here, so the end of a
+        block is recognized by the next block starting at its beginning.
         """
         if segment.event_uuid != previous.event_uuid:
             return False
@@ -709,7 +703,7 @@ class EventMemory:
         accumulated_text = ""
 
         for segment in segments:
-            is_continuation = previous is not None and EventMemory._immediately_follows(
+            is_continuation = previous is not None and EventMemory._is_continuation(
                 previous, segment
             )
 
