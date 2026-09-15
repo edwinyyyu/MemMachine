@@ -6,7 +6,7 @@ from memmachine_server.common.property_keys import (
     RESERVED_PROPERTY_KEY_PREFIX,
     is_reserved_property_key,
     reserved_property_key,
-    validate_caller_property_key,
+    validate_user_property_key,
 )
 
 
@@ -21,17 +21,17 @@ def test_reserved_key_overrunning_the_budget_fails_at_build_time():
         reserved_property_key("event", "a_field_name_far_too_long_for_it")
 
 
-def test_caller_key_in_the_reserved_namespace_is_rejected():
+def test_user_key_in_the_reserved_namespace_is_rejected():
     with pytest.raises(ValueError, match="reserved"):
-        validate_caller_property_key(f"{RESERVED_PROPERTY_KEY_PREFIX}mine")
+        validate_user_property_key(f"{RESERVED_PROPERTY_KEY_PREFIX}mine")
 
 
 @pytest.mark.parametrize("key", ["Color", "m.color", "a" * 33, ""])
-def test_caller_key_outside_the_naming_contract_is_rejected(key):
+def test_user_key_outside_the_naming_contract_is_rejected(key):
     with pytest.raises(ValueError, match=r"\[a-z0-9_\]"):
-        validate_caller_property_key(key)
+        validate_user_property_key(key)
 
 
 @pytest.mark.parametrize("key", ["color", "_episode_uid", "a" * 32])
-def test_legal_caller_key_passes(key):
-    validate_caller_property_key(key)
+def test_legal_user_key_passes(key):
+    validate_user_property_key(key)

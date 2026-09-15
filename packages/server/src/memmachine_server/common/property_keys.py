@@ -4,7 +4,7 @@ The MemMachine property key namespace.
 Keys beginning with `RESERVED_PROPERTY_KEY_PREFIX` belong to MemMachine and are
 built by `reserved_property_key` as `<prefix><system>_<field>`, where `system`
 names the component that writes the key; every other key belongs to the
-caller. The prefix is the distribution name, so its uniqueness
+user. The prefix is the distribution name, so its uniqueness
 is the package registry's. Every key is bounded by `validate_identifier`, the
 vector store's naming contract.
 """
@@ -17,7 +17,7 @@ RESERVED_PROPERTY_KEY_PREFIX: Final[str] = "memmachine_"
 
 
 def is_reserved_property_key(key: str) -> bool:
-    """Return whether `key` belongs to MemMachine rather than to the caller."""
+    """Return whether `key` belongs to MemMachine rather than to the user."""
     return key.startswith(RESERVED_PROPERTY_KEY_PREFIX)
 
 
@@ -36,11 +36,11 @@ def reserved_property_key(system: str, field: str) -> str:
     return key
 
 
-def validate_caller_property_key(key: str) -> None:
+def validate_user_property_key(key: str) -> None:
     """
-    Raise ValueError unless `key` is a legal caller property key.
+    Raise ValueError unless `key` is a legal user property key.
 
-    A caller key is a valid identifier outside the reserved namespace. It is
+    A user key is a valid identifier outside the reserved namespace. It is
     used exactly as given, never rewritten, so an illegal key is rejected
     rather than repaired.
     """

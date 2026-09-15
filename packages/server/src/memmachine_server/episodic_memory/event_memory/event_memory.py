@@ -25,7 +25,7 @@ from memmachine_server.common.metrics_factory import (
 )
 from memmachine_server.common.property_keys import (
     reserved_property_key,
-    validate_caller_property_key,
+    validate_user_property_key,
 )
 from memmachine_server.common.reranker import Reranker
 from memmachine_server.common.vector_store import (
@@ -52,11 +52,8 @@ from .segmenter import Segmenter
 
 logger = logging.getLogger(__name__)
 
-# The reserved keys under which the memory writes its fields into a vector
-# record, the fields a search filters on at the vector stage; `em` names
-# this memory, kept short because the keys share a small identifier
-# budget. Built rather than written out so the alphabet and length
-# budget of the vector store's naming contract are checked at import time.
+# The keys the memory writes into a vector record; `em` names this memory,
+# short because the keys share the identifier budget.
 EVENT_TIMESTAMP_KEY: Final[str] = reserved_property_key("em", "timestamp")
 EVENT_SESSION_KEY: Final[str] = reserved_property_key("em", "session")
 EVENT_SOURCE_KEY: Final[str] = reserved_property_key("em", "source")
@@ -157,21 +154,14 @@ class EventMemoryParams(BaseModel):
 class EventMemory:
     """Event memory: encodes events into segments and derivatives, and searches them.
 
-    Stored data is immutable: no operation may edit a stored segment or
-    vector record, and none may be added, because a vector record's copy
-    of its segment's fields is exact only while it is written once, with
-    its segment, and replaced with it. A change is `forget_events`
-    and `encode_events` again; `encode_events` replaces an event's
-    earlier encoding wholesale, under new segment and derivative uuids.
+    Stored data is immutable: no operation edits a stored segment or
+    vector record, and none may be added. A change is `forget_events`
+    and `encode_events` again.
     """
 
-    # Every property a vector record carries, under the reserved keys this
-    # module owns, with the type the collection declares: the fields a
-    # search filters on at the vector stage, and nothing else. The caller's
-    # properties are not among them: the segment store holds them, and
-    # `property_filter` selects on them there. The derivative's segment and
-    # event are not among them either: the segment store owns those
-    # mappings, and a copy here could only go stale.
+    # Every property a vector record carries, with the type the collection
+    # declares: the fields a search filters on at the vector stage. User
+    # properties stay in the segment store.
     _RESERVED_PROPERTY_SCHEMA: ClassVar[dict[str, type[PropertyValue]]] = {
         EVENT_TIMESTAMP_KEY: cast(type[PropertyValue], datetime.datetime),
         EVENT_SESSION_KEY: cast(type[PropertyValue], str),
@@ -242,7 +232,7 @@ class EventMemory:
         """
         for event in events:
             for key in event.properties:
-                validate_caller_property_key(key)
+                validate_user_property_key(key)
 
     async def encode_events(self, events: Iterable[Event]) -> None:
         """
@@ -313,18 +303,11 @@ class EventMemory:
         )
         t_segment_store = time.monotonic()
 
-        embeddings_by_derivative = dict(
-            zip(
-                (derivative.uuid for derivative in derivatives),
-                derivative_embeddings,
-                strict=True,
-            )
-        )
         derivative_records = [
-            EventMemory._build_derivative_record(
-                derivative, embeddings_by_derivative[derivative.uuid]
+            EventMemory._build_derivative_record(derivative, embedding)
+            for derivative, embedding in zip(
+                derivatives, derivative_embeddings, strict=True
             )
-            for derivative in derivatives
         ]
         if derivative_records:
             await self._vector_store_collection.upsert(records=derivative_records)
@@ -390,25 +373,18 @@ class EventMemory:
         """
         Query event memory for segments relevant to the query.
 
-        The vector stage: `rerank` is the second stage, for a caller that
-        has a reranker. The typed filters are evaluated by the vector store
-        during the search; `property_filter` is evaluated by the segment
-        store afterwards, on the seeds and their neighbors.
-
         Args:
             query (str):
                 The search query.
             vector_search_limit (int):
-                The maximum number of derivatives the vector search
-                returns; the hits are the distinct segments among them
-                that the store admits, so at most this many (default: 20).
+                The maximum number of matches the vector search returns,
+                and so of hits (default: 20).
             min_cosine_similarity (float | None):
                 Drop matches whose cosine similarity is below this
                 (default: None).
             expand_context (int):
-                The number of additional segments to include
-                around each matched segment for additional context,
-                nonnegative (default: 0).
+                The maximum number of neighbors to include around each
+                hit, nonnegative (default: 0).
             since (datetime | None):
                 Inclusive lower bound on the events' timestamps, timezone-aware
                 (default: None).
@@ -425,19 +401,14 @@ class EventMemory:
                 Keep only segments whose block is of these kinds; an empty
                 list keeps none, and None keeps every kind (default: None).
             property_filter (FilterExpr | None):
-                A filter over the segments' properties, applied by the
-                segment store to the seeds the vector stage returns and to
-                the neighbors around them; it never reaches the vector
-                store, so a selective filter returns fewer than
-                `vector_search_limit` hits rather than more work
-                (default: None).
+                A filter over the segments' user properties; None filters
+                nothing (default: None).
 
         Returns:
             list[QueryHit]:
-                At most `vector_search_limit` hits in descending cosine similarity, each
-                with its seed and the neighborhood around it. Neighborhoods
-                of different hits may overlap; each hit is returned whole.
-                Every count is a maximum.
+                At most `vector_search_limit` hits in descending cosine
+                similarity, each with its seed and the neighborhood around
+                it; neighborhoods of different hits may overlap.
 
         Raises:
             ValueError:
@@ -487,7 +458,7 @@ class EventMemory:
         )[0]
         t_embedding = time.monotonic()
 
-        # The vector stage evaluates the system fields only; the caller's
+        # The vector stage evaluates the system fields only; the user
         # property filter is the segment store's, applied to the seeds.
         collection_filter = _system_predicates(
             since=since,

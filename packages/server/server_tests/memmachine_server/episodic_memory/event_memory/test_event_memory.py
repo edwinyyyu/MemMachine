@@ -264,7 +264,7 @@ class TestEncodeEvents:
         assert segments[0].offset == 0
         assert segments[1].offset == 0
 
-    async def test_caller_properties_stay_with_the_segment(
+    async def test_user_properties_stay_with_the_segment(
         self,
         event_memory: EventMemory,
         fake_segment_store_partition: InMemorySegmentStorePartition,
