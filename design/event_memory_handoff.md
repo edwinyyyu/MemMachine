@@ -263,7 +263,13 @@ out of scope:
   by event; replace the timestamp ordering index with
   `segment_store_sg__in_se_ts_ev_ix_of (incarnation, session_id, timestamp,
   event_uuid, index, offset)`, which serves every walk since every walk
-  pins a session; add `segment_store_sg__in_so (incarnation, source_id)`.
+  pins a session; add `segment_store_sg__in_se_so_ts_ev_ix_of (incarnation,
+  session_id, source_id, timestamp, event_uuid, index, offset)`, the same
+  order with the source pinned, which the planner takes for every walk
+  filtered by one source (measured on PostgreSQL; an index on the source
+  alone served no read of the store's). Every index is one a read
+  chooses; none for `block_kind` until a second kind exists and a
+  kind-filtered walk is measured.
 - The total order is `(timestamp, event_uuid, index, offset)` within
   an incarnation; a walk is confined to the seed's session by an
   equality predicate on the session id. The tie-break
