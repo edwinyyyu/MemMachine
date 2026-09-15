@@ -100,6 +100,11 @@ class Event(BaseModel):
 - `Segment` and `Derivative` gain the same two fields, copied verbatim
   from the event by the segmenter and the deriver; that copy is a
   clause of both contracts and the segment store depends on it.
+  `Derivative` carries the derived content and the segment's fields a
+  vector record carries (timestamp, session, source, block kind) and
+  nothing else: a deriver reads the segment's context while composing
+  the text, and nothing reads a copy of the context or the properties
+  on the derivative, so it has none.
 - Timestamps are timezone-aware everywhere: the model rejects a naive
   value, and the typed bounds `since` and `until` reject one, since a
   naive datetime names no instant and a guessed zone would silently
@@ -220,9 +225,11 @@ parameters (`since`, `until`, `session_ids`, `source_ids`,
 never names a system field in a tree the memory sees: the split
 between the two is the API's, made at the boundary where a request is
 read, and hoisted at least to `LongTermMemory` for the legacy API,
-which carries the event timestamp in its filter tree (it lifts
-`timestamp >=` and `<` conjuncts into `since` and `until`; any other
-timestamp predicate stays a post-filter).
+which carries the fields its ingestion maps onto the event in its
+filter tree: it lifts every top-level conjunct on a mapped field back
+into the typed parameter (`timestamp` and `created_at` bounds into
+`since` and `until`, `producer_id =` and `IN` into `source_ids`); any
+other predicate stays a post-filter.
 
 - `EventMemory` owns `_system_predicates(since, until, session_ids,
   source_ids, block_kinds) -> FilterExpr | None`, which builds the tree
@@ -456,11 +463,12 @@ carries session, source and expansion, the second eviction.
 ## Translation layers
 
 Nothing in the server is rewired here, but the server's translation
-from `Episode` to `Event` (`episodic_memory/long_term_memory/`) should
-set `source_id = producer_id` and leave `session_id` null: the server's
-session is its own grouping, not a conversation, and the API carries no
-conversation id; when it does, it goes here. Until then a walk from
-any event reaches every other. Add no `Author` part, since the
+from `Episode` to `Event` (`episodic_memory/long_term_memory/`) sets
+`source_id = producer_id`, `timestamp = created_at` and
+`session_id = memmachine_default`: the server's session is its own
+grouping, not a conversation, and the API carries no conversation id,
+so a partition's events are one stream under the reserved name; when
+the API carries one, it goes here. Add no `Author` part, since the
 server holds no readable name. The claude-memory engine already keeps
 a session id and an author in properties; it moves them into the two
 fields and keeps the rest of its properties as they are.
