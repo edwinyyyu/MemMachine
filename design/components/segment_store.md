@@ -56,7 +56,7 @@ class SegmentPartition(ABC):              # data, bound to one key; no method ta
                            source_ids: Iterable[str] | None,
                            block_kinds: Iterable[str] | None,
                            property_filter: FilterExpr | None) -> dict[UUID, Segment]
-    async def get_segment_neighborhoods(self, seed_segment_uuids: Iterable[UUID], *,
+    async def get_segment_neighborhoods(self, seed_uuids: Iterable[UUID], *,
                                  before: int, after: int,
                                  since: datetime | None, until: datetime | None,
                                  session_ids: Iterable[str] | None,
