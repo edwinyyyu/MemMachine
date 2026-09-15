@@ -112,7 +112,7 @@ class SegmentStorePartition(ABC):
     @abstractmethod
     async def get_segment_neighborhoods(
         self,
-        seed_segment_uuids: Iterable[UUID],
+        seed_uuids: Iterable[UUID],
         *,
         before: int = 0,
         after: int = 0,
@@ -131,7 +131,7 @@ class SegmentStorePartition(ABC):
         neighbors.
 
         Args:
-            seed_segment_uuids (Iterable[UUID]):
+            seed_uuids (Iterable[UUID]):
                 The UUIDs of the segments to gather neighbors around.
             before (int):
                 The maximum number of neighbors before each seed, nonnegative

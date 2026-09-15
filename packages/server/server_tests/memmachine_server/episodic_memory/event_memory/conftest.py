@@ -201,7 +201,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
     @override
     async def get_segment_neighborhoods(
         self,
-        seed_segment_uuids: Iterable[UUID],
+        seed_uuids: Iterable[UUID],
         *,
         before: int = 0,
         after: int = 0,
@@ -223,7 +223,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
             property_filter=property_filter,
         )
         neighborhoods: dict[UUID, Neighborhood] = {}
-        for seed_uuid in seed_segment_uuids:
+        for seed_uuid in seed_uuids:
             seed = self.segments.get(seed_uuid)
             if seed is None:
                 continue

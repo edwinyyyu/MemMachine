@@ -522,7 +522,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     @override
     async def get_segment_neighborhoods(
         self,
-        seed_segment_uuids: Iterable[UUID],
+        seed_uuids: Iterable[UUID],
         *,
         before: int = 0,
         after: int = 0,
@@ -533,8 +533,8 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         property_filter: FilterExpr | None = None,
     ) -> dict[UUID, Neighborhood]:
         _require_nonnegative_counts(before, after)
-        seed_segment_uuids = set(seed_segment_uuids)
-        if not seed_segment_uuids:
+        seed_uuids = set(seed_uuids)
+        if not seed_uuids:
             return {}
         conditions = SQLAlchemySegmentStorePartition._row_conditions(
             since, until, None, source_ids, block_kinds, property_filter
@@ -546,9 +546,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         ):
             # The seed is an address, never part of the answer, so no
             # filter has anything to say about it.
-            seed_rows_by_uuid = await self._rows_by_uuid(
-                session, seed_segment_uuids, []
-            )
+            seed_rows_by_uuid = await self._rows_by_uuid(session, seed_uuids, [])
             if not seed_rows_by_uuid:
                 await self._ensure_partition_live(session)
                 return {}

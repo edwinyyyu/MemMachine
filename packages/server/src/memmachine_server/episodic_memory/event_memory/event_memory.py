@@ -485,17 +485,17 @@ class EventMemory:
 
         # Deduplicate by first occurrence (multiple derivatives can map to the same segment).
         # First occurrence has the best score since matches are ordered best-to-worst.
-        seed_cosine_similarities: dict[UUID, float] = {}
+        cosine_similarity_by_seed_uuid: dict[UUID, float] = {}
         for match in query_result.matches:
             segment_uuid = segment_by_derivative.get(match.record_uuid)
             if segment_uuid is None:
                 # The derivative's segment is gone; its vector outlived it.
                 continue
-            if segment_uuid not in seed_cosine_similarities:
-                seed_cosine_similarities[segment_uuid] = match.cosine_similarity
+            if segment_uuid not in cosine_similarity_by_seed_uuid:
+                cosine_similarity_by_seed_uuid[segment_uuid] = match.cosine_similarity
 
         seed_segments = await self._segment_store_partition.get_segments(
-            seed_cosine_similarities.keys(),
+            cosine_similarity_by_seed_uuid.keys(),
             since=since,
             until=until,
             session_ids=session_ids,
@@ -523,7 +523,7 @@ class EventMemory:
 
         # Seeds the store did not return are dropped; cosine similarity order is kept.
         hits: list[QueryHit] = []
-        for seed_uuid, score in seed_cosine_similarities.items():
+        for seed_uuid, score in cosine_similarity_by_seed_uuid.items():
             seed = seed_segments.get(seed_uuid)
             if seed is None:
                 continue
@@ -555,7 +555,7 @@ class EventMemory:
 
     async def expand(
         self,
-        seed: UUID,
+        seed_uuid: UUID,
         *,
         before: int = 0,
         after: int = 0,
@@ -573,7 +573,7 @@ class EventMemory:
         the result.
 
         Args:
-            seed (UUID):
+            seed_uuid (UUID):
                 The UUID of the seed segment.
             before (int):
                 The maximum number of neighbors before the seed, nonnegative
@@ -615,13 +615,15 @@ class EventMemory:
         async with self._tracker("expand"):
             if session_ids is not None:
                 visible = await self._segment_store_partition.get_segments(
-                    [seed], session_ids=session_ids
+                    [seed_uuid], session_ids=session_ids
                 )
-                if seed not in visible:
-                    raise LookupError(f"Seed {seed} is not in the named sessions")
+                if seed_uuid not in visible:
+                    raise LookupError(
+                        f"Seed segment {seed_uuid} is not in the named sessions"
+                    )
             neighborhoods = (
                 await self._segment_store_partition.get_segment_neighborhoods(
-                    [seed],
+                    [seed_uuid],
                     before=before,
                     after=after,
                     since=since,
@@ -631,9 +633,9 @@ class EventMemory:
                     property_filter=property_filter,
                 )
             )
-            neighborhood = neighborhoods.get(seed)
+            neighborhood = neighborhoods.get(seed_uuid)
             if neighborhood is None:
-                raise LookupError(f"Seed {seed} is not a segment of this memory")
+                raise LookupError(f"Seed segment {seed_uuid} is not in this memory")
             return neighborhood
 
     @staticmethod

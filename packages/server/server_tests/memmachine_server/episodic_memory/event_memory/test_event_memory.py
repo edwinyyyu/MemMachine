@@ -534,16 +534,18 @@ class TestExpand:
     ):
         events = [_make_event(f"event {i}", timestamp=_ts(i)) for i in range(5)]
         await event_memory.encode_events(events)
-        [seed] = fake_segment_store_partition.event_to_segments[events[2].uuid]
+        [seed_uuid] = fake_segment_store_partition.event_to_segments[events[2].uuid]
 
-        neighborhood = await event_memory.expand(seed, before=1, after=2)
+        neighborhood = await event_memory.expand(seed_uuid, before=1, after=2)
 
         assert [s.event_uuid for s in neighborhood.before] == [events[1].uuid]
         assert [s.event_uuid for s in neighborhood.after] == [
             events[3].uuid,
             events[4].uuid,
         ]
-        assert seed not in {s.uuid for s in neighborhood.before + neighborhood.after}
+        assert seed_uuid not in {
+            s.uuid for s in neighborhood.before + neighborhood.after
+        }
 
     async def test_expand_filters_neighbors_but_not_the_seed(
         self,
@@ -554,10 +556,10 @@ class TestExpand:
         blue = _make_event("blue", timestamp=_ts(1), properties={"color": "blue"})
         green = _make_event("green", timestamp=_ts(2), properties={"color": "green"})
         await event_memory.encode_events([red, blue, green])
-        [seed] = fake_segment_store_partition.event_to_segments[blue.uuid]
+        [seed_uuid] = fake_segment_store_partition.event_to_segments[blue.uuid]
 
         neighborhood = await event_memory.expand(
-            seed,
+            seed_uuid,
             before=5,
             after=5,
             property_filter=Comparison(field="m.color", op="=", value="green"),
@@ -575,12 +577,12 @@ class TestExpand:
         b0 = _make_event("b0", timestamp=_ts(1), session_id="b")
         a1 = _make_event("a1", timestamp=_ts(2), session_id="a")
         await event_memory.encode_events([a0, b0, a1])
-        [seed] = fake_segment_store_partition.event_to_segments[a0.uuid]
+        [seed_uuid] = fake_segment_store_partition.event_to_segments[a0.uuid]
 
-        neighborhood = await event_memory.expand(seed, after=5, session_ids=["a"])
+        neighborhood = await event_memory.expand(seed_uuid, after=5, session_ids=["a"])
         assert [s.event_uuid for s in neighborhood.after] == [a1.uuid]
         with pytest.raises(LookupError):
-            await event_memory.expand(seed, after=5, session_ids=["b"])
+            await event_memory.expand(seed_uuid, after=5, session_ids=["b"])
 
     async def test_negative_counts_are_rejected(
         self,
@@ -589,10 +591,10 @@ class TestExpand:
     ):
         event = _make_event("x", timestamp=_ts(0))
         await event_memory.encode_events([event])
-        [seed] = fake_segment_store_partition.event_to_segments[event.uuid]
+        [seed_uuid] = fake_segment_store_partition.event_to_segments[event.uuid]
 
         with pytest.raises(ValueError, match="before must be nonnegative"):
-            await event_memory.expand(seed, before=-1)
+            await event_memory.expand(seed_uuid, before=-1)
         with pytest.raises(ValueError, match="expand_context must be nonnegative"):
             await event_memory.query("x", expand_context=-1)
 
@@ -604,8 +606,8 @@ class TestExpand:
         events = [_make_event(f"event {i}", timestamp=_ts(i)) for i in range(5)]
         await event_memory.encode_events(events)
 
-        [seed] = fake_segment_store_partition.event_to_segments[events[0].uuid]
-        first = await event_memory.expand(seed, after=2)
+        [seed_uuid] = fake_segment_store_partition.event_to_segments[events[0].uuid]
+        first = await event_memory.expand(seed_uuid, after=2)
         second = await event_memory.expand(first.after[-1].uuid, after=2)
 
         assert [s.event_uuid for s in first.after] == [events[1].uuid, events[2].uuid]
