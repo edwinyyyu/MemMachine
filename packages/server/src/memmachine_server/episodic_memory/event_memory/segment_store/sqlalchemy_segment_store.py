@@ -223,17 +223,23 @@ class SegmentRow(BaseSegmentStore):
     # deliberately decoupled so that partition deletion is a registry write
     # (O(1)) and the purge queue reclaims data rows asynchronously.
     __table_args__ = (
+        # Every secondary index leads with its own key and puts the
+        # incarnation second: a read names both, so either order serves
+        # it, and with the incarnation second no secondary index can
+        # answer a lookup by `(incarnation, uuid)`, so the primary key is
+        # the only candidate for the link table's foreign-key check and
+        # the planner needs no statistics to choose it.
         Index(
-            "segment_store_sg__in_ev",
-            "incarnation",
+            "segment_store_sg__ev_in",
             "event_uuid",
+            "incarnation",
         ),
         # The one total order the store exposes, within a session: a walk
         # pins the session and follows it.
         Index(
-            "segment_store_sg__in_se_ts_ev_ix_of",
-            "incarnation",
+            "segment_store_sg__se_in_ts_ev_ix_of",
             "session_id",
+            "incarnation",
             "timestamp",
             "event_uuid",
             "index",
@@ -244,10 +250,10 @@ class SegmentRow(BaseSegmentStore):
         # removes no rows; a walk naming several sources, or none, follows
         # the index above and filters.
         Index(
-            "segment_store_sg__in_se_so_ts_ev_ix_of",
-            "incarnation",
+            "segment_store_sg__se_so_in_ts_ev_ix_of",
             "session_id",
             "source_id",
+            "incarnation",
             "timestamp",
             "event_uuid",
             "index",
