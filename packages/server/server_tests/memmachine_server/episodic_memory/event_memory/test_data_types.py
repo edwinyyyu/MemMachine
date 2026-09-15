@@ -206,7 +206,7 @@ class TestEventRoundTrip:
 
 
 class TestDerivativeRoundTrip:
-    def test_all_property_types(self):
+    def test_round_trip(self):
         der = Derivative(
             session_id="s",
             source_id="src",
@@ -214,12 +214,8 @@ class TestDerivativeRoundTrip:
             segment_uuid=uuid4(),
             timestamp=datetime(2026, 1, 15, 10, 30, tzinfo=UTC),
             block=TextBlock(text="hello"),
-            properties=SAMPLE_PROPERTIES,
         )
-        der2 = Derivative.model_validate(der.model_dump(mode="json"))
-        assert der.properties == der2.properties
-        for key in der.properties:
-            assert type(der.properties[key]) is type(der2.properties[key])
+        assert Derivative.model_validate(der.model_dump(mode="json")) == der
 
 
 class TestDeserializationErrors:

@@ -69,9 +69,7 @@ def _build_text_derivatives(segment: Segment, texts: Iterable[str]) -> list[Deri
             timestamp=segment.timestamp,
             session_id=segment.session_id,
             source_id=segment.source_id,
-            context=segment.context,
             block=TextBlock(text=text),
-            properties=segment.properties,
         )
         for text in texts
     ]

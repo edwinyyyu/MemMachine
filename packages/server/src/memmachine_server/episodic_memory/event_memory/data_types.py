@@ -207,7 +207,7 @@ class Segment(BaseModel):
 
 
 class Derivative(BaseModel):
-    """Content derived from a segment to be embedded in its place, carrying the segment's fields."""
+    """Content derived from a segment to be embedded in its place, with the segment's fields a vector record carries."""
 
     uuid: UUID = Field(description="The UUID of the derivative")
     segment_uuid: UUID = Field(
@@ -218,29 +218,7 @@ class Derivative(BaseModel):
     source_id: _BoundedId | None = Field(
         default=None, description="The segment's source id"
     )
-    context: Context = Field(
-        default_factory=NullContext, description="The segment's context"
-    )
     block: Block = Field(description="The derived content")
-    properties: dict[str, PropertyValue] = Field(
-        default_factory=dict, description="The segment's properties"
-    )
-
-    @field_validator("properties", mode="before")
-    @classmethod
-    def _deserialize_properties(cls, v: object) -> object:
-        if not isinstance(v, Mapping):
-            return v
-        try:
-            return decode_properties(v)
-        except (TypeError, ValueError):
-            return v
-
-    @field_serializer("properties")
-    def _serialize_properties(
-        self, v: dict[str, PropertyValue]
-    ) -> dict[str, dict[str, bool | int | float | str]]:
-        return encode_properties(v)
 
     def __hash__(self) -> int:
         """Hash a derivative by its UUID."""

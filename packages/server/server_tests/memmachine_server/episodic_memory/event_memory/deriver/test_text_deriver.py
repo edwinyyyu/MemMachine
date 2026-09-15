@@ -84,7 +84,6 @@ class TestWholeTextDeriver:
         )
         assert derivative.segment_uuid == seg.uuid
         assert derivative.timestamp == seg.timestamp
-        assert derivative.context == seg.context
 
     async def test_producer_context_prefixes_text(self):
         seg = _make_segment(
@@ -122,16 +121,6 @@ class TestWholeTextDeriver:
         ).derive(seg)
 
         assert result[0].block == TextBlock(text='"hello world"')
-
-    async def test_propagates_segment_properties(self):
-        seg = _make_segment(
-            block=TextBlock(text="x"),
-            properties={"color": "red", "score": 7},
-        )
-
-        result = await WholeTextDeriver().derive(seg)
-
-        assert result[0].properties == {"color": "red", "score": 7}
 
     async def test_non_text_block_raises(self):
         seg = _make_segment_with_unsupported_block()
@@ -188,19 +177,16 @@ class TestSentenceTextDeriver:
             '[Thursday, January 15, 2026] Bob: "Two."',
         }
 
-    async def test_propagates_segment_metadata(self):
-        seg = _make_segment(
-            block=TextBlock(text="A. B."),
-            properties={"k": "v"},
-        )
+    async def test_carries_the_segment_fields_a_record_needs(self):
+        seg = _make_segment(block=TextBlock(text="A. B."))
 
         result = await SentenceTextDeriver().derive(seg)
 
         for derivative in result:
             assert derivative.segment_uuid == seg.uuid
             assert derivative.timestamp == seg.timestamp
-            assert derivative.context == seg.context
-            assert derivative.properties == {"k": "v"}
+            assert derivative.session_id == seg.session_id
+            assert derivative.source_id == seg.source_id
 
     async def test_non_text_block_raises(self):
         seg = _make_segment_with_unsupported_block()
