@@ -266,17 +266,25 @@ out of scope:
   still carries one `block` with its `kind` inside. The store derives
   `block_kind` from `segment.block.kind` and never accepts it as a
   separate input, so the column cannot disagree with the block.
-- Indexes: keep `(incarnation, event_uuid)` for lookup by event;
-  replace the timestamp ordering index with
-  `segment_store_sg__in_se_ts_ev_ix_of (incarnation, session_id, timestamp,
-  event_uuid, index, offset)`, which serves every walk since every walk
-  pins a session; add `segment_store_sg__in_se_so_ts_ev_ix_of (incarnation,
-  session_id, source_id, timestamp, event_uuid, index, offset)`, the same
-  order with the source pinned, which the planner takes for every walk
-  filtered by one source (measured on PostgreSQL; an index on the source
-  alone served no read of the store's). Every index is one a read
-  chooses; none for `block_kind` until a second kind exists and a
-  kind-filtered walk is measured.
+- Indexes: `segment_store_sg__ev_in (event_uuid, incarnation)` for
+  lookup by event; the timestamp ordering index is replaced by
+  `segment_store_sg__se_in_ts_ev_ix_of (session_id, incarnation,
+  timestamp, event_uuid, index, offset)`, which serves every walk since
+  every walk pins a session; `segment_store_sg__se_so_in_ts_ev_ix_of
+  (session_id, source_id, incarnation, timestamp, event_uuid, index,
+  offset)`, the same order with the source pinned, which the planner
+  takes for every walk filtered by one source (measured on PostgreSQL;
+  an index on the source alone served no read of the store's). Every
+  secondary index leads with its own key and puts the incarnation
+  second: a read names both, so either order serves it, and with the
+  incarnation second no secondary index can answer a lookup by
+  `(incarnation, uuid)`, so the primary key is the only candidate for
+  the link table's foreign-key check and the planner needs no
+  statistics to choose it (on a table without statistics PostgreSQL
+  tied the primary key with an incarnation-led index and scanned the
+  partition per link). Every index is one a read chooses; none for
+  `block_kind` until a second kind exists and a kind-filtered walk is
+  measured.
 - The total order is `(timestamp, event_uuid, index, offset)` within
   an incarnation; a walk is confined to the seed's session by an
   equality predicate on the session id. The tie-break
@@ -317,9 +325,13 @@ async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
   so ranges meet without overlap (`until`, not `before`, so that
   `before` is a count everywhere); `source_ids`, `block_kinds` and
   `property_filter` select rows. A walk is confined to the given
-  segment's session by an equality on its session id, or spans every
-  session when it has none. The lateral and loop plans serve it, with
-  the located seeds' keys bound as parameters.
+  segment's session by an equality on its session id. The lateral and
+  loop plans serve it, with the located seeds' keys bound as
+  parameters: on PostgreSQL one statement per direction for every seed,
+  the seeds an `unnest` over bound arrays with the seed's session among
+  them and the lateral pinning `session_id` to the seed row's, an
+  equality the planner parameterizes per seed (a statement pair per
+  seed session cost a twenty-seed search 53 ms against 5.7).
 - `get_segments` is the filtered lookup: the segments among the given
   uuids that the partition holds and that pass every filter; a uuid
   that fails has no entry. A search fetches its seeds with it.

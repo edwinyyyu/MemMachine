@@ -205,12 +205,15 @@ to it.
 | `block` | `LargeBinary` | not null, codec-encoded |
 | `properties` | `JSON` (`JSONB` on PostgreSQL) | not null |
 
-Indexes: `segment_store_sg__key_event (key, event_uuid)` for lookup by
-event; `segment_store_sg__key_order (key, session_id, timestamp,
+Indexes: `segment_store_sg__event_key (event_uuid, key)` for lookup by
+event; `segment_store_sg__session_key_order (session_id, key, timestamp,
 event_position, index, offset)` for context windows, expansion and
 `since` and `until`, which is the one total order the store exposes, and
 the same order with `source_id` pinned after `session_id` for a walk
-filtered by one source; expression indexes on `properties` for the keys a
+filtered by one source. Every secondary index leads with its own key
+and puts the partition key second, so none can serve a lookup by
+`(key, uuid)` and the primary key is the foreign-key check's only
+candidate whatever the statistics; expression indexes on `properties` for the keys a
 deployment names in `segment_store.property_indexes`, created by the
 schema command.
 
