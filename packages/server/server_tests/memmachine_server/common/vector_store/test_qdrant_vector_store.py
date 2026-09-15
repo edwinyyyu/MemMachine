@@ -1098,6 +1098,77 @@ class TestMetrics:
         await store.delete_collection(namespace=NAMESPACE, name="metrics_test")
 
 
+class TestStrictMode:
+    """Every collection the store creates accepts filters on unindexed keys.
+
+    A caller may filter on any property, declared or not. Qdrant Cloud turns
+    strict mode on by default, and strict mode rejects a filter on an
+    unindexed payload key, so the store creates its collections with strict
+    mode disabled: the physical collections that hold points and the
+    registry collections alike.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_store_creates_its_collections_with_strict_mode_off(
+        self, in_memory_qdrant_client
+    ):
+        """Local mode does not keep strict_mode_config, so the request is what is checked."""
+        created: dict[str, models.StrictModeConfig | None] = {}
+        real_create = in_memory_qdrant_client.create_collection
+
+        async def spy(*args, **kwargs):
+            created[kwargs["collection_name"]] = kwargs.get("strict_mode_config")
+            return await real_create(*args, **kwargs)
+
+        in_memory_qdrant_client.create_collection = spy
+        store = QdrantVectorStore(
+            QdrantVectorStoreParams(client=in_memory_qdrant_client)
+        )
+        await store.startup()
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+        await store.create_collection(namespace="strict_ns", name="n", config=config)
+
+        native = QdrantVectorStore._build_native_collection_name("strict_ns", config)
+        registry = QdrantVectorStore._registry_collection_name("strict_ns")
+        assert set(created) == {native, registry}
+        for collection_name, strict_mode in created.items():
+            assert strict_mode is not None, f"{collection_name}: no strict mode config"
+            assert strict_mode.enabled is False, f"{collection_name}: strict mode on"
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_an_undeclared_key_is_filterable_on_a_real_server(
+        self, qdrant_client
+    ):
+        """What strict mode would reject: a filter on a key the schema does not declare."""
+        namespace, name = "strict_real_ns", "n"
+        config = VectorStoreCollectionConfig(
+            vector_dimensions=VECTOR_DIM, indexed_properties_schema={"name": str}
+        )
+        store = QdrantVectorStore(QdrantVectorStoreParams(client=qdrant_client))
+        await store.startup()
+        try:
+            await store.create_collection(namespace=namespace, name=name, config=config)
+            native = QdrantVectorStore._build_native_collection_name(namespace, config)
+            info = await qdrant_client.get_collection(native)
+            assert info.config.strict_mode_config is not None
+            assert info.config.strict_mode_config.enabled is False
+
+            collection = await store.get_collection(namespace=namespace, name=name)
+            assert collection is not None
+            vector = _normalize([1.0, 0.0, 0.0])
+            record = _make_record(vector=vector, properties={"undeclared": "x"})
+            await collection.upsert(records=[record])
+            results = await collection.query(
+                query_vectors=[vector],
+                limit=1,
+                property_filter=Comparison(field="undeclared", op="=", value="x"),
+            )
+            assert [m.record_uuid for m in results[0].matches] == [record.uuid]
+        finally:
+            await store.delete_collection(namespace=namespace, name=name)
+
+
 @pytest.mark.integration
 class TestCollectionLifecycleAcrossWorkers:
     """Collection creation has to survive more than one creator.

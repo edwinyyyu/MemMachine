@@ -464,6 +464,13 @@ class QdrantVectorStore(VectorStore):
     _REGISTRY_VECTOR_DIMENSIONS: ClassVar[str] = "vector_dimensions"
     _REGISTRY_INDEXED_PROPERTIES_SCHEMA: ClassVar[str] = "indexed_properties_schema"
 
+    # Every collection this store creates accepts filters on unindexed payload
+    # keys: a caller may filter on any property, declared or not, and Qdrant
+    # Cloud's default strict mode would reject the undeclared ones.
+    _STRICT_MODE: ClassVar[models.StrictModeConfig] = models.StrictModeConfig(
+        enabled=False
+    )
+
     # Fixed UUID namespace for deterministic registry point IDs.
     _REGISTRY_UUID_NAMESPACE: ClassVar[UUID] = UUID(
         "a3c1f6d2-4b8e-4f2a-9c7d-1e5f8a0b3d6c"
@@ -560,6 +567,7 @@ class QdrantVectorStore(VectorStore):
                 ),
                 replication_factor=self._registry_replication_factor,
                 write_consistency_factor=self._registry_replication_factor,
+                strict_mode_config=QdrantVectorStore._STRICT_MODE,
             )
         except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
             if not QdrantVectorStore._is_already_exists_error(e):
@@ -646,6 +654,7 @@ class QdrantVectorStore(VectorStore):
                     m=0,
                     payload_m=self._hnsw_m,
                 ),
+                strict_mode_config=QdrantVectorStore._STRICT_MODE,
             )
         except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
             if not QdrantVectorStore._is_already_exists_error(e):
