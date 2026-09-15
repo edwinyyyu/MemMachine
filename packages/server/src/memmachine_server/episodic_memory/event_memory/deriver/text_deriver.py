@@ -51,13 +51,9 @@ def _format_for_embedding(
     return f"[{formatted_timestamp}] {body}"
 
 
-def _datetime_format_or_default(
-    datetime_format: DatetimeFormat | None,
-) -> DatetimeFormat:
-    """The given options, or a full date and no time."""
-    if datetime_format is not None:
-        return datetime_format
-    return DatetimeFormat(time_style=None)
+# A full date and no time, the format of the derived text unless a
+# deriver is given another.
+_DATE_ONLY = DatetimeFormat(time_style=None)
 
 
 def _build_text_derivatives(segment: Segment, texts: Iterable[str]) -> list[Derivative]:
@@ -79,12 +75,12 @@ class WholeTextDeriver(Deriver):
     """Emits one derivative with the segment's whole text formatted in context.
 
     `datetime_format` decides how the timestamp and the author are written
-    into the derived text; None is a full date and no time.
+    into the derived text; by default a full date and no time.
     """
 
-    def __init__(self, datetime_format: DatetimeFormat | None = None) -> None:
+    def __init__(self, datetime_format: DatetimeFormat = _DATE_ONLY) -> None:
         """Take the format of the derived text."""
-        self._datetime_format = _datetime_format_or_default(datetime_format)
+        self._datetime_format = datetime_format
 
     @override
     async def derive(self, segment: Segment) -> list[Derivative]:
@@ -104,12 +100,12 @@ class SentenceTextDeriver(Deriver):
     """Emits one derivative per sentence in the segment's text, formatted in context.
 
     `datetime_format` decides how the timestamp and the author are written
-    into the derived text; None is a full date and no time.
+    into the derived text; by default a full date and no time.
     """
 
-    def __init__(self, datetime_format: DatetimeFormat | None = None) -> None:
+    def __init__(self, datetime_format: DatetimeFormat = _DATE_ONLY) -> None:
         """Take the format of the derived text."""
-        self._datetime_format = _datetime_format_or_default(datetime_format)
+        self._datetime_format = datetime_format
 
     @override
     async def derive(self, segment: Segment) -> list[Derivative]:

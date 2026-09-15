@@ -12,6 +12,7 @@ from pydantic import (
     AfterValidator,
     AwareDatetime,
     BaseModel,
+    ConfigDict,
     Field,
     InstanceOf,
     JsonValue,
@@ -207,7 +208,7 @@ class Segment(BaseModel):
 
 
 class Derivative(BaseModel):
-    """Content derived from a segment to be embedded in its place, with the segment's fields a vector record carries."""
+    """Content derived from a segment for embedding, with the segment's fields a vector record carries."""
 
     uuid: UUID = Field(description="The UUID of the derivative")
     segment_uuid: UUID = Field(
@@ -228,7 +229,7 @@ class Derivative(BaseModel):
 # DatetimeFormat: how a timestamp is written into text.
 
 # CLDR datetime style. Ordered from compact to verbose.
-DateTimeStyle = Literal["short", "medium", "long", "full"]
+DatetimeStyle = Literal["short", "medium", "long", "full"]
 
 
 class DatetimeFormat(BaseModel):
@@ -236,10 +237,10 @@ class DatetimeFormat(BaseModel):
     How a timestamp is written into text.
 
     Attributes:
-        date_style (DateTimeStyle | None):
+        date_style (DatetimeStyle | None):
             The CLDR style of the date, or None to omit the date
             (default: "full").
-        time_style (DateTimeStyle | None):
+        time_style (DatetimeStyle | None):
             The CLDR style of the time, or None to omit the time
             (default: "long").
         locale (str):
@@ -250,10 +251,12 @@ class DatetimeFormat(BaseModel):
             or None to write it in the zone it carries (default: None).
     """
 
-    date_style: DateTimeStyle | None = Field(
+    model_config = ConfigDict(frozen=True)
+
+    date_style: DatetimeStyle | None = Field(
         "full", description="The CLDR style of the date, or None to omit the date"
     )
-    time_style: DateTimeStyle | None = Field(
+    time_style: DatetimeStyle | None = Field(
         "long", description="The CLDR style of the time, or None to omit the time"
     )
     locale: str = Field(
