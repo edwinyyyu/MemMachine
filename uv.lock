@@ -2275,7 +2275,7 @@ requires-dist = [
     { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.63.0,<1.86" },
     { name = "memmachine-common", editable = "packages/common" },
     { name = "milvus-lite", marker = "extra == 'milvus'", specifier = ">=3.0.0" },
-    { name = "nebula5-python", marker = "extra == 'nebula'", specifier = ">=5.2.1" },
+    { name = "nebula5-python", marker = "extra == 'nebula'", specifier = ">=5.2.1,<5.3" },
     { name = "neo4j", specifier = ">=5.28.2" },
     { name = "nltk", specifier = ">=3.9.4" },
     { name = "openai", specifier = ">=2.21.0" },
@@ -2507,20 +2507,18 @@ wheels = [
 
 [[package]]
 name = "nebula5-python"
-version = "5.3.0"
+version = "5.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "grpcio" },
     { name = "minijinja" },
-    { name = "pool" },
     { name = "protobuf" },
-    { name = "pytest" },
     { name = "rich" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ef/ed/3ac50de3a130348a0bd60020d5a8d7871023dcb73d26bda7e21248083eed/nebula5_python-5.3.0.tar.gz", hash = "sha256:c0249068ebb96e3e156d242be24fdd0b4b4c130b87882b10f7b0b345789cbba4", size = 94534, upload-time = "2026-06-26T05:39:32.311Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/66/eee93be1cc050178a631ff30f495d0f1b2b41f046fcee8f47c2219803938/nebula5_python-5.2.2.tar.gz", hash = "sha256:91869f254033e8e526ae82cd8f336116b1177c3a401b3a4dbca3bc9995717dde", size = 82256, upload-time = "2026-04-08T06:42:41.653Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d2/39/cfa9020ee82b3c3f53b78050a10a10834830c1ee83a1ed5296aaf58fbb7c/nebula5_python-5.3.0-py3-none-any.whl", hash = "sha256:014512d27c41d3097620d0b58da0b0b2f6e1fd385eaa07db32f3d3685391969f", size = 104122, upload-time = "2026-06-26T05:39:31.109Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/af/9bc05ea38e40ef09d621e30b84e99ad95e748000195097cc0e5746b02ca0/nebula5_python-5.2.2-py3-none-any.whl", hash = "sha256:3904046c5acc587ebf19aca7db8a9e7e9bb034f82b959ef9eeb94a00769caea3", size = 101587, upload-time = "2026-04-08T06:42:40.509Z" },
 ]
 
 [[package]]
@@ -3033,12 +3031,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
 ]
-
-[[package]]
-name = "pool"
-version = "0.1.2.dev0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ea/b4/b7c44381e6e074a01c004ecd6d7b668037821abaf17a787fc01cdf9256a7/pool-0.1.2dev.tar.gz", hash = "sha256:99a3aefa842c5bb87c92a3bbd40cacab212f104268a8fc6e706a2df92002f785", size = 19063, upload-time = "2013-01-05T06:44:34.646Z" }
 
 [[package]]
 name = "portalocker"
