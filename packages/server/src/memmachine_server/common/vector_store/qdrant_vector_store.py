@@ -3,10 +3,10 @@
 import asyncio
 import hashlib
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
-from datetime import datetime
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Any, ClassVar, cast, override
-from uuid import UUID, uuid5
+from uuid import UUID, uuid4, uuid5
 from weakref import WeakKeyDictionary
 
 import grpc
@@ -49,6 +49,7 @@ from .data_types import (
     Record,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
+    VectorStoreCollectionHandleStaleError,
 )
 from .utils import validate_filter, validate_identifier
 from .vector_store import VectorStore, VectorStoreCollection
@@ -57,19 +58,38 @@ from .vector_store import VectorStore, VectorStoreCollection
 # System keys use _SYSTEM_KEY_PREFIX, which contains a hyphen. Hyphens are valid in
 # Qdrant but forbidden by _IDENTIFIER_RE, so system keys can never collide with user keys.
 _SYSTEM_KEY_PREFIX = "sys-"
-_PAYLOAD_PARTITION_KEY = f"{_SYSTEM_KEY_PREFIX}partition_key"
+_PAYLOAD_INCARNATION = f"{_SYSTEM_KEY_PREFIX}incarnation"
+"""The payload key naming the collection incarnation a point belongs to.
+
+Points carry the incarnation, never the collection name: a collection
+deleted and re-created under the same name gets a fresh incarnation, and
+its predecessor's points are invisible to it while the purge reclaims them.
+"""
+_PAYLOAD_RECORD_UUID = f"{_SYSTEM_KEY_PREFIX}record_uuid"
+"""The payload key holding the record's uuid, which the point id is derived from."""
 
 
-def _partition_filter(partition_key: str) -> models.Filter:
-    """Build a Qdrant filter that matches the given partition key."""
+def _incarnation_filter(incarnation: UUID) -> models.Filter:
+    """Build a Qdrant filter that matches the points of one collection incarnation."""
     return models.Filter(
         must=[
             models.FieldCondition(
-                key=_PAYLOAD_PARTITION_KEY,
-                match=models.MatchValue(value=partition_key),
+                key=_PAYLOAD_INCARNATION,
+                match=models.MatchValue(value=incarnation.hex),
             ),
         ],
     )
+
+
+def _point_id(incarnation: UUID, record_uuid: UUID) -> UUID:
+    """The id of a record's point: one per (incarnation, record uuid).
+
+    Point ids are global within a physical collection, which logical
+    collections share. Deriving the id from the incarnation keeps a stale
+    handle, or a co-tenant, from overwriting a point that a live incarnation
+    holds under the same record uuid.
+    """
+    return uuid5(incarnation, str(record_uuid))
 
 
 class QdrantVectorStoreCollection(VectorStoreCollection):
@@ -231,16 +251,32 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         *,
         client: AsyncQdrantClient,
         collection_name: str,
-        partition_key: str,
+        namespace: str,
+        name: str,
+        incarnation: UUID,
         config: VectorStoreCollectionConfig,
         tracker: OperationTracker,
+        is_live: Callable[[str, str, UUID], Awaitable[bool]],
     ) -> None:
-        """Initialize with a Qdrant client and collection name."""
+        """Initialize with a Qdrant client and the incarnation the handle is bound to."""
         self._client = client
         self._tracker = tracker
         self._collection_name = collection_name
-        self._partition_key = partition_key
+        self._namespace = namespace
+        self._name = name
+        self._incarnation = incarnation
         self._config = config
+        self._is_live = is_live
+
+    async def _fence(self) -> None:
+        """Raise if this handle's incarnation is no longer the collection's.
+
+        Qdrant has no transactions, so the check and the operation are two
+        calls; a deletion landing between them leaves points under a dead
+        incarnation, which the purge reclaims like any other.
+        """
+        if not await self._is_live(self._namespace, self._name, self._incarnation):
+            raise VectorStoreCollectionHandleStaleError(self._namespace, self._name)
 
     @property
     @override
@@ -254,7 +290,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     ) -> dict[str, PropertyValue]:
         """Build Qdrant-compatible payload from record properties."""
         payload: dict[str, PropertyValue] = {
-            _PAYLOAD_PARTITION_KEY: self._partition_key,
+            _PAYLOAD_INCARNATION: self._incarnation.hex,
         }
         if properties:
             for key, value in properties.items():
@@ -266,27 +302,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                     payload[key] = value
         return payload
 
-    def _parse_payload(
-        self,
-        payload: dict[str, Any] | None,
-    ) -> dict[str, PropertyValue] | None:
-        """Parse record properties from Qdrant payload."""
-        if payload is None:
-            return None
-
-        indexed_properties_schema = self._config.indexed_properties_schema
-        result: dict[str, PropertyValue] = {}
-        for key, value in payload.items():
-            if key == _PAYLOAD_PARTITION_KEY or value is None:
-                continue
-            if indexed_properties_schema.get(key) is datetime and isinstance(
-                value, str
-            ):
-                result[key] = datetime.fromisoformat(value)
-            else:
-                result[key] = cast(PropertyValue, value)
-        return result
-
     @override
     async def upsert(
         self,
@@ -295,14 +310,16 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     ) -> None:
         """Upsert records into the collection."""
         async with self._tracker("upsert"):
+            await self._fence()
             points: list[models.PointStruct] = []
             for record in records:
-                properties = record.properties
+                payload = self._build_payload(record.properties)
+                payload[_PAYLOAD_RECORD_UUID] = str(record.uuid)
                 points.append(
                     models.PointStruct(
-                        id=record.uuid,
+                        id=_point_id(self._incarnation, record.uuid),
                         vector=record.vector,
-                        payload=self._build_payload(properties),
+                        payload=payload,
                     )
                 )
             if points:
@@ -337,8 +354,9 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
             query_vectors = [list(query_vector) for query_vector in query_vectors]
             if not query_vectors:
                 return []
+            await self._fence()
 
-            partition_key_filter = _partition_filter(self._partition_key)
+            incarnation_filter = _incarnation_filter(self._incarnation)
             if property_filter:
                 if not validate_filter(property_filter):
                     raise ValueError("Filter contains an invalid property key")
@@ -346,10 +364,10 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                     QdrantVectorStoreCollection._build_qdrant_filter(property_filter)
                 )
                 qdrant_filter = models.Filter(
-                    must=[partition_key_filter, property_qdrant_filter]
+                    must=[incarnation_filter, property_qdrant_filter]
                 )
             else:
-                qdrant_filter = partition_key_filter
+                qdrant_filter = incarnation_filter
 
             requests = [
                 models.QueryRequest(
@@ -358,7 +376,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                     score_threshold=min_cosine_similarity,
                     limit=limit,
                     with_vector=False,
-                    with_payload=False,
+                    with_payload=[_PAYLOAD_RECORD_UUID],
                 )
                 for query_vector in query_vectors
             ]
@@ -373,7 +391,9 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                 matches = [
                     QueryMatch(
                         cosine_similarity=point.score,
-                        record_uuid=UUID(str(point.id)),
+                        record_uuid=UUID(
+                            cast(dict[str, Any], point.payload)[_PAYLOAD_RECORD_UUID]
+                        ),
                     )
                     for point in batch.points
                 ]
@@ -392,18 +412,15 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
             uuid_list = list(record_uuids)
             if not uuid_list:
                 return
+            await self._fence()
 
             await self._client.delete(
                 collection_name=self._collection_name,
-                points_selector=models.FilterSelector(
-                    filter=models.Filter(
-                        must=[
-                            _partition_filter(self._partition_key),
-                            models.HasIdCondition(
-                                has_id=list(uuid_list),
-                            ),
-                        ],
-                    ),
+                points_selector=models.PointIdsList(
+                    points=[
+                        _point_id(self._incarnation, record_uuid)
+                        for record_uuid in uuid_list
+                    ],
                 ),
             )
 
@@ -444,7 +461,30 @@ class QdrantVectorStoreParams(BaseModel):
 
 
 class QdrantVectorStore(VectorStore):
-    """Asynchronous Qdrant-based implementation of VectorStore."""
+    """Asynchronous Qdrant-based implementation of VectorStore.
+
+    A logical collection is identified to callers by its (namespace, name)
+    pair and inside the store by an incarnation minted when it is created.
+    Its points carry the incarnation, never the name, so a collection deleted
+    and re-created under the same pair starts empty and its predecessor's
+    points are never adopted by, or reclaimed out from under, the successor.
+    A handle is bound to one incarnation: once that incarnation is deleted,
+    every operation of the handle raises `VectorStoreCollectionHandleStaleError`.
+
+    `delete_collection` is two registry writes: the collection's live entry
+    goes, making it unreachable at once, and an entry in the store's purge
+    queue follows. `purge_deleted_collections` reclaims the points afterward,
+    oldest deletion first, one collection per call. Qdrant has no
+    transactions: a write that passed its fence before the deletion lands
+    under the dead incarnation and is reclaimed with it, and a crash between
+    the two registry writes leaves the points unreachable and unreclaimed, a
+    leak, never a collection the purge takes from under a live one.
+
+    Physical collections are shared by every logical collection of a
+    namespace with the same configuration; the per-namespace registry holds
+    one point per live logical collection, and the purge queue, one per
+    store, one point per deleted incarnation.
+    """
 
     _QDRANT_DISTANCE: ClassVar[models.Distance] = models.Distance.COSINE
 
@@ -458,11 +498,23 @@ class QdrantVectorStore(VectorStore):
         datetime: models.PayloadSchemaType.DATETIME,
     }
 
-    # Registry collection keys (stored on registry points, one per logical collection)
+    # Registry collection keys (stored on registry points, one per live logical
+    # collection; the point id is uuid5 of the name).
     _REGISTRY_SUFFIX: ClassVar[str] = "__registry"
     _REGISTRY_NAME: ClassVar[str] = "name"
+    _REGISTRY_INCARNATION: ClassVar[str] = "incarnation"
     _REGISTRY_VECTOR_DIMENSIONS: ClassVar[str] = "vector_dimensions"
     _REGISTRY_INDEXED_PROPERTIES_SCHEMA: ClassVar[str] = "indexed_properties_schema"
+
+    # Purge queue keys (stored on queue points, one per deleted incarnation; the
+    # point id is the incarnation). The queue is one collection per store, so a
+    # sweep serves every namespace with one scroll; its name cannot collide with
+    # a namespace's `<namespace>__<sha256>` or `<namespace>__registry`.
+    _PURGE_QUEUE_COLLECTION: ClassVar[str] = "memmachine__purge_queue"
+    _QUEUE_NAMESPACE: ClassVar[str] = "namespace"
+    _QUEUE_NAME: ClassVar[str] = "name"
+    _QUEUE_NATIVE_COLLECTION: ClassVar[str] = "native_collection"
+    _QUEUE_DELETED_AT: ClassVar[str] = "deleted_at"
 
     # Every collection this store creates accepts filters on unindexed payload
     # keys: a caller may filter on any property, declared or not, and Qdrant
@@ -544,7 +596,8 @@ class QdrantVectorStore(VectorStore):
 
     @override
     async def startup(self) -> None:
-        """No-op; client lifecycle is managed externally."""
+        """Create the store's purge queue; the client's lifecycle is managed externally."""
+        await self._ensure_purge_queue_collection()
 
     @override
     async def shutdown(self) -> None:
@@ -568,6 +621,35 @@ class QdrantVectorStore(VectorStore):
                 replication_factor=self._registry_replication_factor,
                 write_consistency_factor=self._registry_replication_factor,
                 strict_mode_config=QdrantVectorStore._STRICT_MODE,
+            )
+        except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
+            if not QdrantVectorStore._is_already_exists_error(e):
+                raise
+
+    async def _ensure_purge_queue_collection(self) -> None:
+        """Idempotently create the purge queue and the index its sweep orders by."""
+        try:
+            await self._client.create_collection(
+                collection_name=QdrantVectorStore._PURGE_QUEUE_COLLECTION,
+                vectors_config=models.VectorParams(
+                    size=1,
+                    distance=models.Distance.COSINE,
+                ),
+                hnsw_config=models.HnswConfigDiff(
+                    m=0,
+                ),
+                replication_factor=self._registry_replication_factor,
+                write_consistency_factor=self._registry_replication_factor,
+                strict_mode_config=QdrantVectorStore._STRICT_MODE,
+            )
+        except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
+            if not QdrantVectorStore._is_already_exists_error(e):
+                raise
+        try:
+            await self._client.create_payload_index(
+                collection_name=QdrantVectorStore._PURGE_QUEUE_COLLECTION,
+                field_name=QdrantVectorStore._QUEUE_DELETED_AT,
+                field_schema=models.PayloadSchemaType.INTEGER,
             )
         except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
             if not QdrantVectorStore._is_already_exists_error(e):
@@ -616,18 +698,33 @@ class QdrantVectorStore(VectorStore):
             ],
         )
 
+    async def _is_live(self, namespace: str, name: str, incarnation: UUID) -> bool:
+        """Whether the collection's live entry still names this incarnation."""
+        entry = await self._get_registry_entry(namespace, name)
+        return (
+            entry is not None
+            and entry.get(QdrantVectorStore._REGISTRY_INCARNATION) == incarnation.hex
+        )
+
     def _build_collection_handle(
-        self, namespace: str, name: str, config: VectorStoreCollectionConfig
+        self,
+        namespace: str,
+        name: str,
+        config: VectorStoreCollectionConfig,
+        incarnation: UUID,
     ) -> QdrantVectorStoreCollection:
-        """Build a QdrantVectorStoreCollection handle."""
+        """Build a handle bound to one incarnation of the collection."""
         return QdrantVectorStoreCollection(
             client=self._client,
             collection_name=QdrantVectorStore._build_native_collection_name(
                 namespace, config
             ),
-            partition_key=name,
+            namespace=namespace,
+            name=name,
+            incarnation=incarnation,
             config=config,
             tracker=self._tracker,
+            is_live=self._is_live,
         )
 
     async def _create_native_collection(
@@ -662,7 +759,7 @@ class QdrantVectorStore(VectorStore):
 
         indexes: list[tuple[str, Any]] = [
             (
-                _PAYLOAD_PARTITION_KEY,
+                _PAYLOAD_INCARNATION,
                 models.KeywordIndexParams(
                     type=models.KeywordIndexType.KEYWORD,
                     is_tenant=True,
@@ -686,9 +783,13 @@ class QdrantVectorStore(VectorStore):
                     raise
 
     async def _register_collection(
-        self, namespace: str, name: str, config: VectorStoreCollectionConfig
+        self,
+        namespace: str,
+        name: str,
+        config: VectorStoreCollectionConfig,
+        incarnation: UUID,
     ) -> None:
-        """Write the logical collection entry to the registry."""
+        """Write the logical collection's live entry to the registry."""
         registry_name = QdrantVectorStore._registry_collection_name(namespace)
         point_uuid = QdrantVectorStore._registry_point_uuid(name)
         await self._client.upsert(
@@ -699,6 +800,7 @@ class QdrantVectorStore(VectorStore):
                     vector=[0.0],
                     payload={
                         QdrantVectorStore._REGISTRY_NAME: name,
+                        QdrantVectorStore._REGISTRY_INCARNATION: incarnation.hex,
                         QdrantVectorStore._REGISTRY_VECTOR_DIMENSIONS: config.vector_dimensions,
                         QdrantVectorStore._REGISTRY_INDEXED_PROPERTIES_SCHEMA: config.model_dump(
                             mode="json"
@@ -734,7 +836,7 @@ class QdrantVectorStore(VectorStore):
             if await self._get_registry_entry(namespace, name) is not None:
                 raise VectorStoreCollectionAlreadyExistsError(namespace, name)
             await self._create_native_collection(namespace, config)
-            await self._register_collection(namespace, name, config)
+            await self._register_collection(namespace, name, config, uuid4())
 
     @override
     async def get_collection(
@@ -753,7 +855,10 @@ class QdrantVectorStore(VectorStore):
         if entry is None:
             return None
         return self._build_collection_handle(
-            namespace, name, QdrantVectorStore._parse_entry(entry)
+            namespace,
+            name,
+            QdrantVectorStore._parse_entry(entry),
+            UUID(entry[QdrantVectorStore._REGISTRY_INCARNATION]),
         )
 
     @override
@@ -774,26 +879,98 @@ class QdrantVectorStore(VectorStore):
             entry = await self._get_registry_entry(namespace, name)
             if entry is None:
                 return
-
+            incarnation = UUID(entry[QdrantVectorStore._REGISTRY_INCARNATION])
             config = QdrantVectorStore._parse_entry(entry)
             native_collection_name = QdrantVectorStore._build_native_collection_name(
                 namespace, config
             )
 
-            # Delete partition data, then registry entry.
+            # The live entry goes first, so the collection is unreachable
+            # before anything else happens; the purge entry follows. The
+            # delete names the incarnation it read, so a creation that raced
+            # in from another process keeps its entry.
             await self._client.delete(
-                collection_name=native_collection_name,
+                collection_name=QdrantVectorStore._registry_collection_name(namespace),
                 points_selector=models.FilterSelector(
-                    filter=_partition_filter(name),
-                ),
-            )
-
-            registry_name = QdrantVectorStore._registry_collection_name(namespace)
-            point_uuid = QdrantVectorStore._registry_point_uuid(name)
-            await self._client.delete(
-                collection_name=registry_name,
-                points_selector=models.PointIdsList(
-                    points=[point_uuid],
+                    filter=models.Filter(
+                        must=[
+                            models.HasIdCondition(
+                                has_id=[QdrantVectorStore._registry_point_uuid(name)]
+                            ),
+                            models.FieldCondition(
+                                key=QdrantVectorStore._REGISTRY_INCARNATION,
+                                match=models.MatchValue(value=incarnation.hex),
+                            ),
+                        ]
+                    ),
                 ),
                 wait=True,
             )
+            await self._client.upsert(
+                collection_name=QdrantVectorStore._PURGE_QUEUE_COLLECTION,
+                points=[
+                    models.PointStruct(
+                        id=incarnation,
+                        vector=[0.0],
+                        payload={
+                            QdrantVectorStore._QUEUE_NAMESPACE: namespace,
+                            QdrantVectorStore._QUEUE_NAME: name,
+                            QdrantVectorStore._QUEUE_NATIVE_COLLECTION: native_collection_name,
+                            QdrantVectorStore._QUEUE_DELETED_AT: int(
+                                datetime.now(UTC).timestamp() * 1_000_000
+                            ),
+                        },
+                    ),
+                ],
+                wait=True,
+            )
+
+    @override
+    async def purge_deleted_collections(self) -> bool:
+        # One dead incarnation per call, oldest first: its points go by a
+        # filter on the incarnation, one server-side operation, then the
+        # queue entry. Concurrent purgers may claim the same entry; every
+        # step is idempotent, so the loser does empty work.
+        async with self._tracker("purge_deleted_collections"):
+            entries, _ = await self._client.scroll(
+                collection_name=QdrantVectorStore._PURGE_QUEUE_COLLECTION,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key=QdrantVectorStore._QUEUE_DELETED_AT,
+                            range=models.Range(gte=0),
+                        )
+                    ]
+                ),
+                order_by=models.OrderBy(
+                    key=QdrantVectorStore._QUEUE_DELETED_AT,
+                    direction=models.Direction.ASC,
+                ),
+                limit=1,
+                with_payload=True,
+                with_vectors=False,
+            )
+            if not entries:
+                return False
+            [entry] = entries
+            incarnation = UUID(str(entry.id))
+            native_collection_name = cast(dict[str, Any], entry.payload)[
+                QdrantVectorStore._QUEUE_NATIVE_COLLECTION
+            ]
+
+            # A physical collection an operator dropped has nothing left to
+            # reclaim; its entries retire.
+            if await self._client.collection_exists(native_collection_name):
+                await self._client.delete(
+                    collection_name=native_collection_name,
+                    points_selector=models.FilterSelector(
+                        filter=_incarnation_filter(incarnation),
+                    ),
+                    wait=True,
+                )
+            await self._client.delete(
+                collection_name=QdrantVectorStore._PURGE_QUEUE_COLLECTION,
+                points_selector=models.PointIdsList(points=[incarnation]),
+                wait=True,
+            )
+            return True

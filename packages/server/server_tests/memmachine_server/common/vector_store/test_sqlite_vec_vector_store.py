@@ -904,3 +904,9 @@ class TestFilterEdgeCases:
         assert r1.uuid in uuids
         assert r3.uuid in uuids
         assert r2.uuid not in uuids
+
+
+@pytest.mark.asyncio
+async def test_purge_has_nothing_to_do_because_deletion_reclaims_at_once(store):
+    """This store reclaims in delete_collection; the sweeper finds nothing."""
+    assert await store.purge_deleted_collections() is False

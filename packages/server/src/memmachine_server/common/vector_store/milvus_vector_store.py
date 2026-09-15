@@ -331,7 +331,14 @@ class MilvusVectorStoreParams(BaseModel):
 
 
 class MilvusVectorStore(VectorStore):
-    """Asynchronous Milvus-based implementation of VectorStore."""
+    """Asynchronous Milvus-based implementation of VectorStore.
+
+    `delete_collection` deletes the collection's entities at once, so
+    `purge_deleted_collections` has nothing to do. A handle held across a
+    deletion keeps addressing the shared native collection by name, and
+    reaches the new entities once a collection is created under the same
+    pair.
+    """
 
     _MILVUS_METRIC_TYPE: ClassVar[str] = "COSINE"
 
@@ -645,6 +652,10 @@ class MilvusVectorStore(VectorStore):
         return self._build_collection_handle(
             namespace, name, MilvusVectorStore._parse_entry(entry)
         )
+
+    @override
+    async def purge_deleted_collections(self) -> bool:
+        return False
 
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:

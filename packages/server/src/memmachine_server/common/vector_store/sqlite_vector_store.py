@@ -737,6 +737,10 @@ class SQLiteVectorStore(VectorStore):
     Vector store backed by SQLite + a pluggable vector search engine.
 
     Each logical collection gets its own records table and engine instance.
+    `delete_collection` drops them at once, so `purge_deleted_collections`
+    has nothing to do. A handle held across a deletion fails on its dropped
+    table, and reaches the new table once a collection is created under the
+    same pair.
     """
 
     def __init__(self, params: SQLiteVectorStoreParams) -> None:
@@ -978,6 +982,10 @@ class SQLiteVectorStore(VectorStore):
             index_path=str(index_path) if index_path is not None else None,
             save_threshold=self._save_threshold,
         )
+
+    @override
+    async def purge_deleted_collections(self) -> bool:
+        return False
 
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:

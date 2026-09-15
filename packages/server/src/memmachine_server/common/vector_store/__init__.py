@@ -5,6 +5,7 @@ from .data_types import (
     Record,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
+    VectorStoreCollectionHandleStaleError,
 )
 from .vector_store import VectorStore, VectorStoreCollection
 
@@ -15,4 +16,5 @@ __all__ = [
     "VectorStoreCollection",
     "VectorStoreCollectionAlreadyExistsError",
     "VectorStoreCollectionConfig",
+    "VectorStoreCollectionHandleStaleError",
 ]

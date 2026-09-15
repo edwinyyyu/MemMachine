@@ -27,10 +27,13 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStoreCollectionConfig,
 )
 from memmachine_server.common.vector_store.qdrant_vector_store import (
-    _PAYLOAD_PARTITION_KEY,
+    _PAYLOAD_INCARNATION,
     QdrantVectorStore,
     QdrantVectorStoreCollection,
     QdrantVectorStoreParams,
+)
+from server_tests.memmachine_server.common.vector_store.collection_lifecycle_contract import (
+    CollectionLifecycleContract,
 )
 
 
@@ -1130,7 +1133,8 @@ class TestStrictMode:
 
         native = QdrantVectorStore._build_native_collection_name("strict_ns", config)
         registry = QdrantVectorStore._registry_collection_name("strict_ns")
-        assert set(created) == {native, registry}
+        queue = QdrantVectorStore._PURGE_QUEUE_COLLECTION
+        assert set(created) == {native, registry, queue}
         for collection_name, strict_mode in created.items():
             assert strict_mode is not None, f"{collection_name}: no strict mode config"
             assert strict_mode.enabled is False, f"{collection_name}: strict mode on"
@@ -1226,7 +1230,7 @@ class TestCollectionLifecycleAcrossWorkers:
             await _open_or_create(store, namespace=namespace, name=name, config=config)
             info = await qdrant_client.get_collection(native)
             indexed = set(info.payload_schema or {})
-            assert _PAYLOAD_PARTITION_KEY in indexed, (
+            assert _PAYLOAD_INCARNATION in indexed, (
                 "the tenant partition index is missing: a collection that already "
                 "existed never had its payload indexes created, so tenant "
                 f"filtering is unindexed. present: {sorted(indexed)}"
@@ -1274,7 +1278,7 @@ class TestCollectionLifecycleAcrossWorkers:
 
             info = await client_a.get_collection(native)
             indexed = set(info.payload_schema or {})
-            assert _PAYLOAD_PARTITION_KEY in indexed, (
+            assert _PAYLOAD_INCARNATION in indexed, (
                 "two workers raced and the tenant partition index was lost: the "
                 "loser skips index creation entirely. present: "
                 f"{sorted(indexed)}"
@@ -1283,3 +1287,14 @@ class TestCollectionLifecycleAcrossWorkers:
             await store_a.delete_collection(namespace=namespace, name=name)
             await client_a.close()
             await client_b.close()
+
+
+class TestIncarnationLifecycle(CollectionLifecycleContract):
+    """The incarnation contract, against the shared physical collection's point count."""
+
+    @staticmethod
+    async def count_stored(store, namespace: str, config) -> int:
+        native = QdrantVectorStore._build_native_collection_name(namespace, config)
+        if not await store._client.collection_exists(native):
+            return 0
+        return (await store._client.count(collection_name=native, exact=True)).count

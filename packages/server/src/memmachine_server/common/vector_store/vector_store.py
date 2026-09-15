@@ -26,6 +26,11 @@ class VectorStoreCollection(ABC):
     Identified by a (namespace, name) pair.
     All data operations are scoped to this logical collection.
 
+    A handle is bound to the collection as it was when the handle was
+    obtained. What its operations do once the collection has been deleted,
+    or deleted and re-created under the same pair, is implementation-defined;
+    see `VectorStore`.
+
     Implementations must support storing and filtering on record properties
     not declared in the configured indexed properties schema.
 
@@ -127,6 +132,20 @@ class VectorStore(ABC):
     Multiple logical collections with the same (namespace, vector dimensions, indexed properties schema)
     may share a native collection to reduce overhead.
 
+    Lifecycle, guaranteed by every implementation: `delete_collection` makes
+    the collection unreachable through `get_collection` at once and is
+    idempotent, and a collection created under a deleted pair starts empty
+    and never adopts its predecessor's records.
+
+    Implementation-defined: whether deletion reclaims the records at once or
+    defers that to `purge_deleted_collections`; and what a handle held
+    across a deletion does. An implementation that binds each handle to one
+    incarnation of its collection raises `VectorStoreCollectionHandleStaleError`
+    from every operation of a stale handle and never lets one reach a
+    successor's records. An implementation that does not may fail with a
+    backend error, or, once storage exists again under the same pair, let
+    the stale handle reach it. Each implementation states which it is.
+
     Naming constraints:
         - Namespaces, names, and property keys must match `[a-z0-9_]+`
           (lowercase alphanumeric and underscores only).
@@ -196,13 +215,35 @@ class VectorStore(ABC):
         """
         Delete a logical collection from the vector store.
 
-        This will delete all data in the collection.
-        It is idempotent.
+        The collection is unreachable through `get_collection` at once, and
+        its records are reclaimed then or by `purge_deleted_collections`, as
+        the implementation defines. Idempotent.
 
         Args:
             namespace (str):
                 Namespace of the collection.
             name (str):
                 Name of the collection within the namespace.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def purge_deleted_collections(self) -> bool:
+        """
+        Physically reclaim storage for deleted collections, bounded per call.
+
+        The sweeper: reclaims what `delete_collection` deferred, for every
+        namespace this store serves, oldest deletion first. Each call does a
+        bounded amount of work, sized so it does not noticeably degrade
+        concurrent request serving, and is safe to repeat and to run
+        concurrently from any process. The store never schedules it; a
+        deployment must run it somewhere (the server's resource manager runs
+        it in the background). Implementations that reclaim in
+        `delete_collection` return False without doing anything.
+
+        Returns:
+            bool:
+                True if another call may reclaim more. False if this call
+                found nothing to claim.
         """
         raise NotImplementedError

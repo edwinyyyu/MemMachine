@@ -81,6 +81,23 @@ class VectorStoreCollectionAlreadyExistsError(Exception):
         super().__init__(f"Collection ({namespace!r}, {name!r}) already exists.")
 
 
+class VectorStoreCollectionHandleStaleError(Exception):
+    """Raised by an operation of a handle whose collection was deleted after the handle was bound.
+
+    Only implementations that bind a handle to one incarnation of its
+    collection raise it; see `VectorStore`.
+    """
+
+    def __init__(self, namespace: str, name: str) -> None:
+        """Initialize with the namespace and name of the deleted collection."""
+        self.namespace = namespace
+        self.name = name
+        super().__init__(
+            f"Stale handle for collection ({namespace!r}, {name!r}): the collection "
+            "was deleted, or deleted and re-created, after this handle was bound."
+        )
+
+
 class Record(BaseModel):
     """
     A record to write to a vector store collection.

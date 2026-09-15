@@ -321,6 +321,10 @@ class SQLiteVecVectorStore(VectorStore):
     Vector store backed by SQLite + sqlite-vec.
 
     Each logical collection gets its own records table and vec0 virtual table.
+    `delete_collection` drops them at once, so `purge_deleted_collections`
+    has nothing to do. A handle held across a deletion fails on its dropped
+    tables, and reaches the new tables once a collection is created under
+    the same pair.
     """
 
     _SQLITE_VEC_DISTANCE_METRIC: ClassVar[str] = "cosine"
@@ -398,6 +402,10 @@ class SQLiteVecVectorStore(VectorStore):
             records_table=records_table,
             vector_table_name=vector_table_name,
         )
+
+    @override
+    async def purge_deleted_collections(self) -> bool:
+        return False
 
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
