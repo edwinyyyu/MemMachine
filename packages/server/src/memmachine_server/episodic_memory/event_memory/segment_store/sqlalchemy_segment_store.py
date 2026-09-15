@@ -27,6 +27,7 @@ from sqlalchemy import (
     Select,
     String,
     Uuid,
+    bindparam,
     delete,
     false,
     func,
@@ -35,10 +36,9 @@ from sqlalchemy import (
     select,
     true,
     tuple_,
-    union_all,
     update,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.engine import Dialect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
@@ -54,7 +54,7 @@ from sqlalchemy.orm import (
 )
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.sql.elements import ColumnElement
-from sqlalchemy.sql.selectable import Subquery
+from sqlalchemy.sql.selectable import FromClause
 from sqlalchemy.types import TypeDecorator
 
 from memmachine_server.common.filter.filter_parser import (
@@ -321,17 +321,6 @@ class _SeedKey:
     session_id: str
 
 
-def _seed_key(row: SegmentRow) -> _SeedKey:
-    return _SeedKey(
-        uuid=row.uuid,
-        timestamp=row.timestamp,
-        event_uuid=row.event_uuid,
-        index=row.index,
-        offset=row.offset,
-        session_id=row.session_id,
-    )
-
-
 class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     """SQLAlchemy-backed partition handle."""
 
@@ -551,12 +540,12 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             self._create_session() as session,
         ):
             # The seed is an address, never part of the answer, so no
-            # filter has anything to say about it.
-            seed_rows_by_uuid = await self._rows_by_uuid(session, seed_uuids, [])
-            if not seed_rows_by_uuid:
+            # filter has anything to say about it, and only its place in
+            # the order is read.
+            seeds = await self._seed_keys(session, seed_uuids)
+            if not seeds:
                 await self._ensure_partition_live(session)
                 return {}
-            seeds = [_seed_key(row) for row in seed_rows_by_uuid.values()]
             window_rows_by_seed = await self._window_rows(
                 session, seeds, before, after, conditions
             )
@@ -573,6 +562,24 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     forward_rows,
                 ) in window_rows_by_seed.items()
             }
+
+    async def _seed_keys(
+        self, session: AsyncSession, seed_uuids: set[UUID]
+    ) -> list[_SeedKey]:
+        """The order keys of this partition's rows among `seed_uuids`."""
+        query = select(
+            SegmentRow.uuid,
+            SegmentRow.timestamp,
+            SegmentRow.event_uuid,
+            SegmentRow.index,
+            SegmentRow.offset,
+            SegmentRow.session_id,
+        ).where(
+            SegmentRow.uuid.in_(seed_uuids),
+            SegmentRow.incarnation == self._incarnation,
+            self._registry_row_query().exists(),
+        )
+        return [_SeedKey(*row) for row in (await session.execute(query)).all()]
 
     async def _rows_by_uuid(
         self,
@@ -675,21 +682,68 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         after: int,
         conditions: Sequence[ColumnElement[bool]],
     ) -> dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]]:
-        """Get backward/forward context using LATERAL joins (non-SQLite).
+        """Get backward/forward context using LATERAL joins (PostgreSQL).
 
-        The seeds are bound parameters in a row set, one pair of statements
-        per distinct seed session, so the session predicate is a literal
-        the session-pinned ordering index serves. Binding the seed keys, not
-        rendering them, keeps the statements cacheable by shape.
+        The seeds are one row set, `unnest` over six bound arrays, their
+        session among them: the lateral pins `session_id` to the seed's, an
+        equality the planner parameterizes per seed, so the session-led
+        ordering index serves every seed in one statement per direction.
+        Six parameters whatever the seed count keep the statement small
+        and cacheable by shape.
         """
-        rows_by_seed: dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]] = {
-            seed.uuid: ([], []) for seed in seeds
-        }
-
-        seeds_by_session: defaultdict[str, list[_SeedKey]] = defaultdict(list)
-        for seed in seeds:
-            seeds_by_session[seed.session_id].append(seed)
-
+        seeds_subquery = (
+            func.unnest(
+                bindparam("seed_uuids", [seed.uuid for seed in seeds], ARRAY(Uuid)),
+                bindparam(
+                    "seed_session_ids",
+                    [seed.session_id for seed in seeds],
+                    ARRAY(String(255)),
+                ),
+                bindparam(
+                    "seed_timestamps",
+                    [seed.timestamp for seed in seeds],
+                    ARRAY(DateTime(timezone=True)),
+                ),
+                bindparam(
+                    "seed_event_uuids",
+                    [seed.event_uuid for seed in seeds],
+                    ARRAY(Uuid),
+                ),
+                bindparam(
+                    "seed_indexes", [seed.index for seed in seeds], ARRAY(Integer)
+                ),
+                bindparam(
+                    "seed_offsets", [seed.offset for seed in seeds], ARRAY(Integer)
+                ),
+            )
+            .table_valued(
+                "seed_uuid",
+                "seed_session_id",
+                "seed_timestamp",
+                "seed_event_uuid",
+                "seed_index",
+                "seed_offset",
+            )
+            .render_derived()
+            .alias("seeds")
+        )
+        segment_ordering_columns = tuple_(
+            SegmentRow.timestamp,
+            SegmentRow.event_uuid,
+            SegmentRow.index,
+            SegmentRow.offset,
+        )
+        seed_ordering_columns = tuple_(
+            seeds_subquery.c.seed_timestamp,
+            seeds_subquery.c.seed_event_uuid,
+            seeds_subquery.c.seed_index,
+            seeds_subquery.c.seed_offset,
+        )
+        row_conditions = [
+            SegmentRow.session_id == seeds_subquery.c.seed_session_id,
+            self._registry_row_query().exists(),
+            *conditions,
+        ]
         chronological_order = [
             SegmentRow.timestamp,
             SegmentRow.event_uuid,
@@ -697,77 +751,44 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             SegmentRow.offset,
         ]
         reverse_chronological_order = [col.desc() for col in chronological_order]
+        seed_uuids = [seed.uuid for seed in seeds]
 
-        for session_id, session_seeds in seeds_by_session.items():
-            seeds_subquery = union_all(
-                *(
-                    select(
-                        literal(seed.uuid, Uuid).label("seed_uuid"),
-                        literal(seed.timestamp, DateTime(timezone=True)).label(
-                            "seed_timestamp"
-                        ),
-                        literal(seed.event_uuid, Uuid).label("seed_event_uuid"),
-                        literal(seed.index, Integer).label("seed_index"),
-                        literal(seed.offset, Integer).label("seed_offset"),
-                    )
-                    for seed in session_seeds
-                )
-            ).subquery("seeds")
-            segment_ordering_columns = tuple_(
-                SegmentRow.timestamp,
-                SegmentRow.event_uuid,
-                SegmentRow.index,
-                SegmentRow.offset,
+        backward_rows_by_seed: dict[UUID, list[SegmentRow]] = {
+            seed_uuid: [] for seed_uuid in seed_uuids
+        }
+        if before > 0:
+            backward_rows_by_seed = await self._lateral_window_rows(
+                session,
+                seeds_subquery,
+                seed_uuids,
+                [segment_ordering_columns < seed_ordering_columns, *row_conditions],
+                reverse_chronological_order,
+                before,
             )
-            seed_ordering_columns = tuple_(
-                seeds_subquery.c.seed_timestamp,
-                seeds_subquery.c.seed_event_uuid,
-                seeds_subquery.c.seed_index,
-                seeds_subquery.c.seed_offset,
+        forward_rows_by_seed: dict[UUID, list[SegmentRow]] = {
+            seed_uuid: [] for seed_uuid in seed_uuids
+        }
+        if after > 0:
+            forward_rows_by_seed = await self._lateral_window_rows(
+                session,
+                seeds_subquery,
+                seed_uuids,
+                [segment_ordering_columns > seed_ordering_columns, *row_conditions],
+                chronological_order,
+                after,
             )
-            row_conditions = [
-                SQLAlchemySegmentStorePartition._session_condition(session_id),
-                self._registry_row_query().exists(),
-                *conditions,
-            ]
-            seed_uuids = [seed.uuid for seed in session_seeds]
-
-            if before > 0:
-                backward_rows_by_seed = await self._lateral_window_rows(
-                    session,
-                    seeds_subquery,
-                    seed_uuids,
-                    [
-                        segment_ordering_columns < seed_ordering_columns,
-                        *row_conditions,
-                    ],
-                    reverse_chronological_order,
-                    before,
-                )
-                for seed_uuid, backward_rows in backward_rows_by_seed.items():
-                    rows_by_seed[seed_uuid][0].extend(backward_rows)
-
-            if after > 0:
-                forward_rows_by_seed = await self._lateral_window_rows(
-                    session,
-                    seeds_subquery,
-                    seed_uuids,
-                    [
-                        segment_ordering_columns > seed_ordering_columns,
-                        *row_conditions,
-                    ],
-                    chronological_order,
-                    after,
-                )
-                for seed_uuid, forward_rows in forward_rows_by_seed.items():
-                    rows_by_seed[seed_uuid][1].extend(forward_rows)
-
-        return rows_by_seed
+        return {
+            seed_uuid: (
+                backward_rows_by_seed[seed_uuid],
+                forward_rows_by_seed[seed_uuid],
+            )
+            for seed_uuid in seed_uuids
+        }
 
     async def _lateral_window_rows(
         self,
         session: AsyncSession,
-        seeds_subquery: Subquery,
+        seeds_subquery: FromClause,
         seed_uuids: Iterable[UUID],
         conditions: Sequence[ColumnElement[bool]],
         ordering: Iterable[ColumnElement | InstrumentedAttribute],
