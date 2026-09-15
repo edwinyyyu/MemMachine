@@ -189,11 +189,9 @@ class PartitionRow(BaseSegmentStore):
 class SegmentRow(BaseSegmentStore):
     """Persisted segment.
 
-    `session_id`, `source_id` and `block_kind` are projections of the
-    segment the row already holds in its encoded block and fields: the
-    codec-encoded block is opaque to SQL, so what the store filters on is
-    copied out beside it at insert. `block_kind` is derived from the block
-    and never accepted as a separate input, so it cannot disagree with it.
+    `block_kind` is the encoded block's kind in a column of its own, since
+    the codec's bytes are opaque to SQL; the store fills it from the block,
+    so the two cannot disagree.
     """
 
     __tablename__ = "segment_store_sg"
