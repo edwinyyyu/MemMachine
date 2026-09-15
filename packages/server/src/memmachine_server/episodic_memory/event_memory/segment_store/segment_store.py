@@ -186,9 +186,7 @@ class SegmentStorePartition(ABC):
 
         Returns:
             dict[UUID, list[UUID]]:
-                A mapping from each event UUID to the UUIDs of its
-                associated segments, in the event's own order (by index,
-                then offset).
+                A mapping from each event UUID to the UUIDs of its associated segments.
         """
         raise NotImplementedError
 

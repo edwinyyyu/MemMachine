@@ -3066,18 +3066,3 @@ async def test_row_projections_are_derived_from_the_segment(
 
     returned = (await partition.get_segments([seg.uuid]))[seg.uuid]
     assert (returned.session_id, returned.source_id) == ("s1", "alice")
-
-
-@pytest.mark.asyncio
-async def test_segment_uuids_by_event_are_in_the_events_order(
-    partition: SQLAlchemySegmentStorePartition,
-) -> None:
-    ep = uuid4()
-    later_block = _seg(event_uuid=ep, index=1, offset=0)
-    second_chunk = _seg(event_uuid=ep, index=0, offset=1)
-    first_chunk = _seg(event_uuid=ep, index=0, offset=0)
-    await partition.add_segments(_links(later_block, second_chunk, first_chunk))
-
-    result = await partition.get_segment_uuids_by_event_uuids([ep])
-
-    assert result[ep] == [first_chunk.uuid, second_chunk.uuid, later_block.uuid]

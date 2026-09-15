@@ -246,13 +246,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         for event_uuid in event_uuids:
             segment_uuids = self.event_to_segments.get(event_uuid)
             if segment_uuids:
-                result[event_uuid] = sorted(
-                    segment_uuids,
-                    key=lambda uid: (
-                        self.segments[uid].index,
-                        self.segments[uid].offset,
-                    ),
-                )
+                result[event_uuid] = list(segment_uuids)
         return result
 
     @override

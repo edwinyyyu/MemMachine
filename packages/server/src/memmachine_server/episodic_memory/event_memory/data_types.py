@@ -279,13 +279,13 @@ class DateTimeFormat(BaseModel):
 
 
 class Neighborhood(BaseModel):
-    """The segments around an anchor, excluding the anchor itself: its open neighborhood."""
+    """The segments around a seed, excluding the seed itself: its open neighborhood."""
 
     before: list[Segment] = Field(
-        description="The segments before the anchor, in the store's order"
+        description="The segments before the seed, in the store's order"
     )
     after: list[Segment] = Field(
-        description="The segments after the anchor, in the store's order"
+        description="The segments after the seed, in the store's order"
     )
 
 

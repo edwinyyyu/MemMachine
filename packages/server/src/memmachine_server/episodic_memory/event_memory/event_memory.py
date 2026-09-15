@@ -584,7 +584,7 @@ class EventMemory:
 
     async def expand(
         self,
-        anchor: UUID,
+        seed: UUID,
         *,
         before: int = 0,
         after: int = 0,
@@ -596,22 +596,19 @@ class EventMemory:
         property_filter: FilterExpr | None = None,
     ) -> Neighborhood:
         """
-        Get the neighborhood of an anchor in the store's order, within its session.
+        Get the neighborhood of a seed segment: the segments before and after it in its session, in the store's order.
 
-        The anchor is a segment uuid (from a hit) or an event uuid (its
-        first segment). The filters apply to the neighbors only, and the
-        anchor is never returned: its place is between the two lists. To
-        walk further, call again from the first of `before` or the last of
-        `after` with one side zero.
+        The filters select the neighbors; the seed itself is excluded from
+        the result.
 
         Args:
-            anchor (UUID):
-                A segment or event UUID.
+            seed (UUID):
+                The UUID of the seed segment.
             before (int):
-                The maximum number of segments before the anchor, nonnegative
+                The maximum number of neighbors before the seed, nonnegative
                 (default: 0).
             after (int):
-                The maximum number of segments after the anchor, nonnegative
+                The maximum number of neighbors after the seed, nonnegative
                 (default: 0).
             since (datetime | None):
                 Inclusive lower bound on the neighbors' timestamps, timezone-aware
@@ -620,9 +617,8 @@ class EventMemory:
                 Exclusive upper bound on the neighbors' timestamps, timezone-aware
                 (default: None).
             session_ids (Iterable[str] | None):
-                The sessions the anchor may be in; an anchor in another
-                session is not found, and None allows any session
-                (default: None).
+                The sessions the seed may be in; a seed in another session
+                is not found, and None allows any session (default: None).
             source_ids (Iterable[str] | None):
                 Keep only neighbors of these sources; an empty list keeps
                 none, and None keeps every source (default: None).
@@ -630,39 +626,31 @@ class EventMemory:
                 Keep only neighbors whose block is of these kinds; an empty
                 list keeps none, and None keeps every kind (default: None).
             property_filter (FilterExpr | None):
-                Property fields and values to filter the neighbors by
-                (default: None).
+                A filter over the neighbors' user properties; None filters
+                nothing (default: None).
 
         Returns:
             Neighborhood:
-                The neighbors before and after the anchor, in the store's order.
+                The neighbors before and after the seed, in the store's order.
 
         Raises:
             LookupError:
-                If the anchor is neither a segment nor an event of this
-                memory, or its session is not among `session_ids`.
+                If the seed is not a segment of this memory, or its
+                session is not among `session_ids`.
             ValueError:
                 If `before` or `after` is negative, or `since` or `until`
                 is naive.
         """
         async with self._tracker("expand"):
-            segment_uuids_by_event = (
-                await self._segment_store_partition.get_segment_uuids_by_event_uuids(
-                    event_uuids=[anchor],
-                )
-            )
-            event_segment_uuids = segment_uuids_by_event.get(anchor)
-            seed_uuid = event_segment_uuids[0] if event_segment_uuids else anchor
-
             if session_ids is not None:
                 visible = await self._segment_store_partition.get_segments(
-                    [seed_uuid], session_ids=session_ids
+                    [seed], session_ids=session_ids
                 )
-                if seed_uuid not in visible:
-                    raise LookupError(f"Anchor {anchor} is not in the named sessions")
+                if seed not in visible:
+                    raise LookupError(f"Seed {seed} is not in the named sessions")
             neighborhoods = (
                 await self._segment_store_partition.get_segment_neighborhoods(
-                    [seed_uuid],
+                    [seed],
                     before=before,
                     after=after,
                     since=since,
@@ -672,11 +660,9 @@ class EventMemory:
                     property_filter=property_filter,
                 )
             )
-            neighborhood = neighborhoods.get(seed_uuid)
+            neighborhood = neighborhoods.get(seed)
             if neighborhood is None:
-                raise LookupError(
-                    f"Anchor {anchor} is neither a segment nor an event of this memory"
-                )
+                raise LookupError(f"Seed {seed} is not a segment of this memory")
             return neighborhood
 
     @staticmethod

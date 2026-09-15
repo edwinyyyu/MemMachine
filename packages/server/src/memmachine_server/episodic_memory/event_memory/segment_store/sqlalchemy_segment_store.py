@@ -223,13 +223,10 @@ class SegmentRow(BaseSegmentStore):
     # deliberately decoupled so that partition deletion is a registry write
     # (O(1)) and the purge queue reclaims data rows asynchronously.
     __table_args__ = (
-        # Lookup by event, in the event's own order.
         Index(
-            "segment_store_sg__in_ev_ix_of",
+            "segment_store_sg__in_ev",
             "incarnation",
             "event_uuid",
-            "index",
-            "offset",
         ),
         # The one total order the store exposes, within a session: a walk
         # pins the session and follows it.
@@ -916,14 +913,10 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             self._tracker("get_segment_uuids_by_event_uuids"),
             self._create_session() as session,
         ):
-            query = (
-                select(SegmentRow.event_uuid, SegmentRow.uuid)
-                .where(
-                    SegmentRow.incarnation == self._incarnation,
-                    SegmentRow.event_uuid.in_(event_uuids),
-                    self._registry_row_query().exists(),
-                )
-                .order_by(SegmentRow.event_uuid, SegmentRow.index, SegmentRow.offset)
+            query = select(SegmentRow.event_uuid, SegmentRow.uuid).where(
+                SegmentRow.incarnation == self._incarnation,
+                SegmentRow.event_uuid.in_(event_uuids),
+                self._registry_row_query().exists(),
             )
             rows = (await session.execute(query)).all()
             if not rows:

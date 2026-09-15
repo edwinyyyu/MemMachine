@@ -534,42 +534,18 @@ class TestExpand:
     ):
         events = [_make_event(f"event {i}", timestamp=_ts(i)) for i in range(5)]
         await event_memory.encode_events(events)
-        [anchor] = fake_segment_store_partition.event_to_segments[events[2].uuid]
+        [seed] = fake_segment_store_partition.event_to_segments[events[2].uuid]
 
-        neighborhood = await event_memory.expand(anchor, before=1, after=2)
+        neighborhood = await event_memory.expand(seed, before=1, after=2)
 
         assert [s.event_uuid for s in neighborhood.before] == [events[1].uuid]
         assert [s.event_uuid for s in neighborhood.after] == [
             events[3].uuid,
             events[4].uuid,
         ]
-        assert anchor not in {s.uuid for s in neighborhood.before + neighborhood.after}
+        assert seed not in {s.uuid for s in neighborhood.before + neighborhood.after}
 
-    async def test_expand_around_an_event_uses_its_first_segment(
-        self,
-        event_memory: EventMemory,
-    ):
-        events = [_make_event(f"event {i}", timestamp=_ts(i)) for i in range(3)]
-        long = Event(
-            session_id="s",
-            source_id="src",
-            uuid=uuid4(),
-            timestamp=_ts(1),
-            blocks=[TextBlock(text="first block"), TextBlock(text="second block")],
-        )
-        events[1] = long
-        await event_memory.encode_events(events)
-
-        neighborhood = await event_memory.expand(long.uuid, before=1, after=5)
-
-        assert [s.event_uuid for s in neighborhood.before] == [events[0].uuid]
-        # The anchor is the event's first segment; its second block is a neighbor.
-        assert [s.block.text for s in neighborhood.after] == [
-            "second block",
-            "event 2",
-        ]
-
-    async def test_expand_filters_neighbors_but_not_the_anchor(
+    async def test_expand_filters_neighbors_but_not_the_seed(
         self,
         event_memory: EventMemory,
         fake_segment_store_partition: InMemorySegmentStorePartition,
@@ -578,10 +554,10 @@ class TestExpand:
         blue = _make_event("blue", timestamp=_ts(1), properties={"color": "blue"})
         green = _make_event("green", timestamp=_ts(2), properties={"color": "green"})
         await event_memory.encode_events([red, blue, green])
-        [anchor] = fake_segment_store_partition.event_to_segments[blue.uuid]
+        [seed] = fake_segment_store_partition.event_to_segments[blue.uuid]
 
         neighborhood = await event_memory.expand(
-            anchor,
+            seed,
             before=5,
             after=5,
             property_filter=Comparison(field="m.color", op="=", value="green"),
@@ -590,7 +566,7 @@ class TestExpand:
         assert neighborhood.before == []
         assert [s.event_uuid for s in neighborhood.after] == [green.uuid]
 
-    async def test_expand_session_ids_bound_what_the_anchor_may_be_in(
+    async def test_expand_session_ids_bound_what_the_seed_may_be_in(
         self,
         event_memory: EventMemory,
         fake_segment_store_partition: InMemorySegmentStorePartition,
@@ -599,12 +575,12 @@ class TestExpand:
         b0 = _make_event("b0", timestamp=_ts(1), session_id="b")
         a1 = _make_event("a1", timestamp=_ts(2), session_id="a")
         await event_memory.encode_events([a0, b0, a1])
-        [anchor] = fake_segment_store_partition.event_to_segments[a0.uuid]
+        [seed] = fake_segment_store_partition.event_to_segments[a0.uuid]
 
-        neighborhood = await event_memory.expand(anchor, after=5, session_ids=["a"])
+        neighborhood = await event_memory.expand(seed, after=5, session_ids=["a"])
         assert [s.event_uuid for s in neighborhood.after] == [a1.uuid]
         with pytest.raises(LookupError):
-            await event_memory.expand(anchor, after=5, session_ids=["b"])
+            await event_memory.expand(seed, after=5, session_ids=["b"])
 
     async def test_negative_counts_are_rejected(
         self,
@@ -613,27 +589,29 @@ class TestExpand:
     ):
         event = _make_event("x", timestamp=_ts(0))
         await event_memory.encode_events([event])
-        [anchor] = fake_segment_store_partition.event_to_segments[event.uuid]
+        [seed] = fake_segment_store_partition.event_to_segments[event.uuid]
 
         with pytest.raises(ValueError, match="before must be nonnegative"):
-            await event_memory.expand(anchor, before=-1)
+            await event_memory.expand(seed, before=-1)
         with pytest.raises(ValueError, match="expand_context must be nonnegative"):
             await event_memory.query("x", expand_context=-1)
 
     async def test_expand_walks_further_from_an_edge(
         self,
         event_memory: EventMemory,
+        fake_segment_store_partition: InMemorySegmentStorePartition,
     ):
         events = [_make_event(f"event {i}", timestamp=_ts(i)) for i in range(5)]
         await event_memory.encode_events(events)
 
-        first = await event_memory.expand(events[0].uuid, after=2)
+        [seed] = fake_segment_store_partition.event_to_segments[events[0].uuid]
+        first = await event_memory.expand(seed, after=2)
         second = await event_memory.expand(first.after[-1].uuid, after=2)
 
         assert [s.event_uuid for s in first.after] == [events[1].uuid, events[2].uuid]
         assert [s.event_uuid for s in second.after] == [events[3].uuid, events[4].uuid]
 
-    async def test_unknown_anchor_raises(self, event_memory: EventMemory):
+    async def test_unknown_seed_raises(self, event_memory: EventMemory):
         await event_memory.encode_events([_make_event("hi")])
         with pytest.raises(LookupError):
             await event_memory.expand(uuid4(), before=1, after=1)
