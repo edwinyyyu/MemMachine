@@ -139,12 +139,12 @@ class _RegistryInsertRejectedError(Exception):
 
 
 class UtcInstant(TypeDecorator[datetime]):
-    """A timezone-aware column that holds a UTC instant.
+    """A timestamp column that holds a UTC instant.
 
-    Binds an aware datetime as its UTC instant and rejects a naive one,
-    which names no instant. Decodes a naive result as the UTC instant the
-    column holds: SQLite keeps no zone, so it returns every timestamp
-    naive, and PostgreSQL returns it aware.
+    On write, a timezone-aware datetime is converted to UTC and a naive
+    one is rejected. On read, PostgreSQL returns an aware datetime, which
+    is passed through; SQLite stores no zone and returns a naive one,
+    which is given `tzinfo=UTC`, the zone it was written in.
     """
 
     impl = DateTime(timezone=True)
