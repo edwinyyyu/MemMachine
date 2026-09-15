@@ -389,6 +389,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
               # token: $MILVUS_TOKEN
               # db_name: default
               consistency_level: Session
+              request_timeout: 30
       ```
     </Tab>
     <Tab title="With Comments">
@@ -420,6 +421,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
               # token: $MILVUS_TOKEN # Required for Zilliz Cloud or auth-enabled Milvus
               # db_name: default # Optional Milvus database name
               consistency_level: Session # Strong, Session, Bounded, or Eventually
+              request_timeout: 30 # Seconds a request may take; required
       ```
     </Tab>
     </Tabs>
@@ -436,6 +438,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
       | `config.uri`  | The URI for the given database.                                      | Depends on provider |
       | `config.token` | Milvus auth token for Zilliz Cloud or auth-enabled Milvus server.   | `""` |
       | `config.consistency_level` | Milvus collection consistency level: `Strong`, `Session`, `Bounded`, or `Eventually`. | `Session` |
+      | `config.request_timeout` | Seconds a request to Qdrant or Milvus may take before the client gives up; bounds every remote write. | *Required for `qdrant` and `milvus`* |
       | `config.path`  | The path for the given database.                                    | Depends on provider |
       | `config.username` | Username for internal graph store authentication.                | Depends on provider |
       | `my_storage_id` | The specific configuration for the system's internal graph store.  | *Required*  |
