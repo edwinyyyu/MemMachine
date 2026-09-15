@@ -328,10 +328,10 @@ async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
   segment's session by an equality on its session id. The lateral and
   loop plans serve it, with the located seeds' keys bound as
   parameters: on PostgreSQL one statement per direction for every seed,
-  the seeds an `unnest` over bound arrays with the seed's session among
-  them and the lateral pinning `session_id` to the seed row's, an
-  equality the planner parameterizes per seed (a statement pair per
-  seed session cost a twenty-seed search 53 ms against 5.7).
+  speedkick's shape with the seed's `session_id` added to the seeds
+  subquery and the lateral pinning `session_id` to it, an equality the
+  planner parameterizes per seed (a statement pair per seed session
+  cost a twenty-seed search 53 ms against 5.7).
 - `get_segments` is the filtered lookup: the segments among the given
   uuids that the partition holds and that pass every filter; a uuid
   that fails has no entry. A search fetches its seeds with it.
