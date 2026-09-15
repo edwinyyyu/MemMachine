@@ -374,7 +374,8 @@ class EventMemory:
     @staticmethod
     def render(segments: Iterable[Segment], *,
                datetime_format: DateTimeFormat,
-               parts: Iterable[str] = ("author",)) -> str
+               parts: Iterable[str] = ("author",),
+               ids: Iterable[Literal["session", "segment"]] = ()) -> str
     @staticmethod
     async def rerank(query: str, hits: Sequence[QueryHit], *,
                      reranker: Reranker,
@@ -417,7 +418,9 @@ class EventMemory:
   `string_from_segment_contexts` and uses `_is_continuation` (the
   branch's `_immediately_follows`) for the header decision: a new
   header when the segment does not continue the previous one, the next
-  piece of the same event. No gap marker.
+  piece of the same event. No gap marker. Session blocks and the id
+  markers (`episodic_memory.md`, "Rendering for a reader") are a
+  further PR on the blocks PR.
 - `build_query_result_context` and `string_from_query_result`, already
   gone on the branch, go here too.
 

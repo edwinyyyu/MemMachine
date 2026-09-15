@@ -76,7 +76,8 @@ class EpisodicMemory:
     @staticmethod
     def render(segments: Iterable[Segment], *,
                datetime_format: DateTimeFormat,
-               parts: Iterable[str] = ("author",)) -> str
+               parts: Iterable[str] = ("author",),
+               ids: Iterable[Literal["session", "segment"]] = ()) -> str
 ```
 
 - `encode`: for each event, first `forget` its derived rows (so a
@@ -125,11 +126,36 @@ class EpisodicMemory:
   with the first of `before` or the last of `after` as the anchor and one side
   zero. Backed by `SegmentPartition.get_segment_neighborhoods` over the ordering
   index; no vector search and no embedding, so it is one indexed read.
-- `render`: the reader's text for a run of segments, in their order:
-  each segment's timestamp written per `datetime_format`, its context
-  parts' contributions, and its block's rendering (`context.md`,
-  `blocks.md`). What the API returns as `text`, and what a reranker
-  scores.
+- `render`: the reader's text for any segments, a segment given twice
+  rendered once: a block per session, the sessions in the order of
+  their latest timestamps with the latest last and a blank line
+  between; each block in the store's order, one line per run of
+  adjacent pieces of one event: the timestamp written per
+  `datetime_format`, the context parts' contributions, and the block
+  renderings (`context.md`, `blocks.md`). Nothing in the text says
+  whether two lines are adjacent in the store: a filtered walk can omit
+  a neighbor and no segment carries a position, so no rendering can
+  promise contiguity and this one claims none. What the API returns as
+  `text`, and what a reranker scores, with `ids` off.
+- Rendering for a reader who names things back. `ids` marks, each kind
+  independently: `"session"` heads every block with `[session:"<id>"]`,
+  the id JSON-quoted since a session id is any string; `"segment"`
+  starts every line with `[segment:<hex>]`, or
+  `[segments:<first>..<last>]` when the line holds more than one
+  segment, a uuid as 32 hex digits. The plural and the range say which
+  id opens the event and which closes it without prompting; a
+  one-segment event carries one id. `session` and `segment` are spelled
+  out, since the words cost what the abbreviations cost. Short ids are
+  the client's: the server cannot resolve an id abbreviated per
+  conversation, so the client translates before calling `expand`
+  either way, and abbreviating is substitution on the markers, whose
+  grammar is one marker per line,
+  `\[segments?:([0-9a-f]{32})(?:\.\.([0-9a-f]{32}))?\]`, and
+  `\[session:("(?:[^"\\]|\\.)*")\]` at a block's head. A returned or
+  mutable mapping would add a type to the API and a request payload
+  that grows with everything the model has seen. Minimal-unique
+  prefixes, resolved against the store, are the stateless alternative
+  and are not built.
 
 ## Eviction
 
