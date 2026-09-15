@@ -3,7 +3,7 @@
 import datetime
 import logging
 from collections.abc import Iterable
-from typing import Annotated, Final, Literal, cast
+from typing import Annotated, Final, Literal, NamedTuple, cast
 from uuid import UUID, uuid4, uuid5
 
 from pydantic import BaseModel, Field, InstanceOf, JsonValue
@@ -20,6 +20,7 @@ from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
     FilterExpr,
+    In,
     map_filter_fields,
     normalize_filter_field,
 )
@@ -65,10 +66,6 @@ logger = logging.getLogger(__name__)
 # change without a data migration.
 _EVENT_UUID_NAMESPACE = UUID("8c2c0e0a-3a2f-4b9c-9d1f-9b6c2a3a4f7e")
 
-# Reserved system-defined property keys on the event-backend. Stored on
-# event.properties with the leading underscore so EventMemory's existing
-# `_to_vector_record_property` translation (bare client-API field -> `_field`)
-# matches the storage layout transparently.
 DEFAULT_SESSION_ID: Final[str] = "memmachine_default"
 """The session of every event this API ingests.
 
@@ -77,6 +74,8 @@ stream. This one name is reserved for it; a caller may name a session
 anything else.
 """
 
+# The adapter's fields, stored on `event.properties` under a leading
+# underscore; the segment store maps a bare client-API name to `_<name>`.
 _EPISODE_UID_FIELD = "_episode_uid"
 _SESSION_KEY_FIELD = "_session_key"
 _PRODUCER_ID_FIELD = "_producer_id"
@@ -121,6 +120,15 @@ _FILTERABLE_METADATA_NONE_FLAG = "_filterable_metadata_none"
 # distinct episodes even when a single episode produces multiple segments
 # (e.g., under TextSegmenter with chunking).
 _EVENT_BACKEND_DEDUP_OVERFETCH = 4
+
+
+class _LiftedFilters(NamedTuple):
+    """A filter tree split into the memory's typed parameters and its post-filter."""
+
+    since: datetime.datetime | None
+    until: datetime.datetime | None
+    source_ids: list[str] | None
+    rest: FilterExpr | None
 
 
 class DeclarativeBackendParams(BaseModel):
@@ -330,18 +338,18 @@ class LongTermMemory:
             num_episodes_limit * _EVENT_BACKEND_DEDUP_OVERFETCH,
             num_episodes_limit,
         )
-        # The API carries the event timestamp in the filter tree; the
-        # memory takes it typed, so the vector stage bounds by it.
-        since, until, property_filter = LongTermMemory._split_timestamp_bounds(
-            property_filter
-        )
+        # The fields ingestion maps onto the event come back typed: the
+        # memory filters by them at the vector stage, and the rest of the
+        # tree is the segment store's post-filter.
+        lifted = LongTermMemory._lift_typed_filters(property_filter)
         hits = await event_memory.query(
             query,
             vector_search_limit=vector_search_limit,
             expand_context=expand_context,
-            since=since,
-            until=until,
-            property_filter=property_filter,
+            since=lifted.since,
+            until=lifted.until,
+            source_ids=lifted.source_ids,
+            property_filter=lifted.rest,
         )
         if self._reranker is not None:
             hits = await EventMemory.rerank(
@@ -601,29 +609,44 @@ class LongTermMemory:
     # --- Episode <-> Event translation (event backend) ---
 
     @staticmethod
-    def _split_timestamp_bounds(
-        property_filter: FilterExpr | None,
-    ) -> tuple[datetime.datetime | None, datetime.datetime | None, FilterExpr | None]:
-        """Lift `timestamp >= x` and `timestamp < x` conjuncts out of a filter tree.
+    def _lift_typed_filters(property_filter: FilterExpr | None) -> _LiftedFilters:
+        """Lift the conjuncts on ingestion-mapped fields out of a filter tree.
 
-        Returns the tightest such bounds as `since` and `until`, and the
-        tree of the remaining conjuncts, or None when nothing remains. A
-        `timestamp` predicate of another operator, or one under a
-        disjunction or a negation, stays in the tree as a post-filter.
+        `_episode_to_event` maps `created_at` onto the event's timestamp and
+        `producer_id` onto its source, so a top-level `timestamp >= x` or
+        `created_at >= x` is `since`, `< x` is `until` (the tightest of
+        each), and `producer_id = x` or `producer_id IN [...]` is
+        `source_ids` (the intersection; empty admits nothing). The tree of
+        the remaining conjuncts is `rest`, or None when nothing remains. A
+        predicate of another operator, or one under a disjunction or a
+        negation, stays in the tree as a post-filter.
         """
         since: datetime.datetime | None = None
         until: datetime.datetime | None = None
+        source_ids: set[str] | None = None
         rest: list[FilterExpr] = []
         for conjunct in LongTermMemory._conjuncts(property_filter):
             match conjunct:
                 case Comparison(
-                    field="timestamp", op=">=", value=datetime.datetime() as bound
+                    field="timestamp" | "created_at",
+                    op=">=",
+                    value=datetime.datetime() as bound,
                 ):
                     since = bound if since is None else max(since, bound)
                 case Comparison(
-                    field="timestamp", op="<", value=datetime.datetime() as bound
+                    field="timestamp" | "created_at",
+                    op="<",
+                    value=datetime.datetime() as bound,
                 ):
                     until = bound if until is None else min(until, bound)
+                case Comparison(field="producer_id", op="=", value=str() as source):
+                    sources = {source}
+                    source_ids = sources if source_ids is None else source_ids & sources
+                case In(field="producer_id", values=values) if all(
+                    isinstance(value, str) for value in values
+                ):
+                    sources = set(cast(list[str], values))
+                    source_ids = sources if source_ids is None else source_ids & sources
                 case _:
                     rest.append(conjunct)
         remaining: FilterExpr | None = None
@@ -631,7 +654,12 @@ class LongTermMemory:
             remaining = (
                 conjunct if remaining is None else And(left=remaining, right=conjunct)
             )
-        return since, until, remaining
+        return _LiftedFilters(
+            since=since,
+            until=until,
+            source_ids=None if source_ids is None else sorted(source_ids),
+            rest=remaining,
+        )
 
     @staticmethod
     def _conjuncts(expr: FilterExpr | None) -> list[FilterExpr]:
@@ -810,9 +838,10 @@ class LongTermMemory:
           Context: ProducerContext for messages; NullContext otherwise.
         - One TextBlock per event (Episode.content is a string today).
         - Properties: system fields stored with `_` prefix, user filterable
-          metadata stored bare. Matches EventMemory's `_to_vector_record_property`
-          translation so the client-facing filter API (`producer_id`,
-          `m.my_field`) Just Works.
+          metadata stored bare, the layout the segment store maps a filter's
+          bare name (`producer_id`) and `m.<key>` onto. A search lifts the
+          fields mapped above (`producer_id`, `created_at`) back into the
+          memory's typed filters (`_lift_typed_filters`).
 
         Reject `_`-prefixed user metadata keys (event-backend only — the
         declarative backend mangles user keys with a `metadata.` prefix and

@@ -34,6 +34,9 @@ from memmachine_server.common.filter.filter_parser import (
     Comparison as FilterComparison,
 )
 from memmachine_server.common.filter.filter_parser import (
+    In as FilterIn,
+)
+from memmachine_server.common.filter.filter_parser import (
     Or as FilterOr,
 )
 from memmachine_server.common.vector_store import VectorStore
@@ -49,7 +52,10 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     WholeTextDeriver,
 )
-from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
+from memmachine_server.episodic_memory.event_memory.event_memory import (
+    EVENT_SOURCE_KEY,
+    EventMemory,
+)
 from memmachine_server.episodic_memory.event_memory.segment_store import (
     SegmentStore,
 )
@@ -461,23 +467,89 @@ def test_timestamp_bounds_are_lifted_out_of_the_filter():
             right=color,
         ),
         right=FilterAnd(
-            left=FilterComparison(field="timestamp", op="<", value=t2),
+            left=FilterComparison(field="created_at", op="<", value=t2),
             right=FilterComparison(field="timestamp", op=">=", value=t1),
         ),
     )
 
-    since, until, rest = LongTermMemory._split_timestamp_bounds(tree)
+    lifted = LongTermMemory._lift_typed_filters(tree)
 
-    assert (since, until) == (t1, t2)
-    assert rest == color
-    assert LongTermMemory._split_timestamp_bounds(None) == (None, None, None)
+    assert (lifted.since, lifted.until, lifted.source_ids) == (t1, t2, None)
+    assert lifted.rest == color
+    assert LongTermMemory._lift_typed_filters(None) == (None, None, None, None)
     # Another operator, or a timestamp under a disjunction, is not lifted.
     later = FilterComparison(field="timestamp", op=">", value=t0)
-    assert LongTermMemory._split_timestamp_bounds(later) == (None, None, later)
+    assert LongTermMemory._lift_typed_filters(later) == (None, None, None, later)
     either = FilterOr(
         left=FilterComparison(field="timestamp", op=">=", value=t0), right=color
     )
-    assert LongTermMemory._split_timestamp_bounds(either) == (None, None, either)
+    assert LongTermMemory._lift_typed_filters(either) == (None, None, None, either)
+
+
+def test_producer_conjuncts_are_lifted_into_source_ids():
+    """`producer_id =` and `IN` conjuncts become `source_ids`; their intersection when several."""
+    color = FilterComparison(field="m.color", op="=", value="red")
+    one = FilterComparison(field="producer_id", op="=", value="alice")
+    assert LongTermMemory._lift_typed_filters(one) == (None, None, ["alice"], None)
+    several = FilterAnd(
+        left=FilterIn(field="producer_id", values=["bob", "alice", "carol"]),
+        right=FilterAnd(
+            left=color,
+            right=FilterIn(field="producer_id", values=["alice", "bob"]),
+        ),
+    )
+    lifted = LongTermMemory._lift_typed_filters(several)
+    assert (lifted.source_ids, lifted.rest) == (["alice", "bob"], color)
+    # Contradictory conjuncts admit nothing, which an empty list expresses.
+    nobody = FilterAnd(left=one, right=FilterIn(field="producer_id", values=["bob"]))
+    assert LongTermMemory._lift_typed_filters(nobody).source_ids == []
+    # A negation or another operator stays a post-filter.
+    other = FilterComparison(field="producer_id", op="!=", value="alice")
+    assert LongTermMemory._lift_typed_filters(other) == (None, None, None, other)
+
+
+async def test_a_producer_filter_reaches_the_vector_stage(
+    long_term_memory, fake_episode_storage, vector_store_collection, monkeypatch
+):
+    """The vector store gets the source predicate; the segment store gets no tree."""
+    episodes = [
+        Episode(
+            uid="p-1",
+            content="alice msg",
+            session_key="sess1",
+            created_at=datetime(2026, 1, 15, 12, 0, tzinfo=UTC),
+            producer_id="alice",
+            producer_role="user",
+        ),
+        Episode(
+            uid="p-2",
+            content="bob msg",
+            session_key="sess1",
+            created_at=datetime(2026, 1, 15, 12, 1, tzinfo=UTC),
+            producer_id="bob",
+            producer_role="user",
+        ),
+    ]
+    fake_episode_storage._episodes.update({e.uid: e for e in episodes})
+    await long_term_memory.add_episodes(episodes)
+    seen: list[object] = []
+    original_query = vector_store_collection.query
+
+    async def recording_query(**kwargs):
+        seen.append(kwargs.get("property_filter"))
+        return await original_query(**kwargs)
+
+    monkeypatch.setattr(vector_store_collection, "query", recording_query)
+
+    scored = await long_term_memory.search_scored(
+        "msg",
+        num_episodes_limit=10,
+        property_filter=FilterComparison(field="producer_id", op="=", value="alice"),
+    )
+
+    assert {ep.uid for _, ep in scored} == {"p-1"}
+    [vector_filter] = seen
+    assert vector_filter == FilterIn(field=EVENT_SOURCE_KEY, values=["alice"])
 
 
 def _make_ltm(episodes: list[Episode]) -> LongTermMemory:
