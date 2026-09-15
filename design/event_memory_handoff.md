@@ -414,9 +414,10 @@ class EventMemory:
   `session_ids` when sessions are named, so a seed outside them is not
   found. Expansion is by segment only; an event is never a seed.
 - `render` replaces `string_from_segment_context` and
-  `string_from_segment_contexts` and uses `_immediately_follows` for
-  the header decision: a new header when the segment is not the very
-  next piece of the same event. No gap marker.
+  `string_from_segment_contexts` and uses `_is_continuation` (the
+  branch's `_immediately_follows`) for the header decision: a new
+  header when the segment does not continue the previous one, the next
+  piece of the same event. No gap marker.
 - `build_query_result_context` and `string_from_query_result`, already
   gone on the branch, go here too.
 
