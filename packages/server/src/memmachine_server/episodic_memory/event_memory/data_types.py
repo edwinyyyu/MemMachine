@@ -228,8 +228,11 @@ class Derivative(BaseModel):
 
 # DatetimeFormat: how a timestamp is written into text.
 
-# CLDR datetime style. Ordered from compact to verbose.
-DatetimeStyle = Literal["short", "medium", "long", "full"]
+# The CLDR format length of a date or of a time (`dateFormatLength`,
+# `timeFormatLength`), spelled as CLDR spells `dateTime`; `DatetimeFormat`
+# is the format of a datetime, one noun, as in `AwareDatetime`. Ordered
+# from compact to verbose.
+DateTimeStyle = Literal["short", "medium", "long", "full"]
 
 
 class DatetimeFormat(BaseModel):
@@ -237,10 +240,10 @@ class DatetimeFormat(BaseModel):
     How a timestamp is written into text.
 
     Attributes:
-        date_style (DatetimeStyle | None):
+        date_style (DateTimeStyle | None):
             The CLDR style of the date, or None to omit the date
             (default: "full").
-        time_style (DatetimeStyle | None):
+        time_style (DateTimeStyle | None):
             The CLDR style of the time, or None to omit the time
             (default: "long").
         locale (str):
@@ -253,10 +256,10 @@ class DatetimeFormat(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    date_style: DatetimeStyle | None = Field(
+    date_style: DateTimeStyle | None = Field(
         "full", description="The CLDR style of the date, or None to omit the date"
     )
-    time_style: DatetimeStyle | None = Field(
+    time_style: DateTimeStyle | None = Field(
         "long", description="The CLDR style of the time, or None to omit the time"
     )
     locale: str = Field(
