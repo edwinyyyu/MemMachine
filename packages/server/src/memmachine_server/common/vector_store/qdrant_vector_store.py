@@ -435,7 +435,7 @@ class QdrantVectorStoreParams(BaseModel):
             partitions exist, under which incarnation, and which dead
             incarnations await purge. Qdrant arbitrates none of that, so
             the registry lives where a primary key and a transaction can.
-        tombstone_retention_seconds (float):
+        tombstone_retention_seconds (int):
             How long a deleted partition's registry entry outlives the
             first purge round that finds nothing under it, so a write that
             landed after that round is still reclaimed; orders of magnitude
@@ -463,7 +463,7 @@ class QdrantVectorStoreParams(BaseModel):
         ...,
         description="The relational database holding the partition registry",
     )
-    tombstone_retention_seconds: float = Field(
+    tombstone_retention_seconds: int = Field(
         ...,
         gt=0,
         description=(
