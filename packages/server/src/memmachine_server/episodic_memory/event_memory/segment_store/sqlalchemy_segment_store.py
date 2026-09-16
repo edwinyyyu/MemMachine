@@ -235,20 +235,6 @@ class SegmentRow(BaseSegmentStore):
             "index",
             "offset",
         ),
-        # The same order with the source pinned, for a walk that filters
-        # by one source: the planner takes it for every such walk and
-        # removes no rows; a walk naming several sources, or none, follows
-        # the index above and filters.
-        Index(
-            "segment_store_sg__in_se_so_ts_ev_ix_of",
-            "incarnation",
-            "session_id",
-            "source_id",
-            "timestamp",
-            "event_uuid",
-            "index",
-            "offset",
-        ),
     )
 
 
