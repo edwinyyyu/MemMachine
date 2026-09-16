@@ -121,7 +121,7 @@ def db_conf_dict() -> dict:
                     "prefer_grpc": True,
                     "api_key": "test-key",
                     "collection_registry": "local_sqlite",
-                    "request_timeout": 12.5,
+                    "request_timeout_seconds": 12.5,
                 },
             },
             "my_milvus": {
@@ -132,7 +132,7 @@ def db_conf_dict() -> dict:
                     "db_name": "memory",
                     "consistency_level": "Strong",
                     "collection_registry": "main_postgres",
-                    "request_timeout": 7.0,
+                    "request_timeout_seconds": 7.0,
                 },
             },
             "my_sqlite_vs": {
@@ -207,7 +207,7 @@ def test_parse_valid_storage_dict(db_conf_dict):
     assert qdrant_conf.prefer_grpc is True
     assert qdrant_conf.api_key == SecretStr("test-key")
     assert qdrant_conf.collection_registry == "local_sqlite"
-    assert qdrant_conf.request_timeout == 12.5
+    assert qdrant_conf.request_timeout_seconds == 12.5
 
     # Milvus check
     milvus_conf = storage_conf.milvus_confs["my_milvus"]
@@ -217,7 +217,7 @@ def test_parse_valid_storage_dict(db_conf_dict):
     assert milvus_conf.db_name == "memory"
     assert milvus_conf.consistency_level == "Strong"
     assert milvus_conf.collection_registry == "main_postgres"
-    assert milvus_conf.request_timeout == 7.0
+    assert milvus_conf.request_timeout_seconds == 7.0
 
     # SQLiteVectorStore (hnswlib engine)
     sqlite_vs_conf = storage_conf.sqlite_vector_store_confs["my_sqlite_vs"]
@@ -291,7 +291,7 @@ def test_milvus_conf_defaults():
     assert conf.db_name == ""
     assert conf.consistency_level == "Session"
     assert conf.tombstone_retention_seconds == 86400
-    assert conf.request_timeout == 30.0
+    assert conf.request_timeout_seconds == 30.0
 
 
 def test_milvus_conf_requires_a_collection_registry():
@@ -319,8 +319,8 @@ def test_milvus_conf_rejects_invalid_values():
         MilvusConf(collection_registry="db", uri="")
     with pytest.raises(ValueError, match="consistency_level"):
         MilvusConf(collection_registry="db", consistency_level="Linearizable")
-    with pytest.raises(ValueError, match="request_timeout"):
-        MilvusConf(collection_registry="db", request_timeout=0)
+    with pytest.raises(ValueError, match="request_timeout_seconds"):
+        MilvusConf(collection_registry="db", request_timeout_seconds=0)
 
 
 def test_neo4j_pool_lifecycle_fields():
@@ -381,14 +381,14 @@ def test_qdrant_conf_defaults():
     assert conf.collection_registry == "db"
     assert conf.tombstone_retention_seconds == 86400
     assert conf.api_key.get_secret_value() == ""
-    assert conf.request_timeout == 30.0
+    assert conf.request_timeout_seconds == 30.0
 
 
 def test_qdrant_conf_rejects_a_timeout_that_is_not_positive():
-    with pytest.raises(ValueError, match="request_timeout"):
-        QdrantConf(collection_registry="db", request_timeout=0)
-    with pytest.raises(ValueError, match="request_timeout"):
-        QdrantConf(collection_registry="db", request_timeout=-1.5)
+    with pytest.raises(ValueError, match="request_timeout_seconds"):
+        QdrantConf(collection_registry="db", request_timeout_seconds=0)
+    with pytest.raises(ValueError, match="request_timeout_seconds"):
+        QdrantConf(collection_registry="db", request_timeout_seconds=-1.5)
 
 
 def test_qdrant_conf_requires_a_collection_registry():
@@ -424,14 +424,14 @@ def test_qdrant_build_config():
             "host": "qdrant.local",
             "port": 9333,
             "collection_registry": "db",
-            "request_timeout": 5.0,
+            "request_timeout_seconds": 5.0,
         }
     )
     assert isinstance(config, QdrantConf)
     assert config.host == "qdrant.local"
     assert config.port == 9333
     assert config.collection_registry == "db"
-    assert config.request_timeout == 5.0
+    assert config.request_timeout_seconds == 5.0
 
 
 def test_sqlite_vector_store_conf_defaults():
