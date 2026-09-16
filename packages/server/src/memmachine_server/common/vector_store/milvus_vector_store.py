@@ -171,9 +171,12 @@ class MilvusVectorStorePartition(VectorStorePartition):
     async def _fence(self) -> None:
         """Raise if this handle's incarnation is no longer the partition's.
 
-        Milvus has no transactions, so the check and the operation are two
-        calls; a deletion landing between them leaves entities under a dead
-        incarnation, which the purge reclaims like any other.
+        Called before an operation, to refuse a handle known to be dead,
+        and after it, so an operation completed under an incarnation that
+        died meanwhile raises instead of reporting success. Milvus has no
+        transactions, so a write can still land under a dead incarnation:
+        between the two checks, or after a check that never ran; the
+        purge reclaims it.
         """
         if not await self._is_live(self._incarnation):
             raise VectorStorePartitionHandleStaleError(
@@ -255,6 +258,7 @@ class MilvusVectorStorePartition(VectorStorePartition):
                 )
 
             await asyncio.to_thread(_upsert)
+            await self._fence()
 
     @override
     async def query(
@@ -322,6 +326,7 @@ class MilvusVectorStorePartition(VectorStorePartition):
                 matches.sort(key=lambda match: match.cosine_similarity, reverse=True)
                 results.append(QueryResult(matches=matches))
 
+            await self._fence()
             return results
 
     @override
@@ -345,6 +350,7 @@ class MilvusVectorStorePartition(VectorStorePartition):
                 ids=primary_ids,
                 timeout=self._request_timeout_seconds,
             )
+            await self._fence()
 
 
 class MilvusVectorStoreParams(BaseModel):

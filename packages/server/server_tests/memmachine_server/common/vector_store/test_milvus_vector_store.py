@@ -12,7 +12,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from server_tests.memmachine_server.common.vector_store.partition_lifecycle_contract import (
-    PartitionLifecycleContract,
+    RemotePartitionLifecycleContract,
 )
 
 pytest.importorskip("milvus_lite")
@@ -523,7 +523,7 @@ class TestPartitionIsolation:
         await store.delete_partition("tenant_b")
 
 
-class TestPartitionLifecycle(PartitionLifecycleContract):
+class TestPartitionLifecycle(RemotePartitionLifecycleContract):
     """The partition lifecycle contract, against this store."""
 
     @staticmethod
