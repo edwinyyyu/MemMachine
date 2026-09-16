@@ -275,11 +275,9 @@ class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
         ),
     )
     request_timeout: float = Field(
-        ...,
-        description=(
-            "Seconds a request to Qdrant may take before the client gives up. "
-            "Required: every remote write is bounded by it."
-        ),
+        default=30.0,
+        gt=0,
+        description="Seconds a request to Qdrant may take before the client gives up.",
     )
 
 
@@ -334,11 +332,9 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         ),
     )
     request_timeout: float = Field(
-        ...,
-        description=(
-            "Seconds a request to Milvus may take before the client gives up. "
-            "Required: every remote write is bounded by it."
-        ),
+        default=30.0,
+        gt=0,
+        description="Seconds a request to Milvus may take before the client gives up.",
     )
 
     @field_validator("uri", mode="before")

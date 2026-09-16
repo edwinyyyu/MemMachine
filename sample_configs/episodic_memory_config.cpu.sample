@@ -102,7 +102,7 @@ resources:
         grpc_port: 6334
         prefer_grpc: false
         https: false
-        request_timeout: 30              # seconds; required, bounds every request
+        request_timeout: 30              # seconds
         # api_key: <YOUR_QDRANT_API_KEY>   # required for Qdrant Cloud
         collection_registry: profile_storage    # relational database holding the collection registry
     # VectorStore for vector-backed semantic memory.
@@ -115,7 +115,7 @@ resources:
         grpc_port: 6334
         prefer_grpc: false
         https: false
-        request_timeout: 30              # seconds; required, bounds every request
+        request_timeout: 30              # seconds
         # api_key: <YOUR_QDRANT_API_KEY>   # required for Qdrant Cloud
         collection_registry: profile_storage    # relational database holding the collection registry
     #
@@ -129,7 +129,7 @@ resources:
     #     # db_name: default
     #     consistency_level: Session       # Strong, Session, Bounded, Eventually
     #     collection_registry: profile_storage
-    #     request_timeout: 30              # seconds; required
+    #     request_timeout: 30              # seconds
     # semantic_vector_store:
     #   provider: milvus
     #   config:
@@ -138,7 +138,7 @@ resources:
     #     # db_name: default
     #     consistency_level: Session
     #     collection_registry: profile_storage
-    #     request_timeout: 30              # seconds; required
+    #     request_timeout: 30              # seconds
     #
     # Alternative: a local file-backed SQLite vector store. Single-writer; OK
     # for embedded/dev use, not recommended for multi-process server deploys.
