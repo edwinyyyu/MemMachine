@@ -274,8 +274,8 @@ class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
             "above the longest a request to Qdrant can be in flight."
         ),
     )
-    request_timeout_seconds: float = Field(
-        default=30.0,
+    request_timeout_seconds: int = Field(
+        default=30,
         gt=0,
         description="Seconds a request to Qdrant may take before the client gives up.",
     )
@@ -331,8 +331,8 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
             "above the longest a request to Milvus can be in flight."
         ),
     )
-    request_timeout_seconds: float = Field(
-        default=30.0,
+    request_timeout_seconds: int = Field(
+        default=30,
         gt=0,
         description="Seconds a request to Milvus may take before the client gives up.",
     )

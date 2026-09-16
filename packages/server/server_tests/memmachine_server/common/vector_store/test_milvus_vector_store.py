@@ -49,7 +49,7 @@ NAME = "test_name"
 VECTOR_DIM = 3
 VECTOR_STORE_NAME = "milvus_test"
 TOMBSTONE_RETENTION = timedelta(days=1)
-REQUEST_TIMEOUT_SECONDS = 30.0
+REQUEST_TIMEOUT_SECONDS = 30
 
 
 def _normalize(vector: list[float]) -> list[float]:

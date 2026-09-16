@@ -351,7 +351,7 @@ async def test_qdrant_client_kwargs_forwarded():
     assert call_kwargs["grpc_port"] == 7334
     assert call_kwargs["prefer_grpc"] is True
     assert call_kwargs["https"] is True
-    assert call_kwargs["timeout"] == 30.0
+    assert call_kwargs["timeout"] == 30
     assert call_kwargs["api_key"] == "secret-key"
 
 
@@ -586,7 +586,7 @@ async def test_milvus_client_kwargs_forwarded():
     assert call_kwargs["uri"] == "https://example.zillizcloud.com"
     assert call_kwargs["token"] == "secret-token"
     assert call_kwargs["db_name"] == "memory"
-    assert call_kwargs["timeout"] == 30.0
+    assert call_kwargs["timeout"] == 30
 
 
 @pytest.mark.asyncio
@@ -611,7 +611,7 @@ async def test_milvus_token_and_db_name_omitted_when_empty():
         builder = DatabaseManager(conf)
         await builder.async_get_milvus_client("milvus1")
 
-    assert mock_cls.call_args.kwargs == {"uri": "./milvus.db", "timeout": 30.0}
+    assert mock_cls.call_args.kwargs == {"uri": "./milvus.db", "timeout": 30}
 
 
 @pytest.mark.asyncio
@@ -670,7 +670,7 @@ async def test_milvus_creates_vector_store():
         client=mock_client,
         collection_registry=mock_registry_cls.return_value,
         consistency_level="Strong",
-        request_timeout_seconds=30.0,
+        request_timeout_seconds=30,
     )
     mock_store_cls.assert_called_once_with(mock_params_cls.return_value)
     mock_store_cls.return_value.startup.assert_awaited_once()
