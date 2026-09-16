@@ -271,7 +271,12 @@ class VectorStore(ABC):
         store never schedules it; a deployment must run it somewhere (the
         server's resource manager runs it in the background).
         Implementations that reclaim physically in `delete_partition` may
-        return False without doing anything.
+        return False without doing anything. An implementation whose
+        records live outside the database that arbitrates deletion keeps
+        a deleted partition's entry as a tombstone until a call finds
+        nothing under it, a retention has passed, and a call finds nothing
+        again, so a write that landed after an earlier call is still
+        reclaimed.
 
         Returns:
             bool:

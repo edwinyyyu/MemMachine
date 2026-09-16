@@ -422,6 +422,7 @@ async def test_qdrant_creates_vector_store():
     assert kwargs["collection"] == "c"
     assert kwargs["vector_dimensions"] == 3
     assert kwargs["registry_engine"] is builder.sql_engines["registry"]
+    assert kwargs["tombstone_retention_seconds"] == 86400.0
     assert kwargs["indexed_properties"] == {"memmachine_event_session": str}
     # Asserted as "not None" rather than pinned to a value: OperationTracker
     # accepts None and then discards every timing without error, so passing the
@@ -641,6 +642,7 @@ async def test_milvus_creates_vector_store():
     mock_params_cls.assert_called_once_with(
         client=mock_client,
         registry_engine=builder.sql_engines["registry"],
+        tombstone_retention_seconds=86400.0,
         collection="c",
         vector_dimensions=3,
         consistency_level="Strong",

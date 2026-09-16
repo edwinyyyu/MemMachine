@@ -352,6 +352,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
               consistency_level: Session
               request_timeout_seconds: 30
               registry_database: sqlite_test
+              tombstone_retention_seconds: 86400
       ```
     </Tab>
     <Tab title="With Comments">
@@ -395,6 +396,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
               consistency_level: Session # Strong, Session, Bounded, or Eventually
               request_timeout_seconds: 30 # Bounds every request to Milvus
               registry_database: sqlite_test # Relational database (a name above) holding the partition registry; required
+              tombstone_retention_seconds: 86400 # A deleted partition's tombstone outlives its first clean purge round this long
       ```
     </Tab>
     </Tabs>
