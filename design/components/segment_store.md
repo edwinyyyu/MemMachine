@@ -208,9 +208,9 @@ to it.
 Indexes: `segment_store_sg__key_event (key, event_uuid)` for lookup by
 event; `segment_store_sg__key_order (key, session_id, timestamp,
 event_position, index, offset)` for context windows, expansion and
-`since` and `until`, which is the one total order the store exposes, and
-the same order with `source_id` pinned after `session_id` for a walk
-filtered by one source; expression indexes on `properties` for the keys a
+`since` and `until`, which is the one total order the store exposes (a
+walk filtered by source or kind scans past the session's other rows; a
+pinned walk index is added when a workload shows such walks); expression indexes on `properties` for the keys a
 deployment names in `segment_store.property_indexes`, created by the
 schema command.
 

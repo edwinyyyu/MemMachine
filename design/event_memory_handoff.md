@@ -270,13 +270,14 @@ out of scope:
   replace the timestamp ordering index with
   `segment_store_sg__in_se_ts_ev_ix_of (incarnation, session_id, timestamp,
   event_uuid, index, offset)`, which serves every walk since every walk
-  pins a session; add `segment_store_sg__in_se_so_ts_ev_ix_of (incarnation,
-  session_id, source_id, timestamp, event_uuid, index, offset)`, the same
-  order with the source pinned, which the planner takes for every walk
-  filtered by one source (measured on PostgreSQL; an index on the source
-  alone served no read of the store's). Every index is one a read
-  chooses; none for `block_kind` until a second kind exists and a
-  kind-filtered walk is measured. A fresh PostgreSQL table misplans
+  pins a session. No walk index pinned on the source or the kind: a
+  walk filtered by either scans past the session's other rows (tens of
+  microseconds on a 200,000-row table), an index is paid on every
+  insert, and adding one later is a one-off `CREATE INDEX CONCURRENTLY`
+  (seconds per million rows), so the store indexes the reads it has and
+  a filter column earns its walk index when a workload shows walks
+  filtered by it; source and kind are treated alike. A fresh
+  PostgreSQL table misplans
   until its first `ANALYZE` whatever the indexes (the foreign-key
   check of the link table scans the partition per link, the lookup by
   uuid runs a sequential scan); autovacuum's first pass ends it, and
