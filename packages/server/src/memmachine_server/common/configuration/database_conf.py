@@ -266,8 +266,8 @@ class QdrantConf(YamlSerializableMixin, ApiKeyMixin):
             "is set to match so all replicas confirm writes."
         ),
     )
-    request_timeout_seconds: float = Field(
-        default=30.0,
+    request_timeout_seconds: int = Field(
+        default=30,
         gt=0,
         description="Seconds a request to Qdrant may take before the client gives up.",
     )
@@ -301,8 +301,8 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
             "Supported values: Strong, Session, Bounded, Eventually."
         ),
     )
-    request_timeout_seconds: float = Field(
-        default=30.0,
+    request_timeout_seconds: int = Field(
+        default=30,
         gt=0,
         description="Seconds a request to Milvus may take before the client gives up.",
     )
