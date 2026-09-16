@@ -599,6 +599,7 @@ async def test_milvus_creates_vector_store():
     mock_params_cls.assert_called_once_with(
         client=mock_client,
         consistency_level="Strong",
+        request_timeout_seconds=30.0,
     )
     mock_store_cls.assert_called_once_with(mock_params_cls.return_value)
     mock_store_cls.return_value.startup.assert_awaited_once()
