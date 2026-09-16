@@ -706,6 +706,8 @@ class DatabaseManager:
 
             from pymilvus import MilvusClient
 
+            # The constructor's timeout bounds connecting and reconnecting;
+            # the store passes the same bound to every request it makes.
             client_kwargs: dict[str, Any] = {
                 "uri": conf.uri,
                 "timeout": conf.request_timeout_seconds,
@@ -740,6 +742,7 @@ class DatabaseManager:
                 client=client,
                 collection_registry=collection_registry,
                 consistency_level=conf.consistency_level,
+                request_timeout_seconds=conf.request_timeout_seconds,
             )
             try:
                 store = MilvusVectorStore(params)
