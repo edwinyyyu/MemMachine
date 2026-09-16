@@ -238,8 +238,8 @@ class EventMemory:
         """
         Encode events.
 
-        A batch is written whole: each event's earlier encoding is forgotten
-        first, so a repeated batch leaves one copy.
+        Every call adds: nothing is looked up or removed first, so encoding
+        an event a second time stores a second copy.
 
         Args:
             events (Iterable[Event]): The events to encode.
@@ -258,8 +258,6 @@ class EventMemory:
         self._validate_events(events)
         if not events:
             return
-
-        await self._forget_events({event.uuid for event in events})
 
         segment_lists = await asyncio.gather(
             *(self._segmenter.segment(event) for event in events)

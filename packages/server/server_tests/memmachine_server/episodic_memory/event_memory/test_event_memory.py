@@ -333,20 +333,6 @@ class TestEncodeEvents:
         assert len(fake_segment_store_partition.segments) == 1
         assert len(fake_vector_store_collection.records) > 1
 
-    async def test_repeated_batch_leaves_one_copy(
-        self,
-        event_memory: EventMemory,
-        fake_segment_store_partition: InMemorySegmentStorePartition,
-        fake_vector_store_collection: InMemoryVectorStoreCollection,
-    ):
-        event = _make_event("hello world")
-        await event_memory.encode_events([event])
-        await event_memory.encode_events([event])
-
-        assert len(fake_segment_store_partition.segments) == 1
-        assert len(fake_vector_store_collection.records) == 1
-        assert len(await event_memory.query("hello")) == 1
-
 
 # ===================================================================
 # query
