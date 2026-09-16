@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 from qdrant_client import AsyncQdrantClient, models
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.filter.filter_parser import (
@@ -27,6 +28,9 @@ from memmachine_server.common.vector_store.qdrant_vector_store import (
     QdrantVectorStore,
     QdrantVectorStoreParams,
     QdrantVectorStorePartition,
+)
+from server_tests.memmachine_server.common.vector_store.partition_lifecycle_contract import (
+    PartitionLifecycleContract,
 )
 
 COLLECTION = "test_namespace"
@@ -69,12 +73,21 @@ def any_qdrant_client(request):
 
 
 @pytest_asyncio.fixture
-async def store(any_qdrant_client):
+async def registry_engine(tmp_path):
+    """The relational database holding the partition registry, one per test."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}")
+    yield engine
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def store(any_qdrant_client, registry_engine):
     params = QdrantVectorStoreParams(
         collection=COLLECTION,
         vector_dimensions=VECTOR_DIM,
         indexed_properties=INDEXED_PROPERTIES,
         client=any_qdrant_client,
+        registry_engine=registry_engine,
     )
     s = QdrantVectorStore(params)
     await s.provision()
@@ -1017,7 +1030,7 @@ class TestPartitionIsolation:
 @pytest.mark.integration
 class TestMetrics:
     @pytest.mark.asyncio
-    async def test_metrics_collection(self, qdrant_client):
+    async def test_metrics_collection(self, qdrant_client, registry_engine):
         mock_factory = MagicMock(spec=MetricsFactory)
         mock_histogram = MagicMock(spec=MetricsFactory.Histogram)
         mock_factory.get_histogram.return_value = mock_histogram
@@ -1027,6 +1040,7 @@ class TestMetrics:
             vector_dimensions=VECTOR_DIM,
             indexed_properties=INDEXED_PROPERTIES,
             client=qdrant_client,
+            registry_engine=registry_engine,
             metrics_factory=mock_factory,
         )
         store = QdrantVectorStore(params)
@@ -1061,13 +1075,16 @@ class TestDeclaredPayloadIndexes:
     """Local mode accepts payload indexes but reports no schema, so this needs a server."""
 
     @pytest.mark.asyncio
-    async def test_every_declared_key_gets_a_payload_index(self, qdrant_client):
+    async def test_every_declared_key_gets_a_payload_index(
+        self, qdrant_client, registry_engine
+    ):
         store = QdrantVectorStore(
             QdrantVectorStoreParams(
                 collection=COLLECTION,
                 vector_dimensions=VECTOR_DIM,
                 indexed_properties=INDEXED_PROPERTIES,
                 client=qdrant_client,
+                registry_engine=registry_engine,
             )
         )
         await store.provision()
@@ -1084,3 +1101,12 @@ class TestDeclaredPayloadIndexes:
         )
         assert info.payload_schema["age"].data_type == models.PayloadSchemaType.INTEGER
         await store.delete_partition("declared_indexes")
+
+
+class TestPartitionLifecycle(PartitionLifecycleContract):
+    """The partition lifecycle contract, against this store."""
+
+    @staticmethod
+    async def count_stored(store) -> int:
+        result = await store._client.count(collection_name=COLLECTION, exact=True)
+        return result.count
