@@ -75,8 +75,7 @@ milvus = [
 ]
 litellm = [
     # 1.93 is the first release that supports Python 3.14; 1.83.8 through
-    # 1.92 cap themselves at <3.14. litellm requires openai<3, which is what
-    # keeps the resolved OpenAI SDK on the 2.x line.
+    # 1.92 cap themselves at <3.14.
     "litellm>=1.93.0",
 ]
 
