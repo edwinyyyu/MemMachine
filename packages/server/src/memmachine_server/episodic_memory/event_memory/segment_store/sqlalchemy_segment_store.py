@@ -468,10 +468,11 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             self._tracker("get_segments"),
             self._create_session() as session,
         ):
-            rows_by_uuid = await self._rows_by_uuid(session, segment_uuids, conditions)
+            rows_by_uuid = await self._segment_rows_by_uuid(
+                session, segment_uuids, conditions
+            )
             if not rows_by_uuid:
-                # Nothing matched, or the partition is gone: the registry
-                # read tells which, and raises for the latter.
+                # Empty may mean a stale handle; the registry read raises if so.
                 await self._ensure_partition_live(session)
             return {
                 segment_uuid: self._segment_from_segment_row(row)
@@ -506,9 +507,9 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             self._tracker("get_segment_neighborhoods"),
             self._create_session() as session,
         ):
-            # The seed is an address, never part of the answer, so no
-            # filter has anything to say about it.
-            seed_rows_by_uuid = await self._rows_by_uuid(session, seed_uuids, [])
+            seed_rows_by_uuid = await self._segment_rows_by_uuid(
+                session, seed_uuids, []
+            )
             if not seed_rows_by_uuid:
                 await self._ensure_partition_live(session)
                 return {}
@@ -529,7 +530,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 ) in window_rows_by_seed.items()
             }
 
-    async def _rows_by_uuid(
+    async def _segment_rows_by_uuid(
         self,
         session: AsyncSession,
         segment_uuids: set[UUID],
