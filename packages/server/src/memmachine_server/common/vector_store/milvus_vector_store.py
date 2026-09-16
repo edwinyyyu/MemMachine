@@ -147,6 +147,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         partition_key: str,
         config: VectorStoreCollectionConfig,
         tracker: OperationTracker,
+        request_timeout_seconds: float,
     ) -> None:
         """Initialize with a Milvus client and collection name."""
         self._client = client
@@ -154,6 +155,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         self._partition_key = partition_key
         self._config = config
         self._tracker = tracker
+        self._request_timeout_seconds = request_timeout_seconds
 
     @property
     @override
@@ -216,6 +218,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 self._client.upsert(
                     collection_name=self._collection_name,
                     data=entities,
+                    timeout=self._request_timeout_seconds,
                 )
 
             await asyncio.to_thread(_upsert)
@@ -255,6 +258,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 # locally so MemMachine score semantics stay consistent.
                 output_fields=self._output_fields(),
                 anns_field=_VECTOR_FIELD,
+                timeout=self._request_timeout_seconds,
             )
 
             results: list[QueryResult] = []
@@ -304,6 +308,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 self._client.delete,
                 collection_name=self._collection_name,
                 ids=primary_ids,
+                timeout=self._request_timeout_seconds,
             )
 
 
@@ -314,6 +319,7 @@ class MilvusVectorStoreParams(BaseModel):
     Attributes:
         client (MilvusClient): Milvus client instance.
         consistency_level (str): Collection consistency level for newly created collections.
+        request_timeout_seconds (float): Seconds any request to Milvus may take.
         metrics_factory (MetricsFactory | None): Metrics factory for collecting usage metrics.
     """
 
@@ -324,6 +330,9 @@ class MilvusVectorStoreParams(BaseModel):
     consistency_level: str = Field(
         default="Session",
         description="Milvus consistency level for newly created collections",
+    )
+    request_timeout_seconds: float = Field(
+        ..., gt=0, description="Seconds any request to Milvus may take"
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
@@ -378,6 +387,7 @@ class MilvusVectorStore(VectorStore):
         super().__init__()
         self._client = params.client
         self._consistency_level = params.consistency_level
+        self._request_timeout_seconds = params.request_timeout_seconds
         self._tracker = OperationTracker(
             params.metrics_factory,
             prefix="vector_store_milvus",
@@ -400,7 +410,9 @@ class MilvusVectorStore(VectorStore):
             namespace
         )
         if await asyncio.to_thread(
-            self._client.has_collection, registry_collection_name
+            self._client.has_collection,
+            registry_collection_name,
+            timeout=self._request_timeout_seconds,
         ):
             return
 
@@ -437,6 +449,7 @@ class MilvusVectorStore(VectorStore):
                 schema=schema,
                 index_params=index_params,
                 consistency_level=self._consistency_level,
+                timeout=self._request_timeout_seconds,
             )
 
         try:
@@ -453,7 +466,9 @@ class MilvusVectorStore(VectorStore):
             namespace
         )
         if not await asyncio.to_thread(
-            self._client.has_collection, registry_collection_name
+            self._client.has_collection,
+            registry_collection_name,
+            timeout=self._request_timeout_seconds,
         ):
             return None
 
@@ -464,6 +479,7 @@ class MilvusVectorStore(VectorStore):
                 collection_name=registry_collection_name,
                 ids=[name],
                 output_fields=[_ID_FIELD, self._REGISTRY_CONFIG],
+                timeout=self._request_timeout_seconds,
             )
         except MilvusException as exc:
             if MilvusVectorStore._is_not_found_error(exc):
@@ -485,6 +501,7 @@ class MilvusVectorStore(VectorStore):
                 collection_name=registry_collection_name,
                 filter=filter_expr,
                 output_fields=[_ID_FIELD, self._REGISTRY_CONFIG],
+                timeout=self._request_timeout_seconds,
             )
             rows = list(rows)
             if not rows:
@@ -514,6 +531,7 @@ class MilvusVectorStore(VectorStore):
             partition_key=name,
             config=config,
             tracker=self._tracker,
+            request_timeout_seconds=self._request_timeout_seconds,
         )
 
     async def _create_native_collection(
@@ -523,7 +541,11 @@ class MilvusVectorStore(VectorStore):
         native_collection_name = MilvusVectorStore._build_native_collection_name(
             namespace, config
         )
-        if await asyncio.to_thread(self._client.has_collection, native_collection_name):
+        if await asyncio.to_thread(
+            self._client.has_collection,
+            native_collection_name,
+            timeout=self._request_timeout_seconds,
+        ):
             return
 
         def _create_collection() -> None:
@@ -570,6 +592,7 @@ class MilvusVectorStore(VectorStore):
                 schema=schema,
                 index_params=index_params,
                 consistency_level=self._consistency_level,
+                timeout=self._request_timeout_seconds,
             )
 
         try:
@@ -598,6 +621,7 @@ class MilvusVectorStore(VectorStore):
                     },
                 }
             ],
+            timeout=self._request_timeout_seconds,
         )
 
     @override
@@ -715,9 +739,11 @@ class MilvusVectorStore(VectorStore):
                 self._client.delete,
                 collection_name=native_collection_name,
                 filter=f"{_PARTITION_KEY_FIELD} == {_expr_string(name)}",
+                timeout=self._request_timeout_seconds,
             )
             await asyncio.to_thread(
                 self._client.delete,
                 collection_name=registry_name,
                 ids=[name],
+                timeout=self._request_timeout_seconds,
             )
