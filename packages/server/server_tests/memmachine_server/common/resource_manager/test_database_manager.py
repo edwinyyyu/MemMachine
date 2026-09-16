@@ -302,7 +302,6 @@ def _qdrant_only_conf() -> MagicMock:
     conf.qdrant_confs = {
         "qdrant1": QdrantConf(
             collection_registry="registry",
-            request_timeout=30.0,
             host="localhost",
             port=6333,
         ),
@@ -318,7 +317,6 @@ async def test_qdrant_client_kwargs_forwarded():
     conf = _qdrant_only_conf()
     conf.qdrant_confs["qdrant1"] = QdrantConf(
         collection_registry="registry",
-        request_timeout=30.0,
         host="qdrant.example.com",
         port=7333,
         grpc_port=7334,
@@ -392,7 +390,6 @@ async def test_qdrant_creates_vector_store():
     conf.qdrant_confs["qdrant1"] = QdrantConf(
         collection_registry="registry",
         tombstone_retention_seconds=3600,
-        request_timeout=30.0,
     )
 
     mock_client = AsyncMock()
@@ -440,9 +437,7 @@ async def test_qdrant_client_is_not_opened_when_the_registry_database_is_unknown
     """The registry database is resolved before the client is opened, so a
     bad collection_registry leaves no client behind."""
     conf = _qdrant_only_conf()
-    conf.qdrant_confs["qdrant1"] = QdrantConf(
-        collection_registry="missing", request_timeout=30.0
-    )
+    conf.qdrant_confs["qdrant1"] = QdrantConf(collection_registry="missing")
 
     with patch("qdrant_client.AsyncQdrantClient") as mock_cls:
         builder = DatabaseManager(conf)
@@ -550,9 +545,7 @@ def _milvus_only_conf() -> MagicMock:
     conf.nebula_graph_confs = {}
     conf.qdrant_confs = {}
     conf.milvus_confs = {
-        "milvus1": MilvusConf(
-            collection_registry="registry", uri="./milvus.db", request_timeout=30.0
-        ),
+        "milvus1": MilvusConf(collection_registry="registry", uri="./milvus.db"),
     }
     conf.sqlite_vector_store_confs = {}
     conf.sqlite_vec_vector_store_confs = {}
@@ -566,7 +559,6 @@ async def test_milvus_client_kwargs_forwarded():
     conf = _milvus_only_conf()
     conf.milvus_confs["milvus1"] = MilvusConf(
         collection_registry="registry",
-        request_timeout=30.0,
         uri="https://example.zillizcloud.com",
         token=SecretStr("secret-token"),
         db_name="memory",
@@ -628,9 +620,7 @@ async def test_milvus_client_is_not_opened_when_the_registry_database_is_unknown
     """The registry database is resolved before the client is opened, so a
     bad collection_registry leaves no client behind."""
     conf = _milvus_only_conf()
-    conf.milvus_confs["milvus1"] = MilvusConf(
-        collection_registry="missing", request_timeout=30.0
-    )
+    conf.milvus_confs["milvus1"] = MilvusConf(collection_registry="missing")
 
     with patch("pymilvus.MilvusClient") as mock_cls:
         builder = DatabaseManager(conf)
@@ -650,7 +640,6 @@ async def test_milvus_creates_vector_store():
         collection_registry="registry",
         consistency_level="Strong",
         tombstone_retention_seconds=3600,
-        request_timeout=30.0,
     )
 
     mock_client = MagicMock()

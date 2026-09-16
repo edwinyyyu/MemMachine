@@ -285,12 +285,13 @@ def test_serialize_deserialize_database_conf(db_conf_dict):
 
 
 def test_milvus_conf_defaults():
-    conf = MilvusConf(collection_registry="db", request_timeout=30.0)
+    conf = MilvusConf(collection_registry="db")
     assert conf.uri == "./milvus.db"
     assert conf.token == SecretStr("")
     assert conf.db_name == ""
     assert conf.consistency_level == "Session"
     assert conf.tombstone_retention_seconds == 86400
+    assert conf.request_timeout == 30.0
 
 
 def test_milvus_conf_requires_a_collection_registry():
@@ -304,7 +305,6 @@ def test_milvus_conf_reads_env(monkeypatch):
     monkeypatch.setenv("MILVUS_DB_NAME", "memory")
     conf = MilvusConf(
         collection_registry="db",
-        request_timeout=30.0,
         uri="$MILVUS_URI",
         token=SecretStr("${MILVUS_TOKEN}"),
         db_name="$MILVUS_DB_NAME",
@@ -316,13 +316,11 @@ def test_milvus_conf_reads_env(monkeypatch):
 
 def test_milvus_conf_rejects_invalid_values():
     with pytest.raises(ValueError, match="non-empty 'uri'"):
-        MilvusConf(collection_registry="db", request_timeout=30.0, uri="")
+        MilvusConf(collection_registry="db", uri="")
     with pytest.raises(ValueError, match="consistency_level"):
-        MilvusConf(
-            collection_registry="db",
-            request_timeout=30.0,
-            consistency_level="Linearizable",
-        )
+        MilvusConf(collection_registry="db", consistency_level="Linearizable")
+    with pytest.raises(ValueError, match="request_timeout"):
+        MilvusConf(collection_registry="db", request_timeout=0)
 
 
 def test_neo4j_pool_lifecycle_fields():
@@ -374,7 +372,7 @@ def test_neo4j_uri_with_special_host():
 
 
 def test_qdrant_conf_defaults():
-    conf = QdrantConf(collection_registry="db", request_timeout=30.0)
+    conf = QdrantConf(collection_registry="db")
     assert conf.host == "localhost"
     assert conf.port == 6333
     assert conf.grpc_port == 6334
@@ -383,6 +381,14 @@ def test_qdrant_conf_defaults():
     assert conf.collection_registry == "db"
     assert conf.tombstone_retention_seconds == 86400
     assert conf.api_key.get_secret_value() == ""
+    assert conf.request_timeout == 30.0
+
+
+def test_qdrant_conf_rejects_a_timeout_that_is_not_positive():
+    with pytest.raises(ValueError, match="request_timeout"):
+        QdrantConf(collection_registry="db", request_timeout=0)
+    with pytest.raises(ValueError, match="request_timeout"):
+        QdrantConf(collection_registry="db", request_timeout=-1.5)
 
 
 def test_qdrant_conf_requires_a_collection_registry():
@@ -394,13 +400,11 @@ def test_qdrant_conf_rejects_a_retention_that_is_not_a_positive_whole_second():
     with pytest.raises(ValueError, match="tombstone_retention_seconds"):
         QdrantConf(
             collection_registry="db",
-            request_timeout=30.0,
             tombstone_retention_seconds=0,
         )
     with pytest.raises(ValueError, match="tombstone_retention_seconds"):
         QdrantConf(
             collection_registry="db",
-            request_timeout=30.0,
             tombstone_retention_seconds=1.5,
         )
 
@@ -409,7 +413,6 @@ def test_qdrant_conf_api_key_from_env(monkeypatch):
     monkeypatch.setenv("QDRANT_API_KEY", "env-qdrant-key")
     conf = QdrantConf(
         collection_registry="db",
-        request_timeout=30.0,
         api_key=SecretStr("$QDRANT_API_KEY"),
     )
     assert conf.api_key == SecretStr("env-qdrant-key")
