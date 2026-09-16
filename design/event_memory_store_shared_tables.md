@@ -1,7 +1,7 @@
-# Segment store: shared tables with incarnation-scoped tenant keys
+# Event memory store: shared tables with incarnation-scoped tenant keys
 
 Status: accepted 2026-08-31. Supersedes the per-tenant partitioned layout of
-the SQLAlchemy segment store on all dialects.
+the SQLAlchemy event memory store on all dialects.
 
 ## Problem
 
@@ -38,10 +38,10 @@ tenant may hold tens of thousands to tens of millions of rows.
 
 One physical schema on every dialect; the ORM models are the tables.
 
-- `segment_store_pt`, the tenant registry: one row per live tenant, holding
+- `event_memory_store_pt`, the tenant registry: one row per live tenant, holding
   the logical partition key (primary key), an `incarnation` (a random UUID
   minted at creation, unique-constrained), and the payload codec config.
-- `segment_store_ev`, `segment_store_sg` and `segment_store_dv_ln`, the
+- `event_memory_store_ev`, `event_memory_store_sg` and `event_memory_store_dv_ln`, the
   event, segment and derivative-link tables, shared by all tenants and not
   partitioned. The event row is one per event the partition holds, keyed
   by incarnation and event uuid, and is what makes an event addable once:
@@ -54,7 +54,7 @@ One physical schema on every dialect; the ORM models are the tables.
   guarded against. A 16-byte UUID also keeps index entries narrower than a
   composite string key, and random UUIDs are unique across nodes without
   coordination, so a tenant's rows move between databases verbatim.
-- `segment_store_gc`, the purge queue: one row per dead incarnation, with
+- `event_memory_store_gc`, the purge queue: one row per dead incarnation, with
   the logical key kept for forensics.
 
 The segment table keeps a foreign key to the event table and the link
@@ -88,7 +88,7 @@ on random-UUID collision resistance.
   partition-exists error. Any other integrity rejection, or a minted
   incarnation found in the purge queue, is retried with a fresh incarnation
   up to `_MAX_MINT_ATTEMPTS`; a persistent failure raises
-  `SegmentStoreAttemptsExhaustedError` with the database error chained.
+  `EventMemoryStoreAttemptsExhaustedError` with the database error chained.
 - **Open**: read the registry row. The handle captures the logical key, the
   incarnation, and the codec.
 - **Delete**: one transaction: lock the registry row (`SELECT ... FOR
@@ -99,7 +99,7 @@ on random-UUID collision resistance.
 - **Re-create**: a new registry row with a fresh incarnation, safe at any
   time; the old incarnation's rows are invisible to the successor even
   while the purger is still sweeping them.
-- **Purge**: `purge_deleted_partitions() -> bool` on the `SegmentStore`
+- **Purge**: `purge_deleted_partitions() -> bool` on the `EventMemoryStore`
   ABC, the sweeper: it claims the oldest entry across all keys, returns
   True while more work may remain, and the caller's whole protocol is
   "call until False"; how much one call does is implementation policy. The caller is promised only that a call
@@ -111,7 +111,7 @@ on random-UUID collision resistance.
     committed progress survives interruption.
   - Segment rows are deleted in batches (`uuid IN (SELECT ... LIMIT n)`,
     portable across dialects) up to
-    `SQLAlchemySegmentStoreParams.purge_max_segments` per call. The link
+    `SQLAlchemyEventMemoryStoreParams.purge_max_segments` per call. The link
     table follows by cascade, measured faster than deleting link rows
     manually at one and at four links per segment. Cascade deletion
     saturates around 3M link rows/s as density grows (380k segments/s at
@@ -122,7 +122,7 @@ on random-UUID collision resistance.
     runs on the budgeted path; they draw on the same budget, count for
     count, and a full batch leaves the entry for the next call.
   - Queue entries carry their own bound,
-    `SQLAlchemySegmentStoreParams.purge_max_partitions`, because their cost
+    `SQLAlchemyEventMemoryStoreParams.purge_max_partitions`, because their cost
     is round trips rather than rows: empty partitions are cheap to create
     and delete, and a backlog of them must not turn one call into an
     unbounded transaction. Both bounds are set once at construction; the

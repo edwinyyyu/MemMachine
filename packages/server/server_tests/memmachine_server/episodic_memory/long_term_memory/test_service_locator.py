@@ -1,6 +1,6 @@
 """Unit tests for service_locator helpers."""
 
-from memmachine_server.episodic_memory.event_memory.segment_store.utils import (
+from memmachine_server.episodic_memory.event_memory.event_memory_store.utils import (
     PARTITION_KEY_MAX_BYTES,
     validate_partition_key,
 )

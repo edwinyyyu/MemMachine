@@ -1,4 +1,4 @@
-"""SQLAlchemy implementation of the SegmentStore interface."""
+"""SQLAlchemy implementation of the EventMemoryStore interface."""
 
 import json
 import logging
@@ -93,20 +93,20 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     encode_block,
     encode_context,
 )
-from memmachine_server.episodic_memory.event_memory.segment_store.data_types import (
-    SegmentStoreAttemptsExhaustedError,
-    SegmentStoreEventAlreadyStoredError,
-    SegmentStorePartitionAlreadyExistsError,
-    SegmentStorePartitionConfig,
-    SegmentStorePartitionConfigMismatchError,
-    SegmentStorePartitionHandleStaleError,
+from memmachine_server.episodic_memory.event_memory.event_memory_store.data_types import (
+    EventMemoryStoreAttemptsExhaustedError,
+    EventMemoryStoreEventAlreadyStoredError,
+    EventMemoryStorePartitionAlreadyExistsError,
+    EventMemoryStorePartitionConfig,
+    EventMemoryStorePartitionConfigMismatchError,
+    EventMemoryStorePartitionHandleStaleError,
 )
-from memmachine_server.episodic_memory.event_memory.segment_store.segment_store import (
-    SegmentStore,
-    SegmentStorePartition,
-    SegmentStorePartitionWriter,
+from memmachine_server.episodic_memory.event_memory.event_memory_store.event_memory_store import (
+    EventMemoryStore,
+    EventMemoryStorePartition,
+    EventMemoryStorePartitionWriter,
 )
-from memmachine_server.episodic_memory.event_memory.segment_store.utils import (
+from memmachine_server.episodic_memory.event_memory.event_memory_store.utils import (
     validate_partition_key,
 )
 
@@ -134,7 +134,7 @@ class _RegistryInsertRejectedError(Exception):
     exists under the key, or when the minted incarnation still has
     garbage awaiting purge. Either way the fix is a fresh incarnation,
     retried up to `_MAX_MINT_ATTEMPTS`; a persistent failure raises
-    `SegmentStoreAttemptsExhaustedError` with the database error
+    `EventMemoryStoreAttemptsExhaustedError` with the database error
     chained.
     """
 
@@ -173,14 +173,14 @@ class UtcInstant(TypeDecorator[datetime]):
         return value.replace(tzinfo=UTC)
 
 
-class BaseSegmentStore(DeclarativeBase):
-    """Base class for segment store tables."""
+class BaseEventMemoryStore(DeclarativeBase):
+    """Base class for event memory store tables."""
 
 
-class PartitionRow(BaseSegmentStore):
+class PartitionRow(BaseEventMemoryStore):
     """The tenant registry: one row per live partition incarnation."""
 
-    __tablename__ = "segment_store_pt"
+    __tablename__ = "event_memory_store_pt"
 
     partition_key: MappedColumn[str] = mapped_column(String(255), primary_key=True)
     incarnation: MappedColumn[UUID] = mapped_column(Uuid, nullable=False, unique=True)
@@ -190,7 +190,7 @@ class PartitionRow(BaseSegmentStore):
     )
 
 
-class EventRow(BaseSegmentStore):
+class EventRow(BaseEventMemoryStore):
     """One row per event the partition holds.
 
     The primary key is what makes an event addable once: a second
@@ -199,13 +199,13 @@ class EventRow(BaseSegmentStore):
     their derivative links.
     """
 
-    __tablename__ = "segment_store_ev"
+    __tablename__ = "event_memory_store_ev"
 
     incarnation: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
     uuid: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
 
 
-class SegmentRow(BaseSegmentStore):
+class SegmentRow(BaseEventMemoryStore):
     """Persisted segment.
 
     `block_kind` is the encoded block's kind in a column of its own, since
@@ -213,7 +213,7 @@ class SegmentRow(BaseSegmentStore):
     so the two cannot disagree.
     """
 
-    __tablename__ = "segment_store_sg"
+    __tablename__ = "event_memory_store_sg"
 
     incarnation: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
 
@@ -241,21 +241,21 @@ class SegmentRow(BaseSegmentStore):
         ForeignKeyConstraint(
             ["incarnation", "event_uuid"],
             [
-                "segment_store_ev.incarnation",
-                "segment_store_ev.uuid",
+                "event_memory_store_ev.incarnation",
+                "event_memory_store_ev.uuid",
             ],
             ondelete="CASCADE",
         ),
         # Serves the event lookups and the cascade from the event row.
         Index(
-            "segment_store_sg__in_ev",
+            "event_memory_store_sg__in_ev",
             "incarnation",
             "event_uuid",
         ),
         # The one total order the store exposes, within a session: a walk
         # pins the session and follows it.
         Index(
-            "segment_store_sg__in_se_ts_ev_ix_of",
+            "event_memory_store_sg__in_se_ts_ev_ix_of",
             "incarnation",
             "session_id",
             "timestamp",
@@ -266,10 +266,10 @@ class SegmentRow(BaseSegmentStore):
     )
 
 
-class DerivativeLinkRow(BaseSegmentStore):
+class DerivativeLinkRow(BaseEventMemoryStore):
     """Maps a derivative UUID to its owning segment."""
 
-    __tablename__ = "segment_store_dv_ln"
+    __tablename__ = "event_memory_store_dv_ln"
 
     incarnation: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
 
@@ -280,20 +280,20 @@ class DerivativeLinkRow(BaseSegmentStore):
         ForeignKeyConstraint(
             ["incarnation", "segment_uuid"],
             [
-                "segment_store_sg.incarnation",
-                "segment_store_sg.uuid",
+                "event_memory_store_sg.incarnation",
+                "event_memory_store_sg.uuid",
             ],
             ondelete="CASCADE",
         ),
         Index(
-            "segment_store_dv_ln__in_su",
+            "event_memory_store_dv_ln__in_su",
             "incarnation",
             "segment_uuid",
         ),
     )
 
 
-class PurgeQueueRow(BaseSegmentStore):
+class PurgeQueueRow(BaseEventMemoryStore):
     """The purge queue: one row per dead partition incarnation.
 
     Claimed oldest-first by the enqueue stamp, which is the database clock,
@@ -302,7 +302,7 @@ class PurgeQueueRow(BaseSegmentStore):
     the rows to reclaim; the logical key is carried for forensics.
     """
 
-    __tablename__ = "segment_store_gc"
+    __tablename__ = "event_memory_store_gc"
 
     incarnation: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
     partition_key: MappedColumn[str] = mapped_column(String(255), nullable=False)
@@ -310,10 +310,10 @@ class PurgeQueueRow(BaseSegmentStore):
         DateTime(timezone=True), nullable=False
     )
 
-    __table_args__ = (Index("segment_store_gc__ea", "enqueued_at"),)
+    __table_args__ = (Index("event_memory_store_gc__ea", "enqueued_at"),)
 
 
-class SQLAlchemySegmentStorePartition(SegmentStorePartition):
+class SQLAlchemyEventMemoryStorePartition(EventMemoryStorePartition):
     """SQLAlchemy-backed partition handle."""
 
     def __init__(
@@ -322,7 +322,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         incarnation: UUID,
         create_session: async_sessionmaker[AsyncSession],
         is_sqlite: bool,
-        config: SegmentStorePartitionConfig,
+        config: EventMemoryStorePartitionConfig,
         payload_codec: PayloadCodec,
         tracker: OperationTracker,
     ) -> None:
@@ -342,7 +342,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
 
     @override
     @property
-    def config(self) -> SegmentStorePartitionConfig:
+    def config(self) -> EventMemoryStorePartitionConfig:
         return self._config
 
     async def _lock_partition_for_write(
@@ -374,7 +374,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 .values(incarnation=self._incarnation)
             )
             if fenced.rowcount == 0:
-                raise SegmentStorePartitionHandleStaleError(self._partition_key)
+                raise EventMemoryStorePartitionHandleStaleError(self._partition_key)
             return
         await self._ensure_partition_live(session, pin=True, exclusive=exclusive)
 
@@ -405,7 +405,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             query = query.with_for_update(read=not exclusive)
         row = (await session.execute(query)).scalar_one_or_none()
         if row is None:
-            raise SegmentStorePartitionHandleStaleError(self._partition_key)
+            raise EventMemoryStorePartitionHandleStaleError(self._partition_key)
 
     # Writing
 
@@ -413,14 +413,14 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     @asynccontextmanager
     async def write(
         self, *, exclusive: bool = False
-    ) -> AsyncIterator[SegmentStorePartitionWriter]:
+    ) -> AsyncIterator[EventMemoryStorePartitionWriter]:
         async with (
             self._tracker("write"),
             self._create_session() as session,
             session.begin(),
         ):
             await self._lock_partition_for_write(session, exclusive=exclusive)
-            yield SQLAlchemySegmentStorePartitionWriter(
+            yield SQLAlchemyEventMemoryStorePartitionWriter(
                 session,
                 incarnation=self._incarnation,
                 is_sqlite=self._is_sqlite,
@@ -444,7 +444,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         segment_uuids = set(segment_uuids)
         if not segment_uuids:
             return {}
-        conditions = SQLAlchemySegmentStorePartition._row_conditions(
+        conditions = SQLAlchemyEventMemoryStorePartition._row_conditions(
             since, until, session_ids, source_ids, block_kinds, property_filter
         )
 
@@ -483,7 +483,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         seed_uuids = set(seed_uuids)
         if not seed_uuids:
             return {}
-        conditions = SQLAlchemySegmentStorePartition._row_conditions(
+        conditions = SQLAlchemyEventMemoryStorePartition._row_conditions(
             since, until, None, source_ids, block_kinds, property_filter
         )
 
@@ -589,19 +589,19 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             conditions.append(SegmentRow.timestamp < until)
         if session_ids is not None:
             conditions.append(
-                SQLAlchemySegmentStorePartition._in_values(
+                SQLAlchemyEventMemoryStorePartition._in_values(
                     SegmentRow.session_id, session_ids
                 )
             )
         if source_ids is not None:
             conditions.append(
-                SQLAlchemySegmentStorePartition._in_values(
+                SQLAlchemyEventMemoryStorePartition._in_values(
                     SegmentRow.source_id, source_ids
                 )
             )
         if block_kinds is not None:
             conditions.append(
-                SQLAlchemySegmentStorePartition._in_values(
+                SQLAlchemyEventMemoryStorePartition._in_values(
                     SegmentRow.block_kind, block_kinds
                 )
             )
@@ -609,7 +609,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             conditions.append(
                 compile_sql_filter(
                     property_filter,
-                    SQLAlchemySegmentStorePartition._resolve_segment_field,
+                    SQLAlchemyEventMemoryStorePartition._resolve_segment_field,
                 )
             )
         return conditions
@@ -1038,8 +1038,8 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         )
 
 
-class SQLAlchemySegmentStorePartitionWriter(SegmentStorePartitionWriter):
-    """The transaction `SQLAlchemySegmentStorePartition.write` opens."""
+class SQLAlchemyEventMemoryStorePartitionWriter(EventMemoryStorePartitionWriter):
+    """The transaction `SQLAlchemyEventMemoryStorePartition.write` opens."""
 
     def __init__(
         self,
@@ -1080,7 +1080,7 @@ class SQLAlchemySegmentStorePartitionWriter(SegmentStorePartitionWriter):
         stored = await self._insert_event_rows(events.keys())
         already_stored = events.keys() - stored
         if already_stored:
-            raise SegmentStoreEventAlreadyStoredError(already_stored)
+            raise EventMemoryStoreEventAlreadyStoredError(already_stored)
 
         segments_to_derivative_uuids = {
             segment: derivative_uuids
@@ -1187,9 +1187,9 @@ def _segment_uuids_by_derivative_uuids_query(
     )
 
 
-class SQLAlchemySegmentStoreParams(BaseModel):
+class SQLAlchemyEventMemoryStoreParams(BaseModel):
     """
-    Parameters for constructing a SQLAlchemySegmentStore.
+    Parameters for constructing a SQLAlchemyEventMemoryStore.
 
     Attributes:
         engine (AsyncEngine):
@@ -1283,17 +1283,17 @@ class SQLAlchemySegmentStoreParams(BaseModel):
         return engine
 
 
-class SQLAlchemySegmentStore(SegmentStore):
-    """SQLAlchemy-backed SegmentStore factory."""
+class SQLAlchemyEventMemoryStore(EventMemoryStore):
+    """SQLAlchemy-backed EventMemoryStore factory."""
 
-    def __init__(self, params: SQLAlchemySegmentStoreParams) -> None:
+    def __init__(self, params: SQLAlchemyEventMemoryStoreParams) -> None:
         """Initialize with an async SQLAlchemy engine."""
         self._engine = params.engine
         self._create_session = async_sessionmaker(self._engine, expire_on_commit=False)
 
         self._tracker = OperationTracker(
             params.metrics_factory,
-            prefix="segment_store_sqlalchemy",
+            prefix="event_memory_store_sqlalchemy",
         )
 
         self._purge_max_segments = params.purge_max_segments
@@ -1306,7 +1306,7 @@ class SQLAlchemySegmentStore(SegmentStore):
     @override
     async def startup(self) -> None:
         async with self._tracker("startup"), self._engine.begin() as connection:
-            await connection.run_sync(BaseSegmentStore.metadata.create_all)
+            await connection.run_sync(BaseEventMemoryStore.metadata.create_all)
 
     @override
     async def shutdown(self) -> None:
@@ -1318,7 +1318,7 @@ class SQLAlchemySegmentStore(SegmentStore):
     async def create_partition(
         self,
         partition_key: str,
-        config: SegmentStorePartitionConfig,
+        config: EventMemoryStorePartitionConfig,
     ) -> None:
         validate_partition_key(partition_key)
         async with self._tracker("create_partition"):
@@ -1333,7 +1333,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                 except _RegistryInsertRejectedError as err:
                     attempts += 1
                     if attempts >= _MAX_MINT_ATTEMPTS:
-                        raise SegmentStoreAttemptsExhaustedError(
+                        raise EventMemoryStoreAttemptsExhaustedError(
                             f"Creating partition {partition_key!r} made no "
                             f"progress after {_MAX_MINT_ATTEMPTS} attempts"
                         ) from err
@@ -1344,7 +1344,7 @@ class SQLAlchemySegmentStore(SegmentStore):
         self,
         partition_key: str,
         incarnation: UUID,
-        config: SegmentStorePartitionConfig,
+        config: EventMemoryStorePartitionConfig,
     ) -> None:
         """Insert a registry row for a freshly minted incarnation.
 
@@ -1361,7 +1361,7 @@ class SQLAlchemySegmentStore(SegmentStore):
         whose plain reads serve transaction-start snapshots.
 
         Raises:
-            SegmentStorePartitionAlreadyExistsError:
+            EventMemoryStorePartitionAlreadyExistsError:
                 The partition key is taken; open or delete the existing
                 partition instead.
             _RegistryInsertRejectedError:
@@ -1398,11 +1398,13 @@ class SQLAlchemySegmentStore(SegmentStore):
             # If a committed row exists under this key, the key is taken.
             # Otherwise retry with a fresh incarnation.
             async with self._create_session() as session:
-                partition_row = await SQLAlchemySegmentStore._get_partition_row(
+                partition_row = await SQLAlchemyEventMemoryStore._get_partition_row(
                     session, partition_key
                 )
             if partition_row is not None:
-                raise SegmentStorePartitionAlreadyExistsError(partition_key) from err
+                raise EventMemoryStorePartitionAlreadyExistsError(
+                    partition_key
+                ) from err
             logger.warning(
                 "Registry insert for partition %r with incarnation %s failed "
                 "and no row exists under the key; retrying with a fresh "
@@ -1415,11 +1417,11 @@ class SQLAlchemySegmentStore(SegmentStore):
     @override
     async def open_partition(
         self, partition_key: str
-    ) -> SQLAlchemySegmentStorePartition | None:
+    ) -> SQLAlchemyEventMemoryStorePartition | None:
         validate_partition_key(partition_key)
         async with self._tracker("open_partition"):
             async with self._create_session() as session:
-                partition_row = await SQLAlchemySegmentStore._get_partition_row(
+                partition_row = await SQLAlchemyEventMemoryStore._get_partition_row(
                     session, partition_key
                 )
             if partition_row is None:
@@ -1431,8 +1433,8 @@ class SQLAlchemySegmentStore(SegmentStore):
     async def open_or_create_partition(
         self,
         partition_key: str,
-        config: SegmentStorePartitionConfig,
-    ) -> SQLAlchemySegmentStorePartition:
+        config: EventMemoryStorePartitionConfig,
+    ) -> SQLAlchemyEventMemoryStorePartition:
         validate_partition_key(partition_key)
         async with self._tracker("open_or_create_partition"):
             return await self._open_or_create_partition(partition_key, config)
@@ -1440,8 +1442,8 @@ class SQLAlchemySegmentStore(SegmentStore):
     async def _open_or_create_partition(
         self,
         partition_key: str,
-        config: SegmentStorePartitionConfig,
-    ) -> SQLAlchemySegmentStorePartition:
+        config: EventMemoryStorePartitionConfig,
+    ) -> SQLAlchemyEventMemoryStorePartition:
         attempts = 0
         # Read-then-insert, retried: losing the insert race means a
         # concurrent creator won (reopen its row), and finding no row
@@ -1450,12 +1452,12 @@ class SQLAlchemySegmentStore(SegmentStore):
         # (or, vanishingly, a minted incarnation to have collided).
         while True:
             async with self._create_session() as session:
-                partition_row = await SQLAlchemySegmentStore._get_partition_row(
+                partition_row = await SQLAlchemyEventMemoryStore._get_partition_row(
                     session, partition_key
                 )
 
             if partition_row is not None:
-                SQLAlchemySegmentStore._raise_if_partition_config_mismatch(
+                SQLAlchemyEventMemoryStore._raise_if_partition_config_mismatch(
                     partition_row, config
                 )
                 return await self._partition_from_partition_row(partition_row)
@@ -1469,12 +1471,12 @@ class SQLAlchemySegmentStore(SegmentStore):
             try:
                 await self._insert_partition_row(partition_key, incarnation, config)
             except (
-                SegmentStorePartitionAlreadyExistsError,
+                EventMemoryStorePartitionAlreadyExistsError,
                 _RegistryInsertRejectedError,
             ) as err:
                 attempts += 1
                 if attempts >= _MAX_MINT_ATTEMPTS:
-                    raise SegmentStoreAttemptsExhaustedError(
+                    raise EventMemoryStoreAttemptsExhaustedError(
                         f"Opening or creating partition {partition_key!r} "
                         f"made no progress after {_MAX_MINT_ATTEMPTS} "
                         f"attempts"
@@ -1484,7 +1486,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                 # fresh one).
                 continue
 
-            return SQLAlchemySegmentStorePartition(
+            return SQLAlchemyEventMemoryStorePartition(
                 partition_key=partition_key,
                 incarnation=incarnation,
                 create_session=self._create_session,
@@ -1496,7 +1498,7 @@ class SQLAlchemySegmentStore(SegmentStore):
 
     @override
     async def close_partition(
-        self, segment_store_partition: SegmentStorePartition
+        self, event_memory_store_partition: EventMemoryStorePartition
     ) -> None:
         pass
 
@@ -1567,7 +1569,7 @@ class SQLAlchemySegmentStore(SegmentStore):
         # doubly-claimed entry costs empty round trips, never duplicated or
         # missed reclamation (an entry is retired only when the retirer's
         # own DELETEs found fewer rows than its budget). Full rationale:
-        # design/segment_store_shared_tables.md.
+        # design/event_memory_store_shared_tables.md.
         remaining = self._purge_max_segments
         entries = 0
         # Pure Core DML on an engine connection: unlike Session.execute,
@@ -1688,7 +1690,7 @@ class SQLAlchemySegmentStore(SegmentStore):
 
     async def _load_payload_codec(
         self,
-        config: SegmentStorePartitionConfig,
+        config: EventMemoryStorePartitionConfig,
     ) -> PayloadCodec:
         """Materialize a live payload codec for a partition config."""
         match config.payload_codec_config:
@@ -1703,15 +1705,15 @@ class SQLAlchemySegmentStore(SegmentStore):
     async def _partition_from_partition_row(
         self,
         partition_row: PartitionRow,
-    ) -> SQLAlchemySegmentStorePartition:
+    ) -> SQLAlchemyEventMemoryStorePartition:
         """Materialize a partition handle from a registry row."""
-        config = SegmentStorePartitionConfig(
+        config = EventMemoryStorePartitionConfig(
             payload_codec_config=decode_payload_codec_config(
                 partition_row.payload_codec_config
             )
         )
         payload_codec = await self._load_payload_codec(config)
-        return SQLAlchemySegmentStorePartition(
+        return SQLAlchemyEventMemoryStorePartition(
             partition_key=partition_row.partition_key,
             incarnation=partition_row.incarnation,
             create_session=self._create_session,
@@ -1736,16 +1738,16 @@ class SQLAlchemySegmentStore(SegmentStore):
     @staticmethod
     def _raise_if_partition_config_mismatch(
         partition_row: PartitionRow,
-        config: SegmentStorePartitionConfig,
+        config: EventMemoryStorePartitionConfig,
     ) -> None:
         """Raise if an existing partition row does not match the requested config."""
-        existing_config = SegmentStorePartitionConfig(
+        existing_config = EventMemoryStorePartitionConfig(
             payload_codec_config=decode_payload_codec_config(
                 partition_row.payload_codec_config
             )
         )
         if existing_config != config:
-            raise SegmentStorePartitionConfigMismatchError(
+            raise EventMemoryStorePartitionConfigMismatchError(
                 partition_row.partition_key,
                 existing_config,
                 config,

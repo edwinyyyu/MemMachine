@@ -411,7 +411,7 @@ def test_backend_flip_declarative_to_event_clears_declarative_fields(
             "long_term_memory": {
                 "backend": "event",
                 "vector_store": "qdrant_vs",
-                "segment_store": "sqlite_db",
+                "event_memory_store": "sqlite_db",
             }
         }
     )
@@ -422,7 +422,7 @@ def test_backend_flip_declarative_to_event_clears_declarative_fields(
     assert ltm.backend == "event"
     assert ltm.vector_graph_store is None, "stale declarative field not cleared"
     assert ltm.vector_store == "qdrant_vs"
-    assert ltm.segment_store == "sqlite_db"
+    assert ltm.event_memory_store == "sqlite_db"
     assert "vector_graph_store=null" in message
     assert "backend=event" in message
 
@@ -436,7 +436,7 @@ def test_backend_flip_event_to_declarative_clears_event_fields(
             backend="event",
             embedder="emb",
             vector_store="qdrant_vs",
-            segment_store="sqlite_db",
+            event_memory_store="sqlite_db",
         )
     )
 
@@ -455,10 +455,10 @@ def test_backend_flip_event_to_declarative_clears_event_fields(
     ltm = memory_resource_manager.config.episodic_memory.long_term_memory
     assert ltm.backend == "declarative"
     assert ltm.vector_store is None, "stale event field not cleared"
-    assert ltm.segment_store is None, "stale event field not cleared"
+    assert ltm.event_memory_store is None, "stale event field not cleared"
     assert ltm.vector_graph_store == "neo4j"
     assert "vector_store=null" in message
-    assert "segment_store=null" in message
+    assert "event_memory_store=null" in message
 
 
 def test_backend_no_flip_preserves_cross_backend_fields(memory_resource_manager):
@@ -467,7 +467,7 @@ def test_backend_no_flip_preserves_cross_backend_fields(memory_resource_manager)
         LongTermMemoryConfPartial(
             backend="event",
             vector_store="qdrant_vs",
-            segment_store="sqlite_db",
+            event_memory_store="sqlite_db",
         )
     )
 
@@ -480,5 +480,5 @@ def test_backend_no_flip_preserves_cross_backend_fields(memory_resource_manager)
     ltm = memory_resource_manager.config.episodic_memory.long_term_memory
     assert ltm.backend == "event"
     assert ltm.vector_store == "qdrant_vs"
-    assert ltm.segment_store == "sqlite_db"
+    assert ltm.event_memory_store == "sqlite_db"
     assert ltm.embedder == "new-emb"
