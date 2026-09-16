@@ -265,6 +265,16 @@ class QdrantConf(YamlSerializableMixin, ApiKeyMixin):
         gt=0,
         description="Seconds a request to Qdrant may take before the client gives up.",
     )
+    tombstone_retention_seconds: float = Field(
+        default=86400,
+        gt=0,
+        description=(
+            "Seconds a deleted partition's registry entry outlives the first purge "
+            "round that finds nothing under it, so a write to Qdrant that landed "
+            "after that round is still reclaimed; keep it orders of magnitude "
+            "above request_timeout_seconds."
+        ),
+    )
 
 
 class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
@@ -308,6 +318,16 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         default=30,
         gt=0,
         description="Seconds a request to Milvus may take before the client gives up.",
+    )
+    tombstone_retention_seconds: float = Field(
+        default=86400,
+        gt=0,
+        description=(
+            "Seconds a deleted partition's registry entry outlives the first purge "
+            "round that finds nothing under it, so a write to Milvus that landed "
+            "after that round is still reclaimed; keep it orders of magnitude "
+            "above request_timeout_seconds."
+        ),
     )
 
     @field_validator("uri", mode="before")

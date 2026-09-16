@@ -11,11 +11,21 @@ name every point of that life carries, and a purge queue of dead
 incarnations claimed oldest-first. Creation is an insert the primary key
 arbitrates, deletion is one transaction, and a purge claim is a row lock
 the database hands to one purger at a time.
+
+A queue entry is the dead incarnation's tombstone. The backend holds the
+points, and a write the registry read as live can land there after the
+purge that followed the deletion, so one purge cannot be the last: the
+entry stays through purge rounds until a round finds nothing, then
+through a retention measured on the database clock, then through one
+more round that finds nothing again. Only then is it removed, and until
+then the incarnation is never re-minted.
 """
 
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import NamedTuple
 from uuid import UUID, uuid4
 
@@ -31,7 +41,9 @@ from sqlalchemy import (
     delete,
     func,
     insert,
+    or_,
     select,
+    update,
 )
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -59,21 +71,43 @@ class RegisteredPartition(NamedTuple):
     schema: PartitionSchema
 
 
+@dataclass
+class PurgeClaim:
+    """A claimed tombstone: the incarnation to purge, and what the round found.
+
+    The purger sets `found` before the claim ends: True when the backend
+    still held points under the incarnation, False when it held none.
+    """
+
+    incarnation: UUID
+    clean_at: datetime | None
+    found: bool | None = None
+
+
 class SqlPartitionRegistry:
     """The partition registry of one collection, in a table pair shared by its backend kind.
 
     `table_prefix` names the backend kind: every store on that kind of
     backend shares `{prefix}_pt` and `{prefix}_gc`, and the collection is
     part of every key, so stores of different collections keep apart in
-    one database.
+    one database. `tombstone_retention` is how long a dead incarnation's
+    entry outlives the first purge round that found nothing; it must
+    exceed, by orders of magnitude, the longest a write to the backend
+    can be in flight.
     """
 
     def __init__(
-        self, *, engine: AsyncEngine, table_prefix: str, collection: str
+        self,
+        *,
+        engine: AsyncEngine,
+        table_prefix: str,
+        collection: str,
+        tombstone_retention: timedelta,
     ) -> None:
         """Bind to the registry tables of one backend kind, for one collection."""
         self._engine = engine
         self._collection = collection
+        self._tombstone_retention = tombstone_retention
         metadata = MetaData()
         self._partitions = Table(
             f"{table_prefix}_pt",
@@ -93,6 +127,10 @@ class SqlPartitionRegistry:
             Column("collection", String(COLLECTION_NAME_MAX_BYTES), nullable=False),
             Column("partition_key", String(255), nullable=False),
             Column("enqueued_at", DateTime(timezone=True), nullable=False),
+            # When a purge round last found nothing under the incarnation;
+            # cleared by a round that finds something. The entry is removed
+            # by a round that finds nothing a retention after this.
+            Column("clean_at", DateTime(timezone=True), nullable=True),
             Index(f"{table_prefix}_gc__cl_ea", "collection", "enqueued_at"),
         )
         self._metadata = metadata
@@ -225,7 +263,7 @@ class SqlPartitionRegistry:
 
         Idempotent: no row under the key is the no-op case. The partition
         is unreachable as soon as the transaction commits; its points are
-        reclaimed by whoever claims the queue entry.
+        reclaimed by the purge rounds that claim the entry, its tombstone.
         """
         # The DELETE goes first: it takes the row's write lock, so racing
         # deleters serialize on it and the loser deletes nothing, on
@@ -253,31 +291,64 @@ class SqlPartitionRegistry:
             )
 
     @asynccontextmanager
-    async def claim_oldest(self) -> AsyncIterator[UUID | None]:
-        """Claim this collection's oldest dead incarnation for the body's reclamation.
+    async def claim_oldest(self) -> AsyncIterator[PurgeClaim | None]:
+        """Claim this collection's oldest tombstone due for a purge round.
 
-        Yields None when the queue is empty. The claim is a row lock held
-        for the body: on PostgreSQL a concurrent purger skips the locked
-        entry and takes the next; on SQLite the writers serialize at the
-        retirement, so a doubly claimed entry costs a repeated, idempotent
-        reclamation and never a missed one. The entry is retired when the
-        body returns and kept when it raises, so a failed reclamation is
-        retried by a later claim.
+        Yields None when no tombstone is due: the queue is empty, or every
+        entry had a clean round less than the retention ago. The claim is a
+        row lock held for the body: on PostgreSQL a concurrent purger skips
+        the locked entry and takes the next; on SQLite the writers
+        serialize at the end of the round, so a doubly claimed entry costs
+        a repeated, idempotent round and never a missed one.
+
+        The body purges and sets `found`. A round that found points keeps
+        the entry and clears `clean_at`, so rounds continue; a round that
+        found none stamps `clean_at` the first time and removes the entry
+        when it is the round due after the retention. A body that raises
+        leaves the entry as it was, for a later claim.
         """
         async with self._engine.begin() as connection:
-            incarnation = (
+            database_now = (
                 await connection.execute(
-                    select(self._purge_queue.c.incarnation)
-                    .where(self._purge_queue.c.collection == self._collection)
+                    select(func.now(type_=DateTime(timezone=True)))
+                )
+            ).scalar_one()
+            row = (
+                await connection.execute(
+                    select(
+                        self._purge_queue.c.incarnation, self._purge_queue.c.clean_at
+                    )
+                    .where(
+                        self._purge_queue.c.collection == self._collection,
+                        or_(
+                            self._purge_queue.c.clean_at.is_(None),
+                            self._purge_queue.c.clean_at
+                            <= database_now - self._tombstone_retention,
+                        ),
+                    )
                     .order_by(self._purge_queue.c.enqueued_at)
                     .limit(1)
                     .with_for_update(skip_locked=True)
                 )
-            ).scalar_one_or_none()
-            yield incarnation
-            if incarnation is not None:
-                await connection.execute(
-                    delete(self._purge_queue).where(
-                        self._purge_queue.c.incarnation == incarnation
-                    )
+            ).one_or_none()
+            if row is None:
+                yield None
+                return
+            claim = PurgeClaim(incarnation=row.incarnation, clean_at=row.clean_at)
+            yield claim
+            if claim.found is None:
+                raise RuntimeError(
+                    f"Purge round for incarnation {claim.incarnation} of collection "
+                    f"{self._collection!r} ended without reporting what it found"
                 )
+            entry = self._purge_queue.c.incarnation == claim.incarnation
+            if claim.found:
+                await connection.execute(
+                    update(self._purge_queue).where(entry).values(clean_at=None)
+                )
+            elif claim.clean_at is None:
+                await connection.execute(
+                    update(self._purge_queue).where(entry).values(clean_at=func.now())
+                )
+            else:
+                await connection.execute(delete(self._purge_queue).where(entry))

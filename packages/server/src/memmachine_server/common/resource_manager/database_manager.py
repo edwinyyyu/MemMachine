@@ -747,6 +747,7 @@ class DatabaseManager:
                     "registry_engine": await self.async_get_sql_engine(
                         conf.registry_database
                     ),
+                    "tombstone_retention_seconds": conf.tombstone_retention_seconds,
                     "indexed_properties": indexed_properties,
                 }
             )
@@ -840,6 +841,7 @@ class DatabaseManager:
             MilvusVectorStoreParams(
                 client=client,
                 registry_engine=await self.async_get_sql_engine(conf.registry_database),
+                tombstone_retention_seconds=conf.tombstone_retention_seconds,
                 collection=collection,
                 vector_dimensions=vector_dimensions,
                 consistency_level=conf.consistency_level,

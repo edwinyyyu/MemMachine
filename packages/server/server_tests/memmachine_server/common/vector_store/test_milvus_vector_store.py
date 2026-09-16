@@ -43,6 +43,7 @@ COLLECTION = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
 REQUEST_TIMEOUT_SECONDS = 30
+TOMBSTONE_RETENTION_SECONDS = 86400.0
 
 INDEXED_PROPERTIES: dict[str, type[PropertyValue]] = {
     "name": str,
@@ -104,6 +105,7 @@ async def store(tmp_path):
             indexed_properties=INDEXED_PROPERTIES,
             client=client,
             registry_engine=registry_engine,
+            tombstone_retention_seconds=TOMBSTONE_RETENTION_SECONDS,
             consistency_level="Session",
             request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
         )
