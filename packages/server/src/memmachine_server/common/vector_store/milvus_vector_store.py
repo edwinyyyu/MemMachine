@@ -180,7 +180,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         config: VectorStoreCollectionConfig,
         tracker: OperationTracker,
         is_live: Callable[[UUID], Awaitable[bool]],
-        request_timeout_seconds: float,
+        request_timeout_seconds: int,
     ) -> None:
         """Initialize with a Milvus client and the incarnation the handle is bound to."""
         self._client = client
@@ -482,7 +482,7 @@ class MilvusVectorStoreParams(BaseModel):
             process, uses this registry, and no store on another
             deployment does.
         consistency_level (str): Collection consistency level for newly created collections.
-        request_timeout_seconds (float): Seconds any request to Milvus may take.
+        request_timeout_seconds (int): Seconds any request to Milvus may take.
         metrics_factory (MetricsFactory | None): Metrics factory for collecting usage metrics.
     """
 
@@ -498,7 +498,7 @@ class MilvusVectorStoreParams(BaseModel):
         default="Session",
         description="Milvus consistency level for newly created collections",
     )
-    request_timeout_seconds: float = Field(
+    request_timeout_seconds: int = Field(
         ..., gt=0, description="Seconds any request to Milvus may take"
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
