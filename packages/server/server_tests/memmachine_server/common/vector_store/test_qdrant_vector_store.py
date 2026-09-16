@@ -36,6 +36,7 @@ from server_tests.memmachine_server.common.vector_store.partition_lifecycle_cont
 COLLECTION = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
+TOMBSTONE_RETENTION_SECONDS = 86400.0
 
 INDEXED_PROPERTIES: dict[str, type[PropertyValue]] = {
     "name": str,
@@ -88,6 +89,7 @@ async def store(any_qdrant_client, registry_engine):
         indexed_properties=INDEXED_PROPERTIES,
         client=any_qdrant_client,
         registry_engine=registry_engine,
+        tombstone_retention_seconds=TOMBSTONE_RETENTION_SECONDS,
     )
     s = QdrantVectorStore(params)
     await s.provision()
@@ -1041,6 +1043,7 @@ class TestMetrics:
             indexed_properties=INDEXED_PROPERTIES,
             client=qdrant_client,
             registry_engine=registry_engine,
+            tombstone_retention_seconds=TOMBSTONE_RETENTION_SECONDS,
             metrics_factory=mock_factory,
         )
         store = QdrantVectorStore(params)
@@ -1085,6 +1088,7 @@ class TestDeclaredPayloadIndexes:
                 indexed_properties=INDEXED_PROPERTIES,
                 client=qdrant_client,
                 registry_engine=registry_engine,
+                tombstone_retention_seconds=TOMBSTONE_RETENTION_SECONDS,
             )
         )
         await store.provision()

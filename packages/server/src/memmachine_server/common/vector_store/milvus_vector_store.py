@@ -3,7 +3,7 @@
 import asyncio
 import json
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, cast, override
 from uuid import UUID
 
@@ -176,7 +176,7 @@ class MilvusVectorStorePartition(VectorStorePartition):
         died meanwhile raises instead of reporting success. Milvus has no
         transactions, so a write can still land under a dead incarnation:
         between the two checks, or after a check that never ran; the
-        purge reclaims it.
+        tombstone's purge rounds reclaim it.
         """
         if not await self._is_live(self._incarnation):
             raise VectorStorePartitionHandleStaleError(
@@ -369,6 +369,11 @@ class MilvusVectorStoreParams(BaseModel):
             partitions exist, under which incarnation, and which dead
             incarnations await purge. Milvus arbitrates none of that, so
             the registry lives where a primary key and a transaction can.
+        tombstone_retention_seconds (float):
+            How long a deleted partition's registry entry outlives the
+            first purge round that finds nothing under it, so a write that
+            landed after that round is still reclaimed; orders of magnitude
+            above the request timeout.
         consistency_level (str): Consistency level for the collection this store creates.
         request_timeout_seconds (int): Seconds any request to Milvus may take.
         indexed_properties (IndexedProperties):
@@ -391,6 +396,14 @@ class MilvusVectorStoreParams(BaseModel):
     registry_engine: InstanceOf[AsyncEngine] = Field(
         ...,
         description="The relational database holding the partition registry",
+    )
+    tombstone_retention_seconds: float = Field(
+        ...,
+        gt=0,
+        description=(
+            "Seconds a deleted partition's tombstone outlives the first purge "
+            "round that finds nothing under it"
+        ),
     )
     consistency_level: str = Field(
         default="Session",
@@ -449,6 +462,7 @@ class MilvusVectorStore(VectorStore):
             engine=params.registry_engine,
             table_prefix=MilvusVectorStore._REGISTRY_TABLE_PREFIX,
             collection=self._collection,
+            tombstone_retention=timedelta(seconds=params.tombstone_retention_seconds),
         )
         self._indexed_properties = params.indexed_properties
         self._tracker = OperationTracker(
@@ -620,20 +634,34 @@ class MilvusVectorStore(VectorStore):
 
     @override
     async def purge_deleted_partitions(self) -> bool:
-        # One dead incarnation per call, oldest first: the claim is a row
-        # lock the registry holds while the entities go by filter, a single
-        # server-side operation; the entry is retired when that returns
-        # and kept when it raises.
+        # One purge round per call, on the oldest tombstone due: the claim
+        # is a row lock the registry holds while one entity is looked for
+        # and, if there is one, the entities go by filter in a single
+        # server-side operation. The registry keeps or removes the
+        # tombstone by what the round found.
         async with (
             self._tracker("purge_deleted_partitions"),
-            self._registry.claim_oldest() as incarnation,
+            self._registry.claim_oldest() as claim,
         ):
-            if incarnation is None:
+            if claim is None:
                 return False
-            await asyncio.to_thread(
-                self._client.delete,
+            partition_filter = (
+                f"{_PARTITION_KEY_FIELD} == {_expr_string(claim.incarnation.hex)}"
+            )
+            held = await asyncio.to_thread(
+                self._client.query,
                 collection_name=self._collection,
-                filter=f"{_PARTITION_KEY_FIELD} == {_expr_string(incarnation.hex)}",
+                filter=partition_filter,
+                output_fields=[_ID_FIELD],
+                limit=1,
                 timeout=self._request_timeout_seconds,
             )
-            return True
+            claim.found = bool(list(held))
+            if claim.found:
+                await asyncio.to_thread(
+                    self._client.delete,
+                    collection_name=self._collection,
+                    filter=partition_filter,
+                    timeout=self._request_timeout_seconds,
+                )
+            return claim.found
