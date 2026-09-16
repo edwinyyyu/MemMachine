@@ -147,7 +147,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         partition_key: str,
         config: VectorStoreCollectionConfig,
         tracker: OperationTracker,
-        request_timeout_seconds: float,
+        request_timeout_seconds: int,
     ) -> None:
         """Initialize with a Milvus client and collection name."""
         self._client = client
@@ -324,7 +324,7 @@ class MilvusVectorStoreParams(BaseModel):
     Attributes:
         client (MilvusClient): Milvus client instance.
         consistency_level (str): Collection consistency level for newly created collections.
-        request_timeout_seconds (float): Seconds any request to Milvus may take.
+        request_timeout_seconds (int): Seconds any request to Milvus may take.
         metrics_factory (MetricsFactory | None): Metrics factory for collecting usage metrics.
     """
 
@@ -336,7 +336,7 @@ class MilvusVectorStoreParams(BaseModel):
         default="Session",
         description="Milvus consistency level for newly created collections",
     )
-    request_timeout_seconds: float = Field(
+    request_timeout_seconds: int = Field(
         ..., gt=0, description="Seconds any request to Milvus may take"
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
