@@ -291,7 +291,7 @@ def test_milvus_conf_defaults():
     assert conf.db_name == ""
     assert conf.consistency_level == "Session"
     assert conf.request_timeout_seconds == 30
-    assert conf.tombstone_retention_seconds == 86400.0
+    assert conf.tombstone_retention_seconds == 86400
 
 
 def test_milvus_conf_reads_env(monkeypatch):
@@ -379,7 +379,7 @@ def test_qdrant_conf_defaults():
     assert conf.registry_database == "db"
     assert conf.api_key.get_secret_value() == ""
     assert conf.request_timeout_seconds == 30
-    assert conf.tombstone_retention_seconds == 86400.0
+    assert conf.tombstone_retention_seconds == 86400
 
 
 def test_qdrant_conf_rejects_a_timeout_that_is_not_a_positive_whole_second():

@@ -265,7 +265,7 @@ class QdrantConf(YamlSerializableMixin, ApiKeyMixin):
         gt=0,
         description="Seconds a request to Qdrant may take before the client gives up.",
     )
-    tombstone_retention_seconds: float = Field(
+    tombstone_retention_seconds: int = Field(
         default=86400,
         gt=0,
         description=(
@@ -319,7 +319,7 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         gt=0,
         description="Seconds a request to Milvus may take before the client gives up.",
     )
-    tombstone_retention_seconds: float = Field(
+    tombstone_retention_seconds: int = Field(
         default=86400,
         gt=0,
         description=(
