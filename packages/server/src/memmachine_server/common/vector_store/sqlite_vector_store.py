@@ -1,18 +1,28 @@
 """
 Vector store backed by SQLite + pluggable vector search engine.
 
-The store is one collection. Each partition gets its own records table and
-vector search engine, and a pending operations table shared by the
-collection's partitions tracks search engine operations for crash recovery:
-on startup, unfinalized operations are replayed.
+The store is one collection, held in one records table named by the
+collection, so stores of different collections may share one engine. Every
+partition of the collection lives in that table under an incarnation the
+store mints per partition life, and has its own vector search engine and
+index file, named by the incarnation: a deleted-and-recreated partition
+never sees its predecessor's rows, engine or file. A pending operations
+table tracks search engine operations for crash recovery: on startup,
+unfinalized operations of live incarnations are replayed.
+
+Deleting a partition is a registry write: the incarnation goes onto the
+purge queue and the registry row goes, so the partition is unreachable at
+once; `purge_deleted_partitions` reclaims its rows, log and index file
+afterward, a bounded batch per call.
 """
 
 import logging
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import override
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import numpy as np
 from pydantic import BaseModel, Field, InstanceOf, JsonValue, field_validator
@@ -20,23 +30,28 @@ from sqlalchemy import (
     JSON,
     Boolean,
     Column,
-    ForeignKeyConstraint,
+    DateTime,
+    Index,
     Integer,
     LargeBinary,
     MetaData,
+    Select,
     String,
     Table,
+    UniqueConstraint,
     Uuid,
     create_engine,
     delete,
     event,
     func,
+    insert,
     select,
     update,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.engine.interfaces import DBAPIConnection
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, MappedColumn, Session, mapped_column
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
@@ -58,7 +73,9 @@ from .data_types import (
     QueryMatch,
     QueryResult,
     Record,
+    VectorStoreAttemptsExhaustedError,
     VectorStorePartitionAlreadyExistsError,
+    VectorStorePartitionHandleStaleError,
     VectorStorePartitionSchemaMismatchError,
     indexed_property_names,
     validate_collection_name,
@@ -68,6 +85,16 @@ from .vector_search_engine import VectorSearchEngine
 from .vector_store import VectorStore, VectorStorePartition
 
 logger = logging.getLogger(__name__)
+
+# Consecutive failed mint attempts before the store concludes it is
+# re-attempting a persistent database error rather than losing races: a
+# uuid collision is a once-in-the-universe event and each race retry
+# requires another actor to have changed the registry in the meantime.
+_MAX_MINT_ATTEMPTS = 10
+
+
+class _RegistryInsertRejectedError(Exception):
+    """A registry insert was rejected; retry with a fresh incarnation."""
 
 
 class IndexLoadError(RuntimeError):
@@ -89,10 +116,12 @@ class BaseSQLiteVectorStore(DeclarativeBase):
 
 
 class _PartitionRow(BaseSQLiteVectorStore):
-    """The registry: one row per partition, keyed by its collection and key.
+    """The registry: one row per live partition, keyed by its collection and key.
 
     Stores of different collections may share one engine, so the collection
-    is part of the key and every read names it.
+    is part of the key and every read names it. The incarnation is the
+    store's own name for this life of the key; records, pending operations,
+    the engine and the index file are keyed by it alone.
     """
 
     __tablename__ = "vector_store_sqlite_pt"
@@ -101,6 +130,7 @@ class _PartitionRow(BaseSQLiteVectorStore):
         String(COLLECTION_NAME_MAX_BYTES), primary_key=True
     )
     partition_key: MappedColumn[str] = mapped_column(String(255), primary_key=True)
+    incarnation: MappedColumn[UUID] = mapped_column(Uuid, nullable=False, unique=True)
     # The dimensions and declared schema the partition was created under, so
     # a store built with others fails loudly instead of reading columns and
     # vectors that are not there.
@@ -115,34 +145,51 @@ class _PartitionRow(BaseSQLiteVectorStore):
     )
 
 
+class _PurgeQueueRow(BaseSQLiteVectorStore):
+    """The purge queue: one row per dead partition incarnation.
+
+    Claimed oldest-first by the enqueue stamp. The incarnation identifies
+    the rows, log entries and index file to reclaim; the collection says
+    which store's table holds the rows, and the logical key is carried for
+    forensics.
+    """
+
+    __tablename__ = "vector_store_sqlite_gc"
+
+    incarnation: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
+    collection: MappedColumn[str] = mapped_column(
+        String(COLLECTION_NAME_MAX_BYTES), nullable=False
+    )
+    partition_key: MappedColumn[str] = mapped_column(String(255), nullable=False)
+    enqueued_at: MappedColumn[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        Index("vector_store_sqlite_gc__cl_ea", "collection", "enqueued_at"),
+    )
+
+
 class _PendingOperationRow(BaseSQLiteVectorStore):
     """
     Pending partition operations for crash recovery.
 
-    One row per (collection, partition, record). New operations replace old
-    ones. Lifecycle:
+    One row per (incarnation, record). New operations replace old ones.
+    Lifecycle:
     1. Inserted in the same SQLite transaction as the records table change.
     2. Marked `applied=True` after the search engine processes the operation.
     3. Applied operations are deleted after the search engine is saved to disk.
-    4. On startup, all remaining rows (applied or not) are replayed.
+    4. On startup, all remaining rows (applied or not) of live incarnations
+       are replayed; a dead incarnation's rows wait for the purge.
+
+    No foreign key to the registry: registry rows and log rows are
+    deliberately decoupled so that partition deletion is a registry write
+    and the purge queue reclaims the log asynchronously.
     """
 
     __tablename__ = "vector_store_sqlite_pd_op"
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["collection", "partition_key"],
-            [
-                f"{_PartitionRow.__tablename__}.collection",
-                f"{_PartitionRow.__tablename__}.partition_key",
-            ],
-            ondelete="CASCADE",
-        ),
-    )
 
-    collection: MappedColumn[str] = mapped_column(
-        String(COLLECTION_NAME_MAX_BYTES), primary_key=True
-    )
-    partition_key: MappedColumn[str] = mapped_column(String(255), primary_key=True)
+    incarnation: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
     record_row_id: MappedColumn[int] = mapped_column(Integer, primary_key=True)
     operation_type: MappedColumn[str] = mapped_column(
         String(8), nullable=False
@@ -162,8 +209,7 @@ def _enable_sqlite_foreign_keys(
 async def _save_partition_index(
     *,
     create_session: async_sessionmaker[AsyncSession],
-    collection: str,
-    partition_key: str,
+    incarnation: UUID,
     search_engine: VectorSearchEngine,
     path: str,
 ) -> None:
@@ -175,16 +221,14 @@ async def _save_partition_index(
     async with create_session() as session, session.begin():
         await session.execute(
             delete(_PendingOperationRow).where(
-                _PendingOperationRow.collection == collection,
-                _PendingOperationRow.partition_key == partition_key,
+                _PendingOperationRow.incarnation == incarnation,
                 _PendingOperationRow.applied.is_(True),
             )
         )
         await session.execute(
             update(_PartitionRow)
             .where(
-                _PartitionRow.collection == collection,
-                _PartitionRow.partition_key == partition_key,
+                _PartitionRow.incarnation == incarnation,
                 _PartitionRow.index_saved.is_(False),
             )
             .values(index_saved=True)
@@ -201,11 +245,13 @@ class SQLiteVectorStorePartition(VectorStorePartition):
             self,
             sync_sqlalchemy_engine: Engine,
             records_table: Table,
+            incarnation: UUID,
             filter_expression: ColumnElement[bool],
         ) -> None:
             """Initialize with a sync SQLAlchemy engine, records table, and filter expression."""
             self._sync_sqlalchemy_engine = sync_sqlalchemy_engine
             self._records_table = records_table
+            self._incarnation = incarnation
             self._filter_expression = filter_expression
 
             self._cache: dict[int, bool] = {}
@@ -227,6 +273,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
                 self._get_session()
                 .execute(
                     select(self._records_table.c.row_id).where(
+                        self._records_table.c.incarnation == self._incarnation,
                         self._records_table.c.row_id == key,
                         self._filter_expression,
                     )
@@ -250,11 +297,12 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         search_engine: VectorSearchEngine,
         collection: str,
         partition_key: str,
+        incarnation: UUID,
         indexed_properties: Mapping[str, PropertyType],
         index_path: str | None,
         save_threshold: int,
     ) -> None:
-        """Initialize a partition handle."""
+        """Initialize a partition handle bound to one incarnation."""
         self._create_session = create_session
         self._sync_sqlalchemy_engine = sync_sqlalchemy_engine
         self._records_table = records_table
@@ -262,6 +310,11 @@ class SQLiteVectorStorePartition(VectorStorePartition):
 
         self._collection = collection
         self._partition_key = partition_key
+        # Rows, log entries and the engine are keyed by the incarnation
+        # alone: rows of a deleted-and-recreated partition under the same
+        # logical key are invisible to the new incarnation while the purge
+        # queue reclaims them.
+        self._incarnation = incarnation
 
         self._indexed_properties = dict(indexed_properties)
 
@@ -278,6 +331,25 @@ class SQLiteVectorStorePartition(VectorStorePartition):
     def indexed_properties(self) -> Mapping[str, PropertyType]:
         return self._indexed_properties
 
+    def _registry_row_query(self) -> Select[tuple[str]]:
+        """This incarnation's registry row: absent once the handle is stale."""
+        return select(_PartitionRow.partition_key).where(
+            _PartitionRow.incarnation == self._incarnation
+        )
+
+    async def _ensure_live(self, session: AsyncSession) -> None:
+        """Raise if this handle's incarnation is no longer registered.
+
+        Writes call this inside their transaction. Reads call it when their
+        data statement returned no rows: it tells an empty partition from a
+        stale handle.
+        """
+        row = (await session.execute(self._registry_row_query())).scalar_one_or_none()
+        if row is None:
+            raise VectorStorePartitionHandleStaleError(
+                self._collection, self._partition_key
+            )
+
     async def _maybe_save_index(self) -> None:
         """Save the index to disk if applied pending operations exceed the threshold."""
         if self._index_path is None:
@@ -287,8 +359,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
             count = (
                 await session.execute(
                     select(func.count()).where(
-                        _PendingOperationRow.collection == self._collection,
-                        _PendingOperationRow.partition_key == self._partition_key,
+                        _PendingOperationRow.incarnation == self._incarnation,
                         _PendingOperationRow.applied.is_(True),
                     )
                 )
@@ -297,8 +368,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         if count >= self._save_threshold:
             await _save_partition_index(
                 create_session=self._create_session,
-                collection=self._collection,
-                partition_key=self._partition_key,
+                incarnation=self._incarnation,
                 search_engine=self._search_engine,
                 path=self._index_path,
             )
@@ -316,10 +386,14 @@ class SQLiteVectorStorePartition(VectorStorePartition):
                 )
 
         async with self._create_session() as session, session.begin():
+            await self._ensure_live(session)
             upsert_records = (
                 sqlite_insert(self._records_table)
                 .on_conflict_do_update(
-                    index_elements=[self._records_table.c.uuid],
+                    index_elements=[
+                        self._records_table.c.incarnation,
+                        self._records_table.c.uuid,
+                    ],
                     set_={
                         "properties": sqlite_insert(
                             self._records_table
@@ -333,6 +407,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
                     upsert_records,
                     [
                         {
+                            "incarnation": self._incarnation,
                             "uuid": record.uuid,
                             "properties": encode_properties(record.properties),
                         }
@@ -344,8 +419,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
 
             pending_operation_values = [
                 {
-                    "collection": self._collection,
-                    "partition_key": self._partition_key,
+                    "incarnation": self._incarnation,
                     "record_row_id": uuid_to_row_id[record.uuid],
                     "operation_type": "upsert",
                     "vector": np.array(record.vector, dtype=np.float32).tobytes(),
@@ -357,7 +431,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
                 upsert_pending_operation = sqlite_insert(_PendingOperationRow)
                 await session.execute(
                     upsert_pending_operation.on_conflict_do_update(
-                        index_elements=["collection", "partition_key", "record_row_id"],
+                        index_elements=["incarnation", "record_row_id"],
                         set_={
                             "operation_type": upsert_pending_operation.excluded.operation_type,
                             "vector": upsert_pending_operation.excluded.vector,
@@ -389,8 +463,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
                 await session.execute(
                     update(_PendingOperationRow)
                     .where(
-                        _PendingOperationRow.collection == self._collection,
-                        _PendingOperationRow.partition_key == self._partition_key,
+                        _PendingOperationRow.incarnation == self._incarnation,
                         _PendingOperationRow.record_row_id.in_(
                             list(engine_vectors.keys())
                         ),
@@ -427,17 +500,16 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         )
 
         results: list[QueryResult] = []
-        for search_result in search_results:
-            if not search_result.matches:
-                results.append(QueryResult(matches=[]))
-                continue
-            matches = await self._build_matches(
-                row_id_to_cosine_similarity={
-                    m.key: m.cosine_similarity for m in search_result.matches
-                },
-                min_cosine_similarity=min_cosine_similarity,
-            )
-            results.append(QueryResult(matches=matches))
+        async with self._create_session() as session:
+            for search_result in search_results:
+                matches = await self._build_matches(
+                    session,
+                    row_id_to_cosine_similarity={
+                        m.key: m.cosine_similarity for m in search_result.matches
+                    },
+                    min_cosine_similarity=min_cosine_similarity,
+                )
+                results.append(QueryResult(matches=matches))
 
         return results
 
@@ -450,6 +522,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         return SQLiteVectorStorePartition._KeyFilter(
             sync_sqlalchemy_engine=self._sync_sqlalchemy_engine,
             records_table=self._records_table,
+            incarnation=self._incarnation,
             filter_expression=compile_sql_filter(
                 property_filter,
                 lambda field: (
@@ -461,19 +534,29 @@ class SQLiteVectorStorePartition(VectorStorePartition):
 
     async def _build_matches(
         self,
+        session: AsyncSession,
+        *,
         row_id_to_cosine_similarity: Mapping[int, float],
         min_cosine_similarity: float | None,
     ) -> list[QueryMatch]:
         matched_row_ids = list(row_id_to_cosine_similarity.keys())
 
-        fetch_records = select(
-            self._records_table.c.uuid, self._records_table.c.row_id
-        ).where(
-            self._records_table.c.row_id.in_(matched_row_ids),
-        )
-
-        async with self._create_session() as session:
+        # The rows are read only while the incarnation is registered, in
+        # the same statement: a stale handle reads nothing. An empty result
+        # is then either an empty partition or a stale handle, and only the
+        # registry tells them apart.
+        matched_rows = []
+        if matched_row_ids:
+            fetch_records = select(
+                self._records_table.c.uuid, self._records_table.c.row_id
+            ).where(
+                self._records_table.c.incarnation == self._incarnation,
+                self._records_table.c.row_id.in_(matched_row_ids),
+                self._registry_row_query().exists(),
+            )
             matched_rows = (await session.execute(fetch_records)).all()
+        if not matched_rows:
+            await self._ensure_live(session)
 
         matches: list[QueryMatch] = []
         for row in matched_rows:
@@ -506,9 +589,11 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         record_uuids = list(uuid_list)
 
         async with self._create_session() as session, session.begin():
+            await self._ensure_live(session)
             rows = (
                 await session.execute(
                     select(self._records_table.c.row_id).where(
+                        self._records_table.c.incarnation == self._incarnation,
                         self._records_table.c.uuid.in_(record_uuids),
                     )
                 )
@@ -521,7 +606,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
             upsert_pending_operation = sqlite_insert(_PendingOperationRow)
             await session.execute(
                 upsert_pending_operation.on_conflict_do_update(
-                    index_elements=["collection", "partition_key", "record_row_id"],
+                    index_elements=["incarnation", "record_row_id"],
                     set_={
                         "operation_type": upsert_pending_operation.excluded.operation_type,
                         "applied": upsert_pending_operation.excluded.applied,
@@ -529,8 +614,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
                 ),
                 [
                     {
-                        "collection": self._collection,
-                        "partition_key": self._partition_key,
+                        "incarnation": self._incarnation,
                         "record_row_id": record_row_id,
                         "operation_type": "delete",
                         "applied": False,
@@ -541,7 +625,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
 
             await session.execute(
                 delete(self._records_table).where(
-                    self._records_table.c.uuid.in_(record_uuids),
+                    self._records_table.c.row_id.in_(record_row_ids),
                 )
             )
 
@@ -550,8 +634,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
             await session.execute(
                 update(_PendingOperationRow)
                 .where(
-                    _PendingOperationRow.collection == self._collection,
-                    _PendingOperationRow.partition_key == self._partition_key,
+                    _PendingOperationRow.incarnation == self._incarnation,
                     _PendingOperationRow.record_row_id.in_(record_row_ids),
                     _PendingOperationRow.applied.is_(False),
                 )
@@ -589,6 +672,14 @@ class SQLiteVectorStoreParams(BaseModel):
             Number of engine operations before auto-saving the index to disk.
             Only applies when index_directory is set
             (default: 1000).
+        purge_max_records (int):
+            Maximum number of records purged per call, each with its log
+            entry (default: 10000).
+        purge_max_partitions (int):
+            Maximum number of queue entries a purge call processes. Entries
+            cost round trips rather than row deletions, so they carry their
+            own bound: a backlog of empty partitions cannot turn one
+            bounded call into an unbounded transaction (default: 100).
     """
 
     sqlalchemy_engine: InstanceOf[AsyncEngine] = Field(
@@ -622,6 +713,16 @@ class SQLiteVectorStoreParams(BaseModel):
             "Only applies when index_directory is set"
         ),
     )
+    purge_max_records: int = Field(
+        10_000,
+        gt=0,
+        description="Maximum number of records purged per call, each with its log entry",
+    )
+    purge_max_partitions: int = Field(
+        100,
+        gt=0,
+        description="Maximum number of queue entries a purge call processes",
+    )
 
     @field_validator("collection")
     @classmethod
@@ -649,7 +750,11 @@ class SQLiteVectorStore(VectorStore):
     """
     Vector store backed by SQLite + a pluggable vector search engine.
 
-    Each partition gets its own records table and engine instance.
+    One records table per collection, shared by every partition of it under
+    the partition's incarnation; one engine instance and index file per
+    incarnation. The engine and its index file live in the process that
+    opened the partition, so a partition is managed by at most one process
+    at a time: an embedded store for one server process, not a shared one.
     """
 
     def __init__(self, params: SQLiteVectorStoreParams) -> None:
@@ -664,12 +769,15 @@ class SQLiteVectorStore(VectorStore):
             Path(params.index_directory) if params.index_directory else None
         )
         self._save_threshold = params.save_threshold
+        self._purge_max_records = params.purge_max_records
+        self._purge_max_partitions = params.purge_max_partitions
 
         self._create_session = async_sessionmaker(
             self._sqlalchemy_engine, expire_on_commit=False
         )
-        self._search_engines: dict[str, VectorSearchEngine] = {}
+        self._search_engines: dict[UUID, VectorSearchEngine] = {}
         self._sa_metadata = MetaData()
+        self._records_table = self._build_records_table()
 
         self._sync_sqlalchemy_engine = create_engine(
             str(self._sqlalchemy_engine.url).replace("aiosqlite", "pysqlite")
@@ -712,6 +820,9 @@ class SQLiteVectorStore(VectorStore):
 
         async with self._sqlalchemy_engine.begin() as connection:
             await connection.run_sync(BaseSQLiteVectorStore.metadata.create_all)
+            await connection.run_sync(
+                self._sa_metadata.create_all, tables=[self._records_table]
+            )
 
     @override
     async def startup(self) -> None:
@@ -723,14 +834,22 @@ class SQLiteVectorStore(VectorStore):
         self._started = True
 
     async def _replay_pending_operations(self) -> None:
-        """Replay any pending engine operations of this collection."""
+        """Replay any pending engine operations of this collection's live partitions.
+
+        A dead incarnation's rows are not replayed: nothing can read them,
+        and the purge reclaims them with the rest.
+        """
         async with self._create_session() as session:
             pending_operations = (
                 (
                     await session.execute(
-                        select(_PendingOperationRow).where(
-                            _PendingOperationRow.collection == self._collection
+                        select(_PendingOperationRow)
+                        .join(
+                            _PartitionRow,
+                            _PartitionRow.incarnation
+                            == _PendingOperationRow.incarnation,
                         )
+                        .where(_PartitionRow.collection == self._collection)
                     )
                 )
                 .scalars()
@@ -740,24 +859,28 @@ class SQLiteVectorStore(VectorStore):
         if not pending_operations:
             return
 
-        operations_by_partition: dict[str, list[_PendingOperationRow]] = defaultdict(
+        operations_by_incarnation: dict[UUID, list[_PendingOperationRow]] = defaultdict(
             list
         )
         for operation in pending_operations:
-            operations_by_partition[operation.partition_key].append(operation)
+            operations_by_incarnation[operation.incarnation].append(operation)
 
-        for partition_key, operations in operations_by_partition.items():
-            await self._replay_partition_operations(partition_key, operations)
+        for incarnation, operations in operations_by_incarnation.items():
+            await self._replay_partition_operations(incarnation, operations)
 
     async def _replay_partition_operations(
-        self, partition_key: str, operations: Iterable[_PendingOperationRow]
+        self, incarnation: UUID, operations: Iterable[_PendingOperationRow]
     ) -> None:
         async with self._create_session() as session:
-            schema = await self._stored_schema(session, partition_key)
-        if schema is None:
+            row = await self._registry_row_by_incarnation(session, incarnation)
+        if row is None:
             return
+        partition_key = row.partition_key
+        self._check_schema(partition_key, row.schema_json)
 
-        search_engine = await self._get_or_create_vector_search_engine(partition_key)
+        search_engine = await self._get_or_create_vector_search_engine(
+            incarnation, partition_key, index_saved=row.index_saved
+        )
 
         upserted_vectors: dict[int, list[float]] = {}
         deleted_row_ids: list[int] = []
@@ -780,8 +903,7 @@ class SQLiteVectorStore(VectorStore):
             await session.execute(
                 update(_PendingOperationRow)
                 .where(
-                    _PendingOperationRow.collection == self._collection,
-                    _PendingOperationRow.partition_key == partition_key,
+                    _PendingOperationRow.incarnation == incarnation,
                     _PendingOperationRow.record_row_id.in_(all_row_ids),
                 )
                 .values(applied=True)
@@ -791,15 +913,12 @@ class SQLiteVectorStore(VectorStore):
     async def shutdown(self) -> None:
         self._require_started()
         if self._index_directory is not None:
-            for partition_key, search_engine in self._search_engines.items():
-                path = self._index_path(partition_key)
-                assert path is not None
+            for incarnation, search_engine in self._search_engines.items():
                 await _save_partition_index(
                     create_session=self._create_session,
-                    collection=self._collection,
-                    partition_key=partition_key,
+                    incarnation=incarnation,
                     search_engine=search_engine,
-                    path=str(path),
+                    path=str(self._index_path(incarnation)),
                 )
         self._search_engines.clear()
         self._started = False
@@ -810,21 +929,80 @@ class SQLiteVectorStore(VectorStore):
         if not validate_identifier(partition_key):
             raise ValueError(f"Invalid partition key {partition_key!r}")
 
-        async with self._create_session() as session, session.begin():
-            if await self._stored_schema(session, partition_key) is not None:
+        attempts = 0
+        while True:
+            try:
+                await self._insert_partition_row(partition_key, uuid4())
+            except _RegistryInsertRejectedError as err:
+                attempts += 1
+                if attempts >= _MAX_MINT_ATTEMPTS:
+                    raise VectorStoreAttemptsExhaustedError(
+                        f"Creating partition {partition_key!r} of collection "
+                        f"{self._collection!r} made no progress after "
+                        f"{_MAX_MINT_ATTEMPTS} attempts"
+                    ) from err
+                continue  # Mint a fresh incarnation.
+            return
+
+    async def _insert_partition_row(
+        self, partition_key: str, incarnation: UUID
+    ) -> None:
+        """Insert a registry row for a freshly minted incarnation.
+
+        The registry's unique constraint rejects an incarnation colliding
+        with a live one; the in-transaction queue check rejects one whose
+        rows still await purge, so rows can never be adopted by, or
+        reclaimed out from under, a new partition.
+
+        Raises:
+            VectorStorePartitionAlreadyExistsError:
+                The partition key is taken.
+            _RegistryInsertRejectedError:
+                The insert cannot be kept for another reason; retry with a
+                fresh incarnation.
+        """
+        try:
+            async with self._create_session() as session, session.begin():
+                await session.execute(
+                    insert(_PartitionRow).values(
+                        collection=self._collection,
+                        partition_key=partition_key,
+                        incarnation=incarnation,
+                        schema_json=self._declared_schema().model_dump(mode="json"),
+                    )
+                )
+                garbage = (
+                    await session.execute(
+                        select(_PurgeQueueRow.incarnation).where(
+                            _PurgeQueueRow.incarnation == incarnation
+                        )
+                    )
+                ).scalar_one_or_none()
+                if garbage is not None:
+                    logger.warning(
+                        "Incarnation %s minted for partition %r of collection %r "
+                        "collides with garbage awaiting purge; re-minting",
+                        incarnation,
+                        partition_key,
+                        self._collection,
+                    )
+                    raise _RegistryInsertRejectedError(str(incarnation))
+        except IntegrityError as err:
+            async with self._create_session() as session:
+                taken = await self._registry_row(session, partition_key)
+            if taken is not None:
                 raise VectorStorePartitionAlreadyExistsError(
                     self._collection, partition_key
-                )
-
-            self._clear_search_engine_state(partition_key)
-            await self._ensure_partition_resources(session, partition_key)
-            session.add(
-                _PartitionRow(
-                    collection=self._collection,
-                    partition_key=partition_key,
-                    schema_json=self._declared_schema().model_dump(mode="json"),
-                )
+                ) from err
+            logger.warning(
+                "Registry insert for partition %r of collection %r with "
+                "incarnation %s failed and no row exists under the key; "
+                "retrying with a fresh incarnation",
+                partition_key,
+                self._collection,
+                incarnation,
             )
+            raise _RegistryInsertRejectedError(str(incarnation)) from err
 
     @override
     async def get_partition(self, partition_key: str) -> VectorStorePartition | None:
@@ -833,18 +1011,23 @@ class SQLiteVectorStore(VectorStore):
             raise ValueError(f"Invalid partition key {partition_key!r}")
 
         async with self._create_session() as session:
-            schema = await self._stored_schema(session, partition_key)
-        if schema is None:
+            row = await self._registry_row(session, partition_key)
+        if row is None:
             return None
+        self._check_schema(partition_key, row.schema_json)
 
-        index_path = self._index_path(partition_key)
+        incarnation = row.incarnation
+        index_path = self._index_path(incarnation)
         return SQLiteVectorStorePartition(
             create_session=self._create_session,
             sync_sqlalchemy_engine=self._sync_sqlalchemy_engine,
-            records_table=self._records_table(partition_key),
-            search_engine=await self._get_or_create_vector_search_engine(partition_key),
+            records_table=self._records_table,
+            search_engine=await self._get_or_create_vector_search_engine(
+                incarnation, partition_key, index_saved=row.index_saved
+            ),
             collection=self._collection,
             partition_key=partition_key,
+            incarnation=incarnation,
             indexed_properties=self._indexed_properties,
             index_path=str(index_path) if index_path is not None else None,
             save_threshold=self._save_threshold,
@@ -856,60 +1039,127 @@ class SQLiteVectorStore(VectorStore):
         if not validate_identifier(partition_key):
             raise ValueError(f"Invalid partition key {partition_key!r}")
 
-        async with self._create_session() as session:
-            exists = (
+        # O(1) regardless of partition size: the incarnation goes onto the
+        # purge queue and the registry row is deleted. Rows, log and engine
+        # become unreachable immediately: every operation resolves the
+        # registry first.
+        async with self._create_session() as session, session.begin():
+            row = await self._registry_row(session, partition_key)
+            if row is None:
+                return
+            incarnation = row.incarnation
+            await session.execute(
+                insert(_PurgeQueueRow).values(
+                    incarnation=incarnation,
+                    collection=self._collection,
+                    partition_key=partition_key,
+                    enqueued_at=func.now(),
+                )
+            )
+            await session.execute(
+                delete(_PartitionRow).where(_PartitionRow.incarnation == incarnation)
+            )
+        self._search_engines.pop(incarnation, None)
+
+    @override
+    async def purge_deleted_partitions(self) -> bool:
+        self._require_started()
+        # Reclaim dead incarnations of this collection oldest-first, within
+        # the per-call bounds, in one write transaction: a raise rolls the
+        # whole call back, which is what makes it safe to repeat. SQLite has
+        # one writer, so concurrent purgers serialize; an entry is retired
+        # only when the retirer's own DELETE found fewer rows than its
+        # budget, so a doubly-claimed entry costs empty round trips, never
+        # duplicated or missed reclamation. The index file goes before the
+        # entry: a retired entry never leaves a file behind, and a file
+        # missing on a repeated call is the expected state.
+        remaining = self._purge_max_records
+        entries = 0
+        async with self._create_session() as session, session.begin():
+            while True:
+                incarnation = (
+                    await session.execute(
+                        select(_PurgeQueueRow.incarnation)
+                        .where(_PurgeQueueRow.collection == self._collection)
+                        .order_by(_PurgeQueueRow.enqueued_at)
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if incarnation is None:
+                    return False
+
+                batch = (
+                    select(self._records_table.c.row_id)
+                    .where(self._records_table.c.incarnation == incarnation)
+                    .limit(remaining)
+                    .scalar_subquery()
+                )
+                deleted = (
+                    await (await session.connection()).execute(
+                        delete(self._records_table).where(
+                            self._records_table.c.incarnation == incarnation,
+                            self._records_table.c.row_id.in_(batch),
+                        )
+                    )
+                ).rowcount
+                if deleted == remaining:
+                    # The bound was consumed exactly; this incarnation may
+                    # have more rows, so leave its queue entry for the next
+                    # call.
+                    return True
+                remaining -= deleted
+
+                # The log is bounded by the records it describes, plus the
+                # deletes of records already gone: a batch draws on the same
+                # budget, count for count.
+                log_batch = (
+                    select(_PendingOperationRow.record_row_id)
+                    .where(_PendingOperationRow.incarnation == incarnation)
+                    .limit(remaining)
+                    .scalar_subquery()
+                )
+                purged_log = (
+                    await (await session.connection()).execute(
+                        delete(_PendingOperationRow).where(
+                            _PendingOperationRow.incarnation == incarnation,
+                            _PendingOperationRow.record_row_id.in_(log_batch),
+                        )
+                    )
+                ).rowcount
+                if purged_log == remaining:
+                    return True
+                remaining -= purged_log
+
+                self._search_engines.pop(incarnation, None)
+                index_path = self._index_path(incarnation)
+                if index_path is not None:
+                    index_path.unlink(missing_ok=True)
                 await session.execute(
-                    select(_PartitionRow.partition_key).where(
-                        _PartitionRow.collection == self._collection,
-                        _PartitionRow.partition_key == partition_key,
+                    delete(_PurgeQueueRow).where(
+                        _PurgeQueueRow.incarnation == incarnation
                     )
                 )
-            ).scalar_one_or_none()
-        if exists is None:
-            return
-
-        records_table = self._records_table(partition_key)
-        async with self._create_session() as session, session.begin():
-            connection = await session.connection()
-            await connection.run_sync(
-                self._sa_metadata.drop_all, tables=[records_table]
-            )
-
-            await session.execute(
-                delete(_PartitionRow).where(
-                    _PartitionRow.collection == self._collection,
-                    _PartitionRow.partition_key == partition_key,
-                )
-            )
-
-        self._sa_metadata.remove(records_table)
-
-        # If unlink fails, the orphan is harmless.
-        # _clear_search_engine_state will clean it up if a new partition with the same key is created.
-        index_path = self._index_path(partition_key)
-        if index_path is not None and index_path.exists():
-            index_path.unlink()
-        self._search_engines.pop(partition_key, None)
+                entries += 1
+                if entries >= self._purge_max_partitions:
+                    return True
 
     # Helpers.
 
-    def _partition_prefix(self, partition_key: str) -> str:
-        """Unique prefix for a partition's native resources."""
+    @property
+    def _table_prefix(self) -> str:
         collection = self._collection
-        return (
-            f"vector_store_sqlite_{len(collection)}_{collection}"
-            f"_{len(partition_key)}_{partition_key}"
-        )
+        return f"vector_store_sqlite_{len(collection)}_{collection}"
 
-    def _records_table(self, partition_key: str) -> Table:
-        """Get or create a SQLAlchemy Table for a per-partition records table."""
+    def _build_records_table(self) -> Table:
+        """The collection's records table, shared by its partitions."""
         return Table(
-            f"{self._partition_prefix(partition_key)}_rc",
+            f"{self._table_prefix}_rc",
             self._sa_metadata,
             Column("row_id", Integer, primary_key=True, autoincrement=True),
-            Column("uuid", Uuid, nullable=False, unique=True),
+            Column("incarnation", Uuid, nullable=False),
+            Column("uuid", Uuid, nullable=False),
             Column("properties", JSON, nullable=False, default=dict),
-            extend_existing=True,
+            UniqueConstraint("incarnation", "uuid"),
         )
 
     def _declared_schema(self) -> PartitionSchema:
@@ -918,88 +1168,59 @@ class SQLiteVectorStore(VectorStore):
             indexed_properties=indexed_property_names(self._indexed_properties),
         )
 
-    def _index_path(self, partition_key: str) -> Path | None:
-        """Return the on-disk index path for a partition, or None if in-memory."""
+    def _index_path(self, incarnation: UUID) -> Path | None:
+        """Return the on-disk index path for an incarnation, or None if in-memory."""
         if self._index_directory is None:
             return None
-        return self._index_directory / f"{self._partition_prefix(partition_key)}.idx"
+        return self._index_directory / f"{self._table_prefix}_{incarnation.hex}.idx"
 
-    def _clear_search_engine_state(self, partition_key: str) -> None:
-        """Remove any in-memory engine and on-disk index for a partition."""
-        self._search_engines.pop(partition_key, None)
-        index_path = self._index_path(partition_key)
-        if index_path is not None and index_path.exists():
-            index_path.unlink()
-
-    async def _stored_schema(
-        self,
-        session: AsyncSession,
-        partition_key: str,
-    ) -> PartitionSchema | None:
-        """The schema the partition was created under; raises if it is not this store's."""
-        stored = (
+    async def _registry_row(
+        self, session: AsyncSession, partition_key: str
+    ) -> _PartitionRow | None:
+        return (
             await session.execute(
-                select(_PartitionRow.schema_json).where(
+                select(_PartitionRow).where(
                     _PartitionRow.collection == self._collection,
                     _PartitionRow.partition_key == partition_key,
                 )
             )
         ).scalar_one_or_none()
-        if stored is None:
-            return None
+
+    @staticmethod
+    async def _registry_row_by_incarnation(
+        session: AsyncSession, incarnation: UUID
+    ) -> _PartitionRow | None:
+        return (
+            await session.execute(
+                select(_PartitionRow).where(_PartitionRow.incarnation == incarnation)
+            )
+        ).scalar_one_or_none()
+
+    def _check_schema(self, partition_key: str, stored: dict[str, JsonValue]) -> None:
+        """Raise unless the partition was created under this store's schema."""
         stored_schema = PartitionSchema.model_validate(stored)
         declared_schema = self._declared_schema()
         if stored_schema != declared_schema:
             raise VectorStorePartitionSchemaMismatchError(
                 self._collection, partition_key, stored_schema, declared_schema
             )
-        return stored_schema
 
     async def _get_or_create_vector_search_engine(
-        self, partition_key: str
+        self, incarnation: UUID, partition_key: str, *, index_saved: bool
     ) -> VectorSearchEngine:
-        if partition_key in self._search_engines:
-            return self._search_engines[partition_key]
+        if incarnation in self._search_engines:
+            return self._search_engines[incarnation]
 
         search_engine = self._vector_search_engine_factory(self._vector_dimensions)
 
-        index_path = self._index_path(partition_key)
-        if index_path is not None:
-            async with self._create_session() as session:
-                saved = (
-                    await session.execute(
-                        select(_PartitionRow.index_saved).where(
-                            _PartitionRow.collection == self._collection,
-                            _PartitionRow.partition_key == partition_key,
-                        )
-                    )
-                ).scalar_one_or_none()
+        index_path = self._index_path(incarnation)
+        if index_path is not None and index_saved:
+            # The engine just propagates whatever its backend raises.
+            # Wrap any failure as IndexLoadError so callers see one type.
+            try:
+                await search_engine.load(str(index_path))
+            except Exception as e:
+                raise IndexLoadError(self._collection, partition_key, index_path) from e
 
-            if saved:
-                # The engine just propagates whatever its backend raises.
-                # Wrap any failure as IndexLoadError so callers see one type.
-                try:
-                    await search_engine.load(str(index_path))
-                except Exception as e:
-                    raise IndexLoadError(
-                        self._collection, partition_key, index_path
-                    ) from e
-
-        self._search_engines[partition_key] = search_engine
+        self._search_engines[incarnation] = search_engine
         return search_engine
-
-    async def _ensure_partition_resources(
-        self,
-        session: AsyncSession,
-        partition_key: str,
-    ) -> tuple[Table, VectorSearchEngine]:
-        records_table = self._records_table(partition_key)
-        search_engine = await self._get_or_create_vector_search_engine(partition_key)
-
-        connection = await session.connection()
-        await connection.run_sync(
-            self._sa_metadata.create_all,
-            tables=[records_table],
-        )
-
-        return records_table, search_engine
