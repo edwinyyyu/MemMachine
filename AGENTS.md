@@ -37,6 +37,10 @@ Python and the TypeScript REST client packages.
   `uv run pytest -k "create_memory"`.
 - Run marked tests only:
   `uv run pytest -m integration` or `uv run pytest -m slow`.
+- Integration tests need Docker for their database containers. OpenAI-backed
+  tests run against the in-process fake in
+  `packages/server/server_tests/memmachine_server/fake_openai_api.py` unless
+  `OPENAI_API_KEY` is set, in which case they call the real API.
 
 ### Docker Image Build
 

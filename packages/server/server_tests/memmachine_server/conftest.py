@@ -52,6 +52,9 @@ from memmachine_server.semantic_memory.storage.sqlalchemy_pgvector_semantic impo
     SqlAlchemyPgVectorSemanticStorage,
 )
 from server_tests.memmachine_server.common.reranker.fake_embedder import FakeEmbedder
+from server_tests.memmachine_server.fake_openai_api import (
+    serve as serve_fake_openai_api,
+)
 from server_tests.memmachine_server.semantic_memory.storage.in_memory_semantic_storage import (
     InMemorySemanticStorage,
 )
@@ -96,22 +99,32 @@ def mock_llm_embedder():
 
 @pytest.fixture(scope="session")
 def openai_integration_config():
-    open_api_key = os.environ.get("OPENAI_API_KEY")
-    if not open_api_key:
-        pytest.skip("OPENAI_API_KEY environment variable not set")
+    """OpenAI endpoint and models for the integration tests.
 
-    return {
-        "api_key": open_api_key,
+    Serves the in-process fake for the whole session unless
+    OPENAI_API_KEY is set, in which case the tests call the real API.
+    """
+    models = {
         "llm_model": "gpt-4o-mini",
         "embedding_model": "text-embedding-3-small",
     }
+    open_api_key = os.environ.get("OPENAI_API_KEY")
+    if open_api_key:
+        yield models | {"api_key": open_api_key, "base_url": None}
+        return
+
+    with serve_fake_openai_api() as base_url:
+        yield models | {"api_key": "fake", "base_url": base_url}
 
 
 @pytest.fixture(scope="session")
 def openai_client(openai_integration_config):
     import openai
 
-    return openai.AsyncOpenAI(api_key=openai_integration_config["api_key"])
+    return openai.AsyncOpenAI(
+        api_key=openai_integration_config["api_key"],
+        base_url=openai_integration_config["base_url"],
+    )
 
 
 @pytest.fixture(scope="session")

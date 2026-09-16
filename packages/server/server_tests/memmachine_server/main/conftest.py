@@ -46,6 +46,7 @@ def openai_embedder_config(
                         "config": {
                             "model": openai_integration_config["embedding_model"],
                             "api_key": openai_integration_config["api_key"],
+                            "base_url": openai_integration_config["base_url"],
                             "dimensions": 1536,
                         },
                     }
@@ -75,6 +76,7 @@ def openai_language_model_config(
                         "config": {
                             "model": openai_integration_config["llm_model"],
                             "api_key": openai_integration_config["api_key"],
+                            "base_url": openai_integration_config["base_url"],
                         },
                     }
                 }
