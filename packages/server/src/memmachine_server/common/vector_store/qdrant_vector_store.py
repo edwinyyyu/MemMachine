@@ -257,9 +257,12 @@ class QdrantVectorStorePartition(VectorStorePartition):
     async def _fence(self) -> None:
         """Raise if this handle's incarnation is no longer the partition's.
 
-        Qdrant has no transactions, so the check and the operation are two
-        calls; a deletion landing between them leaves points under a dead
-        incarnation, which the purge reclaims like any other.
+        Called before an operation, to refuse a handle known to be dead,
+        and after it, so an operation completed under an incarnation that
+        died meanwhile raises instead of reporting success. Qdrant has no
+        transactions, so a write can still land under a dead incarnation:
+        between the two checks, or after a check that never ran; the
+        purge reclaims it.
         """
         if not await self._is_live(self._incarnation):
             raise VectorStorePartitionHandleStaleError(
@@ -309,6 +312,7 @@ class QdrantVectorStorePartition(VectorStorePartition):
             ]
             if points:
                 await self._upsert_with_backoff(points)
+            await self._fence()
 
     async def _upsert_with_backoff(self, points: Iterable[models.PointStruct]) -> None:
         """Upsert points, splitting the batch in half on failure and retrying."""
@@ -382,6 +386,7 @@ class QdrantVectorStorePartition(VectorStorePartition):
                 ]
                 query_results.append(QueryResult(matches=matches))
 
+            await self._fence()
             return query_results
 
     @override
@@ -410,6 +415,7 @@ class QdrantVectorStorePartition(VectorStorePartition):
                     ),
                 ),
             )
+            await self._fence()
 
 
 class QdrantVectorStoreParams(BaseModel):
