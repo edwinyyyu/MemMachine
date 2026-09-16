@@ -283,11 +283,12 @@ def test_serialize_deserialize_database_conf(db_conf_dict):
 
 
 def test_milvus_conf_defaults():
-    conf = MilvusConf(request_timeout=30.0)
+    conf = MilvusConf()
     assert conf.uri == "./milvus.db"
     assert conf.token == SecretStr("")
     assert conf.db_name == ""
     assert conf.consistency_level == "Session"
+    assert conf.request_timeout == 30.0
 
 
 def test_milvus_conf_reads_env(monkeypatch):
@@ -295,7 +296,6 @@ def test_milvus_conf_reads_env(monkeypatch):
     monkeypatch.setenv("MILVUS_TOKEN", "env-token")
     monkeypatch.setenv("MILVUS_DB_NAME", "memory")
     conf = MilvusConf(
-        request_timeout=30.0,
         uri="$MILVUS_URI",
         token=SecretStr("${MILVUS_TOKEN}"),
         db_name="$MILVUS_DB_NAME",
@@ -307,9 +307,11 @@ def test_milvus_conf_reads_env(monkeypatch):
 
 def test_milvus_conf_rejects_invalid_values():
     with pytest.raises(ValueError, match="non-empty 'uri'"):
-        MilvusConf(request_timeout=30.0, uri="")
+        MilvusConf(uri="")
     with pytest.raises(ValueError, match="consistency_level"):
-        MilvusConf(request_timeout=30.0, consistency_level="Linearizable")
+        MilvusConf(consistency_level="Linearizable")
+    with pytest.raises(ValueError, match="request_timeout"):
+        MilvusConf(request_timeout=0)
 
 
 def test_neo4j_pool_lifecycle_fields():
@@ -361,7 +363,7 @@ def test_neo4j_uri_with_special_host():
 
 
 def test_qdrant_conf_defaults():
-    conf = QdrantConf(request_timeout=30.0)
+    conf = QdrantConf()
     assert conf.host == "localhost"
     assert conf.port == 6333
     assert conf.grpc_port == 6334
@@ -369,11 +371,19 @@ def test_qdrant_conf_defaults():
     assert conf.https is False
     assert conf.registry_replication_factor == 1
     assert conf.api_key.get_secret_value() == ""
+    assert conf.request_timeout == 30.0
+
+
+def test_qdrant_conf_rejects_a_timeout_that_is_not_positive():
+    with pytest.raises(ValueError, match="request_timeout"):
+        QdrantConf(request_timeout=0)
+    with pytest.raises(ValueError, match="request_timeout"):
+        QdrantConf(request_timeout=-1.5)
 
 
 def test_qdrant_conf_api_key_from_env(monkeypatch):
     monkeypatch.setenv("QDRANT_API_KEY", "env-qdrant-key")
-    conf = QdrantConf(request_timeout=30.0, api_key=SecretStr("$QDRANT_API_KEY"))
+    conf = QdrantConf(api_key=SecretStr("$QDRANT_API_KEY"))
     assert conf.api_key == SecretStr("env-qdrant-key")
 
 
