@@ -180,6 +180,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         config: VectorStoreCollectionConfig,
         tracker: OperationTracker,
         is_live: Callable[[UUID], Awaitable[bool]],
+        request_timeout_seconds: float,
     ) -> None:
         """Initialize with a Milvus client and the incarnation the handle is bound to."""
         self._client = client
@@ -190,6 +191,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         self._config = config
         self._tracker = tracker
         self._is_live = is_live
+        self._request_timeout_seconds = request_timeout_seconds
 
     async def _fence(self) -> None:
         """Raise if this handle's incarnation is no longer the collection's.
@@ -309,6 +311,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 self._client.upsert(
                     collection_name=self._native_collection_name,
                     data=entities,
+                    timeout=self._request_timeout_seconds,
                 )
 
             await asyncio.to_thread(_upsert)
@@ -355,6 +358,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                     return_properties=return_properties,
                 ),
                 anns_field=_VECTOR_FIELD,
+                timeout=self._request_timeout_seconds,
             )
 
             results: list[QueryResult] = []
@@ -458,6 +462,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 self._client.delete,
                 collection_name=self._native_collection_name,
                 ids=primary_ids,
+                timeout=self._request_timeout_seconds,
             )
             await self._fence()
 
@@ -477,6 +482,7 @@ class MilvusVectorStoreParams(BaseModel):
             process, uses this registry, and no store on another
             deployment does.
         consistency_level (str): Collection consistency level for newly created collections.
+        request_timeout_seconds (float): Seconds any request to Milvus may take.
         metrics_factory (MetricsFactory | None): Metrics factory for collecting usage metrics.
     """
 
@@ -491,6 +497,9 @@ class MilvusVectorStoreParams(BaseModel):
     consistency_level: str = Field(
         default="Session",
         description="Milvus consistency level for newly created collections",
+    )
+    request_timeout_seconds: float = Field(
+        ..., gt=0, description="Seconds any request to Milvus may take"
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
@@ -557,6 +566,7 @@ class MilvusVectorStore(VectorStore):
         self._native_collection_locks: defaultdict[str, asyncio.Lock] = defaultdict(
             asyncio.Lock
         )
+        self._request_timeout_seconds = params.request_timeout_seconds
         self._tracker = OperationTracker(
             params.metrics_factory,
             prefix="vector_store_milvus",
@@ -586,6 +596,7 @@ class MilvusVectorStore(VectorStore):
             config=registered.config,
             tracker=self._tracker,
             is_live=self._collection_registry.is_live,
+            request_timeout_seconds=self._request_timeout_seconds,
         )
 
     async def _create_native_collection(
@@ -643,11 +654,14 @@ class MilvusVectorStore(VectorStore):
                 schema=schema,
                 index_params=index_params,
                 consistency_level=self._consistency_level,
+                timeout=self._request_timeout_seconds,
             )
 
         async with self._native_collection_locks[native_collection_name]:
             if await asyncio.to_thread(
-                self._client.has_collection, native_collection_name
+                self._client.has_collection,
+                native_collection_name,
+                timeout=self._request_timeout_seconds,
             ):
                 return
             try:
@@ -763,7 +777,9 @@ class MilvusVectorStore(VectorStore):
             )
             incarnation_filter = _incarnation_filter(claim.incarnation)
             if await asyncio.to_thread(
-                self._client.has_collection, native_collection_name
+                self._client.has_collection,
+                native_collection_name,
+                timeout=self._request_timeout_seconds,
             ):
                 held = await asyncio.to_thread(
                     self._client.query,
@@ -771,6 +787,7 @@ class MilvusVectorStore(VectorStore):
                     filter=incarnation_filter,
                     output_fields=[_ID_FIELD],
                     limit=1,
+                    timeout=self._request_timeout_seconds,
                 )
                 claim.found = bool(list(held))
             else:
@@ -781,5 +798,6 @@ class MilvusVectorStore(VectorStore):
                     self._client.delete,
                     collection_name=native_collection_name,
                     filter=incarnation_filter,
+                    timeout=self._request_timeout_seconds,
                 )
             return claim.found

@@ -4,6 +4,7 @@
 
 import math
 from datetime import UTC, datetime, timedelta, timezone
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -48,6 +49,7 @@ NAME = "test_name"
 VECTOR_DIM = 3
 VECTOR_STORE_NAME = "milvus_test"
 TOMBSTONE_RETENTION = timedelta(days=1)
+REQUEST_TIMEOUT_SECONDS = 30.0
 
 
 def _normalize(vector: list[float]) -> list[float]:
@@ -83,6 +85,7 @@ async def store(tmp_path):
                 tombstone_retention=TOMBSTONE_RETENTION,
             ),
             consistency_level="Session",
+            request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
         )
     )
     await vector_store.startup()
@@ -90,6 +93,52 @@ async def store(tmp_path):
     await vector_store.shutdown()
     client.close()
     await registry_engine.dispose()
+
+
+# MilvusClient's constructor timeout bounds only the connection; a request
+# is bounded only by the timeout passed to it, so every request must carry it.
+_CLIENT_REQUESTS = (
+    "has_collection",
+    "create_collection",
+    "query",
+    "upsert",
+    "search",
+    "delete",
+)
+
+
+@pytest.mark.asyncio
+async def test_every_request_carries_the_timeout(store, monkeypatch):
+    spies = {}
+    for name in _CLIENT_REQUESTS:
+        spies[name] = MagicMock(wraps=getattr(store._client, name))
+        monkeypatch.setattr(store._client, name, spies[name])
+
+    await store.create_collection(
+        namespace=NAMESPACE,
+        name="timed",
+        config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
+    )
+    coll = await store.open_collection(namespace=NAMESPACE, name="timed")
+    assert coll is not None
+    record, kept = (
+        _make_record(vector=_normalize([1.0, 0.0, 0.0])),
+        _make_record(vector=_normalize([0.0, 1.0, 0.0])),
+    )
+    await coll.upsert(records=[record, kept])
+    await coll.query(query_vectors=[record.vector], limit=1)
+    await coll.delete(record_uuids=[record.uuid])
+    await store.delete_collection(namespace=NAMESPACE, name="timed")
+    # The purge finds the record the deletion left and reclaims it.
+    while await store.purge_deleted_collections():
+        pass
+
+    assert {name for name, spy in spies.items() if spy.call_count} >= set(
+        _CLIENT_REQUESTS
+    )
+    for name, spy in spies.items():
+        for call in spy.call_args_list:
+            assert call.kwargs.get("timeout") == REQUEST_TIMEOUT_SECONDS, (name, call)
 
 
 @pytest_asyncio.fixture
