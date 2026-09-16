@@ -1,7 +1,7 @@
 """Qdrant-based vector store implementation."""
 
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import ClassVar, override
 from uuid import UUID
 
@@ -262,7 +262,7 @@ class QdrantVectorStorePartition(VectorStorePartition):
         died meanwhile raises instead of reporting success. Qdrant has no
         transactions, so a write can still land under a dead incarnation:
         between the two checks, or after a check that never ran; the
-        purge reclaims it.
+        tombstone's purge rounds reclaim it.
         """
         if not await self._is_live(self._incarnation):
             raise VectorStorePartitionHandleStaleError(
@@ -435,6 +435,11 @@ class QdrantVectorStoreParams(BaseModel):
             partitions exist, under which incarnation, and which dead
             incarnations await purge. Qdrant arbitrates none of that, so
             the registry lives where a primary key and a transaction can.
+        tombstone_retention_seconds (float):
+            How long a deleted partition's registry entry outlives the
+            first purge round that finds nothing under it, so a write that
+            landed after that round is still reclaimed; orders of magnitude
+            above the request timeout.
         indexed_properties (IndexedProperties):
             The declared schema every partition of this store carries: each
             key gets a payload index of its declared type.
@@ -457,6 +462,14 @@ class QdrantVectorStoreParams(BaseModel):
     registry_engine: InstanceOf[AsyncEngine] = Field(
         ...,
         description="The relational database holding the partition registry",
+    )
+    tombstone_retention_seconds: float = Field(
+        ...,
+        gt=0,
+        description=(
+            "Seconds a deleted partition's tombstone outlives the first purge "
+            "round that finds nothing under it"
+        ),
     )
     indexed_properties: IndexedProperties = Field(
         ...,
@@ -522,6 +535,7 @@ class QdrantVectorStore(VectorStore):
             engine=params.registry_engine,
             table_prefix=QdrantVectorStore._REGISTRY_TABLE_PREFIX,
             collection=self._collection,
+            tombstone_retention=timedelta(seconds=params.tombstone_retention_seconds),
         )
         self._indexed_properties = params.indexed_properties
         self._hnsw_m = 16
@@ -668,21 +682,31 @@ class QdrantVectorStore(VectorStore):
 
     @override
     async def purge_deleted_partitions(self) -> bool:
-        # One dead incarnation per call, oldest first: the claim is a row
-        # lock the registry holds while the points go by filter, a single
-        # server-side operation; the entry is retired when that returns
-        # and kept when it raises.
+        # One purge round per call, on the oldest tombstone due: the claim
+        # is a row lock the registry holds while one point is looked for
+        # and, if there is one, the points go by filter in a single
+        # server-side operation. The registry keeps or removes the
+        # tombstone by what the round found.
         async with (
             self._tracker("purge_deleted_partitions"),
-            self._registry.claim_oldest() as incarnation,
+            self._registry.claim_oldest() as claim,
         ):
-            if incarnation is None:
+            if claim is None:
                 return False
-            await self._client.delete(
+            points, _ = await self._client.scroll(
                 collection_name=self._collection,
-                points_selector=models.FilterSelector(
-                    filter=_partition_filter(incarnation),
-                ),
-                wait=True,
+                scroll_filter=_partition_filter(claim.incarnation),
+                limit=1,
+                with_payload=False,
+                with_vectors=False,
             )
-            return True
+            claim.found = bool(points)
+            if claim.found:
+                await self._client.delete(
+                    collection_name=self._collection,
+                    points_selector=models.FilterSelector(
+                        filter=_partition_filter(claim.incarnation),
+                    ),
+                    wait=True,
+                )
+            return claim.found

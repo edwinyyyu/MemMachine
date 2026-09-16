@@ -100,6 +100,7 @@ resources:
         https: false
         request_timeout_seconds: 30
         registry_database: profile_storage # relational database holding the partition registry; required
+        tombstone_retention_seconds: 86400 # a deleted partition's tombstone outlives its first clean purge round this long
         # api_key: <YOUR_QDRANT_API_KEY>   # required for Qdrant Cloud
     # VectorStore for vector-backed semantic memory.
     # Wire it via `semantic_memory.vector_collection`.
@@ -113,6 +114,7 @@ resources:
         https: false
         request_timeout_seconds: 30
         registry_database: profile_storage # relational database holding the partition registry; required
+        tombstone_retention_seconds: 86400 # a deleted partition's tombstone outlives its first clean purge round this long
         # api_key: <YOUR_QDRANT_API_KEY>   # required for Qdrant Cloud
     #
     # Alternative: Milvus. The local .db URI uses Milvus Lite; replace it with
@@ -126,6 +128,7 @@ resources:
     #     consistency_level: Session       # Strong, Session, Bounded, Eventually
     #     request_timeout_seconds: 30
     #     registry_database: profile_storage # relational database holding the partition registry; required
+    #     tombstone_retention_seconds: 86400 # a deleted partition's tombstone outlives its first clean purge round this long
     # semantic_vector_store:
     #   provider: milvus
     #   config:
@@ -135,6 +138,7 @@ resources:
     #     consistency_level: Session
     #     request_timeout_seconds: 30
     #     registry_database: profile_storage # relational database holding the partition registry; required
+    #     tombstone_retention_seconds: 86400 # a deleted partition's tombstone outlives its first clean purge round this long
     #
     # Alternative: a local file-backed SQLite vector store. Single-writer; OK
     # for embedded/dev use, not recommended for multi-process server deploys.

@@ -18,7 +18,8 @@ and `purge_deleted_partitions` reclaims the records afterward.
 `RemotePartitionLifecycleContract` adds what holds for a store whose
 records live outside the registry's database: a write can land under an
 incarnation that died while it was in flight; the operation then raises
-instead of reporting success, and the purge reclaims the records.
+instead of reporting success, and the incarnation's tombstone has the
+records reclaimed by a later purge round.
 """
 
 import math
@@ -189,6 +190,6 @@ class RemotePartitionLifecycleContract(PartitionLifecycleContract):
 
         # The write landed, under an incarnation nothing can reach...
         assert await self.count_stored(store) == baseline + 2
-        # ...and the purge reclaims it.
+        # ...and the tombstone's next round reclaims it.
         assert await store.purge_deleted_partitions() is True
         assert await self._drained_count(store) == baseline
