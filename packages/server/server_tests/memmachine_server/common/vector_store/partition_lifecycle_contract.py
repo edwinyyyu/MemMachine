@@ -14,6 +14,11 @@ incarnation minted per life of the key. The contract: a handle is bound to
 one incarnation and raises once that incarnation is deleted; a partition
 re-created under a deleted key starts empty; deletion is a registry write
 and `purge_deleted_partitions` reclaims the records afterward.
+
+`RemotePartitionLifecycleContract` adds what holds for a store whose
+records live outside the registry's database: a write can land under an
+incarnation that died while it was in flight; the operation then raises
+instead of reporting success, and the purge reclaims the records.
 """
 
 import math
@@ -154,4 +159,36 @@ class PartitionLifecycleContract:
             record.uuid for record in kept
         }
         await store.delete_partition(live_key)
+        assert await self._drained_count(store) == baseline
+
+
+class RemotePartitionLifecycleContract(PartitionLifecycleContract):
+    """The lifecycle contract plus the late-write clause, for stores with a remote backend."""
+
+    @pytest.mark.asyncio
+    async def test_a_write_landing_under_a_dead_incarnation_raises_and_is_reclaimed(
+        self, store
+    ):
+        partition = await _fresh(store, LIFECYCLE_KEY)
+        baseline = await self._drained_count(store)
+        records = _records(store.vector_dimensions, 2)
+
+        # The partition dies between the handle's check and its write.
+        is_live = partition._is_live
+
+        async def deleted_once_checked(incarnation) -> bool:
+            live = await is_live(incarnation)
+            if live:
+                await store.delete_partition(LIFECYCLE_KEY)
+            return live
+
+        partition._is_live = deleted_once_checked
+
+        with pytest.raises(VectorStorePartitionHandleStaleError, match=LIFECYCLE_KEY):
+            await partition.upsert(records=records)
+
+        # The write landed, under an incarnation nothing can reach...
+        assert await self.count_stored(store) == baseline + 2
+        # ...and the purge reclaims it.
+        assert await store.purge_deleted_partitions() is True
         assert await self._drained_count(store) == baseline
