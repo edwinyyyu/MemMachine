@@ -43,7 +43,7 @@ COLLECTION = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
 REQUEST_TIMEOUT_SECONDS = 30
-TOMBSTONE_RETENTION_SECONDS = 86400.0
+TOMBSTONE_RETENTION_SECONDS = 86400
 
 INDEXED_PROPERTIES: dict[str, type[PropertyValue]] = {
     "name": str,

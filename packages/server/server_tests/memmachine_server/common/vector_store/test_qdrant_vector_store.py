@@ -38,7 +38,7 @@ from server_tests.memmachine_server.common.vector_store.partition_lifecycle_cont
 COLLECTION = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
-TOMBSTONE_RETENTION_SECONDS = 86400.0
+TOMBSTONE_RETENTION_SECONDS = 86400
 
 INDEXED_PROPERTIES: dict[str, type[PropertyValue]] = {
     "name": str,
