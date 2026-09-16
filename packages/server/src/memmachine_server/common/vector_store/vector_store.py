@@ -29,8 +29,9 @@ class VectorStorePartition(ABC):
     minted when the partition was created: once the partition is deleted,
     or deleted and re-created under the same key, every operation of a
     handle bound to the old incarnation raises
-    `VectorStorePartitionHandleStaleError`, and none of them can reach the
-    successor's records.
+    `VectorStorePartitionHandleStaleError`, including one that completes
+    after the deletion, and none of them can reach the successor's
+    records.
 
     A partition stores every property of a record and filters on any key;
     the keys its store declares (`indexed_properties`) are indexed for

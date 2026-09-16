@@ -32,7 +32,7 @@ from memmachine_server.common.vector_store.qdrant_vector_store import (
     QdrantVectorStorePartition,
 )
 from server_tests.memmachine_server.common.vector_store.partition_lifecycle_contract import (
-    PartitionLifecycleContract,
+    RemotePartitionLifecycleContract,
 )
 
 COLLECTION = "test_namespace"
@@ -1243,7 +1243,7 @@ class TestDeclaredPayloadIndexes:
         await store.delete_partition("declared_indexes")
 
 
-class TestPartitionLifecycle(PartitionLifecycleContract):
+class TestPartitionLifecycle(RemotePartitionLifecycleContract):
     """The partition lifecycle contract, against this store."""
 
     @staticmethod
