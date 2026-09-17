@@ -222,9 +222,12 @@ offset the next read starts at, so a session is read once however many
 turns it runs for.
 
 The mark is a shortcut rather than a record. An event's id comes from
-the transcript, so a batch the server already holds is rejected whole
-and capture moves on; deleting the state file costs one rejected batch
-per session, never a second copy of anything.
+the transcript, so deleting the state file costs one rejected batch per
+session, never a second copy of anything. A batch the server answers
+`event_exists` to is posted again an event at a time, and the mark moves
+only once the server holds every one of them, so a session resumed or
+forked from another, whose transcript repeats entries that are already
+stored, loses neither what it repeats nor what is new.
 
 A failure -- a server that does not answer, or answers anything else --
 leaves the mark where it was and exits non-zero, so the next `Stop`

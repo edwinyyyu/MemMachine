@@ -186,13 +186,14 @@ def test_events_the_server_already_holds_move_the_mark_too(
     events_server, tmp_path, monkeypatch, home_directory
 ):
     transcript = claude_transcript(tmp_path / "session.jsonl", count=1)
-    events_server.answers = [
-        (409, {"error": {"code": "event_exists", "message": "already held"}})
-    ]
+    held = (409, {"error": {"code": "event_exists", "message": "already held"}})
+    events_server.answers = [held, held]
 
     exit_code = run_capture(events_server, transcript, monkeypatch)
 
     assert exit_code == 0
+    # The batch is held, and so is the one event it holds.
+    assert [len(batch) for batch in events_server.batches] == [1, 1]
     assert state_of(home_directory)[SESSION]["index"] == 1
 
 
@@ -209,6 +210,51 @@ def test_a_server_failure_leaves_the_mark_where_it_was(
     assert exit_code == 1
     assert state_of(home_directory) == {}
     assert "answered 500" in capsys.readouterr().err
+
+
+def test_a_batch_the_server_already_holds_is_posted_event_by_event(
+    events_server, tmp_path, monkeypatch, home_directory, capsys
+):
+    transcript = claude_transcript(tmp_path / "session.jsonl", count=2)
+    held = (409, {"error": {"code": "event_exists", "message": "already held"}})
+    # The batch carries one event the server holds and one it does not,
+    # which is what a session forked from another looks like.
+    events_server.answers = [held, held, (200, {"stored": []})]
+
+    exit_code = run_capture(events_server, transcript, monkeypatch)
+
+    assert exit_code == 0
+    assert [len(batch) for batch in events_server.batches] == [2, 1, 1]
+    assert [
+        event["blocks"][0]["text"]
+        for batch in events_server.batches[1:]
+        for event in batch
+    ] == [
+        "message 1",
+        "message 2",
+    ]
+    assert state_of(home_directory)[SESSION]["index"] == 2
+    # Only the event the server did not hold was stored now.
+    assert "captured 1 event of" in capsys.readouterr().err
+
+
+def test_a_failure_during_the_event_by_event_pass_keeps_the_mark(
+    events_server, tmp_path, monkeypatch, home_directory
+):
+    transcript = claude_transcript(tmp_path / "session.jsonl", count=3)
+    events_server.answers = [
+        (409, {"error": {"code": "event_exists", "message": "already held"}}),
+        (200, {"stored": []}),
+        (500, {"error": {"code": "internal", "message": "no"}}),
+    ]
+
+    exit_code = run_capture(events_server, transcript, monkeypatch)
+
+    assert exit_code == 1
+    assert [len(batch) for batch in events_server.batches] == [3, 1, 1]
+    # The third event was never reached, so the mark stays before the
+    # batch and the next `Stop` posts all three again.
+    assert state_of(home_directory) == {}
 
 
 def test_a_conflict_of_another_kind_is_a_failure(

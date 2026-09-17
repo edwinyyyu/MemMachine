@@ -11,8 +11,11 @@ Claude Code and `$CODEX_HOME/memmachine/capture-state.json` for Codex.
 That mark is a shortcut rather than a record: a batch is stored whole or
 rejected whole under the event ids the transcript fixes, so a lost mark
 costs one batch the server answers `event_exists` to, never a second
-copy of anything. A failure leaves the mark where it was and answers
-non-zero, so the next `Stop` posts the same entries again.
+copy of anything. A batch the server answers `event_exists` to is posted
+again an event at a time, and the mark moves only once the server holds
+every one of them, so a batch that mixes events already held with events
+that are new loses neither. A failure leaves the mark where it was and
+answers non-zero, so the next `Stop` posts the same entries again.
 """
 
 from __future__ import annotations
@@ -140,8 +143,7 @@ def _capture_session(
     with requests.Session() as http:
         for events, batch_mark in _batched(entries, mark):
             if events:
-                _post_batch(http, url, events, deadline=deadline)
-                posted += len(events)
+                posted += _post_batch(http, url, events, deadline=deadline)
             _save_mark(state_path, session_id, batch_mark)
     return posted
 
@@ -176,15 +178,41 @@ def _post_batch(
     events: list[dict[str, Any]],
     *,
     deadline: float,
-) -> None:
-    """Post one batch and return once the server holds it.
+) -> int:
+    """Post one batch and return once the server holds every event of it.
 
-    A batch is stored whole or rejected whole, so `event_exists` says
-    the server already holds these events and the caller moves on.
+    A batch is stored whole or rejected whole, so `event_exists` for a
+    batch says the server holds one of these events, not that it holds
+    them all: a session resumed or forked from another repeats entries
+    stored under the ids they already had. The batch is then posted an
+    event at a time, in the order it was read, where `event_exists` is
+    that one event and says it is held. The caller moves its mark only
+    when this returns, so nothing is stored twice and nothing is lost.
+
+    Returns:
+        How many of the events the server stored now.
 
     Raises:
         CodingAgentError: If the budget ran out, the server could not be
             reached, or it answered anything else.
+    """
+    if _stored(http, url, events, deadline=deadline):
+        return len(events)
+    return sum(1 for event in events if _stored(http, url, [event], deadline=deadline))
+
+
+def _stored(
+    http: requests.Session,
+    url: str,
+    events: list[dict[str, Any]],
+    *,
+    deadline: float,
+) -> bool:
+    """Whether the server stored what was posted, against already holding it.
+
+    Raises:
+        CodingAgentError: If the budget ran out, the server could not be
+            reached, or it answered anything but stored or held.
     """
     remaining = deadline - time.monotonic()
     if remaining <= 0:
@@ -194,10 +222,10 @@ def _post_batch(
     except requests.RequestException as error:
         raise CodingAgentError(f"{url} could not be reached: {error}") from error
     if response.status_code == _OK:
-        return
+        return True
     code, message = _error_of(response)
     if response.status_code == _CONFLICT and code == "event_exists":
-        return
+        return False
     raise CodingAgentError(f"{url} answered {response.status_code}: {message}")
 
 
