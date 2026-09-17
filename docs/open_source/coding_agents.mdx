@@ -30,7 +30,7 @@ Every passage carries markers that name where it sits:
 
 ```text
 [session:"019b2f1c-6c7a-7bd4-9f3a-4c2d8e5b1a70"]
-[segment:4f9c1a2b3d4e5f60718293a4b5c6d7e8] Edwin asked why the installer
+[segment:4f9c1a2b3d4e5f60718293a4b5c6d7e8] The user asked why the installer
 backs the file up before it writes.
 ```
 
@@ -48,7 +48,7 @@ A direction that comes back empty means the session ran out that way.
 ## Choosing a tenant name
 
 A tenant is one human user: every session of every agent that user runs
-shares one memory, so a name like `edwin` or a work email is the right
+shares one memory, so a name like `alice` or a work email is the right
 grain. Sessions are the agent's own session ids and need no setting up,
 and the project an agent runs in is recorded on what it captures rather
 than kept in a tenant of its own. Pick the name once and use it for
@@ -61,7 +61,7 @@ Install for every project this user opens (user scope):
 ```bash
 memmachine agent install claude-code \
   --server https://memmachine.example.com \
-  --tenant edwin
+  --tenant alice
 ```
 
 This runs Claude Code's own command, which stores the entry in
@@ -70,7 +70,7 @@ This runs Claude Code's own command, which stores the entry in
 ```bash
 claude mcp add --transport http --scope user memmachine \
   https://memmachine.example.com/v1/mcp \
-  --header "X-MemMachine-Tenant: edwin"
+  --header "X-MemMachine-Tenant: alice"
 ```
 
 The `claude` executable has to be on `PATH`. Without it the installer
@@ -83,7 +83,7 @@ scope):
 ```bash
 memmachine agent install claude-code \
   --server https://memmachine.example.com \
-  --tenant edwin \
+  --tenant alice \
   --scope project
 ```
 
@@ -97,7 +97,7 @@ server in it:
       "type": "http",
       "url": "https://memmachine.example.com/v1/mcp",
       "headers": {
-        "X-MemMachine-Tenant": "edwin"
+        "X-MemMachine-Tenant": "alice"
       }
     }
   }
@@ -115,7 +115,7 @@ Install for this user (user scope):
 ```bash
 memmachine agent install codex \
   --server https://memmachine.example.com \
-  --tenant edwin
+  --tenant alice
 ```
 
 This writes two tables into `$CODEX_HOME/config.toml`, which defaults to
@@ -126,7 +126,7 @@ This writes two tables into `$CODEX_HOME/config.toml`, which defaults to
 url = "https://memmachine.example.com/v1/mcp"
 
 [mcp_servers.memmachine.http_headers]
-X-MemMachine-Tenant = "edwin"
+X-MemMachine-Tenant = "alice"
 ```
 
 Install for one repository (project scope) with `--scope project`, which
