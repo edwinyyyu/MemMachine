@@ -5,6 +5,10 @@ headers, so one endpoint (`<server>/v1/mcp`) and one header
 (`X-MemMachine-Tenant`) serve both, and the tools (`memory_query`,
 `memory_expand`) live on the server. This module writes and removes that
 entry in each agent's own configuration.
+
+Capture is the other half: both agents run a `Stop` hook at the end of a
+turn, with the same command line and the same handler shape, so this
+module writes that hook into the file each agent reads its hooks from.
 """
 
 from __future__ import annotations
@@ -29,10 +33,21 @@ TENANT_HEADER_NAME = "X-MemMachine-Tenant"
 CLAUDE_EXECUTABLE_NAME = "claude"
 CLAUDE_PROJECT_CONFIG_NAME = ".mcp.json"
 CLAUDE_DIRECTORY_NAME = ".claude"
+CLAUDE_SETTINGS_NAME = "settings.json"
 CODEX_HOME_VARIABLE = "CODEX_HOME"
 CODEX_DIRECTORY_NAME = ".codex"
 CODEX_CONFIG_NAME = "config.toml"
+CODEX_HOOKS_NAME = "hooks.json"
 BACKUP_SUFFIX = ".bak"
+
+HOOK_EVENT_NAME = "Stop"
+# What the hook runs, and what a handler this installer wrote is
+# recognized by, so a second install replaces it rather than adding one.
+HOOK_COMMAND_MARKER = "memmachine_client.cli agent capture"
+# Seconds a hook may take. Capture posts one batch at a time under a
+# budget of its own, and this bounds what the agent waits for if the
+# machine it runs on stalls.
+HOOK_TIMEOUT_SECONDS = 10
 
 CODEX_TABLE_NAMES = (
     ("mcp_servers", MCP_SERVER_NAME),
@@ -72,48 +87,72 @@ def run_agent_command(args: argparse.Namespace) -> int:
 
 
 def install_claude_code(*, server: str, tenant: str, scope: str, dry_run: bool) -> int:
-    """Register the MemMachine MCP server with Claude Code.
+    """Register the MemMachine MCP server and capture hook with Claude Code.
 
-    User scope is delegated to the `claude` executable, which owns that
-    file; project scope writes `.mcp.json` in the current directory.
+    The MCP entry of user scope is delegated to the `claude` executable,
+    which owns that file; project scope writes `.mcp.json` in the
+    current directory. The `Stop` hook goes into the scope's own
+    settings file either way.
     """
     url = _mcp_endpoint_url(server)
     if scope == "project":
-        entry = {
+        entry: dict[str, object] = {
             "type": "http",
             "url": url,
             "headers": {TENANT_HEADER_NAME: tenant},
         }
-        return _edit_claude_project_config(entry, dry_run=dry_run)
-    # `claude mcp add` refuses a name it already holds, so a reinstall
-    # removes the earlier entry first and leaves exactly one behind.
-    return _run_claude_executable(
-        [
-            "mcp",
-            "add",
-            "--transport",
-            "http",
-            "--scope",
-            "user",
-            MCP_SERVER_NAME,
-            url,
-            "--header",
-            f"{TENANT_HEADER_NAME}: {tenant}",
-        ],
-        preceded_by=["mcp", "remove", "--scope", "user", MCP_SERVER_NAME],
+        mcp_result = _edit_claude_project_config(entry, dry_run=dry_run)
+    else:
+        # `claude mcp add` refuses a name it already holds, so a
+        # reinstall removes the earlier entry first and leaves exactly
+        # one behind.
+        mcp_result = _run_claude_executable(
+            [
+                "mcp",
+                "add",
+                "--transport",
+                "http",
+                "--scope",
+                "user",
+                MCP_SERVER_NAME,
+                url,
+                "--header",
+                f"{TENANT_HEADER_NAME}: {tenant}",
+            ],
+            preceded_by=["mcp", "remove", "--scope", "user", MCP_SERVER_NAME],
+            dry_run=dry_run,
+        )
+    hook_result = _edit_stop_hook(
+        _claude_settings_path(scope),
+        _capture_command("claude-code", server=server, tenant=tenant),
         dry_run=dry_run,
     )
+    return mcp_result or hook_result
 
 
 def disable_claude_code(*, scope: str) -> int:
-    """Remove the MemMachine MCP server entry from Claude Code."""
+    """Remove the MemMachine MCP server entry and capture hook from Claude Code."""
     if scope == "project":
-        return _edit_claude_project_config(None, dry_run=False)
-    return _run_claude_executable(
-        ["mcp", "remove", "--scope", "user", MCP_SERVER_NAME],
-        preceded_by=None,
-        dry_run=False,
-    )
+        mcp_result = _edit_claude_project_config(None, dry_run=False)
+    else:
+        mcp_result = _run_claude_executable(
+            ["mcp", "remove", "--scope", "user", MCP_SERVER_NAME],
+            preceded_by=None,
+            dry_run=False,
+        )
+    hook_result = _edit_stop_hook(_claude_settings_path(scope), None, dry_run=False)
+    return mcp_result or hook_result
+
+
+def _claude_settings_path(scope: str) -> Path:
+    """The settings file a scope's Claude Code hooks live in.
+
+    User scope is `~/.claude/settings.json`, and project scope is the
+    `.claude` directory of the current directory.
+    """
+    if scope == "project":
+        return Path.cwd() / CLAUDE_DIRECTORY_NAME / CLAUDE_SETTINGS_NAME
+    return Path.home() / CLAUDE_DIRECTORY_NAME / CLAUDE_SETTINGS_NAME
 
 
 def _run_claude_executable(
@@ -169,15 +208,7 @@ def _edit_claude_project_config(
     """
     path = Path.cwd() / CLAUDE_PROJECT_CONFIG_NAME
     original_text = path.read_text(encoding="utf-8") if path.exists() else ""
-    document: dict[str, object] = {}
-    if original_text.strip():
-        try:
-            loaded = json.loads(original_text)
-        except json.JSONDecodeError as error:
-            raise CodingAgentError(f"{path} is not valid JSON: {error}") from error
-        if not isinstance(loaded, dict):
-            raise CodingAgentError(f"{path} does not hold a JSON object")
-        document = loaded
+    document = _loaded_json_object(original_text, path)
 
     servers = document.get("mcpServers", {})
     if not isinstance(servers, dict):
@@ -223,7 +254,13 @@ def install_codex(*, server: str, tenant: str, scope: str, dry_run: bool) -> int
             f"the edit of {path} would not have produced the intended "
             f"mcp_servers.{MCP_SERVER_NAME} table. The file is unchanged."
         )
-    return _apply_config_change(path, original_text, new_text, dry_run=dry_run)
+    mcp_result = _apply_config_change(path, original_text, new_text, dry_run=dry_run)
+    hook_result = _edit_stop_hook(
+        _codex_hooks_path(scope),
+        _capture_command("codex", server=server, tenant=tenant),
+        dry_run=dry_run,
+    )
+    return mcp_result or hook_result
 
 
 def disable_codex(*, scope: str) -> int:
@@ -231,7 +268,7 @@ def disable_codex(*, scope: str) -> int:
     path = _codex_config_path(scope)
     if not path.exists():
         sys.stdout.write(f"{path} does not exist\n")
-        return 0
+        return _edit_stop_hook(_codex_hooks_path(scope), None, dry_run=False)
     original_text = path.read_text(encoding="utf-8")
     document = _loaded_toml(original_text, path)
     spans = _memmachine_table_spans(original_text.splitlines(keepends=True))
@@ -246,7 +283,9 @@ def disable_codex(*, scope: str) -> int:
             f"the edit of {path} would have left mcp_servers.{MCP_SERVER_NAME} "
             "behind. The file is unchanged."
         )
-    return _apply_config_change(path, original_text, new_text, dry_run=False)
+    mcp_result = _apply_config_change(path, original_text, new_text, dry_run=False)
+    hook_result = _edit_stop_hook(_codex_hooks_path(scope), None, dry_run=False)
+    return mcp_result or hook_result
 
 
 def _codex_config_path(scope: str) -> Path:
@@ -258,6 +297,18 @@ def _codex_config_path(scope: str) -> Path:
     if scope == "project":
         return Path.cwd() / CODEX_DIRECTORY_NAME / CODEX_CONFIG_NAME
     return codex_home_directory() / CODEX_CONFIG_NAME
+
+
+def _codex_hooks_path(scope: str) -> Path:
+    """Return the `hooks.json` a scope owns.
+
+    Codex reads hooks from `hooks.json` beside the configuration it
+    reads the MCP servers from, so the two scopes are the same two
+    directories.
+    """
+    if scope == "project":
+        return Path.cwd() / CODEX_DIRECTORY_NAME / CODEX_HOOKS_NAME
+    return codex_home_directory() / CODEX_HOOKS_NAME
 
 
 def codex_home_directory() -> Path:
@@ -385,6 +436,153 @@ def _codex_entry(document: dict[str, object]) -> object:
     if not isinstance(servers, dict):
         return None
     return servers.get(MCP_SERVER_NAME)
+
+
+def _edit_stop_hook(path: Path, command: str | None, *, dry_run: bool) -> int:
+    """Set or remove the MemMachine `Stop` hook in an agent's hooks file.
+
+    Claude Code and Codex read the same shape, a `hooks` object whose
+    `Stop` key holds groups of handlers, so one edit serves both. Every
+    other hook and every other key of the file is carried over, and a
+    handler this installer wrote is replaced where it stands, so a
+    second install leaves one behind. A file that already reads the way
+    this edit would leave it is not written.
+    """
+    if command is None and not path.exists():
+        sys.stdout.write(f"{path} does not exist\n")
+        return 0
+    original_text = path.read_text(encoding="utf-8") if path.exists() else ""
+    document = _loaded_json_object(original_text, path)
+    edited = _document_with_stop_hook(document, command, path)
+    if edited == document:
+        held = (
+            "already holds this hook"
+            if command is not None
+            else "holds no hook of ours"
+        )
+        sys.stdout.write(f"{path} {held}\n")
+        return 0
+    new_text = f"{json.dumps(edited, indent=2)}\n"
+    return _apply_config_change(path, original_text, new_text, dry_run=dry_run)
+
+
+def _document_with_stop_hook(
+    document: dict[str, object],
+    command: str | None,
+    path: Path,
+) -> dict[str, object]:
+    """The hooks file with our `Stop` handler set to `command`, or removed.
+
+    A `Stop` key left holding nothing goes, and so does a `hooks` key
+    left holding nothing, so disabling leaves the file as it was before
+    the install.
+    """
+    hooks = document.get("hooks", {})
+    if not isinstance(hooks, dict):
+        raise CodingAgentError(f'{path} has a "hooks" key that is not an object')
+    groups = hooks.get(HOOK_EVENT_NAME, [])
+    if not isinstance(groups, list):
+        raise CodingAgentError(
+            f'{path} has a "hooks.{HOOK_EVENT_NAME}" key that is not a list'
+        )
+    edited_hooks = dict(hooks)
+    edited_groups = _stop_hook_groups(groups, command)
+    if edited_groups:
+        edited_hooks[HOOK_EVENT_NAME] = edited_groups
+    else:
+        edited_hooks.pop(HOOK_EVENT_NAME, None)
+    edited = dict(document)
+    if edited_hooks:
+        edited["hooks"] = edited_hooks
+    else:
+        edited.pop("hooks", None)
+    return edited
+
+
+def _stop_hook_groups(groups: list[object], command: str | None) -> list[object]:
+    """The `Stop` groups with our handler set to `command`, or removed.
+
+    Every group and every handler that is not ours is carried over in
+    the order it was found, a group left holding no handler goes, and a
+    file that held none of ours gets a group of its own.
+    """
+    edited: list[object] = []
+    written = False
+    for group in groups:
+        handlers = group.get("hooks") if isinstance(group, dict) else None
+        if not isinstance(group, dict) or not isinstance(handlers, list):
+            edited.append(group)
+            continue
+        kept: list[object] = []
+        for handler in handlers:
+            if not _is_capture_handler(handler):
+                kept.append(handler)
+            elif command is not None and not written:
+                kept.append(_capture_handler(command))
+                written = True
+        if kept:
+            edited.append({**group, "hooks": kept})
+    if command is not None and not written:
+        edited.append({"hooks": [_capture_handler(command)]})
+    return edited
+
+
+def _is_capture_handler(handler: object) -> bool:
+    """Whether a handler is one this installer wrote.
+
+    A handler is ours if it runs the capture command, whatever server,
+    tenant and interpreter it names, so an install written by an earlier
+    version of this client is replaced rather than left beside its
+    replacement.
+    """
+    if not isinstance(handler, dict):
+        return False
+    return HOOK_COMMAND_MARKER in str(handler.get("command", ""))
+
+
+def _capture_handler(command: str) -> dict[str, object]:
+    """The handler that runs capture when a turn ends."""
+    return {"type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECONDS}
+
+
+def _capture_command(agent_name: str, *, server: str, tenant: str) -> str:
+    """The command line a `Stop` hook runs to capture a session.
+
+    Both agents run a handler's command through a shell, whose PATH need
+    not hold the interpreter this client is installed in, so the command
+    names that interpreter by its own path and reaches the client as a
+    module of it.
+    """
+    return shlex.join(
+        [
+            sys.executable,
+            "-m",
+            "memmachine_client.cli",
+            "agent",
+            "capture",
+            agent_name,
+            "--server",
+            server,
+            "--tenant",
+            tenant,
+        ]
+    )
+
+
+def _loaded_json_object(text: str, path: Path) -> dict[str, object]:
+    """Parse a JSON object, naming the file that does not hold one.
+
+    A file that holds nothing yet holds no keys.
+    """
+    if not text.strip():
+        return {}
+    try:
+        loaded = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise CodingAgentError(f"{path} is not valid JSON: {error}") from error
+    if not isinstance(loaded, dict):
+        raise CodingAgentError(f"{path} does not hold a JSON object")
+    return loaded
 
 
 def _loaded_toml(text: str, path: Path) -> dict[str, object]:

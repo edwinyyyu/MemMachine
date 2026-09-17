@@ -1,6 +1,7 @@
 """Tests for the coding agent installer."""
 
 import json
+import shlex
 import subprocess
 import sys
 
@@ -40,6 +41,16 @@ Not a table header: [mcp_servers.memmachine]
 and neither is this one: [mcp_servers.memmachine.http_headers]
 \"\"\"
 """
+
+
+@pytest.fixture(autouse=True)
+def home_directory(tmp_path, monkeypatch):
+    """Keep every file an install writes inside a temporary home directory."""
+    directory = tmp_path / "home"
+    directory.mkdir()
+    monkeypatch.setenv("HOME", str(directory))
+    monkeypatch.setenv("USERPROFILE", str(directory))
+    return directory
 
 
 @pytest.fixture
@@ -455,3 +466,302 @@ def test_a_server_no_agent_could_reach_is_refused(codex_home, capsys):
     assert exit_code == 1
     assert not (codex_home / "config.toml").exists()
     assert "must be an http or https URL" in capsys.readouterr().err
+
+
+def capture_command(agent_name, server=SERVER, tenant=TENANT):
+    """The command line the installer writes into a `Stop` hook."""
+    return shlex.join(
+        [
+            sys.executable,
+            "-m",
+            "memmachine_client.cli",
+            "agent",
+            "capture",
+            agent_name,
+            "--server",
+            server,
+            "--tenant",
+            tenant,
+        ]
+    )
+
+
+def capture_group(agent_name, server=SERVER):
+    """The `Stop` group the installer writes."""
+    return {
+        "hooks": [
+            {
+                "type": "command",
+                "command": capture_command(agent_name, server=server),
+                "timeout": 10,
+            }
+        ]
+    }
+
+
+def test_claude_code_user_scope_registers_the_capture_hook(
+    claude_commands, home_directory
+):
+    exit_code = run_cli(
+        "agent", "install", "claude-code", "--server", SERVER, "--tenant", TENANT
+    )
+
+    assert exit_code == 0
+    settings = json.loads((home_directory / ".claude" / "settings.json").read_text())
+    assert settings == {"hooks": {"Stop": [capture_group("claude-code")]}}
+    # The hook names the interpreter this client is installed in, so a
+    # shell whose PATH does not hold it still runs the capture.
+    command = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert command.startswith(shlex.quote(sys.executable))
+    assert "-m memmachine_client.cli agent capture claude-code" in command
+
+
+def test_claude_code_project_scope_registers_the_capture_hook(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = run_cli(
+        "agent",
+        "install",
+        "claude-code",
+        "--server",
+        SERVER,
+        "--tenant",
+        TENANT,
+        "--scope",
+        "project",
+    )
+
+    assert exit_code == 0
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    assert settings == {"hooks": {"Stop": [capture_group("claude-code")]}}
+
+
+def test_codex_user_scope_registers_the_capture_hook(codex_home):
+    exit_code = run_cli(
+        "agent", "install", "codex", "--server", SERVER, "--tenant", TENANT
+    )
+
+    assert exit_code == 0
+    hooks = json.loads((codex_home / "hooks.json").read_text())
+    assert hooks == {"hooks": {"Stop": [capture_group("codex")]}}
+
+
+def test_codex_project_scope_registers_the_capture_hook(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = run_cli(
+        "agent",
+        "install",
+        "codex",
+        "--server",
+        SERVER,
+        "--tenant",
+        TENANT,
+        "--scope",
+        "project",
+    )
+
+    assert exit_code == 0
+    hooks = json.loads((tmp_path / ".codex" / "hooks.json").read_text())
+    assert hooks == {"hooks": {"Stop": [capture_group("codex")]}}
+
+
+def test_installing_twice_leaves_one_hook(claude_commands, home_directory, capsys):
+    for _ in range(2):
+        assert (
+            run_cli(
+                "agent",
+                "install",
+                "claude-code",
+                "--server",
+                SERVER,
+                "--tenant",
+                TENANT,
+            )
+            == 0
+        )
+
+    settings_path = home_directory / ".claude" / "settings.json"
+    assert json.loads(settings_path.read_text()) == {
+        "hooks": {"Stop": [capture_group("claude-code")]}
+    }
+    assert "already holds this hook" in capsys.readouterr().out
+    # The second install found the file right and left it, so there is
+    # nothing for a backup to hold.
+    assert not settings_path.with_suffix(".json.bak").exists()
+
+
+def test_the_hook_of_an_earlier_install_is_replaced_where_it_stands(
+    claude_commands, home_directory
+):
+    settings_path = home_directory / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    original = {
+        "hooks": {
+            "Stop": [
+                {
+                    "hooks": [
+                        {"type": "command", "command": "chime.sh"},
+                        {
+                            "type": "command",
+                            "command": capture_command(
+                                "claude-code", server="http://old.test:8080"
+                            ),
+                            "timeout": 10,
+                        },
+                    ]
+                }
+            ]
+        }
+    }
+    settings_path.write_text(json.dumps(original, indent=2))
+
+    assert (
+        run_cli(
+            "agent", "install", "claude-code", "--server", SERVER, "--tenant", TENANT
+        )
+        == 0
+    )
+
+    assert json.loads(settings_path.read_text()) == {
+        "hooks": {
+            "Stop": [
+                {
+                    "hooks": [
+                        {"type": "command", "command": "chime.sh"},
+                        capture_group("claude-code")["hooks"][0],
+                    ]
+                }
+            ]
+        }
+    }
+    assert json.loads(settings_path.with_suffix(".json.bak").read_text()) == original
+
+
+def test_installing_and_disabling_preserve_every_other_hook(
+    claude_commands, home_directory
+):
+    settings_path = home_directory / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    original = {
+        "permissions": {"allow": ["Bash(ls:*)"]},
+        "hooks": {
+            "SessionStart": [{"hooks": [{"type": "command", "command": "note.sh"}]}],
+            "Stop": [{"hooks": [{"type": "command", "command": "chime.sh"}]}],
+        },
+    }
+    settings_path.write_text(f"{json.dumps(original, indent=2)}\n")
+
+    assert (
+        run_cli(
+            "agent", "install", "claude-code", "--server", SERVER, "--tenant", TENANT
+        )
+        == 0
+    )
+
+    installed = json.loads(settings_path.read_text())
+    assert installed["permissions"] == {"allow": ["Bash(ls:*)"]}
+    assert installed["hooks"]["SessionStart"] == original["hooks"]["SessionStart"]
+    assert installed["hooks"]["Stop"] == [
+        {"hooks": [{"type": "command", "command": "chime.sh"}]},
+        capture_group("claude-code"),
+    ]
+
+    assert run_cli("agent", "disable", "claude-code") == 0
+
+    assert json.loads(settings_path.read_text()) == original
+
+
+def test_disabling_leaves_a_file_that_held_only_our_hook_empty(
+    claude_commands, home_directory
+):
+    run_cli("agent", "install", "claude-code", "--server", SERVER, "--tenant", TENANT)
+
+    assert run_cli("agent", "disable", "claude-code") == 0
+
+    settings_path = home_directory / ".claude" / "settings.json"
+    assert json.loads(settings_path.read_text()) == {}
+
+
+def test_disabling_codex_removes_the_hook_it_wrote(codex_home):
+    run_cli("agent", "install", "codex", "--server", SERVER, "--tenant", TENANT)
+    hooks_path = codex_home / "hooks.json"
+    document = json.loads(hooks_path.read_text())
+    document["description"] = "kept"
+    hooks_path.write_text(json.dumps(document, indent=2))
+
+    assert run_cli("agent", "disable", "codex") == 0
+
+    assert json.loads(hooks_path.read_text()) == {"description": "kept"}
+
+
+def test_disabling_a_hook_that_is_not_there_writes_nothing(
+    claude_commands, home_directory, capsys
+):
+    settings_path = home_directory / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    original = '{"permissions": {"allow": []}}'
+    settings_path.write_text(original)
+
+    assert run_cli("agent", "disable", "claude-code") == 0
+
+    assert settings_path.read_text() == original
+    assert not settings_path.with_suffix(".json.bak").exists()
+    assert "holds no hook of ours" in capsys.readouterr().out
+
+
+def test_disabling_without_a_settings_file_writes_none(
+    claude_commands, home_directory, capsys
+):
+    assert run_cli("agent", "disable", "claude-code") == 0
+
+    assert not (home_directory / ".claude" / "settings.json").exists()
+    assert "does not exist" in capsys.readouterr().out
+
+
+def test_a_dry_run_writes_no_hook(claude_commands, home_directory, capsys):
+    exit_code = run_cli(
+        "agent",
+        "install",
+        "claude-code",
+        "--server",
+        SERVER,
+        "--tenant",
+        TENANT,
+        "--dry-run",
+    )
+
+    assert exit_code == 0
+    assert not (home_directory / ".claude" / "settings.json").exists()
+    output = capsys.readouterr().out
+    assert "would write" in output
+    assert '+    "Stop": [' in output
+
+
+def test_a_settings_file_that_is_not_json_is_refused(
+    claude_commands, home_directory, capsys
+):
+    settings_path = home_directory / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text("half a file")
+
+    exit_code = run_cli(
+        "agent", "install", "claude-code", "--server", SERVER, "--tenant", TENANT
+    )
+
+    assert exit_code == 1
+    assert settings_path.read_text() == "half a file"
+    assert "is not valid JSON" in capsys.readouterr().err
+
+
+def test_hooks_that_are_not_a_list_are_refused(claude_commands, home_directory, capsys):
+    settings_path = home_directory / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(json.dumps({"hooks": {"Stop": "chime.sh"}}))
+
+    exit_code = run_cli(
+        "agent", "install", "claude-code", "--server", SERVER, "--tenant", TENANT
+    )
+
+    assert exit_code == 1
+    assert "is not a list" in capsys.readouterr().err
