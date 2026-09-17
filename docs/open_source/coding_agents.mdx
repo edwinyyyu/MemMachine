@@ -1,0 +1,164 @@
+---
+title: "Coding Agents"
+description: "Memory for Claude Code and Codex from a MemMachine server"
+icon: "terminal"
+---
+
+## What a coding agent gets
+
+A MemMachine server serves an MCP endpoint at `<server>/v1/mcp` with two
+memory tools on it. An agent that points at the endpoint can call them
+during a session:
+
+- `memory_search(cue, ...)` returns the passages whose surroundings match
+  the cue, best first, each one rendered with the ids it was found under.
+  A cue is the context a memory was encoded in, not a bare entity: the
+  user's own wording of what they are after works well.
+- `memory_expand(id, direction)` reads more of the session a passage came
+  from, a fixed step at a time, `around`, `earlier` or `later`. Following
+  a lead the passage mentions is another search; reading around it is an
+  expansion.
+
+Both tools run against one tenant's memory, and the tenant travels with
+every request in the `X-MemMachine-Tenant` header the installer writes.
+The tools and their prompting live on the server, so a deployment can
+improve them without touching any machine an agent runs on.
+
+## Reading a result
+
+Every passage carries markers that name where it sits:
+
+```text
+[session:"019b2f1c-6c7a-7bd4-9f3a-4c2d8e5b1a70"]
+[segment:4f9c1a2b3d4e5f60718293a4b5c6d7e8] Edwin asked why the installer
+backs the file up before it writes.
+```
+
+- `[session:"<id>"]` is the agent session a passage belongs to, the
+  conversation it happened in. It is what `memory_search`'s `within`
+  argument takes.
+- `[segment:<hex>]` is one passage. It is what `memory_expand` takes,
+  with or without the wrapper.
+- `[segments:<first>..<last>]` is a run of neighboring passages, rendered
+  as one. Its two ends are the handles a further expansion continues
+  from.
+
+A direction that comes back empty means the session ran out that way.
+
+## Choosing a tenant name
+
+A tenant is one human user: every session of every agent that user runs
+shares one memory, so a name like `edwin` or a work email is the right
+grain. Sessions are the agent's own session ids and need no setting up,
+and the project an agent runs in is recorded on what it captures rather
+than kept in a tenant of its own. Pick the name once and use it for
+every agent on every machine that user works on.
+
+## Claude Code
+
+Install for every project this user opens (user scope):
+
+```bash
+memmachine agent install claude-code \
+  --server https://memmachine.example.com \
+  --tenant edwin
+```
+
+This runs Claude Code's own command, which stores the entry in
+`~/.claude.json`:
+
+```bash
+claude mcp add --transport http --scope user memmachine \
+  https://memmachine.example.com/v1/mcp \
+  --header "X-MemMachine-Tenant: edwin"
+```
+
+The `claude` executable has to be on `PATH`. Without it the installer
+prints that command and exits non-zero, so it can be run where Claude
+Code is installed.
+
+Install for one repository, in a file that can be committed (project
+scope):
+
+```bash
+memmachine agent install claude-code \
+  --server https://memmachine.example.com \
+  --tenant edwin \
+  --scope project
+```
+
+This writes `.mcp.json` in the current directory, keeping every other
+server in it:
+
+```json
+{
+  "mcpServers": {
+    "memmachine": {
+      "type": "http",
+      "url": "https://memmachine.example.com/v1/mcp",
+      "headers": {
+        "X-MemMachine-Tenant": "edwin"
+      }
+    }
+  }
+}
+```
+
+Take it back out with `memmachine agent disable claude-code`, or
+`--scope project` for the repository's file. User scope runs
+`claude mcp remove --scope user memmachine`.
+
+## Codex
+
+Install for this user (user scope):
+
+```bash
+memmachine agent install codex \
+  --server https://memmachine.example.com \
+  --tenant edwin
+```
+
+This writes two tables into `$CODEX_HOME/config.toml`, which defaults to
+`~/.codex/config.toml`:
+
+```toml
+[mcp_servers.memmachine]
+url = "https://memmachine.example.com/v1/mcp"
+
+[mcp_servers.memmachine.http_headers]
+X-MemMachine-Tenant = "edwin"
+```
+
+Install for one repository (project scope) with `--scope project`, which
+writes the same two tables into `<cwd>/.codex/config.toml`. Codex reads a
+project's configuration only for a project it has been told to trust.
+
+Take it back out with `memmachine agent disable codex`, or
+`--scope project` for the repository's file. Only those two tables are
+removed; every other table, comment and blank line in the file stays as
+it was.
+
+## What the installer writes, and what it keeps
+
+- Installing twice leaves one entry. A file that already holds the entry
+  is not written again.
+- Every write first copies the file to `<file>.bak` beside it, so the
+  version an install replaced is one `mv` away. Claude Code's user scope
+  is the exception: that file belongs to the `claude` executable, which
+  keeps its own backups.
+- `--dry-run` prints the command that would run, or a diff of the file
+  that would change, and writes nothing.
+- Disabling removes what the installer wrote and nothing else.
+
+## What is coming
+
+Capture. Recall reads what a MemMachine server already holds; writing
+each session to it is the next piece, through the agents' `Stop` hooks,
+which hand a transcript to a capture client that posts the session's
+messages and tool calls to the server. The installer will register those
+hooks alongside the MCP entry.
+
+Ambient recall, where memory arrives with a prompt instead of being asked
+for, stays designed and off: injected context changes answers often
+enough to need a benefit that has not been measured yet. The two tools
+above are the whole recall surface.
