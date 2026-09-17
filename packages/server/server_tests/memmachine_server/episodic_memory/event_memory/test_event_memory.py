@@ -26,14 +26,18 @@ from memmachine_server.common.vector_store.data_types import (
 )
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Author,
+    Block,
     Context,
     ContextPart,
     DateTimeFormat,
     Event,
     EvictionOptions,
+    InjectedBlock,
     QueryHit,
     Segment,
     TextBlock,
+    ToolCallBlock,
+    ToolResultBlock,
 )
 from memmachine_server.episodic_memory.event_memory.deriver import Deriver
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
@@ -807,6 +811,7 @@ def _make_segment(
     offset: int = 0,
     timestamp: datetime.datetime = _T0,
     text: str = "text",
+    block: Block | None = None,
     context: Context | None = None,
     session_id: str = "s",
 ) -> Segment:
@@ -818,7 +823,7 @@ def _make_segment(
         index=index,
         offset=offset,
         timestamp=timestamp,
-        block=TextBlock(text=text),
+        block=block if block is not None else TextBlock(text=text),
         context=context if context is not None else Context(),
     )
 
@@ -922,6 +927,89 @@ class TestRender:
             EventMemory.render_segments(
                 [], datetime_format=_BARE, ids=cast(Iterable[IdKind], ("event",))
             )
+
+    def test_a_window_of_messages_and_tool_events_reads_as_one_timeline(self):
+        # The capture client writes one event per timeline entry, so each
+        # entry is a line of its own.
+        message = _make_segment(
+            text="run the tests", timestamp=_ts(0), context=_author("Alice")
+        )
+        call = _make_segment(
+            block=ToolCallBlock(name="Bash", input={"command": "pytest -q"}),
+            timestamp=_ts(1),
+            context=_author("Claude"),
+        )
+        result = _make_segment(
+            block=ToolResultBlock(name="Bash", output="1 failed", error=True),
+            timestamp=_ts(2),
+            context=_author("Claude"),
+        )
+        injected = _make_segment(
+            block=InjectedBlock(text="Run the gates.", source="hook"),
+            timestamp=_ts(3),
+            context=_author("Alice"),
+        )
+
+        rendered = EventMemory.render_segments(
+            [message, call, result, injected], datetime_format=_BARE
+        )
+
+        assert rendered == "\n".join(
+            [
+                "Alice: " + json.dumps("run the tests"),
+                "Claude: " + json.dumps('tool_call Bash: {"command":"pytest -q"}'),
+                "Claude: " + json.dumps("tool_result Bash [error]: 1 failed"),
+                "Alice: " + json.dumps("injected hook: Run the gates."),
+            ]
+        )
+
+
+# ===================================================================
+# capture kinds
+# ===================================================================
+
+
+@_async
+class TestCaptureKinds:
+    """A message is the search surface; a tool event is reached from it."""
+
+    async def test_only_the_message_is_embedded_and_the_tool_events_expand(
+        self,
+        event_memory: EventMemory,
+        fake_event_memory_store_partition: InMemoryEventMemoryStorePartition,
+        fake_vector_store_collection: InMemoryVectorStoreCollection,
+    ):
+        call = ToolCallBlock(name="Bash", input={"command": "pytest -q"})
+        result = ToolResultBlock(name="Bash", output="1 failed", error=True)
+        event = Event(
+            uuid=uuid4(),
+            timestamp=_T0,
+            session_id="s",
+            source_id="src",
+            context=_author("Alice"),
+            blocks=[TextBlock(text="run the tests"), call, result],
+        )
+
+        await event_memory.encode_events([event])
+
+        # Every block is on the timeline, one segment each.
+        stored = sorted(
+            fake_event_memory_store_partition.segments.values(),
+            key=lambda segment: segment.index,
+        )
+        assert [segment.block for segment in stored] == list(event.blocks)
+        # Only the message is embedded: one record, of the message's kind.
+        assert len(fake_vector_store_collection.records) == 1
+        record = next(iter(fake_vector_store_collection.records.values()))
+        assert _record_properties(record)[BLOCK_KIND_KEY] == "text"
+
+        # The query reaches the message, and only the message.
+        hits = await event_memory.query("run the tests")
+        assert [hit.seed.block for hit in hits] == [TextBlock(text="run the tests")]
+
+        # The tool events are reached by expanding from it.
+        neighborhood = await event_memory.expand(hits[0].seed.uuid, after=2)
+        assert [segment.block for segment in neighborhood.after] == [call, result]
 
 
 # ===================================================================
