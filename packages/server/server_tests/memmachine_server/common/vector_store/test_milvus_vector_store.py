@@ -107,6 +107,7 @@ async def test_every_request_carries_the_timeout(store, monkeypatch):
     record = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
     await coll.upsert(records=[record])
     await coll.query(query_vectors=[record.vector], limit=1)
+    await coll.get(record_uuids=[record.uuid])
     await coll.delete(record_uuids=[record.uuid])
     await store.delete_collection(namespace=NAMESPACE, name="timed")
 
