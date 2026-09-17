@@ -12,10 +12,12 @@ That mark is a shortcut rather than a record: a batch is stored whole or
 rejected whole under the event ids the transcript fixes, so a lost mark
 costs one batch the server answers `event_exists` to, never a second
 copy of anything. A batch the server answers `event_exists` to is posted
-again an event at a time, and the mark moves only once the server holds
-every one of them, so a batch that mixes events already held with events
-that are new loses neither. A failure leaves the mark where it was and
-answers non-zero, so the next `Stop` posts the same entries again.
+again an event at a time, and the mark moves past each event the server
+holds, so a batch that mixes events already held with events that are
+new loses neither and a batch that conflicts over a slow link makes
+progress on every `Stop`. A failure leaves the mark at the last event
+the server holds and answers non-zero, so the next `Stop` posts what is
+left.
 """
 
 from __future__ import annotations
@@ -90,7 +92,7 @@ def _capture_session(
 ) -> int:
     """Post a session's new entries and move its mark past them.
 
-    The mark moves after each batch the server holds, so a failure part
+    The mark moves past each event the server holds, so a failure part
     way through keeps what was posted and repeats only the rest. It
     moves past entries that produce no events as well, so a session that
     ends in them is not read again.
@@ -140,65 +142,94 @@ def _capture_session(
     )
     deadline = time.monotonic() + budget_seconds
     posted = 0
+    saved = mark
     with requests.Session() as http:
-        for events, batch_mark in _batched(entries, mark):
-            if events:
-                posted += _post_batch(http, url, events, deadline=deadline)
-            _save_mark(state_path, session_id, batch_mark)
+        for batch, batch_mark in _batched(entries, mark):
+            # A batch with no events is entries that carry nothing to
+            # remember: nothing is posted and the mark moves past them.
+            held = batch_mark if not batch else saved
+            try:
+                for event_mark, stored in _post_batch(
+                    http, url, batch, deadline=deadline
+                ):
+                    held = event_mark
+                    posted += stored
+            finally:
+                if held != saved:
+                    _save_mark(state_path, session_id, held)
+                    saved = held
     return posted
 
 
 def _batched(
     entries: Iterator[tuple[list[dict[str, Any]], int, int]],
     mark: _Mark,
-) -> Iterator[tuple[list[dict[str, Any]], _Mark]]:
-    """Group the entries' events into batches, each with the mark past it.
+) -> Iterator[tuple[list[tuple[dict[str, Any], _Mark]], _Mark]]:
+    """Group the entries' events into batches, each event with its own mark.
 
-    No entry is split across two batches, so the mark a batch carries is
-    past every event in it. The last batch carries the mark past the
-    whole read, including entries that produced nothing.
+    An event carries the mark that holds once the server holds it: the
+    mark past its entry for the last event that entry produced, and the
+    mark before the entry for the events ahead of it, since an entry is
+    passed only when every event of it is held. No entry is split across
+    two batches. The mark yielded beside a batch is the one past the
+    whole of it, which is what a batch of no events -- entries that
+    carry nothing to remember -- moves the mark to.
     """
-    batch: list[dict[str, Any]] = []
-    batch_mark = mark
+    batch: list[tuple[dict[str, Any], _Mark]] = []
+    entry_mark = mark
     read_anything = False
     for events, offset, index in entries:
         read_anything = True
         if batch and len(batch) + len(events) > _BATCH_SIZE:
-            yield batch, batch_mark
+            yield batch, entry_mark
             batch = []
-        batch.extend(events)
-        batch_mark = _Mark(offset, index)
+        previous_mark = entry_mark
+        entry_mark = _Mark(offset, index)
+        batch.extend(
+            (event, entry_mark if position == len(events) - 1 else previous_mark)
+            for position, event in enumerate(events)
+        )
     if batch or read_anything:
-        yield batch, batch_mark
+        yield batch, entry_mark
 
 
 def _post_batch(
     http: requests.Session,
     url: str,
-    events: list[dict[str, Any]],
+    batch: list[tuple[dict[str, Any], _Mark]],
     *,
     deadline: float,
-) -> int:
-    """Post one batch and return once the server holds every event of it.
+) -> Iterator[tuple[_Mark, int]]:
+    """Post one batch, saying how far the server holds it as it goes.
 
     A batch is stored whole or rejected whole, so `event_exists` for a
     batch says the server holds one of these events, not that it holds
     them all: a session resumed or forked from another repeats entries
     stored under the ids they already had. The batch is then posted an
-    event at a time, in the order it was read, where `event_exists` is
-    that one event and says it is held. The caller moves its mark only
-    when this returns, so nothing is stored twice and nothing is lost.
+    event at a time, in the order the transcript holds them, where
+    `event_exists` is that one event and says it is held.
 
-    Returns:
-        How many of the events the server stored now.
+    Events go in that order, so once one is held every event before it
+    is held too, and the mark yielded with it stands whatever happens
+    next. A pass that stops part way therefore keeps what it reached.
+
+    Yields:
+        The mark that holds now, and how many events the server stored
+        rather than already holding.
 
     Raises:
         CodingAgentError: If the budget ran out, the server could not be
             reached, or it answered anything else.
     """
+    if not batch:
+        return
+    events = [event for event, _ in batch]
     if _stored(http, url, events, deadline=deadline):
-        return len(events)
-    return sum(1 for event in events if _stored(http, url, [event], deadline=deadline))
+        yield batch[-1][1], len(events)
+        return
+    for event, event_mark in batch:
+        stored = _stored(http, url, [event], deadline=deadline)
+        yield event_mark, 1 if stored else 0
 
 
 def _stored(

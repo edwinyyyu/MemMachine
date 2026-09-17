@@ -238,7 +238,7 @@ def test_a_batch_the_server_already_holds_is_posted_event_by_event(
     assert "captured 1 event of" in capsys.readouterr().err
 
 
-def test_a_failure_during_the_event_by_event_pass_keeps_the_mark(
+def test_a_failure_during_the_event_by_event_pass_keeps_what_was_held(
     events_server, tmp_path, monkeypatch, home_directory
 ):
     transcript = claude_transcript(tmp_path / "session.jsonl", count=3)
@@ -252,8 +252,57 @@ def test_a_failure_during_the_event_by_event_pass_keeps_the_mark(
 
     assert exit_code == 1
     assert [len(batch) for batch in events_server.batches] == [3, 1, 1]
-    # The third event was never reached, so the mark stays before the
-    # batch and the next `Stop` posts all three again.
+    # Events go in the order the transcript holds them, so the first is
+    # held whatever happened after it: the mark stands past that entry
+    # and the next `Stop` posts the two that are left.
+    assert state_of(home_directory)[SESSION]["index"] == 1
+
+    events_server.answers = []
+    assert run_capture(events_server, transcript, monkeypatch) == 0
+
+    assert [len(batch) for batch in events_server.batches] == [3, 1, 1, 2]
+    assert state_of(home_directory)[SESSION]["index"] == 3
+
+
+def test_an_entry_is_passed_only_when_every_event_of_it_is_held(
+    events_server, tmp_path, monkeypatch, home_directory
+):
+    # One entry of two events: a message and the tool call after it.
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "uuid": "aaaaaaaa-0000-4000-8000-000000000001",
+                "sessionId": SESSION,
+                "timestamp": "2026-09-17T10:00:00.000Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "running it"},
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "Bash",
+                            "input": {"command": "ls"},
+                        },
+                    ],
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    events_server.answers = [
+        (409, {"error": {"code": "event_exists", "message": "already held"}}),
+        (200, {"stored": []}),
+        (500, {"error": {"code": "internal", "message": "no"}}),
+    ]
+
+    assert run_capture(events_server, transcript, monkeypatch) == 1
+
+    # The entry's first event is held and its second is not, so the mark
+    # stays before the entry: an entry is read again whole.
     assert state_of(home_directory) == {}
 
 

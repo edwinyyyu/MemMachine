@@ -225,14 +225,15 @@ The mark is a shortcut rather than a record. An event's id comes from
 the transcript, so deleting the state file costs one rejected batch per
 session, never a second copy of anything. A batch the server answers
 `event_exists` to is posted again an event at a time, and the mark moves
-only once the server holds every one of them, so a session resumed or
-forked from another, whose transcript repeats entries that are already
-stored, loses neither what it repeats nor what is new.
+past each event the server holds, so a session resumed or forked from
+another, whose transcript repeats entries that are already stored, loses
+neither what it repeats nor what is new, and a conflicting batch over a
+slow link makes progress on every turn instead of starting over.
 
 A failure -- a server that does not answer, or answers anything else --
-leaves the mark where it was and exits non-zero, so the next `Stop`
-posts the same entries again. The whole capture runs under a budget of
-five seconds, which bounds what the agent waits for.
+leaves the mark at the last event the server holds and exits non-zero,
+so the next `Stop` posts what is left. The whole capture runs under a
+budget of five seconds, which bounds what the agent waits for.
 
 ### Running capture by hand
 
