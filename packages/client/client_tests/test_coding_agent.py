@@ -16,7 +16,7 @@ from memmachine_client import cli, coding_agent
 
 SERVER = "http://memmachine.test:8080"
 ENDPOINT = "http://memmachine.test:8080/v1/mcp"
-TENANT = "edwin"
+TENANT = "alice"
 
 CODEX_TABLES = (
     "[mcp_servers.memmachine]\n"

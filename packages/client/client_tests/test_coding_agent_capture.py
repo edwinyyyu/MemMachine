@@ -12,7 +12,7 @@ import pytest
 from memmachine_client import cli, coding_agent_capture
 
 SESSION = "11111111-2222-3333-4444-555555555555"
-TENANT = "edwin"
+TENANT = "alice"
 
 
 class EventsHandler(BaseHTTPRequestHandler):
