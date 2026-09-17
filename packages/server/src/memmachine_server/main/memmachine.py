@@ -544,6 +544,16 @@ class MemMachine:
             raise RuntimeError(f"Failed to create session {session_key}")
         return ret
 
+    async def _require_session(self, session_key: str) -> None:
+        """Raise SessionNotFoundError unless the session exists and is active.
+
+        A memory request never creates a project (only the create-project
+        request does), so a request naming an unknown project is refused
+        before it reads or writes anything.
+        """
+        if await self.get_session(session_key) is None:
+            raise SessionNotFoundError(session_key)
+
     async def get_session(
         self, session_key: str
     ) -> SessionDataManager.SessionInfo | None:
@@ -697,7 +707,14 @@ class MemMachine:
         Returns:
             IDs of the created episodes.
 
+        Raises:
+            SessionNotFoundError: If the project does not exist. Nothing is
+                written for it: the episodes are persisted only after the
+                check, whichever memories the write targets.
+
         """
+        await self._require_session(session_data.session_key)
+
         episode_storage = await self._resources.get_episode_storage()
         episodes = await episode_storage.add_episodes(
             session_data.session_key,
@@ -711,7 +728,6 @@ class MemMachine:
             episodic_memory_manager = (
                 await self._resources.get_episodic_memory_manager()
             )
-            # A write goes to a project that exists; it never creates one.
             async with episodic_memory_manager.open_episodic_memory(
                 session_data.session_key
             ) as episodic_session:
@@ -974,7 +990,11 @@ class MemMachine:
         semantic_task: Task | None = None
 
         property_filter = parse_filter(search_filter) if search_filter else None
-        if MemoryType.Episodic in target_memories:
+        if MemoryType.Episodic not in target_memories:
+            # Opening episodic memory refuses an unknown project; a search
+            # that does not open it checks the registry itself.
+            await self._require_session(session_data.session_key)
+        else:
             retrieval_agent = await self._get_retrieval_agent() if agent_mode else None
             episodic_task = asyncio.create_task(
                 self._search_episodic_memory(

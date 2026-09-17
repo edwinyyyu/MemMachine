@@ -693,6 +693,67 @@ async def test_add_episodes_skips_memories_not_requested(
 
 
 @pytest.mark.asyncio
+async def test_add_episodes_to_an_unknown_project_persists_nothing(
+    minimal_conf, patched_resource_manager
+):
+    """A write to a project that does not exist is refused before any row is written.
+
+    The episodes are persisted before the memories are updated, and a
+    semantic-only write never opens episodic memory, so the check cannot be
+    left to the episodic open.
+    """
+    session_manager = AsyncMock()
+    session_manager.get_session_info = AsyncMock(return_value=None)
+    patched_resource_manager.get_session_data_manager = AsyncMock(
+        return_value=session_manager
+    )
+    episode_storage = MagicMock()
+    episode_storage.add_episodes = AsyncMock()
+    patched_resource_manager.get_episode_storage = AsyncMock(
+        return_value=episode_storage
+    )
+    memmachine = MemMachine(minimal_conf, patched_resource_manager)
+    entries = [
+        EpisodeEntry(content="hello", producer_id="user", producer_role="assistant"),
+    ]
+
+    with pytest.raises(SessionNotFoundError):
+        await memmachine.add_episodes(
+            DummySessionData("nobody/nowhere"),
+            entries,
+            target_memories=[MemoryType.Semantic],
+        )
+
+    episode_storage.add_episodes.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_semantic_only_search_of_an_unknown_project_is_refused(
+    minimal_conf, patched_resource_manager
+):
+    """A search that does not open episodic memory still refuses an unknown project."""
+    session_manager = AsyncMock()
+    session_manager.get_session_info = AsyncMock(return_value=None)
+    patched_resource_manager.get_session_data_manager = AsyncMock(
+        return_value=session_manager
+    )
+    semantic_manager = MagicMock()
+    patched_resource_manager.get_semantic_session_manager = AsyncMock(
+        return_value=semantic_manager
+    )
+    memmachine = MemMachine(minimal_conf, patched_resource_manager)
+
+    with pytest.raises(SessionNotFoundError):
+        await memmachine.query_search(
+            DummySessionData("nobody/nowhere"),
+            target_memories=[MemoryType.Semantic],
+            query="anything",
+        )
+
+    semantic_manager.search.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_list_search_fetches_episode_history(
     minimal_conf, patched_resource_manager
 ):
