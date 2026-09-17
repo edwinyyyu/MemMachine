@@ -197,6 +197,20 @@ class LongTermMemory:
                     or params.event_memory_partition.similarity_metric.higher_is_better
                 )
 
+    @property
+    def event_memory_partition(self) -> EventMemoryPartition | None:
+        """The event backend's handle on this session's partition, for a caller that speaks events.
+
+        None on the declarative backend, and once `drop_session_partition`
+        has deleted the session's partitions.
+        """
+        return self._event_memory_partition
+
+    @property
+    def reranker(self) -> Reranker | None:
+        """The reranker this memory scores hits with, or None when it has none."""
+        return self._reranker
+
     async def add_episodes(self, episodes: Iterable[Episode]) -> None:
         episodes = list(episodes)
         if self._backend == "declarative":
