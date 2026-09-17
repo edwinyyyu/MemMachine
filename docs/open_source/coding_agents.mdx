@@ -10,13 +10,13 @@ A MemMachine server serves an MCP endpoint at `<server>/v1/mcp` with two
 memory tools on it. An agent that points at the endpoint can call them
 during a session:
 
-- `memory_search(cue, ...)` returns the passages whose surroundings match
+- `memory_query(cue, ...)` returns the passages whose surroundings match
   the cue, best first, each one rendered with the ids it was found under.
   A cue is the context a memory was encoded in, not a bare entity: the
   user's own wording of what they are after works well.
 - `memory_expand(id, direction)` reads more of the session a passage came
   from, a fixed step at a time, `around`, `earlier` or `later`. Following
-  a lead the passage mentions is another search; reading around it is an
+  a lead the passage mentions is another query; reading around it is an
   expansion.
 
 Both tools run against one tenant's memory, and the tenant travels with
@@ -35,7 +35,7 @@ backs the file up before it writes.
 ```
 
 - `[session:"<id>"]` is the agent session a passage belongs to, the
-  conversation it happened in. It is what `memory_search`'s `within`
+  conversation it happened in. It is what `memory_query`'s `within`
   argument takes.
 - `[segment:<hex>]` is one passage. It is what `memory_expand` takes,
   with or without the wrapper.
