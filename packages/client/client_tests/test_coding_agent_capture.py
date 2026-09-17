@@ -492,4 +492,4 @@ def test_nothing_is_written_to_standard_output(
     # happened is reported on standard error.
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "captured 1 events" in captured.err
+    assert "captured 1 event of" in captured.err

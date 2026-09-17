@@ -67,7 +67,8 @@ def run_capture_command(args: argparse.Namespace) -> int:
             working_directory=working_directory,
             budget_seconds=args.budget,
         )
-        sys.stderr.write(f"captured {count} events of session {session_id}\n")
+        noun = "event" if count == 1 else "events"
+        sys.stderr.write(f"captured {count} {noun} of session {session_id}\n")
     except CodingAgentError as error:
         sys.stderr.write(f"{args.prog}: error: {error}\n")
         return 1
@@ -103,7 +104,7 @@ def _capture_session(
             it fails without moving the mark.
 
     Returns:
-        How many events the server holds that it did not before.
+        How many events were posted.
 
     Raises:
         CodingAgentError: If the transcript cannot be read, or the
