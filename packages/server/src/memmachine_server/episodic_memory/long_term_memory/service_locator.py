@@ -40,7 +40,6 @@ from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter imp
 )
 
 from .long_term_memory import (
-    EVENT_BACKEND_SYSTEM_FIELDS,
     DeclarativeBackendParams,
     EventBackendParams,
     LongTermMemoryParams,
@@ -110,10 +109,9 @@ async def _event_params(
     if collection is None:
         collection_config = VectorStoreCollectionConfig(
             vector_dimensions=embedder.dimensions,
-            indexed_properties_schema={
-                **EventMemory.expected_vector_store_collection_schema(),
-                **EVENT_BACKEND_SYSTEM_FIELDS,
-            },
+            indexed_properties_schema=(
+                EventMemory.expected_vector_store_collection_schema()
+            ),
         )
         await vector_store.create_collection(
             namespace=_EVENT_BACKEND_NAMESPACE,
