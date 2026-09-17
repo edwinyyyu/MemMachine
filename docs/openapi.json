@@ -4260,6 +4260,9 @@
                   "$ref": "#/components/schemas/TextBlock"
                 },
                 {
+                  "$ref": "#/components/schemas/ThinkingBlock"
+                },
+                {
                   "$ref": "#/components/schemas/ToolCallBlock"
                 },
                 {
@@ -4274,6 +4277,7 @@
                 "mapping": {
                   "injected": "#/components/schemas/InjectedBlock",
                   "text": "#/components/schemas/TextBlock",
+                  "thinking": "#/components/schemas/ThinkingBlock",
                   "tool_call": "#/components/schemas/ToolCallBlock",
                   "tool_result": "#/components/schemas/ToolResultBlock"
                 }
@@ -4281,7 +4285,7 @@
             },
             "type": "array",
             "title": "Blocks",
-            "description": "The event's content, in order, each block of a registered kind. A `text` block is a message, and is the only kind a query matches; a `tool_call`, `tool_result` or `injected` block is on the session's timeline, reached by expanding from a message"
+            "description": "The event's content, in order, each block of a registered kind. A `text` block is a message, and is the only kind a query matches; a `thinking`, `tool_call`, `tool_result` or `injected` block is on the session's timeline, reached by expanding from a message"
           },
           "properties": {
             "additionalProperties": {
@@ -6606,6 +6610,27 @@
         ],
         "title": "TextBlock",
         "description": "Plain text block."
+      },
+      "ThinkingBlock": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "thinking",
+            "title": "Kind",
+            "default": "thinking"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "The reasoning the transcript recorded"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "ThinkingBlock",
+        "description": "The agent's reasoning, as the transcript recorded it.\n\nThis kind declares no segmenter and no deriver: reasoning is one\nsegment however long it is, and it is on the timeline and off the\nsearch surface, reached by expansion from a message and never by a\nquery."
       },
       "ToolCallBlock": {
         "properties": {

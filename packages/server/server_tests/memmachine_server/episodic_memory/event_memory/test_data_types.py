@@ -19,6 +19,7 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     QueryHit,
     Segment,
     TextBlock,
+    ThinkingBlock,
     ToolCallBlock,
     ToolResultBlock,
     UnknownPart,
@@ -349,6 +350,7 @@ class TestCaptureBlockKinds:
         "block",
         [
             TextBlock(text="run the tests"),
+            ThinkingBlock(text="The suite is red; read the failure first."),
             ToolCallBlock(
                 name="Bash",
                 input={"command": "pytest -q", "timeout": 600, "env": {"CI": True}},
@@ -380,6 +382,10 @@ class TestCaptureBlockKinds:
             "text": "Be brief.",
             "source": "reminder",
         }
+        assert encode_block(ThinkingBlock(text="Read the failure first.")) == {
+            "kind": "thinking",
+            "text": "Read the failure first.",
+        }
 
     def test_a_call_renders_its_tool_and_its_input_on_one_line(self):
         rendered = ToolCallBlock(
@@ -399,6 +405,12 @@ class TestCaptureBlockKinds:
             name="Bash", output="No such file or directory", error=True
         ).render(DateTimeFormat()) == (
             "tool_result Bash [error]: No such file or directory"
+        )
+
+    def test_reasoning_renders_behind_its_kind(self):
+        assert (
+            ThinkingBlock(text="Read the failure first.").render(DateTimeFormat())
+            == "thinking: Read the failure first."
         )
 
     def test_injected_text_renders_its_source_and_its_text(self):

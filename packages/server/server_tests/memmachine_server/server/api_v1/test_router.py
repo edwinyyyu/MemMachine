@@ -196,6 +196,7 @@ class TestEvents:
     def test_the_capture_kinds_are_stored_and_reached_by_expanding(self, client):
         _create(client)
         # The capture client writes one event per timeline entry.
+        thinking = {"kind": "thinking", "text": "The suite is red."}
         call = {"kind": "tool_call", "name": "Bash", "input": {"command": "pytest -q"}}
         result = {
             "kind": "tool_result",
@@ -206,7 +207,7 @@ class TestEvents:
         injected = {"kind": "injected", "text": "Run the gates.", "source": "hook"}
         entries = [
             _event(blocks=[block], minute=minute, author="Claude")
-            for minute, block in enumerate([call, result, injected], start=1)
+            for minute, block in enumerate([thinking, call, result, injected], start=1)
         ]
         _ingest(client, [_event("near one", author="Alice"), *entries])
 
@@ -217,13 +218,14 @@ class TestEvents:
             {"kind": "text", "text": "near one"}
         ]
 
-        # The tool events are reached by expanding from it, one segment
-        # per block, and the window reads as one timeline.
+        # Everything else the session logged is reached by expanding from
+        # it, one segment per block, and the window reads as one timeline.
         expanded = client.post(
             f"/v1/tenants/{_TENANT}/episodic-memory/expand",
-            json={"anchor": seeds[0]["uuid"], "after": 3},
+            json={"anchor": seeds[0]["uuid"], "after": 4},
         ).json()
         assert [segment["block"] for segment in expanded["after"]] == [
+            thinking,
             call,
             result,
             injected,
@@ -232,6 +234,7 @@ class TestEvents:
         # block's rendering.
         lines = expanded["after_text"].splitlines()[1:]
         renderings = [
+            "Claude: " + json.dumps("thinking: The suite is red."),
             "Claude: " + json.dumps('tool_call Bash: {"command":"pytest -q"}'),
             "Claude: " + json.dumps("tool_result Bash [error]: 1 failed"),
             "Claude: " + json.dumps("injected hook: Run the gates."),
