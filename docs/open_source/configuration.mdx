@@ -337,6 +337,16 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
             provider: sqlite
             config:
               path: sqlite_test.db
+          qdrant_vector_store:
+            provider: qdrant
+            config:
+              host: localhost
+              port: 6333
+              grpc_port: 6334
+              prefer_grpc: false
+              https: false
+              request_timeout_seconds: 30
+              # api_key: $QDRANT_API_KEY
           milvus_vector_store:
             provider: milvus
             config:
@@ -371,6 +381,16 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
             provider: sqlite # Local relational database provider
             config: # A dictionary containing provider-specific configuration
               path: sqlite_test.db. # The path for the given database
+          qdrant_vector_store: # VectorStore for event or vector-backed semantic memory
+            provider: qdrant # Qdrant server or Qdrant Cloud
+            config:
+              host: localhost # Qdrant host
+              port: 6333 # REST port
+              grpc_port: 6334 # gRPC port
+              prefer_grpc: false # Use gRPC instead of REST
+              https: false # Use TLS
+              request_timeout_seconds: 30 # Bounds every request to Qdrant
+              # api_key: $QDRANT_API_KEY # Required for Qdrant Cloud
           milvus_vector_store: # VectorStore for event or vector-backed semantic memory
             provider: milvus # Milvus Lite by default, or Milvus server / Zilliz Cloud
             config:
@@ -399,6 +419,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
       | `config.metrics_factory_id` | ID of the metrics exporter factory the Qdrant or Neo4j store reports its operation latencies to. | `prometheus` |
       | `config.collection_registry` | Qdrant and Milvus: the name of a relational database under `resources.databases` that holds the store's collection registry, which arbitrates collection creation and deletion across server processes. Each backend has its own registry, named by the backend's key under `resources.databases`, which must be lowercase letters, digits and underscores, at most 32 bytes. | *Required* |
       | `config.tombstone_retention_seconds` | Qdrant and Milvus: whole seconds a deleted collection's registry entry outlives the first purge round that finds nothing under it, so a write that landed after that round is still reclaimed. | `86400` |
+      | `config.request_timeout_seconds` | Qdrant and Milvus: whole seconds a request to the vector store may take before the client gives up; must be positive. | `30` |
       | `config.path`  | The path for the given database.                                    | Depends on provider |
       | `config.username` | Username for internal graph store authentication.                | Depends on provider |
       | `my_storage_id` | The specific configuration for the system's internal graph store.  | *Required*  |
