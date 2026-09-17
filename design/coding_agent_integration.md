@@ -244,6 +244,15 @@ and posts them to `/v1/tenants/{tenant}/events`.
 
 ## 6. PR plan
 
+Built 2026-09-17 as five PRs on main, `[coding agents N/5]`: #1690 the v1
+API, #1691 the MCP tools, #1689 the installer, #1692 the block kinds,
+#1693 capture. Two facts settled in the building: a tool result is one
+segment however long, so the capture client caps tool output and injected
+text at 8 KB with a truncation marker; and a batch the server already
+holds in part, as a resumed or forked transcript produces, is posted again
+one event at a time with the mark moving past each held event, so nothing
+is lost or duplicated and a slow link makes progress on every `Stop`.
+
 Base: the main port of the event-memory stack (#1597, #1617, #1611, #1632
 and #1659 on `main`), since rendering with ids and the write transaction
 are what the API and the capture contract rest on.
