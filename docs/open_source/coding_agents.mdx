@@ -47,7 +47,9 @@ backs the file up before it writes.
   as one. Its two ends are the handles a further expansion continues
   from.
 
-A direction that comes back empty means the session ran out that way.
+A side the session has run out of answers with a sentence saying so,
+`Nothing earlier: the session starts here.` or `Nothing later: the
+session ends here.`
 
 ## Choosing a tenant name
 
@@ -57,6 +59,18 @@ grain. Sessions are the agent's own session ids and need no setting up,
 and the project an agent runs in is recorded on what it captures rather
 than kept in a tenant of its own. Pick the name once and use it for
 every agent on every machine that user works on.
+
+The installer touches only the agent's files and makes no request to the
+server, so the tenant has to exist there before either tool answers or a
+capture is held. Create it once with the v1 API:
+
+```bash
+curl -X PUT https://memmachine.example.com/v1/tenants/alice
+```
+
+Until it exists, the tools answer an error naming the tenant, and the
+capture hook leaves its mark where it is and posts again on the next
+turn.
 
 ## Claude Code
 
