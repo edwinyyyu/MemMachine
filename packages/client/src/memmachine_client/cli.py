@@ -24,6 +24,10 @@ from memmachine_client.coding_agent import (
     SCOPE_NAMES,
     run_agent_command,
 )
+from memmachine_client.coding_agent_capture import (
+    DEFAULT_BUDGET_SECONDS,
+    run_capture_command,
+)
 from memmachine_client.project import Project
 
 ENV_API_KEY = "MEMMACHINE_API_KEY"
@@ -466,7 +470,8 @@ def build_parser(prog: str = DEFAULT_PROG) -> argparse.ArgumentParser:
         add_request_timeout_arg(delete_parser)
 
     agent = subparsers.add_parser(
-        "agent", help="Point a coding agent at a MemMachine server."
+        "agent",
+        help="Point a coding agent at a MemMachine server, and capture its sessions.",
     )
     agent_subparsers = agent.add_subparsers(dest="agent_command", required=True)
 
@@ -496,6 +501,38 @@ def build_parser(prog: str = DEFAULT_PROG) -> argparse.ArgumentParser:
         help="Print what would change and write nothing.",
     )
 
+    agent_capture = agent_subparsers.add_parser(
+        "capture",
+        help="Write a session's new transcript entries to a tenant's memory.",
+    )
+    agent_capture.add_argument("agent_name", choices=AGENT_NAMES)
+    agent_capture.add_argument(
+        "--server",
+        required=True,
+        help="Base URL of the MemMachine server, without the events path.",
+    )
+    agent_capture.add_argument(
+        "--tenant",
+        required=True,
+        help="Tenant whose memory the session is written to, one per human user.",
+    )
+    agent_capture.add_argument(
+        "--transcript",
+        default=None,
+        help="Transcript file to read, in place of the one the hook names.",
+    )
+    agent_capture.add_argument(
+        "--session-id",
+        default=None,
+        help="Session the entries belong to, in place of the one the hook names.",
+    )
+    agent_capture.add_argument(
+        "--budget",
+        type=float,
+        default=DEFAULT_BUDGET_SECONDS,
+        help="Seconds the capture may take before it fails without moving its mark.",
+    )
+
     agent_disable = agent_subparsers.add_parser(
         "disable", help="Remove the MemMachine MCP server from an agent's config."
     )
@@ -515,6 +552,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser(prog=Path(sys.argv[0]).name if argv is None else DEFAULT_PROG)
     args = parser.parse_args(argv)
     if args.command == "agent":
+        if args.agent_command == "capture":
+            return run_capture_command(args)
         return run_agent_command(args)
     client = build_client(args)
     try:

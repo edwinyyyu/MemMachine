@@ -28,6 +28,7 @@ TENANT_HEADER_NAME = "X-MemMachine-Tenant"
 
 CLAUDE_EXECUTABLE_NAME = "claude"
 CLAUDE_PROJECT_CONFIG_NAME = ".mcp.json"
+CLAUDE_DIRECTORY_NAME = ".claude"
 CODEX_HOME_VARIABLE = "CODEX_HOME"
 CODEX_DIRECTORY_NAME = ".codex"
 CODEX_CONFIG_NAME = "config.toml"
@@ -47,8 +48,8 @@ def run_agent_command(args: argparse.Namespace) -> int:
     """Run an `agent` subcommand and return the process exit code."""
     try:
         if args.agent_command == "install":
-            server = _validated_server(args.server)
-            tenant = _validated_tenant(args.tenant)
+            server = validated_server(args.server)
+            tenant = validated_tenant(args.tenant)
             if args.agent_name == "claude-code":
                 return install_claude_code(
                     server=server,
@@ -251,15 +252,18 @@ def disable_codex(*, scope: str) -> int:
 def _codex_config_path(scope: str) -> Path:
     """Return the `config.toml` a scope owns.
 
-    User scope follows `$CODEX_HOME`, which defaults to `~/.codex`;
-    project scope is the `.codex` directory of the current directory.
+    User scope is Codex's own directory; project scope is the `.codex`
+    directory of the current directory.
     """
     if scope == "project":
         return Path.cwd() / CODEX_DIRECTORY_NAME / CODEX_CONFIG_NAME
+    return codex_home_directory() / CODEX_CONFIG_NAME
+
+
+def codex_home_directory() -> Path:
+    """Codex's own directory, `$CODEX_HOME` where it is set and `~/.codex` where it is not."""
     codex_home = os.environ.get(CODEX_HOME_VARIABLE)
-    if codex_home:
-        return Path(codex_home) / CODEX_CONFIG_NAME
-    return Path.home() / CODEX_DIRECTORY_NAME / CODEX_CONFIG_NAME
+    return Path(codex_home) if codex_home else Path.home() / CODEX_DIRECTORY_NAME
 
 
 def _codex_text_with_tables(
@@ -441,14 +445,14 @@ def _mcp_endpoint_url(server: str) -> str:
     return server.rstrip("/") + MCP_ENDPOINT_PATH
 
 
-def _validated_server(server: str) -> str:
+def validated_server(server: str) -> str:
     """Return the server base URL, rejecting one no agent could reach."""
     if not server.startswith(("http://", "https://")):
         raise CodingAgentError(f"--server must be an http or https URL: {server}")
     return server
 
 
-def _validated_tenant(tenant: str) -> str:
+def validated_tenant(tenant: str) -> str:
     """Return the tenant name, rejecting one no HTTP header could carry."""
     if not tenant or any(
         character < " " or character == "\x7f" for character in tenant
