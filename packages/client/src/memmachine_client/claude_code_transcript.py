@@ -8,6 +8,9 @@ so a session is read once.
 
 Only `text` blocks reach the search surface, so a tool call and its
 result stay on the timeline and are read by expanding from a message.
+A message's text is written as it was; a tool result and an injected
+passage are each one segment however long they are, so what they carry
+is capped at `ONE_SEGMENT_MAX_BYTES` and says where it was cut.
 """
 
 from __future__ import annotations
@@ -19,6 +22,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
+
+from memmachine_client.coding_agent_transcript import bounded_text
 
 _SOURCE_ID = "claude-code"
 
@@ -125,7 +130,11 @@ class _EntryReader:
                 [
                     (
                         "user",
-                        {"kind": "injected", "text": summary, "source": "compaction"},
+                        {
+                            "kind": "injected",
+                            "text": bounded_text(summary),
+                            "source": "compaction",
+                        },
                     )
                 ]
                 if summary.strip()
@@ -164,14 +173,19 @@ class _EntryReader:
             source = "other"
         if source is None:
             return [("user", {"kind": "text", "text": text})]
-        return [("user", {"kind": "injected", "text": text, "source": source})]
+        return [
+            (
+                "user",
+                {"kind": "injected", "text": bounded_text(text), "source": source},
+            )
+        ]
 
     def _result_block(self, block: dict[str, Any]) -> dict[str, Any]:
         """The `tool_result` block of one result in a user entry."""
         return {
             "kind": "tool_result",
             "name": self._tool_name(str(block.get("tool_use_id", ""))),
-            "output": _result_output(block.get("content")),
+            "output": bounded_text(_result_output(block.get("content"))),
             "error": bool(block.get("is_error")),
         }
 

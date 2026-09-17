@@ -157,11 +157,24 @@ last run left off and posts what is new to
   echoes, compaction summaries -- each carrying which of those it is.
 
 Only messages are embedded, so `memory_query` answers with messages and
-nothing else. Everything else sits on the session's timeline beside the
-message it happened around, and `memory_expand` is what reads it. That
-is what makes a past procedure readable again: find the message where
-the work was discussed, expand around it, and the commands, their
-arguments and their output are there.
+nothing else: a tool call, its result and an injected passage are
+reachable by expansion only, and a query never matches one. They sit on
+the session's timeline beside the message they happened around, and
+`memory_expand` is what reads them. That is what makes a past procedure
+readable again: find the message where the work was discussed, expand
+around it, and the commands, their arguments and their output are there.
+
+A tool result and an injected passage are each one segment on the
+server, however long they are, and an expansion step is counted in
+segments, so what they carry is capped at 8192 bytes. Text over the cap
+is cut at a character boundary and carries one line saying so:
+
+```text
+[truncated: 8192 of 41983 bytes]
+```
+
+A message's text is never capped, and neither are the arguments a tool
+call was made with.
 
 Every event carries the agent it came from (`claude-code` or `codex`),
 the project it happened in (the repository root of the session's

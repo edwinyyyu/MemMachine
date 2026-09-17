@@ -424,3 +424,74 @@ def test_a_result_whose_call_is_in_no_entry_is_named_unknown(tmp_path):
     # no block that names none.
     assert events[0]["blocks"][0]["name"] == "unknown"
     assert events[0]["properties"]["tool_name"] == "unknown"
+
+
+def test_a_long_tool_result_is_cut_and_says_where(tmp_path):
+    output = "x" * 9000
+    path = write_transcript(
+        tmp_path / "session.jsonl",
+        [
+            user_entry(
+                "aaaaaaaa-0000-4000-8000-000000000101",
+                [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_9",
+                        "content": output,
+                    }
+                ],
+            )
+        ],
+    )
+
+    events, _, _ = read_all(path)
+
+    written = events[0]["blocks"][0]["output"]
+    assert written == f"{'x' * 8192}\n[truncated: 8192 of 9000 bytes]"
+    assert len(written.encode()) == 8192 + len("\n[truncated: 8192 of 9000 bytes]")
+
+
+def test_a_long_injected_passage_is_cut_and_a_message_is_not(tmp_path):
+    long_text = "y" * 9000
+    path = write_transcript(
+        tmp_path / "session.jsonl",
+        [
+            user_entry(
+                "aaaaaaaa-0000-4000-8000-000000000102", f"<system-reminder>{long_text}"
+            ),
+            user_entry("aaaaaaaa-0000-4000-8000-000000000103", long_text),
+        ],
+    )
+
+    events, _, _ = read_all(path)
+
+    injected, message = events
+    assert injected["blocks"][0]["text"].endswith("[truncated: 8192 of 9017 bytes]")
+    # A message is what a query matches, and is written as it was.
+    assert message["blocks"][0]["text"] == long_text
+
+
+def test_a_cut_falls_on_a_character_boundary(tmp_path):
+    # Three bytes each, so the cap falls inside the 2731st character.
+    output = "é" * 5000
+    path = write_transcript(
+        tmp_path / "session.jsonl",
+        [
+            user_entry(
+                "aaaaaaaa-0000-4000-8000-000000000104",
+                [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_10",
+                        "content": output,
+                    }
+                ],
+            )
+        ],
+    )
+
+    events, _, _ = read_all(path)
+
+    written, marker = events[0]["blocks"][0]["output"].rsplit("\n", 1)
+    assert written == "é" * 4096
+    assert marker == "[truncated: 8192 of 10000 bytes]"

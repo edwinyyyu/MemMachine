@@ -310,3 +310,41 @@ def test_a_line_the_writer_has_not_finished_is_left_for_the_next_read(tmp_path):
 
     assert [event["blocks"][0]["text"] for event in events] == ["finished"]
     assert (offset, index) == (finished_length, 1)
+
+
+def test_a_long_tool_output_is_cut_and_says_where(tmp_path):
+    path = write_rollout(
+        tmp_path / "rollout.jsonl",
+        [
+            response_item(
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_9",
+                    "output": "x" * 9000,
+                }
+            )
+        ],
+    )
+
+    events, _, _ = read_all(path)
+
+    assert events[0]["blocks"][0]["output"] == (
+        f"{'x' * 8192}\n[truncated: 8192 of 9000 bytes]"
+    )
+
+
+def test_a_long_injected_passage_is_cut_and_a_message_is_not(tmp_path):
+    long_text = "y" * 9000
+    path = write_rollout(
+        tmp_path / "rollout.jsonl",
+        [
+            message("developer", long_text),
+            message("assistant", long_text),
+        ],
+    )
+
+    events, _, _ = read_all(path)
+
+    injected, spoken = events
+    assert injected["blocks"][0]["text"].endswith("[truncated: 8192 of 9000 bytes]")
+    assert spoken["blocks"][0]["text"] == long_text

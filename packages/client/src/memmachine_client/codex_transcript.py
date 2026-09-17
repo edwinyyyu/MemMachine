@@ -11,6 +11,10 @@ remembered twice.
 A rollout record carries no id of its own, so an event is held under a
 uuid derived from the session and the record's index in the file, which
 makes a second read of the same record the same event.
+
+A message's text is written as it was; a tool result and an injected
+passage are each one segment however long they are, so what they carry
+is capped at `ONE_SEGMENT_MAX_BYTES` and says where it was cut.
 """
 
 from __future__ import annotations
@@ -22,6 +26,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
+
+from memmachine_client.coding_agent_transcript import bounded_text
 
 _SOURCE_ID = "codex"
 
@@ -117,7 +123,14 @@ class _RecordReader:
         if record.get("type") == "compacted":
             summary = str(payload.get("message", ""))
             part = (
-                ("user", {"kind": "injected", "text": summary, "source": "compaction"})
+                (
+                    "user",
+                    {
+                        "kind": "injected",
+                        "text": bounded_text(summary),
+                        "source": "compaction",
+                    },
+                )
                 if summary.strip()
                 else None
             )
@@ -155,7 +168,7 @@ class _RecordReader:
                     "name": self.tool_names.get(
                         str(payload.get("call_id", "")), _UNNAMED_TOOL
                     ),
-                    "output": output,
+                    "output": bounded_text(output),
                     "error": failed,
                 },
             )
@@ -205,7 +218,7 @@ def _message_part(payload: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
         source = "other"
     if source is None:
         return ("user", {"kind": "text", "text": text})
-    return ("user", {"kind": "injected", "text": text, "source": source})
+    return ("user", {"kind": "injected", "text": bounded_text(text), "source": source})
 
 
 def _message_text(content: object) -> str:
