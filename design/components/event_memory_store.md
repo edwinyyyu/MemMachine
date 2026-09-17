@@ -1,27 +1,33 @@
-# Segment store
+# Event memory store
 
-Existing component, `episodic_memory/event_memory/segment_store/`, as
-shipped in #1548 (`design/segment_store_shared_tables.md`). Derived
-data: segments and their derivative links, rebuildable from the event
-store. This file lists what changes; everything not listed stays.
+Existing component, `episodic_memory/event_memory/event_memory_store/`, as
+shipped in #1548 (`design/event_memory_store_shared_tables.md`) and #1659
+(the write transaction and the event rows; the name follows its
+dependent since the store holds events, segments and links). Derived
+data: the events held, their segments and derivative links, rebuildable
+from the event store. This file lists what changes; everything not
+listed stays.
 
 ## Constructed with
 
-- `SQLAlchemySegmentStore(engine: AsyncEngine,
-  settings: SegmentStoreSettings)`;
+- `SQLAlchemyEventMemoryStore(engine: AsyncEngine,
+  settings: EventMemoryStoreSettings)`;
   settings: `purge_max_segments`, `payload_codec` defaults,
   `property_indexes`.
 
 ## Storage, after the changes
 
-`segment_store_pt`: `key UUID PK`, `config JSON`, `created_at`.
-`segment_store_sg`: `key UUID`, `uuid UUID`,
+`event_memory_store_pt`: `key UUID PK`, `config JSON`, `created_at`.
+`event_memory_store_ev`: `key UUID`, `uuid UUID`, the event uuid; primary
+key `(key, uuid)`, the row that holds an event once.
+`event_memory_store_sg`: `key UUID`, `uuid UUID`,
 `event_uuid UUID`, `event_position`, `index`, `offset`, `timestamp`,
 `timestamp_timezone_offset`, `session_id VARCHAR(255)`, `source_id VARCHAR(255)`,
 `context BLOB`, `block_kind VARCHAR(255)`, `block BLOB`, `properties JSON`;
-primary key `(key, uuid)`. `segment_store_dv_ln`: `key UUID`, `uuid
+primary key `(key, uuid)`, foreign key to the event row with cascade.
+`event_memory_store_dv_ln`: `key UUID`, `uuid
 UUID`, `segment_uuid UUID`, foreign key to the segment row with cascade.
-`segment_store_gc`: `key UUID PK`, `enqueued_at`, the purge queue.
+`event_memory_store_gc`: `key UUID PK`, `enqueued_at`, the purge queue.
 
 ## API, after the changes
 
@@ -30,26 +36,26 @@ Two ABCs: the store, the resource and the only place a key is named
 handle every data consumer holds (`server_redesign.md`, "Vocabulary").
 No method on the partition takes a key, so a consumer cannot name a
 wrong one, and it cannot reach lifecycle. Each backend implements both,
-as the current code does with `SegmentStorePartition`, minus the
+as the current code does with `EventMemoryStorePartition`, minus the
 incarnation, the open and close, and the stale state. `partition(key)`
 does no I/O and checks nothing; every operation through the handle
 fences on the registry row exactly as the current code does.
 
 ```python
-class SegmentStore(ABC):                  # the resource: lifecycle, and handles
+class EventMemoryStore(ABC):                  # the resource: lifecycle, and handles
     async def create_partition(self, key: UUID) -> None
     async def delete_partition(self, key: UUID) -> None
     async def purge_partition(self, key: UUID) -> Progress
     async def purge_deleted_partitions(self) -> bool     # library use only
-    def partition(self, key: UUID) -> SegmentPartition   # stateless handle, no I/O
+    def partition(self, key: UUID) -> EventMemoryPartition   # stateless handle, no I/O
     @property
     def concurrency_scope(self) -> ConcurrencyScope
 
-class SegmentPartition(ABC):              # data, bound to one key; no method takes a key
+class EventMemoryPartition(ABC):              # data, bound to one key; no method takes a key
     @property
     def key(self) -> UUID
-    async def add_segments(self,
-                           segments_to_derivative_uuids: Mapping[Segment, Iterable[UUID]]) -> None
+    def write(self, *, exclusive: bool = False
+              ) -> AbstractAsyncContextManager[EventMemoryPartitionWriter]
     async def get_segments(self, segment_uuids: Iterable[UUID], *,
                            since: datetime | None, until: datetime | None,
                            session_ids: Iterable[str] | None,
@@ -63,8 +69,33 @@ class SegmentPartition(ABC):              # data, bound to one key; no method ta
                                  source_ids: Iterable[str] | None,
                                  block_kinds: Iterable[str] | None,
                                  property_filter: FilterExpr | None) -> dict[UUID, Neighborhood]
+    async def get_derivative_uuids_by_event_uuids(self,
+                           event_uuids: Iterable[UUID]) -> dict[UUID, list[UUID]]
+    async def delete_events(self, event_uuids: Iterable[UUID]) -> None
     async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
+
+class EventMemoryPartitionWriter(ABC):        # one write transaction, inside write() only
+    async def add_events(self,
+                         events: Mapping[UUID, Mapping[Segment, Iterable[UUID]]]) -> None
+    async def get_segment_uuids_by_derivative_uuids(self,
+                         derivative_uuids: Iterable[UUID]) -> dict[UUID, UUID]
 ```
+
+The write transaction. `write()` is a context manager: entering it
+fences on the registry row and pins the partition against deletion,
+normal exit commits, an exception rolls the block back, so a caller
+makes a write conditional on work of its own inside it, which is how
+`EpisodicMemory` writes its vector records: the segments commit only
+once the vector store has acknowledged them. `add_events` is keyed by
+event, and the partition holds an event once: a batch naming a held
+event is rejected whole, before anything is stored, by the event row's
+primary key, exactly under concurrency on both dialects.
+`write(exclusive=True)` takes the row exclusively, waiting for every
+write in flight and excluding new ones until the block exits; a reader
+that must see the partition settled uses it, and read repair does.
+`delete_events` cascades to segments and links and frees the uuid;
+`delete_derivatives` and `delete_segments` (eviction) leave the event
+held, so an evicted event is not resurrected by a replay.
 
 The one total order. Segments within a key are ordered by
 `(timestamp, event_position, index, offset)`: timestamp ties break by
@@ -100,7 +131,7 @@ to it.
 
 ## Changes required
 
-- Key type `UUID` (`sqlalchemy_segment_store.py:145`, `String(255)`),
+- Key type `UUID` (`sqlalchemy_event_memory_store.py:145`, `String(255)`),
   and `validate_partition_key`, `PARTITION_KEY_MAX_BYTES` and
   `partition_key_for_session` (`long_term_memory/service_locator.py:166`)
   go.
@@ -108,7 +139,7 @@ to it.
   (`:146`, `:158`, `:201`, `:234`) becomes the key, the registry row's
   unique incarnation goes, the physical-key helper in `utils.py` goes,
   and the store mints nothing. Rationale in `server_redesign.md`,
-  "Segment store".
+  "Event memory store".
 - The registry row and the purge queue stay as shipped, keyed by the
   key: the logical delete removes the row and enqueues the key in one
   transaction, and a key is in one of two conditions the store can
@@ -117,8 +148,8 @@ to it.
   `dropping` without a second component: a row or an entry refuses
   create; no row refuses data operations; `purge` proceeds on an entry
   and raises `KeyLiveError` on a row with no entry.
-- `SegmentStorePartition` (`segment_store.py:20`) becomes
-  `SegmentPartition`: the same data operations, none taking a key,
+- `EventMemoryStorePartition` (`event_memory_store.py:20`) becomes
+  `EventMemoryPartition`: the same data operations, none taking a key,
   bound to the key at construction and stateless (no incarnation,
   nothing opened or closed, no stale state). `open_partition`,
   `open_or_create_partition` and `close_partition` (`:176`, `:191`,
@@ -144,7 +175,7 @@ to it.
   segment side; `session_ids`, `source_ids` and `block_kinds`; no
   window counts. `session_ids` selects what a read returns; the walk's
   confinement to the given segment's session is a separate rule.
-- `segment_store_sg` gains `block_kind`, the kind name of the segment's
+- `event_memory_store_sg` gains `block_kind`, the kind name of the segment's
   one block as a plain column, since the encoded block cannot be
   filtered (`blocks.md`).
 - `get_segment_neighborhoods` is the one walk, over the ordering index,
@@ -155,18 +186,26 @@ to it.
   session, and the lookup decides which segments are visible.
 - `delete_derivatives` is added for eviction (`episodic_memory.md`):
   removes link rows by derivative uuid and leaves the segments.
-- The two ABCs stay two, `SegmentStore` and `SegmentPartition`, with
+- From #1659, keyed by the key instead of the incarnation: the event
+  table and the segment table's foreign key to it; `write()` and the
+  writer's `add_events`, which replaced `add_segments`;
+  `delete_events`; `get_derivative_uuids_by_event_uuids`, which
+  replaced `get_segment_uuids_by_event_uuids` and
+  `get_derivative_uuids_by_segment_uuids`; the purge reclaiming event
+  rows after the segments, on the same budget; the exclusive fence.
+- The two ABCs stay two, `EventMemoryStore` and `EventMemoryPartition`, with
   the line between them redrawn: the store names keys, the partition
   never does.
-- Errors: `SegmentStorePartitionHandleStaleError` becomes
-  `KeyNotLiveError`; `SegmentStorePartitionAlreadyExistsError` becomes
-  `KeyExistsError`; `SegmentStoreAttemptsExhaustedError` becomes
-  `AttemptsExhaustedError`; `SegmentPartitionConfigMismatchError`
+- Errors: `EventMemoryStorePartitionHandleStaleError` becomes
+  `KeyNotLiveError`; `EventMemoryStorePartitionAlreadyExistsError` becomes
+  `KeyExistsError`; `EventMemoryStoreAttemptsExhaustedError` becomes
+  `AttemptsExhaustedError`; `EventMemoryPartitionConfigMismatchError`
   goes with open-or-create.
 - Fencing is unchanged: writes pin the registry row for the
   transaction (`FOR SHARE` on PostgreSQL; the self-checking registry
-  `UPDATE` on SQLite, as shipped), the logical delete takes it
-  exclusively, reads carry the liveness predicate, the row's existence.
+  `UPDATE` on SQLite, as shipped), an exclusive write and the logical
+  delete take it exclusively, reads carry the liveness predicate, the
+  row's existence.
 - Segmenter and deriver contracts gain a clause: a segment carries a
   verbatim copy of its event's properties, session id, source id,
   context, timestamp with offset and position, and a derivative of its
@@ -174,7 +213,7 @@ to it.
 
 ## Schema, after the changes
 
-`segment_store_pt`, the registry row (the fence):
+`event_memory_store_pt`, the registry row (the fence):
 
 | column | type | constraint |
 | --- | --- | --- |
@@ -182,17 +221,21 @@ to it.
 | `config` | `JSON` (`JSONB` on PostgreSQL) | not null |
 | `created_at` | `DateTime(timezone=True)` | not null, `func.now()` |
 
-`segment_store_gc`, the purge queue: `key Uuid` primary key,
+`event_memory_store_gc`, the purge queue: `key Uuid` primary key,
 `enqueued_at DateTime(timezone=True)` not null `func.now()`, index
-`segment_store_gc__enqueued_at`.
+`event_memory_store_gc__enqueued_at`.
 
-`segment_store_sg`, the segments:
+`event_memory_store_ev`, the events held: `key Uuid` and `uuid Uuid`, the
+event uuid, primary key `(key, uuid)`; nothing else, the row is the
+fact that the partition holds the event.
+
+`event_memory_store_sg`, the segments:
 
 | column | type | constraint |
 | --- | --- | --- |
 | `key` | `Uuid` | primary key part |
 | `uuid` | `Uuid` | primary key part |
-| `event_uuid` | `Uuid` | not null |
+| `event_uuid` | `Uuid` | not null; foreign key `(key, event_uuid)` to `event_memory_store_ev (key, uuid)` `ON DELETE CASCADE` |
 | `event_position` | `BigInteger` | not null; the event's position in the event store |
 | `index` | `Integer` | not null |
 | `offset` | `Integer` | not null |
@@ -205,27 +248,27 @@ to it.
 | `block` | `LargeBinary` | not null, codec-encoded |
 | `properties` | `JSON` (`JSONB` on PostgreSQL) | not null |
 
-Indexes: `segment_store_sg__key_event (key, event_uuid)` for lookup by
-event; `segment_store_sg__key_order (key, session_id, timestamp,
+Indexes: `event_memory_store_sg__key_event (key, event_uuid)` for lookup by
+event and the cascade from the event row; `event_memory_store_sg__key_order (key, session_id, timestamp,
 event_position, index, offset)` for context windows, expansion and
 `since` and `until`, which is the one total order the store exposes (a
 walk filtered by source or kind scans past the session's other rows; a
 pinned walk index is added when a workload shows such walks); expression indexes on `properties` for the keys a
-deployment names in `segment_store.property_indexes`, created by the
+deployment names in `event_memory_store.property_indexes`, created by the
 schema command.
 
-`segment_store_dv_ln`, the derivative links:
+`event_memory_store_dv_ln`, the derivative links:
 
 | column | type | constraint |
 | --- | --- | --- |
 | `key` | `Uuid` | primary key part |
 | `uuid` | `Uuid` | primary key part, the derivative uuid |
-| `segment_uuid` | `Uuid` | not null; foreign key `(key, segment_uuid)` to `segment_store_sg (key, uuid)` `ON DELETE CASCADE` |
+| `segment_uuid` | `Uuid` | not null; foreign key `(key, segment_uuid)` to `event_memory_store_sg (key, uuid)` `ON DELETE CASCADE` |
 
-Index: `segment_store_dv_ln__key_segment (key, segment_uuid)`, which the
-cascade and `get_derivative_uuids_by_segment_uuids` use.
+Index: `event_memory_store_dv_ln__key_segment (key, segment_uuid)`, which the
+cascade and `get_derivative_uuids_by_event_uuids` use.
 
 No foreign key from the data tables to the registry row, so the logical
-delete is O(1); the link table's cascade from segments is kept, and an
-engine that does not enforce it leaves link rows the purge removes with
-a warning, as today.
+delete is O(1); the cascades from events to segments and from segments
+to links are kept, and an engine that does not enforce them leaves rows
+the purge removes with a warning, as today.

@@ -219,6 +219,6 @@ caller.
   never routes a handler another kind; `PassthroughSegmenter` goes.
   `service_locator.py` builds a table per configured option. Done in
   #1597.
-- `Segment` rows gain `block_kind` (`segment_store.md`); vector records
+- `Segment` rows gain `block_kind` (`event_memory_store.md`); vector records
   gain `memmachine_em_block_kind` (`vector_store.md`); search and expansion
   gain `block_kinds` (`episodic_memory.md`).

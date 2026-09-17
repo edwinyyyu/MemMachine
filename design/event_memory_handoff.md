@@ -1,7 +1,7 @@
-# EventMemory and SegmentStore: implementation requirements
+# EventMemory and EventMemoryStore: implementation requirements
 
 A handoff for the agent implementing the accepted parts of the server
-redesign that live in `EventMemory`, `SegmentStore` and their data
+redesign that live in `EventMemory`, `EventMemoryStore` and their data
 models. Everything else in `design/server_redesign.md` (tenants,
 lifecycle, handles, the event store, the manager, settings, the HTTP
 API) is out of scope here, and nothing is renamed: the class stays
@@ -20,15 +20,15 @@ Worktrees on this machine:
 
 - `speedkick` code under this worktree:
   `packages/server/src/memmachine_server/episodic_memory/event_memory/`
-  (`data_types.py`, `event_memory.py`, `segment_store/segment_store.py`,
-  `segment_store/sqlalchemy_segment_store.py`, `deriver/text_deriver.py`,
+  (`data_types.py`, `event_memory.py`, `event_memory_store/event_memory_store.py`,
+  `event_memory_store/sqlalchemy_event_memory_store.py`, `deriver/text_deriver.py`,
   `segmenter/text_segmenter.py`), `common/filter/` (the string parser
   and `sql_filter_util.py`), `common/vector_store/`.
 - The claude-memory branch, worktree
   `/Users/eyu/edwinyyyu/mmcc/agentic_expansion`, same package paths.
   What to take from it, by file and line at its tip `05902295`:
-  - `segment_store/segment_store.py:73` `get_neighbor_segments` and
-    `sqlalchemy_segment_store.py:384` its implementation (commit
+  - `event_memory_store/event_memory_store.py:73` `get_neighbor_segments` and
+    `sqlalchemy_event_memory_store.py:384` its implementation (commit
     `0c19942a`): the neighbors-only read, which becomes
     `get_segment_neighborhoods`. Do not port `get_neighbor_events` (`:113`,
     `:454`); segments are the one unit.
@@ -51,7 +51,7 @@ Worktrees on this machine:
   it is; the filter union is optional here (below).
 - Design, on branch `design/tenant-lifecycle` (this worktree):
   `design/components/episodic_memory.md` (API, eviction, expansion),
-  `design/components/segment_store.md` (schema, the total order, the
+  `design/components/event_memory_store.md` (schema, the total order, the
   neighbors rule), `design/components/filters_and_properties.md`
   (reserved keys, system fields as typed parameters, the tree),
   `design/components/context.md` (parts), `design/components/blocks.md`
@@ -87,19 +87,22 @@ class Event(BaseModel):
   the API requires one (below, "Translation layers"). Any other name,
   `memmachine_`-prefixed or not, is a caller's to use.
 - Stored events are immutable (`server_redesign.md`, "Propagation"):
-  `encode_events` replaces an event's earlier encoding wholesale under
-  new segment and derivative uuids, `forget_events` removes one, and no
-  operation edits a stored segment or a vector record. The rule is stated
-  on `Event`, on `EventMemory` and on the store contract, whose
-  `add_segments` rejects a stored uuid, so the vector record's copy of
-  its segment's fields is exact by construction and a future update
-  operation has to argue with three docstrings and a test.
+  an event is encoded once, `encode_events` rejects a batch naming an
+  event the memory already holds, whole and before anything is stored,
+  `forget_events` removes one, and no operation edits a stored segment
+  or a vector record; a changed event is forgotten and encoded again
+  under new segment and derivative uuids. The rule is stated on
+  `Event`, on `EventMemory` and on the store contract, whose event row
+  rejects a held event and whose segment key rejects a stored uuid, so
+  the vector record's copy of its segment's fields is exact by
+  construction and a future update operation has to argue with three
+  docstrings and a test.
 - Both are bounded strings; bound them by the same limit as a property
   string value, and reject longer ones where events are validated
   (`EventMemory._validate_events`).
 - `Segment` and `Derivative` gain the same two fields, copied verbatim
   from the event by the segmenter and the deriver; that copy is a
-  clause of both contracts and the segment store depends on it.
+  clause of both contracts and the event memory store depends on it.
   `Derivative` carries the derived content and the segment's fields a
   vector record carries (timestamp, session, source, block kind) and
   nothing else: a deriver reads the segment's context while composing
@@ -108,7 +111,7 @@ class Event(BaseModel):
 - Timestamps are timezone-aware everywhere: the model rejects a naive
   value, and the typed bounds `since` and `until` reject one, since a
   naive datetime names no instant and a guessed zone would silently
-  shift an event in the order. The timestamp round-trips with its offset: the segment store already
+  shift an event in the order. The timestamp round-trips with its offset: the event memory store already
   keeps `timestamp_timezone_offset`; keep writing the UTC instant plus
   the offset and reapplying it on read.
 
@@ -202,7 +205,7 @@ walking further from a hit composes with `expand`.
 - Every system value written into a vector record uses a reserved key:
   `memmachine_em_timestamp`, `memmachine_em_session`,
   `memmachine_em_source`, `memmachine_em_block_kind`. The current
-  `_segment_uuid` and `_timestamp` keys go: the segment store maps a
+  `_segment_uuid` and `_timestamp` keys go: the event memory store maps a
   derivative to its segment (#1598), so no uuid is written into a
   record. `expected_vector_store_collection_schema` declares the four
   with their types, so the vector store indexes them through the
@@ -233,9 +236,9 @@ other predicate stays a post-filter.
 
 - `EventMemory` owns `_system_predicates(since, until, session_ids,
   source_ids, block_kinds) -> FilterExpr | None`, which builds the tree
-  the vector store gets, on reserved keys. The segment store never sees
+  the vector store gets, on reserved keys. The event memory store never sees
   a tree for system fields: it gets the typed values and compares
-  columns. `property_filter` is the segment store's alone.
+  columns. `property_filter` is the event memory store's alone.
 - `EventMemory.query` and `expand` take the typed parameters.
 
 Optional: the closed filter union from `822ccb6b` (`Equals`,
@@ -244,13 +247,13 @@ removes the string parser. It is the design's target and touches
 `common/filter` and every vector store's filter compiler; take it only
 if the string parser is in the way, since the server still calls it.
 
-## Segment store
+## Event memory store
 
-Schema (`sqlalchemy_segment_store.py`), keeping the incarnation and
+Schema (`sqlalchemy_event_memory_store.py`), keeping the incarnation and
 the partition tables exactly as shipped in #1548 since lifecycle is
 out of scope:
 
-- `segment_store_sg` gains `session_id VARCHAR(255) NOT NULL`,
+- `event_memory_store_sg` gains `session_id VARCHAR(255) NOT NULL`,
   `source_id VARCHAR(255) NULL` and `block_kind VARCHAR(255) NOT NULL`:
   the type of `partition_key` and of the vector stores' key columns,
   for every string column the store compares on, so the database
@@ -266,9 +269,18 @@ out of scope:
   still carries one `block` with its `kind` inside. The store derives
   `block_kind` from `segment.block.kind` and never accepts it as a
   separate input, so the column cannot disagree with the block.
-- Indexes: keep `(incarnation, event_uuid)` for lookup by event;
+- `event_memory_store_ev`, one row per event the partition holds, primary
+  key `(incarnation, uuid)`, and a foreign key from `event_memory_store_sg`
+  to it with cascade (#1659). The row is what makes an event addable
+  once: a second `add_events` naming it conflicts on the primary key
+  before any segment is written, exactly under concurrency on both
+  dialects (PostgreSQL makes the second inserter wait on the first
+  transaction and then report the conflict; SQLite serializes on the
+  writer lock), and deleting it removes the event's segments and links.
+- Indexes: keep `(incarnation, event_uuid)` for lookup by event and
+  the cascade from the event row;
   replace the timestamp ordering index with
-  `segment_store_sg__in_se_ts_ev_ix_of (incarnation, session_id, timestamp,
+  `event_memory_store_sg__in_se_ts_ev_ix_of (incarnation, session_id, timestamp,
   event_uuid, index, offset)`, which serves every walk since every walk
   pins a session. No walk index pinned on the source or the kind: a
   walk filtered by either scans past the session's other rows (tens of
@@ -293,11 +305,21 @@ out of scope:
   for the lifecycle/DDL work; `startup()` keeps `create_all`, and a
   `speedkick` database is recreated. Rows written before the change
   would not decode anyway (their discriminators were `context_type` /
-  `block_type`).
+  `block_type`). The event table and its foreign key (#1659) are new
+  DDL under the same stance.
 
-`SegmentStorePartition` (`segment_store/segment_store.py`):
+`EventMemoryStorePartition` (`event_memory_store/event_memory_store.py`):
 
 ```python
+def write(self, *, exclusive: bool = False
+        ) -> AbstractAsyncContextManager[EventMemoryStorePartitionWriter]
+
+class EventMemoryStorePartitionWriter:        # usable inside a write() block only
+    async def add_events(self,
+            events: Mapping[UUID, Mapping[Segment, Iterable[UUID]]]) -> None
+    async def get_segment_uuids_by_derivative_uuids(self,
+            derivative_uuids: Iterable[UUID]) -> dict[UUID, UUID]
+
 async def get_segments(self, segment_uuids: Iterable[UUID], *,
         since: datetime | None = None, until: datetime | None = None,
         session_ids: Iterable[str] | None = None,
@@ -313,9 +335,33 @@ async def get_segment_neighborhoods(self, seed_uuids: Iterable[UUID], *,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None) -> dict[UUID, Neighborhood]
 
+async def get_derivative_uuids_by_event_uuids(self,
+        event_uuids: Iterable[UUID]) -> dict[UUID, list[UUID]]
+
+async def delete_events(self, event_uuids: Iterable[UUID]) -> None
 async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
 ```
 
+- `write()` is the write transaction (#1659): entering the block checks
+  the handle and pins the partition against deletion, normal exit
+  commits, an exception rolls the block back, so a caller makes a write
+  conditional on work of its own inside it; `EventMemory` upserts its
+  vector records there. `add_events` replaces `add_segments`, keyed by
+  event; a batch naming a held event raises
+  `EventMemoryStoreEventAlreadyStoredError`, naming every such uuid, with
+  nothing stored. `write(exclusive=True)` takes the registry row
+  exclusively, waiting for every write in flight and excluding new ones
+  until the block exits; the writer's link lookup then sees the
+  partition settled, which read repair (below) needs.
+- `delete_events` deletes events with their segments and links, locking
+  the event rows and then the segment rows in uuid order first so
+  concurrent deletions cannot deadlock.
+  `get_derivative_uuids_by_event_uuids` replaces the two lookups forget
+  used, and a held event with no derivatives answers an empty list.
+  `delete_segments` (eviction) leaves the event held, so an evicted
+  event is not resurrected by a replay; only `delete_events` frees the
+  uuid. The purge reclaims event rows after the segments, on the same
+  budget.
 - The two reads have different jobs, a filtered lookup and a walk.
   `before` and `after` count neighbors on each side of a given segment
   (the shipped `max_backward_segments` and `max_forward_segments`,
@@ -350,6 +396,48 @@ async def delete_derivatives(self, derivative_uuids: Iterable[UUID]) -> None
 - Datetime bounds are normalized to UTC before binding
   (`_normalize_column_value`), on both the column comparisons and the
   JSON property path.
+
+### Orphaned records (#1659)
+
+With the vector upsert outside the event memory store's transaction, a
+forget interleaving between an encode's segment commit and its upsert
+deleted links whose records had not landed, and the records then landed
+with nothing naming them; a forget-first encode had widened that race
+to concurrent re-encodes. The fix is prevention: the upsert runs inside
+`write()`, so links are visible only after their records are
+acknowledged, a forget can only ever see links whose records exist, and
+its delete is issued after the upsert's acknowledgment; every
+interleaving of encode, forget and eviction is then orphan-free on any
+backend that applies one client's sequential acknowledged writes in
+order (Qdrant on one node, Milvus, S3 Vectors, Pinecone serverless,
+Chroma distributed, turbopuffer and the local engines do; a weak-ordered
+Qdrant replica set may reorder, its documented default for any client,
+and read repair converges it on sight). Rejection of a reused event uuid
+comes from the database, the event row's primary key, not from a
+caller convention such as uuid5 segment ids, so it holds for any
+frontend of the memory.
+
+The residue is a process dying between the upsert's acknowledgment and
+the commit, or a request delivered after its compensating delete:
+crash-rate, an embedding plus reserved ids with no text, its content a
+twin of the live record the client's retry writes, reclaimed when
+retrieved and by tenant deletion, which is total per collection. A
+ledger of record states (`pending`, `live`, `tombstoned`) with a
+`SKIP LOCKED` sweeper and a retention clock was designed and rejected
+for that residue: the state describes another system the database
+cannot verify, every writer must keep the protocol, disposal still
+needs a clock because a late request cannot be told from a dead one,
+and the garbage it chases is inert. Change data capture was rejected
+too (PostgreSQL logical decoding moves embedding out of the request
+path and has no SQLite counterpart), as was an outbox carrying vectors.
+The one place a clock would be needed, a tombstone outliving a request,
+is therefore not built. `LongTermMemory` deletes the segment partition
+before the vector collection, so the deletion drains and then blocks
+writers before the collection deletion removes every record that could
+have landed. Bounding the batch one transaction spans is #1658; the
+check that a PostgreSQL transaction timeout is not shorter than the
+vector request timeout waits for the vector-store chain's timeout
+fields.
 
 ## EventMemory
 
@@ -393,21 +481,32 @@ class EventMemory:
                      datetime_format: DateTimeFormat) -> list[QueryHit]
 ```
 
-- `encode_events`: first `forget_events` for the batch's event uuids,
-  so a repeated batch leaves one copy; then segment, derive, embed;
-  then eviction (below); then `add_segments` with the surviving
-  derivatives' links, `upsert` of the surviving records with the
-  reserved keys only, and `delete` of the
-  displaced records plus `delete_derivatives` of their links. The
-  order segments then vectors is unchanged. Drop the branch's
-  `serialize_encode` lock.
+- `encode_events`: segment, derive, embed; then eviction (below); then
+  one `write()` block: `add_events` with the surviving derivatives'
+  links, then `upsert` of the surviving records with the reserved keys
+  only, inside the transaction, so the segments commit only once the
+  vector store has acknowledged their records and a failed upsert rolls
+  them back; on an upsert error the same ids are deleted before the
+  error propagates, since the upsert may have been applied first, and a
+  delete that fails too is a note on the upsert's error. Then `delete`
+  of the displaced records plus `delete_derivatives` of their links
+  (where eviction's deletes sit relative to the block is settled at its
+  rebase onto #1659). A batch naming an encoded event is rejected whole;
+  `forget_events` frees the uuid. Drop the branch's `serialize_encode`
+  lock.
+- `forget_events`: `get_derivative_uuids_by_event_uuids`, `delete` of
+  the records, `delete_events`. Records before events: a failed record
+  delete leaves the event whole for a retry.
 - `query` is the vector stage only: embed the query; `query` the
   collection with `vector_search_limit`, `min_cosine_similarity` and
   `system_predicates(...)` alone, since `property_filter` is the
   caller's, over properties the vector store does not index, and it
   never reaches the vector store; resolve seeds
-  through the segment store's `get_segment_uuids_by_derivative_uuids`
-  (#1598); `get_segments` with the same system values and
+  through the event memory store's `get_segment_uuids_by_derivative_uuids`
+  (#1598), and settle a hit whose link is missing under
+  `write(exclusive=True)`, deleting it from the collection after the
+  fence is released if it is still unlinked (read repair, counted by
+  `event_memory_orphan_records_deleted_total`); `get_segments` with the same system values and
   `property_filter`, the post-filter, then `get_segment_neighborhoods` from the seeds
   it returned, `expand_context` split as today and no walk when it is
   zero; drop seeds the store did not return; return at most `vector_search_limit`
@@ -488,8 +587,21 @@ fields and keeps the rest of its properties as they are.
 
 ## Tests
 
+- #1659, both dialects: a batch naming a held event is rejected whole
+  with the uuids named and nothing stored; a stored segment uuid under
+  another event is still rejected; a segment under the wrong event; a
+  block that raises stores nothing; `delete_events` cascades and is
+  idempotent; `delete_segments` keeps the event held; a stale handle
+  raises at `write()` entry; the purge budget counts event rows. On
+  PostgreSQL the exclusive write blocks on a write in flight and then
+  sees it, and a concurrent add of one event blocks on the uncommitted
+  row and is rejected once it commits; on SQLite the exclusive write
+  waits on the writer lock. In `EventMemory`: rejection then forget, an
+  applied-then-failed upsert leaves nothing and the retry succeeds, a
+  failed compensating delete is noted, an orphan is deleted on
+  retrieval, a record whose encode is in flight is kept.
 - Port the branch's neighbor tests
-  (`server_tests/.../segment_store/test_sqlalchemy_segment_store.py`
+  (`server_tests/.../event_memory_store/test_sqlalchemy_event_memory_store.py`
   on `agentic_expansion`) to the two-list shape, on both dialects, and
   add: the seed is absent from both lists; a seed that fails the
   filter still yields its neighbors; `since`/`until` meet

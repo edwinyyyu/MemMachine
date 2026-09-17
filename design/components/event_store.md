@@ -158,7 +158,7 @@ class EventPartition(ABC):                # data, bound to one key; no method ta
   `True` while any entry remains. The server does not run it.
 - `add_events`: one transaction that locks the registry row `FOR
   UPDATE` (on SQLite, the self-checking `UPDATE` of `next_position`
-  serves as the lock, as in the segment store), so ingests to one
+  serves as the lock, as in the event memory store), so ingests to one
   tenant serialize at the event store and positions are commit-ordered
   within the key; validates every event (block bytes against
   `blocks.max_bytes`, context bytes against `context.max_bytes`,
@@ -202,7 +202,7 @@ that "what is left to process" is a range the subsystem reads from that
 integer, so that lag is a subtraction (`head` minus watermark, the
 status endpoint), so that an event's addition is always replayed before
 its deletion, and so that two events with one timestamp have a fixed
-order in the segment store. Positions are internal to the server:
+order in the event memory store. Positions are internal to the server:
 events are addressed by uuid everywhere else, and a position is never a
 request parameter except as the listing cursor. Commit order is what
 makes "read after p" exact, and it is why `add_events` takes the key's

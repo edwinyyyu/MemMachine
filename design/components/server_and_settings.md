@@ -56,7 +56,7 @@ YAML or TOML file of the same shape; `memmachine settings schema` and
 
 - `ServerSettings`, the root of the settings file: `bind`, `roles`,
   `concurrency_scope`, `databases`, `vector_store`, `embedders`,
-  `rerankers`, `language_models`, `event_store`, `segment_store`,
+  `rerankers`, `language_models`, `event_store`, `event_memory_store`,
   `episodic_memory`, `ingest`, `tenants`, `tenant_templates`. There is
   no nested `server` section; the `Server` object takes the root.
 - Slot settings are discriminated unions over registered kinds, keyed

@@ -103,10 +103,10 @@ Semantics:
   fewer.
 - `supported_filter_nodes`: the node classes the backend evaluates
   during a search, per the table in `filters_and_properties.md`; the
-  subsystem routes any other predicate to the segment store.
+  subsystem routes any other predicate to the event memory store.
 - There is no scoring by id and no allowlist on `query`: the store
   never scores a candidate set assembled outside it. The undeclared
-  part of a filter is applied afterward by the segment store, and the
+  part of a filter is applied afterward by the event memory store, and the
   vector limit is widened to compensate (`episodic_memory.md`).
 - `delete_collection`: `set_state(key, DROPPING)` in the key registry;
   in the SQL-backed stores, remove the row and enqueue the key in one
@@ -192,7 +192,7 @@ the usearch store `process`.
 `vector_store_pt`, the registry row beside the data in pgvector and the
 two SQLite stores, and `vector_store_gc`, their purge queue; a row is
 live and a queue entry is dropping, the same two conditions as the
-segment store's, so the store's outward behavior matches the
+event memory store's, so the store's outward behavior matches the
 key-registry stores' without depending on the key registry:
 
 | column | type | constraint |
@@ -248,7 +248,7 @@ BigInteger` not null unique (the vec0 rowid). The vec0 table's metadata columns
 carry every declared filterable key; the records table maps record uuids to
 rowids for `delete`. The registry row is `vector_store_pt` in the same file,
 and the fence is the same in-statement predicate on its existence as in the
-segment store.
+event memory store.
 
 Engine-backed store (usearch, hnswlib, or turbovec engines, as the
 reference branch's `VectorSearchEngine` family), one shared records

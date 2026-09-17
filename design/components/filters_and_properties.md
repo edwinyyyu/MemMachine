@@ -91,7 +91,7 @@ either choice makes `Not` and `NotEquals` disagree or makes `Not` not
 the complement of what it negates. With it, `NotEquals` stays the
 type-safe "holds a differing value" and `Not` is the complement. It is
 supported everywhere through routing: a backend without an existence
-operator evaluates it in the segment store.
+operator evaluates it in the event memory store.
 
 ## Provider support
 
@@ -99,7 +99,7 @@ Whether each node can be evaluated by the backend during its search.
 Every backend evaluates `Equals`, `Ordering` on numbers and datetimes,
 and `And`; the rest varies. A store declares the set as
 `supported_filter_nodes`, and the subsystem routes any other predicate
-to the segment store, where SQL evaluates the whole tree.
+to the event memory store, where SQL evaluates the whole tree.
 
 | Backend | `NotEquals` | `In` | `IsMissing` | `Or` | `Not` | Note |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -109,7 +109,7 @@ to the segment store, where SQL evaluates the whole tree.
 | Pinecone | yes (`$ne`) | yes | yes (`$exists`) | yes | by rewrite | no `$not`: negation is pushed to the leaves |
 | S3 Vectors | yes (`$ne`) | yes | yes (`$exists`) | yes | by rewrite | no `$not`; ordering on numbers only, datetimes stored as numbers |
 | Weaviate | yes (`NotEqual`) | yes (`ContainsAny`) | yes (`IsNull`) | yes | by rewrite | no `Not` operator |
-| Chroma | yes (`$ne`) | yes (`$in`, `$nin`) | no | yes | partial | `where` has `$ne` but no `$not` or `$exists` (`chromadb/api/types.py`), so `Not` rewrites only over `Equals` and `In` leaves; a negated ordering or `IsMissing` is routed to the segment store |
+| Chroma | yes (`$ne`) | yes (`$in`, `$nin`) | no | yes | partial | `where` has `$ne` but no `$not` or `$exists` (`chromadb/api/types.py`), so `Not` rewrites only over `Equals` and `In` leaves; a negated ordering or `IsMissing` is routed to the event memory store |
 | sqlite-vec | yes (`!=`) | no | no | no | no | KNN metadata constraints are comparisons joined by `AND` only |
 | usearch store | post-filtered by the store over its records table | | | | | |
 
@@ -125,7 +125,7 @@ outside its `supported_filter_nodes`.
 
 The language does not diverge between SQL and vector stores: the tree
 is one, and only the place of evaluation differs. A richer language for
-the segment store alone was considered and rejected for that reason;
+the event memory store alone was considered and rejected for that reason;
 whatever SQL could add (pattern matching, arithmetic) would be a second
 filter language for callers to learn and for MCP to describe.
 

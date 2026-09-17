@@ -38,7 +38,7 @@ document adds.
   exact engine allowlist) and #1603 (`Record` requires a vector and
   never has `None` properties), and after #1597 (the EventMemory
   handoff, stacked on #1598, which owns the reserved keys,
-  `system_filters.py`, and the segment store's `session_id`,
+  `system_filters.py`, and the event memory store's `session_id`,
   `source_id` and `block_kind` columns). #1599 (turbovec engine, which
   takes #1602's allowlist natively) is independent. #1588 (atomic
   index publish) is merged.
@@ -125,7 +125,7 @@ configuration, with no owner and no migration.
 - `query` raises the same when a filter names an undeclared key. An
   undeclared key therefore never exists in the vector store: not stored
   write-only, not scanned for. The split between what the store filters
-  and what the segment store filters is the caller's job (below), never
+  and what the event memory store filters is the caller's job (below), never
   something a store guesses at.
 - Every store keeps storing declared properties and filtering on the
   stored copy; nothing returns them (#1598).
@@ -166,7 +166,7 @@ configuration, with no owner and no migration.
 `query` either. Both would exist to score a candidate set assembled
 outside the store, which the plan below never does: the vector store
 gets the declared part of a filter and applies it during the search,
-and the undeclared part is applied afterward by the segment store,
+and the undeclared part is applied afterward by the event memory store,
 which already holds every segment's properties. The `default` branch
 added `get_cosine_similarity` for a consumer that never arrived, and
 #1598 removed it with `get`; it stays removed.
@@ -178,7 +178,7 @@ engine-backed store's records table, and S3 Vectors when it arrives),
 a datetime property, system or user, is stored as an integer of
 microseconds since the epoch, the same precision the SQL stores keep,
 so a `since` or `until` bound evaluates identically in every store. A
-bound is normalized to UTC before it is compared, as the segment store
+bound is normalized to UTC before it is compared, as the event memory store
 already does.
 
 ## Clients

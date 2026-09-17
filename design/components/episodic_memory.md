@@ -12,7 +12,7 @@ user builds one directly.
 
 ```python
 EpisodicMemory(
-    partition: SegmentPartition,    # handle: this tenant's segments
+    partition: EventMemoryPartition,    # handle: this tenant's segments
     collection: VectorCollection,   # handle: this tenant's records in its embedder's container
     segmenter: Segmenter,           # table from block kind to BlockSegmenter (blocks.md, "Processing")
     deriver: Deriver,               # table from block kind to BlockDeriver
@@ -80,18 +80,21 @@ class EpisodicMemory:
                ids: Iterable[Literal["session", "segment"]] = ()) -> str
 ```
 
-- `encode`: for each event, first `forget` its derived rows (so a
-  repeat leaves one copy), then segment, derive, embed; with eviction
-  on, decide which new derivatives are not worth keeping and which
-  stored ones they displace (below); write segments and the surviving
-  derivatives' links to the segment store; upsert the surviving
-  derivatives to the vector store with the declared properties (system
-  fields under reserved keys, plus the declared user keys); delete the
-  displaced derivatives from both stores. Segment and derivative uuids
-  are `uuid4`. The caller's batch is fully written when `encode`
-  returns; the manager advances the watermark only then.
-- `forget`: look up segments by event uuids and derivatives by segment
-  uuids; delete vector records; delete segments.
+- `encode`: segment, derive, embed; with eviction on, decide which new
+  derivatives are not worth keeping and which stored ones they displace
+  (below); then one `write()` block on the segment partition: add the
+  events with their segments and the surviving derivatives' links, and
+  upsert the surviving derivatives to the vector store with the declared
+  properties (system fields under reserved keys, plus the declared user
+  keys) inside the transaction, so the segments commit only once the
+  vector store holds their records and a failed upsert rolls them back;
+  delete the displaced derivatives from both stores. An event is held
+  once: a batch naming a held event is rejected whole, and `replay`
+  forgets first. Segment and derivative uuids are `uuid4`. The caller's
+  batch is fully written when `encode` returns; the manager advances
+  the watermark only then.
+- `forget`: look up derivatives by event uuids; delete vector records;
+  delete the events, which cascades to segments and links.
 - `query`: one stage, vector search. Embed the query; `collection.query`
   with the system filters (`since`, `until`, `session_ids`, `source_ids`,
   `block_kinds`) as predicates on reserved keys, evaluated during the
@@ -113,7 +116,7 @@ class EpisodicMemory:
   and `filter` is the API's, at the boundary where a request is read:
   the memory never splits a tree.
 - `expand`: the neighborhood of an anchor in its session's one total order
-  (`segment_store.md`), as claude-memory's `memory_expand` walks a conversation
+  (`event_memory_store.md`), as claude-memory's `memory_expand` walks a conversation
   around a memory. The anchor is a segment uuid (from a hit) or an event uuid
   (its first segment). `before` and `after` count segments, the one unit the
   store has; a long event is several segments and is read inward by expanding
@@ -124,7 +127,7 @@ class EpisodicMemory:
   the hit or the event, the filters apply to the neighbors only, and the
   anchor's place is between the lists. A caller walks further by calling again
   with the first of `before` or the last of `after` as the anchor and one side
-  zero. Backed by `SegmentPartition.get_segment_neighborhoods` over the ordering
+  zero. Backed by `EventMemoryPartition.get_segment_neighborhoods` over the ordering
   index; no vector search and no embedding, so it is one indexed read.
 - `render_segments`: the reader's text for any segments, a segment given twice
   rendered once: a block per session, the sessions in the order of
@@ -185,7 +188,7 @@ What it does, per batch of derivatives in `encode`:
   derivative's event timestamp, and the rest go: a stored member is
   displaced, a batch member is skipped.
 - Displaced derivatives are deleted from the vector store and their
-  links from the segment store; skipped ones are never written. The
+  links from the event memory store; skipped ones are never written. The
   segment stays either way: it is reconstructed and expanded like any
   other, and is found by search only through its surviving
   derivatives, the same standing as a block kind the deriver does not
@@ -194,7 +197,7 @@ What it does, per batch of derivatives in `encode`:
 What it guarantees and what it costs. The event store is untouched:
 eviction is lossy for search and lossless for the record, and a
 reprocessing into a new tenant starts from the full history. A redo of
-a batch after a crash forgets the batch's own derivatives first and
+a batch after a crash forgets the batch's events first and
 runs eviction again over a store that has already lost what the first
 run displaced, so it can displace more and never restores anything.
 The cost is one bounded vector query per new derivative, which
@@ -223,14 +226,15 @@ filtered by `block_kinds`; rendering calls `block.render`.
 
 - Rename `EventMemory` to `EpisodicMemory`; `EventMemoryParams`
   (`event_memory.py:52`) to constructor parameters.
-- `segment_store_partition` and `vector_store_collection` (`:76`, `:80`)
+- `event_memory_store_partition` and `vector_store_collection` (`:76`, `:80`)
   stay as dependencies and become the stateless handles
-  `SegmentPartition` and `VectorCollection`; no operation takes a key.
+  `EventMemoryPartition` and `VectorCollection`; no operation takes a key.
 - `reranker` leaves the constructor (`:96`) and the class: reranking is
   the manager's stage.
-- `encode_events` (`:200`) becomes `encode`, idempotent per event by
-  forgetting first, taking `StoredEvent`s so a segment can carry the
-  event's position; `forget_events` (`:680`) becomes `forget`.
+- `encode_events` (`:200`) becomes `encode`, holding an event once (a
+  repeated one is rejected whole; `replay` forgets first), taking
+  `StoredEvent`s so a segment can carry the event's position;
+  `forget_events` (`:680`) becomes `forget`.
 - `query` (`:353`): `vector_search_limit` keeps its name, since it
   bounds the vector stage and the hits can be fewer; the threshold becomes `min_cosine_similarity`; `since`, `until`, `session_ids`, `source_ids` and
   `block_kinds` are added as typed parameters (`until` exclusive, the
@@ -255,7 +259,7 @@ filtered by `block_kinds`; rendering calls `block.render`.
   locale and zone, and nothing else; which parts are composed is the
   composer's `parts`. `produced_for` and the producer roles of the old
   episode model are not carried over and nothing replaces them.
-- `expand` is added, with `get_segment_neighborhoods` on the segment store, on
+- `expand` is added, with `get_segment_neighborhoods` on the event memory store, on
   the rule of MemMachine #1498 and `agentic_expansion` commit 0c19942a:
   the neighbors, never the anchor; `string_from_segment_context` and
   `string_from_segment_contexts` become `render_segments`.

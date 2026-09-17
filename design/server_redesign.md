@@ -4,7 +4,7 @@ Status: proposal, under review in its own PR against `speedkick`. It
 replaces the tenant lifecycle draft in this file's history: the lifecycle
 cannot be fixed inside the current API, configuration and wiring, so the
 document covers the server. Companion:
-`design/segment_store_shared_tables.md` (the segment store as shipped in
+`design/event_memory_store_shared_tables.md` (the event memory store as shipped in
 #1548). Tracking: #1574. Line references are to `speedkick` at 7752e4cb,
 paths under `packages/server/src/memmachine_server` unless given in full.
 Settings are named, never given numeric defaults: none has been measured.
@@ -217,7 +217,7 @@ Named so the redesign can be checked against it.
   raises `KeyNotLiveError` on its next operation, from that fence and
   not from anything it remembers. What it buys is routing that cannot
   be wrong past the point it was built: a consumer holding a handle
-  cannot name another key. `EventPartition`, `SegmentPartition` and
+  cannot name another key. `EventPartition`, `EventMemoryPartition` and
   `VectorCollection` are the three, each an ABC a backend implements
   beside its store. The incarnation-bound handles of the current
   stores, opened, closed and stale, are not these.
@@ -731,7 +731,7 @@ events into segments and derivative embeddings and answering searches.
 
 Derived stores:
 
-- Segment store: segments and their derivative links, as shipped in
+- Event memory store: segments and their derivative links, as shipped in
   #1548.
 - Vector store: derivative embeddings, an index.
 
@@ -744,15 +744,17 @@ subsystem enabled on an existing tenant, whose watermark starts at zero.
 Per-tenant row (the subsystem's own table): tenant id, watermark (the
 last event position processed), applied configuration and its version.
 
-Identifiers: segment and derivative ids are minted (uuid4). Idempotency
-is per event, not per derived row: `encode` for an event first forgets
-that event's derived rows, so repeating it after a crash, or from a
-`replay`, leaves one copy.
+Identifiers: segment and derivative ids are minted (uuid4). An event is
+held once: `encode` rejects a batch naming an event already held, whole
+and before anything is stored, and `replay` forgets a batch's events
+before encoding them, so repeating after a crash leaves one copy.
 
 Operations, in the order the stores are touched:
 
 - `encode` and `forget`: for each log entry in order, an `added` entry is
-  segmented, derived, embedded and written (segments, then vectors) and
+  segmented, derived, embedded and written, the vectors upserted inside
+  the segment partition's write transaction so the segments commit only
+  once the vector store holds them (`design/components/episodic_memory.md`), and
   a `deleted` entry is forgotten; then, after both stores hold the
   batch, the watermark advances past it. A crash mid-batch leaves
   partial derived data above the watermark, which the next replay
@@ -785,7 +787,7 @@ Operations, in the order the stores are touched:
 - Expand: the neighborhood of a segment or event in its session's
   one total order, `before` and `after` counted in segments, the way
   claude-memory walks a conversation around a memory; one indexed read
-  on the segment store, no embedding. Segments are the one unit: a
+  on the event memory store, no embedding. Segments are the one unit: a
   long event is several of them, read inward by expanding from one.
   The anchor is never returned: the caller named it and holds it, the
   filters apply to the neighbors only, and the two sides come back as
@@ -793,8 +795,8 @@ Operations, in the order the stores are touched:
   kept even when its anchor would fail the filter and nothing in it can
   be mistaken for the anchor (#1498). Specified in
   `design/components/episodic_memory.md`.
-- `forget`: look up segments and derivatives; delete vector records;
-  delete segments.
+- `forget`: look up derivatives by event; delete vector records; delete
+  the events, which cascades to segments and links.
 
 Objects per tenant and request, options per request. `EpisodicMemory`
 (the current `EventMemory`) keeps its shape: one segment partition
@@ -804,13 +806,13 @@ no operation naming a key. It is a configured object bound to one
 tenant, never built by the composition and never cached: a handful of
 references, built per request and discarded. The resource is
 `EpisodicMemoryManager`, the name repurposed: constructed with the
-event store, the segment store, the vector store, and the embedders and
+event store, the event memory store, the vector store, and the embedders and
 rerankers the composition built, as mappings from id to object. It is
 registered with the tenant service, owns the per-tenant table and a
 cache of segmenter and deriver objects keyed by their options, and
 serves the routes. On a request the manager reads the tenant's applied
 configuration from its per-tenant row and builds the object in one
-constructor call from `segment_store.partition(key)`,
+constructor call from `event_memory_store.partition(key)`,
 `vector_store.collection(key, e)`, `embedders[e]`, the row's format,
 and the cached segmenter and deriver for the row's options, the
 handles being those of composition rule 4, so past that call nothing
@@ -903,7 +905,7 @@ Hooks:
   reused key and raises (see "Create is strict"); insert the per-tenant
   row if absent, else verify immutable options and write the section
   and its version, never the watermark.
-- `delete`: `delete_partition` on the segment store,
+- `delete`: `delete_partition` on the event memory store,
   `delete_collection` on the vector store, remove the per-tenant row.
 - `purge`: `purge_partition` and `purge_collection`; `DONE` when
   both report done.
@@ -924,7 +926,7 @@ backend builds one online. The redesign gives every kind of data a place that
 is not an index: what the server itself needs indexed is a system field; what a
 deployment wants indexed is declared once, per store, at setup; what is read
 but never filtered is a context part or a block; and the rest is a property,
-filterable through the segment store without an index. Nothing a caller sends
+filterable through the event memory store without an index. Nothing a caller sends
 creates an index.
 
 Two tiers of fields, one mechanism underneath. The reference is the
@@ -980,7 +982,7 @@ Nothing else needs to be a system field: a deployment that filters
 often on a property declares it in the vector store's
 `indexed_properties` and gets the same during-search filtering, typed,
 without a core change, and a property it does not declare is still
-filterable through the segment store. That is the answer to "too few"
+filterable through the event memory store. That is the answer to "too few"
 and "too many" alike: the system set is closed by the criterion, and
 the efficient set is open to each deployment.
 
@@ -994,7 +996,7 @@ Scalar-only is what every backend accepts (Chroma rejects nested values;
 S3 Vectors caps filterable metadata at 2 KB per vector). Long text is
 content, not a property: it goes in a block. Small machine data (an
 external id, a source URL) is a property, which every hit returns and
-which stays filterable through the segment store. There is no separate
+which stays filterable through the event memory store. There is no separate
 opaque metadata field.
 
 Readable metadata, a suggestion. Structured metadata that is meant to
@@ -1017,7 +1019,7 @@ Propagation. Properties are set at ingest and are immutable; changing an
 event's properties is a delete and a re-ingest. The event store holds
 them. Segments and derivatives carry a verbatim copy of their event's
 properties; that is a clause of the segmenter and deriver contracts,
-because filtering in the segment store depends on it. Vector records
+because filtering in the event memory store depends on it. Vector records
 carry only the declared subset, below.
 
 Declared, not dynamic, indexes. The deployment declares, per vector
@@ -1027,7 +1029,7 @@ of that store, created by the schema command (#1573, #1535). Nothing
 creates a filter index at runtime, per tenant, or from a request; the
 current per-collection `indexed_properties_schema` goes. System fields
 are always declared. A user property that is not declared is still
-filterable, through the segment store, where a deployment names in its
+filterable, through the event memory store, where a deployment names in its
 settings the keys it wants expression indexes on, and the schema
 command creates them, without touching the vector store or any
 co-tenant.
@@ -1086,7 +1088,7 @@ do and on how selective the predicate is; the caller never chooses.
 - Undeclared keys, and predicates the store cannot evaluate, never
   reach the vector store. Episodic memory splits the filter: the part
   the store evaluates goes to the vector query; the rest is applied
-  afterward by the segment store, which holds every segment's
+  afterward by the event memory store, which holds every segment's
   properties, when it builds the seeds' windows, and a seed it does
   not return is dropped. The vector query over-fetches with bounded
   widening up to `filter.max_overfetch_factor` while seeds are dropped, and
@@ -1107,7 +1109,7 @@ expansion returns segments in the store's one total order.
 
 Every store takes a UUID key and nothing else. The string key contract
 (charset, 32 bytes, validators, hashing in `partition_key_for_session`)
-is retired, and so is the segment store's incarnation: with keys never
+is retired, and so is the event memory store's incarnation: with keys never
 reused, the registry row keyed by the caller's UUID is the whole fence.
 
 ### How a store fences
@@ -1165,7 +1167,12 @@ writes (Weaviate tenants, Chroma collections, SQLite tables, Qdrant
 shard keys, the last rejected for scale). Everywhere a metadata database
 is paired with a non-transactional store the answer is the same as here:
 a soft-delete marker, asynchronous purging, and periodic
-reconciliation of orphans.
+reconciliation of orphans. Within a live tenant the per-record answer
+has the same shape (#1659, `design/event_memory_handoff.md`, "Orphaned
+records"): the write transaction spans the vector upsert, so a forget
+can only see records that exist; a hit without a link is settled under
+the exclusive fence and deleted if it is an orphan; and tenant deletion
+is total per collection.
 
 Why no lock across the remote write. A share lock held across the write
 makes the delete wait for in-flight writers, so that for live writers no
@@ -1213,7 +1220,7 @@ Scope declarations, computed from constructor arguments:
 
 | Resource | Scope |
 | --- | --- |
-| Tenant registry, event store, segment store, key registry | `cluster` on PostgreSQL; `host` on a SQLite file; `process` on in-memory SQLite |
+| Tenant registry, event store, event memory store, key registry | `cluster` on PostgreSQL; `host` on a SQLite file; `process` on in-memory SQLite |
 | Vector store | the minimum of its backend's and its key registry's: networked Qdrant, Milvus, Pinecone, S3 Vectors, Weaviate, Chroma are `cluster`; local-mode Qdrant and Milvus are `process`; sqlite-vec is `host` (registry and data in one file, under the file lock); the usearch store is `process` (index state in process memory) |
 | Reconciler, ingest service, routers | any; they hold no shared state of their own |
 
@@ -1270,7 +1277,7 @@ proceeds on `creating`, as above:
 | logical delete | returns; idempotent | returns; idempotent |
 | purge | proceeds on `dropping` or a queue entry, which goes when nothing remains; raises on `live` | deletes by key in every container; `DONE` when nothing is found |
 
-### Segment store
+### Event memory store
 
 As shipped in #1548, with these changes:
 
@@ -1285,7 +1292,7 @@ As shipped in #1548, with these changes:
   capability (in-place replacement) the design rejects.
   `open_or_create_partition` goes.
 - The incarnation-bound partition handle, opened and closed, becomes
-  `SegmentPartition`, a stateless handle bound to the key at
+  `EventMemoryPartition`, a stateless handle bound to the key at
   construction: the data operations live on it and none takes a key,
   and `partition(key)` on the store builds it without I/O. The
   registry read that fences each operation returns the codec
@@ -1298,6 +1305,10 @@ As shipped in #1548, with these changes:
   raises past it; the reconciler retries.
 - `purge_deleted_partitions()`: kept for library users without a tenant
   service; the server does not run it.
+- The write transaction (`write()`, `add_events`), the event rows that
+  hold an event once, `delete_events`, and the exclusive fence read
+  repair uses are as shipped in #1659, keyed by the key instead of the
+  incarnation.
 
 ### Vector store
 
@@ -1410,14 +1421,14 @@ must be stored as numbers to be range-filtered, since comparisons apply
 to numbers only.
 
 The SQLite stores. Both are rewritten away from a table per collection,
-like the segment store: the sqlite-vec store keeps one `vec0` table per
+like the event memory store: the sqlite-vec store keeps one `vec0` table per
 container with the tenant key as its partition key, the usearch store
 keeps records in one shared table and one index file per tenant (a file
 it owns, not schema; index state lives in process memory, which is why
 it stays at `process` scope), and both keep their registry in the same
 file, so their fence is in-statement and the sqlite-vec store reaches
 `host` scope. The O(1) drop that a table per collection gave becomes a
-keyed delete run by the purge job, as in the segment store;
+keyed delete run by the purge job, as in the event memory store;
 unreachability is immediate through the registry either way. A `vec0`
 partition key is not a filter over a shared scan: vec0 stores each
 partition value's vectors in chunks of its own, and a KNN constrained on
@@ -1441,7 +1452,7 @@ Five rules, then the mechanics.
 
 1. Fixed topology, pluggable slots. The standard server is a fixed graph
    of roles: database engines, the key registry, the event store, the
-   segment store, the vector store, embedders, rerankers, language
+   event memory store, the vector store, embedders, rerankers, language
    models, the episodic memory manager, the ingest service, the tenant
    service, the routers. Each role is an ABC. The graph never varies
    between deployments; what fills each slot does. This is the shape of
@@ -1470,7 +1481,7 @@ Five rules, then the mechanics.
 4. Scoped views. A dependency that could be misused across a boundary
    is scoped before it is injected, so the misuse is unrepresentable
    rather than checked: the key registry is handed to a store as a view
-   over that store's rows only; the segment store and the vector store
+   over that store's rows only; the event memory store and the vector store
    are handed to an episodic memory object as stateless handles bound
    to one key, and to one container. A store cannot touch another
    store's rows, an object built for one tenant cannot name another,
@@ -1545,7 +1556,7 @@ def compose(s: ServerSettings) -> Server:
     rerankers = {name: RERANKERS[r.kind](r) for name, r in s.rerankers.items()}
     registry = SqlKeyRegistry(main)
     events = SqlAlchemyEventStore(main, s.event_store)
-    segments = SQLAlchemySegmentStore(main, s.segment_store)
+    segments = SQLAlchemyEventMemoryStore(main, s.event_memory_store)
     vector_store = VECTOR_STORES[s.vector_store.kind](
         s.vector_store, embedders=embedders,
         registry=registry.scoped("vector-store"), engine=main,
@@ -1576,7 +1587,7 @@ vector_store:
   indexed_properties:      # once per store; system fields implicit
     category: string
     score: integer
-segment_store:
+event_memory_store:
   property_indexes: [category]   # expression indexes the schema command creates
 embedders:
   openai-large:
@@ -1842,7 +1853,7 @@ In the first deployment, because the first records freeze it:
    backends that cannot rename; the reconciler that executes deletions
    may land after, but the rows and jobs it needs must exist before the
    first delete. This includes the key being the physical key inside
-   each store's own tables: the segment store's rows keyed by the
+   each store's own tables: the event memory store's rows keyed by the
    tenant id with no incarnation column, because a store's schema is
    permanent from its first row, and a store-private identity written
    then could never be removed.
@@ -1877,7 +1888,7 @@ tables, MCP. Internal or reversible.
 
 The first deployment's minimum is therefore narrower than this
 document: the tenant table and jobs, the event store, episodic memory
-over the shipped segment store and one registry-backed vector store, the
+over the shipped event memory store and one registry-backed vector store, the
 property conventions, the v1 API for tenants, events and search, and
 Alembic. Everything else is additive, and the risk to guard against is a
 partial implementation that starts writing records before one of the
@@ -1889,7 +1900,7 @@ One specification per component, under `design/components/`, each with
 its API, storage, fencing, settings, and the changes it requires of an
 existing component: `README.md` (conventions), `tenant_service.md`
 (registry, jobs, reconciler, sweep), `key_registry.md`,
-`event_store.md`, `segment_store.md`, `vector_store.md`,
+`event_store.md`, `event_memory_store.md`, `vector_store.md`,
 `episodic_memory.md`, `episodic_memory_manager.md`, `context.md`,
 `blocks.md`, `ingest_service.md`, `filters_and_properties.md`,
 `server_and_settings.md`. Where a specification and this document

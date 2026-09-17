@@ -13,7 +13,7 @@ service as the `episodic_memory` memory subsystem.
 ```python
 EpisodicMemoryManager(
     event_store: EventStore,
-    segment_store: SegmentStore,           # lifecycle, and partition handles
+    event_memory_store: EventMemoryStore,           # lifecycle, and partition handles
     vector_store: VectorStore,             # lifecycle, and collection handles
     embedders: Mapping[str, Embedder],     # resources, all the deployment built
     rerankers: Mapping[str, Reranker],
@@ -82,12 +82,12 @@ SQLite), so it moves only forward; `provision` writes `config` and
 
 Toward the tenant service (`MemorySubsystem`):
 
-- `provision(tenant_id, section)`: `segment_store.create_partition` and
+- `provision(tenant_id, section)`: `event_memory_store.create_partition` and
   `vector_store.create_collection(key, container=section.embedder)`,
   each treating its own `live` row as success and resuming `creating`;
   insert the per-tenant row, or update its `config` and
   `config_version`.
-- `delete(tenant_id)`: `segment_store.delete_partition`,
+- `delete(tenant_id)`: `event_memory_store.delete_partition`,
   `vector_store.delete_collection`, remove the per-tenant row.
 - `purge(tenant_id)`: `purge_partition` and `purge_collection`;
   `DONE` when both are.
@@ -105,7 +105,7 @@ Toward the routers:
 Each reads the per-tenant row (absent: `ComponentNotEnabledError`,
 which the router turns into 404 or 409 by asking the tenant service),
 builds the tenant's `EpisodicMemory` in one constructor call from
-`segment_store.partition(tenant_id)`, `vector_store.collection(tenant_id,
+`event_memory_store.partition(tenant_id)`, `vector_store.collection(tenant_id,
 e)`, `embedders[e]`, the row's `eviction`, and the
 segmenter and deriver objects for the row's options, taken from the
 cache, and makes one call.
@@ -126,7 +126,7 @@ not offered raises `InvalidTenantConfigError`. The router renders
 with the `added` entries' events and `forget` with the `deleted`
 entries' uuids, and advances the watermark to the batch's last position
 in its own transaction after `encode` and `forget` have returned, that
-is, after both the segment store and the vector store hold the batch.
+is, after both the event memory store and the vector store hold the batch.
 A step that fails before that leaves the watermark, and the next step
 redoes the batch from it. When the watermark is below the log's oldest
 entry (a subsystem enabled on a tenant with history, or a compacted

@@ -48,10 +48,10 @@ Conventions shared by every specification:
   (`InstanceOf[Embedder]` beside scalar fields) mixes the two, which is
   what this rule removes. No numeric default is given here, since none
   has been measured.
-- Every store has two ABCs: the store (`EventStore`, `SegmentStore`,
+- Every store has two ABCs: the store (`EventStore`, `EventMemoryStore`,
   `VectorStore`), the resource and the only place a key is named, for
   lifecycle and for constructing handles; and the handle
-  (`EventPartition`, `SegmentPartition`, `VectorCollection`), the data
+  (`EventPartition`, `EventMemoryPartition`, `VectorCollection`), the data
   surface, bound to one key at construction, with no method taking a
   key. A data consumer holds the handle only, so it cannot reach
   lifecycle and cannot name a wrong key; the store is held by the
@@ -83,7 +83,7 @@ Files:
 - `key_registry.md`: per-key bookkeeping for stores whose data is not
   in SQL, and the scoped view a store receives.
 - `event_store.md`: the system of record for events.
-- `segment_store.md`: the segment store as shipped in #1548 and what
+- `event_memory_store.md`: the event memory store as shipped in #1548 and what
   changes.
 - `vector_store.md`: the vector store contract, its registry rows,
   containers, declared properties, and per-backend notes.
