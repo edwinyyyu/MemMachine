@@ -104,7 +104,6 @@ def _system_predicates(
     return _conjoin(clauses)
 
 
-# The context part kinds rendering prints, in the order they are printed.
 class EventMemoryParams(BaseModel):
     """
     Parameters for EventMemory.
