@@ -224,8 +224,10 @@ and posts them to `/v1/tenants/{tenant}/events`.
   stored, since the store rejects whole batches and writes whole batches
   (#1659); the client treats 409 `event_exists` as done and advances its
   mark.
-- One event per message; tool calls and tool results as events of their
-  own block kinds, registered with the server (#1611, `blocks.md`), so a
+- One event per message; tool calls, tool results, injected text and
+  the agent's reasoning as events of their own block kinds (`tool_call`,
+  `tool_result`, `injected`, `thinking`), registered with the server
+  (#1611, `blocks.md`, #1692), so a
   deriver that embeds only message kinds is a table lookup and the tool
   events stay reachable by expansion. The policy is the deriver's and
   applies to what is ingested from then on: widening it later needs no
@@ -254,34 +256,30 @@ and posts them to `/v1/tenants/{tenant}/events`.
 - OpenCode and other agents: once the two-agent shape has settled which
   parts are shared.
 
-## 6. PR plan
+## 6. PR plan, as built (2026-09-17)
 
-Built 2026-09-17 as five PRs on main, `[coding agents N/5]`: #1690 the v1
-API, #1691 the MCP tools, #1689 the installer, #1692 the block kinds,
-#1693 capture. Two facts settled in the building: a tool result is one
-segment however long, so the capture client caps tool output and injected
-text at 8 KB with a truncation marker; and a batch the server already
-holds in part, as a resumed or forked transcript produces, is posted again
-one event at a time with the mark moving past each held event, so nothing
-is lost or duplicated and a slow link makes progress on every `Stop`.
+Three PRs on main, `[coding agents N/3]`, plus one prerequisite in the
+event-memory line:
 
-Base: the main port of the event-memory stack (#1597, #1617, #1611, #1632
-and #1659 on `main`), since rendering with ids and the write transaction
-are what the API and the capture contract rest on.
+1. #1690, the v1 API, on the event-memory port stack.
+2. #1691, the MCP tools, on #1692.
+3. #1693, the whole client side: the installer, the `Stop` hook it
+   registers, and capture; directly on main, merging after 2 and #1692.
 
-1. Server v1 router: query, expand, events, events/delete over the
-   `resolve_event_memory` seam, with the error mapping and OpenAPI
-   descriptions; tests with the in-memory fakes and one end-to-end test
-   over the SQLite stores.
-2. Server MCP at `/v1/mcp`: the two tools over the same services, tenant
-   from the header; tests through an MCP client.
-3. Agent glue: the installer for Claude Code and Codex with the recall
-   entries only, and the docs page.
-4. Capture: block kinds for tool events, the capture client with the two
-   transcript parsers, the `Stop` handlers in the installer.
+#1692, the block kinds `thinking`, `tool_call`, `tool_result` and
+`injected`, sits between 1 and 2 as event-memory data model rather than
+as a slice of this stack, since it is what the event memory holds, not
+what an agent does with it.
 
-Each PR is reviewable alone; 1 and 2 land before any agent points at a
-server.
+Two facts settled in the building: a tool result is one segment however
+long, so the capture client caps tool output, injected text and reasoning
+at 8 KB with a truncation marker; and a batch the server already holds
+in part, as a resumed or forked transcript produces, is posted again one
+event at a time with the mark moving past each held event, so nothing is
+lost or duplicated and a slow link makes progress on every `Stop`. One
+finding: every Codex rollout on the development machine carries its
+reasoning encrypted with an empty summary, so Codex reasoning records
+produce nothing until a deployment's Codex emits summaries.
 
 ## 7. Decisions taken (2026-09-17)
 
