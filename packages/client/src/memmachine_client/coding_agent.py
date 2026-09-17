@@ -2,7 +2,7 @@
 
 Claude Code and Codex both speak MCP over streamable HTTP with static
 headers, so one endpoint (`<server>/v1/mcp`) and one header
-(`X-MemMachine-Tenant`) serve both, and the tools (`memory_search`,
+(`X-MemMachine-Tenant`) serve both, and the tools (`memory_query`,
 `memory_expand`) live on the server. This module writes and removes that
 entry in each agent's own configuration.
 """
