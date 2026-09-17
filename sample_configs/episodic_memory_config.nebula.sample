@@ -119,6 +119,18 @@ resources:
         registry_database: profile_storage # relational database holding the partition registry; required
         tombstone_retention_seconds: 86400 # a deleted partition's tombstone outlives its first clean purge round this long
         # api_key: <YOUR_QDRANT_API_KEY>   # required for Qdrant Cloud
+        # Optional tuning of the collection, as qdrant_client's HnswConfigDiff,
+        # OptimizersConfigDiff and QuantizationConfig in YAML form. hnsw_config.m
+        # stays 0: the collection holds every partition and indexes per partition.
+        # hnsw_config:
+        #   payload_m: 16
+        #   ef_construct: 100
+        # optimizers_config:
+        #   indexing_threshold: 20000
+        # quantization_config:
+        #   scalar:
+        #     type: int8
+        #     always_ram: true
     #
     # Alternative: Milvus. The local .db URI uses Milvus Lite; replace it with
     # http(s)://... plus token/db_name for Milvus server or Zilliz Cloud.
