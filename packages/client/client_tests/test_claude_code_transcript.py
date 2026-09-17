@@ -77,14 +77,18 @@ def test_a_user_message_becomes_one_text_event(tmp_path):
     assert (offset, index) == (path.stat().st_size, 1)
 
 
-def test_an_assistant_turn_becomes_a_message_and_a_tool_call(tmp_path):
+def test_an_assistant_turn_becomes_its_thinking_message_and_tool_call(tmp_path):
     path = write_transcript(
         tmp_path / "session.jsonl",
         [
             assistant_entry(
                 "aaaaaaaa-0000-4000-8000-000000000002",
                 [
-                    {"type": "thinking", "thinking": "not written down"},
+                    {
+                        "type": "thinking",
+                        "thinking": "The install replaces the file.",
+                        "signature": "…",
+                    },
                     {"type": "text", "text": "Because the install replaces it."},
                     {
                         "type": "tool_use",
@@ -99,19 +103,23 @@ def test_an_assistant_turn_becomes_a_message_and_a_tool_call(tmp_path):
 
     events, _, _ = read_all(path)
 
+    # Everything the entry holds, in the order it happened.
     assert [event["blocks"][0] for event in events] == [
+        {"kind": "thinking", "text": "The install replaces the file."},
         {"kind": "text", "text": "Because the install replaces it."},
         {"kind": "tool_call", "name": "Read", "input": {"file_path": "/a/b.py"}},
     ]
     assert [event["context"] for event in events] == [
         {"author": {"name": "assistant"}},
         {"author": {"name": "assistant"}},
+        {"author": {"name": "assistant"}},
     ]
-    # The entry's own uuid holds its first event; a second event of the
-    # same entry is named under it.
+    # The entry's own uuid holds its first event; the events after it in
+    # the same entry are named under it.
     assert events[0]["id"] == "aaaaaaaa-0000-4000-8000-000000000002"
     assert events[1]["id"] == str(uuid5(UUID(events[0]["id"]), "1"))
-    assert events[1]["properties"]["tool_name"] == "Read"
+    assert events[2]["id"] == str(uuid5(UUID(events[0]["id"]), "2"))
+    assert events[2]["properties"]["tool_name"] == "Read"
 
 
 def test_a_tool_result_is_named_after_the_call_it_answers(tmp_path):
@@ -495,3 +503,41 @@ def test_a_cut_falls_on_a_character_boundary(tmp_path):
     written, marker = events[0]["blocks"][0]["output"].rsplit("\n", 1)
     assert written == "é" * 4096
     assert marker == "[truncated: 8192 of 10000 bytes]"
+
+
+def test_thinking_that_carries_nothing_is_no_event(tmp_path):
+    path = write_transcript(
+        tmp_path / "session.jsonl",
+        [
+            assistant_entry(
+                "aaaaaaaa-0000-4000-8000-000000000111",
+                [
+                    {"type": "thinking", "thinking": "   ", "signature": "…"},
+                    {"type": "text", "text": "done"},
+                ],
+            )
+        ],
+    )
+
+    events, _, _ = read_all(path)
+
+    assert [event["blocks"][0]["kind"] for event in events] == ["text"]
+
+
+def test_long_thinking_is_cut_like_an_injected_passage(tmp_path):
+    path = write_transcript(
+        tmp_path / "session.jsonl",
+        [
+            assistant_entry(
+                "aaaaaaaa-0000-4000-8000-000000000112",
+                [{"type": "thinking", "thinking": "z" * 9000, "signature": "…"}],
+            )
+        ],
+    )
+
+    events, _, _ = read_all(path)
+
+    assert events[0]["blocks"][0] == {
+        "kind": "thinking",
+        "text": f"{'z' * 8192}\n[truncated: 8192 of 9000 bytes]",
+    }

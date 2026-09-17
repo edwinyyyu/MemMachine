@@ -152,22 +152,41 @@ last run left off and posts what is new to
 - Messages: what the user typed, and what the assistant answered.
 - Tool calls, with the arguments the agent gave them, and the results
   they returned.
+- The assistant's thinking, wherever the transcript carries it.
 - Injected text, which is what entered the conversation without being
   typed -- hook context, skill bodies, system reminders, slash-command
   echoes, compaction summaries -- each carrying which of those it is.
 
+Capture posts every entry the transcript holds since the mark, and no
+tool the model can call writes to memory: what a session remembers is
+what it did, not what it chose to record.
+
+One kind of record is left out, and only because it is already there:
+Codex writes each message and each tool call twice, once as the
+conversation (`response_item`) and once for its own interface
+(`event_msg`), so the second is passed over rather than remembered
+twice. Claude Code's transcript repeats nothing this way.
+
+Thinking is written down where the agent's file carries it. Claude
+Code's transcripts hold the text of a `thinking` block, so it is
+captured. Codex carries its reasoning encrypted, with the readable
+`summary` and `content` of a `reasoning` record empty in every rollout
+written here, so those records usually produce nothing; where a rollout
+does carry that text, it is captured the same way.
+
 Only messages are embedded, so `memory_query` answers with messages and
-nothing else: a tool call, its result and an injected passage are
-reachable by expansion only, and a query never matches one. They sit on
-the session's timeline beside the message they happened around, and
+nothing else: a tool call, its result, thinking and an injected passage
+are reachable by expansion only, and a query never matches one. They sit
+on the session's timeline beside the message they happened around, and
 `memory_expand` is what reads them. That is what makes a past procedure
 readable again: find the message where the work was discussed, expand
 around it, and the commands, their arguments and their output are there.
 
-A tool result and an injected passage are each one segment on the
-server, however long they are, and an expansion step is counted in
-segments, so what they carry is capped at 8192 bytes. Text over the cap
-is cut at a character boundary and carries one line saying so:
+A tool result, a passage of thinking and an injected passage are each
+one segment on the server, however long they are, and an expansion step
+is counted in segments, so what they carry is capped at 8192 bytes. Text
+over the cap is cut at a character boundary and carries one line saying
+so:
 
 ```text
 [truncated: 8192 of 41983 bytes]

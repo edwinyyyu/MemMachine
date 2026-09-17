@@ -5,6 +5,10 @@ end of every turn. It reads the transcript from where the last run left
 off, turns the new entries into events, and posts them to
 `<server>/v1/tenants/<tenant>/events` in batches.
 
+Capture posts every entry the transcript holds since the mark, and no
+tool the model can call writes to memory: what a session remembers is
+what it did, not what it chose to record.
+
 How far a session has been posted is kept in a state file under the
 agent's own directory, `~/.claude/memmachine/capture-state.json` for
 Claude Code and `$CODEX_HOME/memmachine/capture-state.json` for Codex.

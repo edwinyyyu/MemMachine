@@ -12,9 +12,15 @@ A rollout record carries no id of its own, so an event is held under a
 uuid derived from the session and the record's index in the file, which
 makes a second read of the same record the same event.
 
-A message's text is written as it was; a tool result and an injected
-passage are each one segment however long they are, so what they carry
-is capped at `ONE_SEGMENT_MAX_BYTES` and says where it was cut.
+A message's text is written as it was; the blocks the server holds as
+one segment each -- a tool result, thinking and an injected passage --
+are capped at `ONE_SEGMENT_MAX_BYTES` and say where they were cut.
+
+A `reasoning` record is written down as thinking wherever it carries
+text, which is what its `summary` and `content` hold; its
+`encrypted_content` is opaque rather than text and is never posted. The
+rollouts written on this machine carry an empty `summary`, a null
+`content` and an encrypted body, so such a record produces no event.
 """
 
 from __future__ import annotations
@@ -114,8 +120,9 @@ class _RecordReader:
     def events_of(self, record: dict[str, Any], index: int) -> list[dict[str, Any]]:
         """The events one record produces, at most one.
 
-        Reasoning records hold no registered kind and are left out, as
-        are the session's own metadata and the turn's settings.
+        The session's own metadata and the turn's settings carry nothing
+        that happened, and the `event_msg` records restate the
+        conversation for the interface, so neither is written down.
         """
         payload = record.get("payload")
         if not isinstance(payload, dict):
@@ -159,6 +166,8 @@ class _RecordReader:
                 "assistant",
                 {"kind": "tool_call", "name": name, "input": _call_input(given)},
             )
+        if payload_type == "reasoning":
+            return _reasoning_part(payload)
         if payload_type in {"function_call_output", "custom_tool_call_output"}:
             output, failed = _output_text(payload.get("output"))
             return (
@@ -197,6 +206,23 @@ class _RecordReader:
         if timestamp is not None:
             body["timestamp"] = timestamp
         return body
+
+
+def _reasoning_part(payload: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """The author and block of a reasoning record, None where it holds no text.
+
+    A record carries its reasoning in `summary`, in `content`, or in
+    neither: `encrypted_content` is opaque rather than text, so a record
+    holding only that is nothing to write down.
+    """
+    parts = (
+        _message_text(payload.get("summary")),
+        _message_text(payload.get("content")),
+    )
+    text = "\n".join(part for part in parts if part)
+    if not text.strip():
+        return None
+    return ("assistant", {"kind": "thinking", "text": bounded_text(text)})
 
 
 def _message_part(payload: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:

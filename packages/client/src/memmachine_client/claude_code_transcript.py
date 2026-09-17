@@ -6,11 +6,13 @@ message, tool call, tool result and injected passage in it becomes one
 event body, in transcript order, and the reader starts at a byte offset
 so a session is read once.
 
-Only `text` blocks reach the search surface, so a tool call and its
-result stay on the timeline and are read by expanding from a message.
-A message's text is written as it was; a tool result and an injected
-passage are each one segment however long they are, so what they carry
-is capped at `ONE_SEGMENT_MAX_BYTES` and says where it was cut.
+Every entry the file holds since the mark is posted. Only `text` blocks
+reach the search surface, so a tool call, its result, the assistant's
+thinking and injected text stay on the timeline and are read by
+expanding from a message. A message's text is written as it was; the
+blocks the server holds as one segment each -- a tool result, thinking
+and an injected passage -- are capped at `ONE_SEGMENT_MAX_BYTES` and say
+where they were cut.
 """
 
 from __future__ import annotations
@@ -211,7 +213,8 @@ class _EntryReader:
     def _assistant_blocks(self, message: object) -> list[tuple[str, dict[str, Any]]]:
         """The author and block of each event an assistant entry produces.
 
-        Thinking blocks carry no registered kind and are left out.
+        A turn's thinking is written down where the transcript carries
+        it, in the order it happened, before the text it led to.
         """
         content = message.get("content") if isinstance(message, dict) else None
         if isinstance(content, str):
@@ -222,6 +225,19 @@ class _EntryReader:
                 continue
             if block.get("type") == "text" and str(block.get("text", "")).strip():
                 blocks.append(("assistant", {"kind": "text", "text": block["text"]}))
+            elif (
+                block.get("type") == "thinking"
+                and str(block.get("thinking", "")).strip()
+            ):
+                blocks.append(
+                    (
+                        "assistant",
+                        {
+                            "kind": "thinking",
+                            "text": bounded_text(str(block["thinking"])),
+                        },
+                    )
+                )
             elif block.get("type") == "tool_use":
                 name = str(block.get("name", ""))
                 self.tool_names[str(block.get("id", ""))] = name

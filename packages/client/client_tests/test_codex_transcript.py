@@ -257,6 +257,8 @@ def test_the_records_that_restate_the_conversation_are_left_behind(tmp_path):
                 "type": "event_msg",
                 "payload": {"type": "agent_message", "message": "said once already"},
             },
+            # Every reasoning record written on this machine looks like
+            # this one: nothing but an encrypted body, which is not text.
             response_item(
                 {"type": "reasoning", "summary": [], "encrypted_content": "x"}
             ),
@@ -348,3 +350,82 @@ def test_a_long_injected_passage_is_cut_and_a_message_is_not(tmp_path):
     injected, spoken = events
     assert injected["blocks"][0]["text"].endswith("[truncated: 8192 of 9000 bytes]")
     assert spoken["blocks"][0]["text"] == long_text
+
+
+def test_reasoning_that_carries_text_is_written_down(tmp_path):
+    path = write_rollout(
+        tmp_path / "rollout.jsonl",
+        [
+            response_item(
+                {
+                    "type": "reasoning",
+                    "summary": [
+                        {"type": "summary_text", "text": "The hook is missing."}
+                    ],
+                    "content": None,
+                    "encrypted_content": "opaque",
+                }
+            ),
+            response_item(
+                {
+                    "type": "reasoning",
+                    "summary": [],
+                    "content": [
+                        {"type": "reasoning_text", "text": "Write it, then test it."}
+                    ],
+                    "encrypted_content": "opaque",
+                }
+            ),
+        ],
+    )
+
+    events, _, _ = read_all(path)
+
+    assert [event["blocks"][0] for event in events] == [
+        {"kind": "thinking", "text": "The hook is missing."},
+        {"kind": "thinking", "text": "Write it, then test it."},
+    ]
+    assert events[0]["context"] == {"author": {"name": "assistant"}}
+    # The encrypted body is not text, and is never posted.
+    assert "opaque" not in json.dumps(events)
+
+
+def test_reasoning_with_a_summary_and_content_carries_both(tmp_path):
+    path = write_rollout(
+        tmp_path / "rollout.jsonl",
+        [
+            response_item(
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "First."}],
+                    "content": [{"type": "reasoning_text", "text": "Then this."}],
+                    "encrypted_content": "opaque",
+                }
+            )
+        ],
+    )
+
+    events, _, _ = read_all(path)
+
+    assert events[0]["blocks"][0]["text"] == "First.\nThen this."
+
+
+def test_long_thinking_is_cut_like_an_injected_passage(tmp_path):
+    path = write_rollout(
+        tmp_path / "rollout.jsonl",
+        [
+            response_item(
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "z" * 9000}],
+                    "encrypted_content": "opaque",
+                }
+            )
+        ],
+    )
+
+    events, _, _ = read_all(path)
+
+    assert events[0]["blocks"][0]["text"] == (
+        f"{'z' * 8192}\n[truncated: 8192 of 9000 bytes]"
+    )
