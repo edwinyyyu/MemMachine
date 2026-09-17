@@ -33,11 +33,11 @@ from memmachine_server.episodic_memory.event_memory.event_memory import (
     EventMemory,
     EventMemoryParams,
 )
-from memmachine_server.episodic_memory.event_memory.segment_store import (
-    SegmentStoreEventAlreadyStoredError,
-    SegmentStorePartition,
-    SegmentStorePartitionConfig,
-    SegmentStorePartitionWriter,
+from memmachine_server.episodic_memory.event_memory.event_memory_store import (
+    EventMemoryStoreEventAlreadyStoredError,
+    EventMemoryStorePartition,
+    EventMemoryStorePartitionConfig,
+    EventMemoryStorePartitionWriter,
 )
 from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter import (
     TextSegmenter,
@@ -60,8 +60,8 @@ def _order_key(segment: Segment) -> tuple:
     return (segment.timestamp, segment.event_uuid, segment.index, segment.offset)
 
 
-class InMemorySegmentStorePartition(SegmentStorePartition):
-    """Minimal in-memory segment store partition for testing.
+class InMemoryEventMemoryStorePartition(EventMemoryStorePartition):
+    """Minimal in-memory event memory store partition for testing.
 
     Mirrors the SQLAlchemy store's reads: one total order, a filtered
     lookup by uuid, and a walk around a given segment within its session
@@ -70,9 +70,9 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
 
     def __init__(
         self,
-        config: SegmentStorePartitionConfig | None = None,
+        config: EventMemoryStorePartitionConfig | None = None,
     ) -> None:
-        self._config = config or SegmentStorePartitionConfig()
+        self._config = config or EventMemoryStorePartitionConfig()
         self.events: set[UUID] = set()
         self.segments: dict[UUID, Segment] = {}
         self.event_to_segments: dict[UUID, list[UUID]] = defaultdict(list)
@@ -85,14 +85,14 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
 
     @override
     @property
-    def config(self) -> SegmentStorePartitionConfig:
+    def config(self) -> EventMemoryStorePartitionConfig:
         return self._config
 
     @override
     @asynccontextmanager
     async def write(
         self, *, exclusive: bool = False
-    ) -> AsyncIterator[SegmentStorePartitionWriter]:
+    ) -> AsyncIterator[EventMemoryStorePartitionWriter]:
         async with self._fence:
             await self._fence.wait_for(
                 lambda: (
@@ -104,7 +104,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
                 self._exclusive_held = True
             else:
                 self._writes_in_flight += 1
-        writer = InMemorySegmentStorePartitionWriter(self)
+        writer = InMemoryEventMemoryStorePartitionWriter(self)
         try:
             yield writer
             writer.apply()
@@ -152,7 +152,7 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
     def _normalize_segment_field(field: str) -> str:
         """Translate canonical filter field names to raw segment property keys.
 
-        Mirrors SQLAlchemySegmentStorePartition._resolve_segment_field:
+        Mirrors SQLAlchemyEventMemoryStorePartition._resolve_segment_field:
         - `timestamp` -> the segment's own timestamp.
         - `m.<key>` / `metadata.<key>` -> user metadata, bare key.
         - any other bare name -> system field, `_<field>` (matches the
@@ -320,10 +320,10 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
             self.segment_to_derivatives.pop(segment_uuid, None)
 
 
-class InMemorySegmentStorePartitionWriter(SegmentStorePartitionWriter):
+class InMemoryEventMemoryStorePartitionWriter(EventMemoryStorePartitionWriter):
     """Stages a write; the partition applies it when the block exits normally."""
 
-    def __init__(self, partition: InMemorySegmentStorePartition) -> None:
+    def __init__(self, partition: InMemoryEventMemoryStorePartition) -> None:
         self._partition = partition
         self._staged: dict[UUID, dict[Segment, list[UUID]]] = {}
 
@@ -352,7 +352,7 @@ class InMemorySegmentStorePartitionWriter(SegmentStorePartitionWriter):
             if event_uuid in self._partition.events or event_uuid in self._staged
         }
         if already_stored:
-            raise SegmentStoreEventAlreadyStoredError(already_stored)
+            raise EventMemoryStoreEventAlreadyStoredError(already_stored)
         for event_uuid, segments in events.items():
             for segment in segments:
                 if segment.uuid in self._partition.segments:
@@ -458,8 +458,8 @@ def fake_embedder():
 
 
 @pytest.fixture
-def fake_segment_store_partition():
-    return InMemorySegmentStorePartition()
+def fake_event_memory_store_partition():
+    return InMemoryEventMemoryStorePartition()
 
 
 @pytest.fixture
@@ -470,12 +470,12 @@ def fake_vector_store_collection(fake_embedder):
 @pytest.fixture
 def event_memory(
     fake_vector_store_collection,
-    fake_segment_store_partition,
+    fake_event_memory_store_partition,
     fake_embedder,
 ):
     return EventMemory(
         EventMemoryParams(
-            segment_store_partition=fake_segment_store_partition,
+            event_memory_store_partition=fake_event_memory_store_partition,
             vector_store_collection=fake_vector_store_collection,
             segmenter=TextSegmenter(),
             deriver=WholeTextDeriver(),
@@ -487,12 +487,12 @@ def event_memory(
 @pytest.fixture
 def event_memory_with_sentences(
     fake_vector_store_collection,
-    fake_segment_store_partition,
+    fake_event_memory_store_partition,
     fake_embedder,
 ):
     return EventMemory(
         EventMemoryParams(
-            segment_store_partition=fake_segment_store_partition,
+            event_memory_store_partition=fake_event_memory_store_partition,
             vector_store_collection=fake_vector_store_collection,
             segmenter=TextSegmenter(),
             deriver=SentenceTextDeriver(),

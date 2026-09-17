@@ -54,9 +54,9 @@ from memmachine_server.episodic_memory.event_memory.event_memory import (
     EventMemory,
     EventMemoryParams,
 )
-from memmachine_server.episodic_memory.event_memory.segment_store import (
-    SegmentStore,
-    SegmentStorePartition,
+from memmachine_server.episodic_memory.event_memory.event_memory_store import (
+    EventMemoryStore,
+    EventMemoryStorePartition,
 )
 from memmachine_server.episodic_memory.event_memory.segmenter import Segmenter
 
@@ -75,7 +75,7 @@ anything else.
 """
 
 # The adapter's fields, stored on `event.properties` under a leading
-# underscore; the segment store maps a bare client-API name to `_<name>`.
+# underscore; the event memory store maps a bare client-API name to `_<name>`.
 _EPISODE_UID_FIELD = "_episode_uid"
 _SESSION_KEY_FIELD = "_session_key"
 _PRODUCER_ID_FIELD = "_producer_id"
@@ -156,13 +156,13 @@ class EventBackendParams(BaseModel):
         description="Already-opened VectorStore collection",
     )
     vector_store_collection_namespace: str = Field(...)
-    segment_store: InstanceOf[SegmentStore] = Field(
+    event_memory_store: InstanceOf[EventMemoryStore] = Field(
         ...,
-        description="Parent SegmentStore (for partition lifecycle)",
+        description="Parent EventMemoryStore (for partition lifecycle)",
     )
-    segment_store_partition: InstanceOf[SegmentStorePartition] = Field(
+    event_memory_store_partition: InstanceOf[EventMemoryStorePartition] = Field(
         ...,
-        description="Already-opened SegmentStorePartition",
+        description="Already-opened EventMemoryStorePartition",
     )
     partition_key: str = Field(...)
     episode_storage: InstanceOf[EpisodeStorage] = Field(
@@ -203,7 +203,7 @@ class LongTermMemory:
         self._event_memory: EventMemory | None = None
         self._vector_store: VectorStore | None = None
         self._vector_store_namespace: str | None = None
-        self._segment_store: SegmentStore | None = None
+        self._event_memory_store: EventMemoryStore | None = None
         self._partition_key: str | None = None
         self._episode_storage: EpisodeStorage | None = None
         self._session_id: str = params.session_id
@@ -225,7 +225,7 @@ class LongTermMemory:
             case EventBackendParams():
                 self._event_memory = EventMemory(
                     EventMemoryParams(
-                        segment_store_partition=params.segment_store_partition,
+                        event_memory_store_partition=params.event_memory_store_partition,
                         vector_store_collection=params.vector_store_collection,
                         segmenter=params.segmenter,
                         deriver=params.deriver,
@@ -236,7 +236,7 @@ class LongTermMemory:
                 self._reranker = params.reranker
                 self._vector_store = params.vector_store
                 self._vector_store_namespace = params.vector_store_collection_namespace
-                self._segment_store = params.segment_store
+                self._event_memory_store = params.event_memory_store
                 self._partition_key = params.partition_key
                 self._episode_storage = params.episode_storage
 
@@ -327,8 +327,8 @@ class LongTermMemory:
         self._validate_event_backend_filter(property_filter)
         # Context can never exceed the remaining quota (declarative parity),
         # and can never go negative: with `num_episodes_limit == 0` the quota
-        # clamp on its own would ask the segment store for a window of -1,
-        # which the SegmentStorePartition contract does not define.
+        # clamp on its own would ask the event memory store for a window of -1,
+        # which the EventMemoryStorePartition contract does not define.
         expand_context = max(0, min(expand_context, num_episodes_limit - 1))
         # Over-fetch from EventMemory: the per-segment results can have many
         # segments per episode under non-passthrough segmenters, and we dedup
@@ -340,7 +340,7 @@ class LongTermMemory:
         )
         # The fields ingestion maps onto the event come back typed: the
         # memory filters by them at the vector stage, and the rest of the
-        # tree is the segment store's post-filter.
+        # tree is the event memory store's post-filter.
         lifted = LongTermMemory._lift_typed_filters(property_filter)
         hits = await event_memory.query(
             query,
@@ -429,7 +429,7 @@ class LongTermMemory:
         """Delete all data for this session/partition.
 
         On the event backend, this drops the underlying VectorStore collection
-        and SegmentStore partition. After this returns the instance is no
+        and EventMemoryStore partition. After this returns the instance is no
         longer usable — `EventMemory` still holds handles to the deleted
         collection and partition, and any reuse would talk to deleted
         resources. We null those handles so subsequent calls fail loudly
@@ -447,13 +447,13 @@ class LongTermMemory:
 
         assert self._vector_store is not None
         assert self._vector_store_namespace is not None
-        assert self._segment_store is not None
+        assert self._event_memory_store is not None
         assert self._partition_key is not None
         # The segment partition first: its deletion waits for every write
         # in flight, whose records land before it commits, and blocks new
         # ones, so the collection deletion that follows removes every
         # record that could ever have landed.
-        await self._segment_store.delete_partition(self._partition_key)
+        await self._event_memory_store.delete_partition(self._partition_key)
         await self._vector_store.delete_collection(
             namespace=self._vector_store_namespace,
             name=self._partition_key,
@@ -463,14 +463,14 @@ class LongTermMemory:
         # rather than silently operating on stale handles.
         self._event_memory = None
         self._vector_store = None
-        self._segment_store = None
+        self._event_memory_store = None
         # Physical reclamation is the sweeper's, which the resource manager
         # runs: the partition is unreachable now, and its rows are reclaimed
         # within the sweeper's interval.
 
     async def close(self) -> None:
         # Backends do not own resources we can close at this layer; the
-        # ResourceManager handles SegmentStore/VectorStore lifecycle.
+        # ResourceManager handles EventMemoryStore/VectorStore lifecycle.
         return
 
     def _score_passes_threshold(
@@ -842,7 +842,7 @@ class LongTermMemory:
           Context: ProducerContext for messages; NullContext otherwise.
         - One TextBlock per event (Episode.content is a string today).
         - Properties: system fields stored with `_` prefix, user filterable
-          metadata stored bare, the layout the segment store maps a filter's
+          metadata stored bare, the layout the event memory store maps a filter's
           bare name (`producer_id`) and `m.<key>` onto. A search lifts the
           fields mapped above (`producer_id`, `created_at`) back into the
           memory's typed filters (`_lift_typed_filters`).
