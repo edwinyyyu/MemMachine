@@ -188,6 +188,18 @@ in the client package, since it is client-side glue.
 - Source: the agent (`claude-code`, `codex`), so a query can be confined
   to one agent's memory or span both.
 
+### 2.5 Ingestion is never the model's decision
+
+No tool the model can call writes to memory: the MCP app at `/v1/mcp`
+serves `memory_query` and `memory_expand` and nothing else, and a test
+pins that surface. Capture is the `Stop` hook's alone, and it posts every
+entry the transcript holds since the session's mark: messages, tool
+calls, tool results, injected text, and the agent's reasoning, each under
+its block kind, with nothing chosen or omitted by the model. The one
+thing left out is a restatement of an entry already captured (Codex's
+`event_msg` records restate its `response_item`s), since that is the same
+entry twice, not a choice about content.
+
 ## 3. Ids
 
 Full ids now: the tools read and write the marker grammar of #1632, and
