@@ -133,7 +133,9 @@ def test_claude_code_user_scope_disable_removes_the_entry(claude_commands):
     ]
 
 
-def test_claude_code_user_scope_dry_run_runs_nothing(claude_commands, capsys):
+def test_claude_code_user_scope_dry_run_runs_nothing(
+    claude_commands, home_directory, capsys
+):
     exit_code = run_cli(
         "agent",
         "install",
@@ -147,7 +149,31 @@ def test_claude_code_user_scope_dry_run_runs_nothing(claude_commands, capsys):
 
     assert exit_code == 0
     assert claude_commands == []
-    assert capsys.readouterr().out.startswith("would run: claude mcp add")
+    assert capsys.readouterr().out.startswith(
+        "would run: claude mcp remove --scope user memmachine\n"
+        "would run: claude mcp add --transport http --scope user memmachine "
+        f"{ENDPOINT} --header 'X-MemMachine-Tenant: {TENANT}'\n"
+    )
+
+
+def test_claude_code_dry_run_needs_no_executable(home_directory, monkeypatch, capsys):
+    monkeypatch.setenv("PATH", "")
+
+    exit_code = run_cli(
+        "agent",
+        "install",
+        "claude-code",
+        "--server",
+        SERVER,
+        "--tenant",
+        TENANT,
+        "--dry-run",
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "would run: claude mcp remove --scope user memmachine\n" in output
+    assert "would run: claude mcp add --transport http" in output
 
 
 def test_claude_code_without_the_executable_names_the_command(monkeypatch, capsys):

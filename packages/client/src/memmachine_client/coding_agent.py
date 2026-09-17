@@ -164,19 +164,23 @@ def _run_claude_executable(
     """Run `claude` with the given arguments, reporting the command run.
 
     `preceded_by` runs first and its exit code is ignored, which is what
-    makes a reinstall idempotent. Without a `claude` executable on PATH
-    the error names the command to run by hand.
+    makes a reinstall idempotent. A dry run reports both commands and
+    needs no executable; a run without a `claude` executable on PATH
+    fails with an error naming the command to run by hand.
     """
     command_line = shlex.join([CLAUDE_EXECUTABLE_NAME, *arguments])
+    if dry_run:
+        if preceded_by is not None:
+            preceding_line = shlex.join([CLAUDE_EXECUTABLE_NAME, *preceded_by])
+            sys.stdout.write(f"would run: {preceding_line}\n")
+        sys.stdout.write(f"would run: {command_line}\n")
+        return 0
     executable = shutil.which(CLAUDE_EXECUTABLE_NAME)
     if executable is None:
         raise CodingAgentError(
             f"no {CLAUDE_EXECUTABLE_NAME} executable on PATH. Run this where "
             f"Claude Code is installed:\n  {command_line}"
         )
-    if dry_run:
-        sys.stdout.write(f"would run: {command_line}\n")
-        return 0
     if preceded_by is not None:
         subprocess.run(
             [executable, *preceded_by],
