@@ -444,19 +444,16 @@ class QdrantVectorStoreParams(BaseModel):
             The declared schema every partition of this store carries: each
             key gets a payload index of its declared type.
         hnsw_config (HnswConfigDiff | None):
-            Optional HNSW index tuning applied to native collections.
-            `m` must be 0 or unset: native collections are multi-tenant
-            and disable the global graph in favor of per-tenant payload indexing,
-            so tune `payload_m` rather than `m`.
-            Does not apply to registry collections
+            Optional HNSW index tuning applied to the store's collection.
+            `m` must be 0 or unset: the collection holds every partition
+            and disables the global graph in favor of per-partition payload
+            indexing, so tune `payload_m` rather than `m`
             (default: None).
         optimizers_config (OptimizersConfigDiff | None):
-            Optional optimizer tuning applied to native collections.
-            Does not apply to registry collections
+            Optional optimizer tuning applied to the store's collection
             (default: None).
         quantization_config (QuantizationConfig | None):
-            Optional quantization applied to native collections.
-            Does not apply to registry collections
+            Optional quantization applied to the store's collection
             (default: None).
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
@@ -493,26 +490,19 @@ class QdrantVectorStoreParams(BaseModel):
     hnsw_config: models.HnswConfigDiff | None = Field(
         None,
         description=(
-            "Optional HNSW index tuning applied to native collections. "
-            "`m` must be 0 or unset: native collections are multi-tenant "
-            "and disable the global graph in favor of per-tenant payload indexing, "
-            "so tune `payload_m` rather than `m`. "
-            "Does not apply to registry collections"
+            "Optional HNSW index tuning applied to the store's collection. "
+            "`m` must be 0 or unset: the collection holds every partition and "
+            "disables the global graph in favor of per-partition payload "
+            "indexing, so tune `payload_m` rather than `m`"
         ),
     )
     optimizers_config: models.OptimizersConfigDiff | None = Field(
         None,
-        description=(
-            "Optional optimizer tuning applied to native collections. "
-            "Does not apply to registry collections"
-        ),
+        description=("Optional optimizer tuning applied to the store's collection"),
     )
     quantization_config: models.QuantizationConfig | None = Field(
         None,
-        description=(
-            "Optional quantization applied to native collections. "
-            "Does not apply to registry collections"
-        ),
+        description=("Optional quantization applied to the store's collection"),
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
@@ -529,9 +519,9 @@ class QdrantVectorStoreParams(BaseModel):
     def _validate_hnsw_m(self) -> Self:
         if self.hnsw_config is not None and self.hnsw_config.m not in (None, 0):
             raise ValueError(
-                "hnsw_config.m must be 0 or unset: native collections are "
-                "multi-tenant and disable the global graph in favor of per-tenant "
-                "payload indexing, so tune payload_m rather than m"
+                "hnsw_config.m must be 0 or unset: the collection holds every "
+                "partition and disables the global graph in favor of "
+                "per-partition payload indexing, so tune payload_m rather than m"
             )
         return self
 
