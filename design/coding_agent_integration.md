@@ -59,7 +59,7 @@ Three layers, each with one job.
 ```
 Claude Code / Codex                      MemMachine server
   MCP client  ── streamable HTTP ──►  /v1/mcp   (memory_query, memory_expand)
-  Stop hook   ── HTTPS JSON ───────►  /v1/tenants/{tenant}/events        (capture, slice 2)
+  Stop hook   ── HTTPS JSON ───────►  /v1/tenants/{tenant}/events        (capture, slice 3)
   installer   ── writes the agent's config (MCP server entry, hooks)
 ```
 
@@ -153,24 +153,24 @@ memory_expand(id: str, direction: "around" | "earlier" | "later" = "around") -> 
 
 Claude Code: an MCP server entry (`claude mcp add --transport http
 memmachine <server>/v1/mcp --header "X-MemMachine-Tenant: <tenant>"`,
-user scope) for recall; hooks for capture in slice 2: `Stop` runs the
+user scope) for recall; hooks for capture in slice 3: `Stop` runs the
 capture client with the hook's `transcript_path` and `session_id`.
 `SessionStart` needs nothing (no daemon to warm). `UserPromptSubmit` is
 the ambient channel, registered off.
 
 Codex: `~/.codex/config.toml` gets `[mcp_servers.memmachine]` with `url`
 and `http_headers`; `~/.codex/hooks.json` gets the same `Stop` handler in
-slice 2. Codex's hooks (`SessionStart`, `UserPromptSubmit`, `Stop`,
+slice 3. Codex's hooks (`SessionStart`, `UserPromptSubmit`, `Stop`,
 `PreCompact`, `PostCompact`, `SessionEnd`, ...) receive `session_id`,
 `transcript_path` and `cwd` on stdin and accept `additionalContext` on
 stdout, the same contract as Claude Code's, so the capture client and the
 ambient client are one script each with an agent-specific transcript
 parser.
 
-An installer, `memmachine-agent install {claude-code,codex} --server
+An installer, `memmachine agent install {claude-code,codex} --server
 <url> --tenant <name> [--scope user|project]`, writes those entries
-idempotently, backs the config up, and `--disable` removes them. It lives
-in the client package, since it is client-side glue.
+idempotently, backs the config up, and `memmachine agent disable` removes
+them. It lives in the client package, since it is client-side glue.
 
 ### 2.4 Tenant, session, source
 
@@ -210,7 +210,7 @@ and it is deferred until the tools are in use and the token cost of full
 ids is measured against real transcripts. Nothing in the server changes
 for it: the server always speaks full ids.
 
-## 4. Capture (slice 2, designed now, built after recall)
+## 4. Capture (slice 3, with the installer)
 
 The `Stop` hook reads the transcript from the hook's `transcript_path`,
 converts the entries since the session's high-water mark into `Event`s,
