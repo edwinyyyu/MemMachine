@@ -100,6 +100,7 @@ async def store(tmp_path):
 _CLIENT_REQUESTS = (
     "has_collection",
     "create_collection",
+    "get",
     "query",
     "upsert",
     "search",
@@ -127,6 +128,7 @@ async def test_every_request_carries_the_timeout(store, monkeypatch):
     )
     await coll.upsert(records=[record, kept])
     await coll.query(query_vectors=[record.vector], limit=1)
+    await coll.get(record_uuids=[record.uuid])
     await coll.delete(record_uuids=[record.uuid])
     await store.delete_collection(namespace=NAMESPACE, name="timed")
     # The purge finds the record the deletion left and reclaims it.

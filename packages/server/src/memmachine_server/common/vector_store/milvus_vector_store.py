@@ -423,6 +423,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                     return_vector=return_vector,
                     return_properties=return_properties,
                 ),
+                timeout=self._request_timeout_seconds,
             )
 
             records_by_uuid = {
