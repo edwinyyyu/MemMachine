@@ -1693,7 +1693,7 @@ Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 
 | Method and path | Effect | Status |
 | --- | --- | --- |
-| `POST .../search` | body `query`; the search options, each optional with the tenant's default: `limit`, `min_cosine_similarity`, `expand_context`, `rerank` (`reranker`, `candidates`, `min_score`, or `null` for none); the system filters `since`, `until`, `session_ids`, `source_ids`, `block_kinds`; `filter` (JSON tree); `datetime_format` (dates, times, locale, zone) and `parts` (the context part kinds composed into `text`, in order) | 200 with up to `limit` hits in descending score |
+| `POST .../query` | body `query`; the query options, each optional with the tenant's default: `limit`, `min_cosine_similarity`, `expand_context`, `rerank` (`reranker`, `candidates`, `min_score`, or `null` for none); the system filters `since`, `until`, `session_ids`, `source_ids`, `block_kinds`; `filter` (JSON tree); `datetime_format` (dates, times, locale, zone) and `parts` (the context part kinds composed into `text`, in order) | 200 with up to `limit` hits in descending score |
 | `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after` (segments), `since`, `until`, `source_ids`, `block_kinds`, `filter`, `datetime_format`, `parts` | 200 with `before` and `after`, the segments on each side in order within the anchor's session, never the anchor itself, and their `text` |
 | `GET ...` | `watermark` and `head`, the lag being their difference | 200 |
 
@@ -1706,7 +1706,7 @@ supplies ids, since a retry without them stores the events again),
 registered kind; `{kind: text, text}` is built in), `properties`
 (scalar values under legal keys; what `filter` sees). An event is
 returned as it was ingested, plus `position`.
-Search hit: `score`, `seed` (the index in `segments` of the matched
+Query hit: `score`, `seed` (the index in `segments` of the matched
 segment), `segments` (each with `uuid`, `event_id`, `position`,
 `index`, `offset`, `timestamp` with offset, `session_id`, `source_id`,
 `context`, `block`, `properties`), `text` (the window rendered with

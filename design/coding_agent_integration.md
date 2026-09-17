@@ -18,8 +18,8 @@ API from the first PR, on today's server.
 Carried over from `claude_memory`:
 
 - Two recall modes. Deliberate recall through tools the model calls
-  (`memory_search`, `memory_expand`), which is where multi-hop happens
-  (search, read, search the lead). Ambient recall through a
+  (`memory_query`, `memory_expand`), which is where multi-hop happens
+  (query, read, query the lead). Ambient recall through a
   `UserPromptSubmit` hook stays designed but off, per the 2026-08
   measurement: about a quarter of injections changed the answer, 1.3%
   caused a correction, and no benefit signal exists to weigh against it.
@@ -31,7 +31,7 @@ Carried over from `claude_memory`:
   is no mutable memory panel and no mid-session discard, so the agent's
   prompt cache is preserved.
 - The tool surface's rules: a cue re-evokes the context a memory was
-  encoded in, not a bare entity; following a lead is another search, not
+  encoded in, not a bare entity; following a lead is another query, not
   a tool; an expansion step has a fixed size and a direction, and the
   model decides only whether to step again.
 - Ids are handles the store can resolve, never a registry.
@@ -50,11 +50,15 @@ Not carried over:
 
 ## 2. Architecture
 
+One verb for the operation, from `EventMemory.query` up: the route is
+`query`, the tool is `memory_query`, and the hits are query hits.
+"Search" names only the vector store's technique.
+
 Three layers, each with one job.
 
 ```
 Claude Code / Codex                      MemMachine server
-  MCP client  ── streamable HTTP ──►  /v1/mcp   (memory_search, memory_expand)
+  MCP client  ── streamable HTTP ──►  /v1/mcp   (memory_query, memory_expand)
   Stop hook   ── HTTPS JSON ───────►  /v1/tenants/{tenant}/events        (capture, slice 2)
   installer   ── writes the agent's config (MCP server entry, hooks)
 ```
@@ -68,7 +72,7 @@ v2 MCP tools (`api_v2/mcp.py`), which are built on episodes.
 
 | Method and path | Effect |
 | --- | --- |
-| `POST /v1/tenants/{tenant}/episodic-memory/search` | `EventMemory.query`, then `rerank` when the tenant has a reranker and the body asks; hits rendered with `render_segments` |
+| `POST /v1/tenants/{tenant}/episodic-memory/query` | `EventMemory.query`, then `rerank` when the tenant has a reranker and the body asks; hits rendered with `render_segments` |
 | `POST /v1/tenants/{tenant}/episodic-memory/expand` | `EventMemory.expand` from a segment uuid, `before` and `after` in segments, rendered |
 | `POST /v1/tenants/{tenant}/events` | `EventMemory.encode_events` with `Event` bodies; whole batch rejected with 409 when any event is already held (#1659) |
 | `POST /v1/tenants/{tenant}/events/delete` | `EventMemory.forget_events` |
@@ -99,7 +103,7 @@ description so a client written now keeps working later:
 
 Errors map as the redesign says (`{error: {code, message}}`, closed set of
 codes); `SegmentStoreEventAlreadyStoredError` is 409 `event_exists` with
-the uuids in the message. Search and expand defaults (`limit`,
+the uuids in the message. Query and expand defaults (`limit`,
 `expand_context`, `before`, `after`, rerank candidates) come from the
 deployment's episodic-memory settings, so the tools need not name them.
 
@@ -117,13 +121,13 @@ needed when the server is remote.
 Tools, over the v1 services (not over HTTP to itself):
 
 ```
-memory_search(cue: str, within: str | None = None,
+memory_query(cue: str, within: str | None = None,
               kinds: list[str] | None = None,
               since: str | None = None, until: str | None = None) -> str
 memory_expand(id: str, direction: "around" | "earlier" | "later" = "around") -> str
 ```
 
-- `memory_search` runs `query` with the tenant's default limit, expansion
+- `memory_query` runs `query` with the tenant's default limit, expansion
   and rerank, then renders every hit's window with
   `render_segments(ids=("session", "segment"))`, hits separated by a blank
   line, best first. `within` is a session id (the value inside
@@ -140,7 +144,7 @@ memory_expand(id: str, direction: "around" | "earlier" | "later" = "around") -> 
   further step continues from; a side that comes back empty means the
   session ran out that way.
 - Tool descriptions carry the cue guidance from `claude_memory` (context
-  over bare entities, the user's wording is a fine cue, search the
+  over bare entities, the user's wording is a fine cue, query the
   surroundings and expand when the target cannot be pinned) and the
   reading rule for markers. They are the only prompting the integration
   does.
@@ -175,13 +179,13 @@ in the client package, since it is client-side glue.
   memory, the "shared space" the in-process version moved to. A project
   is an agent concept, not a MemMachine one, so it is a user-defined
   property: capture stamps `properties.project` (the repo root or cwd)
-  on every event, and `memory_search` accepts no project argument now (a
+  on every event, and `memory_query` accepts no project argument now (a
   later `where` can).
 - Session: the agent's own session id (`session_id` from the hooks), so a
   walk stays inside one agent session, which is the conversation.
   Subagent transcripts are separate sessions with the parent's id in
   `properties.parent_session`.
-- Source: the agent (`claude-code`, `codex`), so a search can be confined
+- Source: the agent (`claude-code`, `codex`), so a query can be confined
   to one agent's memory or span both.
 
 ## 3. Ids
@@ -244,7 +248,7 @@ Base: the main port of the event-memory stack (#1597, #1617, #1611, #1632
 and #1659 on `main`), since rendering with ids and the write transaction
 are what the API and the capture contract rest on.
 
-1. Server v1 router: search, expand, events, events/delete over the
+1. Server v1 router: query, expand, events, events/delete over the
    `resolve_event_memory` seam, with the error mapping and OpenAPI
    descriptions; tests with the in-memory fakes and one end-to-end test
    over the SQLite stores.
