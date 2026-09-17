@@ -24,6 +24,10 @@ every request in the `X-MemMachine-Tenant` header the installer writes.
 The tools and their prompting live on the server, so a deployment can
 improve them without touching any machine an agent runs on.
 
+What they read is what the agent's own sessions wrote: the installer
+also registers a `Stop` hook that posts each session to the same tenant
+as it happens ("What capture records", below).
+
 ## Reading a result
 
 Every passage carries markers that name where it sits:
@@ -138,25 +142,119 @@ Take it back out with `memmachine agent disable codex`, or
 removed; every other table, comment and blank line in the file stays as
 it was.
 
+## What capture records
+
+At the end of every turn, the `Stop` hook the installer registers runs
+the capture client. It reads the session's transcript from where the
+last run left off and posts what is new to
+`<server>/v1/tenants/<tenant>/events`:
+
+- Messages: what the user typed, and what the assistant answered.
+- Tool calls, with the arguments the agent gave them, and the results
+  they returned.
+- Injected text, which is what entered the conversation without being
+  typed -- hook context, skill bodies, system reminders, slash-command
+  echoes, compaction summaries -- each carrying which of those it is.
+
+Only messages are embedded, so `memory_query` answers with messages and
+nothing else. Everything else sits on the session's timeline beside the
+message it happened around, and `memory_expand` is what reads it. That
+is what makes a past procedure readable again: find the message where
+the work was discussed, expand around it, and the commands, their
+arguments and their output are there.
+
+Every event carries the agent it came from (`claude-code` or `codex`),
+the project it happened in (the repository root of the session's
+directory, or the directory itself), and, on a tool event, the tool's
+name. A subagent's turns are a session of their own, with the session
+that launched it recorded on them.
+
+### The hook the installer writes
+
+Claude Code reads it from `~/.claude/settings.json` for user scope, and
+from `.claude/settings.json` in the current directory for project scope:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/venv/bin/python3 -m memmachine_client.cli agent capture claude-code --server https://memmachine.example.com --tenant alice",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Codex reads the same shape from `$CODEX_HOME/hooks.json`, or from
+`<cwd>/.codex/hooks.json` for project scope, with `codex` in place of
+`claude-code`.
+
+The command names the interpreter this client is installed in by its own
+path, because both agents run a hook's command through a shell whose
+`PATH` need not hold that interpreter.
+
+### How far a session has been posted
+
+A mark per session is kept in the agent's own directory:
+`~/.claude/memmachine/capture-state.json` for Claude Code, and
+`$CODEX_HOME/memmachine/capture-state.json` for Codex. It holds the byte
+offset the next read starts at, so a session is read once however many
+turns it runs for.
+
+The mark is a shortcut rather than a record. An event's id comes from
+the transcript, so a batch the server already holds is rejected whole
+and capture moves on; deleting the state file costs one rejected batch
+per session, never a second copy of anything.
+
+A failure -- a server that does not answer, or answers anything else --
+leaves the mark where it was and exits non-zero, so the next `Stop`
+posts the same entries again. The whole capture runs under a budget of
+five seconds, which bounds what the agent waits for.
+
+### Running capture by hand
+
+The same command the hook runs takes a transcript by name, which is how
+a session from before the install is written to memory:
+
+```bash
+memmachine agent capture claude-code \
+  --server https://memmachine.example.com \
+  --tenant alice \
+  --transcript ~/.claude/projects/<directory slug>/<session id>.jsonl \
+  --session-id <session id>
+```
+
+Codex's transcripts are the rollout files under
+`$CODEX_HOME/sessions/<year>/<month>/<day>/`, whose names carry the
+session id. Nothing is written to standard output, since an agent reads
+a hook's output as context; what was posted is reported on standard
+error.
+
 ## What the installer writes, and what it keeps
 
-- Installing twice leaves one entry. A file that already holds the entry
-  is not written again.
+- Installing twice leaves one entry and one hook. A file that already
+  reads the way an install would leave it is not written again.
 - Every write first copies the file to `<file>.bak` beside it, so the
-  version an install replaced is one `mv` away. Claude Code's user scope
-  is the exception: that file belongs to the `claude` executable, which
-  keeps its own backups.
-- `--dry-run` prints the command that would run, or a diff of the file
-  that would change, and writes nothing.
-- Disabling removes what the installer wrote and nothing else.
+  version an install replaced is one `mv` away. Claude Code's MCP entry
+  in user scope is the exception: that file belongs to the `claude`
+  executable, which keeps its own backups.
+- `--dry-run` prints the command that would run, and a diff of every
+  file that would change, and writes nothing.
+- Disabling removes what the installer wrote and nothing else: the MCP
+  entry, and the `Stop` handler that runs capture. Every other hook, and
+  every other key of the file, stays as it was.
 
 ## What is coming
 
-Capture. Recall reads what a MemMachine server already holds; writing
-each session to it is the next piece, through the agents' `Stop` hooks,
-which hand a transcript to a capture client that posts the session's
-messages and tool calls to the server. The installer will register those
-hooks alongside the MCP entry.
+A session outline, a table of contents of what a session did, which
+needs turn boundaries the timeline does not record yet.
 
 Ambient recall, where memory arrives with a prompt instead of being asked
 for, stays designed and off: injected context changes answers often
