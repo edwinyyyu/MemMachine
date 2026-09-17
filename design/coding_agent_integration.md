@@ -78,14 +78,21 @@ that today's server forces and that are called out in the OpenAPI
 description so a client written now keeps working later:
 
 - `{tenant}` is a tenant *name*, an opaque string the server resolves, not
-  a UUID. Today the name is the partition the current episodic memory
-  manager opens (the session key of the event backend); when the tenant
-  registry lands, the same name is looked up in it
-  (`GET /v1/tenants?name=`). The router never sees a lifecycle: it asks
-  one seam, `resolve_event_memory(tenant) -> EventMemory` (and the
-  tenant's reranker and defaults), and the seam's implementation is
-  what changes with the redesign. This is what "tenant-lifecycle-agnostic"
-  means here: the address is stable, the resolution is replaceable.
+  a UUID. A tenant is, roughly, one human user: every session of every
+  agent that user runs writes into it, and sessions carry no lifecycle
+  of their own, they are ids on events. Today the name is resolved to a
+  partition through the current episodic memory manager, under a
+  namespace of its own so v1 tenants and the v2 API's sessions cannot
+  collide or clobber each other; when the tenant registry lands, the
+  same name is looked up in it (`GET /v1/tenants?name=`). The router
+  never sees a lifecycle: it asks one seam,
+  `resolve_event_memory(tenant) -> EventMemory` (and the tenant's
+  reranker and defaults), and the seam's implementation is what changes
+  with the redesign. This is what "tenant-lifecycle-agnostic" means
+  here: the address is stable, the resolution is replaceable. The v1
+  lifecycle is the minimum the address needs, `PUT /v1/tenants/{tenant}`
+  to create (idempotent) and `DELETE` to remove; the data routes answer
+  404 `tenant_not_found` for a name never created.
 - No `position` on segments and no `watermark` route: there is no event
   store yet. Ingest is synchronous (`encode_events` returns when the
   segments and records are written), so `?wait=` is accepted and ignored.
@@ -163,13 +170,13 @@ in the client package, since it is client-side glue.
 
 ### 2.4 Tenant, session, source
 
-- Tenant: one per installation scope by default, named by the installer
-  (`--tenant`), so every session of that agent on that machine shares one
-  memory, the "shared space" the in-process version moved to. A project is
-  a filter, not a tenant: capture stamps `properties.project` (the repo
-  root or cwd) on every event, and `memory_search` accepts no project
-  argument now (a later `where` can). Per-project tenants remain possible
-  by installing with a different name.
+- Tenant: the human user, named by the installer (`--tenant`), so every
+  session of every agent that user runs on that machine shares one
+  memory, the "shared space" the in-process version moved to. A project
+  is an agent concept, not a MemMachine one, so it is a user-defined
+  property: capture stamps `properties.project` (the repo root or cwd)
+  on every event, and `memory_search` accepts no project argument now (a
+  later `where` can).
 - Session: the agent's own session id (`session_id` from the hooks), so a
   walk stays inside one agent session, which is the conversation.
   Subagent transcripts are separate sessions with the parent's id in
@@ -204,7 +211,9 @@ and posts them to `/v1/tenants/{tenant}/events`.
 - One event per message; tool calls and tool results as events of their
   own block kinds, registered with the server (#1611, `blocks.md`), so a
   deriver that embeds only message kinds is a table lookup and the tool
-  events stay reachable by expansion. Injected text (hook context, skill
+  events stay reachable by expansion. The policy is the deriver's and
+  applies to what is ingested from then on: widening it later needs no
+  rebuild, only a re-derivation of what should have been embedded. Injected text (hook context, skill
   bodies, compaction summaries) is classified at capture as in
   `claude_memory`'s `wire.user_text_source` and lands as its own kind, on
   the timeline and off the search surface.
@@ -249,20 +258,22 @@ are what the API and the capture contract rest on.
 Each PR is reviewable alone; 1 and 2 land before any agent points at a
 server.
 
-## 7. Decisions that are expensive to reverse
+## 7. Decisions taken (2026-09-17)
 
-Everything above can be changed by editing code except these, which
-decide where data lands or what clients depend on:
+The ones that decide where data lands or what clients depend on, settled
+before any code:
 
 1. Tenant addressing by name in the path and header, resolved by a seam,
-   rather than by the registry's UUID. Reversing it later means every
-   installed agent's config changes.
-2. One tenant per installation scope, projects as a property. Splitting
-   into per-project tenants later means re-ingesting; merging is not
-   possible at all.
-3. The captured event's uuid being the transcript entry's uuid. It is the
-   dedupe key for the life of the tenant.
-4. Messages only on the search surface, tool events on the timeline only.
-   Changing what is embedded is a re-derivation of the tenant.
-5. MCP served by the server over HTTP rather than a per-agent stdio shim.
-   Reversible, but every agent's config changes.
+   rather than by the registry's UUID. A tenant is roughly one human
+   user, with any number of lifecycle-free sessions. The v1 tenant
+   lifecycle may diverge from the v2 API's entirely, as long as neither
+   steps on the other.
+2. Projects are agent concepts and therefore user-defined properties,
+   not tenants and not MemMachine's org and project.
+3. The captured event's uuid is the transcript entry's uuid, the dedupe
+   key for the life of the tenant.
+4. Messages only on the search surface, tool events on the timeline only,
+   as the initial deriver policy; it applies to new ingestions, so
+   changing it is not a rebuild.
+5. MCP served by the server over HTTP, one implementation for every
+   agent, the tenant in a header.
