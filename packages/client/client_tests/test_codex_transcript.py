@@ -178,7 +178,8 @@ def test_a_result_of_blocks_and_a_result_of_plain_text(tmp_path):
     events, _, _ = read_all(path)
 
     assert events[0]["blocks"][0]["output"] == "one\ntwo"
-    assert events[0]["blocks"][0]["name"] == ""
+    # No call in the file carries this id, so the tool is unnamed.
+    assert events[0]["blocks"][0]["name"] == "unknown"
     assert events[1]["blocks"][0]["output"] == "plain output"
 
 

@@ -399,3 +399,28 @@ def test_an_entry_without_a_time_is_left_for_the_server_to_stamp(tmp_path):
     events, _, _ = read_all(path)
 
     assert "timestamp" not in events[0]
+
+
+def test_a_result_whose_call_is_in_no_entry_is_named_unknown(tmp_path):
+    path = write_transcript(
+        tmp_path / "session.jsonl",
+        [
+            user_entry(
+                "aaaaaaaa-0000-4000-8000-000000000091",
+                [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_gone",
+                        "content": "answered",
+                    }
+                ],
+            )
+        ],
+    )
+
+    events, _, _ = read_all(path)
+
+    # A block names a tool in one word or another, and the server holds
+    # no block that names none.
+    assert events[0]["blocks"][0]["name"] == "unknown"
+    assert events[0]["properties"]["tool_name"] == "unknown"

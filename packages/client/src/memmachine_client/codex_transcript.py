@@ -47,6 +47,11 @@ _INJECTED_TAG_SOURCES: dict[str, str] = {
     "user_shell_command": "command",
 }
 
+# What an output is named when no call in the file carries its call
+# id. A block names a tool in one word or another, so this says the
+# rollout carried no name rather than leaving it empty.
+_UNNAMED_TOOL = "unknown"
+
 
 def read_entries(
     transcript_path: Path,
@@ -147,7 +152,9 @@ class _RecordReader:
                 "user",
                 {
                     "kind": "tool_result",
-                    "name": self.tool_names.get(str(payload.get("call_id", "")), ""),
+                    "name": self.tool_names.get(
+                        str(payload.get("call_id", "")), _UNNAMED_TOOL
+                    ),
                     "output": output,
                     "error": failed,
                 },

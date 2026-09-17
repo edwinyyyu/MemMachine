@@ -43,6 +43,11 @@ _INJECTED_HEADS: tuple[tuple[str, str], ...] = (
 )
 _INJECTED_HEAD_CHARACTERS = 400
 
+# What a result is named when the transcript does not say which tool
+# returned it. A block names a tool in one word or another, so this
+# says the transcript carried no name rather than leaving it empty.
+_UNNAMED_TOOL = "unknown"
+
 
 def read_entries(
     transcript_path: Path,
@@ -171,22 +176,23 @@ class _EntryReader:
         }
 
     def _tool_name(self, tool_use_id: str) -> str:
-        """The name of the call a result answers, empty if it names none.
+        """The name of the call a result answers.
 
         The call is read before its result, so it is already known unless
         the mark fell between the two; then the entries before the mark
-        are read once for their calls.
+        are read once for their calls. A call that is in no entry of the
+        file leaves the result named `unknown`.
         """
         name = self.tool_names.get(tool_use_id)
         if name is not None:
             return name
         if self.read_earlier_calls or self.start_offset == 0:
-            return ""
+            return _UNNAMED_TOOL
         self.read_earlier_calls = True
         self.tool_names.update(
             _tool_names_before(self.transcript_path, self.start_offset)
         )
-        return self.tool_names.get(tool_use_id, "")
+        return self.tool_names.get(tool_use_id, _UNNAMED_TOOL)
 
     def _assistant_blocks(self, message: object) -> list[tuple[str, dict[str, Any]]]:
         """The author and block of each event an assistant entry produces.
