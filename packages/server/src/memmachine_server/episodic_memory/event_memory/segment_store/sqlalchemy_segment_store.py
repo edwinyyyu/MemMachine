@@ -1207,7 +1207,6 @@ class SQLAlchemySegmentStore(SegmentStore):
             )
 
     @override
-    @override
     async def purge_deleted_partitions(self) -> bool:
         # Reclaim dead incarnations oldest-first, within the per-call bounds.
         #
