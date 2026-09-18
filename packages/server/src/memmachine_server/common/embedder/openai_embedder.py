@@ -141,8 +141,11 @@ class OpenAIEmbedder(Embedder):
         # and averaging over zero chunks is undefined.
         inputs = [input_text or "." for input_text in inputs]
 
-        effective_max = (
-            self._max_input_length or self.max_total_input_length_per_request
+        # No chunk may exceed the per-request cap, or cluster_texts rejects it:
+        # a configured limit above the cap can never be honored.
+        effective_max = min(
+            self._max_input_length or self.max_total_input_length_per_request,
+            self.max_total_input_length_per_request,
         )
         # Greedy max-size chunks measured more faithful to the whole-text
         # embedding than balanced chunks when combined with the
