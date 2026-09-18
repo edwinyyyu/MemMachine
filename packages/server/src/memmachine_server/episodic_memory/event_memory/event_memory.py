@@ -14,8 +14,10 @@ from pydantic import BaseModel, Field, InstanceOf
 from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.embedder import Embedder
 from memmachine_server.common.filter.filter_parser import (
+    And,
     FilterExpr,
     demangle_user_metadata_key,
+    filter_fields,
     map_filter_fields,
     normalize_filter_field,
 )
@@ -278,7 +280,7 @@ class EventMemory:
         t_segment_store = time.monotonic()
 
         derivative_records = [
-            EventMemory._build_derivative_record(derivative, derivative_embedding)
+            self._build_derivative_record(derivative, derivative_embedding)
             for derivative, derivative_embedding in zip(
                 derivatives,
                 derivative_embeddings,
@@ -313,25 +315,50 @@ class EventMemory:
                     duration, labels={"phase": phase}
                 )
 
-    @classmethod
     def _build_derivative_record(
-        cls,
+        self,
         derivative: Derivative,
         derivative_embedding: Sequence[float],
     ) -> Record:
-        """Build a vector record from a derivative and its embedding."""
-        properties: dict[str, PropertyValue] = {}
+        """Build a vector record from a derivative and its embedding.
 
-        # System-defined metadata (underscore-prefixed).
-        properties[cls._TIMESTAMP_FIELD_NAME] = derivative.timestamp
-
-        # User-defined properties.
-        properties.update(derivative.properties)
+        The record carries the reserved timestamp and the properties the
+        vector store declares. Every other property stays on the segment: the
+        segment store holds them all and evaluates the whole filter (see
+        `_vector_store_filter`).
+        """
+        declared = self._vector_store_partition.indexed_properties
+        properties: dict[str, PropertyValue] = {
+            self._TIMESTAMP_FIELD_NAME: derivative.timestamp,
+            **{
+                key: value
+                for key, value in derivative.properties.items()
+                if key in declared
+            },
+        }
 
         return Record(
             uuid=derivative.uuid,
             vector=list(derivative_embedding),
             properties=properties,
+        )
+
+    def _vector_store_filter(self, property_filter: FilterExpr) -> FilterExpr | None:
+        """The conjuncts of a filter the vector store evaluates.
+
+        A vector record carries the properties the store declares, so a
+        conjunct naming any other field has nothing to match there and is
+        left to the segment store, which holds every property and evaluates
+        the whole filter on the context windows. A conjunct is dropped whole
+        when any field under it is undeclared, so dropping only ever widens
+        the vector search; the segment store narrows it back.
+        """
+        declared = self._vector_store_partition.indexed_properties
+        mapped = map_filter_fields(property_filter, self._to_vector_record_property)
+        return _conjoin(
+            conjunct
+            for conjunct in _conjuncts(mapped)
+            if filter_fields(conjunct) <= declared.keys()
         )
 
     @classmethod
@@ -409,9 +436,8 @@ class EventMemory:
         )[0]
         t_embedding = time.monotonic()
 
-        # Translate filter fields for vector store.
         collection_filter = (
-            map_filter_fields(property_filter, EventMemory._to_vector_record_property)
+            self._vector_store_filter(property_filter)
             if property_filter is not None
             else None
         )
@@ -809,3 +835,18 @@ class EventMemory:
             # Forward context is more useful than backward.
             return (offset - 0.5) / 2
         return -offset
+
+
+def _conjuncts(expr: FilterExpr) -> list[FilterExpr]:
+    """The operands of a filter's top-level conjunction; the filter itself when it is not one."""
+    if isinstance(expr, And):
+        return [*_conjuncts(expr.left), *_conjuncts(expr.right)]
+    return [expr]
+
+
+def _conjoin(conjuncts: Iterable[FilterExpr]) -> FilterExpr | None:
+    """The conjunction of the given filters; None when there are none."""
+    combined: FilterExpr | None = None
+    for conjunct in conjuncts:
+        combined = conjunct if combined is None else And(left=combined, right=conjunct)
+    return combined

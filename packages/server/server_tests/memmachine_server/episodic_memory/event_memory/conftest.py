@@ -195,10 +195,10 @@ class FakeReranker(Reranker):
 
 
 def make_collection(embedder: FakeEmbedder) -> InMemoryVectorStorePartition:
-    """A collection declaring EventMemory's reserved keys and a `color` property."""
+    """A collection declaring EventMemory's reserved keys and an adapter's system field."""
     return InMemoryVectorStorePartition(
         "test",
-        {**EventMemory.expected_vector_store_collection_schema(), "color": str},
+        {**EventMemory.expected_vector_store_collection_schema(), "_episode_uid": str},
     )
 
 
