@@ -252,11 +252,23 @@ class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
         default=False,
         description="Whether to use HTTPS/TLS for Qdrant communication",
     )
-    registry_replication_factor: int = Field(
-        default=1,
+    registry_database: str = Field(
+        ...,
         description=(
-            "Replication factor for registry collections. Write consistency factor "
-            "is set to match so all replicas confirm writes."
+            "The relational database (a name under resources.databases) that "
+            "holds this backend's collection registry. Required: Qdrant cannot "
+            "arbitrate collection creation or deletion across server processes; "
+            "the registry lives where a primary key and a transaction can."
+        ),
+    )
+    tombstone_retention_seconds: int = Field(
+        default=86400,
+        gt=0,
+        description=(
+            "Seconds a deleted collection's registry entry outlives the first purge "
+            "round that finds nothing under it, so a write to Qdrant that landed "
+            "after that round is still reclaimed; keep it orders of magnitude "
+            "above the longest a request to Qdrant can be in flight."
         ),
     )
 

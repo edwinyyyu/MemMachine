@@ -856,3 +856,8 @@ class MilvusVectorStore(VectorStore):
                 collection_name=registry_name,
                 ids=[name],
             )
+
+    @override
+    async def purge_deleted_collections(self) -> bool:
+        # delete_collection deletes the entities itself.
+        return False

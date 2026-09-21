@@ -26,6 +26,12 @@ class VectorStoreCollection(ABC):
     Identified by a (namespace, name) pair.
     All data operations are scoped to this logical collection.
 
+    A handle is bound to one life of the collection: once the collection
+    is deleted, every operation of the handle raises
+    VectorStoreCollectionHandleStaleError, and a collection created again
+    under the same (namespace, name) is a new life the handle cannot reach.
+    A store that cannot detect a stale handle says so in its own contract.
+
     Implementations must support storing, filtering on, and returning
     record properties not declared in the configured indexed properties schema.
 
@@ -148,9 +154,13 @@ class VectorStore(ABC):
     """
     Abstract base class for a vector store.
 
-    A given logical collection identified by a (namespace, name) pair
-    must be managed by at most one process at a time.
-    The consumer is responsible for sharding names across processes.
+    A logical collection is identified to callers by a (namespace, name)
+    pair and inside the store by an incarnation minted per life of the
+    pair, so nothing written under one life of a name is ever seen by, or
+    reclaimed out from under, another. Which processes may share a store's
+    collections is the store's own contract: QdrantVectorStore and
+    MilvusVectorStore serve any process sharing the backend and the
+    registry database; the SQLite stores state their own bound.
 
     Different namespaces are fully independent (separate native collections).
     Multiple logical collections with the same (namespace, vector dimensions, similarity metric, indexed properties schema)
@@ -267,13 +277,33 @@ class VectorStore(ABC):
         """
         Delete a logical collection from the vector store.
 
-        This will delete all data in the collection.
-        It is idempotent.
+        The collection is unreachable when this returns: opening it finds
+        nothing, and handles bound to it are stale. Its records are gone
+        with it or, on a store that reclaims them afterward, left for
+        `purge_deleted_collections`. It is idempotent.
 
         Args:
             namespace (str):
                 Namespace of the collection.
             name (str):
                 Name of the collection within the namespace.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def purge_deleted_collections(self) -> bool:
+        """
+        Reclaim, bounded, some of the storage of deleted collections.
+
+        A store whose deletion reclaims physically returns False. A store
+        that defers reclamation does one bounded round per call and
+        returns True when the round found records to reclaim, so the
+        caller's protocol is "call until False"; a False may still leave
+        tombstones that come due later. Safe to repeat, and safe from
+        several processes at once. The store never schedules this itself.
+
+        Returns:
+            bool:
+                Whether the round reclaimed records.
         """
         raise NotImplementedError

@@ -631,7 +631,9 @@ class DatabaseManager:
 
             params = QdrantVectorStoreParams(
                 client=client,
-                registry_replication_factor=conf.registry_replication_factor,
+                backend=name,
+                registry_engine=await self.async_get_sql_engine(conf.registry_database),
+                tombstone_retention_seconds=conf.tombstone_retention_seconds,
                 metrics_factory=conf.get_metrics_factory(),
             )
             try:
