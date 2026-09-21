@@ -1,32 +1,23 @@
 """
-A collection registry in SQL, for the stores whose backend holds only points.
+A collection registry in a relational database, through SQLAlchemy.
 
 Qdrant and Milvus have no transactions, unique constraints or conditional
 writes, so a catalog kept inside them cannot arbitrate two processes
-creating, deleting or reclaiming the same logical collection. The registry
-lives in the deployment's relational database instead: one table pair per
-backend kind, shared by every store on that kind of backend, with a row per
-live logical collection keyed by backend, namespace and name, whose
-incarnation is the value every point of that life carries, and a purge
-queue of dead incarnations claimed oldest-first. Creation is an insert the
-primary key arbitrates, deletion is one transaction, and a purge claim is a
-row lock the database hands to one purger at a time.
-
-A queue entry is the dead incarnation's tombstone. The backend holds the
-points, and a write the registry read as live can land there after the
-purge that followed the deletion, so one purge cannot be the last: the
-entry stays through purge rounds until a round finds nothing, then
-through a retention measured on the database clock, then through one
-more round that finds nothing again. Only then is it removed, and until
-then the incarnation is never re-minted.
+creating, deleting or reclaiming the same logical collection. This
+registry lives in the deployment's relational database instead: one table
+pair per backend kind, shared by every store on that kind of backend,
+with a row per live logical collection keyed by backend, namespace and
+name, whose incarnation is the value every point of that life carries,
+and a purge queue of dead incarnations claimed oldest-first. Creation is
+an insert the primary key arbitrates, deletion is one transaction, and a
+purge claim is a row lock the database hands to one purger at a time.
 """
 
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import NamedTuple
+from datetime import timedelta
+from typing import override
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -48,12 +39,14 @@ from sqlalchemy import (
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from .data_types import (
+from memmachine_server.common.vector_store.data_types import (
     VectorStoreAttemptsExhaustedError,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
 )
-from .utils import _IDENTIFIER_MAX_BYTES
+from memmachine_server.common.vector_store.utils import _IDENTIFIER_MAX_BYTES
+
+from .collection_registry import CollectionRegistry, PurgeClaim, RegisteredCollection
 
 logger = logging.getLogger(__name__)
 
@@ -65,30 +58,7 @@ class _RegistryInsertRejectedError(Exception):
     """A registry insert was rejected; retry with a fresh incarnation."""
 
 
-class RegisteredCollection(NamedTuple):
-    """A live collection: the incarnation its points carry and the configuration it was created with."""
-
-    incarnation: UUID
-    config: VectorStoreCollectionConfig
-
-
-@dataclass
-class PurgeClaim:
-    """A claimed tombstone: the incarnation to purge, where its points are, and what the round found.
-
-    The purger sets `found` before the claim ends: True when the backend
-    still held points under the incarnation, False when it held none.
-    """
-
-    incarnation: UUID
-    namespace: str
-    name: str
-    config: VectorStoreCollectionConfig
-    clean_at: datetime | None
-    found: bool | None = None
-
-
-class SqlCollectionRegistry:
+class SQLAlchemyCollectionRegistry(CollectionRegistry):
     """The collection registry of one store, in a table pair shared by its backend kind.
 
     `table_prefix` names the backend kind: every store on that kind of
@@ -98,6 +68,7 @@ class SqlCollectionRegistry:
     `tombstone_retention` is how long a dead incarnation's entry outlives
     the first purge round that found nothing; it must exceed, by orders
     of magnitude, the longest a write to the backend can be in flight.
+    The retention is measured on the database clock.
     """
 
     def __init__(
@@ -142,14 +113,12 @@ class SqlCollectionRegistry:
         )
         self._metadata = metadata
 
-    async def provision(self) -> None:
-        """Create the registry tables, idempotently.
-
-        Two provisioners racing on an empty database can both find the
-        tables absent and both issue the DDL; the loser's fails, and its
-        second pass finds the winner's tables and creates nothing. Any
-        other failure fails the second pass too.
-        """
+    @override
+    async def startup(self) -> None:
+        # Two starters racing on an empty database can both find the
+        # tables absent and both issue the DDL; the loser's fails, and its
+        # second pass finds the winner's tables and creates nothing. Any
+        # other failure fails the second pass too.
         try:
             await self._create_tables()
         except DBAPIError:
@@ -159,22 +128,13 @@ class SqlCollectionRegistry:
         async with self._engine.begin() as connection:
             await connection.run_sync(self._metadata.create_all)
 
+    @override
     async def create(
         self, namespace: str, name: str, config: VectorStoreCollectionConfig
     ) -> UUID:
-        """Register a new collection under a freshly minted incarnation.
-
-        The primary key arbitrates the (namespace, name) across processes;
-        the incarnation's unique constraint and the in-transaction queue
-        check reject an incarnation that is live or still awaiting purge,
-        so no points can be adopted by, or reclaimed out from under, a new
-        collection.
-
-        Raises:
-            VectorStoreCollectionAlreadyExistsError: The (namespace, name) is taken.
-            VectorStoreAttemptsExhaustedError:
-                Every minted incarnation was rejected for another reason.
-        """
+        # The primary key arbitrates the (namespace, name) across processes;
+        # the incarnation's unique constraint and the in-transaction queue
+        # check reject an incarnation that is live or still awaiting purge.
         attempts = 0
         while True:
             incarnation = uuid4()
@@ -240,8 +200,8 @@ class SqlCollectionRegistry:
             )
             raise _RegistryInsertRejectedError(str(incarnation)) from err
 
+    @override
     async def get(self, namespace: str, name: str) -> RegisteredCollection | None:
-        """The live collection under the (namespace, name), or None."""
         async with self._engine.connect() as connection:
             row = (
                 await connection.execute(
@@ -262,8 +222,8 @@ class SqlCollectionRegistry:
             config=VectorStoreCollectionConfig.model_validate(row.config_json),
         )
 
+    @override
     async def is_live(self, incarnation: UUID) -> bool:
-        """Whether a collection is still registered under this incarnation."""
         async with self._engine.connect() as connection:
             row = (
                 await connection.execute(
@@ -274,14 +234,11 @@ class SqlCollectionRegistry:
             ).scalar_one_or_none()
         return row is not None
 
+    @override
     async def delete(self, namespace: str, name: str) -> None:
-        """Unregister the collection and queue its incarnation for purge, in one transaction.
-
-        Idempotent: no row under the key is the no-op case. The collection
-        is unreachable as soon as the transaction commits; its points are
-        reclaimed by the purge rounds that claim the entry, its tombstone.
-        """
-        # The DELETE goes first: it takes the row's write lock, so racing
+        # One transaction: the collection is unreachable as soon as it
+        # commits, and the queue row is the incarnation's tombstone. The
+        # DELETE goes first: it takes the row's write lock, so racing
         # deleters serialize on it and the loser deletes nothing, on
         # PostgreSQL and on SQLite alike.
         async with self._engine.begin() as connection:
@@ -312,23 +269,14 @@ class SqlCollectionRegistry:
                 )
             )
 
+    @override
     @asynccontextmanager
     async def claim_oldest(self) -> AsyncIterator[PurgeClaim | None]:
-        """Claim this backend's oldest tombstone due for a purge round.
-
-        Yields None when no tombstone is due: the queue is empty, or every
-        entry had a clean round less than the retention ago. The claim is a
-        row lock held for the body: on PostgreSQL a concurrent purger skips
-        the locked entry and takes the next; on SQLite the writers
-        serialize at the end of the round, so a doubly claimed entry costs
-        a repeated, idempotent round and never a missed one.
-
-        The body purges and sets `found`. A round that found points keeps
-        the entry and clears `clean_at`, so rounds continue; a round that
-        found none stamps `clean_at` the first time and removes the entry
-        when it is the round due after the retention. A body that raises
-        leaves the entry as it was, for a later claim.
-        """
+        # The claim is a row lock held for the body: on PostgreSQL a
+        # concurrent purger skips the locked entry and takes the next; on
+        # SQLite the writers serialize at the end of the round, so a doubly
+        # claimed entry costs a repeated, idempotent round and never a
+        # missed one. The retention is measured on the database clock.
         async with self._engine.begin() as connection:
             database_now = (
                 await connection.execute(

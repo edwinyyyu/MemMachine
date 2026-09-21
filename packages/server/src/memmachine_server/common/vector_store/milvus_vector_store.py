@@ -5,14 +5,13 @@ import contextlib
 import hashlib
 import json
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any, ClassVar, cast, override
 from uuid import UUID
 
 from pydantic import BaseModel, Field, InstanceOf
 from pymilvus import DataType, MilvusClient
 from pymilvus.exceptions import MilvusException
-from sqlalchemy.ext.asyncio import AsyncEngine
 
 from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
@@ -43,6 +42,7 @@ from memmachine_server.common.properties_json import (
 )
 from memmachine_server.common.utils import compute_similarity, ensure_tz_aware
 
+from .collection_registry import CollectionRegistry, RegisteredCollection
 from .data_types import (
     QueryMatch,
     QueryResult,
@@ -52,7 +52,6 @@ from .data_types import (
     VectorStoreCollectionConfigMismatchError,
     VectorStoreCollectionHandleStaleError,
 )
-from .sql_collection_registry import RegisteredCollection, SqlCollectionRegistry
 from .utils import validate_filter, validate_identifier
 from .vector_store import VectorStore, VectorStoreCollection
 
@@ -461,22 +460,13 @@ class MilvusVectorStoreParams(BaseModel):
 
     Attributes:
         client (MilvusClient): Milvus client instance.
-        backend (str):
-            The id of the configured backend this store is on (its name
-            under `resources.databases`). Every Milvus store in one
-            relational database shares the registry tables; the id keeps
-            their rows apart.
-        registry_engine (AsyncEngine):
-            The relational database holding the collection registry: which
+        registry (CollectionRegistry):
+            The collection registry of this store's backend: which
             collections exist, under which incarnation and configuration,
             and which dead incarnations await purge. Milvus arbitrates none
             of that, so the registry lives where a primary key and a
-            transaction can.
-        tombstone_retention_seconds (int):
-            How long a deleted collection's registry entry outlives the
-            first purge round that finds nothing under it, so a write that
-            landed after that round is still reclaimed; orders of magnitude
-            above the longest a request to Milvus can be in flight.
+            transaction can, and every process serving the backend shares
+            it.
         consistency_level (str): Collection consistency level for newly created collections.
         metrics_factory (MetricsFactory | None): Metrics factory for collecting usage metrics.
     """
@@ -485,22 +475,9 @@ class MilvusVectorStoreParams(BaseModel):
         ...,
         description="Milvus client instance",
     )
-    backend: str = Field(
+    registry: InstanceOf[CollectionRegistry] = Field(
         ...,
-        min_length=1,
-        description="The id of the configured backend this store is on",
-    )
-    registry_engine: InstanceOf[AsyncEngine] = Field(
-        ...,
-        description="The relational database holding the collection registry",
-    )
-    tombstone_retention_seconds: int = Field(
-        ...,
-        gt=0,
-        description=(
-            "Seconds a deleted collection's tombstone outlives the first purge "
-            "round that finds nothing under it"
-        ),
+        description="The collection registry of this store's backend",
     )
     consistency_level: str = Field(
         default="Session",
@@ -517,12 +494,11 @@ class MilvusVectorStore(VectorStore):
 
     A logical collection is a partition-key value, the incarnation of its
     life, inside a native collection shared by the logical collections of
-    one namespace and configuration. The catalog is `SqlCollectionRegistry`
-    in the deployment's relational database: it mints the incarnations and
-    arbitrates creation, deletion and reclamation across processes, which
-    Milvus, with no transactions or unique constraints, cannot. Any process
-    sharing the Milvus backend and the registry database may serve any
-    collection.
+    one namespace and configuration. The catalog is the `CollectionRegistry`
+    the store is given: it mints the incarnations and arbitrates creation,
+    deletion and reclamation across processes, which Milvus, with no
+    transactions or unique constraints, cannot. Any process sharing the
+    Milvus backend and the registry may serve any collection.
     """
 
     _SIMILARITY_METRIC_TO_MILVUS_METRIC: ClassVar[dict[SimilarityMetric, str]] = {
@@ -530,9 +506,6 @@ class MilvusVectorStore(VectorStore):
         SimilarityMetric.DOT: "IP",
         SimilarityMetric.EUCLIDEAN: "L2",
     }
-
-    # Every Milvus store in one relational database shares these tables.
-    _REGISTRY_TABLE_PREFIX: ClassVar[str] = "vector_store_milvus"
 
     @staticmethod
     def _is_already_exists_error(error: Exception) -> bool:
@@ -568,12 +541,7 @@ class MilvusVectorStore(VectorStore):
         super().__init__()
         self._client = params.client
         self._consistency_level = params.consistency_level
-        self._registry = SqlCollectionRegistry(
-            engine=params.registry_engine,
-            table_prefix=MilvusVectorStore._REGISTRY_TABLE_PREFIX,
-            backend=params.backend,
-            tombstone_retention=timedelta(seconds=params.tombstone_retention_seconds),
-        )
+        self._registry = params.registry
         self._tracker = OperationTracker(
             params.metrics_factory,
             prefix="vector_store_milvus",
@@ -581,8 +549,8 @@ class MilvusVectorStore(VectorStore):
 
     @override
     async def startup(self) -> None:
-        """Create the registry tables if they are absent; the client's lifecycle is managed externally."""
-        await self._registry.provision()
+        """Ready the registry; the client's lifecycle is managed externally."""
+        await self._registry.startup()
 
     @override
     async def shutdown(self) -> None:

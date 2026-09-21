@@ -1,4 +1,5 @@
 import importlib.util
+from datetime import timedelta
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -400,6 +401,9 @@ async def test_qdrant_creates_vector_store():
             "memmachine_server.common.vector_store.qdrant_vector_store.QdrantVectorStore",
         ) as mock_store_cls,
         patch(
+            "memmachine_server.common.resource_manager.database_manager.SQLAlchemyCollectionRegistry",
+        ) as mock_registry_cls,
+        patch(
             "qdrant_client.AsyncQdrantClient",
             return_value=mock_client,
         ),
@@ -408,12 +412,16 @@ async def test_qdrant_creates_vector_store():
         builder = DatabaseManager(conf)
         await builder.async_get_qdrant_client("qdrant1")
 
+    mock_registry_cls.assert_called_once_with(
+        engine=builder.sql_engines["registry"],
+        table_prefix="vector_store_qdrant",
+        backend="qdrant1",
+        tombstone_retention=timedelta(seconds=3600),
+    )
     mock_params_cls.assert_called_once()
     kwargs = mock_params_cls.call_args.kwargs
     assert kwargs["client"] is mock_client
-    assert kwargs["backend"] == "qdrant1"
-    assert kwargs["registry_engine"] is builder.sql_engines["registry"]
-    assert kwargs["tombstone_retention_seconds"] == 3600
+    assert kwargs["registry"] is mock_registry_cls.return_value
     # Asserted as "not None" rather than pinned to a value: OperationTracker
     # accepts None and then discards every timing without error, so passing the
     # keyword is not the property that matters - passing a factory is.
@@ -609,17 +617,24 @@ async def test_milvus_creates_vector_store():
         patch(
             "memmachine_server.common.vector_store.milvus_vector_store.MilvusVectorStore",
         ) as mock_store_cls,
+        patch(
+            "memmachine_server.common.resource_manager.database_manager.SQLAlchemyCollectionRegistry",
+        ) as mock_registry_cls,
         patch("pymilvus.MilvusClient", return_value=mock_client),
     ):
         mock_store_cls.return_value.startup = AsyncMock()
         builder = DatabaseManager(conf)
         await builder.async_get_milvus_client("milvus1")
 
+    mock_registry_cls.assert_called_once_with(
+        engine=builder.sql_engines["registry"],
+        table_prefix="vector_store_milvus",
+        backend="milvus1",
+        tombstone_retention=timedelta(seconds=3600),
+    )
     mock_params_cls.assert_called_once_with(
         client=mock_client,
-        backend="milvus1",
-        registry_engine=builder.sql_engines["registry"],
-        tombstone_retention_seconds=3600,
+        registry=mock_registry_cls.return_value,
         consistency_level="Strong",
     )
     mock_store_cls.assert_called_once_with(mock_params_cls.return_value)
