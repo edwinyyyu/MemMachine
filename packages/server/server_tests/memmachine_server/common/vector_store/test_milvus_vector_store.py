@@ -78,7 +78,7 @@ async def store(tmp_path):
     vector_store = MilvusVectorStore(
         MilvusVectorStoreParams(
             client=client,
-            registry=SQLAlchemyCollectionRegistry(
+            collection_registry=SQLAlchemyCollectionRegistry(
                 engine=registry_engine,
                 table_prefix=REGISTRY_TABLE_PREFIX,
                 backend=BACKEND,

@@ -635,8 +635,8 @@ class DatabaseManager:
 
             params = QdrantVectorStoreParams(
                 client=client,
-                registry=SQLAlchemyCollectionRegistry(
-                    engine=await self.async_get_sql_engine(conf.registry_database),
+                collection_registry=SQLAlchemyCollectionRegistry(
+                    engine=await self.async_get_sql_engine(conf.collection_registry),
                     table_prefix="vector_store_qdrant",
                     backend=name,
                     tombstone_retention=timedelta(
@@ -721,8 +721,8 @@ class DatabaseManager:
 
             params = MilvusVectorStoreParams(
                 client=client,
-                registry=SQLAlchemyCollectionRegistry(
-                    engine=await self.async_get_sql_engine(conf.registry_database),
+                collection_registry=SQLAlchemyCollectionRegistry(
+                    engine=await self.async_get_sql_engine(conf.collection_registry),
                     table_prefix="vector_store_milvus",
                     backend=name,
                     tombstone_retention=timedelta(

@@ -252,7 +252,7 @@ class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
         default=False,
         description="Whether to use HTTPS/TLS for Qdrant communication",
     )
-    registry_database: str = Field(
+    collection_registry: str = Field(
         ...,
         description=(
             "The relational database (a name under resources.databases) that "
@@ -301,7 +301,7 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
             "Supported values: Strong, Session, Bounded, Eventually."
         ),
     )
-    registry_database: str = Field(
+    collection_registry: str = Field(
         ...,
         description=(
             "The relational database (a name under resources.databases) that "

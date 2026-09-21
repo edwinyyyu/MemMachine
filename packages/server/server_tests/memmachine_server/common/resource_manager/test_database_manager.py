@@ -301,7 +301,7 @@ def _qdrant_only_conf() -> MagicMock:
     conf.nebula_graph_confs = {}
     conf.qdrant_confs = {
         "qdrant1": QdrantConf(
-            registry_database="registry",
+            collection_registry="registry",
             host="localhost",
             port=6333,
         ),
@@ -316,7 +316,7 @@ async def test_qdrant_client_kwargs_forwarded():
     """host, port, grpc_port, prefer_grpc, and https are forwarded to AsyncQdrantClient."""
     conf = _qdrant_only_conf()
     conf.qdrant_confs["qdrant1"] = QdrantConf(
-        registry_database="registry",
+        collection_registry="registry",
         host="qdrant.example.com",
         port=7333,
         grpc_port=7334,
@@ -387,7 +387,7 @@ async def test_qdrant_creates_vector_store():
     """async_get_qdrant_client creates a QdrantVectorStore and stores it."""
     conf = _qdrant_only_conf()
     conf.qdrant_confs["qdrant1"] = QdrantConf(
-        registry_database="registry", tombstone_retention_seconds=3600
+        collection_registry="registry", tombstone_retention_seconds=3600
     )
 
     mock_client = AsyncMock()
@@ -421,7 +421,7 @@ async def test_qdrant_creates_vector_store():
     mock_params_cls.assert_called_once()
     kwargs = mock_params_cls.call_args.kwargs
     assert kwargs["client"] is mock_client
-    assert kwargs["registry"] is mock_registry_cls.return_value
+    assert kwargs["collection_registry"] is mock_registry_cls.return_value
     # Asserted as "not None" rather than pinned to a value: OperationTracker
     # accepts None and then discards every timing without error, so passing the
     # keyword is not the property that matters - passing a factory is.
@@ -528,7 +528,7 @@ def _milvus_only_conf() -> MagicMock:
     conf.nebula_graph_confs = {}
     conf.qdrant_confs = {}
     conf.milvus_confs = {
-        "milvus1": MilvusConf(registry_database="registry", uri="./milvus.db"),
+        "milvus1": MilvusConf(collection_registry="registry", uri="./milvus.db"),
     }
     conf.sqlite_vector_store_confs = {}
     conf.sqlite_vec_vector_store_confs = {}
@@ -541,7 +541,7 @@ async def test_milvus_client_kwargs_forwarded():
     """uri, token, and db_name are forwarded to MilvusClient."""
     conf = _milvus_only_conf()
     conf.milvus_confs["milvus1"] = MilvusConf(
-        registry_database="registry",
+        collection_registry="registry",
         uri="https://example.zillizcloud.com",
         token=SecretStr("secret-token"),
         db_name="memory",
@@ -602,7 +602,7 @@ async def test_milvus_creates_vector_store():
     """async_get_milvus_client creates a MilvusVectorStore and stores it."""
     conf = _milvus_only_conf()
     conf.milvus_confs["milvus1"] = MilvusConf(
-        registry_database="registry",
+        collection_registry="registry",
         consistency_level="Strong",
         tombstone_retention_seconds=3600,
     )
@@ -634,7 +634,7 @@ async def test_milvus_creates_vector_store():
     )
     mock_params_cls.assert_called_once_with(
         client=mock_client,
-        registry=mock_registry_cls.return_value,
+        collection_registry=mock_registry_cls.return_value,
         consistency_level="Strong",
     )
     mock_store_cls.assert_called_once_with(mock_params_cls.return_value)
