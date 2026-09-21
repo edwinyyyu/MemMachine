@@ -1,5 +1,6 @@
 """Helpers for building long-term memory from configuration."""
 
+import contextlib
 import hashlib
 import logging
 
@@ -17,7 +18,10 @@ from memmachine_server.common.configuration.episodic_config import (
     WholeTextDeriverConf,
 )
 from memmachine_server.common.resource_manager import CommonResourceManager
-from memmachine_server.common.vector_store import VectorStoreCollectionConfig
+from memmachine_server.common.vector_store import (
+    VectorStoreCollectionAlreadyExistsError,
+    VectorStoreCollectionConfig,
+)
 from memmachine_server.episodic_memory.event_memory.deriver import Deriver
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
@@ -116,11 +120,15 @@ async def _event_params(
                 **EVENT_BACKEND_SYSTEM_FIELDS,
             },
         )
-        await vector_store.create_collection(
-            namespace=_EVENT_BACKEND_NAMESPACE,
-            name=partition_key,
-            config=collection_config,
-        )
+        # The registry arbitrates creation across processes: a worker that
+        # loses the race to another creating the same partition opens the
+        # winner's collection.
+        with contextlib.suppress(VectorStoreCollectionAlreadyExistsError):
+            await vector_store.create_collection(
+                namespace=_EVENT_BACKEND_NAMESPACE,
+                name=partition_key,
+                config=collection_config,
+            )
         collection = await vector_store.open_collection(
             namespace=_EVENT_BACKEND_NAMESPACE,
             name=partition_key,
