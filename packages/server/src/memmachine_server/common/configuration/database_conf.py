@@ -256,7 +256,7 @@ class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
         ...,
         description=(
             "The relational database, a name under resources.databases, that "
-            "holds this store's collection registry."
+            "holds this store's partition registry."
         ),
     )
     tombstone_retention_seconds: int = Field(
@@ -305,7 +305,7 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         ...,
         description=(
             "The relational database, a name under resources.databases, that "
-            "holds this store's collection registry."
+            "holds this store's partition registry."
         ),
     )
     tombstone_retention_seconds: int = Field(
