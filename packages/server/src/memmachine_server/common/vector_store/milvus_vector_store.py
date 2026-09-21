@@ -1,18 +1,18 @@
 """Milvus-based vector store implementation."""
 
 import asyncio
+import contextlib
 import hashlib
 import json
-from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
-from datetime import UTC, datetime
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, cast, override
 from uuid import UUID
-from weakref import WeakKeyDictionary
 
 from pydantic import BaseModel, Field, InstanceOf
 from pymilvus import DataType, MilvusClient
 from pymilvus.exceptions import MilvusException
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
@@ -50,21 +50,28 @@ from .data_types import (
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
+    VectorStoreCollectionHandleStaleError,
 )
+from .sql_collection_registry import RegisteredCollection, SqlCollectionRegistry
 from .utils import validate_filter, validate_identifier
 from .vector_store import VectorStore, VectorStoreCollection
 
 _ID_FIELD = "id"
 _RECORD_UUID_FIELD = "record_uuid"
 _PARTITION_KEY_FIELD = "partition_key"
+"""The native partition-key field; holds the incarnation, never the collection's name.
+
+A collection deleted and re-created under the same name gets a fresh
+incarnation, and its predecessor's entities are invisible to it while the
+purge reclaims them.
+"""
 _VECTOR_FIELD = "vector"
 _PROPERTIES_FIELD = "properties"
 _PROPERTY_FILTER_PREFIX = "_p_"
 
 _MAX_UUID_LENGTH = 36
 _MAX_PRIMARY_ID_LENGTH = 128
-_MAX_PARTITION_KEY_LENGTH = 32
-_REGISTRY_VECTOR_DIMENSION = 2
+_INCARNATION_HEX_LENGTH = 32
 _FALSE_EXPR = f'{_ID_FIELD} == "__memmachine_no_match__"'
 
 
@@ -94,6 +101,11 @@ def _normalize_property_filter_value(value: PropertyValue) -> PropertyValue:
     if isinstance(value, datetime):
         return ensure_tz_aware(value).astimezone(UTC).isoformat()
     return value
+
+
+def _incarnation_filter(incarnation: UUID) -> str:
+    """A Milvus expression matching the entities of one collection incarnation."""
+    return f"{_PARTITION_KEY_FIELD} == {_expr_string(incarnation.hex)}"
 
 
 class MilvusVectorStoreCollection(VectorStoreCollection):
@@ -148,25 +160,44 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         return score <= threshold
 
     @staticmethod
-    def _primary_id(partition_key: str, record_uuid: UUID) -> str:
+    def _primary_id(incarnation: UUID, record_uuid: UUID) -> str:
         """Build a native primary key unique within a shared native collection."""
-        return f"{partition_key}:{record_uuid}"
+        return f"{incarnation.hex}:{record_uuid}"
 
     def __init__(
         self,
         *,
         client: MilvusClient,
-        collection_name: str,
-        partition_key: str,
+        native_collection_name: str,
+        namespace: str,
+        name: str,
+        incarnation: UUID,
         config: VectorStoreCollectionConfig,
         tracker: OperationTracker,
+        is_live: Callable[[UUID], Awaitable[bool]],
     ) -> None:
-        """Initialize with a Milvus client and collection name."""
+        """Initialize with a Milvus client and the incarnation the handle is bound to."""
         self._client = client
-        self._collection_name = collection_name
-        self._partition_key = partition_key
+        self._native_collection_name = native_collection_name
+        self._namespace = namespace
+        self._name = name
+        self._incarnation = incarnation
         self._config = config
         self._tracker = tracker
+        self._is_live = is_live
+
+    async def _fence(self) -> None:
+        """Raise if this handle's incarnation is no longer the collection's.
+
+        Called before an operation, to refuse a handle known to be dead,
+        and after it, so an operation completed under an incarnation that
+        died meanwhile raises instead of reporting success. Milvus has no
+        transactions, so a write can still land under a dead incarnation:
+        between the two checks, or after a check that never ran; the
+        tombstone's purge rounds reclaim it.
+        """
+        if not await self._is_live(self._incarnation):
+            raise VectorStoreCollectionHandleStaleError(self._namespace, self._name)
 
     @property
     @override
@@ -183,9 +214,9 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
 
         properties = record.properties if record.properties is not None else {}
         entity: dict[str, Any] = {
-            _ID_FIELD: self._primary_id(self._partition_key, record.uuid),
+            _ID_FIELD: self._primary_id(self._incarnation, record.uuid),
             _RECORD_UUID_FIELD: str(record.uuid),
-            _PARTITION_KEY_FIELD: self._partition_key,
+            _PARTITION_KEY_FIELD: self._incarnation.hex,
             _VECTOR_FIELD: record.vector,
             _PROPERTIES_FIELD: encode_properties(properties),
         }
@@ -248,7 +279,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         )[0]
 
     def _partition_filter(self) -> str:
-        return f"{_PARTITION_KEY_FIELD} == {_expr_string(self._partition_key)}"
+        return _incarnation_filter(self._incarnation)
 
     @override
     async def upsert(
@@ -262,15 +293,17 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             if not records:
                 return
 
+            await self._fence()
             entities = [self._build_entity(record) for record in records]
 
             def _upsert() -> None:
                 self._client.upsert(
-                    collection_name=self._collection_name,
+                    collection_name=self._native_collection_name,
                     data=entities,
                 )
 
             await asyncio.to_thread(_upsert)
+            await self._fence()
 
     @override
     async def query(
@@ -291,6 +324,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             if limit <= 0:
                 return [QueryResult(matches=[]) for _ in query_vectors]
 
+            await self._fence()
             filter_expr = self._partition_filter()
             if property_filter is not None:
                 if not validate_filter(property_filter):
@@ -300,7 +334,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
 
             raw_results = await asyncio.to_thread(
                 self._client.search,
-                collection_name=self._collection_name,
+                collection_name=self._native_collection_name,
                 data=query_vectors,
                 filter=filter_expr,
                 limit=limit,
@@ -348,6 +382,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 )
                 results.append(QueryResult(matches=matches))
 
+            await self._fence()
             return results
 
     @override
@@ -364,12 +399,13 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             if not uuid_list:
                 return []
 
+            await self._fence()
             primary_ids = [
-                self._primary_id(self._partition_key, uuid) for uuid in uuid_list
+                self._primary_id(self._incarnation, uuid) for uuid in uuid_list
             ]
             raw_records = await asyncio.to_thread(
                 self._client.get,
-                collection_name=self._collection_name,
+                collection_name=self._native_collection_name,
                 ids=primary_ids,
                 output_fields=self._output_fields(
                     return_vector=return_vector,
@@ -388,11 +424,13 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                     for raw_record in raw_records
                 )
             }
-            return [
+            records = [
                 records_by_uuid[record_uuid]
                 for record_uuid in uuid_list
                 if record_uuid in records_by_uuid
             ]
+            await self._fence()
+            return records
 
     @override
     async def delete(
@@ -405,14 +443,16 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             uuid_list = list(record_uuids)
             if not uuid_list:
                 return
+            await self._fence()
             primary_ids = [
-                self._primary_id(self._partition_key, uuid) for uuid in uuid_list
+                self._primary_id(self._incarnation, uuid) for uuid in uuid_list
             ]
             await asyncio.to_thread(
                 self._client.delete,
-                collection_name=self._collection_name,
+                collection_name=self._native_collection_name,
                 ids=primary_ids,
             )
+            await self._fence()
 
 
 class MilvusVectorStoreParams(BaseModel):
@@ -421,6 +461,22 @@ class MilvusVectorStoreParams(BaseModel):
 
     Attributes:
         client (MilvusClient): Milvus client instance.
+        backend (str):
+            The id of the configured backend this store is on (its name
+            under `resources.databases`). Every Milvus store in one
+            relational database shares the registry tables; the id keeps
+            their rows apart.
+        registry_engine (AsyncEngine):
+            The relational database holding the collection registry: which
+            collections exist, under which incarnation and configuration,
+            and which dead incarnations await purge. Milvus arbitrates none
+            of that, so the registry lives where a primary key and a
+            transaction can.
+        tombstone_retention_seconds (int):
+            How long a deleted collection's registry entry outlives the
+            first purge round that finds nothing under it, so a write that
+            landed after that round is still reclaimed; orders of magnitude
+            above the longest a request to Milvus can be in flight.
         consistency_level (str): Collection consistency level for newly created collections.
         metrics_factory (MetricsFactory | None): Metrics factory for collecting usage metrics.
     """
@@ -428,6 +484,23 @@ class MilvusVectorStoreParams(BaseModel):
     client: InstanceOf[MilvusClient] = Field(
         ...,
         description="Milvus client instance",
+    )
+    backend: str = Field(
+        ...,
+        min_length=1,
+        description="The id of the configured backend this store is on",
+    )
+    registry_engine: InstanceOf[AsyncEngine] = Field(
+        ...,
+        description="The relational database holding the collection registry",
+    )
+    tombstone_retention_seconds: int = Field(
+        ...,
+        gt=0,
+        description=(
+            "Seconds a deleted collection's tombstone outlives the first purge "
+            "round that finds nothing under it"
+        ),
     )
     consistency_level: str = Field(
         default="Session",
@@ -440,7 +513,17 @@ class MilvusVectorStoreParams(BaseModel):
 
 
 class MilvusVectorStore(VectorStore):
-    """Asynchronous Milvus-based implementation of VectorStore."""
+    """Asynchronous Milvus-based implementation of VectorStore.
+
+    A logical collection is a partition-key value, the incarnation of its
+    life, inside a native collection shared by the logical collections of
+    one namespace and configuration. The catalog is `SqlCollectionRegistry`
+    in the deployment's relational database: it mints the incarnations and
+    arbitrates creation, deletion and reclamation across processes, which
+    Milvus, with no transactions or unique constraints, cannot. Any process
+    sharing the Milvus backend and the registry database may serve any
+    collection.
+    """
 
     _SIMILARITY_METRIC_TO_MILVUS_METRIC: ClassVar[dict[SimilarityMetric, str]] = {
         SimilarityMetric.COSINE: "COSINE",
@@ -448,35 +531,14 @@ class MilvusVectorStore(VectorStore):
         SimilarityMetric.EUCLIDEAN: "L2",
     }
 
-    _REGISTRY_SUFFIX: ClassVar[str] = "__registry"
-    _REGISTRY_VECTOR_DIMENSIONS: ClassVar[str] = "vector_dimensions"
-    _REGISTRY_SIMILARITY_METRIC: ClassVar[str] = "similarity_metric"
-    _REGISTRY_INDEXED_PROPERTIES_SCHEMA: ClassVar[str] = "indexed_properties_schema"
-    _REGISTRY_CONFIG: ClassVar[str] = "config"
-
-    _name_locks: ClassVar[
-        WeakKeyDictionary[
-            MilvusClient,
-            defaultdict[tuple[str, str], asyncio.Lock],
-        ]
-    ] = WeakKeyDictionary()
+    # Every Milvus store in one relational database shares these tables.
+    _REGISTRY_TABLE_PREFIX: ClassVar[str] = "vector_store_milvus"
 
     @staticmethod
     def _is_already_exists_error(error: Exception) -> bool:
         """Check if an exception indicates a resource already exists."""
         message = str(error).lower()
         return "already exist" in message or "already exists" in message
-
-    @staticmethod
-    def _is_not_found_error(error: Exception) -> bool:
-        """Check if an exception indicates a resource was not found."""
-        message = str(error).lower()
-        return "not found" in message or "can't find" in message
-
-    @staticmethod
-    def _registry_collection_name(namespace: str) -> str:
-        """Return the registry collection name for a namespace."""
-        return f"memmachine_{namespace}{MilvusVectorStore._REGISTRY_SUFFIX}"
 
     @staticmethod
     def _build_native_collection_name(
@@ -506,143 +568,41 @@ class MilvusVectorStore(VectorStore):
         super().__init__()
         self._client = params.client
         self._consistency_level = params.consistency_level
+        self._registry = SqlCollectionRegistry(
+            engine=params.registry_engine,
+            table_prefix=MilvusVectorStore._REGISTRY_TABLE_PREFIX,
+            backend=params.backend,
+            tombstone_retention=timedelta(seconds=params.tombstone_retention_seconds),
+        )
         self._tracker = OperationTracker(
             params.metrics_factory,
             prefix="vector_store_milvus",
         )
-        self._client_name_locks = MilvusVectorStore._name_locks.setdefault(
-            self._client, defaultdict(asyncio.Lock)
-        )
 
     @override
     async def startup(self) -> None:
-        """No-op; client lifecycle is managed externally."""
+        """Create the registry tables if they are absent; the client's lifecycle is managed externally."""
+        await self._registry.provision()
 
     @override
     async def shutdown(self) -> None:
         """No-op; client lifecycle is managed externally."""
 
-    async def _ensure_namespace_registry_collection(self, namespace: str) -> None:
-        """Idempotently create the registry collection for a namespace."""
-        registry_collection_name = MilvusVectorStore._registry_collection_name(
-            namespace
-        )
-        if await asyncio.to_thread(
-            self._client.has_collection, registry_collection_name
-        ):
-            return
-
-        def _create_registry() -> None:
-            schema = self._client.create_schema(
-                auto_id=False,
-                enable_dynamic_field=False,
-            )
-            schema.add_field(
-                field_name=_ID_FIELD,
-                datatype=DataType.VARCHAR,
-                is_primary=True,
-                max_length=_MAX_PARTITION_KEY_LENGTH,
-            )
-            schema.add_field(
-                field_name=_VECTOR_FIELD,
-                datatype=DataType.FLOAT_VECTOR,
-                dim=_REGISTRY_VECTOR_DIMENSION,
-            )
-            schema.add_field(
-                field_name=self._REGISTRY_CONFIG,
-                datatype=DataType.JSON,
-            )
-
-            index_params = self._client.prepare_index_params()
-            index_params.add_index(
-                field_name=_VECTOR_FIELD,
-                index_type="AUTOINDEX",
-                metric_type="COSINE",
-            )
-
-            self._client.create_collection(
-                collection_name=registry_collection_name,
-                schema=schema,
-                index_params=index_params,
-                consistency_level=self._consistency_level,
-            )
-
-        try:
-            await asyncio.to_thread(_create_registry)
-        except MilvusException as exc:
-            if not MilvusVectorStore._is_already_exists_error(exc):
-                raise
-
-    async def _get_registry_entry(
-        self, namespace: str, name: str
-    ) -> dict[str, Any] | None:
-        """Retrieve the registry entry for a logical collection name."""
-        registry_collection_name = MilvusVectorStore._registry_collection_name(
-            namespace
-        )
-        if not await asyncio.to_thread(
-            self._client.has_collection, registry_collection_name
-        ):
-            return None
-
-        filter_expr = f"{_ID_FIELD} == {_expr_string(name)}"
-        try:
-            result = await asyncio.to_thread(
-                self._client.get,
-                collection_name=registry_collection_name,
-                ids=[name],
-                output_fields=[_ID_FIELD, self._REGISTRY_CONFIG],
-            )
-        except MilvusException as exc:
-            if MilvusVectorStore._is_not_found_error(exc):
-                return None
-            raise
-
-        entries = list(result)
-        if not entries:
-            return None
-        entry = entries[0]
-        entry_id = entry.get(_ID_FIELD)
-        if entry_id is not None and entry_id != name:
-            return None
-        config = cast(dict[str, Any], entry.get(self._REGISTRY_CONFIG))
-        if config is None:
-            # Older clients may not include the primary key in get() output unless queried.
-            rows = await asyncio.to_thread(
-                self._client.query,
-                collection_name=registry_collection_name,
-                filter=filter_expr,
-                output_fields=[_ID_FIELD, self._REGISTRY_CONFIG],
-            )
-            rows = list(rows)
-            if not rows:
-                return None
-            config = cast(dict[str, Any], rows[0][self._REGISTRY_CONFIG])
-        return config
-
-    @staticmethod
-    def _parse_entry(entry: Mapping[str, Any]) -> VectorStoreCollectionConfig:
-        """Parse a VectorStoreCollectionConfig from a registry entry."""
-        return VectorStoreCollectionConfig(
-            vector_dimensions=entry[MilvusVectorStore._REGISTRY_VECTOR_DIMENSIONS],
-            similarity_metric=entry[MilvusVectorStore._REGISTRY_SIMILARITY_METRIC],
-            indexed_properties_schema=entry[
-                MilvusVectorStore._REGISTRY_INDEXED_PROPERTIES_SCHEMA
-            ],
-        )
-
     def _build_collection_handle(
-        self, namespace: str, name: str, config: VectorStoreCollectionConfig
+        self, namespace: str, name: str, registered: RegisteredCollection
     ) -> MilvusVectorStoreCollection:
-        """Build a MilvusVectorStoreCollection handle."""
+        """Build a MilvusVectorStoreCollection handle bound to the registered incarnation."""
         return MilvusVectorStoreCollection(
             client=self._client,
-            collection_name=MilvusVectorStore._build_native_collection_name(
-                namespace, config
+            native_collection_name=MilvusVectorStore._build_native_collection_name(
+                namespace, registered.config
             ),
-            partition_key=name,
-            config=config,
+            namespace=namespace,
+            name=name,
+            incarnation=registered.incarnation,
+            config=registered.config,
             tracker=self._tracker,
+            is_live=self._registry.is_live,
         )
 
     async def _create_native_collection(
@@ -675,7 +635,7 @@ class MilvusVectorStore(VectorStore):
             schema.add_field(
                 field_name=_PARTITION_KEY_FIELD,
                 datatype=DataType.VARCHAR,
-                max_length=_MAX_PARTITION_KEY_LENGTH,
+                max_length=_INCARNATION_HEX_LENGTH,
                 is_partition_key=True,
             )
             schema.add_field(
@@ -710,28 +670,16 @@ class MilvusVectorStore(VectorStore):
             if not MilvusVectorStore._is_already_exists_error(exc):
                 raise
 
-    async def _register_collection(
-        self, namespace: str, name: str, config: VectorStoreCollectionConfig
-    ) -> None:
-        """Write the logical collection entry to the registry."""
-        registry_name = MilvusVectorStore._registry_collection_name(namespace)
-        await asyncio.to_thread(
-            self._client.insert,
-            collection_name=registry_name,
-            data=[
-                {
-                    _ID_FIELD: name,
-                    _VECTOR_FIELD: [0.0] * _REGISTRY_VECTOR_DIMENSION,
-                    self._REGISTRY_CONFIG: {
-                        self._REGISTRY_VECTOR_DIMENSIONS: config.vector_dimensions,
-                        self._REGISTRY_SIMILARITY_METRIC: config.similarity_metric.value,
-                        self._REGISTRY_INDEXED_PROPERTIES_SCHEMA: config.model_dump(
-                            mode="json"
-                        )["indexed_properties_schema"],
-                    },
-                }
-            ],
-        )
+    @staticmethod
+    def _require_identifiers(namespace: str, name: str) -> None:
+        if not validate_identifier(namespace):
+            raise ValueError(
+                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
+            )
+        if not validate_identifier(name):
+            raise ValueError(
+                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
+            )
 
     @override
     async def create_collection(
@@ -742,24 +690,17 @@ class MilvusVectorStore(VectorStore):
         config: VectorStoreCollectionConfig,
     ) -> None:
         """Create a logical collection in the Milvus vector store."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
+        MilvusVectorStore._require_identifiers(namespace, name)
         self._validate_metric(config.similarity_metric)
-        async with (
-            self._client_name_locks[(namespace, name)],
-            self._tracker("create_collection"),
-        ):
-            await self._ensure_namespace_registry_collection(namespace)
-            if await self._get_registry_entry(namespace, name) is not None:
-                raise VectorStoreCollectionAlreadyExistsError(namespace, name)
+        async with self._tracker("create_collection"):
+            # The native collection first, the registry row last: a crash
+            # between the two leaves an empty native collection the next
+            # creation of the same configuration adopts, never a row whose
+            # entities have nowhere to go. The registry's primary key is the
+            # arbiter: a racing creator on any process loses here, never in
+            # Milvus.
             await self._create_native_collection(namespace, config)
-            await self._register_collection(namespace, name, config)
+            await self._registry.create(namespace, name, config)
 
     @override
     async def open_or_create_collection(
@@ -770,52 +711,37 @@ class MilvusVectorStore(VectorStore):
         config: VectorStoreCollectionConfig,
     ) -> MilvusVectorStoreCollection:
         """Open the collection if it exists, or create and return it."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
+        MilvusVectorStore._require_identifiers(namespace, name)
         self._validate_metric(config.similarity_metric)
-        async with (
-            self._client_name_locks[(namespace, name)],
-            self._tracker("open_or_create_collection"),
-        ):
-            entry = await self._get_registry_entry(namespace, name)
-            if entry is not None:
-                existing_config = MilvusVectorStore._parse_entry(entry)
-                if existing_config != config:
-                    raise VectorStoreCollectionConfigMismatchError(
-                        namespace, name, existing_config, config
-                    )
-                return self._build_collection_handle(namespace, name, existing_config)
-
-            await self._ensure_namespace_registry_collection(namespace)
-            await self._create_native_collection(namespace, config)
-            await self._register_collection(namespace, name, config)
-            return self._build_collection_handle(namespace, name, config)
+        async with self._tracker("open_or_create_collection"):
+            registered = await self._registry.get(namespace, name)
+            if registered is None:
+                await self._create_native_collection(namespace, config)
+                # A racing creator may win the insert; its row is then the
+                # one to open.
+                with contextlib.suppress(VectorStoreCollectionAlreadyExistsError):
+                    await self._registry.create(namespace, name, config)
+                registered = await self._registry.get(namespace, name)
+                if registered is None:
+                    # Created and deleted again meanwhile: report it as absent
+                    # rather than creating a collection the deleter removed.
+                    raise VectorStoreCollectionHandleStaleError(namespace, name)
+            if registered.config != config:
+                raise VectorStoreCollectionConfigMismatchError(
+                    namespace, name, registered.config, config
+                )
+            return self._build_collection_handle(namespace, name, registered)
 
     @override
     async def open_collection(
         self, *, namespace: str, name: str
     ) -> MilvusVectorStoreCollection | None:
         """Get a collection handle from the vector store."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        entry = await self._get_registry_entry(namespace, name)
-        if entry is None:
+        MilvusVectorStore._require_identifiers(namespace, name)
+        registered = await self._registry.get(namespace, name)
+        if registered is None:
             return None
-        return self._build_collection_handle(
-            namespace, name, MilvusVectorStore._parse_entry(entry)
-        )
+        return self._build_collection_handle(namespace, name, registered)
 
     @override
     async def close_collection(self, *, collection: VectorStoreCollection) -> None:
@@ -824,40 +750,47 @@ class MilvusVectorStore(VectorStore):
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
         """Delete a logical collection from the Milvus vector store."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        async with (
-            self._client_name_locks[(namespace, name)],
-            self._tracker("delete_collection"),
-        ):
-            entry = await self._get_registry_entry(namespace, name)
-            if entry is None:
-                return
-
-            config = MilvusVectorStore._parse_entry(entry)
-            native_collection_name = MilvusVectorStore._build_native_collection_name(
-                namespace, config
-            )
-            registry_name = MilvusVectorStore._registry_collection_name(namespace)
-
-            await asyncio.to_thread(
-                self._client.delete,
-                collection_name=native_collection_name,
-                filter=f"{_PARTITION_KEY_FIELD} == {_expr_string(name)}",
-            )
-            await asyncio.to_thread(
-                self._client.delete,
-                collection_name=registry_name,
-                ids=[name],
-            )
+        MilvusVectorStore._require_identifiers(namespace, name)
+        async with self._tracker("delete_collection"):
+            # One registry transaction: the collection is unreachable when
+            # it commits, and its entities wait on the queue for the purge.
+            await self._registry.delete(namespace, name)
 
     @override
     async def purge_deleted_collections(self) -> bool:
-        # delete_collection deletes the entities itself.
-        return False
+        # One purge round per call, on the oldest tombstone due: the claim
+        # is a row lock the registry holds while one entity is looked for
+        # and, if there is one, the entities go by filter in a single
+        # server-side operation. The registry keeps or removes the
+        # tombstone by what the round found.
+        async with (
+            self._tracker("purge_deleted_collections"),
+            self._registry.claim_oldest() as claim,
+        ):
+            if claim is None:
+                return False
+            native_collection_name = MilvusVectorStore._build_native_collection_name(
+                claim.namespace, claim.config
+            )
+            incarnation_filter = _incarnation_filter(claim.incarnation)
+            if await asyncio.to_thread(
+                self._client.has_collection, native_collection_name
+            ):
+                held = await asyncio.to_thread(
+                    self._client.query,
+                    collection_name=native_collection_name,
+                    filter=incarnation_filter,
+                    output_fields=[_ID_FIELD],
+                    limit=1,
+                )
+                claim.found = bool(list(held))
+            else:
+                # The native collection is gone with everything in it.
+                claim.found = False
+            if claim.found:
+                await asyncio.to_thread(
+                    self._client.delete,
+                    collection_name=native_collection_name,
+                    filter=incarnation_filter,
+                )
+            return claim.found

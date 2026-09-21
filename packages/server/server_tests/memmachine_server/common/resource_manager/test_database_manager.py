@@ -516,11 +516,11 @@ def _milvus_only_conf() -> MagicMock:
     """Build a DatabasesConf mock with only a Milvus entry."""
     conf = MagicMock(spec=DatabasesConf)
     conf.neo4j_confs = {}
-    conf.relational_db_confs = {}
+    conf.relational_db_confs = {"registry": _REGISTRY_DB}
     conf.nebula_graph_confs = {}
     conf.qdrant_confs = {}
     conf.milvus_confs = {
-        "milvus1": MilvusConf(uri="./milvus.db"),
+        "milvus1": MilvusConf(registry_database="registry", uri="./milvus.db"),
     }
     conf.sqlite_vector_store_confs = {}
     conf.sqlite_vec_vector_store_confs = {}
@@ -533,6 +533,7 @@ async def test_milvus_client_kwargs_forwarded():
     """uri, token, and db_name are forwarded to MilvusClient."""
     conf = _milvus_only_conf()
     conf.milvus_confs["milvus1"] = MilvusConf(
+        registry_database="registry",
         uri="https://example.zillizcloud.com",
         token=SecretStr("secret-token"),
         db_name="memory",
@@ -592,7 +593,11 @@ async def test_milvus_token_and_db_name_omitted_when_empty():
 async def test_milvus_creates_vector_store():
     """async_get_milvus_client creates a MilvusVectorStore and stores it."""
     conf = _milvus_only_conf()
-    conf.milvus_confs["milvus1"] = MilvusConf(consistency_level="Strong")
+    conf.milvus_confs["milvus1"] = MilvusConf(
+        registry_database="registry",
+        consistency_level="Strong",
+        tombstone_retention_seconds=3600,
+    )
 
     mock_client = MagicMock()
     mock_client.close = MagicMock()
@@ -612,6 +617,9 @@ async def test_milvus_creates_vector_store():
 
     mock_params_cls.assert_called_once_with(
         client=mock_client,
+        backend="milvus1",
+        registry_engine=builder.sql_engines["registry"],
+        tombstone_retention_seconds=3600,
         consistency_level="Strong",
     )
     mock_store_cls.assert_called_once_with(mock_params_cls.return_value)

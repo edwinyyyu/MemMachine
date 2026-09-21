@@ -8,6 +8,11 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from server_tests.memmachine_server.common.vector_store.collection_lifecycle_contract import (
+    CollectionLifecycleContract,
+)
 
 pytest.importorskip("milvus_lite")
 pymilvus = pytest.importorskip("pymilvus")
@@ -38,6 +43,8 @@ from memmachine_server.common.vector_store.milvus_vector_store import (
 NAMESPACE = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
+BACKEND = "milvus_test"
+TOMBSTONE_RETENTION_SECONDS = 86400
 
 
 def _normalize(vector: list[float]) -> list[float]:
@@ -61,13 +68,23 @@ def _make_record(
 @pytest_asyncio.fixture
 async def store(tmp_path):
     client = MilvusClient(uri=str(tmp_path / "test_milvus.db"))
+    registry_engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}"
+    )
     vector_store = MilvusVectorStore(
-        MilvusVectorStoreParams(client=client, consistency_level="Session")
+        MilvusVectorStoreParams(
+            client=client,
+            backend=BACKEND,
+            registry_engine=registry_engine,
+            tombstone_retention_seconds=TOMBSTONE_RETENTION_SECONDS,
+            consistency_level="Session",
+        )
     )
     await vector_store.startup()
     yield vector_store
     await vector_store.shutdown()
     client.close()
+    await registry_engine.dispose()
 
 
 @pytest_asyncio.fixture
@@ -104,31 +121,6 @@ class TestCollectionLifecycle:
         coll = await store.open_collection(namespace=NAMESPACE, name="lifecycle")
         assert isinstance(coll, MilvusVectorStoreCollection)
         await store.delete_collection(namespace=NAMESPACE, name="lifecycle")
-
-    @pytest.mark.asyncio
-    async def test_registry_lookup_requests_primary_key(self, store, monkeypatch):
-        await store.create_collection(
-            namespace=NAMESPACE,
-            name="registry_fields",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-
-        captured_output_fields = None
-        original_get = MilvusClient.get
-
-        def tracked_get(self, *args, **kwargs):
-            nonlocal captured_output_fields
-            captured_output_fields = kwargs.get("output_fields")
-            return original_get(self, *args, **kwargs)
-
-        monkeypatch.setattr(MilvusClient, "get", tracked_get)
-        coll = await store.open_collection(namespace=NAMESPACE, name="registry_fields")
-
-        assert coll is not None
-        assert captured_output_fields is not None
-        assert "id" in captured_output_fields
-        assert "config" in captured_output_fields
-        await store.delete_collection(namespace=NAMESPACE, name="registry_fields")
 
     @pytest.mark.asyncio
     async def test_duplicate_name_raises(self, store, collection):
@@ -173,7 +165,7 @@ class TestCollectionLifecycle:
         coll_b = await store.open_collection(namespace=NAMESPACE, name="coll_b")
         assert coll_a is not None
         assert coll_b is not None
-        assert coll_a._collection_name == coll_b._collection_name
+        assert coll_a._native_collection_name == coll_b._native_collection_name
 
         await store.delete_collection(namespace=NAMESPACE, name="coll_a")
         await store.delete_collection(namespace=NAMESPACE, name="coll_b")
@@ -188,7 +180,7 @@ class TestCollectionLifecycle:
         coll = await store.open_collection(namespace=NAMESPACE, name="schema")
         assert coll is not None
 
-        schema = store._client.describe_collection(coll._collection_name)
+        schema = store._client.describe_collection(coll._native_collection_name)
         fields = {field["name"]: field for field in schema["fields"]}
 
         assert schema["auto_id"] is False
@@ -236,7 +228,7 @@ class TestUpsertAndQuery:
         await collection.upsert(records=[record])
 
         assert captured_kwargs is not None
-        assert captured_kwargs["collection_name"] == collection._collection_name
+        assert captured_kwargs["collection_name"] == collection._native_collection_name
         assert captured_kwargs["data"] == [collection._build_entity(record)]
 
     @pytest.mark.asyncio
@@ -555,3 +547,18 @@ class TestPartitionIsolation:
 
         await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
+
+
+class TestLifecycleContract(CollectionLifecycleContract):
+    """The collection lifecycle contract, against this store."""
+
+    @staticmethod
+    async def count_stored(store, namespace: str, config) -> int:
+        native = MilvusVectorStore._build_native_collection_name(namespace, config)
+        rows = store._client.query(
+            collection_name=native,
+            filter='id != ""',
+            output_fields=["id"],
+            limit=16384,
+        )
+        return len(list(rows))

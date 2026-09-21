@@ -340,6 +340,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
               # token: $MILVUS_TOKEN
               # db_name: default
               consistency_level: Session
+              registry_database: profile_storage
       ```
     </Tab>
     <Tab title="With Comments">
@@ -371,6 +372,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
               # token: $MILVUS_TOKEN # Required for Zilliz Cloud or auth-enabled Milvus
               # db_name: default # Optional Milvus database name
               consistency_level: Session # Strong, Session, Bounded, or Eventually
+              registry_database: profile_storage # Relational database holding the collection registry
       ```
     </Tab>
     </Tabs>
