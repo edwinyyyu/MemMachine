@@ -1,4 +1,4 @@
-"""The SQL collection registry: creation arbitrated by the database, deletion queued, purge claimed."""
+"""The SQLAlchemy collection registry: creation arbitrated by the database, deletion queued, purge claimed."""
 
 import asyncio
 from datetime import timedelta
@@ -8,13 +8,13 @@ import pytest
 from sqlalchemy import DateTime, func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
+    SQLAlchemyCollectionRegistry,
+)
 from memmachine_server.common.vector_store.data_types import (
     VectorStoreAttemptsExhaustedError,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
-)
-from memmachine_server.common.vector_store.sql_collection_registry import (
-    SqlCollectionRegistry,
 )
 
 CONFIG = VectorStoreCollectionConfig(
@@ -32,18 +32,18 @@ def backend() -> str:
     return f"b_{uuid4().hex}"
 
 
-async def _registry(engine: AsyncEngine, backend: str) -> SqlCollectionRegistry:
-    registry = SqlCollectionRegistry(
+async def _registry(engine: AsyncEngine, backend: str) -> SQLAlchemyCollectionRegistry:
+    registry = SQLAlchemyCollectionRegistry(
         engine=engine,
         table_prefix=PREFIX,
         backend=backend,
         tombstone_retention=RETENTION,
     )
-    await registry.provision()
+    await registry.startup()
     return registry
 
 
-async def _queued(registry: SqlCollectionRegistry) -> list[UUID]:
+async def _queued(registry: SQLAlchemyCollectionRegistry) -> list[UUID]:
     """The registry's backend's tombstones, oldest first."""
     async with registry._engine.connect() as connection:
         rows = await connection.execute(
@@ -54,7 +54,7 @@ async def _queued(registry: SqlCollectionRegistry) -> list[UUID]:
         return list(rows.scalars())
 
 
-async def _clean_rounds(registry: SqlCollectionRegistry) -> dict[UUID, bool]:
+async def _clean_rounds(registry: SQLAlchemyCollectionRegistry) -> dict[UUID, bool]:
     """Each tombstone of the registry's backend, and whether a round has found it clean."""
     async with registry._engine.connect() as connection:
         rows = await connection.execute(
@@ -65,7 +65,9 @@ async def _clean_rounds(registry: SqlCollectionRegistry) -> dict[UUID, bool]:
         return {row.incarnation: row.clean_at is not None for row in rows}
 
 
-async def _age_clean_round(registry: SqlCollectionRegistry, incarnation: UUID) -> None:
+async def _age_clean_round(
+    registry: SQLAlchemyCollectionRegistry, incarnation: UUID
+) -> None:
     """Move the tombstone's clean round back past the retention, on the database clock."""
     async with registry._engine.begin() as connection:
         database_now = (
@@ -78,7 +80,7 @@ async def _age_clean_round(registry: SqlCollectionRegistry, incarnation: UUID) -
         )
 
 
-async def _round(registry: SqlCollectionRegistry, found: bool) -> UUID | None:
+async def _round(registry: SQLAlchemyCollectionRegistry, found: bool) -> UUID | None:
     """One purge round on the oldest due tombstone, reporting `found`; its incarnation, or None."""
     async with registry.claim_oldest() as claim:
         if claim is None:
@@ -309,7 +311,7 @@ async def test_an_incarnation_awaiting_purge_is_never_reminted(
     await registry.delete(NAMESPACE, "a")
     minted = iter([dead, uuid4()])
     monkeypatch.setattr(
-        "memmachine_server.common.vector_store.sql_collection_registry.uuid4",
+        "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.uuid4",
         lambda: next(minted),
     )
 
@@ -327,7 +329,7 @@ async def test_creation_that_never_mints_a_free_incarnation_gives_up(
     dead = await registry.create(NAMESPACE, "a", CONFIG)
     await registry.delete(NAMESPACE, "a")
     monkeypatch.setattr(
-        "memmachine_server.common.vector_store.sql_collection_registry.uuid4",
+        "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.uuid4",
         lambda: dead,
     )
 

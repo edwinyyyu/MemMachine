@@ -21,6 +21,9 @@ from memmachine_server.common.filter.filter_parser import (
     Or,
 )
 from memmachine_server.common.metrics_factory import MetricsFactory
+from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
+    SQLAlchemyCollectionRegistry,
+)
 from memmachine_server.common.vector_store.data_types import (
     Record,
     VectorStoreCollectionAlreadyExistsError,
@@ -41,7 +44,8 @@ NAMESPACE = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
 BACKEND = "qdrant_test"
-TOMBSTONE_RETENTION_SECONDS = 86400
+REGISTRY_TABLE_PREFIX = "vector_store_qdrant"
+TOMBSTONE_RETENTION = timedelta(days=1)
 
 
 @pytest.fixture
@@ -69,11 +73,15 @@ async def registry_engine(tmp_path):
 
 
 def _params(client, registry_engine, **overrides) -> QdrantVectorStoreParams:
+    """Parameters for one store: its own registry over the shared registry database."""
     return QdrantVectorStoreParams(
         client=client,
-        backend=BACKEND,
-        registry_engine=registry_engine,
-        tombstone_retention_seconds=TOMBSTONE_RETENTION_SECONDS,
+        registry=SQLAlchemyCollectionRegistry(
+            engine=registry_engine,
+            table_prefix=REGISTRY_TABLE_PREFIX,
+            backend=BACKEND,
+            tombstone_retention=TOMBSTONE_RETENTION,
+        ),
         **overrides,
     )
 

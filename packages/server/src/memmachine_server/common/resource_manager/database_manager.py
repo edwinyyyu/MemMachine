@@ -4,6 +4,7 @@ import asyncio
 import logging
 from asyncio import Lock
 from collections.abc import Callable
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Self
 
 from neo4j import AsyncDriver, AsyncGraphDatabase
@@ -33,6 +34,9 @@ from memmachine_server.common.vector_graph_store.neo4j_vector_graph_store import
     Neo4jVectorGraphStoreParams,
 )
 from memmachine_server.common.vector_store import VectorStore
+from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
+    SQLAlchemyCollectionRegistry,
+)
 from memmachine_server.common.vector_store.vector_search_engine import (
     VectorSearchEngine,
 )
@@ -631,9 +635,14 @@ class DatabaseManager:
 
             params = QdrantVectorStoreParams(
                 client=client,
-                backend=name,
-                registry_engine=await self.async_get_sql_engine(conf.registry_database),
-                tombstone_retention_seconds=conf.tombstone_retention_seconds,
+                registry=SQLAlchemyCollectionRegistry(
+                    engine=await self.async_get_sql_engine(conf.registry_database),
+                    table_prefix="vector_store_qdrant",
+                    backend=name,
+                    tombstone_retention=timedelta(
+                        seconds=conf.tombstone_retention_seconds
+                    ),
+                ),
                 metrics_factory=conf.get_metrics_factory(),
             )
             try:
@@ -712,9 +721,14 @@ class DatabaseManager:
 
             params = MilvusVectorStoreParams(
                 client=client,
-                backend=name,
-                registry_engine=await self.async_get_sql_engine(conf.registry_database),
-                tombstone_retention_seconds=conf.tombstone_retention_seconds,
+                registry=SQLAlchemyCollectionRegistry(
+                    engine=await self.async_get_sql_engine(conf.registry_database),
+                    table_prefix="vector_store_milvus",
+                    backend=name,
+                    tombstone_retention=timedelta(
+                        seconds=conf.tombstone_retention_seconds
+                    ),
+                ),
                 consistency_level=conf.consistency_level,
             )
             try:
