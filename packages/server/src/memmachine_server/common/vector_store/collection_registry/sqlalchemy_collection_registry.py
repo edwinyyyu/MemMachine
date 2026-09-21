@@ -148,6 +148,13 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
         incarnation: UUID,
         config: VectorStoreCollectionConfig,
     ) -> None:
+        # The queue check runs after the insert so that a concurrent
+        # deletion moving a colliding row to the queue, which our insert
+        # waited on, is already visible; after the check, no new queue
+        # entry for this incarnation can appear before we commit, because
+        # the only registry row carrying it is ours, uncommitted. The
+        # locking read sees latest-committed state even on dialects whose
+        # plain reads serve transaction-start snapshots.
         try:
             async with self._engine.begin() as connection:
                 await connection.execute(
@@ -161,9 +168,9 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
                 )
                 queued = (
                     await connection.execute(
-                        select(self._purge_queue.c.incarnation).where(
-                            self._purge_queue.c.incarnation == incarnation
-                        )
+                        select(self._purge_queue.c.incarnation)
+                        .where(self._purge_queue.c.incarnation == incarnation)
+                        .with_for_update(read=True)
                     )
                 ).scalar_one_or_none()
                 if queued is not None:
@@ -228,9 +235,12 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
     async def delete(self, namespace: str, name: str) -> None:
         # One transaction: the collection is unreachable as soon as it
         # commits, and the queue row is the incarnation's tombstone. The
-        # DELETE goes first: it takes the row's write lock, so racing
+        # segment store pins the row before its queue insert with the
+        # fence its writes use; the registry has no such fence to reuse,
+        # so the DELETE goes first: it takes the row's write lock, racing
         # deleters serialize on it and the loser deletes nothing, on
-        # PostgreSQL and on SQLite alike.
+        # PostgreSQL and on SQLite alike, and RETURNING resolves the
+        # incarnation in the same round trip.
         async with self._engine.begin() as connection:
             row = (
                 await connection.execute(

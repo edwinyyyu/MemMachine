@@ -1,6 +1,5 @@
 """Qdrant-based vector store implementation."""
 
-import contextlib
 import hashlib
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import datetime
@@ -47,6 +46,7 @@ from .data_types import (
     QueryMatch,
     QueryResult,
     Record,
+    VectorStoreAttemptsExhaustedError,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
@@ -60,6 +60,11 @@ from .vector_store import VectorStore, VectorStoreCollection
 # Qdrant but forbidden by _IDENTIFIER_RE, so system keys can never collide with user keys.
 _SYSTEM_KEY_PREFIX = "sys-"
 _PAYLOAD_INCARNATION = f"{_SYSTEM_KEY_PREFIX}incarnation"
+
+# Consecutive lost creation races before open-or-create gives up: every
+# retry requires another process to have created and then deleted the
+# collection in between, so this depth means something else is wrong.
+_MAX_OPEN_OR_CREATE_ATTEMPTS = 10
 """The payload key naming the collection incarnation a point belongs to.
 
 Points carry the incarnation, never the collection's name: a collection
@@ -750,23 +755,35 @@ class QdrantVectorStore(VectorStore):
         """Open the collection if it exists, or create and return it."""
         QdrantVectorStore._require_identifiers(namespace, name)
         async with self._tracker("open_or_create_collection"):
-            registered = await self._registry.get(namespace, name)
-            if registered is None:
-                await self._create_native_collection(namespace, config)
-                # A racing creator may win the insert; its row is then the
-                # one to open.
-                with contextlib.suppress(VectorStoreCollectionAlreadyExistsError):
-                    await self._registry.create(namespace, name, config)
+            attempts = 0
+            # Read-then-create, retried: losing the create means a racing
+            # creator won (open its row), and finding no row after losing
+            # means a racing deleter removed the winner (create again).
+            while True:
                 registered = await self._registry.get(namespace, name)
-                if registered is None:
-                    # Created and deleted again meanwhile: report it as absent
-                    # rather than creating a collection the deleter removed.
-                    raise VectorStoreCollectionHandleStaleError(namespace, name)
-            if registered.config != config:
-                raise VectorStoreCollectionConfigMismatchError(
-                    namespace, name, registered.config, config
+                if registered is not None:
+                    if registered.config != config:
+                        raise VectorStoreCollectionConfigMismatchError(
+                            namespace, name, registered.config, config
+                        )
+                    return self._build_collection_handle(namespace, name, registered)
+                await self._create_native_collection(namespace, config)
+                try:
+                    incarnation = await self._registry.create(namespace, name, config)
+                except VectorStoreCollectionAlreadyExistsError as err:
+                    attempts += 1
+                    if attempts >= _MAX_OPEN_OR_CREATE_ATTEMPTS:
+                        raise VectorStoreAttemptsExhaustedError(
+                            f"Opening or creating collection ({namespace!r}, "
+                            f"{name!r}) made no progress after "
+                            f"{_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts"
+                        ) from err
+                    continue
+                return self._build_collection_handle(
+                    namespace,
+                    name,
+                    RegisteredCollection(incarnation=incarnation, config=config),
                 )
-            return self._build_collection_handle(namespace, name, registered)
 
     @override
     async def open_collection(
