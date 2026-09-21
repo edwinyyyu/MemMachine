@@ -505,6 +505,7 @@ class ConfigurationWizard:
                 databases.milvus_confs = {
                     self.MILVUS_VECTOR_STORE_ID: MilvusConf(
                         uri="memmachine_milvus.db",
+                        registry_database=self.SQLITE_DB_ID,
                     )
                 }
             case self.SQLITE_VECTOR_STORE_ID:

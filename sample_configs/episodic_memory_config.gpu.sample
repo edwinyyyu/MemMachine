@@ -128,6 +128,7 @@ resources:
     #     # token: $MILVUS_TOKEN
     #     # db_name: default
     #     consistency_level: Session       # Strong, Session, Bounded, Eventually
+    #     registry_database: sqlite_test
     # semantic_vector_store:
     #   provider: milvus
     #   config:
@@ -135,6 +136,7 @@ resources:
     #     # token: $MILVUS_TOKEN
     #     # db_name: default
     #     consistency_level: Session
+    #     registry_database: sqlite_test
     #
     # Alternative: a local file-backed SQLite vector store. Single-writer; OK
     # for embedded/dev use, not recommended for multi-process server deploys.

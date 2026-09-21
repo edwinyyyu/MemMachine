@@ -712,6 +712,9 @@ class DatabaseManager:
 
             params = MilvusVectorStoreParams(
                 client=client,
+                backend=name,
+                registry_engine=await self.async_get_sql_engine(conf.registry_database),
+                tombstone_retention_seconds=conf.tombstone_retention_seconds,
                 consistency_level=conf.consistency_level,
             )
             try:

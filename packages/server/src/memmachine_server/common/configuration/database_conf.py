@@ -301,6 +301,25 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
             "Supported values: Strong, Session, Bounded, Eventually."
         ),
     )
+    registry_database: str = Field(
+        ...,
+        description=(
+            "The relational database (a name under resources.databases) that "
+            "holds this backend's collection registry. Required: Milvus cannot "
+            "arbitrate collection creation or deletion across server processes; "
+            "the registry lives where a primary key and a transaction can."
+        ),
+    )
+    tombstone_retention_seconds: int = Field(
+        default=86400,
+        gt=0,
+        description=(
+            "Seconds a deleted collection's registry entry outlives the first purge "
+            "round that finds nothing under it, so a write to Milvus that landed "
+            "after that round is still reclaimed; keep it orders of magnitude "
+            "above the longest a request to Milvus can be in flight."
+        ),
+    )
 
     @field_validator("uri", mode="before")
     @classmethod
