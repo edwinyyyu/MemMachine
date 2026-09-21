@@ -120,7 +120,7 @@ def db_conf_dict() -> dict:
                     "grpc_port": 6334,
                     "prefer_grpc": True,
                     "api_key": "test-key",
-                    "registry_database": "local_sqlite",
+                    "collection_registry": "local_sqlite",
                 },
             },
             "my_milvus": {
@@ -130,7 +130,7 @@ def db_conf_dict() -> dict:
                     "token": "test-token",
                     "db_name": "memory",
                     "consistency_level": "Strong",
-                    "registry_database": "main_postgres",
+                    "collection_registry": "main_postgres",
                 },
             },
             "my_sqlite_vs": {
@@ -204,7 +204,7 @@ def test_parse_valid_storage_dict(db_conf_dict):
     assert qdrant_conf.grpc_port == 6334
     assert qdrant_conf.prefer_grpc is True
     assert qdrant_conf.api_key == SecretStr("test-key")
-    assert qdrant_conf.registry_database == "local_sqlite"
+    assert qdrant_conf.collection_registry == "local_sqlite"
 
     # Milvus check
     milvus_conf = storage_conf.milvus_confs["my_milvus"]
@@ -213,7 +213,7 @@ def test_parse_valid_storage_dict(db_conf_dict):
     assert milvus_conf.token == SecretStr("test-token")
     assert milvus_conf.db_name == "memory"
     assert milvus_conf.consistency_level == "Strong"
-    assert milvus_conf.registry_database == "main_postgres"
+    assert milvus_conf.collection_registry == "main_postgres"
 
     # SQLiteVectorStore (hnswlib engine)
     sqlite_vs_conf = storage_conf.sqlite_vector_store_confs["my_sqlite_vs"]
@@ -281,7 +281,7 @@ def test_serialize_deserialize_database_conf(db_conf_dict):
 
 
 def test_milvus_conf_defaults():
-    conf = MilvusConf(registry_database="db")
+    conf = MilvusConf(collection_registry="db")
     assert conf.uri == "./milvus.db"
     assert conf.token == SecretStr("")
     assert conf.db_name == ""
@@ -289,8 +289,8 @@ def test_milvus_conf_defaults():
     assert conf.tombstone_retention_seconds == 86400
 
 
-def test_milvus_conf_requires_a_registry_database():
-    with pytest.raises(ValueError, match="registry_database"):
+def test_milvus_conf_requires_a_collection_registry():
+    with pytest.raises(ValueError, match="collection_registry"):
         MilvusConf.model_validate({})
 
 
@@ -299,7 +299,7 @@ def test_milvus_conf_reads_env(monkeypatch):
     monkeypatch.setenv("MILVUS_TOKEN", "env-token")
     monkeypatch.setenv("MILVUS_DB_NAME", "memory")
     conf = MilvusConf(
-        registry_database="db",
+        collection_registry="db",
         uri="$MILVUS_URI",
         token=SecretStr("${MILVUS_TOKEN}"),
         db_name="$MILVUS_DB_NAME",
@@ -311,9 +311,9 @@ def test_milvus_conf_reads_env(monkeypatch):
 
 def test_milvus_conf_rejects_invalid_values():
     with pytest.raises(ValueError, match="non-empty 'uri'"):
-        MilvusConf(registry_database="db", uri="")
+        MilvusConf(collection_registry="db", uri="")
     with pytest.raises(ValueError, match="consistency_level"):
-        MilvusConf(registry_database="db", consistency_level="Linearizable")
+        MilvusConf(collection_registry="db", consistency_level="Linearizable")
 
 
 def test_neo4j_pool_lifecycle_fields():
@@ -365,33 +365,33 @@ def test_neo4j_uri_with_special_host():
 
 
 def test_qdrant_conf_defaults():
-    conf = QdrantConf(registry_database="db")
+    conf = QdrantConf(collection_registry="db")
     assert conf.host == "localhost"
     assert conf.port == 6333
     assert conf.grpc_port == 6334
     assert conf.prefer_grpc is False
     assert conf.https is False
-    assert conf.registry_database == "db"
+    assert conf.collection_registry == "db"
     assert conf.tombstone_retention_seconds == 86400
     assert conf.api_key.get_secret_value() == ""
 
 
-def test_qdrant_conf_requires_a_registry_database():
-    with pytest.raises(ValueError, match="registry_database"):
+def test_qdrant_conf_requires_a_collection_registry():
+    with pytest.raises(ValueError, match="collection_registry"):
         QdrantConf.model_validate({})
 
 
 def test_qdrant_conf_rejects_a_retention_that_is_not_a_positive_whole_second():
     with pytest.raises(ValueError, match="tombstone_retention_seconds"):
-        QdrantConf(registry_database="db", tombstone_retention_seconds=0)
+        QdrantConf(collection_registry="db", tombstone_retention_seconds=0)
     with pytest.raises(ValueError, match="tombstone_retention_seconds"):
-        QdrantConf(registry_database="db", tombstone_retention_seconds=1.5)
+        QdrantConf(collection_registry="db", tombstone_retention_seconds=1.5)
 
 
 def test_qdrant_conf_api_key_from_env(monkeypatch):
     monkeypatch.setenv("QDRANT_API_KEY", "env-qdrant-key")
     conf = QdrantConf(
-        registry_database="db",
+        collection_registry="db",
         api_key=SecretStr("$QDRANT_API_KEY"),
     )
     assert conf.api_key == SecretStr("env-qdrant-key")
@@ -399,12 +399,12 @@ def test_qdrant_conf_api_key_from_env(monkeypatch):
 
 def test_qdrant_build_config():
     config = SupportedDB.QDRANT.build_config(
-        {"host": "qdrant.local", "port": 9333, "registry_database": "db"}
+        {"host": "qdrant.local", "port": 9333, "collection_registry": "db"}
     )
     assert isinstance(config, QdrantConf)
     assert config.host == "qdrant.local"
     assert config.port == 9333
-    assert config.registry_database == "db"
+    assert config.collection_registry == "db"
 
 
 def test_sqlite_vector_store_conf_defaults():

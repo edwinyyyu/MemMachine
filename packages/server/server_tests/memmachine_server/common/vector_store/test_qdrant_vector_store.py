@@ -76,7 +76,7 @@ def _params(client, registry_engine, **overrides) -> QdrantVectorStoreParams:
     """Parameters for one store: its own registry over the shared registry database."""
     return QdrantVectorStoreParams(
         client=client,
-        registry=SQLAlchemyCollectionRegistry(
+        collection_registry=SQLAlchemyCollectionRegistry(
             engine=registry_engine,
             table_prefix=REGISTRY_TABLE_PREFIX,
             backend=BACKEND,

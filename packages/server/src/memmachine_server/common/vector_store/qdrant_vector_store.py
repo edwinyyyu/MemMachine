@@ -530,7 +530,7 @@ class QdrantVectorStoreParams(BaseModel):
     Attributes:
         client (AsyncQdrantClient):
             Async Qdrant client instance.
-        registry (CollectionRegistry):
+        collection_registry (CollectionRegistry):
             The collection registry of this store's backend: which
             collections exist, under which incarnation and configuration,
             and which dead incarnations await purge. Qdrant arbitrates none
@@ -547,7 +547,7 @@ class QdrantVectorStoreParams(BaseModel):
         ...,
         description="Async Qdrant client instance",
     )
-    registry: InstanceOf[CollectionRegistry] = Field(
+    collection_registry: InstanceOf[CollectionRegistry] = Field(
         ...,
         description="The collection registry of this store's backend",
     )
@@ -623,7 +623,7 @@ class QdrantVectorStore(VectorStore):
         super().__init__()
         self._client: AsyncQdrantClient = params.client
 
-        self._registry = params.registry
+        self._collection_registry = params.collection_registry
 
         self._hnsw_m = 16
 
@@ -635,7 +635,7 @@ class QdrantVectorStore(VectorStore):
     @override
     async def startup(self) -> None:
         """Ready the registry; the client's lifecycle is managed externally."""
-        await self._registry.startup()
+        await self._collection_registry.startup()
 
     @override
     async def shutdown(self) -> None:
@@ -655,7 +655,7 @@ class QdrantVectorStore(VectorStore):
             incarnation=registered.incarnation,
             config=registered.config,
             tracker=self._tracker,
-            is_live=self._registry.is_live,
+            is_live=self._collection_registry.is_live,
         )
 
     async def _create_native_collection(
@@ -742,7 +742,7 @@ class QdrantVectorStore(VectorStore):
             # arbiter: a racing creator on any process loses here, never in
             # Qdrant.
             await self._create_native_collection(namespace, config)
-            await self._registry.create(namespace, name, config)
+            await self._collection_registry.create(namespace, name, config)
 
     @override
     async def open_or_create_collection(
@@ -760,7 +760,7 @@ class QdrantVectorStore(VectorStore):
             # creator won (open its row), and finding no row after losing
             # means a racing deleter removed the winner (create again).
             while True:
-                registered = await self._registry.get(namespace, name)
+                registered = await self._collection_registry.get(namespace, name)
                 if registered is not None:
                     if registered.config != config:
                         raise VectorStoreCollectionConfigMismatchError(
@@ -769,7 +769,9 @@ class QdrantVectorStore(VectorStore):
                     return self._build_collection_handle(namespace, name, registered)
                 await self._create_native_collection(namespace, config)
                 try:
-                    incarnation = await self._registry.create(namespace, name, config)
+                    incarnation = await self._collection_registry.create(
+                        namespace, name, config
+                    )
                 except VectorStoreCollectionAlreadyExistsError as err:
                     attempts += 1
                     if attempts >= _MAX_OPEN_OR_CREATE_ATTEMPTS:
@@ -791,7 +793,7 @@ class QdrantVectorStore(VectorStore):
     ) -> QdrantVectorStoreCollection | None:
         """Get a collection handle from the vector store."""
         QdrantVectorStore._require_identifiers(namespace, name)
-        registered = await self._registry.get(namespace, name)
+        registered = await self._collection_registry.get(namespace, name)
         if registered is None:
             return None
         return self._build_collection_handle(namespace, name, registered)
@@ -807,7 +809,7 @@ class QdrantVectorStore(VectorStore):
         async with self._tracker("delete_collection"):
             # One registry transaction: the collection is unreachable when
             # it commits, and its points wait on the queue for the purge.
-            await self._registry.delete(namespace, name)
+            await self._collection_registry.delete(namespace, name)
 
     @override
     async def purge_deleted_collections(self) -> bool:
@@ -818,7 +820,7 @@ class QdrantVectorStore(VectorStore):
         # tombstone by what the round found.
         async with (
             self._tracker("purge_deleted_collections"),
-            self._registry.claim_oldest() as claim,
+            self._collection_registry.claim_oldest() as claim,
         ):
             if claim is None:
                 return False
