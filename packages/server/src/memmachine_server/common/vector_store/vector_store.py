@@ -158,9 +158,7 @@ class VectorStore(ABC):
     pair and inside the store by an incarnation minted per life of the
     pair, so nothing written under one life of a name is ever seen by, or
     reclaimed out from under, another. Which processes may share a store's
-    collections is the store's own contract: QdrantVectorStore and
-    MilvusVectorStore serve any process sharing the backend and the
-    registry database; the SQLite stores state their own bound.
+    collections is the store's own contract, stated on the store.
 
     Different namespaces are fully independent (separate native collections).
     Multiple logical collections with the same (namespace, vector dimensions, similarity metric, indexed properties schema)
