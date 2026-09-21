@@ -3,12 +3,14 @@
 import asyncio
 import logging
 from asyncio import Lock
+from collections.abc import Mapping
 
 from neo4j import AsyncDriver
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from memmachine_server.common.configuration import Configuration
 from memmachine_server.common.configuration.mixin_confs import MetricsFactoryIdMixin
+from memmachine_server.common.data_types import PropertyType, SimilarityMetric
 from memmachine_server.common.embedder import Embedder
 from memmachine_server.common.episode_store import (
     CountCachingEpisodeStorage,
@@ -145,8 +147,8 @@ class ResourceManagerImpl:
         self._semantic_manager: SemanticResourceManager | None = None
         self._segment_stores: dict[str, SegmentStore] = {}
         self._segment_store_purge_tasks: list[asyncio.Task[None]] = []
-        # One sweeper per vector store, keyed by the store's configured name.
-        self._vector_store_purge_tasks: dict[str, asyncio.Task[None]] = {}
+        # One sweeper per vector store, keyed by its backend and its name.
+        self._vector_store_purge_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
 
         self._session_data_manager_lock = Lock()
         self._episodic_memory_manager_lock = Lock()
@@ -206,17 +208,32 @@ class ResourceManagerImpl:
         """Return a vector graph store by name."""
         return await self._database_manager.get_vector_graph_store(name)
 
-    async def get_vector_store(self, name: str) -> VectorStore:
-        """Return a vector store by name.
+    async def get_vector_store(
+        self,
+        backend: str,
+        *,
+        vector_store_name: str,
+        vector_dimensions: int,
+        similarity_metric: SimilarityMetric,
+        indexed_properties: Mapping[str, PropertyType],
+    ) -> VectorStore:
+        """Return the store of one name on a configured backend.
 
         The first time a store is handed out, its sweeper is started: the
         store never schedules its own purge.
         """
-        store = await self._database_manager.get_vector_store(name)
-        if name not in self._vector_store_purge_tasks:
-            self._vector_store_purge_tasks[name] = asyncio.create_task(
+        store = await self._database_manager.get_vector_store(
+            backend,
+            vector_store_name=vector_store_name,
+            vector_dimensions=vector_dimensions,
+            similarity_metric=similarity_metric,
+            indexed_properties=indexed_properties,
+        )
+        key = (backend, vector_store_name)
+        if key not in self._vector_store_purge_tasks:
+            self._vector_store_purge_tasks[key] = asyncio.create_task(
                 _purge_deleted_vector_store_partitions_forever(
-                    store, f"Vector store {name}"
+                    store, f"Vector store {backend}/{vector_store_name}"
                 )
             )
         return store

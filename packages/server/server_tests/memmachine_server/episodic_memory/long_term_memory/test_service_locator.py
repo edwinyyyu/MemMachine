@@ -14,7 +14,6 @@ from memmachine_server.common.resource_manager import CommonResourceManager
 from memmachine_server.common.vector_store import (
     VectorStore,
     VectorStorePartition,
-    VectorStorePartitionAlreadyExistsError,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store import (
     SegmentStore,
@@ -25,8 +24,9 @@ from memmachine_server.episodic_memory.event_memory.segment_store.utils import (
     validate_partition_key,
 )
 from memmachine_server.episodic_memory.long_term_memory.service_locator import (
-    _EVENT_BACKEND_NAMESPACE,
     _event_params,
+    event_backend_indexed_properties,
+    event_backend_vector_store_name,
     partition_key_for_session,
 )
 
@@ -95,24 +95,31 @@ def test_partition_key_empty_string_passthrough():
     assert len(key) == PARTITION_KEY_MAX_BYTES
 
 
-@pytest.mark.asyncio
-async def test_event_params_opens_the_collection_a_racing_creator_won():
-    """Two workers can create a session's collection at once; the loser opens the winner's.
+def test_event_backend_vector_store_name_is_the_embedders():
+    """One vector store per embedder, named so a backend can hold several side by side."""
+    assert (
+        event_backend_vector_store_name("openai_small")
+        == "long_term_memory__openai_small"
+    )
+    with pytest.raises(ValueError, match="Rename the embedder"):
+        event_backend_vector_store_name("Open-AI")
 
-    The vector store's registry arbitrates creation across processes, so the
-    strict create this locator issues when the collection is absent can lose
-    to another worker's; the locator then opens the collection that exists
-    instead of failing the request.
+
+@pytest.mark.asyncio
+async def test_event_params_opens_the_session_partition_of_the_embedders_collection():
+    """The store is the embedder's collection, and the session's partition is opened in it.
+
+    Opening creates the partition when it is absent; the vector store's
+    registry arbitrates creation across processes, so a worker that loses
+    the race to another opens the winner's partition instead of failing
+    the request.
     """
     config = EventLongTermMemoryConf(
         session_id="raced", vector_store="vs", segment_store="ss", embedder="e"
     )
-    collection = create_autospec(VectorStorePartition, instance=True)
+    partition = create_autospec(VectorStorePartition, instance=True)
     vector_store = create_autospec(VectorStore, instance=True)
-    vector_store.get_partition.side_effect = [None, collection]
-    vector_store.create_partition.side_effect = VectorStorePartitionAlreadyExistsError(
-        _EVENT_BACKEND_NAMESPACE, "raced"
-    )
+    vector_store.open_or_create_partition.return_value = partition
     embedder = create_autospec(Embedder, instance=True)
     embedder.dimensions = 3
     embedder.similarity_metric = SimilarityMetric.COSINE
@@ -132,6 +139,12 @@ async def test_event_params_opens_the_collection_a_racing_creator_won():
 
     params = await _event_params(config, resource_manager)
 
-    assert params.vector_store_partition is collection
-    vector_store.create_partition.assert_awaited_once()
-    assert vector_store.get_partition.await_count == 2
+    assert params.vector_store_partition is partition
+    vector_store.open_or_create_partition.assert_awaited_once_with("raced")
+    resource_manager.get_vector_store.assert_awaited_once_with(
+        "vs",
+        vector_store_name="long_term_memory__e",
+        vector_dimensions=3,
+        similarity_metric=SimilarityMetric.COSINE,
+        indexed_properties=event_backend_indexed_properties(),
+    )

@@ -1,4 +1,4 @@
-"""Collection registry interface and implementations."""
+"""Partition registry interface and implementations."""
 
 from .partition_registry import (
     PurgeClaim,

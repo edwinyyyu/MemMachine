@@ -1,7 +1,6 @@
 """Milvus-based vector store implementation."""
 
 import asyncio
-import hashlib
 import json
 import math
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -9,11 +8,15 @@ from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, ClassVar, cast, override
 from uuid import UUID
 
-from pydantic import BaseModel, Field, InstanceOf
+from pydantic import BaseModel, Field, InstanceOf, field_validator
 from pymilvus import DataType, MilvusClient
 from pymilvus.exceptions import MilvusException
 
-from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_server.common.data_types import (
+    PropertyType,
+    PropertyValue,
+    SimilarityMetric,
+)
 from memmachine_server.common.filter.filter_parser import (
     And as FilterAnd,
 )
@@ -44,25 +47,28 @@ from memmachine_server.common.properties_json import (
 from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
 
 from .data_types import (
+    IndexedProperties,
+    PartitionSchema,
     QueryMatch,
     QueryResult,
     Record,
     VectorStoreAttemptsExhaustedError,
-    VectorStoreCollectionConfig,
-    VectorStoreCollectionConfigMismatchError,
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionHandleStaleError,
+    VectorStorePartitionSchemaMismatchError,
+    indexed_property_names,
+    validate_vector_store_name,
 )
 from .partition_registry import RegisteredPartition, VectorStorePartitionRegistry
-from .utils import require_identifiers, validate_filter
+from .utils import require_partition_key, validate_filter
 from .vector_store import VectorStore, VectorStorePartition
 
 _ID_FIELD = "id"
 _RECORD_UUID_FIELD = "record_uuid"
 _PARTITION_KEY_FIELD = "partition_key"
-"""The native partition-key field; holds the incarnation, never the collection's name.
+"""The native partition-key field; holds the incarnation, never the caller's key.
 
-A collection deleted and re-created under the same name gets a fresh
+A partition deleted and re-created under the same key gets a fresh
 incarnation, and its predecessor's entities are invisible to it while the
 purge reclaims them.
 """
@@ -120,7 +126,7 @@ _SEARCH_PARAMS: dict[str, Any] = {"ef": 64, "refine_k": 2}
 
 # Consecutive lost creation races before open-or-create gives up: every
 # retry requires another process to have created and then deleted the
-# collection in between, so this depth means something else is wrong.
+# partition in between, so this depth means something else is wrong.
 _MAX_OPEN_OR_CREATE_ATTEMPTS = 10
 
 # The most entities one purge round lists and deletes. A query's offset plus
@@ -235,12 +241,12 @@ def _milvus_filter(
 
 
 def _incarnation_filter(incarnation: UUID) -> str:
-    """A Milvus expression matching the entities of one collection incarnation."""
+    """A Milvus expression matching the entities of one partition incarnation."""
     return f"{_PARTITION_KEY_FIELD} == {_expr_string(incarnation.hex)}"
 
 
 class MilvusVectorStorePartition(VectorStorePartition):
-    """A logical collection backed by Milvus."""
+    """A partition backed by Milvus: one partition-key value inside the store's collection."""
 
     @staticmethod
     def _passes_threshold(
@@ -263,28 +269,30 @@ class MilvusVectorStorePartition(VectorStorePartition):
         self,
         *,
         client: MilvusClient,
-        native_collection_name: str,
-        namespace: str,
-        name: str,
+        collection_name: str,
+        partition_key: str,
         incarnation: UUID,
-        config: VectorStoreCollectionConfig,
+        vector_dimensions: int,
+        similarity_metric: SimilarityMetric,
+        indexed_properties: Mapping[str, PropertyType],
         tracker: OperationTracker,
         is_live: Callable[[UUID], Awaitable[bool]],
         request_timeout_seconds: int,
     ) -> None:
         """Initialize with a Milvus client and the incarnation the handle is bound to."""
         self._client = client
-        self._native_collection_name = native_collection_name
-        self._namespace = namespace
-        self._name = name
+        self._collection_name = collection_name
+        self._partition_key = partition_key
         self._incarnation = incarnation
-        self._config = config
+        self._vector_dimensions = vector_dimensions
+        self._similarity_metric = similarity_metric
+        self._indexed_properties = dict(indexed_properties)
         self._tracker = tracker
         self._is_live = is_live
         self._request_timeout_seconds = request_timeout_seconds
 
     async def _fence(self) -> None:
-        """Raise if this handle's incarnation is no longer the collection's.
+        """Raise if this handle's incarnation is no longer the partition's.
 
         Called before every operation, to refuse a handle known to be
         dead, and after a write, so a write completed under an incarnation
@@ -292,18 +300,30 @@ class MilvusVectorStorePartition(VectorStorePartition):
         no transactions, so a write can still land under a dead
         incarnation: between the two checks, or after a check that never
         ran; the tombstone's purge rounds reclaim it. A read is not checked
-        after: a collection deleted while a read is in flight keeps its
+        after: a partition deleted while a read is in flight keeps its
         entities until a purge round claims its tombstone, so the read returns
         what it saw, a snapshot from before the deletion, as a read that
         happened to run just before it would have.
         """
         if not await self._is_live(self._incarnation):
-            raise VectorStorePartitionHandleStaleError(self._namespace, self._name)
+            raise VectorStorePartitionHandleStaleError(
+                self._collection_name, self._partition_key
+            )
 
     @property
     @override
-    def config(self) -> VectorStoreCollectionConfig:
-        return self._config
+    def partition_key(self) -> str:
+        return self._partition_key
+
+    @property
+    @override
+    def similarity_metric(self) -> SimilarityMetric:
+        return self._similarity_metric
+
+    @property
+    @override
+    def indexed_properties(self) -> Mapping[str, PropertyType]:
+        return self._indexed_properties
 
     def _build_entity(self, record: Record) -> dict[str, Any]:
         """Build a Milvus entity from a vector store record."""
@@ -313,7 +333,7 @@ class MilvusVectorStorePartition(VectorStorePartition):
             )
 
         properties = record.properties if record.properties is not None else {}
-        declared = self._config.indexed_properties_schema
+        declared = self._indexed_properties
         entity: dict[str, Any] = {
             _ID_FIELD: self._primary_id(self._incarnation, record.uuid),
             _RECORD_UUID_FIELD: str(record.uuid),
@@ -363,7 +383,7 @@ class MilvusVectorStorePartition(VectorStorePartition):
             properties = decode_properties(
                 cast(Mapping | None, entity.get(_PROPERTIES_FIELD))
             )
-            for key, declared_type in self._config.indexed_properties_schema.items():
+            for key, declared_type in self._indexed_properties.items():
                 value = entity.get(f"{_DECLARED_FIELD_PREFIX}{key}")
                 if value is None:
                     continue
@@ -386,7 +406,7 @@ class MilvusVectorStorePartition(VectorStorePartition):
             fields.append(_VECTOR_FIELD)
         if return_properties:
             fields.append(_PROPERTIES_FIELD)
-            for key, declared_type in self._config.indexed_properties_schema.items():
+            for key, declared_type in self._indexed_properties.items():
                 fields.append(f"{_DECLARED_FIELD_PREFIX}{key}")
                 if declared_type is datetime:
                     fields.append(f"{_OFFSET_FIELD_PREFIX}{key}")
@@ -398,7 +418,7 @@ class MilvusVectorStorePartition(VectorStorePartition):
         Milvus returns cosine similarity and inner product as they are, and
         the squared Euclidean distance.
         """
-        if self._config.similarity_metric is SimilarityMetric.EUCLIDEAN:
+        if self._similarity_metric is SimilarityMetric.EUCLIDEAN:
             return math.sqrt(max(distance, 0.0))
         return distance
 
@@ -421,7 +441,7 @@ class MilvusVectorStorePartition(VectorStorePartition):
 
             def _upsert() -> None:
                 self._client.upsert(
-                    collection_name=self._native_collection_name,
+                    collection_name=self._collection_name,
                     data=entities,
                     timeout=self._request_timeout_seconds,
                 )
@@ -458,13 +478,13 @@ class MilvusVectorStorePartition(VectorStorePartition):
                 if not validate_filter(property_filter):
                     raise ValueError("Filter contains an invalid property key")
                 property_expr = _milvus_filter(
-                    property_filter, self._config.indexed_properties_schema
+                    property_filter, self._indexed_properties
                 )
                 filter_expr = f"({filter_expr}) && ({property_expr})"
 
             raw_results = await asyncio.to_thread(
                 self._client.search,
-                collection_name=self._native_collection_name,
+                collection_name=self._collection_name,
                 data=query_vectors,
                 filter=filter_expr,
                 limit=limit,
@@ -484,7 +504,7 @@ class MilvusVectorStorePartition(VectorStorePartition):
                     entity = cast(Mapping[str, Any], raw_match["entity"])
                     score = self._score(raw_match["distance"])
                     if not self._passes_threshold(
-                        score, score_threshold, self._config.similarity_metric
+                        score, score_threshold, self._similarity_metric
                     ):
                         continue
 
@@ -501,7 +521,7 @@ class MilvusVectorStorePartition(VectorStorePartition):
 
                 matches.sort(
                     key=lambda match: match.score,
-                    reverse=self._config.similarity_metric.higher_is_better,
+                    reverse=self._similarity_metric.higher_is_better,
                 )
                 results.append(QueryResult(matches=matches))
 
@@ -526,7 +546,7 @@ class MilvusVectorStorePartition(VectorStorePartition):
             ]
             raw_records = await asyncio.to_thread(
                 self._client.get,
-                collection_name=self._native_collection_name,
+                collection_name=self._collection_name,
                 ids=primary_ids,
                 output_fields=self._output_fields(
                     return_vector=return_vector,
@@ -569,7 +589,7 @@ class MilvusVectorStorePartition(VectorStorePartition):
             ]
             await asyncio.to_thread(
                 self._client.delete,
-                collection_name=self._native_collection_name,
+                collection_name=self._collection_name,
                 ids=primary_ids,
                 timeout=self._request_timeout_seconds,
             )
@@ -583,14 +603,25 @@ class MilvusVectorStoreParams(BaseModel):
     Attributes:
         client (MilvusClient): Milvus client instance.
         partition_registry (VectorStorePartitionRegistry):
-            The registry of the Milvus deployment the client reaches: which
-            collections exist, under which incarnation and configuration,
-            and which dead incarnations await purge. Milvus arbitrates none
-            of that, so the registry lives where a primary key and a
-            transaction can. Every store on the deployment, in any
-            process, uses this registry, and no store on another
-            deployment does. The caller starts it before handing it over.
-        consistency_level (str): Collection consistency level for newly created collections.
+            The registry of this store's partitions: which exist, under which
+            incarnation and schema, and which dead incarnations await purge.
+            Milvus arbitrates none of that, so the registry lives where a
+            primary key and a transaction can. Every process serving this
+            store uses this registry, and no other store does. The caller
+            provisions it before handing it over.
+        vector_store_name (str):
+            The name of this store, and of the native Milvus collection it
+            is, so stores of different names may share the client.
+        vector_dimensions (int):
+            Dimensionality of every vector in the store.
+        similarity_metric (SimilarityMetric):
+            The metric every query of the store scores by; cosine, dot or
+            euclidean (default: cosine).
+        indexed_properties (IndexedProperties):
+            The declared schema every partition of this store carries: each
+            key is a nullable typed field, `_p_<key>`, with a scalar index,
+            which a search filters on.
+        consistency_level (str): Consistency level for the collection this store creates.
         request_timeout_seconds (int): Seconds any request to Milvus may take.
         metrics_factory (MetricsFactory | None): Metrics factory for collecting usage metrics.
     """
@@ -601,11 +632,26 @@ class MilvusVectorStoreParams(BaseModel):
     )
     partition_registry: InstanceOf[VectorStorePartitionRegistry] = Field(
         ...,
-        description="The registry of the deployment the client reaches",
+        description="The registry of this store's partitions",
+    )
+    vector_store_name: str = Field(
+        ...,
+        description="The name of this store; the native Milvus collection's name",
+    )
+    vector_dimensions: int = Field(
+        ..., gt=0, description="Dimensionality of every vector in the store"
+    )
+    similarity_metric: SimilarityMetric = Field(
+        SimilarityMetric.COSINE,
+        description="The metric every query of the store scores by",
+    )
+    indexed_properties: IndexedProperties = Field(
+        ...,
+        description="The declared schema every partition of this store carries",
     )
     consistency_level: str = Field(
         default="Session",
-        description="Milvus consistency level for newly created collections",
+        description="Milvus consistency level for the collection this store creates",
     )
     request_timeout_seconds: int = Field(
         ..., gt=0, description="Seconds any request to Milvus may take"
@@ -615,17 +661,23 @@ class MilvusVectorStoreParams(BaseModel):
         description="An instance of MetricsFactory for collecting usage metrics",
     )
 
+    @field_validator("vector_store_name")
+    @classmethod
+    def _validate_vector_store_name(cls, vector_store_name: str) -> str:
+        validate_vector_store_name(vector_store_name)
+        return vector_store_name
+
 
 class MilvusVectorStore(VectorStore):
     """Asynchronous Milvus-based implementation of VectorStore.
 
-    A logical collection is a partition-key value, the incarnation of its
-    life, inside a native collection shared by the logical collections of
-    one namespace and configuration. The catalog is the `VectorStorePartitionRegistry`
-    the store is given: it mints the incarnations and arbitrates creation,
-    deletion and reclamation across processes, which Milvus, with no
-    transactions or unique constraints, cannot. Any process sharing the
-    Milvus backend and the registry may serve any collection.
+    The store is one native Milvus collection, named at construction, in
+    which every partition is a partition-key value: the incarnation of its
+    life, minted by the `VectorStorePartitionRegistry` the store is given,
+    which arbitrates creation, deletion and reclamation across processes,
+    as Milvus, with no transactions or unique constraints, cannot. Any
+    process sharing the Milvus backend and the registry may serve any
+    partition.
     """
 
     _SIMILARITY_METRIC_TO_MILVUS_METRIC: ClassVar[dict[SimilarityMetric, str]] = {
@@ -639,14 +691,6 @@ class MilvusVectorStore(VectorStore):
         """Check if an exception indicates a resource already exists."""
         message = str(error).lower()
         return "already exist" in message or "already exists" in message
-
-    @staticmethod
-    def _build_native_collection_name(
-        namespace: str, config: VectorStoreCollectionConfig
-    ) -> str:
-        """Build a deterministic native collection name from namespace and config."""
-        digest = hashlib.sha256(config.model_dump_json().encode()).hexdigest()
-        return f"memmachine_{namespace}__{digest}"
 
     @staticmethod
     def _validate_metric(similarity_metric: SimilarityMetric) -> None:
@@ -666,14 +710,51 @@ class MilvusVectorStore(VectorStore):
     def __init__(self, params: MilvusVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
         super().__init__()
+        MilvusVectorStore._validate_metric(params.similarity_metric)
         self._client = params.client
+        self._vector_store_name = params.vector_store_name
+        self._vector_dimensions = params.vector_dimensions
+        self._similarity_metric = params.similarity_metric
+        self._indexed_properties = params.indexed_properties
         self._consistency_level = params.consistency_level
-        self._partition_registry = params.partition_registry
         self._request_timeout_seconds = params.request_timeout_seconds
+        self._partition_registry = params.partition_registry
         self._tracker = OperationTracker(
             params.metrics_factory,
             prefix="vector_store_milvus",
         )
+
+    @property
+    @override
+    def vector_store_name(self) -> str:
+        return self._vector_store_name
+
+    @property
+    @override
+    def vector_dimensions(self) -> int:
+        return self._vector_dimensions
+
+    @property
+    @override
+    def similarity_metric(self) -> SimilarityMetric:
+        return self._similarity_metric
+
+    @property
+    @override
+    def indexed_properties(self) -> Mapping[str, PropertyType]:
+        return self._indexed_properties
+
+    def _declared_schema(self) -> PartitionSchema:
+        return PartitionSchema(
+            vector_dimensions=self._vector_dimensions,
+            similarity_metric=self._similarity_metric,
+            indexed_properties=indexed_property_names(self._indexed_properties),
+        )
+
+    @override
+    async def provision(self) -> None:
+        async with self._tracker("provision"):
+            await self._ensure_native_collection()
 
     @override
     async def startup(self) -> None:
@@ -685,32 +766,14 @@ class MilvusVectorStore(VectorStore):
         # The caller owns the client's and the registry's lifecycles.
         pass
 
-    def _build_collection_handle(
-        self, namespace: str, name: str, registered: RegisteredPartition
-    ) -> MilvusVectorStorePartition:
-        """Build a MilvusVectorStorePartition handle bound to the registered incarnation."""
-        return MilvusVectorStorePartition(
-            client=self._client,
-            native_collection_name=MilvusVectorStore._build_native_collection_name(
-                namespace, registered.config
-            ),
-            namespace=namespace,
-            name=name,
-            incarnation=registered.incarnation,
-            config=registered.config,
-            tracker=self._tracker,
-            is_live=self._partition_registry.is_live,
-            request_timeout_seconds=self._request_timeout_seconds,
-        )
-
-    async def _create_native_collection(
-        self, namespace: str, config: VectorStoreCollectionConfig
-    ) -> None:
+    async def _ensure_native_collection(self) -> None:
         """Idempotently create the native Milvus collection."""
-        self._validate_metric(config.similarity_metric)
-        native_collection_name = MilvusVectorStore._build_native_collection_name(
-            namespace, config
-        )
+        if await asyncio.to_thread(
+            self._client.has_collection,
+            self._vector_store_name,
+            timeout=self._request_timeout_seconds,
+        ):
+            return
 
         def _create_collection() -> None:
             schema = self._client.create_schema(
@@ -737,7 +800,7 @@ class MilvusVectorStore(VectorStore):
             schema.add_field(
                 field_name=_VECTOR_FIELD,
                 datatype=DataType.FLOAT_VECTOR,
-                dim=config.vector_dimensions,
+                dim=self._vector_dimensions,
             )
             schema.add_field(
                 field_name=_PROPERTIES_FIELD,
@@ -748,11 +811,11 @@ class MilvusVectorStore(VectorStore):
                 field_name=_VECTOR_FIELD,
                 index_type=_VECTOR_INDEX_TYPE,
                 metric_type=self._SIMILARITY_METRIC_TO_MILVUS_METRIC[
-                    config.similarity_metric
+                    self._similarity_metric
                 ],
                 params=_VECTOR_INDEX_PARAMS,
             )
-            for key, declared_type in config.indexed_properties_schema.items():
+            for key, declared_type in self._indexed_properties.items():
                 if declared_type is str:
                     schema.add_field(
                         field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
@@ -778,7 +841,7 @@ class MilvusVectorStore(VectorStore):
                 )
 
             self._client.create_collection(
-                collection_name=native_collection_name,
+                collection_name=self._vector_store_name,
                 schema=schema,
                 index_params=index_params,
                 consistency_level=self._consistency_level,
@@ -786,103 +849,109 @@ class MilvusVectorStore(VectorStore):
                 timeout=self._request_timeout_seconds,
             )
 
-        if await asyncio.to_thread(
-            self._client.has_collection,
-            native_collection_name,
-            timeout=self._request_timeout_seconds,
-        ):
-            return
         try:
             await asyncio.to_thread(_create_collection)
         except MilvusException as exc:
             if not MilvusVectorStore._is_already_exists_error(exc):
                 raise
 
+    async def _checked_entry(self, partition_key: str) -> RegisteredPartition | None:
+        """The live partition under the key, or None; raises if its schema is not this store's."""
+        registered = await self._partition_registry.get(partition_key)
+        if registered is None:
+            return None
+        declared_schema = self._declared_schema()
+        if registered.schema != declared_schema:
+            raise VectorStorePartitionSchemaMismatchError(
+                self._vector_store_name,
+                partition_key,
+                registered.schema,
+                declared_schema,
+            )
+        return registered
+
+    def _partition_handle(
+        self, partition_key: str, incarnation: UUID
+    ) -> MilvusVectorStorePartition:
+        return MilvusVectorStorePartition(
+            client=self._client,
+            collection_name=self._vector_store_name,
+            partition_key=partition_key,
+            incarnation=incarnation,
+            vector_dimensions=self._vector_dimensions,
+            similarity_metric=self._similarity_metric,
+            indexed_properties=self._indexed_properties,
+            tracker=self._tracker,
+            is_live=self._partition_registry.is_live,
+            request_timeout_seconds=self._request_timeout_seconds,
+        )
+
     @override
-    async def create_partition(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
-    ) -> None:
-        require_identifiers(namespace, name)
-        self._validate_metric(config.similarity_metric)
+    async def create_partition(self, partition_key: str) -> None:
+        require_partition_key(partition_key)
         async with self._tracker("create_partition"):
-            # The native collection first, the registry row last: a crash
-            # between the two leaves an empty native collection the next
-            # creation of the same configuration adopts, never a row whose
-            # entities have nowhere to go. The registry's primary key is the
-            # arbiter: a racing creator on any process loses here, never in
-            # Milvus.
-            await self._create_native_collection(namespace, config)
-            await self._partition_registry.register(namespace, name, config)
+            # The registry's primary key is the arbiter: a racing creator
+            # on any process loses here, never in Milvus.
+            try:
+                await self._partition_registry.register(
+                    partition_key, self._declared_schema()
+                )
+            except VectorStorePartitionAlreadyExistsError:
+                # A key taken under another schema is reported as such.
+                await self._checked_entry(partition_key)
+                raise
 
     @override
     async def open_or_create_partition(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
+        self, partition_key: str
     ) -> MilvusVectorStorePartition:
-        require_identifiers(namespace, name)
-        self._validate_metric(config.similarity_metric)
+        require_partition_key(partition_key)
         async with self._tracker("open_or_create_partition"):
             attempts = 0
             # Read-then-create, retried: losing the create means a racing
             # creator won (open its row), and finding no row after losing
             # means a racing deleter removed the winner (create again).
             while True:
-                registered = await self._partition_registry.get(namespace, name)
+                registered = await self._checked_entry(partition_key)
                 if registered is not None:
-                    if registered.config != config:
-                        raise VectorStoreCollectionConfigMismatchError(
-                            namespace, name, registered.config, config
-                        )
-                    return self._build_collection_handle(namespace, name, registered)
-                await self._create_native_collection(namespace, config)
+                    return self._partition_handle(partition_key, registered.incarnation)
                 try:
                     incarnation = await self._partition_registry.register(
-                        namespace, name, config
+                        partition_key, self._declared_schema()
                     )
                 except VectorStorePartitionAlreadyExistsError as err:
                     attempts += 1
                     if attempts >= _MAX_OPEN_OR_CREATE_ATTEMPTS:
                         raise VectorStoreAttemptsExhaustedError(
-                            f"Opening or creating collection ({namespace!r}, "
-                            f"{name!r}) made no progress after "
+                            f"Opening or creating partition {partition_key!r} of "
+                            f"vector store {self._vector_store_name!r} made no progress after "
                             f"{_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts"
                         ) from err
                     continue
-                return self._build_collection_handle(
-                    namespace,
-                    name,
-                    RegisteredPartition(incarnation=incarnation, config=config),
-                )
+                return self._partition_handle(partition_key, incarnation)
 
     @override
     async def get_partition(
-        self, *, namespace: str, name: str
+        self, partition_key: str
     ) -> MilvusVectorStorePartition | None:
-        require_identifiers(namespace, name)
-        registered = await self._partition_registry.get(namespace, name)
+        require_partition_key(partition_key)
+        registered = await self._checked_entry(partition_key)
         if registered is None:
             return None
-        return self._build_collection_handle(namespace, name, registered)
+        return self._partition_handle(partition_key, registered.incarnation)
 
     @override
-    async def close_collection(self, *, collection: VectorStorePartition) -> None:
-        # Milvus collection handles hold nothing to release.
+    async def close_partition(self, *, partition: VectorStorePartition) -> None:
+        # Milvus partition handles hold nothing to release.
         pass
 
     @override
-    async def delete_partition(self, *, namespace: str, name: str) -> None:
-        require_identifiers(namespace, name)
+    async def delete_partition(self, partition_key: str) -> None:
+        require_partition_key(partition_key)
         async with self._tracker("delete_partition"):
-            # One registry transaction: the collection is unreachable when
+            # One registry transaction: the partition is unreachable when
             # it commits, and its entities wait on the queue for the purge.
-            await self._partition_registry.unregister(namespace, name)
+            await self._partition_registry.unregister(partition_key)
 
     @override
     async def purge_deleted_partitions(self) -> bool:
@@ -899,40 +968,29 @@ class MilvusVectorStore(VectorStore):
         ):
             if claim is None:
                 return False
-            native_collection_name = MilvusVectorStore._build_native_collection_name(
-                claim.namespace, claim.config
-            )
-            if await asyncio.to_thread(
-                self._client.has_collection,
-                native_collection_name,
+            # Primary keys begin with the incarnation and a colon, so its
+            # keys are exactly those between that prefix and the prefix
+            # ending in the character after the colon: a key-range query
+            # reads the sorted key index instead of scanning the
+            # partition-key column of the incarnation's whole partition.
+            prefix = claim.incarnation.hex
+            listed = await asyncio.to_thread(
+                self._client.query,
+                collection_name=self._vector_store_name,
+                filter=(
+                    f"{_ID_FIELD} > {_expr_string(f'{prefix}:')}"
+                    f" and {_ID_FIELD} < {_expr_string(f'{prefix};')}"
+                ),
+                output_fields=[_ID_FIELD],
+                limit=_PURGE_BATCH_SIZE,
                 timeout=self._request_timeout_seconds,
-            ):
-                # Primary keys begin with the incarnation and a colon, so its
-                # keys are exactly those between that prefix and the prefix
-                # ending in the character after the colon: a key-range query
-                # reads the sorted key index instead of scanning the
-                # partition-key column of the incarnation's whole partition.
-                prefix = claim.incarnation.hex
-                listed = await asyncio.to_thread(
-                    self._client.query,
-                    collection_name=native_collection_name,
-                    filter=(
-                        f"{_ID_FIELD} > {_expr_string(f'{prefix}:')}"
-                        f" and {_ID_FIELD} < {_expr_string(f'{prefix};')}"
-                    ),
-                    output_fields=[_ID_FIELD],
-                    limit=_PURGE_BATCH_SIZE,
-                    timeout=self._request_timeout_seconds,
-                )
-                primary_ids = [entity[_ID_FIELD] for entity in listed]
-            else:
-                # The native collection is gone with everything in it.
-                primary_ids = []
+            )
+            primary_ids = [entity[_ID_FIELD] for entity in listed]
             claim.found = bool(primary_ids)
             if claim.found:
                 await asyncio.to_thread(
                     self._client.delete,
-                    collection_name=native_collection_name,
+                    collection_name=self._vector_store_name,
                     ids=primary_ids,
                     timeout=self._request_timeout_seconds,
                 )

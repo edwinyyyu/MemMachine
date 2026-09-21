@@ -19,7 +19,6 @@ from memmachine_server.common.filter.filter_parser import (
 )
 from memmachine_server.common.vector_store.data_types import (
     Record,
-    VectorStoreCollectionConfig,
 )
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Event,
@@ -221,15 +220,13 @@ class TestEncodeEvents:
         self, fake_embedder
     ):
         # Collection without context fields.
-        config = VectorStoreCollectionConfig(
-            vector_dimensions=2,
+        collection = InMemoryVectorStorePartition(
             similarity_metric=SimilarityMetric.COSINE,
-            indexed_properties_schema={
+            indexed_properties={
                 "_segment_uuid": str,
                 "_timestamp": datetime.datetime,
             },
         )
-        collection = InMemoryVectorStorePartition(config)
         partition = InMemorySegmentStorePartition()
         em = EventMemory(
             EventMemoryParams(
@@ -251,18 +248,16 @@ class TestEncodeEvents:
 
     async def test_init_raises_on_missing_base_field(self, fake_embedder):
         # Collection without _timestamp — base field required at init.
-        config = VectorStoreCollectionConfig(
-            vector_dimensions=2,
+        collection = InMemoryVectorStorePartition(
             similarity_metric=SimilarityMetric.COSINE,
-            indexed_properties_schema={
+            indexed_properties={
                 "_segment_uuid": str,
             },
         )
-        collection = InMemoryVectorStorePartition(config)
         partition = InMemorySegmentStorePartition()
         with pytest.raises(
             ValueError,
-            match="Collection schema missing fields required by EventMemory",
+            match="Vector store schema missing fields required by EventMemory",
         ):
             EventMemory(
                 EventMemoryParams(
@@ -1049,17 +1044,14 @@ class _RecordingEmbedder(FakeEmbedder):
 class TestIngestFormatOptions:
     @staticmethod
     def _build(embedder: FakeEmbedder) -> EventMemory:
-        config = VectorStoreCollectionConfig(
-            vector_dimensions=embedder.dimensions,
+        vector_store_partition = InMemoryVectorStorePartition(
             similarity_metric=embedder.similarity_metric,
-            indexed_properties_schema=(
-                EventMemory.expected_vector_store_collection_schema()
-            ),
+            indexed_properties=(EventMemory.expected_vector_store_collection_schema()),
         )
         return EventMemory(
             EventMemoryParams(
                 segment_store_partition=InMemorySegmentStorePartition(),
-                vector_store_partition=InMemoryVectorStorePartition(config),
+                vector_store_partition=vector_store_partition,
                 segmenter=TextSegmenter(),
                 deriver=WholeTextDeriver(),
                 embedder=embedder,
@@ -1091,17 +1083,14 @@ class TestIngestFormatOptions:
         """The baked timestamp lives only in the embedding, not the segment."""
         embedder = _RecordingEmbedder()
         partition = InMemorySegmentStorePartition()
-        config = VectorStoreCollectionConfig(
-            vector_dimensions=embedder.dimensions,
+        vector_store_partition = InMemoryVectorStorePartition(
             similarity_metric=embedder.similarity_metric,
-            indexed_properties_schema=(
-                EventMemory.expected_vector_store_collection_schema()
-            ),
+            indexed_properties=(EventMemory.expected_vector_store_collection_schema()),
         )
         event_memory = EventMemory(
             EventMemoryParams(
                 segment_store_partition=partition,
-                vector_store_partition=InMemoryVectorStorePartition(config),
+                vector_store_partition=vector_store_partition,
                 segmenter=TextSegmenter(),
                 deriver=WholeTextDeriver(),
                 embedder=embedder,

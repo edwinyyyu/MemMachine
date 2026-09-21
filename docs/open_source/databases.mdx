@@ -30,12 +30,17 @@ keeps event segments in a relational database. Configure the VectorStore under
 `episodic_memory.long_term_memory.vector_store`.
 
 Supported VectorStore providers include Qdrant, Milvus, SQLiteVectorStore, and
-SQLiteVecVectorStore. Qdrant and Milvus keep the registry of their logical
-collections in a relational database named by `partition_registry`, so any
-number of server processes can share one backend; the SQLite stores are bound
-to one node. Each Qdrant or Milvus backend has its own registry, named by its
-key under `resources.databases` (lowercase letters, digits and underscores, at
-most 32 bytes), so several backends can keep their registries in one database. Milvus supports two deployment shapes through the same
+SQLiteVecVectorStore. A store is one collection on its backend, named by
+its vector store name, one per memory and embedder
+(`long_term_memory__<embedder>` for the event-backed long-term memory,
+`semantic_memory__<embedder>` for semantic memory), and each session's data
+is a partition of it. Qdrant and Milvus keep the registry
+of their partitions in a relational database named by `partition_registry`, so
+any number of server processes can share one backend; the SQLite stores are
+bound to one node. Each store has its own registry there, named by its
+vector store name (lowercase letters, digits and underscores, at most 32
+bytes), so several stores can keep their registries in one database. Milvus supports
+two deployment shapes through the same
 configuration fields:
 
 - **Milvus server:** set `uri` to a server endpoint such as

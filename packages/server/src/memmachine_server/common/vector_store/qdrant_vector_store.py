@@ -1,19 +1,19 @@
 """Qdrant-based vector store implementation."""
 
-import hashlib
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, ClassVar, cast, override
 from uuid import UUID
 
 import grpc
 import grpc.aio
-from pydantic import BaseModel, Field, InstanceOf
+from pydantic import BaseModel, Field, InstanceOf, field_validator
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
 from memmachine_server.common.data_types import (
     OrderedValue,
+    PropertyType,
     PropertyValue,
     SimilarityMetric,
 )
@@ -42,17 +42,20 @@ from memmachine_server.common.metrics_factory import MetricsFactory, OperationTr
 from memmachine_server.common.utils import ensure_tz_aware
 
 from .data_types import (
+    IndexedProperties,
+    PartitionSchema,
     QueryMatch,
     QueryResult,
     Record,
     VectorStoreAttemptsExhaustedError,
-    VectorStoreCollectionConfig,
-    VectorStoreCollectionConfigMismatchError,
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionHandleStaleError,
+    VectorStorePartitionSchemaMismatchError,
+    indexed_property_names,
+    validate_vector_store_name,
 )
 from .partition_registry import RegisteredPartition, VectorStorePartitionRegistry
-from .utils import require_identifiers, validate_filter
+from .utils import require_partition_key, validate_filter
 from .vector_store import VectorStore, VectorStorePartition
 
 # Point payload keys (stored on every Qdrant point).
@@ -60,21 +63,21 @@ from .vector_store import VectorStore, VectorStorePartition
 # Qdrant but forbidden by _IDENTIFIER_RE, so system keys can never collide with user keys.
 _SYSTEM_KEY_PREFIX = "sys-"
 _PAYLOAD_INCARNATION = f"{_SYSTEM_KEY_PREFIX}incarnation"
-"""The payload key naming the collection incarnation a point belongs to.
+"""The payload key naming the partition incarnation a point belongs to.
 
-Points carry the incarnation, never the collection's name: a collection
-deleted and re-created under the same name gets a fresh incarnation, and
-its predecessor's points are invisible to it while the purge reclaims them.
+Points carry the incarnation, never the partition key: a partition deleted
+and re-created under the same key gets a fresh incarnation, and its
+predecessor's points are invisible to it while the purge reclaims them.
 """
 
 # Consecutive lost creation races before open-or-create gives up: every
 # retry requires another process to have created and then deleted the
-# collection in between, so this depth means something else is wrong.
+# partition in between, so this depth means something else is wrong.
 _MAX_OPEN_OR_CREATE_ATTEMPTS = 10
 
 
 def _incarnation_filter(incarnation: UUID) -> models.Filter:
-    """Build a Qdrant filter that matches the points of one collection incarnation."""
+    """Build a Qdrant filter that matches the points of one partition incarnation."""
     return models.Filter(
         must=[
             models.FieldCondition(
@@ -86,7 +89,7 @@ def _incarnation_filter(incarnation: UUID) -> models.Filter:
 
 
 class QdrantVectorStorePartition(VectorStorePartition):
-    """A collection backed by Qdrant."""
+    """A partition backed by Qdrant: one payload value inside the store's collection."""
 
     _RANGE_OPERATORS: ClassVar[dict[str, str]] = {
         ">": "gt",
@@ -241,26 +244,28 @@ class QdrantVectorStorePartition(VectorStorePartition):
         self,
         *,
         client: AsyncQdrantClient,
-        native_collection_name: str,
-        namespace: str,
-        name: str,
+        collection_name: str,
+        partition_key: str,
         incarnation: UUID,
-        config: VectorStoreCollectionConfig,
+        vector_dimensions: int,
+        similarity_metric: SimilarityMetric,
+        indexed_properties: Mapping[str, PropertyType],
         tracker: OperationTracker,
         is_live: Callable[[UUID], Awaitable[bool]],
     ) -> None:
         """Initialize with a Qdrant client and the incarnation the handle is bound to."""
         self._client = client
         self._tracker = tracker
-        self._native_collection_name = native_collection_name
-        self._namespace = namespace
-        self._name = name
+        self._collection_name = collection_name
+        self._partition_key = partition_key
         self._incarnation = incarnation
-        self._config = config
+        self._vector_dimensions = vector_dimensions
+        self._similarity_metric = similarity_metric
+        self._indexed_properties = dict(indexed_properties)
         self._is_live = is_live
 
     async def _fence(self) -> None:
-        """Raise if this handle's incarnation is no longer the collection's.
+        """Raise if this handle's incarnation is no longer the partition's.
 
         Called before every operation, to refuse a handle known to be
         dead, and after a write, so a write completed under an incarnation
@@ -268,18 +273,30 @@ class QdrantVectorStorePartition(VectorStorePartition):
         no transactions, so a write can still land under a dead
         incarnation: between the two checks, or after a check that never
         ran; the tombstone's purge rounds reclaim it. A read is not checked
-        after: a collection deleted while a read is in flight keeps its
+        after: a partition deleted while a read is in flight keeps its
         points until a purge round claims its tombstone, so the read returns
         what it saw, a snapshot from before the deletion, as a read that
         happened to run just before it would have.
         """
         if not await self._is_live(self._incarnation):
-            raise VectorStorePartitionHandleStaleError(self._namespace, self._name)
+            raise VectorStorePartitionHandleStaleError(
+                self._collection_name, self._partition_key
+            )
 
     @property
     @override
-    def config(self) -> VectorStoreCollectionConfig:
-        return self._config
+    def partition_key(self) -> str:
+        return self._partition_key
+
+    @property
+    @override
+    def similarity_metric(self) -> SimilarityMetric:
+        return self._similarity_metric
+
+    @property
+    @override
+    def indexed_properties(self) -> Mapping[str, PropertyType]:
+        return self._indexed_properties
 
     def _build_payload(
         self,
@@ -307,14 +324,11 @@ class QdrantVectorStorePartition(VectorStorePartition):
         if payload is None:
             return None
 
-        indexed_properties_schema = self._config.indexed_properties_schema
         result: dict[str, PropertyValue] = {}
         for key, value in payload.items():
             if key == _PAYLOAD_INCARNATION or value is None:
                 continue
-            if indexed_properties_schema.get(key) is datetime and isinstance(
-                value, str
-            ):
+            if self._indexed_properties.get(key) is datetime and isinstance(value, str):
                 result[key] = datetime.fromisoformat(value)
             else:
                 result[key] = cast(PropertyValue, value)
@@ -351,7 +365,7 @@ class QdrantVectorStorePartition(VectorStorePartition):
         points = list(points)
         try:
             await self._client.upsert(
-                collection_name=self._native_collection_name,
+                collection_name=self._collection_name,
                 points=points,
             )
         except (ResponseHandlingException, UnexpectedResponse):
@@ -378,7 +392,7 @@ class QdrantVectorStorePartition(VectorStorePartition):
                 return []
 
             await self._fence()
-            partition_key_filter = _incarnation_filter(self._incarnation)
+            partition_filter = _incarnation_filter(self._incarnation)
             if property_filter:
                 if not validate_filter(property_filter):
                     raise ValueError("Filter contains an invalid property key")
@@ -386,10 +400,10 @@ class QdrantVectorStorePartition(VectorStorePartition):
                     QdrantVectorStorePartition._build_qdrant_filter(property_filter)
                 )
                 qdrant_filter = models.Filter(
-                    must=[partition_key_filter, property_qdrant_filter]
+                    must=[partition_filter, property_qdrant_filter]
                 )
             else:
-                qdrant_filter = partition_key_filter
+                qdrant_filter = partition_filter
 
             requests = [
                 models.QueryRequest(
@@ -404,7 +418,7 @@ class QdrantVectorStorePartition(VectorStorePartition):
             ]
 
             batch_results = await self._client.query_batch_points(
-                collection_name=self._native_collection_name,
+                collection_name=self._collection_name,
                 requests=requests,
             )
 
@@ -450,7 +464,7 @@ class QdrantVectorStorePartition(VectorStorePartition):
             await self._fence()
             # Always get payload so we can check the incarnation.
             points = await self._client.retrieve(
-                collection_name=self._native_collection_name,
+                collection_name=self._collection_name,
                 ids=list(uuid_list),
                 with_vectors=return_vector,
                 with_payload=True,
@@ -503,7 +517,7 @@ class QdrantVectorStorePartition(VectorStorePartition):
 
             await self._fence()
             await self._client.delete(
-                collection_name=self._native_collection_name,
+                collection_name=self._collection_name,
                 points_selector=models.FilterSelector(
                     filter=models.Filter(
                         must=[
@@ -526,13 +540,23 @@ class QdrantVectorStoreParams(BaseModel):
         client (AsyncQdrantClient):
             Async Qdrant client instance.
         partition_registry (VectorStorePartitionRegistry):
-            The registry of the Qdrant deployment the client reaches: which
-            collections exist, under which incarnation and configuration,
-            and which dead incarnations await purge. Qdrant arbitrates none
-            of that, so the registry lives where a primary key and a
-            transaction can. Every store on the deployment, in any
-            process, uses this registry, and no store on another
-            deployment does. The caller starts it before handing it over.
+            The registry of this store's partitions: which exist, under which
+            incarnation and schema, and which dead incarnations await purge.
+            Qdrant arbitrates none of that, so the registry lives where a
+            primary key and a transaction can. Every process serving this
+            store uses this registry, and no other store does. The caller
+            provisions it before handing it over.
+        vector_store_name (str):
+            The name of this store, and of the native Qdrant collection it
+            is, so stores of different names may share the client.
+        vector_dimensions (int):
+            Dimensionality of every vector in the store.
+        similarity_metric (SimilarityMetric):
+            The metric every query of the store scores by
+            (default: cosine).
+        indexed_properties (IndexedProperties):
+            The declared schema every partition of this store carries: each
+            key gets a payload index of its declared type.
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -545,24 +569,44 @@ class QdrantVectorStoreParams(BaseModel):
     )
     partition_registry: InstanceOf[VectorStorePartitionRegistry] = Field(
         ...,
-        description="The registry of the deployment the client reaches",
+        description="The registry of this store's partitions",
+    )
+    vector_store_name: str = Field(
+        ...,
+        description="The name of this store; the native Qdrant collection's name",
+    )
+    vector_dimensions: int = Field(
+        ..., gt=0, description="Dimensionality of every vector in the store"
+    )
+    similarity_metric: SimilarityMetric = Field(
+        SimilarityMetric.COSINE,
+        description="The metric every query of the store scores by",
+    )
+    indexed_properties: IndexedProperties = Field(
+        ...,
+        description="The declared schema every partition of this store carries",
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
         description="An instance of MetricsFactory for collecting usage metrics",
     )
 
+    @field_validator("vector_store_name")
+    @classmethod
+    def _validate_vector_store_name(cls, vector_store_name: str) -> str:
+        validate_vector_store_name(vector_store_name)
+        return vector_store_name
+
 
 class QdrantVectorStore(VectorStore):
     """Asynchronous Qdrant-based implementation of VectorStore.
 
-    A logical collection is a payload value, the incarnation of its life,
-    inside a native collection shared by the logical collections of one
-    namespace and configuration. The catalog is the `VectorStorePartitionRegistry`
-    the store is given: it mints the incarnations and arbitrates creation,
-    deletion and reclamation across processes, which Qdrant, with no
-    transactions or unique constraints, cannot. Any process sharing the
-    Qdrant backend and the registry may serve any collection.
+    The store is one native Qdrant collection, named at construction, in
+    which every partition is a payload value: the incarnation of its life,
+    minted by the `VectorStorePartitionRegistry` the store is given, which
+    arbitrates creation, deletion and reclamation across processes, as
+    Qdrant, with no transactions or unique constraints, cannot. Any process
+    sharing the Qdrant backend and the registry may serve any partition.
     """
 
     _SIMILARITY_METRIC_TO_QDRANT_DISTANCE: ClassVar[
@@ -595,29 +639,14 @@ class QdrantVectorStore(VectorStore):
             return "already exists" in str(error).lower()
         return False
 
-    @staticmethod
-    def _is_not_found_error(error: Exception) -> bool:
-        """Check if an exception indicates a resource was not found."""
-        if isinstance(error, UnexpectedResponse):
-            return error.status_code == 404
-        if isinstance(error, grpc.aio.AioRpcError):
-            return error.code() == grpc.StatusCode.NOT_FOUND
-        if isinstance(error, ValueError):
-            return "not found" in str(error).lower()
-        return False
-
-    @staticmethod
-    def _build_native_collection_name(
-        namespace: str, config: VectorStoreCollectionConfig
-    ) -> str:
-        """Build a deterministic native collection name from namespace and config."""
-        digest = hashlib.sha256(config.model_dump_json().encode()).hexdigest()
-        return f"{namespace}__{digest}"
-
     def __init__(self, params: QdrantVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
         super().__init__()
         self._client: AsyncQdrantClient = params.client
+        self._vector_store_name = params.vector_store_name
+        self._vector_dimensions = params.vector_dimensions
+        self._similarity_metric = params.similarity_metric
+        self._indexed_properties = params.indexed_properties
 
         self._partition_registry = params.partition_registry
 
@@ -627,6 +656,38 @@ class QdrantVectorStore(VectorStore):
             params.metrics_factory,
             prefix="vector_store_qdrant",
         )
+
+    @property
+    @override
+    def vector_store_name(self) -> str:
+        return self._vector_store_name
+
+    @property
+    @override
+    def vector_dimensions(self) -> int:
+        return self._vector_dimensions
+
+    @property
+    @override
+    def similarity_metric(self) -> SimilarityMetric:
+        return self._similarity_metric
+
+    @property
+    @override
+    def indexed_properties(self) -> Mapping[str, PropertyType]:
+        return self._indexed_properties
+
+    def _declared_schema(self) -> PartitionSchema:
+        return PartitionSchema(
+            vector_dimensions=self._vector_dimensions,
+            similarity_metric=self._similarity_metric,
+            indexed_properties=indexed_property_names(self._indexed_properties),
+        )
+
+    @override
+    async def provision(self) -> None:
+        async with self._tracker("provision"):
+            await self._ensure_native_collection()
 
     @override
     async def startup(self) -> None:
@@ -638,32 +699,10 @@ class QdrantVectorStore(VectorStore):
         # The caller owns the client's and the registry's lifecycles.
         pass
 
-    def _build_collection_handle(
-        self, namespace: str, name: str, registered: RegisteredPartition
-    ) -> QdrantVectorStorePartition:
-        """Build a QdrantVectorStorePartition handle bound to the registered incarnation."""
-        return QdrantVectorStorePartition(
-            client=self._client,
-            native_collection_name=QdrantVectorStore._build_native_collection_name(
-                namespace, registered.config
-            ),
-            namespace=namespace,
-            name=name,
-            incarnation=registered.incarnation,
-            config=registered.config,
-            tracker=self._tracker,
-            is_live=self._partition_registry.is_live,
-        )
-
-    async def _create_native_collection(
-        self, namespace: str, config: VectorStoreCollectionConfig
-    ) -> None:
+    async def _ensure_native_collection(self) -> None:
         """Idempotently create the native Qdrant collection and payload indexes."""
-        native_collection_name = QdrantVectorStore._build_native_collection_name(
-            namespace, config
-        )
         distance = QdrantVectorStore._SIMILARITY_METRIC_TO_QDRANT_DISTANCE[
-            config.similarity_metric
+            self._similarity_metric
         ]
         # The collection and its indexes are created under separate guards. Sharing
         # one meant a collection that already existed - a second worker, or a retry
@@ -672,9 +711,9 @@ class QdrantVectorStore(VectorStore):
         # at all.
         try:
             await self._client.create_collection(
-                collection_name=native_collection_name,
+                collection_name=self._vector_store_name,
                 vectors_config=models.VectorParams(
-                    size=config.vector_dimensions, distance=distance
+                    size=self._vector_dimensions, distance=distance
                 ),
                 hnsw_config=models.HnswConfigDiff(
                     m=0,
@@ -694,7 +733,7 @@ class QdrantVectorStore(VectorStore):
                 ),
             )
         ]
-        for prop_name, prop_type in config.indexed_properties_schema.items():
+        for prop_name, prop_type in self._indexed_properties.items():
             index_type = QdrantVectorStore._PROPERTY_TYPE_TO_INDEX_TYPE.get(prop_type)
             if index_type is not None:
                 indexes.append((prop_name, index_type))
@@ -702,7 +741,7 @@ class QdrantVectorStore(VectorStore):
         for field_name, field_schema in indexes:
             try:
                 await self._client.create_payload_index(
-                    collection_name=native_collection_name,
+                    collection_name=self._vector_store_name,
                     field_name=field_name,
                     field_schema=field_schema,
                 )
@@ -710,89 +749,102 @@ class QdrantVectorStore(VectorStore):
                 if not QdrantVectorStore._is_already_exists_error(e):
                     raise
 
+    async def _checked_entry(self, partition_key: str) -> RegisteredPartition | None:
+        """The live partition under the key, or None; raises if its schema is not this store's."""
+        registered = await self._partition_registry.get(partition_key)
+        if registered is None:
+            return None
+        declared_schema = self._declared_schema()
+        if registered.schema != declared_schema:
+            raise VectorStorePartitionSchemaMismatchError(
+                self._vector_store_name,
+                partition_key,
+                registered.schema,
+                declared_schema,
+            )
+        return registered
+
+    def _partition_handle(
+        self, partition_key: str, incarnation: UUID
+    ) -> QdrantVectorStorePartition:
+        return QdrantVectorStorePartition(
+            client=self._client,
+            collection_name=self._vector_store_name,
+            partition_key=partition_key,
+            incarnation=incarnation,
+            vector_dimensions=self._vector_dimensions,
+            similarity_metric=self._similarity_metric,
+            indexed_properties=self._indexed_properties,
+            tracker=self._tracker,
+            is_live=self._partition_registry.is_live,
+        )
+
     @override
-    async def create_partition(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
-    ) -> None:
-        require_identifiers(namespace, name)
+    async def create_partition(self, partition_key: str) -> None:
+        require_partition_key(partition_key)
         async with self._tracker("create_partition"):
-            # The native collection first, the registry row last: a crash
-            # between the two leaves an empty native collection the next
-            # creation of the same configuration adopts, never a row whose
-            # points have nowhere to go. The registry's primary key is the
-            # arbiter: a racing creator on any process loses here, never in
-            # Qdrant.
-            await self._create_native_collection(namespace, config)
-            await self._partition_registry.register(namespace, name, config)
+            # The registry's primary key is the arbiter: a racing creator
+            # on any process loses here, never in Qdrant.
+            try:
+                await self._partition_registry.register(
+                    partition_key, self._declared_schema()
+                )
+            except VectorStorePartitionAlreadyExistsError:
+                # A key taken under another schema is reported as such.
+                await self._checked_entry(partition_key)
+                raise
 
     @override
     async def open_or_create_partition(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
+        self, partition_key: str
     ) -> QdrantVectorStorePartition:
-        require_identifiers(namespace, name)
+        require_partition_key(partition_key)
         async with self._tracker("open_or_create_partition"):
             attempts = 0
             # Read-then-create, retried: losing the create means a racing
             # creator won (open its row), and finding no row after losing
             # means a racing deleter removed the winner (create again).
             while True:
-                registered = await self._partition_registry.get(namespace, name)
+                registered = await self._checked_entry(partition_key)
                 if registered is not None:
-                    if registered.config != config:
-                        raise VectorStoreCollectionConfigMismatchError(
-                            namespace, name, registered.config, config
-                        )
-                    return self._build_collection_handle(namespace, name, registered)
-                await self._create_native_collection(namespace, config)
+                    return self._partition_handle(partition_key, registered.incarnation)
                 try:
                     incarnation = await self._partition_registry.register(
-                        namespace, name, config
+                        partition_key, self._declared_schema()
                     )
                 except VectorStorePartitionAlreadyExistsError as err:
                     attempts += 1
                     if attempts >= _MAX_OPEN_OR_CREATE_ATTEMPTS:
                         raise VectorStoreAttemptsExhaustedError(
-                            f"Opening or creating collection ({namespace!r}, "
-                            f"{name!r}) made no progress after "
+                            f"Opening or creating partition {partition_key!r} of "
+                            f"vector store {self._vector_store_name!r} made no progress after "
                             f"{_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts"
                         ) from err
                     continue
-                return self._build_collection_handle(
-                    namespace,
-                    name,
-                    RegisteredPartition(incarnation=incarnation, config=config),
-                )
+                return self._partition_handle(partition_key, incarnation)
 
     @override
     async def get_partition(
-        self, *, namespace: str, name: str
+        self, partition_key: str
     ) -> QdrantVectorStorePartition | None:
-        require_identifiers(namespace, name)
-        registered = await self._partition_registry.get(namespace, name)
+        require_partition_key(partition_key)
+        registered = await self._checked_entry(partition_key)
         if registered is None:
             return None
-        return self._build_collection_handle(namespace, name, registered)
+        return self._partition_handle(partition_key, registered.incarnation)
 
     @override
-    async def close_collection(self, *, collection: VectorStorePartition) -> None:
-        # Qdrant collection handles hold nothing to release.
+    async def close_partition(self, *, partition: VectorStorePartition) -> None:
+        # Qdrant partition handles hold nothing to release.
         pass
 
     @override
-    async def delete_partition(self, *, namespace: str, name: str) -> None:
-        require_identifiers(namespace, name)
+    async def delete_partition(self, partition_key: str) -> None:
+        require_partition_key(partition_key)
         async with self._tracker("delete_partition"):
-            # One registry transaction: the collection is unreachable when
+            # One registry transaction: the partition is unreachable when
             # it commits, and its points wait on the queue for the purge.
-            await self._partition_registry.unregister(namespace, name)
+            await self._partition_registry.unregister(partition_key)
 
     @override
     async def purge_deleted_partitions(self) -> bool:
@@ -807,26 +859,17 @@ class QdrantVectorStore(VectorStore):
         ):
             if claim is None:
                 return False
-            native_collection_name = QdrantVectorStore._build_native_collection_name(
-                claim.namespace, claim.config
+            points, _ = await self._client.scroll(
+                collection_name=self._vector_store_name,
+                scroll_filter=_incarnation_filter(claim.incarnation),
+                limit=1,
+                with_payload=False,
+                with_vectors=False,
             )
-            try:
-                points, _ = await self._client.scroll(
-                    collection_name=native_collection_name,
-                    scroll_filter=_incarnation_filter(claim.incarnation),
-                    limit=1,
-                    with_payload=False,
-                    with_vectors=False,
-                )
-            except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
-                # The native collection is gone with everything in it.
-                if not QdrantVectorStore._is_not_found_error(e):
-                    raise
-                points = []
             claim.found = bool(points)
             if claim.found:
                 await self._client.delete(
-                    collection_name=native_collection_name,
+                    collection_name=self._vector_store_name,
                     points_selector=models.FilterSelector(
                         filter=_incarnation_filter(claim.incarnation),
                     ),

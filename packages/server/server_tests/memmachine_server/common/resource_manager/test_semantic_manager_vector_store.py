@@ -9,7 +9,9 @@ from memmachine_server.common.configuration import (
     SemanticMemoryConf,
     SemanticMemoryStorageBackend,
 )
+from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.resource_manager.semantic_manager import (
+    _INDEXED_PROPERTIES,
     SemanticResourceManager,
 )
 from memmachine_server.semantic_memory.storage.vector_store_semantic_storage import (
@@ -48,7 +50,15 @@ async def test_semantic_manager_builds_vector_store_backend(sqlalchemy_sqlite_en
     resource_manager.get_sql_engine.assert_awaited_once_with(
         "semantic_db", validate=True
     )
-    resource_manager.get_vector_store.assert_awaited_once_with("semantic_vectors")
-    vector_store.open_or_create_partition.assert_awaited_once()
+    # The store is the semantic memory's store for its embedder, built
+    # with the keys the storage writes; the partition is the manager's own.
+    resource_manager.get_vector_store.assert_awaited_once_with(
+        "semantic_vectors",
+        vector_store_name="semantic_memory__embedder",
+        vector_dimensions=2,
+        similarity_metric=SimilarityMetric.COSINE,
+        indexed_properties=_INDEXED_PROPERTIES,
+    )
+    vector_store.open_or_create_partition.assert_awaited_once_with("semantic_memory")
 
     await storage.cleanup()

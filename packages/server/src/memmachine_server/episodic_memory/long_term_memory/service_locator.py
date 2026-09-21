@@ -1,6 +1,5 @@
 """Helpers for building long-term memory from configuration."""
 
-import contextlib
 import hashlib
 import logging
 
@@ -17,10 +16,11 @@ from memmachine_server.common.configuration.episodic_config import (
     TextSegmenterConf,
     WholeTextDeriverConf,
 )
+from memmachine_server.common.data_types import PropertyType
 from memmachine_server.common.resource_manager import CommonResourceManager
 from memmachine_server.common.vector_store import (
-    VectorStoreCollectionConfig,
-    VectorStorePartitionAlreadyExistsError,
+    VectorStore,
+    validate_vector_store_name,
 )
 from memmachine_server.episodic_memory.event_memory.deriver import Deriver
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
@@ -52,7 +52,7 @@ from .long_term_memory import (
 
 logger = logging.getLogger(__name__)
 
-_EVENT_BACKEND_NAMESPACE = "long_term_memory"
+_EVENT_BACKEND_PURPOSE = "long_term_memory"
 
 
 async def long_term_memory_params_from_config(
@@ -93,9 +93,9 @@ async def _event_params(
     config: EventLongTermMemoryConf,
     resource_manager: InstanceOf[CommonResourceManager],
 ) -> EventBackendParams:
-    vector_store = await resource_manager.get_vector_store(config.vector_store)
     segment_store = await resource_manager.get_segment_store(config.segment_store)
     embedder = await resource_manager.get_embedder(config.embedder, validate=True)
+    vector_store = await event_backend_vector_store(config, resource_manager)
     reranker = (
         await resource_manager.get_reranker(config.reranker, validate=True)
         if config.reranker is not None
@@ -105,39 +105,9 @@ async def _event_params(
 
     partition_key = partition_key_for_session(config.session_id)
 
-    # Open the existing collection if any (preserves the original schema). Only
-    # create with our merged schema if the partition does not yet exist.
-    collection = await vector_store.get_partition(
-        namespace=_EVENT_BACKEND_NAMESPACE,
-        name=partition_key,
-    )
-    if collection is None:
-        collection_config = VectorStoreCollectionConfig(
-            vector_dimensions=embedder.dimensions,
-            similarity_metric=embedder.similarity_metric,
-            indexed_properties_schema={
-                **EventMemory.expected_vector_store_collection_schema(),
-                **EVENT_BACKEND_SYSTEM_FIELDS,
-            },
-        )
-        # The registry arbitrates creation across processes: a worker that
-        # loses the race to another creating the same partition opens the
-        # winner's collection.
-        with contextlib.suppress(VectorStorePartitionAlreadyExistsError):
-            await vector_store.create_partition(
-                namespace=_EVENT_BACKEND_NAMESPACE,
-                name=partition_key,
-                config=collection_config,
-            )
-        collection = await vector_store.get_partition(
-            namespace=_EVENT_BACKEND_NAMESPACE,
-            name=partition_key,
-        )
-        if collection is None:
-            raise RuntimeError(
-                f"Failed to open vector store collection after creation for "
-                f"partition {partition_key!r}"
-            )
+    # The registry arbitrates creation across processes: a worker that loses
+    # the race to another creating the same partition opens the winner's.
+    vector_store_partition = await vector_store.open_or_create_partition(partition_key)
 
     partition = await segment_store.open_or_create_partition(
         partition_key,
@@ -150,8 +120,7 @@ async def _event_params(
     return EventBackendParams(
         session_id=config.session_id,
         vector_store=vector_store,
-        vector_store_partition=collection,
-        vector_store_collection_namespace=_EVENT_BACKEND_NAMESPACE,
+        vector_store_partition=vector_store_partition,
         segment_store=segment_store,
         segment_store_partition=partition,
         partition_key=partition_key,
@@ -162,6 +131,50 @@ async def _event_params(
         deriver=deriver,
         metrics_factory=await resource_manager.get_metrics_factory("prometheus"),
     )
+
+
+async def event_backend_vector_store(
+    config: EventLongTermMemoryConf,
+    resource_manager: InstanceOf[CommonResourceManager],
+) -> VectorStore:
+    """The event backend's vector store: the store of its embedder, built for it."""
+    embedder = await resource_manager.get_embedder(config.embedder, validate=True)
+    return await resource_manager.get_vector_store(
+        config.vector_store,
+        vector_store_name=event_backend_vector_store_name(config.embedder),
+        vector_dimensions=embedder.dimensions,
+        similarity_metric=embedder.similarity_metric,
+        indexed_properties=event_backend_indexed_properties(),
+    )
+
+
+def event_backend_vector_store_name(embedder_id: str) -> str:
+    """The name of the vector store the event backend keeps for one embedder.
+
+    One cell of the purpose-by-embedder matrix, named so that one backend
+    can hold the stores of several embedders side by side.
+    """
+    vector_store_name = f"{_EVENT_BACKEND_PURPOSE}__{embedder_id}"
+    try:
+        validate_vector_store_name(vector_store_name)
+    except ValueError as error:
+        raise ValueError(
+            f"Embedder id {embedder_id!r} cannot name a vector store: "
+            f"{error} Rename the embedder in the configuration."
+        ) from error
+    return vector_store_name
+
+
+def event_backend_indexed_properties() -> dict[str, PropertyType]:
+    """The system keys the event backend writes into every vector record.
+
+    EventMemory's reserved keys and the adapter's own event fields; the
+    vector store is built with these.
+    """
+    return {
+        **EventMemory.expected_vector_store_collection_schema(),
+        **EVENT_BACKEND_SYSTEM_FIELDS,
+    }
 
 
 def partition_key_for_session(session_id: str) -> str:
