@@ -62,7 +62,7 @@ class CollectionRegistry(ABC):
 
     @abstractmethod
     async def startup(self) -> None:
-        """Ready the registry, idempotently; safe from several processes at once."""
+        """Ready the registry, idempotently."""
         raise NotImplementedError
 
     @abstractmethod

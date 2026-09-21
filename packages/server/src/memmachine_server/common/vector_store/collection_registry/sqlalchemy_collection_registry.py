@@ -36,7 +36,7 @@ from sqlalchemy import (
     select,
     update,
 )
-from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from memmachine_server.common.vector_store.data_types import (
@@ -115,16 +115,6 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
 
     @override
     async def startup(self) -> None:
-        # Two starters racing on an empty database can both find the
-        # tables absent and both issue the DDL; the loser's fails, and its
-        # second pass finds the winner's tables and creates nothing. Any
-        # other failure fails the second pass too.
-        try:
-            await self._create_tables()
-        except DBAPIError:
-            await self._create_tables()
-
-    async def _create_tables(self) -> None:
         async with self._engine.begin() as connection:
             await connection.run_sync(self._metadata.create_all)
 
