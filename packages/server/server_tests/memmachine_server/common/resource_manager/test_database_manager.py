@@ -289,14 +289,21 @@ async def test_sqlalchemy_pool_lifecycle_kwargs_none_omitted():
 # --- Qdrant ---
 
 
+_REGISTRY_DB = SqlAlchemyConf(dialect="sqlite", driver="aiosqlite", path=":memory:")
+
+
 def _qdrant_only_conf() -> MagicMock:
     """Build a DatabasesConf mock with only a Qdrant entry."""
     conf = MagicMock(spec=DatabasesConf)
     conf.neo4j_confs = {}
-    conf.relational_db_confs = {}
+    conf.relational_db_confs = {"registry": _REGISTRY_DB}
     conf.nebula_graph_confs = {}
     conf.qdrant_confs = {
-        "qdrant1": QdrantConf(host="localhost", port=6333),
+        "qdrant1": QdrantConf(
+            registry_database="registry",
+            host="localhost",
+            port=6333,
+        ),
     }
     conf.sqlite_vector_store_confs = {}
     conf.sqlite_vec_vector_store_confs = {}
@@ -308,6 +315,7 @@ async def test_qdrant_client_kwargs_forwarded():
     """host, port, grpc_port, prefer_grpc, and https are forwarded to AsyncQdrantClient."""
     conf = _qdrant_only_conf()
     conf.qdrant_confs["qdrant1"] = QdrantConf(
+        registry_database="registry",
         host="qdrant.example.com",
         port=7333,
         grpc_port=7334,
@@ -377,7 +385,9 @@ async def test_qdrant_api_key_omitted_when_empty():
 async def test_qdrant_creates_vector_store():
     """async_get_qdrant_client creates a QdrantVectorStore and stores it."""
     conf = _qdrant_only_conf()
-    conf.qdrant_confs["qdrant1"] = QdrantConf(registry_replication_factor=3)
+    conf.qdrant_confs["qdrant1"] = QdrantConf(
+        registry_database="registry", tombstone_retention_seconds=3600
+    )
 
     mock_client = AsyncMock()
     mock_client.close = AsyncMock()
@@ -401,7 +411,9 @@ async def test_qdrant_creates_vector_store():
     mock_params_cls.assert_called_once()
     kwargs = mock_params_cls.call_args.kwargs
     assert kwargs["client"] is mock_client
-    assert kwargs["registry_replication_factor"] == 3
+    assert kwargs["backend"] == "qdrant1"
+    assert kwargs["registry_engine"] is builder.sql_engines["registry"]
+    assert kwargs["tombstone_retention_seconds"] == 3600
     # Asserted as "not None" rather than pinned to a value: OperationTracker
     # accepts None and then discards every timing without error, so passing the
     # keyword is not the property that matters - passing a factory is.

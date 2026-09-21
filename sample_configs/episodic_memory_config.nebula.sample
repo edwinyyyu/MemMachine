@@ -119,6 +119,7 @@ resources:
         prefer_grpc: false
         https: false
         # api_key: <YOUR_QDRANT_API_KEY>   # required for Qdrant Cloud
+        registry_database: sqlite_test    # relational database holding the collection registry
     #
     # Alternative: Milvus. The local .db URI uses Milvus Lite; replace it with
     # http(s)://... plus token/db_name for Milvus server or Zilliz Cloud.
