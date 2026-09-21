@@ -15,7 +15,6 @@ from abc import ABC, abstractmethod
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import NamedTuple
 from uuid import UUID
 
 from memmachine_server.common.vector_store.data_types import (
@@ -23,7 +22,8 @@ from memmachine_server.common.vector_store.data_types import (
 )
 
 
-class RegisteredCollection(NamedTuple):
+@dataclass(frozen=True)
+class RegisteredCollection:
     """A live collection: the incarnation its points carry and the configuration it was created with."""
 
     incarnation: UUID
@@ -34,8 +34,9 @@ class RegisteredCollection(NamedTuple):
 class PurgeClaim:
     """A claimed tombstone: the incarnation to purge, where its points are, and what the round found.
 
-    The purger sets `found` before the claim ends: True when the backend
-    still held points under the incarnation, False when it held none.
+    Mutable for `found`, which the purger sets before the claim ends: True
+    when the backend still held points under the incarnation, False when
+    it held none.
     """
 
     incarnation: UUID
