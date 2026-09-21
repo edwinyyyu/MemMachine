@@ -17,7 +17,7 @@ from memmachine_server.common.episode_store import (
 from memmachine_server.common.episode_store.episode_sqlalchemy_store import (
     SqlAlchemyEpisodeStore,
 )
-from memmachine_server.common.errors import ResourceManagerClosedError
+from memmachine_server.common.errors import ResourcesClosedError
 from memmachine_server.common.language_model import LanguageModel
 from memmachine_server.common.metrics_factory import MetricsFactory
 from memmachine_server.common.reranker import Reranker
@@ -222,8 +222,8 @@ class ResourceManagerImpl:
         if name not in self._vector_store_purge_tasks:
             async with self._vector_store_lock:
                 if self._closed:
-                    raise ResourceManagerClosedError(
-                        "Resource manager is closed; no new vector stores can be handed out"
+                    raise ResourcesClosedError(
+                        f"Vector store {name!r} was requested after the resources were closed"
                     )
                 if name not in self._vector_store_purge_tasks:
                     self._vector_store_purge_tasks[name] = asyncio.create_task(

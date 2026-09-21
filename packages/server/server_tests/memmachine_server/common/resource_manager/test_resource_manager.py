@@ -34,7 +34,7 @@ from memmachine_server.common.errors import (
     InvalidEmbedderError,
     InvalidLanguageModelError,
     InvalidRerankerError,
-    ResourceManagerClosedError,
+    ResourcesClosedError,
 )
 from memmachine_server.common.resource_manager import CommonResourceManager
 from memmachine_server.common.resource_manager import (
@@ -432,7 +432,7 @@ async def test_get_vector_store_starts_one_sweeper_per_store(
     await invalid_resource_manager.close()
 
     assert task.cancelled()
-    with pytest.raises(ResourceManagerClosedError):
+    with pytest.raises(ResourcesClosedError):
         await invalid_resource_manager.get_vector_store("vs")
 
 
