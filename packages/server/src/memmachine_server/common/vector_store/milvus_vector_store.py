@@ -1,7 +1,6 @@
 """Milvus-based vector store implementation."""
 
 import asyncio
-import contextlib
 import hashlib
 import json
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -47,6 +46,7 @@ from .data_types import (
     QueryMatch,
     QueryResult,
     Record,
+    VectorStoreAttemptsExhaustedError,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
@@ -72,6 +72,11 @@ _MAX_UUID_LENGTH = 36
 _MAX_PRIMARY_ID_LENGTH = 128
 _INCARNATION_HEX_LENGTH = 32
 _FALSE_EXPR = f'{_ID_FIELD} == "__memmachine_no_match__"'
+
+# Consecutive lost creation races before open-or-create gives up: every
+# retry requires another process to have created and then deleted the
+# collection in between, so this depth means something else is wrong.
+_MAX_OPEN_OR_CREATE_ATTEMPTS = 10
 
 
 def _expr_string(value: str) -> str:
@@ -682,23 +687,35 @@ class MilvusVectorStore(VectorStore):
         MilvusVectorStore._require_identifiers(namespace, name)
         self._validate_metric(config.similarity_metric)
         async with self._tracker("open_or_create_collection"):
-            registered = await self._registry.get(namespace, name)
-            if registered is None:
-                await self._create_native_collection(namespace, config)
-                # A racing creator may win the insert; its row is then the
-                # one to open.
-                with contextlib.suppress(VectorStoreCollectionAlreadyExistsError):
-                    await self._registry.create(namespace, name, config)
+            attempts = 0
+            # Read-then-create, retried: losing the create means a racing
+            # creator won (open its row), and finding no row after losing
+            # means a racing deleter removed the winner (create again).
+            while True:
                 registered = await self._registry.get(namespace, name)
-                if registered is None:
-                    # Created and deleted again meanwhile: report it as absent
-                    # rather than creating a collection the deleter removed.
-                    raise VectorStoreCollectionHandleStaleError(namespace, name)
-            if registered.config != config:
-                raise VectorStoreCollectionConfigMismatchError(
-                    namespace, name, registered.config, config
+                if registered is not None:
+                    if registered.config != config:
+                        raise VectorStoreCollectionConfigMismatchError(
+                            namespace, name, registered.config, config
+                        )
+                    return self._build_collection_handle(namespace, name, registered)
+                await self._create_native_collection(namespace, config)
+                try:
+                    incarnation = await self._registry.create(namespace, name, config)
+                except VectorStoreCollectionAlreadyExistsError as err:
+                    attempts += 1
+                    if attempts >= _MAX_OPEN_OR_CREATE_ATTEMPTS:
+                        raise VectorStoreAttemptsExhaustedError(
+                            f"Opening or creating collection ({namespace!r}, "
+                            f"{name!r}) made no progress after "
+                            f"{_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts"
+                        ) from err
+                    continue
+                return self._build_collection_handle(
+                    namespace,
+                    name,
+                    RegisteredCollection(incarnation=incarnation, config=config),
                 )
-            return self._build_collection_handle(namespace, name, registered)
 
     @override
     async def open_collection(
