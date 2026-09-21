@@ -231,6 +231,10 @@ class ResourceNotReadyError(MemMachineError):
         super().__init__(message)
 
 
+class ResourceManagerClosedError(MemMachineError):
+    """Raised when a resource is requested from a resource manager that has been closed."""
+
+
 class EpisodicMemoryManagerClosedError(MemMachineError):
     """Exception raised when operating on a closed EpisodicMemory instance."""
 
