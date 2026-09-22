@@ -9,7 +9,7 @@ from sqlalchemy import DateTime, func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
-    SQLAlchemyCollectionRegistry,
+    SQLAlchemyVectorStoreCollectionRegistry,
 )
 from memmachine_server.common.vector_store.data_types import (
     VectorStoreAttemptsExhaustedError,
@@ -33,8 +33,8 @@ def vector_store_name() -> str:
 
 async def _registry(
     engine: AsyncEngine, vector_store_name: str
-) -> SQLAlchemyCollectionRegistry:
-    registry = SQLAlchemyCollectionRegistry(
+) -> SQLAlchemyVectorStoreCollectionRegistry:
+    registry = SQLAlchemyVectorStoreCollectionRegistry(
         engine=engine,
         vector_store_name=vector_store_name,
         tombstone_retention=RETENTION,
@@ -43,7 +43,7 @@ async def _registry(
     return registry
 
 
-async def _queued(registry: SQLAlchemyCollectionRegistry) -> list[UUID]:
+async def _queued(registry: SQLAlchemyVectorStoreCollectionRegistry) -> list[UUID]:
     """The registry's tombstones, oldest first."""
     async with registry._engine.connect() as connection:
         rows = await connection.execute(
@@ -55,7 +55,7 @@ async def _queued(registry: SQLAlchemyCollectionRegistry) -> list[UUID]:
 
 
 async def _clean_rounds(
-    registry: SQLAlchemyCollectionRegistry,
+    registry: SQLAlchemyVectorStoreCollectionRegistry,
 ) -> dict[UUID, bool]:
     """Each tombstone of the registry, and whether a round has found it clean."""
     async with registry._engine.connect() as connection:
@@ -68,7 +68,7 @@ async def _clean_rounds(
 
 
 async def _age_clean_round(
-    registry: SQLAlchemyCollectionRegistry, incarnation: UUID
+    registry: SQLAlchemyVectorStoreCollectionRegistry, incarnation: UUID
 ) -> None:
     """Move the tombstone's clean round back past the retention, on the database clock."""
     async with registry._engine.begin() as connection:
@@ -83,7 +83,7 @@ async def _age_clean_round(
 
 
 async def _age_enqueue(
-    registry: SQLAlchemyCollectionRegistry, incarnation: UUID
+    registry: SQLAlchemyVectorStoreCollectionRegistry, incarnation: UUID
 ) -> None:
     """Move the tombstone's enqueue stamp back a minute, on the database clock."""
     async with registry._engine.begin() as connection:
@@ -97,7 +97,9 @@ async def _age_enqueue(
         )
 
 
-async def _round(registry: SQLAlchemyCollectionRegistry, found: bool) -> UUID | None:
+async def _round(
+    registry: SQLAlchemyVectorStoreCollectionRegistry, found: bool
+) -> UUID | None:
     """One purge round on the oldest due tombstone, reporting `found`; its incarnation, or None."""
     async with registry.claim_oldest() as claim:
         if claim is None:
@@ -139,7 +141,7 @@ async def test_a_taken_name_is_already_exists_whatever_the_config(
 @pytest.mark.parametrize("invalid_name", ["", "Upper", "with-hyphen", "x" * 33])
 def test_a_vector_store_name_must_be_an_identifier(invalid_name):
     with pytest.raises(ValueError, match="Vector store name"):
-        SQLAlchemyCollectionRegistry(
+        SQLAlchemyVectorStoreCollectionRegistry(
             engine=create_async_engine("sqlite+aiosqlite://"),
             vector_store_name=invalid_name,
             tombstone_retention=RETENTION,
