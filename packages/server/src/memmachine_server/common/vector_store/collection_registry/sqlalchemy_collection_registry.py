@@ -36,6 +36,7 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -58,6 +59,8 @@ from .collection_registry import (
 logger = logging.getLogger(__name__)
 
 _MAX_MINT_ATTEMPTS = 10
+
+_JSON_AUTO = JSON().with_variant(JSONB, "postgresql")
 
 
 class _RegistryInsertRejectedError(Exception):
@@ -104,7 +107,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             Column("incarnation", Uuid, nullable=False, unique=True),
             # The configuration the collection was created with: the handle
             # is built from it, and open-or-create compares against it.
-            Column("config_json", JSON, nullable=False),
+            Column("config", _JSON_AUTO, nullable=False),
         )
         self._purge_queue = Table(
             f"{table_prefix}_gc",
@@ -113,7 +116,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             Column("namespace", String(_IDENTIFIER_MAX_BYTES), nullable=False),
             Column("name", String(_IDENTIFIER_MAX_BYTES), nullable=False),
             # The configuration names the native collection the points are in.
-            Column("config_json", JSON, nullable=False),
+            Column("config", _JSON_AUTO, nullable=False),
             Column("enqueued_at", DateTime(timezone=True), nullable=False),
             # When a purge round last found nothing under the incarnation;
             # cleared by a round that finds something. The entry is removed
@@ -171,7 +174,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                         namespace=namespace,
                         name=name,
                         incarnation=incarnation,
-                        config_json=config.model_dump(mode="json"),
+                        config=config.model_dump(mode="json"),
                     )
                 )
                 queued = (
@@ -210,7 +213,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                 await connection.execute(
                     select(
                         self._collections.c.incarnation,
-                        self._collections.c.config_json,
+                        self._collections.c.config,
                     ).where(
                         self._collections.c.namespace == namespace,
                         self._collections.c.name == name,
@@ -221,7 +224,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             return None
         return RegisteredCollection(
             incarnation=row.incarnation,
-            config=VectorStoreCollectionConfig.model_validate(row.config_json),
+            config=VectorStoreCollectionConfig.model_validate(row.config),
         )
 
     @override
@@ -256,7 +259,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                     )
                     .returning(
                         self._collections.c.incarnation,
-                        self._collections.c.config_json,
+                        self._collections.c.config,
                     )
                 )
             ).one_or_none()
@@ -267,7 +270,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                     incarnation=row.incarnation,
                     namespace=namespace,
                     name=name,
-                    config_json=row.config_json,
+                    config=row.config,
                     enqueued_at=func.now(),
                 )
             )
@@ -295,7 +298,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                         self._purge_queue.c.incarnation,
                         self._purge_queue.c.namespace,
                         self._purge_queue.c.name,
-                        self._purge_queue.c.config_json,
+                        self._purge_queue.c.config,
                         self._purge_queue.c.clean_at,
                     )
                     .where(
@@ -317,7 +320,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                 incarnation=row.incarnation,
                 namespace=row.namespace,
                 name=row.name,
-                config=VectorStoreCollectionConfig.model_validate(row.config_json),
+                config=VectorStoreCollectionConfig.model_validate(row.config),
                 clean_at=row.clean_at,
             )
             yield claim
