@@ -29,7 +29,7 @@ from memmachine_server.common.filter.filter_parser import (
     Or,
 )
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
-    SQLAlchemyCollectionRegistry,
+    SQLAlchemyVectorStoreCollectionRegistry,
 )
 from memmachine_server.common.vector_store.data_types import (
     Record,
@@ -77,7 +77,7 @@ async def store(tmp_path):
     vector_store = MilvusVectorStore(
         MilvusVectorStoreParams(
             client=client,
-            collection_registry=SQLAlchemyCollectionRegistry(
+            collection_registry=SQLAlchemyVectorStoreCollectionRegistry(
                 engine=registry_engine,
                 vector_store_name=VECTOR_STORE_NAME,
                 tombstone_retention=TOMBSTONE_RETENTION,

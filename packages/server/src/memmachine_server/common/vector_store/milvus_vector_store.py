@@ -41,7 +41,7 @@ from memmachine_server.common.properties_json import (
 )
 from memmachine_server.common.utils import compute_similarity, ensure_tz_aware
 
-from .collection_registry import CollectionRegistry, RegisteredCollection
+from .collection_registry import RegisteredCollection, VectorStoreCollectionRegistry
 from .data_types import (
     QueryMatch,
     QueryResult,
@@ -467,7 +467,7 @@ class MilvusVectorStoreParams(BaseModel):
 
     Attributes:
         client (MilvusClient): Milvus client instance.
-        collection_registry (CollectionRegistry):
+        collection_registry (VectorStoreCollectionRegistry):
             The registry of the Milvus deployment the client reaches: which
             collections exist, under which incarnation and configuration,
             and which dead incarnations await purge. Milvus arbitrates none
@@ -483,7 +483,7 @@ class MilvusVectorStoreParams(BaseModel):
         ...,
         description="Milvus client instance",
     )
-    collection_registry: InstanceOf[CollectionRegistry] = Field(
+    collection_registry: InstanceOf[VectorStoreCollectionRegistry] = Field(
         ...,
         description="The registry of the deployment the client reaches",
     )
@@ -502,7 +502,7 @@ class MilvusVectorStore(VectorStore):
 
     A logical collection is a partition-key value, the incarnation of its
     life, inside a native collection shared by the logical collections of
-    one namespace and configuration. The catalog is the `CollectionRegistry`
+    one namespace and configuration. The catalog is the `VectorStoreCollectionRegistry`
     the store is given: it mints the incarnations and arbitrates creation,
     deletion and reclamation across processes, which Milvus, with no
     transactions or unique constraints, cannot. Any process sharing the

@@ -401,7 +401,7 @@ async def test_qdrant_creates_vector_store():
             "memmachine_server.common.vector_store.qdrant_vector_store.QdrantVectorStore",
         ) as mock_store_cls,
         patch(
-            "memmachine_server.common.resource_manager.database_manager.SQLAlchemyCollectionRegistry",
+            "memmachine_server.common.resource_manager.database_manager.SQLAlchemyVectorStoreCollectionRegistry",
         ) as mock_registry_cls,
         patch(
             "qdrant_client.AsyncQdrantClient",
@@ -650,7 +650,7 @@ async def test_milvus_creates_vector_store():
             "memmachine_server.common.vector_store.milvus_vector_store.MilvusVectorStore",
         ) as mock_store_cls,
         patch(
-            "memmachine_server.common.resource_manager.database_manager.SQLAlchemyCollectionRegistry",
+            "memmachine_server.common.resource_manager.database_manager.SQLAlchemyVectorStoreCollectionRegistry",
         ) as mock_registry_cls,
         patch("pymilvus.MilvusClient", return_value=mock_client),
     ):

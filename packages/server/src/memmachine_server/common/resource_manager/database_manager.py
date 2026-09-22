@@ -35,7 +35,7 @@ from memmachine_server.common.vector_graph_store.neo4j_vector_graph_store import
 )
 from memmachine_server.common.vector_store import VectorStore
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
-    SQLAlchemyCollectionRegistry,
+    SQLAlchemyVectorStoreCollectionRegistry,
 )
 from memmachine_server.common.vector_store.vector_search_engine import (
     VectorSearchEngine,
@@ -627,7 +627,7 @@ class DatabaseManager:
             # failed lookup would have nothing to close it. The backend's
             # key names the vector store: the one identity of the
             # deployment the client reaches that this wiring has.
-            collection_registry = SQLAlchemyCollectionRegistry(
+            collection_registry = SQLAlchemyVectorStoreCollectionRegistry(
                 engine=await self.async_get_sql_engine(conf.collection_registry),
                 vector_store_name=name,
                 tombstone_retention=timedelta(seconds=conf.tombstone_retention_seconds),
@@ -716,7 +716,7 @@ class DatabaseManager:
             # failed lookup would have nothing to close it. The backend's
             # key names the vector store: the one identity of the
             # deployment the client reaches that this wiring has.
-            collection_registry = SQLAlchemyCollectionRegistry(
+            collection_registry = SQLAlchemyVectorStoreCollectionRegistry(
                 engine=await self.async_get_sql_engine(conf.collection_registry),
                 vector_store_name=name,
                 tombstone_retention=timedelta(seconds=conf.tombstone_retention_seconds),

@@ -50,9 +50,9 @@ from memmachine_server.common.vector_store.utils import (
 )
 
 from .collection_registry import (
-    CollectionRegistry,
     PurgeClaim,
     RegisteredCollection,
+    VectorStoreCollectionRegistry,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ class _RegistryInsertRejectedError(Exception):
     """A registry insert was rejected; retry with a fresh incarnation."""
 
 
-class SQLAlchemyCollectionRegistry(CollectionRegistry):
+class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     """The registry of one vector store's collections, in its own table pair.
 
     `vector_store_name` names the vector store, and so the vector database

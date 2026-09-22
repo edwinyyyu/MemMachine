@@ -41,7 +41,7 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 from memmachine_server.common.utils import ensure_tz_aware
 
-from .collection_registry import CollectionRegistry, RegisteredCollection
+from .collection_registry import RegisteredCollection, VectorStoreCollectionRegistry
 from .data_types import (
     QueryMatch,
     QueryResult,
@@ -532,7 +532,7 @@ class QdrantVectorStoreParams(BaseModel):
     Attributes:
         client (AsyncQdrantClient):
             Async Qdrant client instance.
-        collection_registry (CollectionRegistry):
+        collection_registry (VectorStoreCollectionRegistry):
             The registry of the Qdrant deployment the client reaches: which
             collections exist, under which incarnation and configuration,
             and which dead incarnations await purge. Qdrant arbitrates none
@@ -550,7 +550,7 @@ class QdrantVectorStoreParams(BaseModel):
         ...,
         description="Async Qdrant client instance",
     )
-    collection_registry: InstanceOf[CollectionRegistry] = Field(
+    collection_registry: InstanceOf[VectorStoreCollectionRegistry] = Field(
         ...,
         description="The registry of the deployment the client reaches",
     )
@@ -565,7 +565,7 @@ class QdrantVectorStore(VectorStore):
 
     A logical collection is a payload value, the incarnation of its life,
     inside a native collection shared by the logical collections of one
-    namespace and configuration. The catalog is the `CollectionRegistry`
+    namespace and configuration. The catalog is the `VectorStoreCollectionRegistry`
     the store is given: it mints the incarnations and arbitrates creation,
     deletion and reclamation across processes, which Qdrant, with no
     transactions or unique constraints, cannot. Any process sharing the

@@ -51,7 +51,7 @@ class PurgeClaim:
     found: bool | None = None
 
 
-class CollectionRegistry(ABC):
+class VectorStoreCollectionRegistry(ABC):
     """
     The collection registry of one vector store.
 

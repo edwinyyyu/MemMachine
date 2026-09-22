@@ -22,7 +22,7 @@ from memmachine_server.common.filter.filter_parser import (
 )
 from memmachine_server.common.metrics_factory import MetricsFactory
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
-    SQLAlchemyCollectionRegistry,
+    SQLAlchemyVectorStoreCollectionRegistry,
 )
 from memmachine_server.common.vector_store.data_types import (
     Record,
@@ -75,7 +75,7 @@ def _params(client, registry_engine, **overrides) -> QdrantVectorStoreParams:
     """Parameters for one store: its own registry over the shared registry database."""
     return QdrantVectorStoreParams(
         client=client,
-        collection_registry=SQLAlchemyCollectionRegistry(
+        collection_registry=SQLAlchemyVectorStoreCollectionRegistry(
             engine=registry_engine,
             vector_store_name=VECTOR_STORE_NAME,
             tombstone_retention=TOMBSTONE_RETENTION,
