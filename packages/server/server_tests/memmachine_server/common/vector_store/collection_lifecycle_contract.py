@@ -30,6 +30,7 @@ import pytest
 
 from memmachine_server.common.vector_store import (
     Record,
+    VectorStoreAttemptsExhaustedError,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
@@ -204,12 +205,17 @@ class CollectionLifecycleContract:
         await store.delete_collection(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
         )
-        # Unreachable at once; the records may still be held.
+        # Unreachable at once, and the records are left for the purge:
+        # deletion touches the registry alone, whatever the collection holds.
         assert (
             await store.open_collection(
                 namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
             )
             is None
+        )
+        assert (
+            await self.count_stored(store, LIFECYCLE_NAMESPACE, LIFECYCLE_CONFIG)
+            == baseline + 5
         )
 
         assert await self._drained_count(store) == baseline
@@ -280,6 +286,126 @@ class CollectionLifecycleContract:
                 await store.create_collection(
                     namespace=namespace, name=name, config=LIFECYCLE_CONFIG
                 )
+
+    @pytest.mark.asyncio
+    async def test_a_read_checks_the_registry_once_and_a_write_twice(self, store):
+        """A read costs one registry round trip, before it; a write two,
+        around it, so a write under an incarnation that died meanwhile raises."""
+        collection = await _fresh(store, LIFECYCLE_NAME)
+        record = _records(1)[0]
+        checks = 0
+        is_live = collection._is_live
+
+        async def counted_is_live(incarnation) -> bool:
+            nonlocal checks
+            checks += 1
+            return await is_live(incarnation)
+
+        collection._is_live = counted_is_live
+
+        await collection.upsert(records=[record])
+        assert checks == 2
+        checks = 0
+        await collection.query(query_vectors=[record.vector], limit=1)
+        assert checks == 1
+        checks = 0
+        await collection.get(record_uuids=[record.uuid])
+        assert checks == 1
+        checks = 0
+        await collection.delete(record_uuids=[record.uuid])
+        assert checks == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "create", ["create_collection", "open_or_create_collection"]
+    )
+    async def test_a_failed_native_creation_registers_nothing(
+        self, store, monkeypatch, create
+    ):
+        """The native collection comes first: a creation that fails there
+        leaves no registered collection whose records have nowhere to go."""
+        await store.delete_collection(
+            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
+        )
+
+        async def refused(namespace, config) -> None:
+            raise RuntimeError("the backend refused")
+
+        monkeypatch.setattr(store, "_create_native_collection", refused)
+        with pytest.raises(RuntimeError, match="refused"):
+            await getattr(store, create)(
+                namespace=LIFECYCLE_NAMESPACE,
+                name=LIFECYCLE_NAME,
+                config=LIFECYCLE_CONFIG,
+            )
+
+        assert (
+            await store.open_collection(
+                namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
+            )
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_open_or_create_gives_up_after_losing_every_race(
+        self, store, monkeypatch
+    ):
+        """A creator that keeps losing to a winner that keeps vanishing gives
+        up after a bounded number of attempts instead of looping."""
+        registry = store._collection_registry
+
+        async def lost(namespace, name, config):
+            # Yields as a real round trip would, so an unbounded loop fails
+            # the timeout below instead of starving the event loop.
+            await asyncio.sleep(0)
+            raise VectorStoreCollectionAlreadyExistsError(namespace, name)
+
+        async def vanished(namespace, name) -> None:
+            return None
+
+        monkeypatch.setattr(registry, "create", lost)
+        monkeypatch.setattr(registry, "get", vanished)
+
+        with pytest.raises(VectorStoreAttemptsExhaustedError):
+            await asyncio.wait_for(
+                store.open_or_create_collection(
+                    namespace=LIFECYCLE_NAMESPACE,
+                    name=LIFECYCLE_NAME,
+                    config=LIFECYCLE_CONFIG,
+                ),
+                30,
+            )
+
+    @pytest.mark.asyncio
+    async def test_open_or_create_creates_again_when_the_winner_is_gone(
+        self, store, monkeypatch
+    ):
+        """Losing the create to a winner that is deleted before it can be
+        opened is not an error: open-or-create creates the collection again."""
+        await store.delete_collection(
+            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
+        )
+        registry = store._collection_registry
+        create = registry.create
+        lost = False
+
+        async def lose_once(namespace, name, config):
+            nonlocal lost
+            if not lost:
+                lost = True
+                raise VectorStoreCollectionAlreadyExistsError(namespace, name)
+            return await create(namespace, name, config)
+
+        monkeypatch.setattr(registry, "create", lose_once)
+
+        collection = await store.open_or_create_collection(
+            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME, config=LIFECYCLE_CONFIG
+        )
+
+        assert lost
+        record = _records(1)[0]
+        await collection.upsert(records=[record])
+        assert await collection.get(record_uuids=[record.uuid])
 
     @pytest.mark.asyncio
     async def test_lifecycle_churn_raises_only_domain_errors(self, store):
