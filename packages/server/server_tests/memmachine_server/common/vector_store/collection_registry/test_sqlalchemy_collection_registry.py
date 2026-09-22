@@ -172,6 +172,15 @@ def test_a_vector_store_name_must_be_an_identifier(invalid_name):
         )
 
 
+def test_an_engine_of_another_dialect_is_refused(monkeypatch):
+    engine = create_async_engine("sqlite+aiosqlite://")
+    monkeypatch.setattr(engine.dialect, "name", "mssql")
+    with pytest.raises(ValueError, match="mssql"):
+        SQLAlchemyVectorStoreCollectionRegistry(
+            engine=engine, vector_store_name="store", tombstone_retention=RETENTION
+        )
+
+
 @pytest.mark.asyncio
 async def test_registries_of_two_vector_stores_share_a_database_and_nothing_else(
     sqlalchemy_engine, vector_store_name
