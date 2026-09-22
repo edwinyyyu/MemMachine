@@ -6,8 +6,8 @@ writes, so a catalog kept inside them cannot arbitrate two processes
 creating, deleting or reclaiming the same logical collection. This
 registry lives in the deployment's relational database instead: one table
 pair per backend kind, shared by every store on that kind of backend,
-with a row per live logical collection keyed by backend, namespace and
-name, whose incarnation is the value every point of that life carries,
+with a row per live logical collection keyed by namespace and name, whose
+incarnation is the value every point of that life carries,
 and a purge queue of dead incarnations claimed oldest-first. Creation is
 an insert the primary key arbitrates, deletion is one transaction, and a
 purge claim is a row lock the database hands to one purger at a time.
@@ -51,7 +51,6 @@ from .collection_registry import CollectionRegistry, PurgeClaim, RegisteredColle
 logger = logging.getLogger(__name__)
 
 _MAX_MINT_ATTEMPTS = 10
-_BACKEND_ID_MAX_LENGTH = 255
 
 
 class _RegistryInsertRejectedError(Exception):
@@ -62,10 +61,7 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
     """The collection registry of one store, in a table pair shared by its backend kind.
 
     `table_prefix` names the backend kind: every store on that kind of
-    backend shares `{prefix}_ct` and `{prefix}_gc`, and `backend`, the id
-    of the configured backend the store is on, is part of every key, so
-    stores on different backends keep apart in one database.
-    `tombstone_retention` is how long a dead incarnation's entry outlives
+    backend shares `{prefix}_ct` and `{prefix}_gc`. `tombstone_retention` is how long a dead incarnation's entry outlives
     the first purge round that found nothing; it must exceed, by orders
     of magnitude, the longest a write to the backend can be in flight.
     The retention is measured on the database clock.
@@ -76,18 +72,15 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
         *,
         engine: AsyncEngine,
         table_prefix: str,
-        backend: str,
         tombstone_retention: timedelta,
     ) -> None:
-        """Bind to the registry tables of one backend kind, for one backend."""
+        """Bind to the registry tables of one backend kind."""
         self._engine = engine
-        self._backend = backend
         self._tombstone_retention = tombstone_retention
         metadata = MetaData()
         self._collections = Table(
             f"{table_prefix}_ct",
             metadata,
-            Column("backend", String(_BACKEND_ID_MAX_LENGTH), primary_key=True),
             Column("namespace", String(_IDENTIFIER_MAX_BYTES), primary_key=True),
             Column("name", String(_IDENTIFIER_MAX_BYTES), primary_key=True),
             Column("incarnation", Uuid, nullable=False, unique=True),
@@ -99,7 +92,6 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
             f"{table_prefix}_gc",
             metadata,
             Column("incarnation", Uuid, primary_key=True),
-            Column("backend", String(_BACKEND_ID_MAX_LENGTH), nullable=False),
             Column("namespace", String(_IDENTIFIER_MAX_BYTES), nullable=False),
             Column("name", String(_IDENTIFIER_MAX_BYTES), nullable=False),
             # The configuration names the native collection the points are in.
@@ -109,7 +101,7 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
             # cleared by a round that finds something. The entry is removed
             # by a round that finds nothing a retention after this.
             Column("clean_at", DateTime(timezone=True), nullable=True),
-            Index(f"{table_prefix}_gc__ba_ea", "backend", "enqueued_at"),
+            Index(f"{table_prefix}_gc__ea", "enqueued_at"),
         )
         self._metadata = metadata
 
@@ -134,9 +126,8 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
                 attempts += 1
                 if attempts >= _MAX_MINT_ATTEMPTS:
                     raise VectorStoreAttemptsExhaustedError(
-                        f"Creating collection ({namespace!r}, {name!r}) on backend "
-                        f"{self._backend!r} made no progress after "
-                        f"{_MAX_MINT_ATTEMPTS} attempts"
+                        f"Creating collection ({namespace!r}, {name!r}) made no "
+                        f"progress after {_MAX_MINT_ATTEMPTS} attempts"
                     ) from err
                 continue
             return incarnation
@@ -159,7 +150,6 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
             async with self._engine.begin() as connection:
                 await connection.execute(
                     insert(self._collections).values(
-                        backend=self._backend,
                         namespace=namespace,
                         name=name,
                         incarnation=incarnation,
@@ -175,24 +165,22 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
                 ).scalar_one_or_none()
                 if queued is not None:
                     logger.warning(
-                        "Incarnation %s minted for collection (%r, %r) on backend %r "
+                        "Incarnation %s minted for collection (%r, %r) "
                         "collides with garbage awaiting purge; re-minting",
                         incarnation,
                         namespace,
                         name,
-                        self._backend,
                     )
                     raise _RegistryInsertRejectedError(str(incarnation))
         except IntegrityError as err:
             if await self.get(namespace, name) is not None:
                 raise VectorStoreCollectionAlreadyExistsError(namespace, name) from err
             logger.warning(
-                "Registry insert for collection (%r, %r) on backend %r with "
-                "incarnation %s failed and no row exists under the key; "
-                "retrying with a fresh incarnation",
+                "Registry insert for collection (%r, %r) with incarnation %s "
+                "failed and no row exists under the key; retrying with a fresh "
+                "incarnation",
                 namespace,
                 name,
-                self._backend,
                 incarnation,
             )
             raise _RegistryInsertRejectedError(str(incarnation)) from err
@@ -206,7 +194,6 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
                         self._collections.c.incarnation,
                         self._collections.c.config_json,
                     ).where(
-                        self._collections.c.backend == self._backend,
                         self._collections.c.namespace == namespace,
                         self._collections.c.name == name,
                     )
@@ -246,7 +233,6 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
                 await connection.execute(
                     delete(self._collections)
                     .where(
-                        self._collections.c.backend == self._backend,
                         self._collections.c.namespace == namespace,
                         self._collections.c.name == name,
                     )
@@ -261,7 +247,6 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
             await connection.execute(
                 insert(self._purge_queue).values(
                     incarnation=row.incarnation,
-                    backend=self._backend,
                     namespace=namespace,
                     name=name,
                     config_json=row.config_json,
@@ -296,7 +281,6 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
                         self._purge_queue.c.clean_at,
                     )
                     .where(
-                        self._purge_queue.c.backend == self._backend,
                         or_(
                             self._purge_queue.c.clean_at.is_(None),
                             self._purge_queue.c.clean_at
@@ -321,8 +305,8 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
             yield claim
             if claim.found is None:
                 raise RuntimeError(
-                    f"Purge round for incarnation {claim.incarnation} on backend "
-                    f"{self._backend!r} ended without reporting what it found"
+                    f"Purge round for incarnation {claim.incarnation} ended "
+                    "without reporting what it found"
                 )
             # A round that found nothing applies its outcome only to the
             # entry as the claim read it. Under the row lock that is always

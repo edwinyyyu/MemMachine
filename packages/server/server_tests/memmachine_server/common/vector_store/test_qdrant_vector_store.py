@@ -43,7 +43,6 @@ from server_tests.memmachine_server.common.vector_store.collection_lifecycle_con
 NAMESPACE = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
-BACKEND = "qdrant_test"
 REGISTRY_TABLE_PREFIX = "vector_store_qdrant"
 TOMBSTONE_RETENTION = timedelta(days=1)
 
@@ -79,7 +78,6 @@ def _params(client, registry_engine, **overrides) -> QdrantVectorStoreParams:
         collection_registry=SQLAlchemyCollectionRegistry(
             engine=registry_engine,
             table_prefix=REGISTRY_TABLE_PREFIX,
-            backend=BACKEND,
             tombstone_retention=TOMBSTONE_RETENTION,
         ),
         **overrides,

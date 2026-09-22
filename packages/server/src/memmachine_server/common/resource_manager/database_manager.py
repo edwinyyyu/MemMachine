@@ -628,7 +628,6 @@ class DatabaseManager:
             collection_registry = SQLAlchemyCollectionRegistry(
                 engine=await self.async_get_sql_engine(conf.collection_registry),
                 table_prefix="vector_store_qdrant",
-                backend=name,
                 tombstone_retention=timedelta(seconds=conf.tombstone_retention_seconds),
             )
 
@@ -716,7 +715,6 @@ class DatabaseManager:
             collection_registry = SQLAlchemyCollectionRegistry(
                 engine=await self.async_get_sql_engine(conf.collection_registry),
                 table_prefix="vector_store_milvus",
-                backend=name,
                 tombstone_retention=timedelta(seconds=conf.tombstone_retention_seconds),
             )
 

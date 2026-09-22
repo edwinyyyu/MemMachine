@@ -3,8 +3,8 @@ Abstract base class for a collection registry.
 
 The catalog of a vector store whose backend holds only points: which
 logical collections exist, under which incarnation and configuration, and
-which dead incarnations await purge. A registry is bound to one configured
-backend and keys its collections by namespace and name. Its calls are
+which dead incarnations await purge. A registry keys its collections by
+namespace and name. Its calls are
 arbitrated across every process sharing it: creation mints an incarnation
 no live or queued collection carries, deletion makes the collection
 unreachable when it returns, and a purge claim is handed to one purger at
@@ -49,7 +49,7 @@ class PurgeClaim:
 
 class CollectionRegistry(ABC):
     """
-    The collection registry of one vector store, on one configured backend.
+    The collection registry of one vector store.
 
     A queue entry is a dead incarnation's tombstone. The backend holds the
     points, and a write the registry read as live can land there after
