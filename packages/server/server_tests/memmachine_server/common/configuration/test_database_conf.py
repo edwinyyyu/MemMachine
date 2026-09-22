@@ -319,8 +319,15 @@ def test_milvus_conf_rejects_invalid_values():
         MilvusConf(collection_registry="db", uri="")
     with pytest.raises(ValueError, match="consistency_level"):
         MilvusConf(collection_registry="db", consistency_level="Linearizable")
+
+
+def test_milvus_conf_rejects_a_timeout_that_is_not_a_positive_whole_second():
     with pytest.raises(ValueError, match="request_timeout_seconds"):
         MilvusConf(collection_registry="db", request_timeout_seconds=0)
+    with pytest.raises(ValueError, match="request_timeout_seconds"):
+        MilvusConf(collection_registry="db", request_timeout_seconds=-1)
+    with pytest.raises(ValueError, match="request_timeout_seconds"):
+        MilvusConf(collection_registry="db", request_timeout_seconds=1.5)
 
 
 def test_neo4j_pool_lifecycle_fields():
