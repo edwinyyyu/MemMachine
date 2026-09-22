@@ -21,6 +21,7 @@ from unittest.mock import create_autospec
 import pytest
 
 from memmachine_server.common.data_types import SimilarityMetric
+from memmachine_server.common.embedder import Embedder
 from memmachine_server.common.episode_store import (
     Episode,
     EpisodeEntry,
@@ -43,6 +44,12 @@ from memmachine_server.episodic_memory.event_memory.segment_store import (
 )
 from memmachine_server.episodic_memory.event_memory.segmenter.passthrough_segmenter import (
     PassthroughSegmenter,
+)
+from memmachine_server.episodic_memory.event_memory.segmenter.segmenter import (
+    Segmenter,
+)
+from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter import (
+    TextSegmenter,
 )
 from memmachine_server.episodic_memory.long_term_memory import (
     EVENT_BACKEND_SYSTEM_FIELDS,
@@ -480,20 +487,23 @@ async def test_timestamp_filter_field_is_accepted(long_term_memory, episodes):
     )
 
 
-def _make_ltm_with_metric(
-    metric: SimilarityMetric,
+def _make_ltm(
+    embedder: Embedder,
     episodes: list[Episode],
+    *,
+    segmenter: Segmenter | None = None,
 ) -> LongTermMemory:
-    """Build a self-contained LongTermMemory whose vector store uses `metric`.
+    """Build a self-contained LongTermMemory around `embedder` and `segmenter`.
 
-    Avoids the shared fixtures so each test can pick its own similarity metric.
-    No reranker is configured — that's the failure mode under euclidean.
+    Avoids the shared fixtures so each test can pick its own similarity metric
+    (the vector store takes the embedder's) or segmenter (passthrough unless
+    given). No reranker is configured — that's the failure mode under
+    euclidean.
     """
-    fake_embedder = FakeEmbedder(similarity_metric=metric)
     vector_store_collection = InMemoryVectorStoreCollection(
         VectorStoreCollectionConfig(
-            vector_dimensions=fake_embedder.dimensions,
-            similarity_metric=metric,
+            vector_dimensions=embedder.dimensions,
+            similarity_metric=embedder.similarity_metric,
             indexed_properties_schema={
                 **EventMemory.expected_vector_store_collection_schema(),
                 **EVENT_BACKEND_SYSTEM_FIELDS,
@@ -510,8 +520,8 @@ def _make_ltm_with_metric(
             segment_store_partition=InMemorySegmentStorePartition(),
             partition_key="sess1",
             episode_storage=FakeEpisodeStorage({e.uid: e for e in episodes}),
-            embedder=fake_embedder,
-            segmenter=PassthroughSegmenter(),
+            embedder=embedder,
+            segmenter=segmenter if segmenter is not None else PassthroughSegmenter(),
             deriver=WholeTextDeriver(),
         ),
     )
@@ -526,7 +536,7 @@ async def test_score_threshold_drops_low_scores_under_cosine():
         _episode("near", "abc"),
         _episode("far", "abcdefghij"),
     ]
-    ltm = _make_ltm_with_metric(SimilarityMetric.COSINE, episodes)
+    ltm = _make_ltm(FakeEmbedder(similarity_metric=SimilarityMetric.COSINE), episodes)
     await ltm.add_episodes(episodes)
 
     kept_all = await ltm.search_scored("abc", num_episodes_limit=10)
@@ -557,7 +567,9 @@ async def test_score_threshold_not_inverted_under_euclidean_no_reranker():
         _episode("near", "abc"),
         _episode("far", "abcdefghij"),
     ]
-    ltm = _make_ltm_with_metric(SimilarityMetric.EUCLIDEAN, episodes)
+    ltm = _make_ltm(
+        FakeEmbedder(similarity_metric=SimilarityMetric.EUCLIDEAN), episodes
+    )
     await ltm.add_episodes(episodes)
 
     scores_by_uid = {
@@ -587,7 +599,9 @@ async def test_score_threshold_none_keeps_all_results_under_euclidean():
     the default "no threshold" must NOT drop everything. Default is now
     `score_threshold=None` which short-circuits the filter."""
     episodes = [_episode("only", "abc")]
-    ltm = _make_ltm_with_metric(SimilarityMetric.EUCLIDEAN, episodes)
+    ltm = _make_ltm(
+        FakeEmbedder(similarity_metric=SimilarityMetric.EUCLIDEAN), episodes
+    )
     await ltm.add_episodes(episodes)
 
     scored = await ltm.search_scored("abc", num_episodes_limit=10)
@@ -813,6 +827,56 @@ async def test_expand_context_window_stays_within_the_episode_limit(
             assert backward >= 0
             assert forward >= 0
             assert backward + forward <= max(0, num_episodes_limit - 1)
+
+
+async def test_expand_context_counts_segments_under_a_splitting_segmenter(
+    timeline_episodes,
+):
+    """`expand_context` is a window of segments; it reaches their episodes.
+
+    EventMemory and the segment store know segments, not episodes. Under
+    PassthroughSegmenter one segment is one episode, so a window of
+    `expand_context` segments is `expand_context` neighbour episodes, the
+    declarative backend's unit. A splitting segmenter puts several segments
+    in each episode; the same window then covers fewer episodes, and the fold
+    dedups one episode's segments into it. Expanding by episodes is a matter
+    of configuring the passthrough segmenter.
+
+    An episode keeps the score of the first window that contributed it, so
+    the episodes carrying the match's score are the ones its own window
+    reached, whatever the other windows add up to the limit.
+    """
+    query = _timeline_token(_MATCH_INDEX)
+    match_uid = f"tl-{_MATCH_INDEX}"
+    expand_context = 3
+    # At this chunk length every timeline episode splits into three segments
+    # (`timeline` / `message` / `tok-<i>`), so the window of three segments
+    # around the match's `tok-<i>` segment reaches one neighbour episode under
+    # any backward/forward split, against three under passthrough.
+    segmenters = {
+        "passthrough": PassthroughSegmenter(),
+        "text": TextSegmenter(max_chunk_length=9),
+    }
+    reached: dict[str, set[str]] = {}
+    for name, segmenter in segmenters.items():
+        ltm = _make_ltm(RankedEmbedder(), timeline_episodes, segmenter=segmenter)
+        await ltm.add_episodes(timeline_episodes)
+        expanded = await ltm.search_scored(
+            query,
+            num_episodes_limit=expand_context + 1,
+            expand_context=expand_context,
+        )
+        assert len(expanded) <= expand_context + 1
+        created = [ep.created_at for _, ep in expanded]
+        assert created == sorted(created)
+        match_score = next(score for score, ep in expanded if ep.uid == match_uid)
+        reached[name] = {ep.uid for score, ep in expanded if score == match_score} - {
+            match_uid
+        }
+
+    assert len(reached["passthrough"]) == expand_context
+    assert 1 <= len(reached["text"]) < expand_context
+    assert reached["text"] <= reached["passthrough"]
 
 
 def test_unify_takes_whole_contexts_while_they_fit():

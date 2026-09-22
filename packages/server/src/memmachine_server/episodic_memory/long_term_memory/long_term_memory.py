@@ -326,10 +326,16 @@ class LongTermMemory:
         event_memory = self._require_event_backend_live()
         assert self._episode_storage is not None
         self._validate_event_backend_filter(property_filter)
-        # Context can never exceed the remaining quota (declarative parity),
-        # and can never go negative: with `num_episodes_limit == 0` the quota
-        # clamp on its own would ask the segment store for a window of -1,
-        # which the SegmentStorePartition contract does not define.
+        # `expand_context` is a window of segments, the unit EventMemory and
+        # the segment store work in: neither knows episodes. Under the
+        # passthrough segmenter one segment is one episode, and the window is
+        # the declarative backend's window of neighbor episodes; under a
+        # splitting segmenter the same window covers fewer episodes, the ones
+        # its segments belong to. The window can never exceed the remaining
+        # quota in either unit (a segment belongs to one episode; declarative
+        # parity), and can never go negative: with `num_episodes_limit == 0`
+        # the quota clamp on its own would ask the segment store for a window
+        # of -1, which the SegmentStorePartition contract does not define.
         expand_context = max(0, min(expand_context, num_episodes_limit - 1))
         # Over-fetch from EventMemory: the per-segment results can have many
         # segments per episode under non-passthrough segmenters, and we dedup
