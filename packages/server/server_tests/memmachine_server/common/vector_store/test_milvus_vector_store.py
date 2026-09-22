@@ -46,7 +46,7 @@ from memmachine_server.common.vector_store.milvus_vector_store import (
 NAMESPACE = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
-REGISTRY_TABLE_PREFIX = "vector_store_milvus"
+VECTOR_STORE_NAME = "milvus_test"
 TOMBSTONE_RETENTION = timedelta(days=1)
 
 
@@ -79,7 +79,7 @@ async def store(tmp_path):
             client=client,
             collection_registry=SQLAlchemyCollectionRegistry(
                 engine=registry_engine,
-                table_prefix=REGISTRY_TABLE_PREFIX,
+                vector_store_name=VECTOR_STORE_NAME,
                 tombstone_retention=TOMBSTONE_RETENTION,
             ),
             consistency_level="Session",

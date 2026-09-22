@@ -1,6 +1,10 @@
 """Collection registry interface and implementations."""
 
-from .collection_registry import CollectionRegistry, PurgeClaim, RegisteredCollection
+from .collection_registry import (
+    CollectionRegistry,
+    PurgeClaim,
+    RegisteredCollection,
+)
 
 __all__ = [
     "CollectionRegistry",

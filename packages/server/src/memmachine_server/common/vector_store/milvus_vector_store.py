@@ -468,12 +468,13 @@ class MilvusVectorStoreParams(BaseModel):
     Attributes:
         client (MilvusClient): Milvus client instance.
         collection_registry (CollectionRegistry):
-            The collection registry of this store's backend: which
+            The registry of the Milvus deployment the client reaches: which
             collections exist, under which incarnation and configuration,
             and which dead incarnations await purge. Milvus arbitrates none
             of that, so the registry lives where a primary key and a
-            transaction can, and every process serving the backend shares
-            it.
+            transaction can. Every store on the deployment, in any
+            process, uses this registry, and no store on another
+            deployment does.
         consistency_level (str): Collection consistency level for newly created collections.
         metrics_factory (MetricsFactory | None): Metrics factory for collecting usage metrics.
     """
@@ -484,7 +485,7 @@ class MilvusVectorStoreParams(BaseModel):
     )
     collection_registry: InstanceOf[CollectionRegistry] = Field(
         ...,
-        description="The collection registry of this store's backend",
+        description="The registry of the deployment the client reaches",
     )
     consistency_level: str = Field(
         default="Session",
