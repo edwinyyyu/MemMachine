@@ -623,6 +623,15 @@ class DatabaseManager:
             if conf.api_key.get_secret_value():
                 client_kwargs["api_key"] = conf.api_key.get_secret_value()
 
+            # The registry database first: a client opened before a
+            # failed lookup would have nothing to close it.
+            collection_registry = SQLAlchemyCollectionRegistry(
+                engine=await self.async_get_sql_engine(conf.collection_registry),
+                table_prefix="vector_store_qdrant",
+                backend=name,
+                tombstone_retention=timedelta(seconds=conf.tombstone_retention_seconds),
+            )
+
             client = AsyncQdrantClient(**client_kwargs)
 
             if validate:
@@ -635,14 +644,7 @@ class DatabaseManager:
 
             params = QdrantVectorStoreParams(
                 client=client,
-                collection_registry=SQLAlchemyCollectionRegistry(
-                    engine=await self.async_get_sql_engine(conf.collection_registry),
-                    table_prefix="vector_store_qdrant",
-                    backend=name,
-                    tombstone_retention=timedelta(
-                        seconds=conf.tombstone_retention_seconds
-                    ),
-                ),
+                collection_registry=collection_registry,
                 metrics_factory=conf.get_metrics_factory(),
             )
             try:
@@ -709,6 +711,15 @@ class DatabaseManager:
             if conf.db_name:
                 client_kwargs["db_name"] = conf.db_name
 
+            # The registry database first: a client opened before a
+            # failed lookup would have nothing to close it.
+            collection_registry = SQLAlchemyCollectionRegistry(
+                engine=await self.async_get_sql_engine(conf.collection_registry),
+                table_prefix="vector_store_milvus",
+                backend=name,
+                tombstone_retention=timedelta(seconds=conf.tombstone_retention_seconds),
+            )
+
             client = MilvusClient(**client_kwargs)
 
             if validate:
@@ -721,14 +732,7 @@ class DatabaseManager:
 
             params = MilvusVectorStoreParams(
                 client=client,
-                collection_registry=SQLAlchemyCollectionRegistry(
-                    engine=await self.async_get_sql_engine(conf.collection_registry),
-                    table_prefix="vector_store_milvus",
-                    backend=name,
-                    tombstone_retention=timedelta(
-                        seconds=conf.tombstone_retention_seconds
-                    ),
-                ),
+                collection_registry=collection_registry,
                 consistency_level=conf.consistency_level,
             )
             try:
