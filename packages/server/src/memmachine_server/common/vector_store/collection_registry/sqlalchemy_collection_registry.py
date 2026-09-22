@@ -98,6 +98,11 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                 f"Vector store name {vector_store_name!r} must match [a-z0-9_]+ "
                 "and be at most 32 bytes"
             )
+        if engine.dialect.name not in ("postgresql", "sqlite"):
+            raise ValueError(
+                f"Engine uses the {engine.dialect.name} dialect, which the "
+                "registry does not support. Use PostgreSQL or SQLite."
+            )
         self._engine = engine
         self._is_sqlite = engine.dialect.name == "sqlite"
         self._tombstone_retention = tombstone_retention
