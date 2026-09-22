@@ -8,7 +8,8 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import DateTime, event, func, select, text, update
+from sqlalchemy import DateTime, delete, event, func, insert, select, text, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
@@ -117,6 +118,32 @@ async def _age_enqueue(
             .where(registry._purge_queue.c.incarnation == incarnation)
             .values(enqueued_at=database_now - timedelta(minutes=1))
         )
+
+
+async def _blocked_or_done(engine: AsyncEngine, task: asyncio.Task) -> str:
+    """Wait until `task` finishes ("done") or another backend waits on a lock ("blocked").
+
+    Decided by the database's own state (pg_stat_activity), not elapsed time.
+    """
+    deadline = asyncio.get_running_loop().time() + 30
+    while not task.done():
+        async with engine.connect() as connection:
+            blocked = (
+                await connection.execute(
+                    text(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE wait_event_type = 'Lock' "
+                        "AND datname = current_database() "
+                        "AND pid != pg_backend_pid()"
+                    )
+                )
+            ).scalar_one()
+        if blocked:
+            return "blocked"
+        if asyncio.get_running_loop().time() > deadline:
+            raise TimeoutError("the task neither blocked on a lock nor finished")
+        await asyncio.sleep(0.01)
+    return "done"
 
 
 async def _round(
@@ -634,3 +661,209 @@ async def test_purge_rounds_keep_time_by_the_database_clock(
         await skewed_engine.dispose()
         async with sqlalchemy_engine.begin() as connection:
             await connection.execute(text(f"DROP SCHEMA {schema} CASCADE"))
+
+
+@pytest.mark.asyncio
+async def test_a_claim_skips_a_tombstone_another_purger_holds(
+    sqlalchemy_engine, vector_store_name
+):
+    """A purger never waits on another purger's claim: it takes the next due tombstone."""
+    if sqlalchemy_engine.dialect.name != "postgresql":
+        pytest.skip("SQLite holds no row locks to skip")
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    held = await registry.create(NAMESPACE, "held", CONFIG)
+    free = await registry.create(NAMESPACE, "free", CONFIG)
+    await registry.delete(NAMESPACE, "held")
+    await registry.delete(NAMESPACE, "free")
+    await _age_enqueue(registry, held)
+
+    queue = registry._purge_queue
+    claim = None
+    try:
+        async with sqlalchemy_engine.connect() as other_purger, other_purger.begin():
+            await other_purger.execute(
+                select(queue.c.incarnation)
+                .where(queue.c.incarnation == held)
+                .with_for_update()
+            )
+            claim = asyncio.create_task(_round(registry, found=False))
+            outcome = await _blocked_or_done(sqlalchemy_engine, claim)
+            assert outcome == "done", (
+                "the claim waited on a tombstone another purger holds"
+            )
+            assert await claim == free
+    finally:
+        if claim is not None and not claim.done():
+            await asyncio.wait_for(claim, 30)
+
+
+@pytest.mark.asyncio
+async def test_racing_deletions_of_a_collection_queue_one_tombstone(
+    sqlalchemy_engine, vector_store_name
+):
+    """Racing deletions serialize on the collection's row: the losers delete
+    nothing, one tombstone is queued, and the name can be created again."""
+    registries = [
+        await _registry(sqlalchemy_engine, vector_store_name) for _ in range(4)
+    ]
+    for cycle in range(10):
+        await registries[0].create(NAMESPACE, "c", CONFIG)
+        await asyncio.wait_for(
+            asyncio.gather(*(r.delete(NAMESPACE, "c") for r in registries)), 30
+        )
+        assert await registries[0].get(NAMESPACE, "c") is None
+        assert len(await _queued(registries[0])) == cycle + 1
+    await registries[0].create(NAMESPACE, "c", CONFIG)
+
+
+@pytest.mark.asyncio
+async def test_a_deletion_racing_another_waits_and_queues_nothing_more(
+    sqlalchemy_engine, vector_store_name
+):
+    """A deletion that finds another process's deletion in flight waits for
+    it, then finds nothing to delete: one tombstone, and no error."""
+    if sqlalchemy_engine.dialect.name != "postgresql":
+        pytest.skip("SQLite serializes whole write transactions")
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    incarnation = await registry.create(NAMESPACE, "c", CONFIG)
+    collections, queue = registry._collections, registry._purge_queue
+
+    local = None
+    try:
+        async with sqlalchemy_engine.connect() as remote, remote.begin():
+            # Another process's deletion, held uncommitted.
+            await remote.execute(
+                delete(collections).where(
+                    collections.c.namespace == NAMESPACE, collections.c.name == "c"
+                )
+            )
+            await remote.execute(
+                insert(queue).values(
+                    incarnation=incarnation,
+                    namespace=NAMESPACE,
+                    name="c",
+                    config=CONFIG.model_dump(mode="json"),
+                    enqueued_at=func.now(),
+                )
+            )
+            local = asyncio.create_task(registry.delete(NAMESPACE, "c"))
+            assert await _blocked_or_done(sqlalchemy_engine, local) == "blocked"
+        await asyncio.wait_for(local, 30)
+    finally:
+        if local is not None and not local.done():
+            local.cancel()
+
+    assert await _queued(registry) == [incarnation]
+
+
+@pytest.mark.asyncio
+async def test_an_incarnation_colliding_with_a_live_collection_is_reminted(
+    sqlalchemy_engine, vector_store_name, monkeypatch
+):
+    """A mint rejected by the incarnation's unique constraint, with the name
+    free, is a collision to mint again, not a taken name."""
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    live = await registry.create(NAMESPACE, "live", CONFIG)
+    minted = iter([live, uuid4()])
+    monkeypatch.setattr(
+        "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.uuid4",
+        lambda: next(minted),
+    )
+
+    fresh = await registry.create(NAMESPACE, "fresh", CONFIG)
+
+    assert fresh != live
+    registered = await registry.get(NAMESPACE, "live")
+    assert registered is not None
+    assert registered.incarnation == live
+
+
+@pytest.mark.asyncio
+async def test_a_mint_checks_the_queue_after_its_insert(
+    sqlalchemy_engine, vector_store_name, monkeypatch
+):
+    """A mint colliding with a deletion in flight sees the deletion's tombstone.
+
+    The deletion frees the incarnation's row and queues its tombstone in one
+    uncommitted transaction; the colliding mint's insert waits on it. Only a
+    queue check made after the insert sees the tombstone once the deletion
+    commits: one made before reads the queue too early and registers a live
+    collection under an incarnation awaiting purge.
+    """
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    victim = await registry.create(NAMESPACE, "victim", CONFIG)
+    minted = iter([victim, uuid4()])
+    monkeypatch.setattr(
+        "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.uuid4",
+        lambda: next(minted),
+    )
+    collections, queue = registry._collections, registry._purge_queue
+    insert_issued = asyncio.Event()
+
+    def on_statement(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.startswith(f"INSERT INTO {collections.name}"):
+            insert_issued.set()
+
+    event.listen(sqlalchemy_engine.sync_engine, "before_cursor_execute", on_statement)
+    creator = None
+    try:
+        async with sqlalchemy_engine.connect() as remote, remote.begin():
+            await remote.execute(
+                delete(collections).where(collections.c.incarnation == victim)
+            )
+            await remote.execute(
+                insert(queue).values(
+                    incarnation=victim,
+                    namespace=NAMESPACE,
+                    name="victim",
+                    config=CONFIG.model_dump(mode="json"),
+                    enqueued_at=func.now(),
+                )
+            )
+            creator = asyncio.create_task(registry.create(NAMESPACE, "fresh", CONFIG))
+            await asyncio.wait_for(insert_issued.wait(), 30)
+        fresh = await asyncio.wait_for(creator, 30)
+    finally:
+        event.remove(
+            sqlalchemy_engine.sync_engine, "before_cursor_execute", on_statement
+        )
+        if creator is not None and not creator.done():
+            creator.cancel()
+
+    assert fresh != victim, "a live collection took an incarnation awaiting purge"
+    assert await _queued(registry) == [victim]
+
+
+@pytest.mark.asyncio
+async def test_a_round_claims_one_tombstone(sqlalchemy_engine, vector_store_name):
+    """A claim takes one tombstone and leaves the others to other purgers."""
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    for name in ("a", "b", "c"):
+        await registry.create(NAMESPACE, name, CONFIG)
+        await registry.delete(NAMESPACE, name)
+
+    assert await _round(registry, found=False) is not None
+
+    assert sorted((await _clean_rounds(registry)).values()) == [False, False, True]
+
+
+@pytest.mark.asyncio
+async def test_a_persistent_database_error_surfaces_with_its_cause(
+    sqlalchemy_engine, vector_store_name, monkeypatch
+):
+    """A rejected insert is retried a bounded number of times, then the
+    database's own error is chained to the one that gives up."""
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    # A NOT NULL violation stands in for a cause that is not a collision.
+    monkeypatch.setattr(
+        "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.uuid4",
+        lambda: None,
+    )
+
+    with pytest.raises(VectorStoreAttemptsExhaustedError) as raised:
+        await asyncio.wait_for(registry.create(NAMESPACE, "a", CONFIG), 30)
+
+    cause: BaseException | None = raised.value
+    while cause is not None and not isinstance(cause, IntegrityError):
+        cause = cause.__cause__
+    assert isinstance(cause, IntegrityError)
