@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast, override
@@ -550,6 +551,12 @@ class MilvusVectorStore(VectorStore):
         self._client = params.client
         self._consistency_level = params.consistency_level
         self._collection_registry = params.collection_registry
+        # Milvus Lite does not arbitrate two creations of one collection
+        # racing in one process: they take turns here, and the later one
+        # finds the collection.
+        self._native_collection_locks: defaultdict[str, asyncio.Lock] = defaultdict(
+            asyncio.Lock
+        )
         self._tracker = OperationTracker(
             params.metrics_factory,
             prefix="vector_store_milvus",
@@ -589,8 +596,6 @@ class MilvusVectorStore(VectorStore):
         native_collection_name = MilvusVectorStore._build_native_collection_name(
             namespace, config
         )
-        if await asyncio.to_thread(self._client.has_collection, native_collection_name):
-            return
 
         def _create_collection() -> None:
             schema = self._client.create_schema(
@@ -640,11 +645,16 @@ class MilvusVectorStore(VectorStore):
                 consistency_level=self._consistency_level,
             )
 
-        try:
-            await asyncio.to_thread(_create_collection)
-        except MilvusException as exc:
-            if not MilvusVectorStore._is_already_exists_error(exc):
-                raise
+        async with self._native_collection_locks[native_collection_name]:
+            if await asyncio.to_thread(
+                self._client.has_collection, native_collection_name
+            ):
+                return
+            try:
+                await asyncio.to_thread(_create_collection)
+            except MilvusException as exc:
+                if not MilvusVectorStore._is_already_exists_error(exc):
+                    raise
 
     @override
     async def create_collection(
