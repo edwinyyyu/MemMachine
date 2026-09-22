@@ -8,7 +8,16 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import DateTime, delete, event, func, insert, select, text, update
+from sqlalchemy import (
+    ColumnElement,
+    delete,
+    event,
+    func,
+    insert,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -88,6 +97,13 @@ async def _clean_rounds(
         return {row.incarnation: row.clean_at is not None for row in rows}
 
 
+def _database_time_ago(engine: AsyncEngine, delta: timedelta) -> ColumnElement:
+    """The database clock's now less `delta`, written by the database in the form of its own stamps."""
+    if engine.dialect.name == "sqlite":
+        return func.datetime("now", f"-{int(delta.total_seconds())} seconds")
+    return func.now() - delta
+
+
 async def _age_clean_round(
     registry: SQLAlchemyVectorStoreCollectionRegistry,
     incarnation: UUID,
@@ -95,13 +111,14 @@ async def _age_clean_round(
 ) -> None:
     """Move the tombstone's clean round back past the retention, on the database clock."""
     async with registry._engine.begin() as connection:
-        database_now = (
-            await connection.execute(select(func.now(type_=DateTime(timezone=True))))
-        ).scalar_one()
         await connection.execute(
             update(registry._purge_queue)
             .where(registry._purge_queue.c.incarnation == incarnation)
-            .values(clean_at=database_now - RETENTION - timedelta(seconds=1) - extra)
+            .values(
+                clean_at=_database_time_ago(
+                    registry._engine, RETENTION + timedelta(seconds=1) + extra
+                )
+            )
         )
 
 
@@ -110,13 +127,12 @@ async def _age_enqueue(
 ) -> None:
     """Move the tombstone's enqueue stamp back a minute, on the database clock."""
     async with registry._engine.begin() as connection:
-        database_now = (
-            await connection.execute(select(func.now(type_=DateTime(timezone=True))))
-        ).scalar_one()
         await connection.execute(
             update(registry._purge_queue)
             .where(registry._purge_queue.c.incarnation == incarnation)
-            .values(enqueued_at=database_now - timedelta(minutes=1))
+            .values(
+                enqueued_at=_database_time_ago(registry._engine, timedelta(minutes=1))
+            )
         )
 
 
