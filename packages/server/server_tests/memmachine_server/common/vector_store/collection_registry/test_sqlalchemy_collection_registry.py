@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import DateTime, func, select, update
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     SQLAlchemyCollectionRegistry,
@@ -26,17 +26,17 @@ NAMESPACE = "ns"
 
 
 @pytest.fixture
-def table_prefix() -> str:
-    """A table prefix no other test (or earlier run on a shared server) used."""
-    return f"vector_store_test_{uuid4().hex[:12]}"
+def vector_store_name() -> str:
+    """A vector store name no other test (or earlier run on a shared server) used."""
+    return f"test_{uuid4().hex[:12]}"
 
 
 async def _registry(
-    engine: AsyncEngine, table_prefix: str
+    engine: AsyncEngine, vector_store_name: str
 ) -> SQLAlchemyCollectionRegistry:
     registry = SQLAlchemyCollectionRegistry(
         engine=engine,
-        table_prefix=table_prefix,
+        vector_store_name=vector_store_name,
         tombstone_retention=RETENTION,
     )
     await registry.startup()
@@ -54,7 +54,9 @@ async def _queued(registry: SQLAlchemyCollectionRegistry) -> list[UUID]:
         return list(rows.scalars())
 
 
-async def _clean_rounds(registry: SQLAlchemyCollectionRegistry) -> dict[UUID, bool]:
+async def _clean_rounds(
+    registry: SQLAlchemyCollectionRegistry,
+) -> dict[UUID, bool]:
     """Each tombstone of the registry, and whether a round has found it clean."""
     async with registry._engine.connect() as connection:
         rows = await connection.execute(
@@ -106,9 +108,9 @@ async def _round(registry: SQLAlchemyCollectionRegistry, found: bool) -> UUID | 
 
 @pytest.mark.asyncio
 async def test_create_registers_a_fresh_incarnation_with_the_config(
-    sqlalchemy_engine, table_prefix
+    sqlalchemy_engine, vector_store_name
 ):
-    registry = await _registry(sqlalchemy_engine, table_prefix)
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
 
     incarnation = await registry.create(NAMESPACE, "c", CONFIG)
 
@@ -123,9 +125,9 @@ async def test_create_registers_a_fresh_incarnation_with_the_config(
 
 @pytest.mark.asyncio
 async def test_a_taken_name_is_already_exists_whatever_the_config(
-    sqlalchemy_engine, table_prefix
+    sqlalchemy_engine, vector_store_name
 ):
-    registry = await _registry(sqlalchemy_engine, table_prefix)
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
     await registry.create(NAMESPACE, "c", CONFIG)
 
     with pytest.raises(VectorStoreCollectionAlreadyExistsError):
@@ -134,11 +136,46 @@ async def test_a_taken_name_is_already_exists_whatever_the_config(
         await registry.create(NAMESPACE, "c", OTHER_CONFIG)
 
 
+@pytest.mark.parametrize("invalid_name", ["", "Upper", "with-hyphen", "x" * 33])
+def test_a_vector_store_name_must_be_an_identifier(invalid_name):
+    with pytest.raises(ValueError, match="Vector store name"):
+        SQLAlchemyCollectionRegistry(
+            engine=create_async_engine("sqlite+aiosqlite://"),
+            vector_store_name=invalid_name,
+            tombstone_retention=RETENTION,
+        )
+
+
 @pytest.mark.asyncio
-async def test_concurrent_creators_get_one_winner(sqlalchemy_engine, table_prefix):
+async def test_registries_of_two_vector_stores_share_a_database_and_nothing_else(
+    sqlalchemy_engine, vector_store_name
+):
+    """Each registry has its own collections, and a purge round claims
+    only its own tombstones."""
+    first = await _registry(sqlalchemy_engine, f"{vector_store_name}_a")
+    second = await _registry(sqlalchemy_engine, f"{vector_store_name}_b")
+
+    one = await first.create(NAMESPACE, "c", CONFIG)
+    two = await second.create(NAMESPACE, "c", OTHER_CONFIG)
+    assert one != two
+    in_first = await first.get(NAMESPACE, "c")
+    in_second = await second.get(NAMESPACE, "c")
+    assert in_first is not None
+    assert in_second is not None
+    assert in_first.incarnation == one
+    assert in_second.incarnation == two
+
+    await first.delete(NAMESPACE, "c")
+    assert await second.is_live(two)
+    assert await _round(second, found=False) is None
+    assert await _round(first, found=False) == one
+
+
+@pytest.mark.asyncio
+async def test_concurrent_creators_get_one_winner(sqlalchemy_engine, vector_store_name):
     """Two registries on one database, the two-process shape in one process."""
-    first = await _registry(sqlalchemy_engine, table_prefix)
-    second = await _registry(sqlalchemy_engine, table_prefix)
+    first = await _registry(sqlalchemy_engine, vector_store_name)
+    second = await _registry(sqlalchemy_engine, vector_store_name)
 
     results = await asyncio.gather(
         *(registry.create(NAMESPACE, "c", CONFIG) for registry in (first, second) * 3),
@@ -156,9 +193,9 @@ async def test_concurrent_creators_get_one_winner(sqlalchemy_engine, table_prefi
 
 @pytest.mark.asyncio
 async def test_delete_queues_the_incarnation_and_is_idempotent(
-    sqlalchemy_engine, table_prefix
+    sqlalchemy_engine, vector_store_name
 ):
-    registry = await _registry(sqlalchemy_engine, table_prefix)
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
     incarnation = await registry.create(NAMESPACE, "c", CONFIG)
 
     await registry.delete(NAMESPACE, "c")
@@ -172,8 +209,10 @@ async def test_delete_queues_the_incarnation_and_is_idempotent(
 
 
 @pytest.mark.asyncio
-async def test_a_recreated_name_gets_a_new_incarnation(sqlalchemy_engine, table_prefix):
-    registry = await _registry(sqlalchemy_engine, table_prefix)
+async def test_a_recreated_name_gets_a_new_incarnation(
+    sqlalchemy_engine, vector_store_name
+):
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
     old = await registry.create(NAMESPACE, "c", CONFIG)
     await registry.delete(NAMESPACE, "c")
 
@@ -185,9 +224,9 @@ async def test_a_recreated_name_gets_a_new_incarnation(sqlalchemy_engine, table_
 
 
 @pytest.mark.asyncio
-async def test_a_claim_names_where_the_points_are(sqlalchemy_engine, table_prefix):
+async def test_a_claim_names_where_the_points_are(sqlalchemy_engine, vector_store_name):
     """The tombstone carries what a purger needs to find the points: namespace, name, configuration."""
-    registry = await _registry(sqlalchemy_engine, table_prefix)
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
     incarnation = await registry.create(NAMESPACE, "c", OTHER_CONFIG)
     await registry.delete(NAMESPACE, "c")
 
@@ -202,9 +241,9 @@ async def test_a_claim_names_where_the_points_are(sqlalchemy_engine, table_prefi
 
 @pytest.mark.asyncio
 async def test_rounds_go_oldest_first_and_a_clean_round_stamps_the_tombstone(
-    sqlalchemy_engine, table_prefix
+    sqlalchemy_engine, vector_store_name
 ):
-    registry = await _registry(sqlalchemy_engine, table_prefix)
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
     first = await registry.create(NAMESPACE, "a", CONFIG)
     second = await registry.create(NAMESPACE, "b", CONFIG)
     await registry.delete(NAMESPACE, "a")
@@ -224,9 +263,9 @@ async def test_rounds_go_oldest_first_and_a_clean_round_stamps_the_tombstone(
 
 @pytest.mark.asyncio
 async def test_a_tombstone_is_removed_by_a_clean_round_after_the_retention(
-    sqlalchemy_engine, table_prefix
+    sqlalchemy_engine, vector_store_name
 ):
-    registry = await _registry(sqlalchemy_engine, table_prefix)
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
     incarnation = await registry.create(NAMESPACE, "a", CONFIG)
     await registry.delete(NAMESPACE, "a")
     assert await _round(registry, found=False) == incarnation
@@ -239,9 +278,9 @@ async def test_a_tombstone_is_removed_by_a_clean_round_after_the_retention(
 
 @pytest.mark.asyncio
 async def test_a_late_write_found_after_the_retention_restarts_the_rounds(
-    sqlalchemy_engine, table_prefix
+    sqlalchemy_engine, vector_store_name
 ):
-    registry = await _registry(sqlalchemy_engine, table_prefix)
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
     incarnation = await registry.create(NAMESPACE, "a", CONFIG)
     await registry.delete(NAMESPACE, "a")
     assert await _round(registry, found=False) == incarnation
@@ -258,14 +297,14 @@ async def test_a_late_write_found_after_the_retention_restarts_the_rounds(
 
 @pytest.mark.asyncio
 async def test_a_clean_round_does_not_remove_a_tombstone_another_round_found_points_under(
-    sqlalchemy_engine, table_prefix
+    sqlalchemy_engine, vector_store_name
 ):
     """Two purgers on one SQLite registry can claim the same tombstone: the
     one that found nothing must not remove what the one that found points
     just un-stamped, or a later write under the incarnation is orphaned."""
     if sqlalchemy_engine.dialect.name != "sqlite":
         pytest.skip("the row lock keeps claims apart on this dialect")
-    registry = await _registry(sqlalchemy_engine, table_prefix)
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
     incarnation = await registry.create(NAMESPACE, "c", CONFIG)
     await registry.delete(NAMESPACE, "c")
     assert await _round(registry, found=False) == incarnation
@@ -287,9 +326,9 @@ async def test_a_clean_round_does_not_remove_a_tombstone_another_round_found_poi
 
 @pytest.mark.asyncio
 async def test_a_round_whose_body_raises_keeps_the_tombstone_as_it_was(
-    sqlalchemy_engine, table_prefix
+    sqlalchemy_engine, vector_store_name
 ):
-    registry = await _registry(sqlalchemy_engine, table_prefix)
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
     incarnation = await registry.create(NAMESPACE, "a", CONFIG)
     await registry.delete(NAMESPACE, "a")
 
@@ -310,9 +349,9 @@ async def test_a_round_whose_body_raises_keeps_the_tombstone_as_it_was(
 
 @pytest.mark.asyncio
 async def test_a_round_that_reports_nothing_is_an_error(
-    sqlalchemy_engine, table_prefix
+    sqlalchemy_engine, vector_store_name
 ):
-    registry = await _registry(sqlalchemy_engine, table_prefix)
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
     await registry.create(NAMESPACE, "a", CONFIG)
     await registry.delete(NAMESPACE, "a")
 
@@ -323,10 +362,10 @@ async def test_a_round_that_reports_nothing_is_an_error(
 
 @pytest.mark.asyncio
 async def test_an_incarnation_awaiting_purge_is_never_reminted(
-    sqlalchemy_engine, table_prefix, monkeypatch
+    sqlalchemy_engine, vector_store_name, monkeypatch
 ):
     """A minted incarnation colliding with queued garbage is rejected and re-minted."""
-    registry = await _registry(sqlalchemy_engine, table_prefix)
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
     dead = await registry.create(NAMESPACE, "a", CONFIG)
     await registry.delete(NAMESPACE, "a")
     minted = iter([dead, uuid4()])
@@ -343,9 +382,9 @@ async def test_an_incarnation_awaiting_purge_is_never_reminted(
 
 @pytest.mark.asyncio
 async def test_creation_that_never_mints_a_free_incarnation_gives_up(
-    sqlalchemy_engine, table_prefix, monkeypatch
+    sqlalchemy_engine, vector_store_name, monkeypatch
 ):
-    registry = await _registry(sqlalchemy_engine, table_prefix)
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
     dead = await registry.create(NAMESPACE, "a", CONFIG)
     await registry.delete(NAMESPACE, "a")
     monkeypatch.setattr(

@@ -4,11 +4,15 @@ Abstract base class for a collection registry.
 The catalog of a vector store whose backend holds only points: which
 logical collections exist, under which incarnation and configuration, and
 which dead incarnations await purge. A registry keys its collections by
-namespace and name. Its calls are
-arbitrated across every process sharing it: creation mints an incarnation
-no live or queued collection carries, deletion makes the collection
-unreachable when it returns, and a purge claim is handed to one purger at
-a time.
+namespace and name. Its calls are arbitrated across every process sharing
+it: creation mints an incarnation no live or queued collection carries,
+deletion makes the collection unreachable when it returns, and a purge
+claim is handed to one purger at a time.
+
+A registry belongs to one vector deployment: every store whose client
+reaches that deployment uses it, and stores on other deployments use
+other registries, since a store reclaims its registry's tombstones
+through its own client.
 """
 
 from abc import ABC, abstractmethod

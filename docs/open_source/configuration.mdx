@@ -395,7 +395,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
       | `config.token` | Milvus auth token for Zilliz Cloud or auth-enabled Milvus server.   | `""` |
       | `config.consistency_level` | Milvus collection consistency level: `Strong`, `Session`, `Bounded`, or `Eventually`. | `Session` |
       | `config.metrics_factory_id` | ID of the metrics exporter factory the Qdrant or Neo4j store reports its operation latencies to. | `prometheus` |
-      | `config.collection_registry` | Qdrant and Milvus: the name of a relational database under `resources.databases` that holds the store's collection registry, which arbitrates collection creation and deletion across server processes. | *Required* |
+      | `config.collection_registry` | Qdrant and Milvus: the name of a relational database under `resources.databases` that holds the store's collection registry, which arbitrates collection creation and deletion across server processes. Each backend has its own registry, named by the backend's key under `resources.databases`, which must be lowercase letters, digits and underscores, at most 32 bytes. | *Required* |
       | `config.tombstone_retention_seconds` | Qdrant and Milvus: whole seconds a deleted collection's registry entry outlives the first purge round that finds nothing under it, so a write that landed after that round is still reclaimed. | `86400` |
       | `config.path`  | The path for the given database.                                    | Depends on provider |
       | `config.username` | Username for internal graph store authentication.                | Depends on provider |

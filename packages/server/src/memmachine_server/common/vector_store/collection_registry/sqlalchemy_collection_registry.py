@@ -4,13 +4,13 @@ A collection registry in a relational database, through SQLAlchemy.
 Qdrant and Milvus have no transactions, unique constraints or conditional
 writes, so a catalog kept inside them cannot arbitrate two processes
 creating, deleting or reclaiming the same logical collection. This
-registry lives in the deployment's relational database instead: one table
-pair per backend kind, shared by every store on that kind of backend,
-with a row per live logical collection keyed by namespace and name, whose
-incarnation is the value every point of that life carries,
-and a purge queue of dead incarnations claimed oldest-first. Creation is
-an insert the primary key arbitrates, deletion is one transaction, and a
-purge claim is a row lock the database hands to one purger at a time.
+registry lives in a relational database instead: a table pair per vector
+store, named by the store's name, with a row per live logical collection
+keyed by namespace and name, whose incarnation is the value
+every point of that life carries, and a purge queue of dead incarnations
+claimed oldest-first. Creation is an insert the primary key arbitrates,
+deletion is one transaction, and a purge claim is a row lock the database
+hands to one purger at a time.
 """
 
 import logging
@@ -44,9 +44,16 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
 )
-from memmachine_server.common.vector_store.utils import _IDENTIFIER_MAX_BYTES
+from memmachine_server.common.vector_store.utils import (
+    _IDENTIFIER_MAX_BYTES,
+    validate_identifier,
+)
 
-from .collection_registry import CollectionRegistry, PurgeClaim, RegisteredCollection
+from .collection_registry import (
+    CollectionRegistry,
+    PurgeClaim,
+    RegisteredCollection,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,25 +65,36 @@ class _RegistryInsertRejectedError(Exception):
 
 
 class SQLAlchemyCollectionRegistry(CollectionRegistry):
-    """The collection registry of one store, in a table pair shared by its backend kind.
+    """The registry of one vector store's collections, in its own table pair.
 
-    `table_prefix` names the backend kind: every store on that kind of
-    backend shares `{prefix}_ct` and `{prefix}_gc`. `tombstone_retention` is how long a dead incarnation's entry outlives
-    the first purge round that found nothing; it must exceed, by orders
-    of magnitude, the longest a write to the backend can be in flight.
-    The retention is measured on the database clock.
+    `vector_store_name` names the vector store, and so the vector database
+    deployment it reaches, whose collections the registry holds: its tables
+    are `collection_registry_{vector_store_name}_ct` and `..._gc`, so the
+    registries of different vector stores share a database without sharing
+    a row, and registry objects under one name are one registry. It must
+    match `[a-z0-9_]+` and be at most 32 bytes. `tombstone_retention` is
+    how long a dead incarnation's entry outlives the first purge round that
+    found nothing; it must exceed, by orders of magnitude, the longest a
+    write to the backend can be in flight. The retention is measured on the
+    database clock.
     """
 
     def __init__(
         self,
         *,
         engine: AsyncEngine,
-        table_prefix: str,
+        vector_store_name: str,
         tombstone_retention: timedelta,
     ) -> None:
-        """Bind to the registry tables of one backend kind."""
+        """Bind to the tables of the registry of the vector store `vector_store_name`."""
+        if not validate_identifier(vector_store_name):
+            raise ValueError(
+                f"Vector store name {vector_store_name!r} must match [a-z0-9_]+ "
+                "and be at most 32 bytes"
+            )
         self._engine = engine
         self._tombstone_retention = tombstone_retention
+        table_prefix = f"collection_registry_{vector_store_name}"
         metadata = MetaData()
         self._collections = Table(
             f"{table_prefix}_ct",

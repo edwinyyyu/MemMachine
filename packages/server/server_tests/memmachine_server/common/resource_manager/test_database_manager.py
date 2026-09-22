@@ -414,7 +414,7 @@ async def test_qdrant_creates_vector_store():
 
     mock_registry_cls.assert_called_once_with(
         engine=builder.sql_engines["registry"],
-        table_prefix="vector_store_qdrant",
+        vector_store_name="qdrant1",
         tombstone_retention=timedelta(seconds=3600),
     )
     mock_params_cls.assert_called_once()
@@ -660,7 +660,7 @@ async def test_milvus_creates_vector_store():
 
     mock_registry_cls.assert_called_once_with(
         engine=builder.sql_engines["registry"],
-        table_prefix="vector_store_milvus",
+        vector_store_name="milvus1",
         tombstone_retention=timedelta(seconds=3600),
     )
     mock_params_cls.assert_called_once_with(
