@@ -80,6 +80,21 @@ async def _age_clean_round(
         )
 
 
+async def _age_enqueue(
+    registry: SQLAlchemyCollectionRegistry, incarnation: UUID
+) -> None:
+    """Move the tombstone's enqueue stamp back a minute, on the database clock."""
+    async with registry._engine.begin() as connection:
+        database_now = (
+            await connection.execute(select(func.now(type_=DateTime(timezone=True))))
+        ).scalar_one()
+        await connection.execute(
+            update(registry._purge_queue)
+            .where(registry._purge_queue.c.incarnation == incarnation)
+            .values(enqueued_at=database_now - timedelta(minutes=1))
+        )
+
+
 async def _round(registry: SQLAlchemyCollectionRegistry, found: bool) -> UUID | None:
     """One purge round on the oldest due tombstone, reporting `found`; its incarnation, or None."""
     async with registry.claim_oldest() as claim:
@@ -211,6 +226,8 @@ async def test_rounds_go_oldest_first_and_a_clean_round_stamps_the_tombstone(
     second = await registry.create(NAMESPACE, "b", CONFIG)
     await registry.delete(NAMESPACE, "a")
     await registry.delete(NAMESPACE, "b")
+    # Two deletions in one tick of the database clock are unordered.
+    await _age_enqueue(registry, first)
 
     assert await _round(registry, found=True) == first
     # Found points: the tombstone stays due, and it is still the oldest.

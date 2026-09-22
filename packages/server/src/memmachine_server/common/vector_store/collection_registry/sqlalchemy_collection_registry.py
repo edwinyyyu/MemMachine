@@ -276,7 +276,10 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
         # concurrent purger skips the locked entry and takes the next; on
         # SQLite the writers serialize at the end of the round, so a doubly
         # claimed entry costs a repeated, idempotent round and never a
-        # missed one. The retention is measured on the database clock.
+        # missed one. Entries order by their enqueue stamp on the database
+        # clock, so entries from every server order on one clock; entries
+        # stamped in the same tick are unordered among themselves. The
+        # retention is measured on the same clock.
         async with self._engine.begin() as connection:
             database_now = (
                 await connection.execute(
