@@ -33,7 +33,9 @@ Supported VectorStore providers include Qdrant, Milvus, SQLiteVectorStore, and
 SQLiteVecVectorStore. Qdrant and Milvus keep the registry of their logical
 collections in a relational database named by `collection_registry`, so any
 number of server processes can share one backend; the SQLite stores are bound
-to one node. Milvus supports three deployment shapes through the same
+to one node. The registry keys its rows by the store's id under
+`resources.databases`, so renaming that id orphans every collection registered
+under it. Milvus supports three deployment shapes through the same
 configuration fields:
 
 - **Milvus Lite:** set `uri` to a local `.db` path such as

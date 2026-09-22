@@ -207,6 +207,8 @@ class VectorStore(ABC):
         Raises:
             VectorStoreCollectionAlreadyExistsError: If a collection with the same
                 (namespace, name) already exists.
+            VectorStoreAttemptsExhaustedError: If the store gave up creating the
+                collection after repeated attempts that made no progress.
         """
         raise NotImplementedError
 
@@ -237,6 +239,9 @@ class VectorStore(ABC):
         Raises:
             VectorStoreCollectionConfigMismatchError: If a collection with the same
                 (namespace, name) already exists with a different configuration.
+            VectorStoreAttemptsExhaustedError: If the store gave up opening or
+                creating the collection after repeated attempts that made no
+                progress.
         """
         raise NotImplementedError
 

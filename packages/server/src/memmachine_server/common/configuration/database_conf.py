@@ -258,7 +258,9 @@ class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
             "The relational database (a name under resources.databases) that "
             "holds this backend's collection registry. Required: Qdrant cannot "
             "arbitrate collection creation or deletion across server processes; "
-            "the registry lives where a primary key and a transaction can."
+            "the registry lives where a primary key and a transaction can. The "
+            "registry keys its rows by this backend's id under resources.databases, "
+            "so renaming the id orphans every collection registered under it."
         ),
     )
     tombstone_retention_seconds: int = Field(
@@ -307,7 +309,9 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
             "The relational database (a name under resources.databases) that "
             "holds this backend's collection registry. Required: Milvus cannot "
             "arbitrate collection creation or deletion across server processes; "
-            "the registry lives where a primary key and a transaction can."
+            "the registry lives where a primary key and a transaction can. The "
+            "registry keys its rows by this backend's id under resources.databases, "
+            "so renaming the id orphans every collection registered under it."
         ),
     )
     tombstone_retention_seconds: int = Field(
