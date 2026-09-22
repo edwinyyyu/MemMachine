@@ -17,7 +17,6 @@ from memmachine_server.common.episode_store import (
 from memmachine_server.common.episode_store.episode_sqlalchemy_store import (
     SqlAlchemyEpisodeStore,
 )
-from memmachine_server.common.errors import ResourcesClosedError
 from memmachine_server.common.language_model import LanguageModel
 from memmachine_server.common.metrics_factory import MetricsFactory
 from memmachine_server.common.reranker import Reranker
@@ -147,13 +146,11 @@ class ResourceManagerImpl:
         # One sweeper per vector store, keyed by the store's configured name.
         self._vector_store_purge_tasks: dict[str, asyncio.Task[None]] = {}
 
-        self._closed = False
         self._session_data_manager_lock = Lock()
         self._episodic_memory_manager_lock = Lock()
         self._episode_storage_lock = Lock()
         self._semantic_manager_lock = Lock()
         self._segment_store_lock = Lock()
-        self._vector_store_lock = Lock()
 
     async def build(self) -> None:
         """Build all configured resources in parallel."""
@@ -170,15 +167,10 @@ class ResourceManagerImpl:
 
     async def close(self) -> None:
         """Close resources and clean up state."""
-        # The flag flips under the lock get_vector_store takes to start a
-        # sweeper, so a racing get either starts its sweeper before the
-        # tasks are collected here or observes the flag and refuses.
-        async with self._vector_store_lock:
-            self._closed = True
-            purge_tasks = list(self._vector_store_purge_tasks.values())
-            self._vector_store_purge_tasks.clear()
-        purge_tasks.extend(self._segment_store_purge_tasks)
+        purge_tasks = list(self._segment_store_purge_tasks)
         self._segment_store_purge_tasks.clear()
+        purge_tasks.extend(self._vector_store_purge_tasks.values())
+        self._vector_store_purge_tasks.clear()
         segment_stores = list(self._segment_stores.values())
         self._segment_stores.clear()
 
@@ -218,27 +210,11 @@ class ResourceManagerImpl:
         The first time a store is handed out, its sweeper is started: the
         store never schedules its own purge.
         """
-        # Refused before the database manager is asked: after close() it
-        # would rebuild the client and the store for nothing.
-        if self._closed:
-            raise ResourcesClosedError(
-                f"Vector store {name!r} was requested after the resources were closed"
-            )
         store = await self._database_manager.get_vector_store(name)
         if name not in self._vector_store_purge_tasks:
-            async with self._vector_store_lock:
-                # Re-checked under the lock close() flips the flag under,
-                # so a get racing close() never starts a sweeper it misses.
-                if self._closed:
-                    raise ResourcesClosedError(
-                        f"Vector store {name!r} was requested after the resources were closed"
-                    )
-                if name not in self._vector_store_purge_tasks:
-                    self._vector_store_purge_tasks[name] = asyncio.create_task(
-                        _purge_deleted_collections_forever(
-                            store, f"Vector store {name}"
-                        )
-                    )
+            self._vector_store_purge_tasks[name] = asyncio.create_task(
+                _purge_deleted_collections_forever(store, f"Vector store {name}")
+            )
         return store
 
     async def get_segment_store(self, name: str) -> SegmentStore:
