@@ -76,13 +76,14 @@ def indexed_property_names(
 VECTOR_STORE_NAME_MAX_BYTES = 64
 """Bound on a vector store name, in bytes; the store's one native name."""
 
-_VECTOR_STORE_NAME_RE = re.compile(r"^[a-z0-9_]+$")
+# Matched with fullmatch: `$` also matches before a trailing newline.
+_VECTOR_STORE_NAME_RE = re.compile(r"[a-z0-9_]+")
 
 
 def validate_vector_store_name(name: str) -> None:
     """Raise ValueError unless `name` can name a vector store on every backend."""
     if (
-        not _VECTOR_STORE_NAME_RE.match(name)
+        not _VECTOR_STORE_NAME_RE.fullmatch(name)
         or len(name.encode()) > VECTOR_STORE_NAME_MAX_BYTES
     ):
         raise ValueError(
