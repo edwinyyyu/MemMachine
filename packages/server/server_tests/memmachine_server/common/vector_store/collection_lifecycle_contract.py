@@ -21,14 +21,18 @@ success, with the incarnation's tombstone having the records reclaimed by
 a later purge round.
 """
 
+import asyncio
 import math
+import random
 from uuid import uuid4
 
 import pytest
 
 from memmachine_server.common.vector_store import (
     Record,
+    VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
+    VectorStoreCollectionConfigMismatchError,
     VectorStoreCollectionHandleStaleError,
 )
 
@@ -276,3 +280,45 @@ class CollectionLifecycleContract:
                 await store.create_collection(
                     namespace=namespace, name=name, config=LIFECYCLE_CONFIG
                 )
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_churn_raises_only_domain_errors(self, store):
+        """Concurrent create, open-or-create, open and delete of a few names
+        raise nothing but the domain's own outcomes."""
+        names = [f"{LIFECYCLE_NAME}_{index}" for index in range(4)]
+
+        async def worker(seed: int) -> None:
+            rng = random.Random(seed)
+            for _ in range(30):
+                name = rng.choice(names)
+                operation = rng.randrange(4)
+                try:
+                    if operation == 0:
+                        await store.create_collection(
+                            namespace=LIFECYCLE_NAMESPACE,
+                            name=name,
+                            config=LIFECYCLE_CONFIG,
+                        )
+                    elif operation == 1:
+                        await store.open_or_create_collection(
+                            namespace=LIFECYCLE_NAMESPACE,
+                            name=name,
+                            config=LIFECYCLE_CONFIG,
+                        )
+                    elif operation == 2:
+                        await store.open_collection(
+                            namespace=LIFECYCLE_NAMESPACE, name=name
+                        )
+                    else:
+                        await store.delete_collection(
+                            namespace=LIFECYCLE_NAMESPACE, name=name
+                        )
+                except (
+                    VectorStoreCollectionAlreadyExistsError,
+                    VectorStoreCollectionConfigMismatchError,
+                ):
+                    pass
+
+        await asyncio.wait_for(
+            asyncio.gather(*(worker(seed) for seed in range(6))), 120
+        )
