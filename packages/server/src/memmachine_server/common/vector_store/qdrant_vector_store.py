@@ -52,7 +52,7 @@ from .data_types import (
     VectorStoreCollectionConfigMismatchError,
     VectorStoreCollectionHandleStaleError,
 )
-from .utils import validate_filter, validate_identifier
+from .utils import require_identifiers, validate_filter
 from .vector_store import VectorStore, VectorStoreCollection
 
 # Point payload keys (stored on every Qdrant point).
@@ -713,17 +713,6 @@ class QdrantVectorStore(VectorStore):
                 if not QdrantVectorStore._is_already_exists_error(e):
                     raise
 
-    @staticmethod
-    def _require_identifiers(namespace: str, name: str) -> None:
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-
     @override
     async def create_collection(
         self,
@@ -733,7 +722,7 @@ class QdrantVectorStore(VectorStore):
         config: VectorStoreCollectionConfig,
     ) -> None:
         """Create a logical collection in the Qdrant vector store."""
-        QdrantVectorStore._require_identifiers(namespace, name)
+        require_identifiers(namespace, name)
         async with self._tracker("create_collection"):
             # The native collection first, the registry row last: a crash
             # between the two leaves an empty native collection the next
@@ -753,7 +742,7 @@ class QdrantVectorStore(VectorStore):
         config: VectorStoreCollectionConfig,
     ) -> QdrantVectorStoreCollection:
         """Open the collection if it exists, or create and return it."""
-        QdrantVectorStore._require_identifiers(namespace, name)
+        require_identifiers(namespace, name)
         async with self._tracker("open_or_create_collection"):
             attempts = 0
             # Read-then-create, retried: losing the create means a racing
@@ -792,7 +781,7 @@ class QdrantVectorStore(VectorStore):
         self, *, namespace: str, name: str
     ) -> QdrantVectorStoreCollection | None:
         """Get a collection handle from the vector store."""
-        QdrantVectorStore._require_identifiers(namespace, name)
+        require_identifiers(namespace, name)
         registered = await self._collection_registry.get(namespace, name)
         if registered is None:
             return None
@@ -805,7 +794,7 @@ class QdrantVectorStore(VectorStore):
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
         """Delete a logical collection from the Qdrant vector store."""
-        QdrantVectorStore._require_identifiers(namespace, name)
+        require_identifiers(namespace, name)
         async with self._tracker("delete_collection"):
             # One registry transaction: the collection is unreachable when
             # it commits, and its points wait on the queue for the purge.

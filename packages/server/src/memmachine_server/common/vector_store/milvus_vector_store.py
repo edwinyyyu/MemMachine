@@ -52,7 +52,7 @@ from .data_types import (
     VectorStoreCollectionConfigMismatchError,
     VectorStoreCollectionHandleStaleError,
 )
-from .utils import validate_filter, validate_identifier
+from .utils import require_identifiers, validate_filter
 from .vector_store import VectorStore, VectorStoreCollection
 
 _ID_FIELD = "id"
@@ -643,17 +643,6 @@ class MilvusVectorStore(VectorStore):
             if not MilvusVectorStore._is_already_exists_error(exc):
                 raise
 
-    @staticmethod
-    def _require_identifiers(namespace: str, name: str) -> None:
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-
     @override
     async def create_collection(
         self,
@@ -663,7 +652,7 @@ class MilvusVectorStore(VectorStore):
         config: VectorStoreCollectionConfig,
     ) -> None:
         """Create a logical collection in the Milvus vector store."""
-        MilvusVectorStore._require_identifiers(namespace, name)
+        require_identifiers(namespace, name)
         self._validate_metric(config.similarity_metric)
         async with self._tracker("create_collection"):
             # The native collection first, the registry row last: a crash
@@ -684,7 +673,7 @@ class MilvusVectorStore(VectorStore):
         config: VectorStoreCollectionConfig,
     ) -> MilvusVectorStoreCollection:
         """Open the collection if it exists, or create and return it."""
-        MilvusVectorStore._require_identifiers(namespace, name)
+        require_identifiers(namespace, name)
         self._validate_metric(config.similarity_metric)
         async with self._tracker("open_or_create_collection"):
             attempts = 0
@@ -724,7 +713,7 @@ class MilvusVectorStore(VectorStore):
         self, *, namespace: str, name: str
     ) -> MilvusVectorStoreCollection | None:
         """Get a collection handle from the vector store."""
-        MilvusVectorStore._require_identifiers(namespace, name)
+        require_identifiers(namespace, name)
         registered = await self._collection_registry.get(namespace, name)
         if registered is None:
             return None
@@ -737,7 +726,7 @@ class MilvusVectorStore(VectorStore):
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
         """Delete a logical collection from the Milvus vector store."""
-        MilvusVectorStore._require_identifiers(namespace, name)
+        require_identifiers(namespace, name)
         async with self._tracker("delete_collection"):
             # One registry transaction: the collection is unreachable when
             # it commits, and its entities wait on the queue for the purge.
