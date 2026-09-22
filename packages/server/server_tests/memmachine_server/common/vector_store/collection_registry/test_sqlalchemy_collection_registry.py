@@ -257,6 +257,35 @@ async def test_a_late_write_found_after_the_retention_restarts_the_rounds(
 
 
 @pytest.mark.asyncio
+async def test_a_clean_round_does_not_remove_a_tombstone_another_round_found_points_under(
+    sqlalchemy_engine, backend
+):
+    """Two purgers on one SQLite registry can claim the same tombstone: the
+    one that found nothing must not remove what the one that found points
+    just un-stamped, or a later write under the incarnation is orphaned."""
+    if sqlalchemy_engine.dialect.name != "sqlite":
+        pytest.skip("the row lock keeps claims apart on this dialect")
+    registry = await _registry(sqlalchemy_engine, backend)
+    incarnation = await registry.create(NAMESPACE, "c", CONFIG)
+    await registry.delete(NAMESPACE, "c")
+    assert await _round(registry, found=False) == incarnation
+    await _age_clean_round(registry, incarnation)
+
+    async with registry.claim_oldest() as stale:
+        assert stale is not None
+        assert stale.incarnation == incarnation
+        # A second purger claims the same entry, finds points, un-stamps it.
+        async with registry.claim_oldest() as other:
+            assert other is not None
+            assert other.incarnation == incarnation
+            other.found = True
+        stale.found = False
+
+    assert await _queued(registry) == [incarnation]
+    assert await _clean_rounds(registry) == {incarnation: False}
+
+
+@pytest.mark.asyncio
 async def test_a_round_whose_body_raises_keeps_the_tombstone_as_it_was(
     sqlalchemy_engine, backend
 ):

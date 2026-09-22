@@ -321,6 +321,12 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
                     f"Purge round for incarnation {claim.incarnation} on backend "
                     f"{self._backend!r} ended without reporting what it found"
                 )
+            # A round that found nothing applies its outcome only to the
+            # entry as the claim read it. Under the row lock that is always
+            # the entry; on SQLite a doubly claimed entry is possible, and a
+            # round that found nothing must neither stamp over nor remove
+            # an entry another round has since un-stamped for the points it
+            # found. Un-stamping restarts the protocol and is always safe.
             entry = self._purge_queue.c.incarnation == claim.incarnation
             if claim.found:
                 await connection.execute(
@@ -328,7 +334,13 @@ class SQLAlchemyCollectionRegistry(CollectionRegistry):
                 )
             elif claim.clean_at is None:
                 await connection.execute(
-                    update(self._purge_queue).where(entry).values(clean_at=func.now())
+                    update(self._purge_queue)
+                    .where(entry, self._purge_queue.c.clean_at.is_(None))
+                    .values(clean_at=func.now())
                 )
             else:
-                await connection.execute(delete(self._purge_queue).where(entry))
+                await connection.execute(
+                    delete(self._purge_queue).where(
+                        entry, self._purge_queue.c.clean_at == claim.clean_at
+                    )
+                )
