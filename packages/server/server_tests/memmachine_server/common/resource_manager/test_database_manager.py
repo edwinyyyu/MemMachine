@@ -432,6 +432,22 @@ async def test_qdrant_creates_vector_store():
 
 
 @pytest.mark.asyncio
+async def test_qdrant_client_is_not_opened_when_the_registry_database_is_unknown():
+    """The registry database is resolved before the client is opened, so a
+    bad collection_registry leaves no client behind."""
+    conf = _qdrant_only_conf()
+    conf.qdrant_confs["qdrant1"] = QdrantConf(collection_registry="missing")
+
+    with patch("qdrant_client.AsyncQdrantClient") as mock_cls:
+        builder = DatabaseManager(conf)
+        with pytest.raises(ValueError, match="missing"):
+            await builder.async_get_qdrant_client("qdrant1")
+
+    mock_cls.assert_not_called()
+    assert "qdrant1" not in builder.qdrant_clients
+
+
+@pytest.mark.asyncio
 async def test_get_vector_store_qdrant():
     """get_vector_store returns the VectorStore for a Qdrant config."""
     conf = _qdrant_only_conf()
@@ -594,6 +610,23 @@ async def test_milvus_token_and_db_name_omitted_when_empty():
         await builder.async_get_milvus_client("milvus1")
 
     assert mock_cls.call_args.kwargs == {"uri": "./milvus.db"}
+
+
+@pytest.mark.asyncio
+@requires_pymilvus
+async def test_milvus_client_is_not_opened_when_the_registry_database_is_unknown():
+    """The registry database is resolved before the client is opened, so a
+    bad collection_registry leaves no client behind."""
+    conf = _milvus_only_conf()
+    conf.milvus_confs["milvus1"] = MilvusConf(collection_registry="missing")
+
+    with patch("pymilvus.MilvusClient") as mock_cls:
+        builder = DatabaseManager(conf)
+        with pytest.raises(ValueError, match="missing"):
+            await builder.async_get_milvus_client("milvus1")
+
+    mock_cls.assert_not_called()
+    assert "milvus1" not in builder.milvus_clients
 
 
 @pytest.mark.asyncio
