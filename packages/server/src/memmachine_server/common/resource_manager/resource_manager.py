@@ -218,9 +218,17 @@ class ResourceManagerImpl:
         The first time a store is handed out, its sweeper is started: the
         store never schedules its own purge.
         """
+        # Refused before the database manager is asked: after close() it
+        # would rebuild the client and the store for nothing.
+        if self._closed:
+            raise ResourcesClosedError(
+                f"Vector store {name!r} was requested after the resources were closed"
+            )
         store = await self._database_manager.get_vector_store(name)
         if name not in self._vector_store_purge_tasks:
             async with self._vector_store_lock:
+                # Re-checked under the lock close() flips the flag under,
+                # so a get racing close() never starts a sweeper it misses.
                 if self._closed:
                     raise ResourcesClosedError(
                         f"Vector store {name!r} was requested after the resources were closed"

@@ -432,8 +432,12 @@ async def test_get_vector_store_starts_one_sweeper_per_store(
     await invalid_resource_manager.close()
 
     assert task.cancelled()
+    get_vector_store = invalid_resource_manager._database_manager.get_vector_store
+    assert get_vector_store.await_count == 2
     with pytest.raises(ResourcesClosedError):
         await invalid_resource_manager.get_vector_store("vs")
+    # Refused before the database manager was asked to rebuild the store.
+    assert get_vector_store.await_count == 2
 
 
 @pytest.mark.asyncio
