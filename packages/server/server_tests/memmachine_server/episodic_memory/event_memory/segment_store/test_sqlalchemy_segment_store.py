@@ -12,7 +12,16 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 from pydantic import ValidationError
-from sqlalchemy import delete, event, func, insert, select, text, update
+from sqlalchemy import (
+    ColumnElement,
+    delete,
+    event,
+    func,
+    insert,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -89,6 +98,13 @@ def _links(*segments: Segment) -> dict[Segment, list[UUID]]:
 def _plaintext_partition_config() -> SegmentStorePartitionConfig:
     """Return the default plaintext partition config."""
     return SegmentStorePartitionConfig()
+
+
+def _database_time_ago(engine: AsyncEngine, delta: timedelta) -> ColumnElement:
+    """The database clock's now less `delta`, written by the database in the form of its own stamps."""
+    if engine.dialect.name == "sqlite":
+        return func.datetime("now", f"-{int(delta.total_seconds())} seconds")
+    return func.now() - delta
 
 
 async def _wait_until_blocked_or_done(
@@ -1559,7 +1575,7 @@ async def test_concurrent_remote_delete_yields_single_queue_entry(
                 insert(PurgeQueueRow).values(
                     incarnation=incarnation,
                     partition_key="remote_del",
-                    enqueued_at=datetime.now(UTC),
+                    enqueued_at=func.now(),
                 )
             )
             await remote_session.execute(
@@ -1766,7 +1782,7 @@ async def test_mint_detects_collision_with_concurrent_deletion(
             insert(PurgeQueueRow).values(
                 incarnation=victim_incarnation,
                 partition_key="mint_victim",
-                enqueued_at=datetime.now(UTC),
+                enqueued_at=func.now(),
             )
         )
         await remote_session.execute(
@@ -2088,13 +2104,16 @@ async def test_purge_reclaims_oldest_garbage_first(
     # Stamps come from the database clock, whose resolution need not
     # separate back-to-back deletions; set them so the LAST-inserted entry
     # is the oldest, so only the ordering key can produce the expectation.
-    base = datetime(2026, 1, 1, tzinfo=UTC)
     async with partition._create_session() as session, session.begin():
         for age, key in enumerate(incarnations):
             await session.execute(
                 update(PurgeQueueRow)
                 .where(PurgeQueueRow.incarnation == incarnations[key])
-                .values(enqueued_at=base - timedelta(seconds=age))
+                .values(
+                    enqueued_at=_database_time_ago(
+                        store._engine, timedelta(minutes=age)
+                    )
+                )
             )
 
     # One row of budget: only the oldest entry's row may die.
@@ -2617,7 +2636,7 @@ async def test_sqlite_mint_detects_collision_with_concurrent_deletion(
             insert(PurgeQueueRow).values(
                 incarnation=victim_incarnation,
                 partition_key="sq_mint_victim",
-                enqueued_at=datetime.now(UTC),
+                enqueued_at=func.now(),
             )
         )
         await remote_session.execute(
