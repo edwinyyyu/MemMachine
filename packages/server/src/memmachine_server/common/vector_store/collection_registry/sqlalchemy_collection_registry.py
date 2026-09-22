@@ -6,9 +6,9 @@ writes, so a catalog kept inside them cannot arbitrate two processes
 creating, deleting or reclaiming the same logical collection. This
 registry lives in a relational database instead: a table pair per vector
 store, named by the store's name, with a row per live logical collection
-keyed by namespace and name, whose incarnation is the value
-every point of that life carries, and a purge queue of dead incarnations
-claimed oldest-first. Creation is an insert the primary key arbitrates,
+keyed by namespace and name, whose incarnation is the value every point of
+that life carries, and a purge queue of dead incarnations claimed in the
+order they come due. Creation is an insert the primary key arbitrates,
 deletion is one transaction, and a purge claim is a row lock the database
 hands to one purger at a time.
 """
@@ -23,16 +23,19 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     JSON,
     Column,
+    ColumnElement,
     DateTime,
     Index,
+    Interval,
     MetaData,
+    Select,
     String,
     Table,
     Uuid,
+    bindparam,
     delete,
     func,
     insert,
-    or_,
     select,
     update,
 )
@@ -96,6 +99,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                 "and be at most 32 bytes"
             )
         self._engine = engine
+        self._is_sqlite = engine.dialect.name == "sqlite"
         self._tombstone_retention = tombstone_retention
         table_prefix = f"collection_registry_{vector_store_name}"
         metadata = MetaData()
@@ -122,7 +126,22 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             # cleared by a round that finds something. The entry is removed
             # by a round that finds nothing a retention after this.
             Column("clean_at", DateTime(timezone=True), nullable=True),
-            Index(f"{table_prefix}_gc__ea", "enqueued_at"),
+        )
+        # One partial index per claim: tombstones no round has found clean,
+        # by deletion, and tombstones found clean, by the clean round.
+        unstamped = self._purge_queue.c.clean_at.is_(None)
+        stamped = self._purge_queue.c.clean_at.is_not(None)
+        Index(
+            f"{table_prefix}_gc__ea",
+            self._purge_queue.c.enqueued_at,
+            postgresql_where=unstamped,
+            sqlite_where=unstamped,
+        )
+        Index(
+            f"{table_prefix}_gc__ca",
+            self._purge_queue.c.clean_at,
+            postgresql_where=stamped,
+            sqlite_where=stamped,
         )
         self._metadata = metadata
 
@@ -277,42 +296,36 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
 
     @override
     @asynccontextmanager
-    async def claim_oldest(self) -> AsyncIterator[PurgeClaim | None]:
-        # The claim is a row lock held for the body: on PostgreSQL a
-        # concurrent purger skips the locked entry and takes the next; on
-        # SQLite the writers serialize at the end of the round, so a doubly
-        # claimed entry costs a repeated, idempotent round and never a
-        # missed one. Entries order by their enqueue stamp on the database
-        # clock, so entries from every server order on one clock; entries
-        # stamped in the same tick are unordered among themselves. The
-        # retention is measured on the same clock.
+    async def claim_due(self) -> AsyncIterator[PurgeClaim | None]:
+        # The queue stores only the times of what happened, the deletion and
+        # the last clean round, both on the database clock; the retention is
+        # policy, applied by the database's own arithmetic when a claim or a
+        # removal is decided, so a changed retention reaches every
+        # tombstone. Tombstones no round has found clean come first, oldest
+        # deletion first; a tombstone found clean is due once the retention
+        # has passed since its round, oldest round first; each claim is a
+        # range on its own partial index. Tombstones of one tick of the
+        # clock are unordered among themselves. The claim is a row lock held
+        # for the body: on PostgreSQL a concurrent purger skips the locked
+        # entry and takes the next; on SQLite the writers serialize at the
+        # end of the round, so a doubly claimed entry costs a repeated,
+        # idempotent round and never a missed one.
+        queue = self._purge_queue
         async with self._engine.begin() as connection:
-            database_now = (
-                await connection.execute(
-                    select(func.now(type_=DateTime(timezone=True)))
-                )
-            ).scalar_one()
             row = (
                 await connection.execute(
-                    select(
-                        self._purge_queue.c.incarnation,
-                        self._purge_queue.c.namespace,
-                        self._purge_queue.c.name,
-                        self._purge_queue.c.config,
-                        self._purge_queue.c.clean_at,
-                    )
-                    .where(
-                        or_(
-                            self._purge_queue.c.clean_at.is_(None),
-                            self._purge_queue.c.clean_at
-                            <= database_now - self._tombstone_retention,
-                        ),
-                    )
-                    .order_by(self._purge_queue.c.enqueued_at)
-                    .limit(1)
-                    .with_for_update(skip_locked=True)
+                    self._claim(queue.c.clean_at.is_(None), queue.c.enqueued_at)
                 )
             ).one_or_none()
+            if row is None:
+                row = (
+                    await connection.execute(
+                        self._claim(
+                            queue.c.clean_at <= self._retention_cutoff(),
+                            queue.c.clean_at,
+                        )
+                    )
+                ).one_or_none()
             if row is None:
                 yield None
                 return
@@ -330,25 +343,58 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                     "without reporting what it found"
                 )
             # A round that found nothing applies its outcome only to the
-            # entry as the claim read it. Under the row lock that is always
-            # the entry; on SQLite a doubly claimed entry is possible, and a
-            # round that found nothing must neither stamp over nor remove
-            # an entry another round has since un-stamped for the points it
-            # found. Un-stamping restarts the protocol and is always safe.
-            entry = self._purge_queue.c.incarnation == claim.incarnation
+            # entry as the database finds it now: stamped if still
+            # unstamped, removed if still past the retention. Under the row
+            # lock that is the entry as claimed; on SQLite a doubly claimed
+            # entry is possible, and a round that found nothing must neither
+            # stamp over nor remove an entry another round has since
+            # un-stamped for the points it found. Un-stamping restarts the
+            # protocol and is always safe.
+            entry = queue.c.incarnation == claim.incarnation
             if claim.found:
                 await connection.execute(
-                    update(self._purge_queue).where(entry).values(clean_at=None)
+                    update(queue).where(entry).values(clean_at=None)
                 )
             elif claim.clean_at is None:
                 await connection.execute(
-                    update(self._purge_queue)
-                    .where(entry, self._purge_queue.c.clean_at.is_(None))
+                    update(queue)
+                    .where(entry, queue.c.clean_at.is_(None))
                     .values(clean_at=func.now())
                 )
             else:
                 await connection.execute(
-                    delete(self._purge_queue).where(
-                        entry, self._purge_queue.c.clean_at == claim.clean_at
+                    delete(queue).where(
+                        entry, queue.c.clean_at <= self._retention_cutoff()
                     )
                 )
+
+    def _claim(self, due: ColumnElement[bool], order: ColumnElement) -> Select:
+        queue = self._purge_queue
+        return (
+            select(
+                queue.c.incarnation,
+                queue.c.namespace,
+                queue.c.name,
+                queue.c.config,
+                queue.c.clean_at,
+            )
+            .where(due)
+            .order_by(order)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+
+    def _retention_cutoff(self) -> ColumnElement:
+        """The database clock's now, less the retention, computed by the database."""
+        if self._is_sqlite:
+            # datetime() emits the form CURRENT_TIMESTAMP stamps with, so
+            # the stamps and the cutoff compare as text in time order.
+            seconds = int(self._tombstone_retention.total_seconds())
+            return func.datetime(
+                "now",
+                bindparam("retention_modifier", f"-{seconds} seconds"),
+                type_=DateTime(timezone=True),
+            )
+        return func.now() - bindparam(
+            "retention", self._tombstone_retention, type_=Interval
+        )

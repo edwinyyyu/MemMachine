@@ -141,9 +141,9 @@ class VectorStoreCollectionRegistry(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def claim_oldest(self) -> AbstractAsyncContextManager[PurgeClaim | None]:
+    def claim_due(self) -> AbstractAsyncContextManager[PurgeClaim | None]:
         """
-        Claim the oldest tombstone due for a purge round, for the body of the context.
+        Claim the tombstone that came due first, for a purge round in the body of the context.
 
         The context yields None when no tombstone is due: the queue is
         empty, or every entry had a clean round less than the retention
