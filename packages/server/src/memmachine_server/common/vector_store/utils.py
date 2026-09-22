@@ -36,6 +36,16 @@ def validate_identifier(value: str) -> bool:
     )
 
 
+def require_identifiers(namespace: str, name: str) -> None:
+    """Raise ValueError unless both the namespace and the name are valid identifiers."""
+    if not validate_identifier(namespace):
+        raise ValueError(
+            f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
+        )
+    if not validate_identifier(name):
+        raise ValueError(f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes")
+
+
 def validate_filter(expr: FilterExpr) -> bool:
     """Return whether all field names in the filter tree are valid identifiers."""
     if isinstance(expr, (FilterComparison, FilterIn, FilterIsNull)):
