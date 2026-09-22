@@ -911,6 +911,11 @@ class SQLAlchemySegmentStoreParams(BaseModel):
         # A value judgment, not an argument-type check: pydantic turns
         # only ValueError/AssertionError into a ValidationError, so a
         # TypeError here would escape model construction raw.
+        if engine.dialect.name not in ("postgresql", "sqlite"):
+            raise ValueError(
+                f"Engine uses the {engine.dialect.name} dialect, which the store "
+                "does not support. Use PostgreSQL or SQLite."
+            )
         engine_shares_one_connection = isinstance(engine.pool, StaticPool)
         if engine_shares_one_connection:
             raise ValueError(

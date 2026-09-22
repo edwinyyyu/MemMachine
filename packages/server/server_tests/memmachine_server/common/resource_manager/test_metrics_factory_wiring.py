@@ -93,7 +93,9 @@ def test_get_segment_store_supplies_a_factory(monkeypatch, mock_metrics_factory)
     async def fake_engine(
         _self: rm.ResourceManagerImpl, _name: str, validate: bool = False
     ) -> AsyncEngine:
-        return cast(AsyncEngine, MagicMock(spec=AsyncEngine))
+        engine = MagicMock(spec=AsyncEngine)
+        engine.dialect.name = "postgresql"
+        return cast(AsyncEngine, engine)
 
     monkeypatch.setattr(rm.ResourceManagerImpl, "get_sql_engine", fake_engine)
 

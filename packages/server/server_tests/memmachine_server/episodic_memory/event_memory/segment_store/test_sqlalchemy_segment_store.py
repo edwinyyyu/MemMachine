@@ -2271,6 +2271,17 @@ async def test_old_sqlite_runtime_is_rejected(
 
 
 @pytest.mark.asyncio
+async def test_unsupported_dialect_engine_is_rejected(
+    sqlalchemy_sqlite_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The store supports PostgreSQL and SQLite; refuse any other dialect loudly."""
+    monkeypatch.setattr(sqlalchemy_sqlite_engine.dialect, "name", "mssql")
+    with pytest.raises(ValidationError, match="mssql"):
+        SQLAlchemySegmentStoreParams(engine=sqlalchemy_sqlite_engine)
+
+
+@pytest.mark.asyncio
 async def test_windowed_read_raises_when_partition_dies_between_statements(
     store: SQLAlchemySegmentStore,
     monkeypatch: pytest.MonkeyPatch,
