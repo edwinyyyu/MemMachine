@@ -60,17 +60,17 @@ from .vector_store import VectorStore, VectorStoreCollection
 # Qdrant but forbidden by _IDENTIFIER_RE, so system keys can never collide with user keys.
 _SYSTEM_KEY_PREFIX = "sys-"
 _PAYLOAD_INCARNATION = f"{_SYSTEM_KEY_PREFIX}incarnation"
-
-# Consecutive lost creation races before open-or-create gives up: every
-# retry requires another process to have created and then deleted the
-# collection in between, so this depth means something else is wrong.
-_MAX_OPEN_OR_CREATE_ATTEMPTS = 10
 """The payload key naming the collection incarnation a point belongs to.
 
 Points carry the incarnation, never the collection's name: a collection
 deleted and re-created under the same name gets a fresh incarnation, and
 its predecessor's points are invisible to it while the purge reclaims them.
 """
+
+# Consecutive lost creation races before open-or-create gives up: every
+# retry requires another process to have created and then deleted the
+# collection in between, so this depth means something else is wrong.
+_MAX_OPEN_OR_CREATE_ATTEMPTS = 10
 
 
 def _incarnation_filter(incarnation: UUID) -> models.Filter:
