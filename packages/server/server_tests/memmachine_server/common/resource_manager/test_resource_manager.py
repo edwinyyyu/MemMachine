@@ -428,7 +428,8 @@ async def test_get_vector_store_starts_one_sweeper_per_store(
     [task] = invalid_resource_manager._vector_store_purge_tasks.values()
     assert store.purge_deleted_collections.await_count == 1
 
-    await invalid_resource_manager.close()
+    # Bounded: close() waits for the sweepers it cancels.
+    await asyncio.wait_for(invalid_resource_manager.close(), 30)
 
     assert task.cancelled()
 
