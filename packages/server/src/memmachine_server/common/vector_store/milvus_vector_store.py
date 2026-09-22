@@ -737,14 +737,14 @@ class MilvusVectorStore(VectorStore):
 
     @override
     async def purge_deleted_collections(self) -> bool:
-        # One purge round per call, on the oldest tombstone due: the claim
-        # is a row lock the registry holds while one entity is looked for
-        # and, if there is one, the entities go by filter in a single
-        # server-side operation. The registry keeps or removes the
-        # tombstone by what the round found.
+        # One purge round per call, on the tombstone that came due first: the
+        # claim is a row lock the registry holds while one entity is looked
+        # for and, if there is one, the entities go by filter in a single
+        # server-side operation. The registry keeps or removes the tombstone
+        # by what the round found.
         async with (
             self._tracker("purge_deleted_collections"),
-            self._collection_registry.claim_oldest() as claim,
+            self._collection_registry.claim_due() as claim,
         ):
             if claim is None:
                 return False
