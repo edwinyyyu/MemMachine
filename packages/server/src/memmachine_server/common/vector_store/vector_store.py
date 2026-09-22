@@ -30,6 +30,8 @@ class VectorStoreCollection(ABC):
     is deleted, every operation of the handle raises
     VectorStoreCollectionHandleStaleError, and a collection created again
     under the same (namespace, name) is a new life the handle cannot reach.
+    A read already in flight when the collection is deleted may instead
+    return what it read, the collection's content from before the deletion.
     A store that cannot detect a stale handle says so in its own contract.
 
     Implementations must support storing, filtering on, and returning

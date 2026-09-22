@@ -193,12 +193,16 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
     async def _fence(self) -> None:
         """Raise if this handle's incarnation is no longer the collection's.
 
-        Called before an operation, to refuse a handle known to be dead,
-        and after it, so an operation completed under an incarnation that
-        died meanwhile raises instead of reporting success. Milvus has no
-        transactions, so a write can still land under a dead incarnation:
-        between the two checks, or after a check that never ran; the
-        tombstone's purge rounds reclaim it.
+        Called before every operation, to refuse a handle known to be
+        dead, and after a write, so a write completed under an incarnation
+        that died meanwhile raises instead of reporting success. Milvus has
+        no transactions, so a write can still land under a dead
+        incarnation: between the two checks, or after a check that never
+        ran; the tombstone's purge rounds reclaim it. A read is not checked
+        after: a collection deleted while a read is in flight keeps its
+        entities until a purge round claims its tombstone, so the read returns
+        what it saw, a snapshot from before the deletion, as a read that
+        happened to run just before it would have.
         """
         if not await self._is_live(self._incarnation):
             raise VectorStoreCollectionHandleStaleError(self._namespace, self._name)
@@ -386,7 +390,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 )
                 results.append(QueryResult(matches=matches))
 
-            await self._fence()
             return results
 
     @override
@@ -433,7 +436,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 for record_uuid in uuid_list
                 if record_uuid in records_by_uuid
             ]
-            await self._fence()
             return records
 
     @override
