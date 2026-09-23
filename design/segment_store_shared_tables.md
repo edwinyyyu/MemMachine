@@ -145,14 +145,11 @@ on random-UUID collision resistance.
     within the sweeper's interval. Waking the sweeper from the delete
     path is future work with the tenant lifecycle layer.
   - An entry is retired only when the retiring call's own deletes found
-    fewer rows than its remaining budget. Before retiring, the call also
-    deletes any link rows still carrying the incarnation, in batches drawn
-    from the same budget and logged as a warning: none when the cascade
-    is enforced; an engine without foreign-key enforcement leaves them
-    behind. A link row deletes about 3x cheaper than a segment
-    row (1.0 vs 3.3 us per row, batched, on the benchmark box), so one
-    budget calibrated on segment rows bounds the call without assuming a
-    ratio; widening or indexing the link table revisits this.
+    fewer rows than its remaining budget. Link rows go with their segments
+    by the foreign key's cascade and nothing else: the store requires
+    foreign-key enforcement of its engine (on SQLite, per connection) and
+    does not verify it, so an engine without enforcement leaves link rows
+    behind.
   - On SQLite, which drops locking clauses and defers BEGIN to the first
     DML, the claim is an UPDATE of the queue row, the write fence's
     primitive: it opens the write transaction, so purgers serialize at the

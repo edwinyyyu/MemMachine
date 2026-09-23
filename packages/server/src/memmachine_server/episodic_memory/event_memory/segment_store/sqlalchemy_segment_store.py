@@ -1316,41 +1316,6 @@ class SQLAlchemySegmentStore(SegmentStore):
                     return True
 
                 remaining -= deleted
-                # The cascade has already removed the deleted segments'
-                # links; this guards retirement against rows that escaped
-                # referential integrity. Normally a zero-row delete; if
-                # integrity was actually broken, the leak is reclaimed in
-                # batches drawing count-for-count on the same budget as
-                # the segments, and a full batch leaves the entry for the
-                # next call. A link row deletes cheaper than a segment
-                # row (narrower, fewer indexes, no cascade), so the
-                # shared budget is an upper bound on a call sized for
-                # segment rows, not a guessed ratio.
-                leaked_batch = (
-                    select(DerivativeLinkRow.uuid)
-                    .where(DerivativeLinkRow.incarnation == incarnation)
-                    .limit(remaining)
-                    .scalar_subquery()
-                )
-                leaked = (
-                    await connection.execute(
-                        delete(DerivativeLinkRow).where(
-                            DerivativeLinkRow.incarnation == incarnation,
-                            DerivativeLinkRow.uuid.in_(leaked_batch),
-                        )
-                    )
-                ).rowcount
-                if leaked:
-                    logger.warning(
-                        "Purged %d derivative-link rows that referential "
-                        "integrity should have removed with their segments "
-                        "(incarnation %s); check foreign-key enforcement",
-                        leaked,
-                        incarnation,
-                    )
-                    if leaked == remaining:
-                        return True
-                    remaining -= leaked
                 await connection.execute(
                     delete(PurgeQueueRow).where(
                         PurgeQueueRow.incarnation == incarnation

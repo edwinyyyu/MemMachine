@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import json
-import logging
 import random
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta, timezone
@@ -2424,66 +2423,6 @@ async def test_purge_reclaims_oldest_garbage_first(
 
     while await store.purge_deleted_partitions():
         pass
-
-
-@pytest.mark.asyncio
-async def test_purge_batches_links_that_escaped_integrity(
-    sqlite_store: SQLAlchemySegmentStore,
-    sqlalchemy_sqlite_engine: AsyncEngine,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Integrity-escaped link rows are reclaimed in bounded, warned batches.
-
-    Staged on SQLite, where a connection without the store's
-    foreign_keys pragma can insert orphan link rows; the batching under
-    test is dialect-independent.
-    """
-    partition = await sqlite_store.open_or_create_partition(
-        "leaky", _plaintext_partition_config()
-    )
-    incarnation = partition._incarnation
-    await sqlite_store.delete_partition("leaky")
-
-    # A second engine without the store's pragma listener enforces no
-    # foreign keys, standing in for whatever once broke integrity.
-    rogue_engine = create_async_engine(str(sqlalchemy_sqlite_engine.url))
-    async with rogue_engine.begin() as connection:
-        await connection.execute(
-            insert(DerivativeLinkRow),
-            [
-                {
-                    "incarnation": incarnation,
-                    "uuid": uuid4(),
-                    "segment_uuid": uuid4(),
-                }
-                for _ in range(5)
-            ],
-        )
-    await rogue_engine.dispose()
-
-    monkeypatch.setattr(sqlite_store, "_purge_max_segments", 2)
-    with caplog.at_level(logging.WARNING):
-        first = await sqlite_store.purge_deleted_partitions()
-    # A full link batch leaves the entry claimable and warns.
-    assert first is True
-    assert "referential integrity" in caplog.text
-
-    while await sqlite_store.purge_deleted_partitions():
-        pass
-    async with sqlite_store._create_session() as session:
-        links = (
-            await session.execute(
-                select(func.count())
-                .select_from(DerivativeLinkRow)
-                .where(DerivativeLinkRow.incarnation == incarnation)
-            )
-        ).scalar_one()
-        entries = (
-            await session.execute(select(func.count()).select_from(PurgeQueueRow))
-        ).scalar_one()
-    assert links == 0
-    assert entries == 0
 
 
 @pytest.mark.integration
