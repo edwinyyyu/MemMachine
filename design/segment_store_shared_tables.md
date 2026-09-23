@@ -102,9 +102,11 @@ on random-UUID collision resistance.
 
   - One transaction per call, committing its progress or nothing, so
     committed progress survives interruption.
-  - Segment rows are deleted in batches (`uuid IN (SELECT ... LIMIT n)`,
-    portable across dialects) up to
-    `SQLAlchemySegmentStoreParams.purge_max_segments` per call. The link
+  - Segment rows are deleted in batches up to
+    `SQLAlchemySegmentStoreParams.purge_max_segments` per call, each the
+    incarnation's first rows by primary key: the batch's last key is read
+    first, and the DELETE is the primary-key range up to it, so no plan can
+    join the batch against the incarnation's other rows. The link
     table follows by cascade, measured faster than deleting link rows
     manually at one and at four links per segment. Cascade deletion
     saturates around 3M link rows/s as density grows (380k segments/s at

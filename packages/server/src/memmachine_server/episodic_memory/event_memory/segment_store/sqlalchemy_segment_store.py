@@ -38,6 +38,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
@@ -1249,22 +1250,10 @@ class SQLAlchemySegmentStore(SegmentStore):
                 if incarnation is None:
                     return False
 
-                batch = (
-                    select(SegmentRow.uuid)
-                    .where(SegmentRow.incarnation == incarnation)
-                    .limit(remaining)
-                    .scalar_subquery()
-                )
-
                 # The link-table cascade follows the deleted segments.
-                deleted = (
-                    await connection.execute(
-                        delete(SegmentRow).where(
-                            SegmentRow.incarnation == incarnation,
-                            SegmentRow.uuid.in_(batch),
-                        )
-                    )
-                ).rowcount
+                deleted = await self._delete_first_rows(
+                    connection, SegmentRow, incarnation, remaining
+                )
                 if deleted == remaining:
                     # The bound was consumed exactly; this incarnation may
                     # have more rows, so leave its queue entry for the
@@ -1282,20 +1271,9 @@ class SQLAlchemySegmentStore(SegmentStore):
                 # row (narrower, fewer indexes, no cascade), so the
                 # shared budget is an upper bound on a call sized for
                 # segment rows, not a guessed ratio.
-                leaked_batch = (
-                    select(DerivativeLinkRow.uuid)
-                    .where(DerivativeLinkRow.incarnation == incarnation)
-                    .limit(remaining)
-                    .scalar_subquery()
+                leaked = await self._delete_first_rows(
+                    connection, DerivativeLinkRow, incarnation, remaining
                 )
-                leaked = (
-                    await connection.execute(
-                        delete(DerivativeLinkRow).where(
-                            DerivativeLinkRow.incarnation == incarnation,
-                            DerivativeLinkRow.uuid.in_(leaked_batch),
-                        )
-                    )
-                ).rowcount
                 if leaked:
                     logger.warning(
                         "Purged %d derivative-link rows that referential "
@@ -1321,6 +1299,34 @@ class SQLAlchemySegmentStore(SegmentStore):
                     return True
 
     # Helpers
+
+    @staticmethod
+    async def _delete_first_rows(
+        connection: AsyncConnection,
+        row: type[SegmentRow] | type[DerivativeLinkRow],
+        incarnation: UUID,
+        count: int,
+    ) -> int:
+        """Delete up to `count` of an incarnation's rows, the first by primary key.
+
+        The batch is bounded by its last key instead of selected in a
+        subquery, so the DELETE is a range on the primary key: no plan can
+        join it against the incarnation's other rows, and `count` is no
+        bind-parameter list.
+        """
+        last = (
+            await connection.execute(
+                select(row.uuid)
+                .where(row.incarnation == incarnation)
+                .order_by(row.uuid)
+                .offset(count - 1)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        in_batch = [row.incarnation == incarnation]
+        if last is not None:
+            in_batch.append(row.uuid <= last)
+        return (await connection.execute(delete(row).where(*in_batch))).rowcount
 
     async def _load_payload_codec(
         self,
