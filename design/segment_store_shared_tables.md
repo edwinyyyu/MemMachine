@@ -50,7 +50,8 @@ One physical schema on every dialect; the ORM models are the tables.
   composite string key, and random UUIDs are unique across nodes without
   coordination, so a tenant's rows move between databases verbatim.
 - `segment_store_gc`, the purge queue: one row per dead incarnation, with
-  the logical key kept for forensics.
+  the logical key kept for forensics and the purge's cursor, the last
+  segment key purged.
 
 The link table keeps its foreign key to the segment table (`ON DELETE
 CASCADE`), both sides keyed by incarnation. The segment table has no
@@ -102,11 +103,20 @@ on random-UUID collision resistance.
 
   - One transaction per call, committing its progress or nothing, so
     committed progress survives interruption.
-  - Segment rows are deleted in batches (`uuid IN (SELECT ... LIMIT n)`,
-    portable across dialects) up to
-    `SQLAlchemySegmentStoreParams.purge_max_segments` per call. The link
-    table follows by cascade, measured faster than deleting link rows
-    manually at one and at four links per segment. Cascade deletion
+  - Segment rows are deleted in batches of up to
+    `SQLAlchemySegmentStoreParams.purge_max_segments` per call. A batch
+    continues from the entry's cursor: it reads the next keys after
+    `purged_through` in primary-key order, deletes that key range, and
+    records its last key in the same transaction. No batch reads a row an
+    earlier batch deleted; PostgreSQL keeps deleted rows in the table and
+    its indexes until vacuum, and a batch that started from the
+    incarnation's first key would step over all of them, making each
+    batch, and the call that finds the incarnation empty, cost in
+    proportion to what was already purged. The cursor relies on no row
+    being written into an incarnation once it is enqueued, which the write
+    fence guarantees (below). The link table follows by cascade, measured
+    faster than deleting link rows manually at one and at four links per
+    segment. Cascade deletion
     saturates around 3M link rows/s as density grows (380k segments/s at
     one link per segment, 46k at 64), so heavily linked partitions still
     purge in sub-second calls. Link fan-out is set by the deriver, not
@@ -144,11 +154,12 @@ on random-UUID collision resistance.
     budget calibrated on segment rows bounds the call without assuming a
     ratio; widening or indexing the link table revisits this.
   - On SQLite, which drops locking clauses and defers BEGIN to the first
-    DML, the claim is a plain read and purgers serialize on the database
-    write lock at the DELETE. Two purgers may claim the same entry; the
-    second deletes whatever the first left (nothing, once the first retired
-    it) and re-retires it. Duplicated round trips, never duplicated or
-    missed reclamation.
+    DML, the claim is an UPDATE of the queue row, the write fence's
+    primitive: it opens the write transaction, so purgers serialize at the
+    claim and each reads the cursor its predecessor committed. With a
+    plain-read claim, a second purger could plan its batch from a cursor
+    the first has since advanced, delete nothing, and retire the entry with
+    rows left.
   - The store never schedules purging; when and how often is the caller's
     policy, and implementations whose deletes reclaim physically return
     False. In the server, the resource manager runs one background task

@@ -14,6 +14,7 @@ import pytest_asyncio
 from pydantic import ValidationError
 from sqlalchemy import (
     ColumnElement,
+    Delete,
     delete,
     event,
     func,
@@ -23,7 +24,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from memmachine_server.common.filter.filter_parser import Comparison, parse_filter
@@ -137,6 +138,47 @@ async def _wait_until_blocked_or_done(
         if asyncio.get_running_loop().time() > deadline:
             raise TimeoutError("task neither blocked on a lock nor finished")
         await asyncio.sleep(0.01)
+
+
+async def _row_counts(
+    owner: SQLAlchemySegmentStore | SQLAlchemySegmentStorePartition,
+    incarnation: UUID,
+) -> tuple[int, int]:
+    """The incarnation's segment and derivative-link row counts."""
+    async with owner._create_session() as session:
+        segments = (
+            await session.execute(
+                select(func.count())
+                .select_from(SegmentRow)
+                .where(SegmentRow.incarnation == incarnation)
+            )
+        ).scalar_one()
+        links = (
+            await session.execute(
+                select(func.count())
+                .select_from(DerivativeLinkRow)
+                .where(DerivativeLinkRow.incarnation == incarnation)
+            )
+        ).scalar_one()
+    return segments, links
+
+
+@contextlib.contextmanager
+def _failing_next_commit(engine: AsyncEngine) -> Iterator[None]:
+    """Make the engine's next transaction commit raise instead of committing."""
+    failed: list[bool] = []
+
+    def _fail_once(_connection) -> None:
+        if not failed:
+            failed.append(True)
+            raise RuntimeError("injected commit failure")
+
+    event.listen(engine.sync_engine, "commit", _fail_once)
+    try:
+        yield
+    finally:
+        event.remove(engine.sync_engine, "commit", _fail_once)
+    assert failed, "no commit was attempted"
 
 
 # ---------------------------------------------------------------------------
@@ -1360,6 +1402,8 @@ async def test_purge_reclaims_only_dead_incarnations(
         ).scalar_one()
     assert dead_rows == 0
     assert queue_depth == 0
+    assert await _row_counts(store, doomed_incarnation) == (0, 0)
+    assert await _row_counts(store, live._incarnation) == (1, 1)
     assert (await live.get_segment_contexts([live_seg.uuid]))[live_seg.uuid]
 
 
@@ -1402,6 +1446,252 @@ async def test_concurrent_purges_reclaim_everything(
             await session.execute(select(func.count()).select_from(PurgeQueueRow))
         ).scalar_one()
     assert dead_rows == 0
+    assert queue_depth == 0
+    for incarnation in incarnations:
+        assert await _row_counts(store, incarnation) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_racing_purgers_never_retire_a_partly_purged_entry(
+    store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A purger racing another never retires rows it did not reach.
+
+    The first purger to delete a batch is held after its DELETE, before it
+    commits, until a second purger reads segment rows (or for a second).
+    A second purger that planned its batch from the entry as it stood
+    before the first committed would delete nothing and retire the entry
+    with rows left. PostgreSQL's claim lock makes it skip the entry; on
+    SQLite the claim is a write, so it waits until the first commits.
+    """
+    partition = await store.open_or_create_partition(
+        "raced", _plaintext_partition_config()
+    )
+    await partition.add_segments(
+        {_seg(ts_offset_seconds=index): [] for index in range(6)}
+    )
+    incarnation = partition._incarnation
+    await store.delete_partition("raced")
+    monkeypatch.setattr(store, "_purge_max_segments", 2)
+
+    held: list[AsyncConnection] = []
+    second_read = asyncio.Event()
+    original_execute = AsyncConnection.execute
+
+    async def interleaving_execute(self, statement, *args, **kwargs):
+        result = await original_execute(self, statement, *args, **kwargs)
+        if (
+            isinstance(statement, Delete)
+            and statement.table.name == SegmentRow.__tablename__
+        ):
+            if not held:
+                held.append(self)
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(second_read.wait(), 1)
+        elif held and self is not held[0] and "segment_store_sg" in str(statement):
+            second_read.set()
+        return result
+
+    monkeypatch.setattr(AsyncConnection, "execute", interleaving_execute)
+    await asyncio.wait_for(
+        asyncio.gather(
+            store.purge_deleted_partitions(), store.purge_deleted_partitions()
+        ),
+        30,
+    )
+    monkeypatch.setattr(AsyncConnection, "execute", original_execute)
+    assert held, "no purger was held after deleting a batch"
+    while await store.purge_deleted_partitions():
+        pass
+
+    assert await _row_counts(store, incarnation) == (0, 0)
+    async with store._create_session() as session:
+        queue_depth = (
+            await session.execute(select(func.count()).select_from(PurgeQueueRow))
+        ).scalar_one()
+    assert queue_depth == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_purge_call_leaves_nothing_half_done(
+    store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A purge call whose commit fails changes nothing; later calls finish.
+
+    A call's deletions and its record of how far it got commit together or
+    not at all, so no row is ever skipped after a failure.
+    """
+    partition = await store.open_or_create_partition(
+        "interrupted", _plaintext_partition_config()
+    )
+    await partition.add_segments(
+        _links(*(_seg(ts_offset_seconds=index) for index in range(5)))
+    )
+    incarnation = partition._incarnation
+    await store.delete_partition("interrupted")
+    monkeypatch.setattr(store, "_purge_max_segments", 2)
+
+    with (
+        _failing_next_commit(store._engine),
+        pytest.raises(RuntimeError, match="injected commit failure"),
+    ):
+        await store.purge_deleted_partitions()
+    assert await _row_counts(store, incarnation) == (5, 5)
+
+    while await store.purge_deleted_partitions():
+        pass
+    assert await _row_counts(store, incarnation) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_purge_reclaims_every_size_within_the_bound(
+    store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every incarnation size is reclaimed whole, never over the bound per call.
+
+    Sizes straddle the bound: empty, below it, exactly it, just over it,
+    and an exact multiple, where the last call finds nothing left.
+    """
+    bound = 3
+    sizes = [0, 1, bound - 1, bound, bound + 1, 2 * bound]
+    incarnations = []
+    for index, size in enumerate(sizes):
+        partition = await store.open_or_create_partition(
+            f"sized_{index}", _plaintext_partition_config()
+        )
+        if size:
+            await partition.add_segments(
+                _links(*(_seg(ts_offset_seconds=offset) for offset in range(size)))
+            )
+        incarnations.append(partition._incarnation)
+        await store.delete_partition(f"sized_{index}")
+    monkeypatch.setattr(store, "_purge_max_segments", bound)
+
+    async def dead_segments() -> int:
+        return sum(
+            [(await _row_counts(store, incarnation))[0] for incarnation in incarnations]
+        )
+
+    left = await dead_segments()
+    for _ in range(50):
+        more = await store.purge_deleted_partitions()
+        now = await dead_segments()
+        assert 0 <= left - now <= bound
+        left = now
+        if not more:
+            break
+    else:
+        pytest.fail("the purge did not finish within 50 calls")
+    for incarnation in incarnations:
+        assert await _row_counts(store, incarnation) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_purging_a_recreated_key_reclaims_only_the_dead_incarnation(
+    store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successor keeps every row it writes while its predecessor is purged."""
+    predecessor = await store.open_or_create_partition(
+        "reborn_purge", _plaintext_partition_config()
+    )
+    await predecessor.add_segments(
+        _links(*(_seg(ts_offset_seconds=index) for index in range(5)))
+    )
+    await store.delete_partition("reborn_purge")
+    successor = await store.open_or_create_partition(
+        "reborn_purge", _plaintext_partition_config()
+    )
+    early = [_seg(ts_offset_seconds=10 + index) for index in range(3)]
+    await successor.add_segments(_links(*early))
+    monkeypatch.setattr(store, "_purge_max_segments", 2)
+
+    assert await store.purge_deleted_partitions() is True
+    late = [_seg(ts_offset_seconds=20 + index) for index in range(2)]
+    await successor.add_segments(_links(*late))
+    while await store.purge_deleted_partitions():
+        pass
+
+    assert await _row_counts(store, predecessor._incarnation) == (0, 0)
+    assert await _row_counts(store, successor._incarnation) == (5, 5)
+    contexts = await successor.get_segment_contexts(
+        [segment.uuid for segment in (*early, *late)]
+    )
+    assert len(contexts) == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seed", [1, 2, 3])
+async def test_racing_purgers_and_writers_leave_exactly_the_live_rows(
+    store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+    seed: int,
+) -> None:
+    """Concurrent purgers and writers leave exactly what live partitions hold.
+
+    Dead incarnations of random sizes and link fan-outs are drained by
+    three concurrent purgers under a small random bound while writers keep
+    adding to live partitions. Afterwards no dead incarnation has a
+    segment or link row, each live partition has exactly the rows written
+    to it, and the queue is empty.
+    """
+    rng = random.Random(seed)
+    monkeypatch.setattr(store, "_purge_max_segments", rng.randint(1, 4))
+
+    def batch(count: int, base: int) -> dict[Segment, list[UUID]]:
+        return {
+            _seg(ts_offset_seconds=base + offset): [
+                uuid4() for _ in range(rng.randint(0, 2))
+            ]
+            for offset in range(count)
+        }
+
+    dead = []
+    for index in range(5):
+        partition = await store.open_or_create_partition(
+            f"stress_dead_{index}", _plaintext_partition_config()
+        )
+        segments = batch(rng.randint(0, 9), 0)
+        if segments:
+            await partition.add_segments(segments)
+        dead.append(partition._incarnation)
+        await store.delete_partition(f"stress_dead_{index}")
+
+    live = [
+        await store.open_or_create_partition(
+            f"stress_live_{index}", _plaintext_partition_config()
+        )
+        for index in range(2)
+    ]
+    written = {partition._incarnation: [0, 0] for partition in live}
+
+    async def write(partition: SQLAlchemySegmentStorePartition) -> None:
+        for round_index in range(5):
+            segments = batch(rng.randint(1, 3), round_index * 10)
+            await partition.add_segments(segments)
+            written[partition._incarnation][0] += len(segments)
+            written[partition._incarnation][1] += sum(map(len, segments.values()))
+
+    async def drain() -> None:
+        while await store.purge_deleted_partitions():
+            pass
+
+    await asyncio.wait_for(
+        asyncio.gather(drain(), drain(), drain(), *(write(p) for p in live)), 60
+    )
+    await drain()
+
+    for incarnation in dead:
+        assert await _row_counts(store, incarnation) == (0, 0)
+    for incarnation, (segments, links) in written.items():
+        assert await _row_counts(store, incarnation) == (segments, links)
+    async with store._create_session() as session:
+        queue_depth = (
+            await session.execute(select(func.count()).select_from(PurgeQueueRow))
+        ).scalar_one()
     assert queue_depth == 0
 
 

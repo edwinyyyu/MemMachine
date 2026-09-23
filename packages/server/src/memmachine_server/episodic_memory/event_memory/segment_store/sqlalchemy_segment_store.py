@@ -226,7 +226,9 @@ class PurgeQueueRow(BaseSegmentStore):
     Claimed oldest-first by the enqueue stamp, which is the database clock,
     so entries from every server order on one clock; entries stamped in the
     same tick are unordered among themselves. The incarnation identifies
-    the rows to reclaim; the logical key is carried for forensics.
+    the rows to reclaim; the logical key is carried for forensics. Every
+    segment row of the incarnation keyed at or below purged_through is
+    deleted; NULL until the first full batch.
     """
 
     __tablename__ = "segment_store_gc"
@@ -236,6 +238,7 @@ class PurgeQueueRow(BaseSegmentStore):
     enqueued_at: MappedColumn[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+    purged_through: MappedColumn[UUID | None] = mapped_column(Uuid, nullable=True)
 
     __table_args__ = (Index("segment_store_gc__ea", "enqueued_at"),)
 
@@ -1218,12 +1221,11 @@ class SQLAlchemySegmentStore(SegmentStore):
         # One transaction per call: reclaim up to the configured bounds and
         # commit, or nothing. That is what makes a call that fails on
         # contention safe to repeat, as the ABC promises: a raise rolls the
-        # whole call back. Entries are claimed one at a time, so only
-        # the claiming call touches a dead incarnation's rows. SQLite drops
-        # locking clauses; there purgers serialize at the DELETE, and a
-        # doubly-claimed entry costs empty round trips, never duplicated or
-        # missed reclamation (an entry is retired only when the retirer's
-        # own DELETEs found fewer rows than its budget). Full rationale:
+        # whole call back, cursor included. Entries are claimed one at a
+        # time, so only the claiming call touches a dead incarnation's rows;
+        # on SQLite, which drops locking clauses, the claim is a write, so
+        # purgers serialize at the claim and each reads the cursor its
+        # predecessor committed. Full rationale:
         # design/segment_store_shared_tables.md.
         remaining = self._purge_max_segments
         entries = 0
@@ -1235,40 +1237,82 @@ class SQLAlchemySegmentStore(SegmentStore):
             self._engine.begin() as connection,
         ):
             while True:
-                incarnation = (
-                    await connection.execute(
-                        # Skips only OTHER transactions' locks; entries this
-                        # call has already claimed cannot come back, each
-                        # being deleted before the next claim.
+                if self._is_sqlite:
+                    # Same primitive as _lock_partition_for_write: the row
+                    # UPDATE opens the write transaction, so a racing
+                    # purger waits here and then reads this call's
+                    # committed cursor. RETURNING resolves the entry in the
+                    # same round trip.
+                    oldest = (
                         select(PurgeQueueRow.incarnation)
+                        .order_by(PurgeQueueRow.enqueued_at)
+                        .limit(1)
+                        .scalar_subquery()
+                    )
+                    claim = (
+                        update(PurgeQueueRow)
+                        .where(PurgeQueueRow.incarnation == oldest)
+                        .values(purged_through=PurgeQueueRow.purged_through)
+                        .returning(
+                            PurgeQueueRow.incarnation, PurgeQueueRow.purged_through
+                        )
+                    )
+                else:
+                    # Skips only OTHER transactions' locks; entries this
+                    # call has already claimed cannot come back, each
+                    # being deleted before the next claim.
+                    claim = (
+                        select(PurgeQueueRow.incarnation, PurgeQueueRow.purged_through)
                         .order_by(PurgeQueueRow.enqueued_at)
                         .limit(1)
                         .with_for_update(skip_locked=True)
                     )
-                ).scalar_one_or_none()
-                if incarnation is None:
+                entry = (await connection.execute(claim)).one_or_none()
+                if entry is None:
                     return False
+                incarnation, purged_through = entry
 
+                # The batch continues after the cursor, so it never reads
+                # rows an earlier batch deleted: PostgreSQL keeps them in
+                # the table and its indexes until vacuum, and a batch
+                # starting from the incarnation's first key would step over
+                # all of them.
+                after_cursor = (
+                    [] if purged_through is None else [SegmentRow.uuid > purged_through]
+                )
                 batch = (
                     select(SegmentRow.uuid)
-                    .where(SegmentRow.incarnation == incarnation)
+                    .where(SegmentRow.incarnation == incarnation, *after_cursor)
+                    .order_by(SegmentRow.uuid)
                     .limit(remaining)
-                    .scalar_subquery()
+                    .subquery()
                 )
-
-                # The link-table cascade follows the deleted segments.
-                deleted = (
+                last = (
                     await connection.execute(
-                        delete(SegmentRow).where(
-                            SegmentRow.incarnation == incarnation,
-                            SegmentRow.uuid.in_(batch),
-                        )
+                        select(batch.c.uuid).order_by(batch.c.uuid.desc()).limit(1)
                     )
-                ).rowcount
+                ).scalar_one_or_none()
+                deleted = 0
+                if last is not None:
+                    # The link-table cascade follows the deleted segments.
+                    deleted = (
+                        await connection.execute(
+                            delete(SegmentRow).where(
+                                SegmentRow.incarnation == incarnation,
+                                *after_cursor,
+                                SegmentRow.uuid <= last,
+                            )
+                        )
+                    ).rowcount
                 if deleted == remaining:
                     # The bound was consumed exactly; this incarnation may
-                    # have more rows, so leave its queue entry for the
-                    # next call.
+                    # have more rows, so record how far it got and leave
+                    # its queue entry for the next call.
+                    await connection.execute(
+                        update(PurgeQueueRow)
+                        .where(PurgeQueueRow.incarnation == incarnation)
+                        .values(purged_through=last)
+                    )
                     return True
 
                 remaining -= deleted
