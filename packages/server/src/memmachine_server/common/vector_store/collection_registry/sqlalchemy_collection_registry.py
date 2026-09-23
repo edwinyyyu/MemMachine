@@ -8,8 +8,8 @@ registry lives in a relational database instead: a table pair per vector
 store, named by the store's name, with a row per live logical collection
 keyed by namespace and name, whose incarnation is the value every point of
 that life carries, and a purge queue of dead incarnations claimed in the
-order they come due. Creation is an insert the primary key arbitrates,
-deletion is one transaction, and a purge claim is a row lock the database
+order they come due. Registration is an insert the primary key
+arbitrates, unregistration is one transaction, and a purge claim is a row lock the database
 hands to one purger at a time.
 """
 
@@ -156,7 +156,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             await connection.run_sync(self._metadata.create_all)
 
     @override
-    async def create(
+    async def register(
         self, namespace: str, name: str, config: VectorStoreCollectionConfig
     ) -> UUID:
         # The primary key arbitrates the (namespace, name) across processes;
@@ -264,7 +264,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
         return row is not None
 
     @override
-    async def delete(self, namespace: str, name: str) -> None:
+    async def unregister(self, namespace: str, name: str) -> None:
         # One transaction: the collection is unreachable as soon as it
         # commits, and the queue row is the incarnation's tombstone. The
         # segment store pins the row before its queue insert with the

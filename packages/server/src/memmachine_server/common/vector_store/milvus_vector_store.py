@@ -690,7 +690,7 @@ class MilvusVectorStore(VectorStore):
             # arbiter: a racing creator on any process loses here, never in
             # Milvus.
             await self._create_native_collection(namespace, config)
-            await self._collection_registry.create(namespace, name, config)
+            await self._collection_registry.register(namespace, name, config)
 
     @override
     async def open_or_create_collection(
@@ -718,7 +718,7 @@ class MilvusVectorStore(VectorStore):
                     return self._build_collection_handle(namespace, name, registered)
                 await self._create_native_collection(namespace, config)
                 try:
-                    incarnation = await self._collection_registry.create(
+                    incarnation = await self._collection_registry.register(
                         namespace, name, config
                     )
                 except VectorStoreCollectionAlreadyExistsError as err:
@@ -758,7 +758,7 @@ class MilvusVectorStore(VectorStore):
         async with self._tracker("delete_collection"):
             # One registry transaction: the collection is unreachable when
             # it commits, and its entities wait on the queue for the purge.
-            await self._collection_registry.delete(namespace, name)
+            await self._collection_registry.unregister(namespace, name)
 
     @override
     async def purge_deleted_collections(self) -> bool:
