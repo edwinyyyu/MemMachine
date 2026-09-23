@@ -26,13 +26,12 @@ class VectorStoreCollection(ABC):
     Identified by a (namespace, name) pair.
     All data operations are scoped to this logical collection.
 
-    A handle is bound to one life of the collection: once the collection
-    is deleted, every operation of the handle raises
-    VectorStoreCollectionHandleStaleError, and a collection created again
-    under the same (namespace, name) is a new life the handle cannot reach.
-    A read already in flight when the collection is deleted may instead
-    return what it read, the collection's content from before the deletion.
-    A store that cannot detect a stale handle says so in its own contract.
+    A handle is bound to one life of the collection: after the collection
+    is deleted, its operations raise VectorStoreCollectionHandleStaleError,
+    and a collection created again under the same (namespace, name) is a
+    new life. A read concurrent with the deletion may take effect before
+    it, returning the content from before the deletion. A store that cannot
+    detect a stale handle says so in its own contract.
 
     Implementations must support storing, filtering on, and returning
     record properties not declared in the configured indexed properties schema.
@@ -282,9 +281,8 @@ class VectorStore(ABC):
         """
         Delete a logical collection from the vector store.
 
-        The collection is unreachable when this returns: opening it finds
-        nothing, and handles bound to it are stale. Its records are gone
-        with it or, on a store that reclaims them afterward, left for
+        When this returns, the collection is unreachable and its data is
+        deleted or, on a store that reclaims it later, left for
         `purge_deleted_collections`. It is idempotent.
 
         Args:
