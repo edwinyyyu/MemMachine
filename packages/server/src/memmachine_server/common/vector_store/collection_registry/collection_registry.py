@@ -18,7 +18,6 @@ through its own client.
 from abc import ABC, abstractmethod
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from datetime import datetime
 from uuid import UUID
 
 from memmachine_server.common.vector_store.data_types import (
@@ -36,18 +35,20 @@ class RegisteredCollection:
 
 @dataclass
 class PurgeClaim:
-    """A claimed tombstone: the incarnation to purge, where its points are, and what the round found.
+    """
+    One purge round's hold on a tombstone: what the round needs, and what it found.
 
-    Mutable for `found`, which the purger sets before the claim ends: True
-    when the backend still held points under the incarnation, False when
-    it held none.
+    The registry fills in what the round needs to find the dead
+    incarnation's points: `incarnation`, the value they carry, and
+    `namespace` and `config`, which name the native collection they are
+    in. The round sets `found` before the claim ends: True when points
+    remained under the incarnation, False when none did. The registry
+    records that outcome when the claim ends.
     """
 
     incarnation: UUID
     namespace: str
-    name: str
     config: VectorStoreCollectionConfig
-    clean_at: datetime | None
     found: bool | None = None
 
 
@@ -66,7 +67,7 @@ class VectorStoreCollectionRegistry(ABC):
 
     @abstractmethod
     async def startup(self) -> None:
-        """Ready the registry, idempotently."""
+        """Startup."""
         raise NotImplementedError
 
     @abstractmethod
@@ -143,23 +144,26 @@ class VectorStoreCollectionRegistry(ABC):
     @abstractmethod
     def claim_due(self) -> AbstractAsyncContextManager[PurgeClaim | None]:
         """
-        Claim the tombstone that came due first, for a purge round in the body of the context.
+        Claim a tombstone that is due for a purge round, held for the body of the context.
 
-        The context yields None when no tombstone is due: the queue is
-        empty, or every entry had a clean round less than the retention
-        ago. A registry that can hold a claim hands the entry to no other
+        A tombstone is due until a round finds no points under its
+        incarnation, and due again once the retention has passed since
+        that round. The caller runs one round in the body: it looks for
+        points under `claim.incarnation` in the native collection that
+        `claim.namespace` and `claim.config` name, deletes any it finds,
+        and sets `claim.found`. When the body ends, the registry records
+        the outcome: a round that found points leaves the tombstone due; a
+        round that found none starts the retention, or, once the retention
+        has passed, removes the tombstone and frees its incarnation. A body
+        that raises leaves the tombstone as it was.
+
+        A registry that can hold a claim hands the tombstone to no other
         purger for the body's duration; one that cannot lets a doubly
-        claimed entry cost a repeated, idempotent round and never a missed
-        one.
-
-        The body purges and sets `found`. A round that found points keeps
-        the entry due, so rounds continue; a round that found none stamps
-        the entry clean the first time and removes it when it is the round
-        due after the retention. A body that raises leaves the entry as it
-        was, for a later claim.
+        claimed tombstone cost a repeated, idempotent round and never a
+        missed one.
 
         Returns:
             AbstractAsyncContextManager[PurgeClaim | None]:
-                The claim, held for the body of the context.
+                The claim, or None when no tombstone is due.
         """
         raise NotImplementedError

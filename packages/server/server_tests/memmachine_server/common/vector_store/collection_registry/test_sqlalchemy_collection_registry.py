@@ -285,7 +285,7 @@ async def test_a_recreated_name_gets_a_new_incarnation(
 
 @pytest.mark.asyncio
 async def test_a_claim_names_where_the_points_are(sqlalchemy_engine, vector_store_name):
-    """The tombstone carries what a purger needs to find the points: namespace, name, configuration."""
+    """The claim carries what a purge round needs to find the points: incarnation, namespace, configuration."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     incarnation = await registry.create(NAMESPACE, "c", OTHER_CONFIG)
     await registry.delete(NAMESPACE, "c")
@@ -294,7 +294,6 @@ async def test_a_claim_names_where_the_points_are(sqlalchemy_engine, vector_stor
         assert claim is not None
         assert claim.incarnation == incarnation
         assert claim.namespace == NAMESPACE
-        assert claim.name == "c"
         assert claim.config == OTHER_CONFIG
         claim.found = False
 

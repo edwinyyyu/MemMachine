@@ -337,9 +337,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             claim = PurgeClaim(
                 incarnation=row.incarnation,
                 namespace=row.namespace,
-                name=row.name,
                 config=VectorStoreCollectionConfig.model_validate(row.config),
-                clean_at=row.clean_at,
             )
             yield claim
             if claim.found is None:
@@ -360,7 +358,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                 await connection.execute(
                     update(queue).where(entry).values(clean_at=None)
                 )
-            elif claim.clean_at is None:
+            elif row.clean_at is None:
                 await connection.execute(
                     update(queue)
                     .where(entry, queue.c.clean_at.is_(None))
@@ -379,7 +377,6 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             select(
                 queue.c.incarnation,
                 queue.c.namespace,
-                queue.c.name,
                 queue.c.config,
                 queue.c.clean_at,
             )
