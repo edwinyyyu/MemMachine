@@ -866,6 +866,53 @@ async def test_delete_segments_partial(
     assert s2.uuid in result
 
 
+@pytest.mark.asyncio
+async def test_add_segments_failing_partway_writes_nothing(
+    partition: SQLAlchemySegmentStorePartition,
+) -> None:
+    """An add whose link rows are rejected keeps none of its segments either."""
+    taken = uuid4()
+    await partition.add_segments({_seg(): [taken]})
+    rejected = [_seg(ts_offset_seconds=1), _seg(ts_offset_seconds=2)]
+
+    with pytest.raises(IntegrityError):
+        await partition.add_segments({rejected[0]: [uuid4()], rejected[1]: [taken]})
+
+    assert await _row_counts(partition, partition._incarnation) == (1, 1)
+    assert (
+        await partition.get_segment_contexts([segment.uuid for segment in rejected])
+        == {}
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["add_segments", "delete_segments"])
+async def test_segment_write_whose_commit_fails_changes_nothing(
+    store: SQLAlchemySegmentStore,
+    operation: str,
+) -> None:
+    """A segment write whose commit fails leaves the partition as it was."""
+    partition = await store.open_or_create_partition(
+        "uncommitted", _plaintext_partition_config()
+    )
+    kept = _seg()
+    await partition.add_segments(_links(kept))
+    write = (
+        partition.add_segments(_links(_seg(ts_offset_seconds=1)))
+        if operation == "add_segments"
+        else partition.delete_segments([kept.uuid])
+    )
+
+    with (
+        _failing_next_commit(store._engine),
+        pytest.raises(RuntimeError, match="injected commit failure"),
+    ):
+        await write
+
+    assert await _row_counts(store, partition._incarnation) == (1, 1)
+    assert kept.uuid in await partition.get_segment_contexts([kept.uuid])
+
+
 # ===================================================================
 # Concurrency tests
 # ===================================================================
@@ -904,6 +951,7 @@ async def test_concurrent_add_disjoint(
             await session.execute(select(func.count()).select_from(SegmentRow))
         ).scalar()
     assert count == 50
+    assert await _row_counts(part, part._incarnation) == (50, 50)
 
 
 @pytest.mark.asyncio
@@ -1281,6 +1329,10 @@ async def test_stale_handle_raises_after_delete(
         await partition.get_segment_uuids_by_event_uuids([seg.event_uuid])
     with pytest.raises(SegmentStorePartitionHandleStaleError):
         await partition.get_derivative_uuids_by_segment_uuids([seg.uuid])
+    with pytest.raises(SegmentStorePartitionHandleStaleError):
+        await partition.delete_segments([seg.uuid])
+    # The stale handle deleted nothing; the rows wait for the purge.
+    assert await _row_counts(store, partition._incarnation) == (1, 1)
 
 
 @pytest.mark.integration
@@ -2709,6 +2761,7 @@ async def test_overlapping_segment_deletes_do_not_deadlock(
             partition.delete_segments(backward),
         )
         await partition.delete_segments(rng.sample(uuids, len(uuids)))
+        assert await _row_counts(partition, partition._incarnation) == (0, 0)
 
     rng = random.Random(7)
     for _ in range(10):
@@ -2782,6 +2835,216 @@ async def test_concurrent_partition_deletes_are_clean(
         # Racing deletions enqueued the dead incarnation exactly once.
         assert queue_depth == cycle + 1
     await store.create_partition("lk_del_race", config)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seed", [1, 2])
+async def test_random_operation_sequences_agree_with_a_model(
+    store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+    seed: int,
+) -> None:
+    """Random sequences of every data operation agree with an in-memory model.
+
+    Adds, segment deletes, partition deletes and re-creates, and bounded
+    purge calls over a few keys. After every step each live key reads back
+    exactly the model's segments and links, and once the purge drains, the
+    tables hold exactly the live rows.
+    """
+    rng = random.Random(seed)
+    monkeypatch.setattr(store, "_purge_max_segments", 3)
+    config = _plaintext_partition_config()
+    keys = ["model_a", "model_b", "model_c"]
+    handles: dict[str, SQLAlchemySegmentStorePartition] = {}
+    model: dict[str, dict[UUID, set[UUID]]] = {}
+
+    for step in range(120):
+        key = rng.choice(keys)
+        operation = rng.choice(
+            ["add", "add", "delete_segments", "delete_partition", "purge"]
+        )
+        if operation == "purge":
+            await store.purge_deleted_partitions()
+        elif operation == "delete_partition":
+            await store.delete_partition(key)
+            handles.pop(key, None)
+            model.pop(key, None)
+        else:
+            if key not in handles:
+                handles[key] = await store.open_or_create_partition(key, config)
+                model[key] = {}
+            if operation == "add":
+                segments = {
+                    _seg(ts_offset_seconds=step * 10 + offset): [
+                        uuid4() for _ in range(rng.randint(0, 2))
+                    ]
+                    for offset in range(rng.randint(1, 4))
+                }
+                await handles[key].add_segments(segments)
+                model[key].update(
+                    {segment.uuid: set(links) for segment, links in segments.items()}
+                )
+            else:
+                victims = rng.sample(
+                    sorted(model[key]), min(len(model[key]), rng.randint(0, 3))
+                )
+                await handles[key].delete_segments([*victims, uuid4()])
+                for victim in victims:
+                    del model[key][victim]
+
+        for live_key, handle in handles.items():
+            expected = model[live_key]
+            links = await handle.get_derivative_uuids_by_segment_uuids(expected)
+            assert {
+                segment_uuid: set(derivatives)
+                for segment_uuid, derivatives in links.items()
+            } == {
+                segment_uuid: derivatives
+                for segment_uuid, derivatives in expected.items()
+                if derivatives
+            }
+            assert set(await handle.get_segment_contexts(expected)) == set(expected)
+
+    while await store.purge_deleted_partitions():
+        pass
+    async with store._create_session() as session:
+        segment_rows = (
+            await session.execute(select(func.count()).select_from(SegmentRow))
+        ).scalar_one()
+        link_rows = (
+            await session.execute(select(func.count()).select_from(DerivativeLinkRow))
+        ).scalar_one()
+    assert segment_rows == sum(map(len, model.values()))
+    assert link_rows == sum(
+        len(derivatives)
+        for segments in model.values()
+        for derivatives in segments.values()
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seed", [1, 2])
+async def test_mixed_operation_churn_completes_and_strands_nothing(
+    store: SQLAlchemySegmentStore,
+    monkeypatch: pytest.MonkeyPatch,
+    seed: int,
+) -> None:
+    """Every data operation at once completes, errs only as documented, and strands nothing.
+
+    Writers add and delete their own segments in live partitions,
+    churners create, fill, and delete partitions under shared keys, and
+    two purgers drain throughout. Everything finishes within the timeout,
+    so no lock cycle stalls it; the only errors are the domain outcomes
+    of churning shared keys; and after a final drain no row belongs to a
+    dead incarnation, while each writer's partition holds exactly what it
+    left.
+    """
+    rng = random.Random(seed)
+    monkeypatch.setattr(store, "_purge_max_segments", 3)
+    config = _plaintext_partition_config()
+    live = [
+        await store.open_or_create_partition(f"churn_live_{index}", config)
+        for index in range(2)
+    ]
+    # Each writer's segments, by UUID, with their link counts.
+    written: dict[UUID, dict[UUID, int]] = {
+        partition._incarnation: {} for partition in live
+    }
+    finished = asyncio.Event()
+
+    async def purger() -> None:
+        while not finished.is_set():
+            if not await store.purge_deleted_partitions():
+                await asyncio.sleep(0.01)
+
+    async def work() -> None:
+        await asyncio.gather(
+            *(
+                _write_and_delete_own_segments(
+                    partition, written[partition._incarnation], rng
+                )
+                for partition in live
+            ),
+            *(_churn_shared_keys(store, config, rng) for _ in range(3)),
+        )
+        finished.set()
+
+    await asyncio.wait_for(asyncio.gather(work(), purger(), purger()), 120)
+    while await store.purge_deleted_partitions():
+        pass
+
+    live_incarnations = select(PartitionRow.incarnation)
+    async with store._create_session() as session:
+        stranded_segments = (
+            await session.execute(
+                select(func.count())
+                .select_from(SegmentRow)
+                .where(SegmentRow.incarnation.not_in(live_incarnations))
+            )
+        ).scalar_one()
+        stranded_links = (
+            await session.execute(
+                select(func.count())
+                .select_from(DerivativeLinkRow)
+                .where(DerivativeLinkRow.incarnation.not_in(live_incarnations))
+            )
+        ).scalar_one()
+        queue_depth = (
+            await session.execute(select(func.count()).select_from(PurgeQueueRow))
+        ).scalar_one()
+    assert (stranded_segments, stranded_links, queue_depth) == (0, 0, 0)
+    for incarnation, segments in written.items():
+        assert await _row_counts(store, incarnation) == (
+            len(segments),
+            sum(segments.values()),
+        )
+
+
+async def _write_and_delete_own_segments(
+    partition: SQLAlchemySegmentStorePartition,
+    mine: dict[UUID, int],
+    rng: random.Random,
+) -> None:
+    """Add segments, then delete some of this writer's own; `mine` tracks what is left."""
+    for round_index in range(12):
+        segments = {
+            _seg(ts_offset_seconds=round_index * 10 + offset): [
+                uuid4() for _ in range(rng.randint(0, 2))
+            ]
+            for offset in range(rng.randint(1, 3))
+        }
+        await partition.add_segments(segments)
+        mine.update({segment.uuid: len(links) for segment, links in segments.items()})
+        victims = rng.sample(sorted(mine), min(len(mine), rng.randint(0, 2)))
+        await partition.delete_segments(victims)
+        for victim in victims:
+            del mine[victim]
+
+
+async def _churn_shared_keys(
+    store: SQLAlchemySegmentStore,
+    config: SegmentStorePartitionConfig,
+    rng: random.Random,
+) -> None:
+    """Create, fill, and delete partitions under keys other churners share."""
+    for _ in range(8):
+        key = f"churn_shared_{rng.randrange(2)}"
+        try:
+            partition = await store.open_or_create_partition(key, config)
+            await partition.add_segments(
+                _links(
+                    *(
+                        _seg(ts_offset_seconds=offset)
+                        for offset in range(rng.randint(1, 4))
+                    )
+                )
+            )
+            await store.delete_partition(key)
+        except (
+            SegmentStorePartitionAlreadyExistsError,
+            SegmentStorePartitionHandleStaleError,
+        ):
+            pass
 
 
 @pytest.fixture
