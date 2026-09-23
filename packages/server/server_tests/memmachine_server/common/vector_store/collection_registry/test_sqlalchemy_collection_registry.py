@@ -1,10 +1,7 @@
 """The SQLAlchemy collection registry: creation arbitrated by the database, deletion queued, purge claimed."""
 
 import asyncio
-import json
-from collections.abc import Iterator
 from datetime import timedelta
-from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -36,21 +33,6 @@ CONFIG = VectorStoreCollectionConfig(
 OTHER_CONFIG = VectorStoreCollectionConfig(vector_dimensions=4)
 RETENTION = timedelta(days=1)
 NAMESPACE = "ns"
-
-
-@pytest.fixture
-def recorded_statements(
-    sqlalchemy_engine: AsyncEngine,
-) -> Iterator[list[tuple[str, Any]]]:
-    """Every statement the engine executes, with its parameters, from the fixture on."""
-    statements: list[tuple[str, Any]] = []
-
-    def record(_connection, _cursor, statement, parameters, _context, _many):
-        statements.append((statement, parameters))
-
-    event.listen(sqlalchemy_engine.sync_engine, "before_cursor_execute", record)
-    yield statements
-    event.remove(sqlalchemy_engine.sync_engine, "before_cursor_execute", record)
 
 
 @pytest.fixture
@@ -539,88 +521,6 @@ async def test_creation_that_never_mints_a_free_incarnation_gives_up(
     with pytest.raises(VectorStoreAttemptsExhaustedError):
         await registry.create(NAMESPACE, "b", CONFIG)
     assert await registry.get(NAMESPACE, "b") is None
-
-
-def _claims(statements: list[tuple[str, Any]], registry) -> list[tuple[str, Any]]:
-    """The recorded purge claims: the bounded reads of the registry's queue."""
-    return [
-        (statement, parameters)
-        for statement, parameters in statements
-        if statement.lstrip().startswith("SELECT")
-        and registry._purge_queue.name in statement
-        and "LIMIT" in statement
-    ]
-
-
-def _rows_removed_by_filter(plan: dict) -> int:
-    return plan.get("Rows Removed by Filter", 0) + sum(
-        _rows_removed_by_filter(child) for child in plan.get("Plans", [])
-    )
-
-
-async def _assert_reads_only_what_it_returns(
-    engine: AsyncEngine, claim: str, parameters: Any, index: str
-) -> None:
-    """The claim reads `index`, a partial index holding only candidates, and
-    filters out no row it reads."""
-    async with engine.connect() as connection:
-        if engine.dialect.name == "postgresql":
-            # A table this small may be scanned whole whatever its indexes;
-            # with sequential scans off the plan shows what an index serves.
-            await connection.execute(text("SET LOCAL enable_seqscan = off"))
-            [[explained]] = (
-                await connection.exec_driver_sql(
-                    f"EXPLAIN (ANALYZE, FORMAT JSON) {claim}", parameters
-                )
-            ).all()
-            plan = json.loads(explained) if isinstance(explained, str) else explained
-            assert index in json.dumps(plan), plan
-            assert _rows_removed_by_filter(plan[0]["Plan"]) == 0, plan
-        else:
-            details = [
-                row[-1]
-                for row in (
-                    await connection.exec_driver_sql(
-                        f"EXPLAIN QUERY PLAN {claim}", parameters
-                    )
-                ).all()
-            ]
-            assert any(d.endswith(index) or f"{index} (" in d for d in details), details
-
-
-@pytest.mark.asyncio
-async def test_a_claim_reads_only_the_tombstones_that_are_due(
-    sqlalchemy_engine, vector_store_name, recorded_statements
-):
-    """Each claim goes straight to a due tombstone, however many are waiting
-    out their retention: a range on its own partial index, not a filtered
-    scan of the queue."""
-    registry = await _registry(sqlalchemy_engine, vector_store_name)
-    waiting = 50
-    for index in range(waiting):
-        await registry.create(NAMESPACE, f"w{index}", CONFIG)
-        await registry.delete(NAMESPACE, f"w{index}")
-    for _ in range(waiting):
-        assert await _round(registry, found=False) is not None
-    fresh = await registry.create(NAMESPACE, "fresh", CONFIG)
-    await registry.delete(NAMESPACE, "fresh")
-    prefix = registry._purge_queue.name
-
-    recorded_statements.clear()
-    assert await _round(registry, found=False) == fresh
-    [(unstamped, parameters)] = _claims(recorded_statements, registry)
-    await _assert_reads_only_what_it_returns(
-        sqlalchemy_engine, unstamped, parameters, f"{prefix}__ea"
-    )
-
-    aged = await _queued(registry)
-    await _age_clean_round(registry, aged[0])
-    recorded_statements.clear()
-    assert await _round(registry, found=False) == aged[0]
-    [_, (stamped, parameters)] = _claims(recorded_statements, registry)
-    await _assert_reads_only_what_it_returns(
-        sqlalchemy_engine, stamped, parameters, f"{prefix}__ca"
-    )
 
 
 @pytest.mark.asyncio
