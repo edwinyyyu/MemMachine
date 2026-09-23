@@ -363,7 +363,7 @@ class CollectionLifecycleContract:
         async def vanished(namespace, name) -> None:
             return None
 
-        monkeypatch.setattr(registry, "create", lost)
+        monkeypatch.setattr(registry, "register", lost)
         monkeypatch.setattr(registry, "get", vanished)
 
         with pytest.raises(VectorStoreAttemptsExhaustedError):
@@ -386,7 +386,7 @@ class CollectionLifecycleContract:
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
         )
         registry = store._collection_registry
-        create = registry.create
+        register = registry.register
         lost = False
 
         async def lose_once(namespace, name, config):
@@ -394,9 +394,9 @@ class CollectionLifecycleContract:
             if not lost:
                 lost = True
                 raise VectorStoreCollectionAlreadyExistsError(namespace, name)
-            return await create(namespace, name, config)
+            return await register(namespace, name, config)
 
-        monkeypatch.setattr(registry, "create", lose_once)
+        monkeypatch.setattr(registry, "register", lose_once)
 
         collection = await store.open_or_create_collection(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME, config=LIFECYCLE_CONFIG

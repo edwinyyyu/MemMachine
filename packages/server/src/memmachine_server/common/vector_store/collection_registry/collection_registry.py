@@ -5,8 +5,8 @@ The catalog of a vector store whose backend holds only points: which
 logical collections exist, under which incarnation and configuration, and
 which dead incarnations await purge. A registry keys its collections by
 namespace and name. Its calls are arbitrated across every process sharing
-it: creation mints an incarnation no live or queued collection carries,
-deletion makes the collection unreachable when it returns, and a purge
+it: registration mints an incarnation no live or queued collection
+carries, unregistration makes the collection unreachable when it returns, and a purge
 claim is handed to one purger at a time.
 
 A registry belongs to one vector deployment: every store whose client
@@ -71,7 +71,7 @@ class VectorStoreCollectionRegistry(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def create(
+    async def register(
         self, namespace: str, name: str, config: VectorStoreCollectionConfig
     ) -> UUID:
         """
@@ -127,7 +127,7 @@ class VectorStoreCollectionRegistry(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def delete(self, namespace: str, name: str) -> None:
+    async def unregister(self, namespace: str, name: str) -> None:
         """
         Unregister a collection and queue its incarnation for purge.
 
