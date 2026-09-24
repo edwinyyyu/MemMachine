@@ -546,7 +546,9 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 select(SegmentRow)
                 .where(SegmentRow.incarnation == incarnation, range_condition)
                 .order_by(
-                    *SQLAlchemySegmentStorePartition._walk_order(SegmentRow, descending)
+                    *SQLAlchemySegmentStorePartition._chronological_order(
+                        SegmentRow, descending
+                    )
                 )
                 .correlate(seeds_subquery)
             )
@@ -654,7 +656,9 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     self._registry_row_query().exists(),
                 )
                 .order_by(
-                    *SQLAlchemySegmentStorePartition._walk_order(SegmentRow, descending)
+                    *SQLAlchemySegmentStorePartition._chronological_order(
+                        SegmentRow, descending
+                    )
                 ),
                 descending,
                 limit,
@@ -705,7 +709,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         limit: int,
         property_filter: FilterExpr | None,
     ) -> Select:
-        """Select a seed's context on one side from `walk`, that side in walk order.
+        """Select a seed's context on one side from `walk`, nearest the seed first.
 
         Unfiltered, the context is the first `limit` rows of the walk. With
         a property filter, it is the first `limit` matching rows among the
@@ -733,16 +737,23 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     ),
                 )
             )
-            .order_by(*SQLAlchemySegmentStorePartition._walk_order(window, descending))
+            .order_by(
+                *SQLAlchemySegmentStorePartition._chronological_order(
+                    window, descending
+                )
+            )
             .limit(limit)
         )
 
     @staticmethod
-    def _walk_order(
+    def _chronological_order(
         row: type[SegmentRow] | AliasedClass[SegmentRow],
         descending: bool,
     ) -> list[ColumnElement | InstrumentedAttribute]:
-        """The store's walk order over `row`, a segment row or an alias of one."""
+        """`row`'s chronological order, newest first if `descending`.
+
+        `row` is a segment row or an alias of one.
+        """
         columns = [row.timestamp, row.event_uuid, row.index, row.offset]
         return [column.desc() for column in columns] if descending else columns
 
