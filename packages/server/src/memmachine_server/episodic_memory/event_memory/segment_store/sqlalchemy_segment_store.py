@@ -47,8 +47,10 @@ from sqlalchemy.orm import (
     DeclarativeBase,
     InstrumentedAttribute,
     MappedColumn,
+    aliased,
     mapped_column,
 )
+from sqlalchemy.orm.util import AliasedClass
 from sqlalchemy.pool import StaticPool
 
 from memmachine_server.common.filter.filter_parser import (
@@ -116,6 +118,10 @@ _MAX_MINT_ATTEMPTS = 10
 
 # Partition deletion depends on RETURNING, which SQLite added in 3.35.
 _MIN_SQLITE_VERSION = (3, 35)
+
+# A context read with a property filter takes its matches from at most this
+# many segments on each side of a seed, matching or not.
+_MAX_FILTERED_CONTEXT_SCAN = 1_024
 
 
 class _RegistryInsertRejectedError(Exception):
@@ -531,25 +537,22 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
 
         async def get_context_rows_directional(
             range_condition: ColumnElement[bool],
-            ordering: Iterable[ColumnElement | InstrumentedAttribute],
+            descending: bool,
             limit: int,
         ) -> dict[UUID, list[SegmentRow]]:
             """Get context rows per seed in the specified direction."""
             # Build a LATERAL subquery that gets context rows for each seed.
-            context_rows_query = (
+            walk = (
                 select(SegmentRow)
                 .where(SegmentRow.incarnation == incarnation, range_condition)
-                .order_by(*ordering)
-                .limit(limit)
+                .order_by(
+                    *SQLAlchemySegmentStorePartition._walk_order(SegmentRow, descending)
+                )
                 .correlate(seeds_subquery)
             )
-            if property_filter is not None:
-                context_rows_query = context_rows_query.where(
-                    compile_sql_filter(
-                        property_filter,
-                        SQLAlchemySegmentStorePartition._resolve_segment_field,
-                    )
-                )
+            context_rows_query = SQLAlchemySegmentStorePartition._context_rows_query(
+                walk, descending, limit, property_filter
+            ).correlate(seeds_subquery)
             lateral_subquery = context_rows_query.subquery().lateral("context")
 
             # Join each seed to its context rows via the LATERAL subquery.
@@ -587,18 +590,10 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 )
             return rows_by_seed
 
-        chronological_order = [
-            SegmentRow.timestamp,
-            SegmentRow.event_uuid,
-            SegmentRow.index,
-            SegmentRow.offset,
-        ]
-        reverse_chronological_order = [col.desc() for col in chronological_order]
-
         backward_rows_by_seed = (
             await get_context_rows_directional(
                 segment_ordering_columns < seed_ordering_columns,
-                reverse_chronological_order,
+                True,
                 max_backward_segments,
             )
             if max_backward_segments > 0
@@ -608,7 +603,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         forward_rows_by_seed = (
             await get_context_rows_directional(
                 segment_ordering_columns > seed_ordering_columns,
-                chronological_order,
+                False,
                 max_forward_segments,
             )
             if max_forward_segments > 0
@@ -647,17 +642,11 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             bindparam("seed_index", type_=SegmentRow.index.type),
             bindparam("seed_offset", type_=SegmentRow.offset.type),
         )
-        chronological_order = [
-            SegmentRow.timestamp,
-            SegmentRow.event_uuid,
-            SegmentRow.index,
-            SegmentRow.offset,
-        ]
 
         def context_rows_query(
             range_condition: ColumnElement[bool], descending: bool, limit: int
         ) -> Select:
-            query = (
+            return SQLAlchemySegmentStorePartition._context_rows_query(
                 select(SegmentRow)
                 .where(
                     SegmentRow.incarnation == self._incarnation,
@@ -665,22 +654,12 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     self._registry_row_query().exists(),
                 )
                 .order_by(
-                    *(
-                        [column.desc() for column in chronological_order]
-                        if descending
-                        else chronological_order
-                    )
-                )
-                .limit(limit)
+                    *SQLAlchemySegmentStorePartition._walk_order(SegmentRow, descending)
+                ),
+                descending,
+                limit,
+                property_filter,
             )
-            if property_filter is not None:
-                query = query.where(
-                    compile_sql_filter(
-                        property_filter,
-                        SQLAlchemySegmentStorePartition._resolve_segment_field,
-                    )
-                )
-            return query
 
         backward_rows_query = context_rows_query(
             segment_ordering_columns < seed_ordering_values,
@@ -718,6 +697,54 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             context_rows_by_seed[seed_uuid] = (backward_rows, forward_rows)
 
         return context_rows_by_seed
+
+    @staticmethod
+    def _context_rows_query(
+        walk: Select,
+        descending: bool,
+        limit: int,
+        property_filter: FilterExpr | None,
+    ) -> Select:
+        """Select a seed's context on one side from `walk`, that side in walk order.
+
+        Unfiltered, the context is the first `limit` rows of the walk. With
+        a property filter, it is the first `limit` matching rows among the
+        walk's first _MAX_FILTERED_CONTEXT_SCAN rows. The window is read
+        with no filter: the planner cannot estimate a property filter, and
+        inside the walk an underestimate makes the walk look unbounded,
+        so the plan reads the seed's whole side and sorts it. A window
+        read with no filter stays an ordered index scan and stops at
+        `limit` matches.
+        """
+        if property_filter is None:
+            return walk.limit(limit)
+        window = aliased(
+            SegmentRow, walk.limit(_MAX_FILTERED_CONTEXT_SCAN).subquery("window")
+        )
+        return (
+            select(window)
+            .where(
+                compile_sql_filter(
+                    property_filter,
+                    lambda field: (
+                        SQLAlchemySegmentStorePartition._resolve_segment_field(
+                            field, window
+                        )
+                    ),
+                )
+            )
+            .order_by(*SQLAlchemySegmentStorePartition._walk_order(window, descending))
+            .limit(limit)
+        )
+
+    @staticmethod
+    def _walk_order(
+        row: type[SegmentRow] | AliasedClass[SegmentRow],
+        descending: bool,
+    ) -> list[ColumnElement | InstrumentedAttribute]:
+        """The store's walk order over `row`, a segment row or an alias of one."""
+        columns = [row.timestamp, row.event_uuid, row.index, row.offset]
+        return [column.desc() for column in columns] if descending else columns
 
     @override
     async def get_segment_uuids_by_event_uuids(
@@ -819,15 +846,16 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     @staticmethod
     def _resolve_segment_field(
         field: str,
+        row: type[SegmentRow] | AliasedClass[SegmentRow] = SegmentRow,
     ) -> tuple[ColumnElement, FieldEncoding]:
-        """Map a filter field name to a segment column and encoding."""
+        """Map a filter field name to a column of `row` and its encoding."""
         if field == "timestamp":
-            return SegmentRow.timestamp.expression, "column"
+            return row.timestamp.expression, "column"
         internal_name, is_user_metadata = normalize_filter_field(field)
         if is_user_metadata:
             key = demangle_user_metadata_key(internal_name)
-            return SegmentRow.properties[key], "properties_json"
-        return SegmentRow.properties[f"_{field}"], "properties_json"
+            return row.properties[key], "properties_json"
+        return row.properties[f"_{field}"], "properties_json"
 
     def _segment_from_segment_row(self, row: SegmentRow) -> Segment:
         """Convert a SegmentRow into a Segment."""

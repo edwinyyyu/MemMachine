@@ -69,6 +69,9 @@ class SegmentStorePartition(ABC):
                 The maximum number of segments to include after each seed segment (default: 0).
             property_filter (FilterExpr | None):
                 An optional filter expression to apply to the segments (default: None).
+                An implementation may take filtered context from a bounded
+                number of the segments nearest each seed on each side,
+                matching or not; a match beyond the bound is not returned.
 
         Returns:
             dict[UUID, list[Segment]]:
