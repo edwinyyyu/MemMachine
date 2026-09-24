@@ -1304,10 +1304,10 @@ class SQLAlchemySegmentStore(SegmentStore):
                             )
                         )
                     ).rowcount
-                if deleted == remaining:
-                    # The bound was consumed exactly; this incarnation may
-                    # have more rows, so record how far it got and leave
-                    # its queue entry for the next call.
+                if deleted >= remaining:
+                    # The bound was consumed; this incarnation may have more
+                    # rows, so record how far it got and leave its queue
+                    # entry for the next call.
                     await connection.execute(
                         update(PurgeQueueRow)
                         .where(PurgeQueueRow.incarnation == incarnation)
