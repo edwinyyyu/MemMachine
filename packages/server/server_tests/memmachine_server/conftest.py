@@ -405,7 +405,7 @@ async def neo4j_semantic_storage(neo4j_driver):
 def qdrant_container():
     if not is_docker_available():
         pytest.skip("Docker is not available")
-    with QdrantContainer(image="qdrant/qdrant:v1.17.0") as container:
+    with QdrantContainer(image="qdrant/qdrant:v1.19.1") as container:
         yield container
 
 
