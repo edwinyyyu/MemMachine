@@ -627,6 +627,44 @@ class TestPartitionIsolation:
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
 
 
+class TestPurgeBatches:
+    @pytest.mark.asyncio
+    async def test_a_purge_round_reclaims_at_most_one_batch(self, store, monkeypatch):
+        monkeypatch.setattr(
+            "memmachine_server.common.vector_store.milvus_vector_store._PURGE_BATCH_SIZE",
+            2,
+        )
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+        await store.create_collection(
+            namespace=NAMESPACE, name="batched", config=config
+        )
+        collection = await store.open_collection(namespace=NAMESPACE, name="batched")
+        assert collection is not None
+        await collection.upsert(
+            records=[
+                _make_record(vector=_normalize([1.0, float(i), 0.0])) for i in range(5)
+            ]
+        )
+        incarnation = collection._incarnation
+        await store.delete_collection(namespace=NAMESPACE, name="batched")
+        native = MilvusVectorStore._build_native_collection_name(NAMESPACE, config)
+
+        def left_of_the_incarnation() -> int:
+            return len(
+                store._client.query(
+                    collection_name=native,
+                    filter=f'partition_key == "{incarnation.hex}"',
+                    output_fields=["id"],
+                    limit=16384,
+                )
+            )
+
+        left_after_each_round = []
+        while await store.purge_deleted_collections():
+            left_after_each_round.append(left_of_the_incarnation())
+        assert left_after_each_round == [3, 1, 0]
+
+
 class TestLifecycleContract(CollectionLifecycleContract):
     """The collection lifecycle contract, against this store."""
 

@@ -79,6 +79,11 @@ _FALSE_EXPR = f'{_ID_FIELD} == "__memmachine_no_match__"'
 # collection in between, so this depth means something else is wrong.
 _MAX_OPEN_OR_CREATE_ATTEMPTS = 10
 
+# The most entities one purge round lists and deletes. A query's offset plus
+# limit may not exceed quotaAndLimits.limits.maxQueryResultWindow, 16384 by
+# default, so the batch stays below it.
+_PURGE_BATCH_SIZE = 10_000
+
 
 def _expr_string(value: str) -> str:
     """Return a Milvus expression string literal."""
@@ -763,10 +768,12 @@ class MilvusVectorStore(VectorStore):
     @override
     async def purge_deleted_collections(self) -> bool:
         # One purge round per call, on the tombstone that came due first: the
-        # claim is a row lock the registry holds while one entity is looked
-        # for and, if there is one, the entities go by filter in a single
-        # server-side operation. The registry keeps or removes the tombstone
-        # by what the round found.
+        # claim is a row lock the registry holds while the round lists up to a
+        # batch of the incarnation's entities and deletes them by primary key.
+        # Deleting the whole incarnation by filter would be one request, but
+        # Milvus applies it as one burst that every Session read waits
+        # behind; a batch keeps each burst small. The registry keeps or
+        # removes the tombstone by what the round found.
         async with (
             self._tracker("purge_deleted_collections"),
             self._collection_registry.claim_due() as claim,
@@ -776,29 +783,38 @@ class MilvusVectorStore(VectorStore):
             native_collection_name = MilvusVectorStore._build_native_collection_name(
                 claim.namespace, claim.config
             )
-            incarnation_filter = _incarnation_filter(claim.incarnation)
             if await asyncio.to_thread(
                 self._client.has_collection,
                 native_collection_name,
                 timeout=self._request_timeout_seconds,
             ):
-                held = await asyncio.to_thread(
+                # Primary keys begin with the incarnation and a colon, so its
+                # keys are exactly those between that prefix and the prefix
+                # ending in the character after the colon: a key-range query
+                # reads the sorted key index instead of scanning the
+                # partition-key column of the incarnation's whole partition.
+                prefix = claim.incarnation.hex
+                listed = await asyncio.to_thread(
                     self._client.query,
                     collection_name=native_collection_name,
-                    filter=incarnation_filter,
+                    filter=(
+                        f"{_ID_FIELD} > {_expr_string(f'{prefix}:')}"
+                        f" and {_ID_FIELD} < {_expr_string(f'{prefix};')}"
+                    ),
                     output_fields=[_ID_FIELD],
-                    limit=1,
+                    limit=_PURGE_BATCH_SIZE,
                     timeout=self._request_timeout_seconds,
                 )
-                claim.found = bool(list(held))
+                primary_ids = [entity[_ID_FIELD] for entity in listed]
             else:
                 # The native collection is gone with everything in it.
-                claim.found = False
+                primary_ids = []
+            claim.found = bool(primary_ids)
             if claim.found:
                 await asyncio.to_thread(
                     self._client.delete,
                     collection_name=native_collection_name,
-                    filter=incarnation_filter,
+                    ids=primary_ids,
                     timeout=self._request_timeout_seconds,
                 )
             return claim.found
