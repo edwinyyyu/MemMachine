@@ -121,7 +121,7 @@ _MIN_SQLITE_VERSION = (3, 35)
 
 # A context read with a property filter takes its matches from at most this
 # many segments on each side of a seed, matching or not.
-_MAX_FILTERED_CONTEXT_SCAN = 1_024
+_MAX_FILTERED_CONTEXT_SCAN = 1_000
 
 
 class _RegistryInsertRejectedError(Exception):
