@@ -27,10 +27,10 @@ from sqlalchemy import (
     Select,
     String,
     Uuid,
+    bindparam,
     delete,
     func,
     insert,
-    literal,
     select,
     true,
     tuple_,
@@ -632,82 +632,89 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         property_filter: FilterExpr | None,
     ) -> dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]]:
         """Get backward/forward context per seed (SQLite fallback)."""
-        context_rows_by_seed: dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]] = {}
-
         segment_ordering_columns = tuple_(
             SegmentRow.timestamp,
             SegmentRow.event_uuid,
             SegmentRow.index,
             SegmentRow.offset,
         )
+        # Each direction's statement is built once and run per seed with
+        # the seed's walk position bound: building one costs more than
+        # SQLite takes to run it.
+        seed_ordering_values = tuple_(
+            bindparam("seed_timestamp", type_=SegmentRow.timestamp.type),
+            bindparam("seed_event_uuid", type_=SegmentRow.event_uuid.type),
+            bindparam("seed_index", type_=SegmentRow.index.type),
+            bindparam("seed_offset", type_=SegmentRow.offset.type),
+        )
+        chronological_order = [
+            SegmentRow.timestamp,
+            SegmentRow.event_uuid,
+            SegmentRow.index,
+            SegmentRow.offset,
+        ]
 
-        compiled_property_filter = (
-            compile_sql_filter(
-                property_filter,
-                SQLAlchemySegmentStorePartition._resolve_segment_field,
+        def context_rows_query(
+            range_condition: ColumnElement[bool], descending: bool, limit: int
+        ) -> Select:
+            query = (
+                select(SegmentRow)
+                .where(
+                    SegmentRow.incarnation == self._incarnation,
+                    range_condition,
+                    self._registry_row_query().exists(),
+                )
+                .order_by(
+                    *(
+                        [column.desc() for column in chronological_order]
+                        if descending
+                        else chronological_order
+                    )
+                )
+                .limit(limit)
             )
-            if property_filter is not None
-            else None
+            if property_filter is not None:
+                query = query.where(
+                    compile_sql_filter(
+                        property_filter,
+                        SQLAlchemySegmentStorePartition._resolve_segment_field,
+                    )
+                )
+            return query
+
+        backward_rows_query = context_rows_query(
+            segment_ordering_columns < seed_ordering_values,
+            True,
+            max_backward_segments,
+        )
+        forward_rows_query = context_rows_query(
+            segment_ordering_columns > seed_ordering_values,
+            False,
+            max_forward_segments,
         )
 
+        context_rows_by_seed: dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]] = {}
         for seed_uuid, seed_row in seed_rows_by_uuid.items():
-            seed_ordering_values = tuple_(
-                literal(seed_row.timestamp),
-                literal(seed_row.event_uuid),
-                literal(seed_row.index),
-                literal(seed_row.offset),
-            )
-
+            seed_position = {
+                "seed_timestamp": seed_row.timestamp,
+                "seed_event_uuid": seed_row.event_uuid,
+                "seed_index": seed_row.index,
+                "seed_offset": seed_row.offset,
+            }
             backward_rows: list[SegmentRow] = []
             if max_backward_segments > 0:
-                backward_rows_query = (
-                    select(SegmentRow)
-                    .where(
-                        SegmentRow.incarnation == self._incarnation,
-                        segment_ordering_columns < seed_ordering_values,
-                        self._registry_row_query().exists(),
-                    )
-                    .order_by(
-                        SegmentRow.timestamp.desc(),
-                        SegmentRow.event_uuid.desc(),
-                        SegmentRow.index.desc(),
-                        SegmentRow.offset.desc(),
-                    )
-                    .limit(max_backward_segments)
-                )
-                if compiled_property_filter is not None:
-                    backward_rows_query = backward_rows_query.where(
-                        compiled_property_filter
-                    )
                 backward_rows = list(
-                    (await session.execute(backward_rows_query)).scalars().all()
+                    (await session.execute(backward_rows_query, seed_position))
+                    .scalars()
+                    .all()
                 )
-
             forward_rows: list[SegmentRow] = []
             if max_forward_segments > 0:
-                forward_rows_query = (
-                    select(SegmentRow)
-                    .where(
-                        SegmentRow.incarnation == self._incarnation,
-                        segment_ordering_columns > seed_ordering_values,
-                        self._registry_row_query().exists(),
-                    )
-                    .order_by(
-                        SegmentRow.timestamp,
-                        SegmentRow.event_uuid,
-                        SegmentRow.index,
-                        SegmentRow.offset,
-                    )
-                    .limit(max_forward_segments)
-                )
-                if compiled_property_filter is not None:
-                    forward_rows_query = forward_rows_query.where(
-                        compiled_property_filter
-                    )
                 forward_rows = list(
-                    (await session.execute(forward_rows_query)).scalars().all()
+                    (await session.execute(forward_rows_query, seed_position))
+                    .scalars()
+                    .all()
                 )
-
             context_rows_by_seed[seed_uuid] = (backward_rows, forward_rows)
 
         return context_rows_by_seed
