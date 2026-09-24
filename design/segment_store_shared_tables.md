@@ -142,8 +142,8 @@ on random-UUID collision resistance.
     on every dialect (on SQLite any writer past the busy timeout fails),
     and a global drain made one deletion pay for other tenants' backlog.
     A deleted partition is unreachable at once and its rows are reclaimed
-    within the sweeper's interval. Waking the sweeper from the delete
-    path is future work with the tenant lifecycle layer.
+    in the background, at the sweeper's pace (below). Waking the sweeper
+    from the delete path is future work with the tenant lifecycle layer.
   - An entry is retired only when the retiring call's own deletes found
     fewer rows than its remaining budget. Link rows go with their segments
     by the foreign key's cascade and nothing else: the store requires
@@ -166,9 +166,13 @@ on random-UUID collision resistance.
     the task is cancelled on close. `LongTermMemory` does not purge on
     session drop; a deployment must run the sweeper somewhere, and the
     ABC says so.
-  - Measured deletion throughput is about 147k rows/s on the benchmark
-    box, so a ten-million-row tenant erases in about a minute of
-    background work.
+  - The sweeper's pacing, not deletion speed, bounds how fast a backlog
+    drains: a call deletes at most `purge_max_segments` segment rows and
+    the resource manager pauses between busy calls, so one process
+    drains fewer than `purge_max_segments` rows per pause (under 10,000
+    rows per second at the defaults, so upwards of 17 minutes for a
+    ten-million-row tenant). Deletion itself measured about 147k rows/s
+    on the benchmark box.
 
 ### Fencing (resolves #1549)
 
@@ -251,15 +255,16 @@ requirement excludes.
   keys (SQLAlchemy's dialect docs, Django's and Rails' adapters); a
   listener added later by the store would miss connections already in the
   pool. An engine without the pragma leaves link rows that outlive their
-  segments until the partition is dropped, when the purge reclaims them
-  with a warning.
+  segments, and nothing reclaims them: the purge relies on the same
+  cascade.
 - Replication and sharding: four ordinary tables. Logical replication
   covers new tenants automatically (they are rows, not relations), and
   moving a tenant between nodes is an indexed row copy plus a registry
   insert whose fresh incarnation fences all stale handles.
 - Tenant deletion is O(rows) physically, in the background: a deleted
   partition is unreachable at once, and its rows are reclaimed by the
-  sweeper within its interval. A deployment must run the sweeper.
+  sweeper in the background, at the pace its bounds and pause set. A
+  deployment must run the sweeper.
 - No migration from the partitioned layout is provided (the event backend
   is opt-in and pre-GA); existing databases recreate their schema.
 - Datetime convention: filter nodes normalize datetime values to UTC-aware
