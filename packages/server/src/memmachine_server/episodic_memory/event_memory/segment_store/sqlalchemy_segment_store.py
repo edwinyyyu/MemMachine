@@ -1252,7 +1252,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                     claim = (
                         update(PurgeQueueRow)
                         .where(PurgeQueueRow.incarnation == oldest)
-                        .values(purged_through=PurgeQueueRow.purged_through)
+                        .values(incarnation=PurgeQueueRow.incarnation)
                         .returning(
                             PurgeQueueRow.incarnation, PurgeQueueRow.purged_through
                         )
