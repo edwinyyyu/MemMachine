@@ -15,7 +15,6 @@ from server_tests.memmachine_server.common.vector_store.collection_lifecycle_con
     CollectionLifecycleContract,
 )
 
-pytest.importorskip("milvus_lite")
 pymilvus = pytest.importorskip("pymilvus")
 DataType = pymilvus.DataType
 MilvusClient = pymilvus.MilvusClient
@@ -70,15 +69,39 @@ def _make_record(
     )
 
 
-@pytest_asyncio.fixture
-async def store(tmp_path):
+@pytest.fixture
+def lite_milvus_client(tmp_path):
+    pytest.importorskip("milvus_lite")
     client = MilvusClient(uri=str(tmp_path / "test_milvus.db"))
+    yield client
+    client.close()
+
+
+@pytest.fixture
+def server_milvus_client(milvus_container):
+    client = MilvusClient(uri=milvus_container.get_connection_url())
+    yield client
+    client.close()
+
+
+@pytest.fixture(
+    params=[
+        "lite_milvus_client",
+        pytest.param("server_milvus_client", marks=pytest.mark.integration),
+    ],
+)
+def milvus_client(request):
+    return request.getfixturevalue(request.param)
+
+
+@pytest_asyncio.fixture
+async def store(milvus_client, tmp_path):
     registry_engine = create_async_engine(
         f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}"
     )
     vector_store = MilvusVectorStore(
         MilvusVectorStoreParams(
-            client=client,
+            client=milvus_client,
             collection_registry=SQLAlchemyVectorStoreCollectionRegistry(
                 engine=registry_engine,
                 vector_store_name=VECTOR_STORE_NAME,
@@ -91,7 +114,6 @@ async def store(tmp_path):
     await vector_store.startup()
     yield vector_store
     await vector_store.shutdown()
-    client.close()
     await registry_engine.dispose()
 
 
