@@ -18,6 +18,7 @@ from pydantic import (
 )
 from sqlalchemy import (
     JSON,
+    ColumnCollection,
     ColumnElement,
     DateTime,
     ForeignKeyConstraint,
@@ -50,7 +51,6 @@ from sqlalchemy.orm import (
     mapped_column,
 )
 from sqlalchemy.pool import StaticPool
-from sqlalchemy.sql.base import ReadOnlyColumnCollection
 
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
@@ -739,7 +739,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
 
     @staticmethod
     def _chronological_order(
-        columns: ReadOnlyColumnCollection[str, ColumnElement],
+        columns: ColumnCollection[str, ColumnElement],
         *,
         descending: bool,
     ) -> list[ColumnElement]:
@@ -851,8 +851,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     def _resolve_segment_field(
         field: str,
         *,
-        row: type[SegmentRow]
-        | ReadOnlyColumnCollection[str, ColumnElement] = SegmentRow,
+        row: type[SegmentRow] | ColumnCollection[str, ColumnElement] = SegmentRow,
     ) -> tuple[ColumnElement, FieldEncoding]:
         """Map a filter field name to a column of `row` and its encoding."""
         if field == "timestamp":
