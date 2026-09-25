@@ -78,9 +78,7 @@ class _PartitionRow(BaseSQLiteVecVectorStore):
     # The dimensions, metric and declared schema the partition was created
     # under, so a store built with others fails loudly instead of reading
     # columns and vectors that are not there.
-    schema_json: MappedColumn[dict[str, JsonValue]] = mapped_column(
-        JSON, nullable=False
-    )
+    schema: MappedColumn[dict[str, JsonValue]] = mapped_column(JSON, nullable=False)
 
 
 class SQLiteVecVectorStorePartition(VectorStorePartition):
@@ -604,7 +602,7 @@ class SQLiteVecVectorStore(VectorStore):
                 _PartitionRow(
                     vector_store_name=self._vector_store_name,
                     partition_key=partition_key,
-                    schema_json=self._declared_schema().model_dump(mode="json"),
+                    schema=self._declared_schema().model_dump(mode="json"),
                 )
             )
 
@@ -621,7 +619,7 @@ class SQLiteVecVectorStore(VectorStore):
                     _PartitionRow(
                         vector_store_name=self._vector_store_name,
                         partition_key=partition_key,
-                        schema_json=self._declared_schema().model_dump(mode="json"),
+                        schema=self._declared_schema().model_dump(mode="json"),
                     )
                 )
             records_table, vector_table_name = await self._ensure_partition_tables(
@@ -742,7 +740,7 @@ class SQLiteVecVectorStore(VectorStore):
         """The schema the partition was created under; raises if it is not this store's."""
         stored = (
             await session.execute(
-                select(_PartitionRow.schema_json).where(
+                select(_PartitionRow.schema).where(
                     _PartitionRow.vector_store_name == self._vector_store_name,
                     _PartitionRow.partition_key == partition_key,
                 )
