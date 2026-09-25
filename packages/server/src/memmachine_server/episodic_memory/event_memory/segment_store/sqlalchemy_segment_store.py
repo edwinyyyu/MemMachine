@@ -607,58 +607,60 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             bindparam("seed_offset", type_=SegmentRow.offset.type),
         )
 
-        # Loaded as segment rows by the ORM, which is cheaper than building
-        # them from plain rows.
-        backward_rows_query = (
-            select(SegmentRow).from_statement(
+        async def get_context_rows_directional(
+            *,
+            backward: bool,
+            limit: int,
+        ) -> dict[UUID, list[SegmentRow]]:
+            """Get context rows per seed in the specified direction."""
+            # Loaded as segment rows by the ORM, which is cheaper than building
+            # them from plain rows.
+            context_rows_query = select(SegmentRow).from_statement(
                 self._context_rows_query(
                     seed_ordering_values,
-                    backward=True,
-                    limit=max_backward_segments,
+                    backward=backward,
+                    limit=limit,
                     property_filter=property_filter,
                 )
+            )
+            rows_by_seed: dict[UUID, list[SegmentRow]] = {}
+            for seed_uuid, seed_row in seed_rows_by_uuid.items():
+                seed_position = {
+                    "seed_timestamp": seed_row.timestamp,
+                    "seed_event_uuid": seed_row.event_uuid,
+                    "seed_index": seed_row.index,
+                    "seed_offset": seed_row.offset,
+                }
+                rows_by_seed[seed_uuid] = list(
+                    (await session.execute(context_rows_query, seed_position))
+                    .scalars()
+                    .all()
+                )
+            return rows_by_seed
+
+        backward_rows_by_seed = (
+            await get_context_rows_directional(
+                backward=True, limit=max_backward_segments
             )
             if max_backward_segments > 0
-            else None
+            else {seed_uuid: [] for seed_uuid in seed_rows_by_uuid}
         )
-        forward_rows_query = (
-            select(SegmentRow).from_statement(
-                self._context_rows_query(
-                    seed_ordering_values,
-                    backward=False,
-                    limit=max_forward_segments,
-                    property_filter=property_filter,
-                )
+
+        forward_rows_by_seed = (
+            await get_context_rows_directional(
+                backward=False, limit=max_forward_segments
             )
             if max_forward_segments > 0
-            else None
+            else {seed_uuid: [] for seed_uuid in seed_rows_by_uuid}
         )
 
-        context_rows_by_seed: dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]] = {}
-        for seed_uuid, seed_row in seed_rows_by_uuid.items():
-            seed_position = {
-                "seed_timestamp": seed_row.timestamp,
-                "seed_event_uuid": seed_row.event_uuid,
-                "seed_index": seed_row.index,
-                "seed_offset": seed_row.offset,
-            }
-            backward_rows: list[SegmentRow] = []
-            if backward_rows_query is not None:
-                backward_rows = list(
-                    (await session.execute(backward_rows_query, seed_position))
-                    .scalars()
-                    .all()
-                )
-            forward_rows: list[SegmentRow] = []
-            if forward_rows_query is not None:
-                forward_rows = list(
-                    (await session.execute(forward_rows_query, seed_position))
-                    .scalars()
-                    .all()
-                )
-            context_rows_by_seed[seed_uuid] = (backward_rows, forward_rows)
-
-        return context_rows_by_seed
+        return {
+            seed_uuid: (
+                backward_rows_by_seed[seed_uuid],
+                forward_rows_by_seed[seed_uuid],
+            )
+            for seed_uuid in seed_rows_by_uuid
+        }
 
     def _context_rows_query(
         self,
