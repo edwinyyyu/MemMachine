@@ -46,13 +46,11 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import (
     DeclarativeBase,
-    InstrumentedAttribute,
     MappedColumn,
-    aliased,
     mapped_column,
 )
-from sqlalchemy.orm.util import AliasedClass
 from sqlalchemy.pool import StaticPool
+from sqlalchemy.sql.base import ReadOnlyColumnCollection
 
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
@@ -625,17 +623,23 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             bindparam("seed_offset", type_=SegmentRow.offset.type),
         )
 
-        backward_rows_query = self._context_rows_query(
-            seed_ordering_values,
-            backward=True,
-            limit=max_backward_segments,
-            property_filter=property_filter,
+        # Loaded as segment rows by the ORM, which is cheaper than building
+        # them from plain rows.
+        backward_rows_query = select(SegmentRow).from_statement(
+            self._context_rows_query(
+                seed_ordering_values,
+                backward=True,
+                limit=max_backward_segments,
+                property_filter=property_filter,
+            )
         )
-        forward_rows_query = self._context_rows_query(
-            seed_ordering_values,
-            backward=False,
-            limit=max_forward_segments,
-            property_filter=property_filter,
+        forward_rows_query = select(SegmentRow).from_statement(
+            self._context_rows_query(
+                seed_ordering_values,
+                backward=False,
+                limit=max_forward_segments,
+                property_filter=property_filter,
+            )
         )
 
         context_rows_by_seed: dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]] = {}
@@ -682,16 +686,20 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         the planner cannot estimate, so the plan stays an ordered index scan.
         Returns nothing once the partition is deleted.
         """
+        # Built from Core columns, the table's and the window's: building from
+        # the mapped class adds ORM work to every column reference, and an
+        # alias of it adapts each column it hands out.
+        segments = SegmentRow.__table__.c
         segment_ordering_columns = tuple_(
-            SegmentRow.timestamp,
-            SegmentRow.event_uuid,
-            SegmentRow.index,
-            SegmentRow.offset,
+            segments.timestamp,
+            segments.event_uuid,
+            segments.index,
+            segments.offset,
         )
         walk = (
-            select(SegmentRow)
+            select(SegmentRow.__table__)
             .where(
-                SegmentRow.incarnation == self._incarnation,
+                segments.incarnation == self._incarnation,
                 segment_ordering_columns < seed_ordering_values
                 if backward
                 else segment_ordering_columns > seed_ordering_values,
@@ -699,18 +707,16 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             )
             .order_by(
                 *SQLAlchemySegmentStorePartition._chronological_order(
-                    SegmentRow, descending=backward
+                    segments, descending=backward
                 )
             )
             # Refer to an enclosing statement that supplies the seed's
             # position instead of selecting from it again.
-            .correlate_except(SegmentRow)
+            .correlate_except(SegmentRow.__table__)
         )
         if property_filter is None:
             return walk.limit(limit)
-        window = aliased(
-            SegmentRow, walk.limit(_MAX_FILTERED_CONTEXT_SCAN).subquery("window")
-        )
+        window = walk.limit(_MAX_FILTERED_CONTEXT_SCAN).subquery("window")
         return (
             select(window)
             .where(
@@ -718,14 +724,14 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     property_filter,
                     lambda field: (
                         SQLAlchemySegmentStorePartition._resolve_segment_field(
-                            field, row=window
+                            field, row=window.c
                         )
                     ),
                 )
             )
             .order_by(
                 *SQLAlchemySegmentStorePartition._chronological_order(
-                    window, descending=backward
+                    window.c, descending=backward
                 )
             )
             .limit(limit)
@@ -733,16 +739,16 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
 
     @staticmethod
     def _chronological_order(
-        row: type[SegmentRow] | AliasedClass[SegmentRow],
+        columns: ReadOnlyColumnCollection[str, ColumnElement],
         *,
         descending: bool,
-    ) -> list[ColumnElement | InstrumentedAttribute]:
-        """`row`'s chronological order, newest first if `descending`.
+    ) -> list[ColumnElement]:
+        """Segments' chronological order over `columns`, newest first if `descending`.
 
-        `row` is a segment row or an alias of one.
+        `columns` is the segment table's columns or a subquery's.
         """
-        columns = [row.timestamp, row.event_uuid, row.index, row.offset]
-        return [column.desc() for column in columns] if descending else columns
+        order = [columns.timestamp, columns.event_uuid, columns.index, columns.offset]
+        return [column.desc() for column in order] if descending else order
 
     @override
     async def get_segment_uuids_by_event_uuids(
@@ -845,7 +851,8 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     def _resolve_segment_field(
         field: str,
         *,
-        row: type[SegmentRow] | AliasedClass[SegmentRow] = SegmentRow,
+        row: type[SegmentRow]
+        | ReadOnlyColumnCollection[str, ColumnElement] = SegmentRow,
     ) -> tuple[ColumnElement, FieldEncoding]:
         """Map a filter field name to a column of `row` and its encoding."""
         if field == "timestamp":
