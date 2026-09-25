@@ -42,9 +42,9 @@ configuration fields:
   `http://localhost:19530`.
 - **Zilliz Cloud:** set `uri` to the cloud endpoint and set `token`.
 
-Milvus Lite is not supported: it is a separate embedded engine that does not
-behave like the server. For a local, single-node deployment, use
-SQLiteVectorStore.
+The Milvus store needs Milvus 2.6.8 or later, for its 4-bit HNSW index. Milvus
+Lite is not supported: it is a separate embedded engine that does not behave
+like the server. For a local, single-node deployment, use SQLiteVectorStore.
 
 Example:
 
