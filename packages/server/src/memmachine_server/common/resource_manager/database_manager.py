@@ -624,8 +624,8 @@ class DatabaseManager:
             if conf.api_key.get_secret_value():
                 client_kwargs["api_key"] = conf.api_key.get_secret_value()
 
-            # The registry database first: a client opened before a
-            # failed lookup would have nothing to close it. The backend's
+            # The registry first: a client opened before a failed lookup
+            # or startup would have nothing to close it. The backend's
             # key names the vector store: the one identity of the
             # deployment the client reaches that this wiring has.
             collection_registry = SQLAlchemyVectorStoreCollectionRegistry(
@@ -633,6 +633,7 @@ class DatabaseManager:
                 vector_store_name=name,
                 tombstone_retention=timedelta(seconds=conf.tombstone_retention_seconds),
             )
+            await collection_registry.startup()
 
             client = AsyncQdrantClient(**client_kwargs)
 
@@ -718,8 +719,8 @@ class DatabaseManager:
             if conf.db_name:
                 client_kwargs["db_name"] = conf.db_name
 
-            # The registry database first: a client opened before a
-            # failed lookup would have nothing to close it. The backend's
+            # The registry first: a client opened before a failed lookup
+            # or startup would have nothing to close it. The backend's
             # key names the vector store: the one identity of the
             # deployment the client reaches that this wiring has.
             collection_registry = SQLAlchemyVectorStoreCollectionRegistry(
@@ -727,6 +728,7 @@ class DatabaseManager:
                 vector_store_name=name,
                 tombstone_retention=timedelta(seconds=conf.tombstone_retention_seconds),
             )
+            await collection_registry.startup()
 
             client = MilvusClient(**client_kwargs)
 

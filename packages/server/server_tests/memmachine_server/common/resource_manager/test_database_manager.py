@@ -410,6 +410,7 @@ async def test_qdrant_creates_vector_store():
             return_value=mock_client,
         ),
     ):
+        mock_registry_cls.return_value.startup = AsyncMock()
         mock_store_cls.return_value.startup = AsyncMock()
         builder = DatabaseManager(conf)
         await builder.async_get_qdrant_client("qdrant1")
@@ -419,6 +420,7 @@ async def test_qdrant_creates_vector_store():
         vector_store_name="qdrant1",
         tombstone_retention=timedelta(seconds=3600),
     )
+    mock_registry_cls.return_value.startup.assert_awaited_once()
     mock_params_cls.assert_called_once()
     kwargs = mock_params_cls.call_args.kwargs
     assert kwargs["client"] is mock_client
@@ -659,6 +661,7 @@ async def test_milvus_creates_vector_store():
         ) as mock_registry_cls,
         patch("pymilvus.MilvusClient", return_value=mock_client),
     ):
+        mock_registry_cls.return_value.startup = AsyncMock()
         mock_store_cls.return_value.startup = AsyncMock()
         builder = DatabaseManager(conf)
         await builder.async_get_milvus_client("milvus1")
@@ -668,6 +671,7 @@ async def test_milvus_creates_vector_store():
         vector_store_name="milvus1",
         tombstone_retention=timedelta(seconds=3600),
     )
+    mock_registry_cls.return_value.startup.assert_awaited_once()
     mock_params_cls.assert_called_once_with(
         client=mock_client,
         collection_registry=mock_registry_cls.return_value,
