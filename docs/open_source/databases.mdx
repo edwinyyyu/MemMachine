@@ -31,7 +31,7 @@ keeps event segments in a relational database. Configure the VectorStore under
 
 Supported VectorStore providers include Qdrant, Milvus, SQLiteVectorStore, and
 SQLiteVecVectorStore. Qdrant and Milvus keep the registry of their logical
-collections in a relational database named by `collection_registry`, so any
+collections in a relational database named by `partition_registry`, so any
 number of server processes can share one backend; the SQLite stores are bound
 to one node. Each Qdrant or Milvus backend has its own registry, named by its
 key under `resources.databases` (lowercase letters, digits and underscores, at
@@ -58,7 +58,7 @@ resources:
         # token: $MILVUS_TOKEN
         # db_name: default
         consistency_level: Session
-        collection_registry: profile_storage
+        partition_registry: profile_storage
         request_timeout_seconds: 30
 
 episodic_memory:

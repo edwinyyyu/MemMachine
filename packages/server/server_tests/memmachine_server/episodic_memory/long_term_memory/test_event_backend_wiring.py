@@ -57,8 +57,8 @@ from memmachine_server.episodic_memory.long_term_memory import (
     LongTermMemory,
 )
 from server_tests.memmachine_server.common.reranker.fake_embedder import FakeEmbedder
-from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_collection import (
-    InMemoryVectorStoreCollection,
+from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_partition import (
+    InMemoryVectorStorePartition,
 )
 from server_tests.memmachine_server.episodic_memory.event_memory.conftest import (
     InMemorySegmentStorePartition,
@@ -149,12 +149,12 @@ def fake_embedder() -> FakeEmbedder:
 
 @pytest.fixture
 def vector_store():
-    """Stand-in for the parent VectorStore: only delete_collection is invoked."""
+    """Stand-in for the parent VectorStore: only delete_partition is invoked."""
     return create_autospec(VectorStore, instance=True)
 
 
 @pytest.fixture
-def vector_store_collection(fake_embedder):
+def vector_store_partition(fake_embedder):
     config = VectorStoreCollectionConfig(
         vector_dimensions=fake_embedder.dimensions,
         similarity_metric=fake_embedder.similarity_metric,
@@ -163,7 +163,7 @@ def vector_store_collection(fake_embedder):
             **EVENT_BACKEND_SYSTEM_FIELDS,
         },
     )
-    return InMemoryVectorStoreCollection(config)
+    return InMemoryVectorStorePartition(config)
 
 
 @pytest.fixture
@@ -183,7 +183,7 @@ def segment_store_partition() -> InMemorySegmentStorePartition:
 def long_term_memory(
     fake_embedder,
     vector_store,
-    vector_store_collection,
+    vector_store_partition,
     segment_store,
     segment_store_partition,
     fake_episode_storage,
@@ -192,7 +192,7 @@ def long_term_memory(
         EventBackendParams(
             session_id="sess1",
             vector_store=vector_store,
-            vector_store_collection=vector_store_collection,
+            vector_store_partition=vector_store_partition,
             vector_store_collection_namespace="long_term_memory",
             segment_store=segment_store,
             segment_store_partition=segment_store_partition,
@@ -298,7 +298,7 @@ async def test_drop_session_partition_calls_parent_lifecycle_hooks(
     segment_store,
 ):
     await long_term_memory.drop_session_partition()
-    vector_store.delete_collection.assert_awaited_once_with(
+    vector_store.delete_partition.assert_awaited_once_with(
         namespace="long_term_memory",
         name="sess1",
     )
@@ -460,7 +460,7 @@ def _make_ltm(
     given). No reranker is configured — that's the failure mode under
     euclidean.
     """
-    vector_store_collection = InMemoryVectorStoreCollection(
+    vector_store_partition = InMemoryVectorStorePartition(
         VectorStoreCollectionConfig(
             vector_dimensions=embedder.dimensions,
             similarity_metric=embedder.similarity_metric,
@@ -474,7 +474,7 @@ def _make_ltm(
         EventBackendParams(
             session_id="sess1",
             vector_store=create_autospec(VectorStore, instance=True),
-            vector_store_collection=vector_store_collection,
+            vector_store_partition=vector_store_partition,
             vector_store_collection_namespace="long_term_memory",
             segment_store=create_autospec(SegmentStore, instance=True),
             segment_store_partition=InMemorySegmentStorePartition(),
@@ -664,18 +664,18 @@ def timeline_storage(timeline_episodes) -> FakeEpisodeStorage:
 @pytest.fixture
 def timeline_long_term_memory(
     vector_store,
-    vector_store_collection,
+    vector_store_partition,
     segment_store,
     segment_store_partition,
     timeline_storage,
 ) -> LongTermMemory:
     # `RankedEmbedder` shares FakeEmbedder's dimensions and similarity metric,
-    # so the shared `vector_store_collection` config still applies.
+    # so the shared `vector_store_partition` config still applies.
     return LongTermMemory(
         EventBackendParams(
             session_id="sess1",
             vector_store=vector_store,
-            vector_store_collection=vector_store_collection,
+            vector_store_partition=vector_store_partition,
             vector_store_collection_namespace="long_term_memory",
             segment_store=segment_store,
             segment_store_partition=segment_store_partition,

@@ -1,4 +1,4 @@
-"""In-memory VectorStoreCollection implementation for testing."""
+"""In-memory VectorStorePartition implementation for testing."""
 
 import math
 import operator
@@ -15,7 +15,7 @@ from memmachine_server.common.filter.filter_parser import (
     Not,
     Or,
 )
-from memmachine_server.common.vector_store import VectorStoreCollection
+from memmachine_server.common.vector_store import VectorStorePartition
 from memmachine_server.common.vector_store.data_types import (
     QueryMatch,
     QueryResult,
@@ -104,12 +104,12 @@ def _passes_threshold(score: float, threshold: float, higher_is_better: bool) ->
 
 
 # ---------------------------------------------------------------------------
-# InMemoryVectorStoreCollection
+# InMemoryVectorStorePartition
 # ---------------------------------------------------------------------------
 
 
-class InMemoryVectorStoreCollection(VectorStoreCollection):
-    """In-memory VectorStoreCollection for testing.
+class InMemoryVectorStorePartition(VectorStorePartition):
+    """In-memory VectorStorePartition for testing.
 
     Supports all similarity metrics (cosine, dot, euclidean, manhattan)
     and full FilterExpr evaluation on record properties.

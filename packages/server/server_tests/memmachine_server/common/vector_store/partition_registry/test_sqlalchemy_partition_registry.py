@@ -18,13 +18,13 @@ from sqlalchemy import (
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
-    SQLAlchemyVectorStoreCollectionRegistry,
-)
 from memmachine_server.common.vector_store.data_types import (
     VectorStoreAttemptsExhaustedError,
-    VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
+    VectorStorePartitionAlreadyExistsError,
+)
+from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
+    SQLAlchemyVectorStorePartitionRegistry,
 )
 
 CONFIG = VectorStoreCollectionConfig(
@@ -45,8 +45,8 @@ async def _registry(
     engine: AsyncEngine,
     vector_store_name: str,
     tombstone_retention: timedelta = RETENTION,
-) -> SQLAlchemyVectorStoreCollectionRegistry:
-    registry = SQLAlchemyVectorStoreCollectionRegistry(
+) -> SQLAlchemyVectorStorePartitionRegistry:
+    registry = SQLAlchemyVectorStorePartitionRegistry(
         engine=engine,
         vector_store_name=vector_store_name,
         tombstone_retention=tombstone_retention,
@@ -55,7 +55,7 @@ async def _registry(
     return registry
 
 
-async def _queued(registry: SQLAlchemyVectorStoreCollectionRegistry) -> list[UUID]:
+async def _queued(registry: SQLAlchemyVectorStorePartitionRegistry) -> list[UUID]:
     """The registry's tombstones, oldest first."""
     async with registry._engine.connect() as connection:
         rows = await connection.execute(
@@ -74,7 +74,7 @@ def _database_time_ago(engine: AsyncEngine, delta: timedelta) -> ColumnElement:
 
 
 async def _age_deletion(
-    registry: SQLAlchemyVectorStoreCollectionRegistry,
+    registry: SQLAlchemyVectorStorePartitionRegistry,
     incarnation: UUID,
     extra: timedelta = timedelta(0),
 ) -> None:
@@ -118,7 +118,7 @@ async def _blocked_or_done(engine: AsyncEngine, task: asyncio.Task) -> str:
 
 
 async def _round(
-    registry: SQLAlchemyVectorStoreCollectionRegistry, found: bool
+    registry: SQLAlchemyVectorStorePartitionRegistry, found: bool
 ) -> UUID | None:
     """One purge round on the oldest due tombstone, reporting `found`; its incarnation, or None."""
     async with registry.claim_due() as claim:
@@ -152,9 +152,9 @@ async def test_a_taken_name_is_already_exists_whatever_the_config(
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     await registry.register(NAMESPACE, "c", CONFIG)
 
-    with pytest.raises(VectorStoreCollectionAlreadyExistsError):
+    with pytest.raises(VectorStorePartitionAlreadyExistsError):
         await registry.register(NAMESPACE, "c", CONFIG)
-    with pytest.raises(VectorStoreCollectionAlreadyExistsError):
+    with pytest.raises(VectorStorePartitionAlreadyExistsError):
         await registry.register(NAMESPACE, "c", OTHER_CONFIG)
 
 
@@ -163,7 +163,7 @@ async def test_a_taken_name_is_already_exists_whatever_the_config(
 )
 def test_a_vector_store_name_must_be_an_identifier(invalid_name):
     with pytest.raises(ValueError, match="Vector store name"):
-        SQLAlchemyVectorStoreCollectionRegistry(
+        SQLAlchemyVectorStorePartitionRegistry(
             engine=create_async_engine("sqlite+aiosqlite://"),
             vector_store_name=invalid_name,
             tombstone_retention=RETENTION,
@@ -174,7 +174,7 @@ def test_an_engine_of_another_dialect_is_refused(monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite://")
     monkeypatch.setattr(engine.dialect, "name", "mssql")
     with pytest.raises(ValueError, match="mssql"):
-        SQLAlchemyVectorStoreCollectionRegistry(
+        SQLAlchemyVectorStorePartitionRegistry(
             engine=engine, vector_store_name="store", tombstone_retention=RETENTION
         )
 
@@ -221,7 +221,7 @@ async def test_concurrent_creators_get_one_winner(sqlalchemy_engine, vector_stor
 
     winners = [r for r in results if isinstance(r, UUID)]
     losers = [
-        r for r in results if isinstance(r, VectorStoreCollectionAlreadyExistsError)
+        r for r in results if isinstance(r, VectorStorePartitionAlreadyExistsError)
     ]
     assert len(winners) == 1
     assert len(losers) == 5
@@ -295,7 +295,7 @@ async def test_due_tombstones_go_oldest_deletion_first_until_a_round_finds_nothi
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     minted = iter([UUID(int=1), UUID(int=2)])
     monkeypatch.setattr(
-        "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.uuid4",
+        "memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry.uuid4",
         lambda: next(minted),
     )
     first = await registry.register(NAMESPACE, "a", CONFIG)
@@ -399,7 +399,7 @@ async def test_an_incarnation_awaiting_purge_is_never_reminted(
     await registry.unregister(NAMESPACE, "a")
     minted = iter([dead, uuid4()])
     monkeypatch.setattr(
-        "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.uuid4",
+        "memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry.uuid4",
         lambda: next(minted),
     )
 
@@ -417,7 +417,7 @@ async def test_creation_that_never_mints_a_free_incarnation_gives_up(
     dead = await registry.register(NAMESPACE, "a", CONFIG)
     await registry.unregister(NAMESPACE, "a")
     monkeypatch.setattr(
-        "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.uuid4",
+        "memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry.uuid4",
         lambda: dead,
     )
 
@@ -579,7 +579,7 @@ async def test_an_incarnation_colliding_with_a_live_collection_is_reminted(
     live = await registry.register(NAMESPACE, "live", CONFIG)
     minted = iter([live, uuid4()])
     monkeypatch.setattr(
-        "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.uuid4",
+        "memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry.uuid4",
         lambda: next(minted),
     )
 
@@ -607,7 +607,7 @@ async def test_a_mint_checks_the_queue_after_its_insert(
     victim = await registry.register(NAMESPACE, "victim", CONFIG)
     minted = iter([victim, uuid4()])
     monkeypatch.setattr(
-        "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.uuid4",
+        "memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry.uuid4",
         lambda: next(minted),
     )
     collections, queue = registry._collections, registry._purge_queue
@@ -671,7 +671,7 @@ async def test_a_persistent_database_error_surfaces_with_its_cause(
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     # A NOT NULL violation stands in for a cause that is not a collision.
     monkeypatch.setattr(
-        "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.uuid4",
+        "memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry.uuid4",
         lambda: None,
     )
 

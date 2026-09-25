@@ -4,21 +4,21 @@ from .data_types import (
     QueryResult,
     Record,
     VectorStoreAttemptsExhaustedError,
-    VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
-    VectorStoreCollectionHandleStaleError,
+    VectorStorePartitionAlreadyExistsError,
+    VectorStorePartitionHandleStaleError,
 )
-from .vector_store import VectorStore, VectorStoreCollection
+from .vector_store import VectorStore, VectorStorePartition
 
 __all__ = [
     "QueryResult",
     "Record",
     "VectorStore",
     "VectorStoreAttemptsExhaustedError",
-    "VectorStoreCollection",
-    "VectorStoreCollectionAlreadyExistsError",
     "VectorStoreCollectionConfig",
     "VectorStoreCollectionConfigMismatchError",
-    "VectorStoreCollectionHandleStaleError",
+    "VectorStorePartition",
+    "VectorStorePartitionAlreadyExistsError",
+    "VectorStorePartitionHandleStaleError",
 ]

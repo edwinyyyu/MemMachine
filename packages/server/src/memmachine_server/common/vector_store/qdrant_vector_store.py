@@ -41,19 +41,19 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 from memmachine_server.common.utils import ensure_tz_aware
 
-from .collection_registry import RegisteredCollection, VectorStoreCollectionRegistry
 from .data_types import (
     QueryMatch,
     QueryResult,
     Record,
     VectorStoreAttemptsExhaustedError,
-    VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
-    VectorStoreCollectionHandleStaleError,
+    VectorStorePartitionAlreadyExistsError,
+    VectorStorePartitionHandleStaleError,
 )
+from .partition_registry import RegisteredPartition, VectorStorePartitionRegistry
 from .utils import require_identifiers, validate_filter
-from .vector_store import VectorStore, VectorStoreCollection
+from .vector_store import VectorStore, VectorStorePartition
 
 # Point payload keys (stored on every Qdrant point).
 # System keys use _SYSTEM_KEY_PREFIX, which contains a hyphen. Hyphens are valid in
@@ -85,7 +85,7 @@ def _incarnation_filter(incarnation: UUID) -> models.Filter:
     )
 
 
-class QdrantVectorStoreCollection(VectorStoreCollection):
+class QdrantVectorStorePartition(VectorStorePartition):
     """A collection backed by Qdrant."""
 
     _RANGE_OPERATORS: ClassVar[dict[str, str]] = {
@@ -99,22 +99,22 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     def _build_qdrant_filter(expr: FilterExpr) -> models.Filter:
         """Convert a FilterExpr tree into a Qdrant Filter."""
         if isinstance(expr, FilterComparison):
-            return QdrantVectorStoreCollection._build_qdrant_comparison(expr)
+            return QdrantVectorStorePartition._build_qdrant_comparison(expr)
         if isinstance(expr, FilterIn):
-            return QdrantVectorStoreCollection._in_filter(expr.field, expr.values)
+            return QdrantVectorStorePartition._in_filter(expr.field, expr.values)
         if isinstance(expr, FilterIsNull):
-            return QdrantVectorStoreCollection._null_filter(expr.field, negate=False)
+            return QdrantVectorStorePartition._null_filter(expr.field, negate=False)
         if isinstance(expr, FilterNot):
             return models.Filter(
-                must_not=[QdrantVectorStoreCollection._build_qdrant_filter(expr.expr)]
+                must_not=[QdrantVectorStorePartition._build_qdrant_filter(expr.expr)]
             )
         if isinstance(expr, FilterAnd):
-            left = QdrantVectorStoreCollection._build_qdrant_filter(expr.left)
-            right = QdrantVectorStoreCollection._build_qdrant_filter(expr.right)
+            left = QdrantVectorStorePartition._build_qdrant_filter(expr.left)
+            right = QdrantVectorStorePartition._build_qdrant_filter(expr.right)
             return models.Filter(must=[left, right])
         if isinstance(expr, FilterOr):
-            left = QdrantVectorStoreCollection._build_qdrant_filter(expr.left)
-            right = QdrantVectorStoreCollection._build_qdrant_filter(expr.right)
+            left = QdrantVectorStorePartition._build_qdrant_filter(expr.left)
+            right = QdrantVectorStorePartition._build_qdrant_filter(expr.right)
             return models.Filter(should=[left, right])
         message = f"Unsupported filter expression type: {type(expr)}"
         raise TypeError(message)
@@ -129,25 +129,23 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         if operator in ("=", "!="):
             negate = operator == "!="
             if isinstance(value, float):
-                return QdrantVectorStoreCollection._float_eq_filter(
+                return QdrantVectorStorePartition._float_eq_filter(
                     field, value, negate=negate
                 )
             if isinstance(value, datetime):
-                return QdrantVectorStoreCollection._datetime_eq_filter(
+                return QdrantVectorStorePartition._datetime_eq_filter(
                     field, value, negate=negate
                 )
-            return QdrantVectorStoreCollection._match_filter(
-                field, value, negate=negate
-            )
-        if operator in QdrantVectorStoreCollection._RANGE_OPERATORS:
+            return QdrantVectorStorePartition._match_filter(field, value, negate=negate)
+        if operator in QdrantVectorStorePartition._RANGE_OPERATORS:
             if not isinstance(value, OrderedValue):
                 message = (
                     f"Range filter on '{field}' requires a numeric or datetime value, "
                     f"got {type(value).__name__}"
                 )
                 raise TypeError(message)
-            return QdrantVectorStoreCollection._range_filter(
-                field, value, QdrantVectorStoreCollection._RANGE_OPERATORS[operator]
+            return QdrantVectorStorePartition._range_filter(
+                field, value, QdrantVectorStorePartition._RANGE_OPERATORS[operator]
             )
 
         message = f"Unsupported filter operator: {operator}"
@@ -276,7 +274,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         happened to run just before it would have.
         """
         if not await self._is_live(self._incarnation):
-            raise VectorStoreCollectionHandleStaleError(self._namespace, self._name)
+            raise VectorStorePartitionHandleStaleError(self._namespace, self._name)
 
     @property
     @override
@@ -385,7 +383,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                 if not validate_filter(property_filter):
                     raise ValueError("Filter contains an invalid property key")
                 property_qdrant_filter = (
-                    QdrantVectorStoreCollection._build_qdrant_filter(property_filter)
+                    QdrantVectorStorePartition._build_qdrant_filter(property_filter)
                 )
                 qdrant_filter = models.Filter(
                     must=[partition_key_filter, property_qdrant_filter]
@@ -527,7 +525,7 @@ class QdrantVectorStoreParams(BaseModel):
     Attributes:
         client (AsyncQdrantClient):
             Async Qdrant client instance.
-        collection_registry (VectorStoreCollectionRegistry):
+        partition_registry (VectorStorePartitionRegistry):
             The registry of the Qdrant deployment the client reaches: which
             collections exist, under which incarnation and configuration,
             and which dead incarnations await purge. Qdrant arbitrates none
@@ -545,7 +543,7 @@ class QdrantVectorStoreParams(BaseModel):
         ...,
         description="Async Qdrant client instance",
     )
-    collection_registry: InstanceOf[VectorStoreCollectionRegistry] = Field(
+    partition_registry: InstanceOf[VectorStorePartitionRegistry] = Field(
         ...,
         description="The registry of the deployment the client reaches",
     )
@@ -560,7 +558,7 @@ class QdrantVectorStore(VectorStore):
 
     A logical collection is a payload value, the incarnation of its life,
     inside a native collection shared by the logical collections of one
-    namespace and configuration. The catalog is the `VectorStoreCollectionRegistry`
+    namespace and configuration. The catalog is the `VectorStorePartitionRegistry`
     the store is given: it mints the incarnations and arbitrates creation,
     deletion and reclamation across processes, which Qdrant, with no
     transactions or unique constraints, cannot. Any process sharing the
@@ -621,7 +619,7 @@ class QdrantVectorStore(VectorStore):
         super().__init__()
         self._client: AsyncQdrantClient = params.client
 
-        self._collection_registry = params.collection_registry
+        self._partition_registry = params.partition_registry
 
         self._hnsw_m = 16
 
@@ -641,10 +639,10 @@ class QdrantVectorStore(VectorStore):
         pass
 
     def _build_collection_handle(
-        self, namespace: str, name: str, registered: RegisteredCollection
-    ) -> QdrantVectorStoreCollection:
-        """Build a QdrantVectorStoreCollection handle bound to the registered incarnation."""
-        return QdrantVectorStoreCollection(
+        self, namespace: str, name: str, registered: RegisteredPartition
+    ) -> QdrantVectorStorePartition:
+        """Build a QdrantVectorStorePartition handle bound to the registered incarnation."""
+        return QdrantVectorStorePartition(
             client=self._client,
             native_collection_name=QdrantVectorStore._build_native_collection_name(
                 namespace, registered.config
@@ -654,7 +652,7 @@ class QdrantVectorStore(VectorStore):
             incarnation=registered.incarnation,
             config=registered.config,
             tracker=self._tracker,
-            is_live=self._collection_registry.is_live,
+            is_live=self._partition_registry.is_live,
         )
 
     async def _create_native_collection(
@@ -713,7 +711,7 @@ class QdrantVectorStore(VectorStore):
                     raise
 
     @override
-    async def create_collection(
+    async def create_partition(
         self,
         *,
         namespace: str,
@@ -721,7 +719,7 @@ class QdrantVectorStore(VectorStore):
         config: VectorStoreCollectionConfig,
     ) -> None:
         require_identifiers(namespace, name)
-        async with self._tracker("create_collection"):
+        async with self._tracker("create_partition"):
             # The native collection first, the registry row last: a crash
             # between the two leaves an empty native collection the next
             # creation of the same configuration adopts, never a row whose
@@ -729,24 +727,24 @@ class QdrantVectorStore(VectorStore):
             # arbiter: a racing creator on any process loses here, never in
             # Qdrant.
             await self._create_native_collection(namespace, config)
-            await self._collection_registry.register(namespace, name, config)
+            await self._partition_registry.register(namespace, name, config)
 
     @override
-    async def open_or_create_collection(
+    async def open_or_create_partition(
         self,
         *,
         namespace: str,
         name: str,
         config: VectorStoreCollectionConfig,
-    ) -> QdrantVectorStoreCollection:
+    ) -> QdrantVectorStorePartition:
         require_identifiers(namespace, name)
-        async with self._tracker("open_or_create_collection"):
+        async with self._tracker("open_or_create_partition"):
             attempts = 0
             # Read-then-create, retried: losing the create means a racing
             # creator won (open its row), and finding no row after losing
             # means a racing deleter removed the winner (create again).
             while True:
-                registered = await self._collection_registry.get(namespace, name)
+                registered = await self._partition_registry.get(namespace, name)
                 if registered is not None:
                     if registered.config != config:
                         raise VectorStoreCollectionConfigMismatchError(
@@ -755,10 +753,10 @@ class QdrantVectorStore(VectorStore):
                     return self._build_collection_handle(namespace, name, registered)
                 await self._create_native_collection(namespace, config)
                 try:
-                    incarnation = await self._collection_registry.register(
+                    incarnation = await self._partition_registry.register(
                         namespace, name, config
                     )
-                except VectorStoreCollectionAlreadyExistsError as err:
+                except VectorStorePartitionAlreadyExistsError as err:
                     attempts += 1
                     if attempts >= _MAX_OPEN_OR_CREATE_ATTEMPTS:
                         raise VectorStoreAttemptsExhaustedError(
@@ -770,42 +768,42 @@ class QdrantVectorStore(VectorStore):
                 return self._build_collection_handle(
                     namespace,
                     name,
-                    RegisteredCollection(incarnation=incarnation, config=config),
+                    RegisteredPartition(incarnation=incarnation, config=config),
                 )
 
     @override
-    async def open_collection(
+    async def get_partition(
         self, *, namespace: str, name: str
-    ) -> QdrantVectorStoreCollection | None:
+    ) -> QdrantVectorStorePartition | None:
         require_identifiers(namespace, name)
-        registered = await self._collection_registry.get(namespace, name)
+        registered = await self._partition_registry.get(namespace, name)
         if registered is None:
             return None
         return self._build_collection_handle(namespace, name, registered)
 
     @override
-    async def close_collection(self, *, collection: VectorStoreCollection) -> None:
+    async def close_collection(self, *, collection: VectorStorePartition) -> None:
         # Qdrant collection handles hold nothing to release.
         pass
 
     @override
-    async def delete_collection(self, *, namespace: str, name: str) -> None:
+    async def delete_partition(self, *, namespace: str, name: str) -> None:
         require_identifiers(namespace, name)
-        async with self._tracker("delete_collection"):
+        async with self._tracker("delete_partition"):
             # One registry transaction: the collection is unreachable when
             # it commits, and its points wait on the queue for the purge.
-            await self._collection_registry.unregister(namespace, name)
+            await self._partition_registry.unregister(namespace, name)
 
     @override
-    async def purge_deleted_collections(self) -> bool:
+    async def purge_deleted_partitions(self) -> bool:
         # One purge round per call, on the tombstone that came due first: the
         # claim is a row lock the registry holds while one point is looked for
         # and, if there is one, the points go by filter in a single
         # server-side operation. The registry keeps or removes the tombstone
         # by what the round found.
         async with (
-            self._tracker("purge_deleted_collections"),
-            self._collection_registry.claim_due() as claim,
+            self._tracker("purge_deleted_partitions"),
+            self._partition_registry.claim_due() as claim,
         ):
             if claim is None:
                 return False

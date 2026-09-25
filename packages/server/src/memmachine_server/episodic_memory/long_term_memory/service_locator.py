@@ -19,8 +19,8 @@ from memmachine_server.common.configuration.episodic_config import (
 )
 from memmachine_server.common.resource_manager import CommonResourceManager
 from memmachine_server.common.vector_store import (
-    VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
+    VectorStorePartitionAlreadyExistsError,
 )
 from memmachine_server.episodic_memory.event_memory.deriver import Deriver
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
@@ -107,7 +107,7 @@ async def _event_params(
 
     # Open the existing collection if any (preserves the original schema). Only
     # create with our merged schema if the partition does not yet exist.
-    collection = await vector_store.open_collection(
+    collection = await vector_store.get_partition(
         namespace=_EVENT_BACKEND_NAMESPACE,
         name=partition_key,
     )
@@ -123,13 +123,13 @@ async def _event_params(
         # The registry arbitrates creation across processes: a worker that
         # loses the race to another creating the same partition opens the
         # winner's collection.
-        with contextlib.suppress(VectorStoreCollectionAlreadyExistsError):
-            await vector_store.create_collection(
+        with contextlib.suppress(VectorStorePartitionAlreadyExistsError):
+            await vector_store.create_partition(
                 namespace=_EVENT_BACKEND_NAMESPACE,
                 name=partition_key,
                 config=collection_config,
             )
-        collection = await vector_store.open_collection(
+        collection = await vector_store.get_partition(
             namespace=_EVENT_BACKEND_NAMESPACE,
             name=partition_key,
         )
@@ -150,7 +150,7 @@ async def _event_params(
     return EventBackendParams(
         session_id=config.session_id,
         vector_store=vector_store,
-        vector_store_collection=collection,
+        vector_store_partition=collection,
         vector_store_collection_namespace=_EVENT_BACKEND_NAMESPACE,
         segment_store=segment_store,
         segment_store_partition=partition,

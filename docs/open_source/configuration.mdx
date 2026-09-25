@@ -340,7 +340,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
               grpc_port: 6334
               prefer_grpc: false
               https: false
-              collection_registry: profile_storage
+              partition_registry: profile_storage
               request_timeout_seconds: 30
               # api_key: $QDRANT_API_KEY
           milvus_vector_store:
@@ -351,7 +351,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
               # token: $MILVUS_TOKEN
               # db_name: default
               consistency_level: Session
-              collection_registry: profile_storage
+              partition_registry: profile_storage
               request_timeout_seconds: 30
       ```
     </Tab>
@@ -385,7 +385,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
               grpc_port: 6334 # gRPC port
               prefer_grpc: false # Use gRPC instead of REST
               https: false # Use TLS
-              collection_registry: profile_storage # Relational database holding the collection registry
+              partition_registry: profile_storage # Relational database holding the collection registry
               request_timeout_seconds: 30 # Bounds every request to Qdrant
               # api_key: $QDRANT_API_KEY # Required for Qdrant Cloud
           milvus_vector_store: # VectorStore for event or vector-backed semantic memory
@@ -395,7 +395,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
               # token: $MILVUS_TOKEN # Required for Zilliz Cloud or auth-enabled Milvus
               # db_name: default # Optional Milvus database name
               consistency_level: Session # Strong, Session, Bounded, or Eventually
-              collection_registry: profile_storage # Relational database holding the collection registry
+              partition_registry: profile_storage # Relational database holding the collection registry
               request_timeout_seconds: 30 # Bounds every request to Milvus
       ```
     </Tab>
@@ -414,7 +414,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
       | `config.token` | Milvus auth token for Zilliz Cloud or auth-enabled Milvus server.   | `""` |
       | `config.consistency_level` | Milvus collection consistency level: `Strong`, `Session`, `Bounded`, or `Eventually`. | `Session` |
       | `config.metrics_factory_id` | ID of the metrics exporter factory the Qdrant or Neo4j store reports its operation latencies to. | `prometheus` |
-      | `config.collection_registry` | Qdrant and Milvus: the name of a relational database under `resources.databases` that holds the store's collection registry (see [Vector stores](/open_source/databases#vector-stores)). | *Required* |
+      | `config.partition_registry` | Qdrant and Milvus: the name of a relational database under `resources.databases` that holds the store's collection registry (see [Vector stores](/open_source/databases#vector-stores)). | *Required* |
       | `config.tombstone_retention_seconds` | Qdrant and Milvus: whole seconds a deleted collection's records are kept before its purge starts, so every write in flight at the deletion has landed and is reclaimed. | `86400` |
       | `config.request_timeout_seconds` | Qdrant and Milvus: whole seconds a request to the vector store may take before the client gives up; must be positive. | `30` |
       | `config.path`  | The path for the given database.                                    | Depends on provider |

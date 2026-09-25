@@ -120,7 +120,7 @@ def db_conf_dict() -> dict:
                     "grpc_port": 6334,
                     "prefer_grpc": True,
                     "api_key": "test-key",
-                    "collection_registry": "local_sqlite",
+                    "partition_registry": "local_sqlite",
                     "request_timeout_seconds": 12,
                 },
             },
@@ -131,7 +131,7 @@ def db_conf_dict() -> dict:
                     "token": "test-token",
                     "db_name": "memory",
                     "consistency_level": "Strong",
-                    "collection_registry": "main_postgres",
+                    "partition_registry": "main_postgres",
                     "request_timeout_seconds": 7,
                 },
             },
@@ -206,7 +206,7 @@ def test_parse_valid_storage_dict(db_conf_dict):
     assert qdrant_conf.grpc_port == 6334
     assert qdrant_conf.prefer_grpc is True
     assert qdrant_conf.api_key == SecretStr("test-key")
-    assert qdrant_conf.collection_registry == "local_sqlite"
+    assert qdrant_conf.partition_registry == "local_sqlite"
     assert qdrant_conf.request_timeout_seconds == 12
 
     # Milvus check
@@ -216,7 +216,7 @@ def test_parse_valid_storage_dict(db_conf_dict):
     assert milvus_conf.token == SecretStr("test-token")
     assert milvus_conf.db_name == "memory"
     assert milvus_conf.consistency_level == "Strong"
-    assert milvus_conf.collection_registry == "main_postgres"
+    assert milvus_conf.partition_registry == "main_postgres"
     assert milvus_conf.request_timeout_seconds == 7
 
     # SQLiteVectorStore (hnswlib engine)
@@ -285,7 +285,7 @@ def test_serialize_deserialize_database_conf(db_conf_dict):
 
 
 def test_milvus_conf_defaults():
-    conf = MilvusConf(collection_registry="db")
+    conf = MilvusConf(partition_registry="db")
     assert conf.uri == "http://localhost:19530"
     assert conf.token == SecretStr("")
     assert conf.db_name == ""
@@ -294,8 +294,8 @@ def test_milvus_conf_defaults():
     assert conf.request_timeout_seconds == 30
 
 
-def test_milvus_conf_requires_a_collection_registry():
-    with pytest.raises(ValueError, match="collection_registry"):
+def test_milvus_conf_requires_a_partition_registry():
+    with pytest.raises(ValueError, match="partition_registry"):
         MilvusConf.model_validate({})
 
 
@@ -304,7 +304,7 @@ def test_milvus_conf_reads_env(monkeypatch):
     monkeypatch.setenv("MILVUS_TOKEN", "env-token")
     monkeypatch.setenv("MILVUS_DB_NAME", "memory")
     conf = MilvusConf(
-        collection_registry="db",
+        partition_registry="db",
         uri="$MILVUS_URI",
         token=SecretStr("${MILVUS_TOKEN}"),
         db_name="$MILVUS_DB_NAME",
@@ -316,23 +316,23 @@ def test_milvus_conf_reads_env(monkeypatch):
 
 def test_milvus_conf_rejects_invalid_values():
     with pytest.raises(ValueError, match="non-empty 'uri'"):
-        MilvusConf(collection_registry="db", uri="")
+        MilvusConf(partition_registry="db", uri="")
     with pytest.raises(ValueError, match="consistency_level"):
-        MilvusConf(collection_registry="db", consistency_level="Linearizable")
+        MilvusConf(partition_registry="db", consistency_level="Linearizable")
 
 
 def test_milvus_conf_rejects_a_milvus_lite_file():
     with pytest.raises(ValueError, match="Milvus Lite files are not supported"):
-        MilvusConf(collection_registry="db", uri="./milvus.db")
+        MilvusConf(partition_registry="db", uri="./milvus.db")
 
 
 def test_milvus_conf_rejects_a_timeout_that_is_not_a_positive_whole_second():
     with pytest.raises(ValueError, match="request_timeout_seconds"):
-        MilvusConf(collection_registry="db", request_timeout_seconds=0)
+        MilvusConf(partition_registry="db", request_timeout_seconds=0)
     with pytest.raises(ValueError, match="request_timeout_seconds"):
-        MilvusConf(collection_registry="db", request_timeout_seconds=-1)
+        MilvusConf(partition_registry="db", request_timeout_seconds=-1)
     with pytest.raises(ValueError, match="request_timeout_seconds"):
-        MilvusConf(collection_registry="db", request_timeout_seconds=1.5)
+        MilvusConf(partition_registry="db", request_timeout_seconds=1.5)
 
 
 def test_neo4j_pool_lifecycle_fields():
@@ -384,13 +384,13 @@ def test_neo4j_uri_with_special_host():
 
 
 def test_qdrant_conf_defaults():
-    conf = QdrantConf(collection_registry="db")
+    conf = QdrantConf(partition_registry="db")
     assert conf.host == "localhost"
     assert conf.port == 6333
     assert conf.grpc_port == 6334
     assert conf.prefer_grpc is False
     assert conf.https is False
-    assert conf.collection_registry == "db"
+    assert conf.partition_registry == "db"
     assert conf.tombstone_retention_seconds == 86400
     assert conf.api_key.get_secret_value() == ""
     assert conf.request_timeout_seconds == 30
@@ -398,27 +398,27 @@ def test_qdrant_conf_defaults():
 
 def test_qdrant_conf_rejects_a_timeout_that_is_not_a_positive_whole_second():
     with pytest.raises(ValueError, match="request_timeout_seconds"):
-        QdrantConf(collection_registry="db", request_timeout_seconds=0)
+        QdrantConf(partition_registry="db", request_timeout_seconds=0)
     with pytest.raises(ValueError, match="request_timeout_seconds"):
-        QdrantConf(collection_registry="db", request_timeout_seconds=-1)
+        QdrantConf(partition_registry="db", request_timeout_seconds=-1)
     with pytest.raises(ValueError, match="request_timeout_seconds"):
-        QdrantConf(collection_registry="db", request_timeout_seconds=1.5)
+        QdrantConf(partition_registry="db", request_timeout_seconds=1.5)
 
 
-def test_qdrant_conf_requires_a_collection_registry():
-    with pytest.raises(ValueError, match="collection_registry"):
+def test_qdrant_conf_requires_a_partition_registry():
+    with pytest.raises(ValueError, match="partition_registry"):
         QdrantConf.model_validate({})
 
 
 def test_qdrant_conf_rejects_a_retention_that_is_not_a_positive_whole_second():
     with pytest.raises(ValueError, match="tombstone_retention_seconds"):
         QdrantConf(
-            collection_registry="db",
+            partition_registry="db",
             tombstone_retention_seconds=0,
         )
     with pytest.raises(ValueError, match="tombstone_retention_seconds"):
         QdrantConf(
-            collection_registry="db",
+            partition_registry="db",
             tombstone_retention_seconds=1.5,
         )
 
@@ -426,7 +426,7 @@ def test_qdrant_conf_rejects_a_retention_that_is_not_a_positive_whole_second():
 def test_qdrant_conf_api_key_from_env(monkeypatch):
     monkeypatch.setenv("QDRANT_API_KEY", "env-qdrant-key")
     conf = QdrantConf(
-        collection_registry="db",
+        partition_registry="db",
         api_key=SecretStr("$QDRANT_API_KEY"),
     )
     assert conf.api_key == SecretStr("env-qdrant-key")
@@ -437,14 +437,14 @@ def test_qdrant_build_config():
         {
             "host": "qdrant.local",
             "port": 9333,
-            "collection_registry": "db",
+            "partition_registry": "db",
             "request_timeout_seconds": 5,
         }
     )
     assert isinstance(config, QdrantConf)
     assert config.host == "qdrant.local"
     assert config.port == 9333
-    assert config.collection_registry == "db"
+    assert config.partition_registry == "db"
     assert config.request_timeout_seconds == 5
 
 

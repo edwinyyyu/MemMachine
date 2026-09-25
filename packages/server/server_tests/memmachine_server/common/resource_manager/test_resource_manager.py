@@ -352,10 +352,10 @@ async def test_vector_store_purge_loop_ticks_and_survives_failures(monkeypatch):
             third_call.set()
         return False
 
-    store.purge_deleted_collections.side_effect = counting_purge
+    store.purge_deleted_partitions.side_effect = counting_purge
 
     task = asyncio.create_task(
-        resource_manager_module._purge_deleted_collections_forever(
+        resource_manager_module._purge_deleted_vector_store_partitions_forever(
             store, "Vector store s"
         )
     )
@@ -387,10 +387,10 @@ async def test_vector_store_purge_drains_backlog_without_waiting(monkeypatch):
         drained.set()
         return False
 
-    store.purge_deleted_collections.side_effect = backlogged_purge
+    store.purge_deleted_partitions.side_effect = backlogged_purge
 
     task = asyncio.create_task(
-        resource_manager_module._purge_deleted_collections_forever(
+        resource_manager_module._purge_deleted_vector_store_partitions_forever(
             store, "Vector store s"
         )
     )
@@ -410,7 +410,7 @@ async def test_get_vector_store_starts_one_sweeper_per_store(
         resource_manager_module, "_VECTOR_STORE_PURGE_INTERVAL_SECONDS", 3600
     )
     store = create_autospec(VectorStore, instance=True)
-    store.purge_deleted_collections.return_value = False
+    store.purge_deleted_partitions.return_value = False
     monkeypatch.setattr(
         invalid_resource_manager._database_manager,
         "get_vector_store",
@@ -426,7 +426,7 @@ async def test_get_vector_store_starts_one_sweeper_per_store(
 
     assert first is second is store
     [task] = invalid_resource_manager._vector_store_purge_tasks.values()
-    assert store.purge_deleted_collections.await_count == 1
+    assert store.purge_deleted_partitions.await_count == 1
 
     # Bounded: close() waits for the sweepers it cancels.
     await asyncio.wait_for(invalid_resource_manager.close(), 30)
@@ -445,9 +445,9 @@ async def test_vector_store_purge_task_does_not_pin_the_manager(
     )
     manager = ResourceManagerImpl(invalid_configure)
     store = create_autospec(VectorStore, instance=True)
-    store.purge_deleted_collections.return_value = False
+    store.purge_deleted_partitions.return_value = False
     task = asyncio.create_task(
-        resource_manager_module._purge_deleted_collections_forever(
+        resource_manager_module._purge_deleted_vector_store_partitions_forever(
             store, "Vector store s"
         )
     )

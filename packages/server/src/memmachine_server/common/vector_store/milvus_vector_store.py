@@ -43,19 +43,19 @@ from memmachine_server.common.properties_json import (
 )
 from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
 
-from .collection_registry import RegisteredCollection, VectorStoreCollectionRegistry
 from .data_types import (
     QueryMatch,
     QueryResult,
     Record,
     VectorStoreAttemptsExhaustedError,
-    VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
-    VectorStoreCollectionHandleStaleError,
+    VectorStorePartitionAlreadyExistsError,
+    VectorStorePartitionHandleStaleError,
 )
+from .partition_registry import RegisteredPartition, VectorStorePartitionRegistry
 from .utils import require_identifiers, validate_filter
-from .vector_store import VectorStore, VectorStoreCollection
+from .vector_store import VectorStore, VectorStorePartition
 
 _ID_FIELD = "id"
 _RECORD_UUID_FIELD = "record_uuid"
@@ -239,7 +239,7 @@ def _incarnation_filter(incarnation: UUID) -> str:
     return f"{_PARTITION_KEY_FIELD} == {_expr_string(incarnation.hex)}"
 
 
-class MilvusVectorStoreCollection(VectorStoreCollection):
+class MilvusVectorStorePartition(VectorStorePartition):
     """A logical collection backed by Milvus."""
 
     @staticmethod
@@ -298,7 +298,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         happened to run just before it would have.
         """
         if not await self._is_live(self._incarnation):
-            raise VectorStoreCollectionHandleStaleError(self._namespace, self._name)
+            raise VectorStorePartitionHandleStaleError(self._namespace, self._name)
 
     @property
     @override
@@ -582,7 +582,7 @@ class MilvusVectorStoreParams(BaseModel):
 
     Attributes:
         client (MilvusClient): Milvus client instance.
-        collection_registry (VectorStoreCollectionRegistry):
+        partition_registry (VectorStorePartitionRegistry):
             The registry of the Milvus deployment the client reaches: which
             collections exist, under which incarnation and configuration,
             and which dead incarnations await purge. Milvus arbitrates none
@@ -599,7 +599,7 @@ class MilvusVectorStoreParams(BaseModel):
         ...,
         description="Milvus client instance",
     )
-    collection_registry: InstanceOf[VectorStoreCollectionRegistry] = Field(
+    partition_registry: InstanceOf[VectorStorePartitionRegistry] = Field(
         ...,
         description="The registry of the deployment the client reaches",
     )
@@ -621,7 +621,7 @@ class MilvusVectorStore(VectorStore):
 
     A logical collection is a partition-key value, the incarnation of its
     life, inside a native collection shared by the logical collections of
-    one namespace and configuration. The catalog is the `VectorStoreCollectionRegistry`
+    one namespace and configuration. The catalog is the `VectorStorePartitionRegistry`
     the store is given: it mints the incarnations and arbitrates creation,
     deletion and reclamation across processes, which Milvus, with no
     transactions or unique constraints, cannot. Any process sharing the
@@ -668,7 +668,7 @@ class MilvusVectorStore(VectorStore):
         super().__init__()
         self._client = params.client
         self._consistency_level = params.consistency_level
-        self._collection_registry = params.collection_registry
+        self._partition_registry = params.partition_registry
         self._request_timeout_seconds = params.request_timeout_seconds
         self._tracker = OperationTracker(
             params.metrics_factory,
@@ -686,10 +686,10 @@ class MilvusVectorStore(VectorStore):
         pass
 
     def _build_collection_handle(
-        self, namespace: str, name: str, registered: RegisteredCollection
-    ) -> MilvusVectorStoreCollection:
-        """Build a MilvusVectorStoreCollection handle bound to the registered incarnation."""
-        return MilvusVectorStoreCollection(
+        self, namespace: str, name: str, registered: RegisteredPartition
+    ) -> MilvusVectorStorePartition:
+        """Build a MilvusVectorStorePartition handle bound to the registered incarnation."""
+        return MilvusVectorStorePartition(
             client=self._client,
             native_collection_name=MilvusVectorStore._build_native_collection_name(
                 namespace, registered.config
@@ -699,7 +699,7 @@ class MilvusVectorStore(VectorStore):
             incarnation=registered.incarnation,
             config=registered.config,
             tracker=self._tracker,
-            is_live=self._collection_registry.is_live,
+            is_live=self._partition_registry.is_live,
             request_timeout_seconds=self._request_timeout_seconds,
         )
 
@@ -799,7 +799,7 @@ class MilvusVectorStore(VectorStore):
                 raise
 
     @override
-    async def create_collection(
+    async def create_partition(
         self,
         *,
         namespace: str,
@@ -808,7 +808,7 @@ class MilvusVectorStore(VectorStore):
     ) -> None:
         require_identifiers(namespace, name)
         self._validate_metric(config.similarity_metric)
-        async with self._tracker("create_collection"):
+        async with self._tracker("create_partition"):
             # The native collection first, the registry row last: a crash
             # between the two leaves an empty native collection the next
             # creation of the same configuration adopts, never a row whose
@@ -816,25 +816,25 @@ class MilvusVectorStore(VectorStore):
             # arbiter: a racing creator on any process loses here, never in
             # Milvus.
             await self._create_native_collection(namespace, config)
-            await self._collection_registry.register(namespace, name, config)
+            await self._partition_registry.register(namespace, name, config)
 
     @override
-    async def open_or_create_collection(
+    async def open_or_create_partition(
         self,
         *,
         namespace: str,
         name: str,
         config: VectorStoreCollectionConfig,
-    ) -> MilvusVectorStoreCollection:
+    ) -> MilvusVectorStorePartition:
         require_identifiers(namespace, name)
         self._validate_metric(config.similarity_metric)
-        async with self._tracker("open_or_create_collection"):
+        async with self._tracker("open_or_create_partition"):
             attempts = 0
             # Read-then-create, retried: losing the create means a racing
             # creator won (open its row), and finding no row after losing
             # means a racing deleter removed the winner (create again).
             while True:
-                registered = await self._collection_registry.get(namespace, name)
+                registered = await self._partition_registry.get(namespace, name)
                 if registered is not None:
                     if registered.config != config:
                         raise VectorStoreCollectionConfigMismatchError(
@@ -843,10 +843,10 @@ class MilvusVectorStore(VectorStore):
                     return self._build_collection_handle(namespace, name, registered)
                 await self._create_native_collection(namespace, config)
                 try:
-                    incarnation = await self._collection_registry.register(
+                    incarnation = await self._partition_registry.register(
                         namespace, name, config
                     )
-                except VectorStoreCollectionAlreadyExistsError as err:
+                except VectorStorePartitionAlreadyExistsError as err:
                     attempts += 1
                     if attempts >= _MAX_OPEN_OR_CREATE_ATTEMPTS:
                         raise VectorStoreAttemptsExhaustedError(
@@ -858,34 +858,34 @@ class MilvusVectorStore(VectorStore):
                 return self._build_collection_handle(
                     namespace,
                     name,
-                    RegisteredCollection(incarnation=incarnation, config=config),
+                    RegisteredPartition(incarnation=incarnation, config=config),
                 )
 
     @override
-    async def open_collection(
+    async def get_partition(
         self, *, namespace: str, name: str
-    ) -> MilvusVectorStoreCollection | None:
+    ) -> MilvusVectorStorePartition | None:
         require_identifiers(namespace, name)
-        registered = await self._collection_registry.get(namespace, name)
+        registered = await self._partition_registry.get(namespace, name)
         if registered is None:
             return None
         return self._build_collection_handle(namespace, name, registered)
 
     @override
-    async def close_collection(self, *, collection: VectorStoreCollection) -> None:
+    async def close_collection(self, *, collection: VectorStorePartition) -> None:
         # Milvus collection handles hold nothing to release.
         pass
 
     @override
-    async def delete_collection(self, *, namespace: str, name: str) -> None:
+    async def delete_partition(self, *, namespace: str, name: str) -> None:
         require_identifiers(namespace, name)
-        async with self._tracker("delete_collection"):
+        async with self._tracker("delete_partition"):
             # One registry transaction: the collection is unreachable when
             # it commits, and its entities wait on the queue for the purge.
-            await self._collection_registry.unregister(namespace, name)
+            await self._partition_registry.unregister(namespace, name)
 
     @override
-    async def purge_deleted_collections(self) -> bool:
+    async def purge_deleted_partitions(self) -> bool:
         # One purge round per call, on the tombstone that came due first: the
         # claim is a row lock the registry holds while the round lists up to a
         # batch of the incarnation's entities and deletes them by primary key.
@@ -894,8 +894,8 @@ class MilvusVectorStore(VectorStore):
         # behind; a batch keeps each burst small. The registry keeps or
         # removes the tombstone by what the round found.
         async with (
-            self._tracker("purge_deleted_collections"),
-            self._collection_registry.claim_due() as claim,
+            self._tracker("purge_deleted_partitions"),
+            self._partition_registry.claim_due() as claim,
         ):
             if claim is None:
                 return False

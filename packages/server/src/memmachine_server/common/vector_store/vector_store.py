@@ -19,7 +19,7 @@ from .data_types import (
 )
 
 
-class VectorStoreCollection(ABC):
+class VectorStorePartition(ABC):
     """
     A logical collection in a vector store.
 
@@ -27,7 +27,7 @@ class VectorStoreCollection(ABC):
     All data operations are scoped to this logical collection.
 
     A handle is bound to one life of the collection: after the collection
-    is deleted, its operations raise VectorStoreCollectionHandleStaleError,
+    is deleted, its operations raise VectorStorePartitionHandleStaleError,
     and a collection created again under the same (namespace, name) is a
     new life. A read concurrent with the deletion may take effect before
     it, returning the content from before the deletion. A store that cannot
@@ -182,7 +182,7 @@ class VectorStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def create_collection(
+    async def create_partition(
         self,
         *,
         namespace: str,
@@ -206,7 +206,7 @@ class VectorStore(ABC):
                 Configuration for the collection.
 
         Raises:
-            VectorStoreCollectionAlreadyExistsError: If a collection with the same
+            VectorStorePartitionAlreadyExistsError: If a collection with the same
                 (namespace, name) already exists.
             VectorStoreAttemptsExhaustedError: If the store gave up creating the
                 collection after repeated attempts that made no progress.
@@ -214,13 +214,13 @@ class VectorStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def open_or_create_collection(
+    async def open_or_create_partition(
         self,
         *,
         namespace: str,
         name: str,
         config: VectorStoreCollectionConfig,
-    ) -> VectorStoreCollection:
+    ) -> VectorStorePartition:
         """
         Open the collection if it exists, or create it if it does not.
 
@@ -234,7 +234,7 @@ class VectorStore(ABC):
                 Configuration for the collection.
 
         Returns:
-            VectorStoreCollection:
+            VectorStorePartition:
                 A handle to the opened or created collection.
 
         Raises:
@@ -247,9 +247,9 @@ class VectorStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def open_collection(
+    async def get_partition(
         self, *, namespace: str, name: str
-    ) -> VectorStoreCollection | None:
+    ) -> VectorStorePartition | None:
         """
         Get a handle to a logical collection in the vector store.
 
@@ -260,13 +260,13 @@ class VectorStore(ABC):
                 Name of the collection within the namespace.
 
         Returns:
-            VectorStoreCollection | None:
+            VectorStorePartition | None:
                 A handle to the opened collection, or None if it does not exist.
         """
         raise NotImplementedError
 
     @abstractmethod
-    async def close_collection(self, *, collection: VectorStoreCollection) -> None:
+    async def close_collection(self, *, collection: VectorStorePartition) -> None:
         """
         Close a collection handle.
 
@@ -277,13 +277,13 @@ class VectorStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def delete_collection(self, *, namespace: str, name: str) -> None:
+    async def delete_partition(self, *, namespace: str, name: str) -> None:
         """
         Delete a logical collection from the vector store.
 
         When this returns, the collection is unreachable and its data is
         deleted or, on a store that reclaims it later, left for
-        `purge_deleted_collections`. It is idempotent.
+        `purge_deleted_partitions`. It is idempotent.
 
         Args:
             namespace (str):
@@ -294,7 +294,7 @@ class VectorStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def purge_deleted_collections(self) -> bool:
+    async def purge_deleted_partitions(self) -> bool:
         """
         Reclaim, bounded, some of the storage of deleted collections.
 

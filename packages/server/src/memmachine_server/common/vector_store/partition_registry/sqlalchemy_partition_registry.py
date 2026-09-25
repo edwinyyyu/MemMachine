@@ -43,18 +43,18 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from memmachine_server.common.vector_store.data_types import (
     VectorStoreAttemptsExhaustedError,
-    VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
+    VectorStorePartitionAlreadyExistsError,
 )
 from memmachine_server.common.vector_store.utils import (
     _IDENTIFIER_MAX_BYTES,
     validate_identifier,
 )
 
-from .collection_registry import (
+from .partition_registry import (
     PurgeClaim,
-    RegisteredCollection,
-    VectorStoreCollectionRegistry,
+    RegisteredPartition,
+    VectorStorePartitionRegistry,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,12 +68,12 @@ class _RegistryInsertRejectedError(Exception):
     """A registry insert was rejected; retry with a fresh incarnation."""
 
 
-class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
+class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
     """The registry of one vector store's collections, in its own table pair.
 
     `vector_store_name` names the vector store, and so the vector database
     deployment it reaches, whose collections the registry holds: its tables
-    are `collection_registry_{vector_store_name}_ct` and `..._gc`, so the
+    are `partition_registry_{vector_store_name}_ct` and `..._gc`, so the
     registries of different vector stores share a database without sharing
     a row, and registry objects under one name are one registry. It must
     match `[a-z0-9_]+` and be at most 32 bytes. `tombstone_retention` is
@@ -104,7 +104,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
         self._engine = engine
         self._is_sqlite = engine.dialect.name == "sqlite"
         self._tombstone_retention = tombstone_retention
-        table_prefix = f"collection_registry_{vector_store_name}"
+        table_prefix = f"partition_registry_{vector_store_name}"
         metadata = MetaData()
         self._collections = Table(
             f"{table_prefix}_ct",
@@ -198,7 +198,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                     raise _RegistryInsertRejectedError(str(incarnation))
         except IntegrityError as err:
             if await self.get(namespace, name) is not None:
-                raise VectorStoreCollectionAlreadyExistsError(namespace, name) from err
+                raise VectorStorePartitionAlreadyExistsError(namespace, name) from err
             logger.warning(
                 "Registry insert for collection (%r, %r) with incarnation %s "
                 "failed and no row exists under the key; retrying with a fresh "
@@ -210,7 +210,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             raise _RegistryInsertRejectedError(str(incarnation)) from err
 
     @override
-    async def get(self, namespace: str, name: str) -> RegisteredCollection | None:
+    async def get(self, namespace: str, name: str) -> RegisteredPartition | None:
         async with self._engine.connect() as connection:
             row = (
                 await connection.execute(
@@ -225,7 +225,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             ).one_or_none()
         if row is None:
             return None
-        return RegisteredCollection(
+        return RegisteredPartition(
             incarnation=row.incarnation,
             config=VectorStoreCollectionConfig.model_validate(row.config),
         )

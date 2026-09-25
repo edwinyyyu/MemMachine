@@ -13,8 +13,8 @@ from memmachine_server.common.episode_store import EpisodeStorage
 from memmachine_server.common.resource_manager import CommonResourceManager
 from memmachine_server.common.vector_store import (
     VectorStore,
-    VectorStoreCollection,
-    VectorStoreCollectionAlreadyExistsError,
+    VectorStorePartition,
+    VectorStorePartitionAlreadyExistsError,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store import (
     SegmentStore,
@@ -107,11 +107,11 @@ async def test_event_params_opens_the_collection_a_racing_creator_won():
     config = EventLongTermMemoryConf(
         session_id="raced", vector_store="vs", segment_store="ss", embedder="e"
     )
-    collection = create_autospec(VectorStoreCollection, instance=True)
+    collection = create_autospec(VectorStorePartition, instance=True)
     vector_store = create_autospec(VectorStore, instance=True)
-    vector_store.open_collection.side_effect = [None, collection]
-    vector_store.create_collection.side_effect = (
-        VectorStoreCollectionAlreadyExistsError(_EVENT_BACKEND_NAMESPACE, "raced")
+    vector_store.get_partition.side_effect = [None, collection]
+    vector_store.create_partition.side_effect = VectorStorePartitionAlreadyExistsError(
+        _EVENT_BACKEND_NAMESPACE, "raced"
     )
     embedder = create_autospec(Embedder, instance=True)
     embedder.dimensions = 3
@@ -132,6 +132,6 @@ async def test_event_params_opens_the_collection_a_racing_creator_won():
 
     params = await _event_params(config, resource_manager)
 
-    assert params.vector_store_collection is collection
-    vector_store.create_collection.assert_awaited_once()
-    assert vector_store.open_collection.await_count == 2
+    assert params.vector_store_partition is collection
+    vector_store.create_partition.assert_awaited_once()
+    assert vector_store.get_partition.await_count == 2

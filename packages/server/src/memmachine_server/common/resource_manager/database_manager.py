@@ -34,8 +34,8 @@ from memmachine_server.common.vector_graph_store.neo4j_vector_graph_store import
     Neo4jVectorGraphStoreParams,
 )
 from memmachine_server.common.vector_store import VectorStore
-from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
-    SQLAlchemyVectorStoreCollectionRegistry,
+from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
+    SQLAlchemyVectorStorePartitionRegistry,
 )
 from memmachine_server.common.vector_store.vector_search_engine import (
     VectorSearchEngine,
@@ -628,12 +628,12 @@ class DatabaseManager:
             # or startup would have nothing to close it. The backend's
             # key names the vector store: the one identity of the
             # deployment the client reaches that this wiring has.
-            collection_registry = SQLAlchemyVectorStoreCollectionRegistry(
-                engine=await self.async_get_sql_engine(conf.collection_registry),
+            partition_registry = SQLAlchemyVectorStorePartitionRegistry(
+                engine=await self.async_get_sql_engine(conf.partition_registry),
                 vector_store_name=name,
                 tombstone_retention=timedelta(seconds=conf.tombstone_retention_seconds),
             )
-            await collection_registry.startup()
+            await partition_registry.startup()
 
             client = AsyncQdrantClient(**client_kwargs)
 
@@ -647,7 +647,7 @@ class DatabaseManager:
 
             params = QdrantVectorStoreParams(
                 client=client,
-                collection_registry=collection_registry,
+                partition_registry=partition_registry,
                 metrics_factory=conf.get_metrics_factory(),
             )
             try:
@@ -723,12 +723,12 @@ class DatabaseManager:
             # or startup would have nothing to close it. The backend's
             # key names the vector store: the one identity of the
             # deployment the client reaches that this wiring has.
-            collection_registry = SQLAlchemyVectorStoreCollectionRegistry(
-                engine=await self.async_get_sql_engine(conf.collection_registry),
+            partition_registry = SQLAlchemyVectorStorePartitionRegistry(
+                engine=await self.async_get_sql_engine(conf.partition_registry),
                 vector_store_name=name,
                 tombstone_retention=timedelta(seconds=conf.tombstone_retention_seconds),
             )
-            await collection_registry.startup()
+            await partition_registry.startup()
 
             client = MilvusClient(**client_kwargs)
 
@@ -742,7 +742,7 @@ class DatabaseManager:
 
             params = MilvusVectorStoreParams(
                 client=client,
-                collection_registry=collection_registry,
+                partition_registry=partition_registry,
                 consistency_level=conf.consistency_level,
                 request_timeout_seconds=conf.request_timeout_seconds,
             )

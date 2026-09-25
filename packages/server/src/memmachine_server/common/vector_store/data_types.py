@@ -75,7 +75,7 @@ class VectorStoreCollectionConfig(BaseModel):
         }
 
 
-class VectorStoreCollectionAlreadyExistsError(Exception):
+class VectorStorePartitionAlreadyExistsError(Exception):
     """Raised when creating a collection that already exists."""
 
     def __init__(self, namespace: str, name: str) -> None:
@@ -107,7 +107,7 @@ class VectorStoreCollectionConfigMismatchError(Exception):
         )
 
 
-class VectorStoreCollectionHandleStaleError(Exception):
+class VectorStorePartitionHandleStaleError(Exception):
     """A collection handle outlived the collection incarnation it was bound to."""
 
     def __init__(self, namespace: str, name: str) -> None:

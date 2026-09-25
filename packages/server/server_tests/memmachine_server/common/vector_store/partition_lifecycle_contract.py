@@ -1,7 +1,7 @@
 """
 The collection lifecycle contract the registry-backed vector stores satisfy.
 
-Each store's test module mixes `CollectionLifecycleContract` into a test
+Each store's test module mixes `PartitionLifecycleContract` into a test
 class and supplies the `store` fixture, a started store, and
 `count_stored(store, namespace, config)`, the number of records the backend
 physically holds in the native collection those name, which the purge tests
@@ -14,7 +14,7 @@ A collection is identified to callers by its (namespace, name) and inside
 the store by an incarnation minted per life of the pair. The contract: a
 handle is bound to one incarnation and raises once that incarnation is
 deleted; a collection re-created under a deleted name starts empty;
-deletion is a registry write and `purge_deleted_collections` reclaims the
+deletion is a registry write and `purge_deleted_partitions` reclaims the
 records afterward; a write can land under an incarnation that died while
 it was in flight, and the operation then raises instead of reporting
 success, with the incarnation's tombstone having the records reclaimed by
@@ -31,10 +31,10 @@ import pytest
 from memmachine_server.common.vector_store import (
     Record,
     VectorStoreAttemptsExhaustedError,
-    VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
-    VectorStoreCollectionHandleStaleError,
+    VectorStorePartitionAlreadyExistsError,
+    VectorStorePartitionHandleStaleError,
 )
 
 LIFECYCLE_NAMESPACE = "lifecycle_ns"
@@ -56,11 +56,11 @@ def _records(count: int) -> list[Record]:
 
 async def _fresh(store, name: str):
     """A new collection under `name`, whatever a persisted backend held for it."""
-    await store.delete_collection(namespace=LIFECYCLE_NAMESPACE, name=name)
-    await store.create_collection(
+    await store.delete_partition(namespace=LIFECYCLE_NAMESPACE, name=name)
+    await store.create_partition(
         namespace=LIFECYCLE_NAMESPACE, name=name, config=LIFECYCLE_CONFIG
     )
-    collection = await store.open_collection(namespace=LIFECYCLE_NAMESPACE, name=name)
+    collection = await store.get_partition(namespace=LIFECYCLE_NAMESPACE, name=name)
     assert collection is not None
     return collection
 
@@ -69,7 +69,7 @@ def _uuids(result) -> set:
     return {match.record.uuid for match in result.matches}
 
 
-class CollectionLifecycleContract:
+class PartitionLifecycleContract:
     """Mixed into a store's test class, with its `store` fixture and `count_stored`."""
 
     @staticmethod
@@ -79,7 +79,7 @@ class CollectionLifecycleContract:
 
     async def _drained_count(self, store) -> int:
         """`count_stored` once nothing deleted is left to reclaim."""
-        while await store.purge_deleted_collections():
+        while await store.purge_deleted_partitions():
             pass
         return await self.count_stored(store, LIFECYCLE_NAMESPACE, LIFECYCLE_CONFIG)
 
@@ -89,23 +89,21 @@ class CollectionLifecycleContract:
         record = _records(1)[0]
         await collection.upsert(records=[record])
 
-        await store.delete_collection(
-            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
-        )
+        await store.delete_partition(namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME)
 
         assert (
-            await store.open_collection(
+            await store.get_partition(
                 namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
             )
             is None
         )
-        with pytest.raises(VectorStoreCollectionHandleStaleError, match=LIFECYCLE_NAME):
+        with pytest.raises(VectorStorePartitionHandleStaleError, match=LIFECYCLE_NAME):
             await collection.upsert(records=[record])
-        with pytest.raises(VectorStoreCollectionHandleStaleError, match=LIFECYCLE_NAME):
+        with pytest.raises(VectorStorePartitionHandleStaleError, match=LIFECYCLE_NAME):
             await collection.query(query_vectors=[record.vector], limit=5)
-        with pytest.raises(VectorStoreCollectionHandleStaleError, match=LIFECYCLE_NAME):
+        with pytest.raises(VectorStorePartitionHandleStaleError, match=LIFECYCLE_NAME):
             await collection.get(record_uuids=[record.uuid])
-        with pytest.raises(VectorStoreCollectionHandleStaleError, match=LIFECYCLE_NAME):
+        with pytest.raises(VectorStorePartitionHandleStaleError, match=LIFECYCLE_NAME):
             await collection.delete(record_uuids=[record.uuid])
 
     @pytest.mark.asyncio
@@ -116,9 +114,7 @@ class CollectionLifecycleContract:
         old_record, new_record = _records(2)
         await old.upsert(records=[old_record])
 
-        await store.delete_collection(
-            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
-        )
+        await store.delete_partition(namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME)
         new = await _fresh(store, LIFECYCLE_NAME)
 
         [before] = await new.query(query_vectors=[old_record.vector], limit=5)
@@ -130,27 +126,23 @@ class CollectionLifecycleContract:
         assert _uuids(after) == {new_record.uuid}
 
         # The old life's handle cannot reach the new life's records.
-        with pytest.raises(VectorStoreCollectionHandleStaleError):
+        with pytest.raises(VectorStorePartitionHandleStaleError):
             await old.query(query_vectors=[new_record.vector], limit=5)
-        with pytest.raises(VectorStoreCollectionHandleStaleError):
+        with pytest.raises(VectorStorePartitionHandleStaleError):
             await old.delete(record_uuids=[new_record.uuid])
         [still] = await new.query(query_vectors=[new_record.vector], limit=5)
         assert _uuids(still) == {new_record.uuid}
 
-        await store.delete_collection(
-            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
-        )
+        await store.delete_partition(namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME)
 
     @pytest.mark.asyncio
     async def test_open_or_create_adopts_the_live_incarnation(self, store):
         """Opening an existing collection binds to its life; creating one mints a new life."""
-        await store.delete_collection(
-            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
-        )
-        first = await store.open_or_create_collection(
+        await store.delete_partition(namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME)
+        first = await store.open_or_create_partition(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME, config=LIFECYCLE_CONFIG
         )
-        second = await store.open_or_create_collection(
+        second = await store.open_or_create_partition(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME, config=LIFECYCLE_CONFIG
         )
         record = _records(1)[0]
@@ -158,36 +150,28 @@ class CollectionLifecycleContract:
         [seen] = await second.query(query_vectors=[record.vector], limit=5)
         assert _uuids(seen) == {record.uuid}
 
-        await store.delete_collection(
-            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
-        )
-        third = await store.open_or_create_collection(
+        await store.delete_partition(namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME)
+        third = await store.open_or_create_partition(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME, config=LIFECYCLE_CONFIG
         )
         [empty] = await third.query(query_vectors=[record.vector], limit=5)
         assert empty.matches == []
-        with pytest.raises(VectorStoreCollectionHandleStaleError):
+        with pytest.raises(VectorStorePartitionHandleStaleError):
             await first.query(query_vectors=[record.vector], limit=5)
-        await store.delete_collection(
-            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
-        )
+        await store.delete_partition(namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME)
 
     @pytest.mark.asyncio
     async def test_deleting_twice_and_deleting_nothing_are_no_ops(self, store):
         await _fresh(store, LIFECYCLE_NAME)
-        await store.delete_collection(
-            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
-        )
-        await store.delete_collection(
-            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
-        )
+        await store.delete_partition(namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME)
+        await store.delete_partition(namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME)
         assert (
-            await store.open_collection(
+            await store.get_partition(
                 namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
             )
             is None
         )
-        await store.delete_collection(
+        await store.delete_partition(
             namespace=LIFECYCLE_NAMESPACE, name=f"{LIFECYCLE_NAME}_never_created"
         )
 
@@ -202,13 +186,11 @@ class CollectionLifecycleContract:
             == baseline + 5
         )
 
-        await store.delete_collection(
-            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
-        )
+        await store.delete_partition(namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME)
         # Unreachable at once, and the records are left for the purge:
         # deletion touches the registry alone, whatever the collection holds.
         assert (
-            await store.open_collection(
+            await store.get_partition(
                 namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
             )
             is None
@@ -220,7 +202,7 @@ class CollectionLifecycleContract:
 
         assert await self._drained_count(store) == baseline
         # Nothing left to claim.
-        assert await store.purge_deleted_collections() is False
+        assert await store.purge_deleted_partitions() is False
 
     @pytest.mark.asyncio
     async def test_purge_leaves_a_live_collection_alone(self, store):
@@ -233,14 +215,12 @@ class CollectionLifecycleContract:
         await live.upsert(records=kept)
         await dead.upsert(records=gone)
 
-        await store.delete_collection(
-            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
-        )
+        await store.delete_partition(namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME)
 
         assert await self._drained_count(store) == baseline + 3
         [result] = await live.query(query_vectors=[kept[0].vector], limit=10)
         assert _uuids(result) == {record.uuid for record in kept}
-        await store.delete_collection(namespace=LIFECYCLE_NAMESPACE, name=live_name)
+        await store.delete_partition(namespace=LIFECYCLE_NAMESPACE, name=live_name)
         assert await self._drained_count(store) == baseline
 
     @pytest.mark.asyncio
@@ -257,14 +237,14 @@ class CollectionLifecycleContract:
         async def deleted_once_checked(incarnation) -> bool:
             live = await is_live(incarnation)
             if live:
-                await store.delete_collection(
+                await store.delete_partition(
                     namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
                 )
             return live
 
         collection._is_live = deleted_once_checked
 
-        with pytest.raises(VectorStoreCollectionHandleStaleError, match=LIFECYCLE_NAME):
+        with pytest.raises(VectorStorePartitionHandleStaleError, match=LIFECYCLE_NAME):
             await collection.upsert(records=records)
 
         # The write landed, under an incarnation nothing can reach...
@@ -273,7 +253,7 @@ class CollectionLifecycleContract:
             == baseline + 2
         )
         # ...and the tombstone's next round reclaims it.
-        assert await store.purge_deleted_collections() is True
+        assert await store.purge_deleted_partitions() is True
         assert await self._drained_count(store) == baseline
 
     @pytest.mark.asyncio
@@ -283,7 +263,7 @@ class CollectionLifecycleContract:
             (f"{LIFECYCLE_NAMESPACE}\n", LIFECYCLE_NAME),
         ):
             with pytest.raises(ValueError, match="must match"):
-                await store.create_collection(
+                await store.create_partition(
                     namespace=namespace, name=name, config=LIFECYCLE_CONFIG
                 )
 
@@ -316,17 +296,13 @@ class CollectionLifecycleContract:
         assert checks == 2
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "create", ["create_collection", "open_or_create_collection"]
-    )
+    @pytest.mark.parametrize("create", ["create_partition", "open_or_create_partition"])
     async def test_a_failed_native_creation_registers_nothing(
         self, store, monkeypatch, create
     ):
         """The native collection comes first: a creation that fails there
         leaves no registered collection whose records have nowhere to go."""
-        await store.delete_collection(
-            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
-        )
+        await store.delete_partition(namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME)
 
         async def refused(namespace, config) -> None:
             raise RuntimeError("the backend refused")
@@ -340,7 +316,7 @@ class CollectionLifecycleContract:
             )
 
         assert (
-            await store.open_collection(
+            await store.get_partition(
                 namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
             )
             is None
@@ -352,13 +328,13 @@ class CollectionLifecycleContract:
     ):
         """A creator that keeps losing to a winner that keeps vanishing gives
         up after a bounded number of attempts instead of looping."""
-        registry = store._collection_registry
+        registry = store._partition_registry
 
         async def lost(namespace, name, config):
             # Yields as a real round trip would, so an unbounded loop fails
             # the timeout below instead of starving the event loop.
             await asyncio.sleep(0)
-            raise VectorStoreCollectionAlreadyExistsError(namespace, name)
+            raise VectorStorePartitionAlreadyExistsError(namespace, name)
 
         async def vanished(namespace, name) -> None:
             return None
@@ -368,7 +344,7 @@ class CollectionLifecycleContract:
 
         with pytest.raises(VectorStoreAttemptsExhaustedError):
             await asyncio.wait_for(
-                store.open_or_create_collection(
+                store.open_or_create_partition(
                     namespace=LIFECYCLE_NAMESPACE,
                     name=LIFECYCLE_NAME,
                     config=LIFECYCLE_CONFIG,
@@ -382,10 +358,8 @@ class CollectionLifecycleContract:
     ):
         """Losing the create to a winner that is deleted before it can be
         opened is not an error: open-or-create creates the collection again."""
-        await store.delete_collection(
-            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
-        )
-        registry = store._collection_registry
+        await store.delete_partition(namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME)
+        registry = store._partition_registry
         register = registry.register
         lost = False
 
@@ -393,12 +367,12 @@ class CollectionLifecycleContract:
             nonlocal lost
             if not lost:
                 lost = True
-                raise VectorStoreCollectionAlreadyExistsError(namespace, name)
+                raise VectorStorePartitionAlreadyExistsError(namespace, name)
             return await register(namespace, name, config)
 
         monkeypatch.setattr(registry, "register", lose_once)
 
-        collection = await store.open_or_create_collection(
+        collection = await store.open_or_create_partition(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME, config=LIFECYCLE_CONFIG
         )
 
@@ -420,27 +394,27 @@ class CollectionLifecycleContract:
                 operation = rng.randrange(4)
                 try:
                     if operation == 0:
-                        await store.create_collection(
+                        await store.create_partition(
                             namespace=LIFECYCLE_NAMESPACE,
                             name=name,
                             config=LIFECYCLE_CONFIG,
                         )
                     elif operation == 1:
-                        await store.open_or_create_collection(
+                        await store.open_or_create_partition(
                             namespace=LIFECYCLE_NAMESPACE,
                             name=name,
                             config=LIFECYCLE_CONFIG,
                         )
                     elif operation == 2:
-                        await store.open_collection(
+                        await store.get_partition(
                             namespace=LIFECYCLE_NAMESPACE, name=name
                         )
                     else:
-                        await store.delete_collection(
+                        await store.delete_partition(
                             namespace=LIFECYCLE_NAMESPACE, name=name
                         )
                 except (
-                    VectorStoreCollectionAlreadyExistsError,
+                    VectorStorePartitionAlreadyExistsError,
                     VectorStoreCollectionConfigMismatchError,
                 ):
                     pass

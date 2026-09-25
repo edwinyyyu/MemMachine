@@ -26,7 +26,7 @@ from memmachine_server.common.vector_store.data_types import (
 
 
 @dataclass(frozen=True)
-class RegisteredCollection:
+class RegisteredPartition:
     """A live collection: the incarnation its points carry and the configuration it was created with."""
 
     incarnation: UUID
@@ -52,7 +52,7 @@ class PurgeClaim:
     found: bool | None = None
 
 
-class VectorStoreCollectionRegistry(ABC):
+class VectorStorePartitionRegistry(ABC):
     """
     The collection registry of one vector store.
 
@@ -92,14 +92,14 @@ class VectorStoreCollectionRegistry(ABC):
             UUID: The incarnation the collection's points carry.
 
         Raises:
-            VectorStoreCollectionAlreadyExistsError: The (namespace, name) is taken.
+            VectorStorePartitionAlreadyExistsError: The (namespace, name) is taken.
             VectorStoreAttemptsExhaustedError:
                 Every minted incarnation was rejected for another reason.
         """
         raise NotImplementedError
 
     @abstractmethod
-    async def get(self, namespace: str, name: str) -> RegisteredCollection | None:
+    async def get(self, namespace: str, name: str) -> RegisteredPartition | None:
         """
         Look up the live collection under a (namespace, name).
 
@@ -108,7 +108,7 @@ class VectorStoreCollectionRegistry(ABC):
             name (str): Name of the collection within the namespace.
 
         Returns:
-            RegisteredCollection | None:
+            RegisteredPartition | None:
                 The live collection, or None when there is none.
         """
         raise NotImplementedError

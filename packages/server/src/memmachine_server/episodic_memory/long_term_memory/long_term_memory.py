@@ -26,7 +26,7 @@ from memmachine_server.common.reranker import Reranker
 from memmachine_server.common.vector_graph_store import VectorGraphStore
 from memmachine_server.common.vector_store import (
     VectorStore,
-    VectorStoreCollection,
+    VectorStorePartition,
 )
 from memmachine_server.episodic_memory.declarative_memory import (
     DeclarativeMemory,
@@ -127,7 +127,7 @@ class EventBackendParams(BaseModel):
         ...,
         description="Parent VectorStore (for partition lifecycle)",
     )
-    vector_store_collection: InstanceOf[VectorStoreCollection] = Field(
+    vector_store_partition: InstanceOf[VectorStorePartition] = Field(
         ...,
         description="Already-opened VectorStore collection",
     )
@@ -206,7 +206,7 @@ class LongTermMemory:
                 self._event_memory = EventMemory(
                     EventMemoryParams(
                         segment_store_partition=params.segment_store_partition,
-                        vector_store_collection=params.vector_store_collection,
+                        vector_store_partition=params.vector_store_partition,
                         segmenter=params.segmenter,
                         deriver=params.deriver,
                         embedder=params.embedder,
@@ -221,7 +221,7 @@ class LongTermMemory:
                 self._episode_storage = params.episode_storage
                 self._score_higher_is_better = (
                     params.reranker is not None
-                    or params.vector_store_collection.config.similarity_metric.higher_is_better
+                    or params.vector_store_partition.config.similarity_metric.higher_is_better
                 )
 
     async def add_episodes(self, episodes: Iterable[Episode]) -> None:
@@ -428,7 +428,7 @@ class LongTermMemory:
         assert self._vector_store_namespace is not None
         assert self._segment_store is not None
         assert self._partition_key is not None
-        await self._vector_store.delete_collection(
+        await self._vector_store.delete_partition(
             namespace=self._vector_store_namespace,
             name=self._partition_key,
         )

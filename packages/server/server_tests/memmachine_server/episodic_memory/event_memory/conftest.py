@@ -36,8 +36,8 @@ from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter imp
 from server_tests.memmachine_server.common.reranker.fake_embedder import (
     FakeEmbedder,
 )
-from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_collection import (
-    InMemoryVectorStoreCollection,
+from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_partition import (
+    InMemoryVectorStorePartition,
     evaluate_filter,
 )
 
@@ -195,7 +195,7 @@ def fake_segment_store_partition():
 
 
 @pytest.fixture
-def fake_vector_store_collection(fake_embedder):
+def fake_vector_store_partition(fake_embedder):
     config = VectorStoreCollectionConfig(
         vector_dimensions=fake_embedder.dimensions,
         similarity_metric=fake_embedder.similarity_metric,
@@ -204,19 +204,19 @@ def fake_vector_store_collection(fake_embedder):
             "_episode_uid": str,
         },
     )
-    return InMemoryVectorStoreCollection(config)
+    return InMemoryVectorStorePartition(config)
 
 
 @pytest.fixture
 def event_memory(
-    fake_vector_store_collection,
+    fake_vector_store_partition,
     fake_segment_store_partition,
     fake_embedder,
 ):
     return EventMemory(
         EventMemoryParams(
             segment_store_partition=fake_segment_store_partition,
-            vector_store_collection=fake_vector_store_collection,
+            vector_store_partition=fake_vector_store_partition,
             segmenter=TextSegmenter(),
             deriver=WholeTextDeriver(),
             embedder=fake_embedder,
@@ -226,14 +226,14 @@ def event_memory(
 
 @pytest.fixture
 def event_memory_with_reranker(
-    fake_vector_store_collection,
+    fake_vector_store_partition,
     fake_segment_store_partition,
     fake_embedder,
 ):
     return EventMemory(
         EventMemoryParams(
             segment_store_partition=fake_segment_store_partition,
-            vector_store_collection=fake_vector_store_collection,
+            vector_store_partition=fake_vector_store_partition,
             segmenter=TextSegmenter(),
             deriver=WholeTextDeriver(),
             embedder=fake_embedder,
@@ -244,14 +244,14 @@ def event_memory_with_reranker(
 
 @pytest.fixture
 def event_memory_with_sentences(
-    fake_vector_store_collection,
+    fake_vector_store_partition,
     fake_segment_store_partition,
     fake_embedder,
 ):
     return EventMemory(
         EventMemoryParams(
             segment_store_partition=fake_segment_store_partition,
-            vector_store_collection=fake_vector_store_collection,
+            vector_store_partition=fake_vector_store_partition,
             segmenter=TextSegmenter(),
             deriver=SentenceTextDeriver(),
             embedder=fake_embedder,
