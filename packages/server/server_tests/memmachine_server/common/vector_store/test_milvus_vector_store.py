@@ -240,25 +240,59 @@ class TestCollectionLifecycle:
 
     @pytest.mark.asyncio
     async def test_native_collection_schema(self, store):
+        """Each declared property is a typed, nullable, indexed field, a
+        datetime with a field for its offset; the collection isolates tenants."""
         await store.create_collection(
             namespace=NAMESPACE,
             name="schema",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
+            config=VectorStoreCollectionConfig(
+                vector_dimensions=VECTOR_DIM,
+                indexed_properties_schema={
+                    "name": str,
+                    "age": int,
+                    "score": float,
+                    "active": bool,
+                    "created_at": datetime,
+                },
+            ),
         )
         coll = await store.open_collection(namespace=NAMESPACE, name="schema")
         assert coll is not None
+        native = coll._native_collection_name
 
-        schema = store._client.describe_collection(coll._native_collection_name)
+        schema = store._client.describe_collection(native)
         fields = {field["name"]: field for field in schema["fields"]}
-
         assert schema["auto_id"] is False
-        assert schema["enable_dynamic_field"] is True
+        assert schema["enable_dynamic_field"] is False
+        assert schema["properties"]["partitionkey.isolation"] == "True"
         assert fields["id"]["is_primary"] is True
         assert fields["partition_key"]["is_partition_key"] is True
         assert fields["vector"]["type"] == DataType.FLOAT_VECTOR
         assert fields["vector"]["params"]["dim"] == VECTOR_DIM
         assert fields["properties"]["type"] == DataType.JSON
-        assert schema["properties"]["partitionkey.isolation"] == "True"
+        expected = {
+            "_p_name": DataType.VARCHAR,
+            "_p_age": DataType.INT64,
+            "_p_score": DataType.DOUBLE,
+            "_p_active": DataType.BOOL,
+            "_p_created_at": DataType.TIMESTAMPTZ,
+            "_tz_created_at": DataType.INT32,
+        }
+        for field_name, data_type in expected.items():
+            assert fields[field_name]["type"] == data_type
+            assert fields[field_name]["nullable"] is True
+        indexed = {
+            store._client.describe_index(native, index_name)["field_name"]
+            for index_name in store._client.list_indexes(native)
+        }
+        assert indexed == {
+            "vector",
+            "_p_name",
+            "_p_age",
+            "_p_score",
+            "_p_active",
+            "_p_created_at",
+        }
 
         await store.delete_collection(namespace=NAMESPACE, name="schema")
 
@@ -550,6 +584,166 @@ class TestFilters:
             ),
         )
         assert {m.record.uuid for m in or_results[0].matches} == {r1.uuid, r2.uuid}
+
+    @pytest.mark.asyncio
+    async def test_negation_is_the_complement_missing_values_included(self, collection):
+        """A condition on a property with no value is false, so its negation,
+        `!=` included, holds there, as on Qdrant."""
+        r1, r2, r3, v1 = await self._setup(collection)
+        bare = _make_record(vector=_normalize([1.0, 0.3, 0.0]), properties={})
+        await collection.upsert(records=[bare])
+
+        async def uuids(expr):
+            [result] = await collection.query(
+                query_vectors=[v1], limit=10, property_filter=expr
+            )
+            return {match.record.uuid for match in result.matches}
+
+        assert await uuids(Comparison(field="name", op="!=", value="alice")) == {
+            r2.uuid,
+            r3.uuid,
+            bare.uuid,
+        }
+        assert await uuids(
+            Not(expr=Comparison(field="name", op="=", value="alice"))
+        ) == {r2.uuid, r3.uuid, bare.uuid}
+        assert await uuids(Not(expr=Comparison(field="age", op=">", value=30))) == {
+            r1.uuid,
+            r2.uuid,
+            bare.uuid,
+        }
+        assert await uuids(Not(expr=In(field="name", values=["alice", "bob"]))) == {
+            r3.uuid,
+            bare.uuid,
+        }
+        assert await uuids(
+            Not(
+                expr=And(
+                    left=Comparison(field="active", op="=", value=True),
+                    right=Comparison(field="age", op=">", value=30),
+                )
+            )
+        ) == {r1.uuid, r2.uuid, bare.uuid}
+        assert await uuids(Not(expr=Not(expr=IsNull(field="name")))) == {bare.uuid}
+
+    @pytest.mark.asyncio
+    async def test_filters_on_undeclared_properties(self, collection):
+        """A property the schema does not declare is stored and filtered too."""
+        v1 = _normalize([1.0, 0.0, 0.0])
+        red = _make_record(vector=v1, properties={"color": "red", "size": 3})
+        blue = _make_record(
+            vector=_normalize([1.0, 0.1, 0.0]), properties={"color": "blue"}
+        )
+        await collection.upsert(records=[red, blue])
+
+        async def uuids(expr):
+            [result] = await collection.query(
+                query_vectors=[v1], limit=10, property_filter=expr
+            )
+            return {match.record.uuid for match in result.matches}
+
+        assert await uuids(Comparison(field="color", op="=", value="red")) == {red.uuid}
+        assert await uuids(Comparison(field="size", op=">=", value=3)) == {red.uuid}
+        assert await uuids(In(field="color", values=["blue", "green"])) == {blue.uuid}
+        assert await uuids(IsNull(field="size")) == {blue.uuid}
+        assert await uuids(Comparison(field="size", op="!=", value=3)) == {blue.uuid}
+        [record] = await collection.get(record_uuids=[red.uuid])
+        assert record.properties == {"color": "red", "size": 3}
+
+    @pytest.mark.asyncio
+    async def test_a_datetime_reads_back_in_the_timezone_it_was_written_in(
+        self, collection
+    ):
+        v1 = _normalize([1.0, 0.0, 0.0])
+        written = datetime(
+            2024,
+            6,
+            15,
+            17,
+            30,
+            0,
+            123456,
+            tzinfo=timezone(timedelta(hours=5, minutes=30)),
+        )
+        record = _make_record(vector=v1, properties={"created_at": written})
+        await collection.upsert(records=[record])
+
+        [got] = await collection.get(record_uuids=[record.uuid])
+        assert got.properties["created_at"].isoformat() == written.isoformat()
+        [result] = await collection.query(query_vectors=[v1], limit=1)
+        assert (
+            result.matches[0].record.properties["created_at"].isoformat()
+            == written.isoformat()
+        )
+
+    @pytest.mark.asyncio
+    async def test_datetime_filters_compare_instants_across_offsets(self, collection):
+        base = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC)
+        plus5 = timezone(timedelta(hours=5))
+        records = [
+            _make_record(
+                vector=_normalize([1.0, 0.1 * index, 0.0]),
+                properties={"created_at": instant},
+            )
+            for index, instant in enumerate(
+                [
+                    base,
+                    (base + timedelta(microseconds=1)).astimezone(plus5),
+                    base - timedelta(days=1),
+                ]
+            )
+        ]
+        await collection.upsert(records=records)
+        v1 = _normalize([1.0, 0.0, 0.0])
+
+        async def uuids(expr):
+            [result] = await collection.query(
+                query_vectors=[v1], limit=10, property_filter=expr
+            )
+            return {match.record.uuid for match in result.matches}
+
+        same_instant = base.astimezone(plus5)
+        assert await uuids(
+            Comparison(field="created_at", op="=", value=same_instant)
+        ) == {records[0].uuid}
+        assert await uuids(Comparison(field="created_at", op=">", value=base)) == {
+            records[1].uuid
+        }
+        assert await uuids(
+            Comparison(field="created_at", op="<", value=same_instant)
+        ) == {records[2].uuid}
+
+    @pytest.mark.asyncio
+    async def test_a_value_of_another_type_matches_nothing(self, collection):
+        r1, r2, r3, v1 = await self._setup(collection)
+
+        [matched] = await collection.query(
+            query_vectors=[v1],
+            limit=10,
+            property_filter=Comparison(field="age", op="=", value="thirty"),
+        )
+        assert matched.matches == []
+        [complement] = await collection.query(
+            query_vectors=[v1],
+            limit=10,
+            property_filter=Comparison(field="age", op="!=", value="thirty"),
+        )
+        assert {m.record.uuid for m in complement.matches} == {
+            r1.uuid,
+            r2.uuid,
+            r3.uuid,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_declared_property_of_another_type_is_refused(self, collection):
+        with pytest.raises(TypeError, match="declared int"):
+            await collection.upsert(
+                records=[
+                    _make_record(
+                        vector=_normalize([1.0, 0.0, 0.0]), properties={"age": "old"}
+                    )
+                ]
+            )
 
     @pytest.mark.asyncio
     async def test_a_limit_above_the_search_cap_is_refused(self, collection):

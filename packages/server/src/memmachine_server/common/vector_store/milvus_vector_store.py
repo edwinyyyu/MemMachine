@@ -5,7 +5,7 @@ import hashlib
 import json
 import math
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, ClassVar, cast, override
 from uuid import UUID
 
@@ -37,10 +37,11 @@ from memmachine_server.common.filter.filter_parser import (
 )
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 from memmachine_server.common.properties_json import (
+    PROPERTY_VALUE_KEY,
     decode_properties,
     encode_properties,
 )
-from memmachine_server.common.utils import ensure_tz_aware
+from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
 
 from .collection_registry import RegisteredCollection, VectorStoreCollectionRegistry
 from .data_types import (
@@ -67,14 +68,40 @@ purge reclaims them.
 """
 _VECTOR_FIELD = "vector"
 _PROPERTIES_FIELD = "properties"
-_PROPERTY_FILTER_PREFIX = "_p_"
+"""A JSON field holding the properties the collection's schema does not declare."""
+_DECLARED_FIELD_PREFIX = "_p_"
+"""The prefix of the typed field holding a declared property."""
+_OFFSET_FIELD_PREFIX = "_tz_"
+"""The prefix of the field holding a declared datetime property's UTC offset.
+
+A TIMESTAMPTZ field keeps the instant and returns it in UTC; the offset, in
+seconds, restores the timezone the value was written in.
+"""
 
 _MAX_UUID_LENGTH = 36
 _MAX_PRIMARY_ID_LENGTH = 128
 _INCARNATION_HEX_LENGTH = 32
+# The longest VARCHAR Milvus stores.
+_MAX_STRING_PROPERTY_LENGTH = 65_535
 # quotaAndLimits.limits.topK: the most results one search may ask for.
 _MAX_SEARCH_LIMIT = 16_384
 _FALSE_EXPR = f'{_ID_FIELD} == "__memmachine_no_match__"'
+
+_DECLARED_DATA_TYPES: dict[type[PropertyValue], DataType] = {
+    bool: DataType.BOOL,
+    int: DataType.INT64,
+    float: DataType.DOUBLE,
+    str: DataType.VARCHAR,
+    datetime: DataType.TIMESTAMPTZ,
+}
+# Term lookups on strings, a bitmap for two values, sorted order for ranges.
+_DECLARED_INDEX_TYPES: dict[type[PropertyValue], str] = {
+    bool: "BITMAP",
+    int: "STL_SORT",
+    float: "STL_SORT",
+    str: "INVERTED",
+    datetime: "STL_SORT",
+}
 
 # The vector index: HNSW with 4-bit codes, rescored against half-precision
 # copies of the vectors. The collection isolates tenants by partition key,
@@ -118,16 +145,93 @@ def _literal(value: PropertyValue) -> str:
     return _expr_string(value)
 
 
-def _property_field(field: str) -> str:
-    """Return the dynamic Milvus field used for property filtering."""
-    return f"{_PROPERTY_FILTER_PREFIX}{field}"
+def _declared_literal(value: PropertyValue) -> str:
+    """Return a Milvus expression literal for a declared property's value.
 
-
-def _normalize_property_filter_value(value: PropertyValue) -> PropertyValue:
-    """Normalize property values stored in dynamic filter fields."""
+    A datetime is a TIMESTAMPTZ instant literal, which compares instants
+    whatever the offsets.
+    """
     if isinstance(value, datetime):
-        return ensure_tz_aware(value).astimezone(UTC).isoformat()
-    return value
+        return f"ISO '{ensure_tz_aware(value).astimezone(UTC).isoformat()}'"
+    return _literal(value)
+
+
+def _fits(value: PropertyValue, declared_type: type[PropertyValue]) -> bool:
+    """Whether a value can be compared with, or stored in, a declared property."""
+    if isinstance(value, bool):
+        return declared_type is bool
+    if isinstance(value, int | float):
+        return declared_type in (int, float)
+    return isinstance(value, declared_type)
+
+
+def _absent(key: str, declared: Mapping[str, type[PropertyValue]]) -> str:
+    """A Milvus expression true exactly where the property has no value."""
+    if key in declared:
+        return f"{_DECLARED_FIELD_PREFIX}{key} is null"
+    return f"not exists {_PROPERTIES_FIELD}[{_expr_string(key)}]"
+
+
+def _condition(
+    expr: FilterComparison | FilterIn,
+    declared: Mapping[str, type[PropertyValue]],
+) -> str:
+    """A Milvus expression for one condition; false or null where the property has no value."""
+    values = list(expr.values) if isinstance(expr, FilterIn) else [expr.value]
+    declared_type = declared.get(expr.field)
+    if declared_type is None:
+        target = (
+            f"{_PROPERTIES_FIELD}[{_expr_string(expr.field)}]"
+            f"[{_expr_string(PROPERTY_VALUE_KEY)}]"
+        )
+        render = _literal
+    else:
+        # A value of another type never equals or orders against the property.
+        values = [value for value in values if _fits(value, declared_type)]
+        target = f"{_DECLARED_FIELD_PREFIX}{expr.field}"
+        render = _declared_literal
+    if not values:
+        return _FALSE_EXPR
+    if isinstance(expr, FilterIn):
+        return f"{target} in [{', '.join(render(value) for value in values)}]"
+    operator = "==" if expr.op == "=" else expr.op
+    return f"{target} {operator} {render(values[0])}"
+
+
+def _milvus_filter(
+    expr: FilterExpr,
+    declared: Mapping[str, type[PropertyValue]],
+    *,
+    negate: bool = False,
+) -> str:
+    """Compile a filter, or with `negate` its complement, into a Milvus expression.
+
+    A condition on a property with no value is false, and a negation is the
+    complement, true wherever the negated expression is not, missing values
+    included. Milvus evaluates a condition on a null the SQL way, so negation
+    is pushed down to the conditions, each of which, negated, also holds
+    where its property has no value. `!=` is the negation of `=`.
+    """
+    if isinstance(expr, FilterNot):
+        return _milvus_filter(expr.expr, declared, negate=not negate)
+    if isinstance(expr, FilterAnd | FilterOr):
+        left = _milvus_filter(expr.left, declared, negate=negate)
+        right = _milvus_filter(expr.right, declared, negate=negate)
+        operator = "&&" if isinstance(expr, FilterAnd) != negate else "||"
+        return f"({left}) {operator} ({right})"
+    if isinstance(expr, FilterIsNull):
+        absent = _absent(expr.field, declared)
+        return f"not ({absent})" if negate else absent
+    if isinstance(expr, FilterComparison) and expr.op == "!=":
+        equal = FilterComparison(field=expr.field, op="=", value=expr.value)
+        return _milvus_filter(equal, declared, negate=not negate)
+    if isinstance(expr, FilterComparison | FilterIn):
+        condition = _condition(expr, declared)
+        if negate:
+            return f"(not ({condition})) || ({_absent(expr.field, declared)})"
+        return condition
+    message = f"Unsupported filter expression type: {type(expr)}"
+    raise TypeError(message)
 
 
 def _incarnation_filter(incarnation: UUID) -> str:
@@ -137,42 +241,6 @@ def _incarnation_filter(incarnation: UUID) -> str:
 
 class MilvusVectorStoreCollection(VectorStoreCollection):
     """A logical collection backed by Milvus."""
-
-    _RANGE_OPERATORS: ClassVar[set[str]] = {">", ">=", "<", "<="}
-
-    @staticmethod
-    def _build_milvus_filter(expr: FilterExpr) -> str:
-        """Convert a FilterExpr tree into a Milvus filter expression."""
-        if isinstance(expr, FilterComparison):
-            return MilvusVectorStoreCollection._build_milvus_comparison(expr)
-        if isinstance(expr, FilterIn):
-            if not expr.values:
-                return _FALSE_EXPR
-            values = ", ".join(_literal(value) for value in expr.values)
-            return f"{_property_field(expr.field)} in [{values}]"
-        if isinstance(expr, FilterIsNull):
-            return f"{_property_field(expr.field)} is null"
-        if isinstance(expr, FilterNot):
-            return (
-                f"not ({MilvusVectorStoreCollection._build_milvus_filter(expr.expr)})"
-            )
-        if isinstance(expr, FilterAnd):
-            left = MilvusVectorStoreCollection._build_milvus_filter(expr.left)
-            right = MilvusVectorStoreCollection._build_milvus_filter(expr.right)
-            return f"({left}) && ({right})"
-        if isinstance(expr, FilterOr):
-            left = MilvusVectorStoreCollection._build_milvus_filter(expr.left)
-            right = MilvusVectorStoreCollection._build_milvus_filter(expr.right)
-            return f"({left}) || ({right})"
-        message = f"Unsupported filter expression type: {type(expr)}"
-        raise TypeError(message)
-
-    @staticmethod
-    def _build_milvus_comparison(comparison: FilterComparison) -> str:
-        """Convert a Comparison into a Milvus filter expression."""
-        field = _property_field(comparison.field)
-        operator = "==" if comparison.op == "=" else comparison.op
-        return f"{field} {operator} {_literal(comparison.value)}"
 
     @staticmethod
     def _passes_threshold(
@@ -246,22 +314,39 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             )
 
         properties = record.properties if record.properties is not None else {}
+        declared = self._config.indexed_properties_schema
         entity: dict[str, Any] = {
             _ID_FIELD: self._primary_id(self._incarnation, record.uuid),
             _RECORD_UUID_FIELD: str(record.uuid),
             _PARTITION_KEY_FIELD: self._incarnation.hex,
             _VECTOR_FIELD: record.vector,
-            _PROPERTIES_FIELD: encode_properties(properties),
+            _PROPERTIES_FIELD: encode_properties(
+                {key: value for key, value in properties.items() if key not in declared}
+            ),
         }
-        # Explicit nulls clear stale dynamic fields during native Milvus upserts.
-        for key in self._config.indexed_properties_schema:
-            entity[_property_field(key)] = None
-        for key, value in properties.items():
-            entity[_property_field(key)] = _normalize_property_filter_value(value)
+        for key, declared_type in declared.items():
+            value = properties.get(key)
+            if value is not None and not _fits(value, declared_type):
+                raise TypeError(
+                    f"Property {key!r} is declared {declared_type.__name__}, "
+                    f"got {type(value).__name__}"
+                )
+            if isinstance(value, datetime):
+                entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = ensure_tz_aware(
+                    value
+                ).isoformat()
+                entity[f"{_OFFSET_FIELD_PREFIX}{key}"] = utc_offset_seconds(value)
+            elif declared_type is datetime:
+                entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = None
+                entity[f"{_OFFSET_FIELD_PREFIX}{key}"] = None
+            elif declared_type is float and isinstance(value, int | float):
+                entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = float(value)
+            else:
+                entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = value
         return entity
 
-    @staticmethod
     def _parse_record(
+        self,
         entity: Mapping[str, Any],
         *,
         return_vector: bool,
@@ -279,6 +364,14 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             properties = decode_properties(
                 cast(Mapping | None, entity.get(_PROPERTIES_FIELD))
             )
+            for key, declared_type in self._config.indexed_properties_schema.items():
+                value = entity.get(f"{_DECLARED_FIELD_PREFIX}{key}")
+                if value is None:
+                    continue
+                if declared_type is datetime:
+                    offset = timedelta(seconds=entity[f"{_OFFSET_FIELD_PREFIX}{key}"])
+                    value = datetime.fromisoformat(value).astimezone(timezone(offset))
+                properties[key] = value
 
         return Record(
             uuid=UUID(str(entity[_RECORD_UUID_FIELD])),
@@ -294,6 +387,10 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             fields.append(_VECTOR_FIELD)
         if return_properties:
             fields.append(_PROPERTIES_FIELD)
+            for key, declared_type in self._config.indexed_properties_schema.items():
+                fields.append(f"{_DECLARED_FIELD_PREFIX}{key}")
+                if declared_type is datetime:
+                    fields.append(f"{_OFFSET_FIELD_PREFIX}{key}")
         return fields
 
     def _score(self, distance: float) -> float:
@@ -363,7 +460,9 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             if property_filter is not None:
                 if not validate_filter(property_filter):
                     raise ValueError("Filter contains an invalid property key")
-                property_expr = self._build_milvus_filter(property_filter)
+                property_expr = _milvus_filter(
+                    property_filter, self._config.indexed_properties_schema
+                )
                 filter_expr = f"({filter_expr}) && ({property_expr})"
 
             raw_results = await asyncio.to_thread(
@@ -620,7 +719,7 @@ class MilvusVectorStore(VectorStore):
         def _create_collection() -> None:
             schema = self._client.create_schema(
                 auto_id=False,
-                enable_dynamic_field=True,
+                enable_dynamic_field=False,
             )
             schema.add_field(
                 field_name=_ID_FIELD,
@@ -648,7 +747,6 @@ class MilvusVectorStore(VectorStore):
                 field_name=_PROPERTIES_FIELD,
                 datatype=DataType.JSON,
             )
-
             index_params = self._client.prepare_index_params()
             index_params.add_index(
                 field_name=_VECTOR_FIELD,
@@ -658,6 +756,30 @@ class MilvusVectorStore(VectorStore):
                 ],
                 params=_VECTOR_INDEX_PARAMS,
             )
+            for key, declared_type in config.indexed_properties_schema.items():
+                if declared_type is str:
+                    schema.add_field(
+                        field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
+                        datatype=DataType.VARCHAR,
+                        max_length=_MAX_STRING_PROPERTY_LENGTH,
+                        nullable=True,
+                    )
+                else:
+                    schema.add_field(
+                        field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
+                        datatype=_DECLARED_DATA_TYPES[declared_type],
+                        nullable=True,
+                    )
+                if declared_type is datetime:
+                    schema.add_field(
+                        field_name=f"{_OFFSET_FIELD_PREFIX}{key}",
+                        datatype=DataType.INT32,
+                        nullable=True,
+                    )
+                index_params.add_index(
+                    field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
+                    index_type=_DECLARED_INDEX_TYPES[declared_type],
+                )
 
             self._client.create_collection(
                 collection_name=native_collection_name,
