@@ -57,12 +57,12 @@ class VectorStoreCollectionRegistry(ABC):
     The collection registry of one vector store.
 
     A queue entry is a dead incarnation's tombstone. The backend holds the
-    points, and a write the registry read as live can land there after
-    the purge that followed the deletion, so one purge cannot be the last:
-    the entry stays through purge rounds until a round finds nothing, then
-    through a retention, then through one more round that finds nothing
-    again. Only then is it removed, and until then the incarnation is
-    never re-minted.
+    points, and a write the registry read as live can land there after the
+    deletion, so purging starts only once a retention has passed since the
+    deletion, longer than any write can be in flight: nothing more lands
+    under the incarnation after that. The entry stays through purge rounds
+    until one finds nothing, and is then removed; until then the
+    incarnation is never re-minted.
     """
 
     @abstractmethod
@@ -146,16 +146,14 @@ class VectorStoreCollectionRegistry(ABC):
         """
         Claim a tombstone that is due for a purge round, held for the body of the context.
 
-        A tombstone is due until a round finds no points under its
-        incarnation, and due again once the retention has passed since
-        that round. The caller runs one round in the body: it looks for
+        A tombstone is due once the retention has passed since its
+        deletion. The caller runs one round in the body: it looks for
         points under `claim.incarnation` in the native collection that
         `claim.namespace` and `claim.config` name, deletes any it finds,
         and sets `claim.found`. When the body ends, the registry records
         the outcome: a round that found points leaves the tombstone due; a
-        round that found none starts the retention, or, once the retention
-        has passed, removes the tombstone and frees its incarnation. A body
-        that raises leaves the tombstone as it was.
+        round that found none removes the tombstone and frees its
+        incarnation. A body that raises leaves the tombstone as it was.
 
         A registry that can hold a claim hands the tombstone to no other
         purger for the body's duration; one that cannot lets a doubly

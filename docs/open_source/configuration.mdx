@@ -415,7 +415,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
       | `config.consistency_level` | Milvus collection consistency level: `Strong`, `Session`, `Bounded`, or `Eventually`. | `Session` |
       | `config.metrics_factory_id` | ID of the metrics exporter factory the Qdrant or Neo4j store reports its operation latencies to. | `prometheus` |
       | `config.collection_registry` | Qdrant and Milvus: the name of a relational database under `resources.databases` that holds the store's collection registry (see [Vector stores](/open_source/databases#vector-stores)). | *Required* |
-      | `config.tombstone_retention_seconds` | Qdrant and Milvus: whole seconds a deleted collection's registry entry outlives the first purge round that finds nothing under it, so a write that landed after that round is still reclaimed. | `86400` |
+      | `config.tombstone_retention_seconds` | Qdrant and Milvus: whole seconds a deleted collection's records are kept before its purge starts, so every write in flight at the deletion has landed and is reclaimed. | `86400` |
       | `config.request_timeout_seconds` | Qdrant and Milvus: whole seconds a request to the vector store may take before the client gives up; must be positive. | `30` |
       | `config.path`  | The path for the given database.                                    | Depends on provider |
       | `config.username` | Username for internal graph store authentication.                | Depends on provider |

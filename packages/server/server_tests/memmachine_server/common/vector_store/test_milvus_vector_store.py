@@ -47,7 +47,8 @@ NAMESPACE = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
 VECTOR_STORE_NAME = "milvus_test"
-TOMBSTONE_RETENTION = timedelta(days=1)
+# Tombstones come due at once, so a test can purge right after deleting.
+TOMBSTONE_RETENTION = timedelta(0)
 REQUEST_TIMEOUT_SECONDS = 30
 
 
