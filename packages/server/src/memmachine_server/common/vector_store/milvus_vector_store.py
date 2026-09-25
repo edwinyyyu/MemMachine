@@ -119,11 +119,6 @@ _SEARCH_PARAMS: dict[str, Any] = {"ef": 64, "refine_k": 2}
 # collection in between, so this depth means something else is wrong.
 _MAX_OPEN_OR_CREATE_ATTEMPTS = 10
 
-# The most entities one purge round lists and deletes. A query's offset plus
-# limit may not exceed quotaAndLimits.limits.maxQueryResultWindow, 16384 by
-# default, so the batch stays below it.
-_PURGE_BATCH_SIZE = 10_000
-
 
 def _expr_string(value: str) -> str:
     """Return a Milvus expression string literal."""
@@ -587,6 +582,10 @@ class MilvusVectorStoreParams(BaseModel):
             Bytes a declared string property can hold: the length of its
             VARCHAR field. Milvus refuses a length above its
             proxy.maxVarCharLength.
+        purge_batch_size (int):
+            The most entities one purge round lists and deletes. Milvus
+            refuses a query whose limit exceeds its
+            quotaAndLimits.limits.maxQueryResultWindow.
         metrics_factory (MetricsFactory | None): Metrics factory for collecting usage metrics.
     """
 
@@ -607,6 +606,9 @@ class MilvusVectorStoreParams(BaseModel):
     )
     max_varchar_length: int = Field(
         ..., gt=0, description="Bytes a declared string property can hold"
+    )
+    purge_batch_size: int = Field(
+        ..., gt=0, description="The most entities one purge round lists and deletes"
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
@@ -669,6 +671,7 @@ class MilvusVectorStore(VectorStore):
         self._collection_registry = params.collection_registry
         self._request_timeout_seconds = params.request_timeout_seconds
         self._max_varchar_length = params.max_varchar_length
+        self._purge_batch_size = params.purge_batch_size
         self._tracker = OperationTracker(
             params.metrics_factory,
             prefix="vector_store_milvus",
@@ -920,7 +923,7 @@ class MilvusVectorStore(VectorStore):
                         f" and {_ID_FIELD} < {_expr_string(f'{prefix};')}"
                     ),
                     output_fields=[_ID_FIELD],
-                    limit=_PURGE_BATCH_SIZE,
+                    limit=self._purge_batch_size,
                     timeout=self._request_timeout_seconds,
                 )
                 primary_ids = [entity[_ID_FIELD] for entity in listed]

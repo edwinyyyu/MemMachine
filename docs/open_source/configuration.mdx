@@ -423,6 +423,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
       | `config.tombstone_retention_seconds` | Qdrant and Milvus: whole seconds a deleted collection's records are kept before its purge starts, so every write in flight at the deletion has landed and is reclaimed. | `86400` |
       | `config.request_timeout_seconds` | Qdrant and Milvus: whole seconds a request to the vector store may take before the client gives up; must be positive. | `30` |
       | `config.max_varchar_length` | Milvus: bytes a declared string property can hold, the length of its VARCHAR field; Milvus refuses a length above its `proxy.maxVarCharLength`. | `65535` |
+      | `config.purge_batch_size` | Milvus: the most entities one purge round lists and deletes; Milvus refuses a query whose limit exceeds its `quotaAndLimits.limits.maxQueryResultWindow`. | `10000` |
       | `config.path`  | The path for the given database.                                    | Depends on provider |
       | `config.username` | Username for internal graph store authentication.                | Depends on provider |
       | `my_storage_id` | The specific configuration for the system's internal graph store.  | *Required*  |

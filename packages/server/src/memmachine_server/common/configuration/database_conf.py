@@ -332,6 +332,16 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
             "proxy.maxVarCharLength, 65535 unless the server sets it otherwise."
         ),
     )
+    purge_batch_size: int = Field(
+        default=10000,
+        gt=0,
+        description=(
+            "The most entities one purge round lists and deletes. Milvus refuses "
+            "a query whose limit exceeds its "
+            "quotaAndLimits.limits.maxQueryResultWindow, 16384 unless the server "
+            "sets it otherwise."
+        ),
+    )
 
     @field_validator("uri", mode="before")
     @classmethod
