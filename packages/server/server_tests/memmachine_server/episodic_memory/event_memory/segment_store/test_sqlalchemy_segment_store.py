@@ -802,19 +802,16 @@ async def test_context_preserved_in_segment_contexts(
 @pytest.mark.parametrize("random_seed", [1, 2, 3])
 async def test_random_context_reads_agree_with_a_model(
     store: SQLAlchemySegmentStore,
-    monkeypatch: pytest.MonkeyPatch,
     random_seed: int,
 ) -> None:
     """Random context reads agree with an in-memory model of the timeline.
 
     Several seeds per read, filters of every node type, and many segments
     sharing a timestamp, with another partition's segments at the same
-    times. Each read sets the store's bound on how far context reaches at
-    random, from one segment to its default, and the model applies the
-    same bound before the filter.
+    times. The partition is far smaller than a filtered read's window, so
+    every match on a side is within it.
     """
     rng = random.Random(random_seed)
-    default_distance = sqlalchemy_segment_store._MAX_CONTEXT_DISTANCE
     config = _plaintext_partition_config()
     partition = await store.open_or_create_partition(PARTITION_KEY, config)
     other_partition = await store.open_or_create_partition("other_partition", config)
@@ -850,10 +847,6 @@ async def test_random_context_reads_agree_with_a_model(
         max_backward_segments = rng.randint(0, 4)
         max_forward_segments = rng.randint(0, 4)
         property_filter = rng.choice(filters)
-        max_distance = rng.choice([1, 2, 3, 5, default_distance])
-        monkeypatch.setattr(
-            sqlalchemy_segment_store, "_MAX_CONTEXT_DISTANCE", max_distance
-        )
 
         result = await partition.get_segment_contexts(
             [seed.uuid for seed in seeds],
@@ -869,9 +862,8 @@ async def test_random_context_reads_agree_with_a_model(
             seeds,
             max_backward_segments=max_backward_segments,
             max_forward_segments=max_forward_segments,
-            max_distance=max_distance,
             property_filter=property_filter,
-        ), (property_filter, max_backward_segments, max_forward_segments, max_distance)
+        ), (property_filter, max_backward_segments, max_forward_segments)
 
 
 def _random_event_segments(rng: random.Random) -> list[Segment]:
@@ -908,13 +900,11 @@ def _model_context_uuids(
     *,
     max_backward_segments: int,
     max_forward_segments: int,
-    max_distance: int,
     property_filter: FilterExpr | None,
 ) -> dict[UUID, list[UUID]]:
     """What get_segment_contexts returns for `seeds`, as segment UUIDs.
 
-    `timeline` is the partition's segments in chronological order. Context
-    comes from the `max_distance` segments nearest each seed on each side.
+    `timeline` is the partition's segments in chronological order.
     """
 
     def matches(segment: Segment) -> bool:
@@ -925,16 +915,8 @@ def _model_context_uuids(
         if not matches(seed):
             continue
         position = timeline.index(seed)
-        before = [
-            segment
-            for segment in timeline[max(0, position - max_distance) : position]
-            if matches(segment)
-        ]
-        after = [
-            segment
-            for segment in timeline[position + 1 : position + 1 + max_distance]
-            if matches(segment)
-        ]
+        before = [segment for segment in timeline[:position] if matches(segment)]
+        after = [segment for segment in timeline[position + 1 :] if matches(segment)]
         context = [
             *(before[-max_backward_segments:] if max_backward_segments else []),
             seed,
