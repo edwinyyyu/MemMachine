@@ -529,6 +529,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         incarnation = self._incarnation
 
         async def get_context_rows_directional(
+            *,
             backward: bool,
             limit: int,
         ) -> dict[UUID, list[SegmentRow]]:
@@ -536,7 +537,10 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             # Build a LATERAL subquery that gets context rows for each seed.
             lateral_subquery = (
                 self._context_rows_query(
-                    seed_ordering_columns, backward, limit, property_filter
+                    seed_ordering_columns,
+                    backward=backward,
+                    limit=limit,
+                    property_filter=property_filter,
                 )
                 .subquery()
                 .lateral("context")
@@ -578,13 +582,17 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             return rows_by_seed
 
         backward_rows_by_seed = (
-            await get_context_rows_directional(True, max_backward_segments)
+            await get_context_rows_directional(
+                backward=True, limit=max_backward_segments
+            )
             if max_backward_segments > 0
             else {seed_uuid: [] for seed_uuid in seed_rows_by_uuid}
         )
 
         forward_rows_by_seed = (
-            await get_context_rows_directional(False, max_forward_segments)
+            await get_context_rows_directional(
+                backward=False, limit=max_forward_segments
+            )
             if max_forward_segments > 0
             else {seed_uuid: [] for seed_uuid in seed_rows_by_uuid}
         )
@@ -617,10 +625,16 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         )
 
         backward_rows_query = self._context_rows_query(
-            seed_ordering_values, True, max_backward_segments, property_filter
+            seed_ordering_values,
+            backward=True,
+            limit=max_backward_segments,
+            property_filter=property_filter,
         )
         forward_rows_query = self._context_rows_query(
-            seed_ordering_values, False, max_forward_segments, property_filter
+            seed_ordering_values,
+            backward=False,
+            limit=max_forward_segments,
+            property_filter=property_filter,
         )
 
         context_rows_by_seed: dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]] = {}
@@ -652,6 +666,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     def _context_rows_query(
         self,
         seed_ordering_values: Tuple,
+        *,
         backward: bool,
         limit: int,
         property_filter: FilterExpr | None,
@@ -683,7 +698,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             )
             .order_by(
                 *SQLAlchemySegmentStorePartition._chronological_order(
-                    SegmentRow, backward
+                    SegmentRow, descending=backward
                 )
             )
             # Refer to an enclosing statement that supplies the seed's
@@ -702,13 +717,15 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     property_filter,
                     lambda field: (
                         SQLAlchemySegmentStorePartition._resolve_segment_field(
-                            field, window
+                            field, row=window
                         )
                     ),
                 )
             )
             .order_by(
-                *SQLAlchemySegmentStorePartition._chronological_order(window, backward)
+                *SQLAlchemySegmentStorePartition._chronological_order(
+                    window, descending=backward
+                )
             )
             .limit(limit)
         )
@@ -716,6 +733,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     @staticmethod
     def _chronological_order(
         row: type[SegmentRow] | AliasedClass[SegmentRow],
+        *,
         descending: bool,
     ) -> list[ColumnElement | InstrumentedAttribute]:
         """`row`'s chronological order, newest first if `descending`.
@@ -825,6 +843,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     @staticmethod
     def _resolve_segment_field(
         field: str,
+        *,
         row: type[SegmentRow] | AliasedClass[SegmentRow] = SegmentRow,
     ) -> tuple[ColumnElement, FieldEncoding]:
         """Map a filter field name to a column of `row` and its encoding."""
