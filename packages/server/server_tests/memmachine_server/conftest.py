@@ -429,9 +429,10 @@ async def qdrant_grpc_client(qdrant_container):
 def milvus_container():
     if not is_docker_available():
         pytest.skip("Docker is not available")
-    # Milvus 3 refuses embedded etcd unless the deploy mode says standalone,
-    # and no longer logs the banner the module's default wait looks for.
-    container = MilvusContainer(image="milvusdb/milvus:v3.0.2").with_env(
+    # Milvus refuses embedded etcd unless the deploy mode says standalone, and
+    # logs no banner the module's default wait can find; its health endpoint
+    # says when it is ready.
+    container = MilvusContainer(image="milvusdb/milvus:v2.6.24").with_env(
         "DEPLOY_MODE", "STANDALONE"
     )
     container.waiting_for(HttpWaitStrategy(container.healthcheck_port, "/healthz"))
