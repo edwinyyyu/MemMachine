@@ -432,7 +432,11 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 seed_segments_query = seed_segments_query.where(
                     compile_sql_filter(
                         property_filter,
-                        SQLAlchemySegmentStorePartition._resolve_segment_field,
+                        lambda field: (
+                            SQLAlchemySegmentStorePartition._resolve_segment_field(
+                                field, columns=SegmentRow.__table__.c
+                            )
+                        ),
                     )
                 )
             seed_segment_rows = (
@@ -713,7 +717,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     property_filter,
                     lambda field: (
                         SQLAlchemySegmentStorePartition._resolve_segment_field(
-                            field, row=window.c
+                            field, columns=window.c
                         )
                     ),
                 )
@@ -840,16 +844,16 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     def _resolve_segment_field(
         field: str,
         *,
-        row: type[SegmentRow] | ColumnCollection[str, ColumnElement] = SegmentRow,
+        columns: ColumnCollection[str, ColumnElement],
     ) -> tuple[ColumnElement, FieldEncoding]:
-        """Map a filter field name to a column of `row` and its encoding."""
+        """Map a filter field name to one of `columns` and its encoding."""
         if field == "timestamp":
-            return row.timestamp.expression, "column"
+            return columns.timestamp, "column"
         internal_name, is_user_metadata = normalize_filter_field(field)
         if is_user_metadata:
             key = demangle_user_metadata_key(internal_name)
-            return row.properties[key], "properties_json"
-        return row.properties[f"_{field}"], "properties_json"
+            return columns.properties[key], "properties_json"
+        return columns.properties[f"_{field}"], "properties_json"
 
     def _segment_from_segment_row(self, row: SegmentRow) -> Segment:
         """Convert a SegmentRow into a Segment."""
