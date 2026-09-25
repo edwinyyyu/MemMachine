@@ -280,11 +280,8 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
     """Configuration options for a Milvus instance."""
 
     uri: str = Field(
-        default="./milvus.db",
-        description=(
-            "Milvus URI. Use a local .db path for Milvus Lite, "
-            "or an HTTP(S) URI for Milvus server / Zilliz Cloud."
-        ),
+        default="http://localhost:19530",
+        description="URL of the Milvus server or Zilliz Cloud endpoint.",
     )
     token: SecretStr = Field(
         default=SecretStr(""),
@@ -334,6 +331,14 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         resolved = cls._resolve_env(v)
         if not isinstance(resolved, str):
             raise TypeError("Milvus URI must be a string")
+        # pymilvus reads a URI without a scheme as a Milvus Lite file, which
+        # is not supported: it is a separate engine that behaves unlike the
+        # server.
+        if resolved and "://" not in resolved:
+            raise ValueError(
+                f"Milvus URI {resolved!r} must be a server URL such as "
+                "http://localhost:19530; Milvus Lite files are not supported"
+            )
         return resolved
 
     @field_validator("token", mode="before")

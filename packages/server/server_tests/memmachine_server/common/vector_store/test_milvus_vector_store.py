@@ -71,14 +71,6 @@ def _make_record(
 
 
 @pytest.fixture
-def lite_milvus_client(tmp_path):
-    pytest.importorskip("milvus_lite")
-    client = MilvusClient(uri=str(tmp_path / "test_milvus.db"))
-    yield client
-    client.close()
-
-
-@pytest.fixture
 def server_milvus_client(milvus_container):
     client = MilvusClient(uri=milvus_container.get_connection_url())
     yield client
@@ -86,10 +78,7 @@ def server_milvus_client(milvus_container):
 
 
 @pytest.fixture(
-    params=[
-        "lite_milvus_client",
-        pytest.param("server_milvus_client", marks=pytest.mark.integration),
-    ],
+    params=[pytest.param("server_milvus_client", marks=pytest.mark.integration)],
 )
 def milvus_client(request):
     return request.getfixturevalue(request.param)

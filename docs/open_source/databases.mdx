@@ -35,14 +35,16 @@ collections in a relational database named by `collection_registry`, so any
 number of server processes can share one backend; the SQLite stores are bound
 to one node. Each Qdrant or Milvus backend has its own registry, named by its
 key under `resources.databases` (lowercase letters, digits and underscores, at
-most 32 bytes), so several backends can keep their registries in one database. Milvus supports three deployment shapes through the same
+most 32 bytes), so several backends can keep their registries in one database. Milvus supports two deployment shapes through the same
 configuration fields:
 
-- **Milvus Lite:** set `uri` to a local `.db` path such as
-  `./memmachine_milvus.db`.
 - **Milvus server:** set `uri` to a server endpoint such as
   `http://localhost:19530`.
 - **Zilliz Cloud:** set `uri` to the cloud endpoint and set `token`.
+
+Milvus Lite is not supported: it is a separate embedded engine that does not
+behave like the server. For a local, single-node deployment, use
+SQLiteVectorStore.
 
 Example:
 
@@ -52,7 +54,7 @@ resources:
     milvus_vector_store:
       provider: milvus
       config:
-        uri: ./memmachine_milvus.db
+        uri: http://localhost:19530
         # token: $MILVUS_TOKEN
         # db_name: default
         consistency_level: Session

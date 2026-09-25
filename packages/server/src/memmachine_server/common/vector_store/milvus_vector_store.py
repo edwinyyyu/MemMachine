@@ -3,7 +3,6 @@
 import asyncio
 import hashlib
 import json
-from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast, override
@@ -566,12 +565,6 @@ class MilvusVectorStore(VectorStore):
         self._client = params.client
         self._consistency_level = params.consistency_level
         self._collection_registry = params.collection_registry
-        # Milvus Lite does not arbitrate two creations of one collection
-        # racing in one process: they take turns here, and the later one
-        # finds the collection.
-        self._native_collection_locks: defaultdict[str, asyncio.Lock] = defaultdict(
-            asyncio.Lock
-        )
         self._request_timeout_seconds = params.request_timeout_seconds
         self._tracker = OperationTracker(
             params.metrics_factory,
@@ -663,18 +656,17 @@ class MilvusVectorStore(VectorStore):
                 timeout=self._request_timeout_seconds,
             )
 
-        async with self._native_collection_locks[native_collection_name]:
-            if await asyncio.to_thread(
-                self._client.has_collection,
-                native_collection_name,
-                timeout=self._request_timeout_seconds,
-            ):
-                return
-            try:
-                await asyncio.to_thread(_create_collection)
-            except MilvusException as exc:
-                if not MilvusVectorStore._is_already_exists_error(exc):
-                    raise
+        if await asyncio.to_thread(
+            self._client.has_collection,
+            native_collection_name,
+            timeout=self._request_timeout_seconds,
+        ):
+            return
+        try:
+            await asyncio.to_thread(_create_collection)
+        except MilvusException as exc:
+            if not MilvusVectorStore._is_already_exists_error(exc):
+                raise
 
     @override
     async def create_collection(
