@@ -56,6 +56,7 @@ INDEXED_PROPERTIES: dict[str, PropertyType] = {
 # Tombstones come due at once, so a test can purge right after deleting.
 TOMBSTONE_RETENTION = timedelta(0)
 REQUEST_TIMEOUT_SECONDS = 30
+MAX_VARCHAR_LENGTH = 1024
 
 
 def _normalize(vector: list[float]) -> list[float]:
@@ -86,6 +87,7 @@ async def _params(client, registry_engine, **overrides) -> MilvusVectorStorePara
         "indexed_properties": INDEXED_PROPERTIES,
         "consistency_level": "Session",
         "request_timeout_seconds": REQUEST_TIMEOUT_SECONDS,
+        "max_varchar_length": MAX_VARCHAR_LENGTH,
     }
     params.update(overrides)
     params["partition_registry"] = SQLAlchemyVectorStorePartitionRegistry(
@@ -273,6 +275,7 @@ class TestPartitionLifecycle:
         for field_name, data_type in expected.items():
             assert fields[field_name]["type"] == data_type
             assert fields[field_name]["nullable"] is True
+        assert fields["_p_name"]["params"]["max_length"] == MAX_VARCHAR_LENGTH
         indexed = {
             store._client.describe_index(native, index_name)["field_name"]
             for index_name in store._client.list_indexes(native)
@@ -735,13 +738,6 @@ class TestFilters:
                         vector=_normalize([1.0, 0.0, 0.0]), properties={"age": "old"}
                     )
                 ]
-            )
-
-    @pytest.mark.asyncio
-    async def test_a_limit_above_the_search_cap_is_refused(self, collection):
-        with pytest.raises(ValueError, match="at most 16384"):
-            await collection.query(
-                query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=16_385
             )
 
 

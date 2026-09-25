@@ -87,10 +87,6 @@ seconds, restores the timezone the value was written in.
 _MAX_UUID_LENGTH = 36
 _MAX_PRIMARY_ID_LENGTH = 128
 _INCARNATION_HEX_LENGTH = 32
-# The longest VARCHAR Milvus stores.
-_MAX_STRING_PROPERTY_LENGTH = 65_535
-# quotaAndLimits.limits.topK: the most results one search may ask for.
-_MAX_SEARCH_LIMIT = 16_384
 _FALSE_EXPR = f'{_ID_FIELD} == "__memmachine_no_match__"'
 
 _DECLARED_DATA_TYPES: dict[type[PropertyValue], DataType] = {
@@ -466,11 +462,6 @@ class MilvusVectorStorePartition(VectorStorePartition):
                 return []
             if limit <= 0:
                 return [QueryResult(matches=[]) for _ in query_vectors]
-            if limit > _MAX_SEARCH_LIMIT:
-                raise ValueError(
-                    f"Milvus returns at most {_MAX_SEARCH_LIMIT} results per "
-                    f"search, got limit={limit}"
-                )
 
             await self._fence()
             filter_expr = self._partition_filter()
@@ -623,6 +614,10 @@ class MilvusVectorStoreParams(BaseModel):
             which a search filters on.
         consistency_level (str): Consistency level for the collection this store creates.
         request_timeout_seconds (int): Seconds any request to Milvus may take.
+        max_varchar_length (int):
+            Bytes a declared string property can hold: the length of its
+            VARCHAR field. Milvus refuses a length above its
+            proxy.maxVarCharLength.
         metrics_factory (MetricsFactory | None): Metrics factory for collecting usage metrics.
     """
 
@@ -655,6 +650,9 @@ class MilvusVectorStoreParams(BaseModel):
     )
     request_timeout_seconds: int = Field(
         ..., gt=0, description="Seconds any request to Milvus may take"
+    )
+    max_varchar_length: int = Field(
+        ..., gt=0, description="Bytes a declared string property can hold"
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
@@ -718,6 +716,7 @@ class MilvusVectorStore(VectorStore):
         self._indexed_properties = params.indexed_properties
         self._consistency_level = params.consistency_level
         self._request_timeout_seconds = params.request_timeout_seconds
+        self._max_varchar_length = params.max_varchar_length
         self._partition_registry = params.partition_registry
         self._tracker = OperationTracker(
             params.metrics_factory,
@@ -820,7 +819,7 @@ class MilvusVectorStore(VectorStore):
                     schema.add_field(
                         field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
                         datatype=DataType.VARCHAR,
-                        max_length=_MAX_STRING_PROPERTY_LENGTH,
+                        max_length=self._max_varchar_length,
                         nullable=True,
                     )
                 else:

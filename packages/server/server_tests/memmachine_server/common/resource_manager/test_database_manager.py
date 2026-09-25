@@ -705,6 +705,7 @@ async def test_get_vector_store_builds_a_milvus_store():
         indexed_properties={},
         consistency_level="Strong",
         request_timeout_seconds=30,
+        max_varchar_length=65535,
     )
     mock_store_cls.assert_called_once_with(mock_params_cls.return_value)
     mock_store_cls.return_value.provision.assert_awaited_once()
