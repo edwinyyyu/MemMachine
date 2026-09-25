@@ -142,9 +142,11 @@ class VectorStoreCollectionRegistry(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def claim_due(self) -> AbstractAsyncContextManager[PurgeClaim | None]:
+    def claim_purgeable_incarnation(
+        self,
+    ) -> AbstractAsyncContextManager[PurgeClaim | None]:
         """
-        Claim a tombstone that is due for a purge round, held for the body of the context.
+        Claim a dead incarnation whose tombstone is due, for one purge round held for the body of the context.
 
         A tombstone is due once the retention has passed since its
         deletion. The caller runs one round in the body: it looks for

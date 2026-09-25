@@ -121,7 +121,7 @@ async def _round(
     registry: SQLAlchemyVectorStoreCollectionRegistry, found: bool
 ) -> UUID | None:
     """One purge round on the oldest due tombstone, reporting `found`; its incarnation, or None."""
-    async with registry.claim_due() as claim:
+    async with registry.claim_purgeable_incarnation() as claim:
         if claim is None:
             return None
         claim.found = found
@@ -268,7 +268,7 @@ async def test_a_claim_names_where_the_points_are(sqlalchemy_engine, vector_stor
     await registry.unregister(NAMESPACE, "c")
     await _age_deletion(registry, incarnation)
 
-    async with registry.claim_due() as claim:
+    async with registry.claim_purgeable_incarnation() as claim:
         assert claim is not None
         assert claim.incarnation == incarnation
         assert claim.namespace == NAMESPACE
@@ -362,7 +362,7 @@ async def test_a_round_whose_body_raises_keeps_the_tombstone_as_it_was(
     await _age_deletion(registry, incarnation)
 
     async def refused_reclamation() -> None:
-        async with registry.claim_due() as claim:
+        async with registry.claim_purgeable_incarnation() as claim:
             assert claim is not None
             assert claim.incarnation == incarnation
             claim.found = False
@@ -384,7 +384,7 @@ async def test_a_round_that_reports_nothing_is_an_error(
     await _age_deletion(registry, incarnation)
 
     with pytest.raises(RuntimeError, match="without reporting"):
-        async with registry.claim_due():
+        async with registry.claim_purgeable_incarnation():
             pass
     assert await _queued(registry) == [incarnation]
 

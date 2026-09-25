@@ -280,7 +280,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
 
     @override
     @asynccontextmanager
-    async def claim_due(self) -> AsyncIterator[PurgeClaim | None]:
+    async def claim_purgeable_incarnation(self) -> AsyncIterator[PurgeClaim | None]:
         # The queue stores only the deletion's time, on the database clock;
         # the retention is policy, applied by the database's own arithmetic
         # when a claim is decided, so a changed retention reaches every

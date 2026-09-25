@@ -897,7 +897,7 @@ class MilvusVectorStore(VectorStore):
         # removes the tombstone by what the round found.
         async with (
             self._tracker("purge_deleted_collections"),
-            self._collection_registry.claim_due() as claim,
+            self._collection_registry.claim_purgeable_incarnation() as claim,
         ):
             if claim is None:
                 return False
