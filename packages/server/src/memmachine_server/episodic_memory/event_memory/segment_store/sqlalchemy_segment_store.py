@@ -625,21 +625,29 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
 
         # Loaded as segment rows by the ORM, which is cheaper than building
         # them from plain rows.
-        backward_rows_query = select(SegmentRow).from_statement(
-            self._context_rows_query(
-                seed_ordering_values,
-                backward=True,
-                limit=max_backward_segments,
-                property_filter=property_filter,
+        backward_rows_query = (
+            select(SegmentRow).from_statement(
+                self._context_rows_query(
+                    seed_ordering_values,
+                    backward=True,
+                    limit=max_backward_segments,
+                    property_filter=property_filter,
+                )
             )
+            if max_backward_segments > 0
+            else None
         )
-        forward_rows_query = select(SegmentRow).from_statement(
-            self._context_rows_query(
-                seed_ordering_values,
-                backward=False,
-                limit=max_forward_segments,
-                property_filter=property_filter,
+        forward_rows_query = (
+            select(SegmentRow).from_statement(
+                self._context_rows_query(
+                    seed_ordering_values,
+                    backward=False,
+                    limit=max_forward_segments,
+                    property_filter=property_filter,
+                )
             )
+            if max_forward_segments > 0
+            else None
         )
 
         context_rows_by_seed: dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]] = {}
@@ -651,14 +659,14 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 "seed_offset": seed_row.offset,
             }
             backward_rows: list[SegmentRow] = []
-            if max_backward_segments > 0:
+            if backward_rows_query is not None:
                 backward_rows = list(
                     (await session.execute(backward_rows_query, seed_position))
                     .scalars()
                     .all()
                 )
             forward_rows: list[SegmentRow] = []
-            if max_forward_segments > 0:
+            if forward_rows_query is not None:
                 forward_rows = list(
                     (await session.execute(forward_rows_query, seed_position))
                     .scalars()
