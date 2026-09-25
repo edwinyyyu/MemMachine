@@ -303,7 +303,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
     @property
     @override
     def config(self) -> VectorStoreCollectionConfig:
-        """The configuration for this collection."""
         return self._config
 
     def _build_entity(self, record: Record) -> dict[str, Any]:
@@ -412,7 +411,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         *,
         records: Iterable[Record],
     ) -> None:
-        """Upsert records into the collection."""
         async with self._tracker("upsert"):
             records = list(records)
             if not records:
@@ -442,7 +440,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         return_vector: bool = False,
         return_properties: bool = True,
     ) -> list[QueryResult]:
-        """Query for records matching the criteria by query vectors."""
         async with self._tracker("query"):
             query_vectors = [list(query_vector) for query_vector in query_vectors]
             if not query_vectors:
@@ -518,7 +515,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         return_vector: bool = False,
         return_properties: bool = True,
     ) -> list[Record]:
-        """Get records from the collection by their UUIDs."""
         async with self._tracker("get"):
             uuid_list = list(record_uuids)
             if not uuid_list:
@@ -563,7 +559,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         *,
         record_uuids: Iterable[UUID],
     ) -> None:
-        """Delete records from the collection by their UUIDs."""
         async with self._tracker("delete"):
             uuid_list = list(record_uuids)
             if not uuid_list:
@@ -811,7 +806,6 @@ class MilvusVectorStore(VectorStore):
         name: str,
         config: VectorStoreCollectionConfig,
     ) -> None:
-        """Create a logical collection in the Milvus vector store."""
         require_identifiers(namespace, name)
         self._validate_metric(config.similarity_metric)
         async with self._tracker("create_collection"):
@@ -832,7 +826,6 @@ class MilvusVectorStore(VectorStore):
         name: str,
         config: VectorStoreCollectionConfig,
     ) -> MilvusVectorStoreCollection:
-        """Open the collection if it exists, or create and return it."""
         require_identifiers(namespace, name)
         self._validate_metric(config.similarity_metric)
         async with self._tracker("open_or_create_collection"):
@@ -872,7 +865,6 @@ class MilvusVectorStore(VectorStore):
     async def open_collection(
         self, *, namespace: str, name: str
     ) -> MilvusVectorStoreCollection | None:
-        """Get a collection handle from the vector store."""
         require_identifiers(namespace, name)
         registered = await self._collection_registry.get(namespace, name)
         if registered is None:
@@ -881,11 +873,11 @@ class MilvusVectorStore(VectorStore):
 
     @override
     async def close_collection(self, *, collection: VectorStoreCollection) -> None:
-        """No-op; Milvus collection handles require no explicit close."""
+        # Milvus collection handles hold nothing to release.
+        pass
 
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
-        """Delete a logical collection from the Milvus vector store."""
         require_identifiers(namespace, name)
         async with self._tracker("delete_collection"):
             # One registry transaction: the collection is unreachable when
