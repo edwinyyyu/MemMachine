@@ -60,9 +60,9 @@ class SegmentStorePartition(ABC):
         """
         Get a window of segments around each of the seed segments.
 
-        Each side's context may be limited to an implementation-defined number
-        of the segments nearest the seed, whether or not they match
-        `property_filter`.
+        An implementation may bound how far from each seed it looks for
+        context, so a side can come back with fewer segments than requested
+        even when more exist further away.
 
         Args:
             seed_segment_uuids (Iterable[UUID]):
