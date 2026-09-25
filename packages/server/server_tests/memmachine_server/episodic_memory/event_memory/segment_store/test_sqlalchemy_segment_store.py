@@ -80,7 +80,6 @@ _NULL_CONTEXT = NullContext()
 
 def _seg(
     *,
-    uuid: UUID | None = None,
     event_uuid: UUID | None = None,
     index: int = 0,
     offset: int = 0,
@@ -90,7 +89,7 @@ def _seg(
     properties: dict | None = None,
 ) -> Segment:
     return Segment(
-        uuid=uuid or uuid4(),
+        uuid=uuid4(),
         event_uuid=event_uuid or uuid4(),
         index=index,
         offset=offset,
@@ -810,26 +809,16 @@ async def test_random_context_reads_agree_with_a_model(
     Several seeds per read, filters of every node type, and many segments
     sharing a timestamp, with another partition's segments at the same
     times. The partition is far smaller than a filtered read's window, so
-    every match on a side is within it. Everything the test generates,
-    identifiers included, comes from the seeded generator, so every run is
-    the same.
+    every match on a side is within it.
     """
     rng = random.Random(random_seed)
     config = _plaintext_partition_config()
     partition = await store.open_or_create_partition(PARTITION_KEY, config)
     other_partition = await store.open_or_create_partition("other_partition", config)
     segments = [segment for _ in range(30) for segment in _random_event_segments(rng)]
-    await partition.add_segments(
-        {segment: [UUID(int=rng.getrandbits(128), version=4)] for segment in segments}
-    )
-    other_segments = [
-        segment for _ in range(15) for segment in _random_event_segments(rng)
-    ]
+    await partition.add_segments(_links(*segments))
     await other_partition.add_segments(
-        {
-            segment: [UUID(int=rng.getrandbits(128), version=4)]
-            for segment in other_segments
-        }
+        _links(*(segment for _ in range(15) for segment in _random_event_segments(rng)))
     )
     timeline = sorted(
         segments,
@@ -880,10 +869,9 @@ async def test_random_context_reads_agree_with_a_model(
 def _random_event_segments(rng: random.Random) -> list[Segment]:
     """One event's segments at one random time, each with random properties.
 
-    Every segment has `tag` and `role`; about half have `opt`. Identifiers
-    come from `rng` too.
+    Every segment has `tag` and `role`; about half have `opt`.
     """
-    event_uuid = UUID(int=rng.getrandbits(128), version=4)
+    event_uuid = uuid4()
     ts_offset_seconds = rng.randrange(20)
     segments = []
     for index in range(rng.randint(1, 2)):
@@ -896,7 +884,6 @@ def _random_event_segments(rng: random.Random) -> list[Segment]:
                 properties["opt"] = rng.choice("xy")
             segments.append(
                 _seg(
-                    uuid=UUID(int=rng.getrandbits(128), version=4),
                     event_uuid=event_uuid,
                     index=index,
                     offset=offset,
