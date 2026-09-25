@@ -658,19 +658,13 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     ) -> Select:
         """Select a seed's context on one side, nearest the seed first.
 
-        `seed_ordering_values` is the seed's timestamp, event UUID, index
-        and offset: bound parameters, or columns of an enclosing statement.
-        The walk reads the partition's segments past the seed on that side,
-        nearest first, and reads nothing once the partition is deleted.
-
-        Unfiltered, the context is the first `limit` rows of the walk. With
-        a property filter, it is the first `limit` matching rows among the
-        walk's first _MAX_FILTERED_CONTEXT_SCAN rows. The window is read
-        with no filter: the planner cannot estimate a property filter, and
-        inside the walk an underestimate makes the walk look unbounded,
-        so the plan reads the seed's whole side and sorts it. A window
-        read with no filter stays an ordered index scan and stops at
-        `limit` matches.
+        `seed_ordering_values` is the seed's (timestamp, event_uuid, index,
+        offset): bound parameters or an enclosing statement's columns.
+        Unfiltered, the context is the next `limit` segments. With a property
+        filter, it is the first `limit` matches among the next
+        _MAX_FILTERED_CONTEXT_SCAN segments, read without the filter, which
+        the planner cannot estimate, so the plan stays an ordered index scan.
+        Returns nothing once the partition is deleted.
         """
         segment_ordering_columns = tuple_(
             SegmentRow.timestamp,
