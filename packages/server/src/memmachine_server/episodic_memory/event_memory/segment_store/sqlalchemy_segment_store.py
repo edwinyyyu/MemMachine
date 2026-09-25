@@ -48,6 +48,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import (
     DeclarativeBase,
     MappedColumn,
+    aliased,
     mapped_column,
 )
 from sqlalchemy.pool import StaticPool
@@ -524,8 +525,6 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             seeds_subquery.c.seed_offset,
         )
 
-        incarnation = self._incarnation
-
         async def get_context_rows_directional(
             *,
             backward: bool,
@@ -544,39 +543,20 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 .lateral("context")
             )
 
-            # Join each seed to its context rows via the LATERAL subquery.
+            # Join each seed to its context rows via the LATERAL subquery,
+            # loaded as segment rows by the ORM.
             seed_context_join_query = select(
-                seeds_subquery.c.seed_uuid,
-                lateral_subquery.c.uuid,
-                lateral_subquery.c.event_uuid,
-                lateral_subquery.c.index,
-                lateral_subquery.c.offset,
-                lateral_subquery.c.timestamp,
-                lateral_subquery.c.timestamp_timezone_offset,
-                lateral_subquery.c.context,
-                lateral_subquery.c.block,
-                lateral_subquery.c.properties,
+                seeds_subquery.c.seed_uuid, aliased(SegmentRow, lateral_subquery)
             ).select_from(seeds_subquery.join(lateral_subquery, true()))
 
             # Group result rows by seed UUID.
             rows_by_seed: dict[UUID, list[SegmentRow]] = {
                 seed_uuid: [] for seed_uuid in seed_rows_by_uuid
             }
-            for row in (await session.execute(seed_context_join_query)).all():
-                rows_by_seed[row.seed_uuid].append(
-                    SegmentRow(
-                        uuid=row.uuid,
-                        incarnation=incarnation,
-                        event_uuid=row.event_uuid,
-                        index=row.index,
-                        offset=row.offset,
-                        timestamp=row.timestamp,
-                        timestamp_timezone_offset=row.timestamp_timezone_offset,
-                        context=row.context,
-                        block=row.block,
-                        properties=row.properties,
-                    )
-                )
+            for seed_uuid, segment_row in (
+                await session.execute(seed_context_join_query)
+            ).all():
+                rows_by_seed[seed_uuid].append(segment_row)
             return rows_by_seed
 
         backward_rows_by_seed = (
