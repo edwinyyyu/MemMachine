@@ -258,6 +258,7 @@ class TestCollectionLifecycle:
         assert fields["vector"]["type"] == DataType.FLOAT_VECTOR
         assert fields["vector"]["params"]["dim"] == VECTOR_DIM
         assert fields["properties"]["type"] == DataType.JSON
+        assert schema["properties"]["partitionkey.isolation"] == "True"
 
         await store.delete_collection(namespace=NAMESPACE, name="schema")
 

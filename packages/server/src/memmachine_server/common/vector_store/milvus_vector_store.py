@@ -76,6 +76,21 @@ _INCARNATION_HEX_LENGTH = 32
 _MAX_SEARCH_LIMIT = 16_384
 _FALSE_EXPR = f'{_ID_FIELD} == "__memmachine_no_match__"'
 
+# The vector index: HNSW with 4-bit codes, rescored against half-precision
+# copies of the vectors. The collection isolates tenants by partition key,
+# which only the HNSW family supports, so each tenant's search walks an index
+# of its own group of tenants rather than every tenant's rows.
+_VECTOR_INDEX_TYPE = "HNSW_SQ"
+_VECTOR_INDEX_PARAMS: dict[str, Any] = {
+    "M": 16,
+    "efConstruction": 200,
+    "sq_type": "SQ4U",
+    "refine": True,
+    "refine_type": "FP16",
+}
+# `refine_k` rescores that many candidates per result.
+_SEARCH_PARAMS: dict[str, Any] = {"ef": 64, "refine_k": 2}
+
 # Consecutive lost creation races before open-or-create gives up: every
 # retry requires another process to have created and then deleted the
 # collection in between, so this depth means something else is wrong.
@@ -357,6 +372,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 data=query_vectors,
                 filter=filter_expr,
                 limit=limit,
+                search_params={"params": _SEARCH_PARAMS},
                 output_fields=self._output_fields(
                     return_vector=return_vector,
                     return_properties=return_properties,
@@ -636,10 +652,11 @@ class MilvusVectorStore(VectorStore):
             index_params = self._client.prepare_index_params()
             index_params.add_index(
                 field_name=_VECTOR_FIELD,
-                index_type="AUTOINDEX",
+                index_type=_VECTOR_INDEX_TYPE,
                 metric_type=self._SIMILARITY_METRIC_TO_MILVUS_METRIC[
                     config.similarity_metric
                 ],
+                params=_VECTOR_INDEX_PARAMS,
             )
 
             self._client.create_collection(
@@ -647,6 +664,7 @@ class MilvusVectorStore(VectorStore):
                 schema=schema,
                 index_params=index_params,
                 consistency_level=self._consistency_level,
+                properties={"partitionkey.isolation": True},
                 timeout=self._request_timeout_seconds,
             )
 
