@@ -18,6 +18,7 @@ from pydantic import (
 )
 from sqlalchemy import (
     JSON,
+    ColumnElement,
     DateTime,
     ForeignKeyConstraint,
     Index,
@@ -49,7 +50,6 @@ from sqlalchemy.orm import (
     mapped_column,
 )
 from sqlalchemy.pool import StaticPool
-from sqlalchemy.sql.elements import ColumnElement
 
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
