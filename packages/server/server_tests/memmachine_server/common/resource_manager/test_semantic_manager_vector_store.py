@@ -54,7 +54,7 @@ async def test_semantic_manager_builds_vector_store_backend(sqlalchemy_sqlite_en
     # with the keys the storage writes; the partition is the manager's own.
     resource_manager.get_vector_store.assert_awaited_once_with(
         "semantic_vectors",
-        vector_store_name="semantic_memory__embedder",
+        vector_store_name="c5e6d41c3c14529b9e4deb6246a17ddf",
         vector_dimensions=2,
         similarity_metric=SimilarityMetric.COSINE,
         indexed_properties=_INDEXED_PROPERTIES,

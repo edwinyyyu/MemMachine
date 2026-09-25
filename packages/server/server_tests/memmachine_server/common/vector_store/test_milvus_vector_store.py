@@ -232,6 +232,22 @@ class TestPartitionLifecycle:
         await store.delete_partition("mismatch")
 
     @pytest.mark.asyncio
+    async def test_a_vector_store_name_may_begin_with_a_digit(self, store):
+        """Milvus refuses a collection name beginning with a digit; the store's
+        collection name begins with its prefix instead."""
+        digit_first = MilvusVectorStore(
+            await _params(
+                store._client,
+                store._partition_registry._engine,
+                vector_store_name="0_digit_first",
+            )
+        )
+        await digit_first.provision()
+        await digit_first.create_partition("digit_first")
+        assert await digit_first.get_partition("digit_first") is not None
+        await digit_first.delete_partition("digit_first")
+
+    @pytest.mark.asyncio
     async def test_partitions_share_the_store_collection(self, store):
         """Every partition is a partition-key value inside the store's one native collection."""
         await store.create_partition("coll_a")
@@ -241,8 +257,8 @@ class TestPartitionLifecycle:
         coll_b = await store.get_partition("coll_b")
         assert coll_a is not None
         assert coll_b is not None
-        assert coll_a._collection_name == store.vector_store_name
-        assert coll_b._collection_name == store.vector_store_name
+        assert coll_a._collection_name == store._collection_name
+        assert coll_b._collection_name == store._collection_name
 
         await store.delete_partition("coll_a")
         await store.delete_partition("coll_b")
@@ -862,7 +878,7 @@ class TestPurgeBatches:
         def left_of_the_incarnation() -> int:
             return len(
                 store._client.query(
-                    collection_name=store.vector_store_name,
+                    collection_name=store._collection_name,
                     filter=f'partition_key == "{incarnation.hex}"',
                     output_fields=["id"],
                     limit=16384,
@@ -881,7 +897,7 @@ class TestLifecycleContract(PartitionLifecycleContract):
     @staticmethod
     async def count_stored(store) -> int:
         rows = store._client.query(
-            collection_name=store.vector_store_name,
+            collection_name=store._collection_name,
             filter='id != ""',
             output_fields=["id"],
             limit=16384,

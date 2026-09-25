@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+from uuid import UUID, uuid5
 
 from pydantic import InstanceOf
 
@@ -18,10 +19,7 @@ from memmachine_server.common.configuration.episodic_config import (
 )
 from memmachine_server.common.data_types import PropertyType
 from memmachine_server.common.resource_manager import CommonResourceManager
-from memmachine_server.common.vector_store import (
-    VectorStore,
-    validate_vector_store_name,
-)
+from memmachine_server.common.vector_store import VectorStore
 from memmachine_server.episodic_memory.event_memory.deriver import Deriver
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
@@ -52,7 +50,14 @@ from .long_term_memory import (
 
 logger = logging.getLogger(__name__)
 
-_EVENT_BACKEND_PURPOSE = "long_term_memory"
+_EVENT_BACKEND_VECTOR_STORE_NAMESPACE = UUID("d545833c-59ce-46ee-a325-c1a6222159a8")
+"""The UUIDv5 namespace of the event backend's vector store names.
+
+The event backend keeps one store per embedder, named by the UUIDv5 of the
+embedder id in this namespace, in hex: a vector store name whatever the id
+is, and never the name of another memory's store of the same embedder.
+Fixed, because the name locates the store's data.
+"""
 
 
 async def long_term_memory_params_from_config(
@@ -141,28 +146,13 @@ async def event_backend_vector_store(
     embedder = await resource_manager.get_embedder(config.embedder, validate=True)
     return await resource_manager.get_vector_store(
         config.vector_store,
-        vector_store_name=event_backend_vector_store_name(config.embedder),
+        vector_store_name=uuid5(
+            _EVENT_BACKEND_VECTOR_STORE_NAMESPACE, config.embedder
+        ).hex,
         vector_dimensions=embedder.dimensions,
         similarity_metric=embedder.similarity_metric,
         indexed_properties=event_backend_indexed_properties(),
     )
-
-
-def event_backend_vector_store_name(embedder_id: str) -> str:
-    """The name of the vector store the event backend keeps for one embedder.
-
-    One cell of the purpose-by-embedder matrix, named so that one backend
-    can hold the stores of several embedders side by side.
-    """
-    vector_store_name = f"{_EVENT_BACKEND_PURPOSE}__{embedder_id}"
-    try:
-        validate_vector_store_name(vector_store_name)
-    except ValueError as error:
-        raise ValueError(
-            f"Embedder id {embedder_id!r} cannot name a vector store: "
-            f"{error} Rename the embedder in the configuration."
-        ) from error
-    return vector_store_name
 
 
 def event_backend_indexed_properties() -> dict[str, PropertyType]:

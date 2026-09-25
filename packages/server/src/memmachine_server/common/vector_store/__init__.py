@@ -7,7 +7,6 @@ from .data_types import (
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionHandleStaleError,
     VectorStorePartitionSchemaMismatchError,
-    validate_vector_store_name,
 )
 from .vector_store import VectorStore, VectorStorePartition
 
@@ -20,5 +19,4 @@ __all__ = [
     "VectorStorePartitionAlreadyExistsError",
     "VectorStorePartitionHandleStaleError",
     "VectorStorePartitionSchemaMismatchError",
-    "validate_vector_store_name",
 ]

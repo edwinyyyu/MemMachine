@@ -182,10 +182,11 @@ class VectorStore(ABC):
     own contract, stated on the store.
 
     Naming constraints:
-        - Vector store names must match `[a-z0-9_]+` and be at most 64 bytes.
-        - Partition keys and property keys must match `[a-z0-9_]+`
-          (lowercase alphanumeric and underscores only) and be at most
-          32 bytes.
+        - Vector store names, partition keys and property keys must match
+          `[a-z0-9_]+` (lowercase alphanumeric and underscores only) and be
+          at most 32 bytes. Every such name works on every backend: a store
+          whose backend restricts its native names further maps the name to
+          one it accepts.
     """
 
     @property

@@ -1,6 +1,5 @@
 """Data types for vector store."""
 
-import re
 from collections.abc import Mapping
 from typing import Annotated
 from uuid import UUID
@@ -73,22 +72,11 @@ def indexed_property_names(
     }
 
 
-VECTOR_STORE_NAME_MAX_BYTES = 64
-"""Bound on a vector store name, in bytes; the store's one native name."""
-
-# Matched with fullmatch: `$` also matches before a trailing newline.
-_VECTOR_STORE_NAME_RE = re.compile(r"[a-z0-9_]+")
-
-
 def validate_vector_store_name(name: str) -> None:
     """Raise ValueError unless `name` can name a vector store on every backend."""
-    if (
-        not _VECTOR_STORE_NAME_RE.fullmatch(name)
-        or len(name.encode()) > VECTOR_STORE_NAME_MAX_BYTES
-    ):
+    if not validate_identifier(name):
         raise ValueError(
-            f"Vector store name {name!r} must match [a-z0-9_]+ and be at most "
-            f"{VECTOR_STORE_NAME_MAX_BYTES} bytes."
+            f"Vector store name {name!r} must match [a-z0-9_]+ and be at most 32 bytes."
         )
 
 

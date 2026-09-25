@@ -63,6 +63,14 @@ from .partition_registry import RegisteredPartition, VectorStorePartitionRegistr
 from .utils import require_partition_key, validate_filter
 from .vector_store import VectorStore, VectorStorePartition
 
+_COLLECTION_NAME_PREFIX = "sys_"
+"""The prefix of the native collection's name, before the vector store name.
+
+Milvus requires a collection name to begin with a letter or an underscore,
+and a vector store name may begin with a digit. Milvus names its own
+internals with a leading underscore (`_default`, `__virtual_pk__`), so the
+prefix begins with a letter.
+"""
 _ID_FIELD = "id"
 _RECORD_UUID_FIELD = "record_uuid"
 _PARTITION_KEY_FIELD = "partition_key"
@@ -713,6 +721,7 @@ class MilvusVectorStore(VectorStore):
         MilvusVectorStore._validate_metric(params.similarity_metric)
         self._client = params.client
         self._vector_store_name = params.vector_store_name
+        self._collection_name = f"{_COLLECTION_NAME_PREFIX}{params.vector_store_name}"
         self._vector_dimensions = params.vector_dimensions
         self._similarity_metric = params.similarity_metric
         self._indexed_properties = params.indexed_properties
@@ -772,7 +781,7 @@ class MilvusVectorStore(VectorStore):
         """Idempotently create the native Milvus collection."""
         if await asyncio.to_thread(
             self._client.has_collection,
-            self._vector_store_name,
+            self._collection_name,
             timeout=self._request_timeout_seconds,
         ):
             return
@@ -843,7 +852,7 @@ class MilvusVectorStore(VectorStore):
                 )
 
             self._client.create_collection(
-                collection_name=self._vector_store_name,
+                collection_name=self._collection_name,
                 schema=schema,
                 index_params=index_params,
                 consistency_level=self._consistency_level,
@@ -877,7 +886,7 @@ class MilvusVectorStore(VectorStore):
     ) -> MilvusVectorStorePartition:
         return MilvusVectorStorePartition(
             client=self._client,
-            collection_name=self._vector_store_name,
+            collection_name=self._collection_name,
             partition_key=partition_key,
             incarnation=incarnation,
             vector_dimensions=self._vector_dimensions,
@@ -978,7 +987,7 @@ class MilvusVectorStore(VectorStore):
             prefix = claim.incarnation.hex
             listed = await asyncio.to_thread(
                 self._client.query,
-                collection_name=self._vector_store_name,
+                collection_name=self._collection_name,
                 filter=(
                     f"{_ID_FIELD} > {_expr_string(f'{prefix}:')}"
                     f" and {_ID_FIELD} < {_expr_string(f'{prefix};')}"
@@ -992,7 +1001,7 @@ class MilvusVectorStore(VectorStore):
             if claim.found:
                 await asyncio.to_thread(
                     self._client.delete,
-                    collection_name=self._vector_store_name,
+                    collection_name=self._collection_name,
                     ids=primary_ids,
                     timeout=self._request_timeout_seconds,
                 )

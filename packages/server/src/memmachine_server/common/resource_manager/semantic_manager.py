@@ -2,6 +2,7 @@
 
 import asyncio
 from typing import cast
+from uuid import UUID, uuid5
 
 from pydantic import InstanceOf
 
@@ -16,7 +17,6 @@ from memmachine_server.common.episode_store import EpisodeStorage
 from memmachine_server.common.errors import ResourceNotReadyError
 from memmachine_server.common.language_model import LanguageModel
 from memmachine_server.common.resource_manager import CommonResourceManager
-from memmachine_server.common.vector_store import validate_vector_store_name
 from memmachine_server.semantic_memory.config_store.caching_semantic_config_storage import (
     CachingSemanticConfigStorage,
 )
@@ -48,7 +48,14 @@ from memmachine_server.semantic_memory.storage.vector_store_semantic_storage imp
     VectorStoreSemanticStorage,
 )
 
-_VECTOR_STORE_PURPOSE = "semantic_memory"
+_VECTOR_STORE_NAMESPACE = UUID("a9aaac84-233d-4ade-8e49-c0a8094c6b8d")
+"""The UUIDv5 namespace of semantic memory's vector store names.
+
+Semantic memory keeps one store per embedder, named by the UUIDv5 of the
+embedder id in this namespace, in hex: a vector store name whatever the id
+is, and never the name of another memory's store of the same embedder.
+Fixed, because the name locates the store's data.
+"""
 _VECTOR_STORE_PARTITION_KEY = "semantic_memory"
 
 # The keys semantic storage may write into a vector record; the vector store
@@ -66,19 +73,6 @@ _INDEXED_PROPERTIES: dict[str, PropertyType] = {
     "feature_name": str,
     "value": str,
 }
-
-
-def _semantic_vector_store_name(embedder_id: str) -> str:
-    """The name of the vector store semantic memory keeps for one embedder."""
-    vector_store_name = f"{_VECTOR_STORE_PURPOSE}__{embedder_id}"
-    try:
-        validate_vector_store_name(vector_store_name)
-    except ValueError as error:
-        raise ValueError(
-            f"Embedder id {embedder_id!r} cannot name a vector store: "
-            f"{error} Rename the embedder in the configuration."
-        ) from error
-    return vector_store_name
 
 
 class SemanticResourceManager:
@@ -177,9 +171,9 @@ class SemanticResourceManager:
             vector_dimensions = (await self._get_default_embedder()).dimensions
         vector_store = await self._resource_manager.get_vector_store(
             vector_store_name,
-            vector_store_name=_semantic_vector_store_name(
-                self._get_default_embedder_name()
-            ),
+            vector_store_name=uuid5(
+                _VECTOR_STORE_NAMESPACE, self._get_default_embedder_name()
+            ).hex,
             vector_dimensions=vector_dimensions,
             similarity_metric=self._conf.vector_similarity_metric,
             indexed_properties=_INDEXED_PROPERTIES,

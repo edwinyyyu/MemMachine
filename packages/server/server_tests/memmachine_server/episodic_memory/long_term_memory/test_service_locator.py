@@ -1,5 +1,6 @@
 """Unit tests for service_locator helpers."""
 
+import re
 from unittest.mock import create_autospec
 
 import pytest
@@ -26,7 +27,7 @@ from memmachine_server.episodic_memory.event_memory.segment_store.utils import (
 from memmachine_server.episodic_memory.long_term_memory.service_locator import (
     _event_params,
     event_backend_indexed_properties,
-    event_backend_vector_store_name,
+    event_backend_vector_store,
     partition_key_for_session,
 )
 
@@ -95,14 +96,27 @@ def test_partition_key_empty_string_passthrough():
     assert len(key) == PARTITION_KEY_MAX_BYTES
 
 
-def test_event_backend_vector_store_name_is_the_embedders():
-    """One vector store per embedder, named so a backend can hold several side by side."""
-    assert (
-        event_backend_vector_store_name("openai_small")
-        == "long_term_memory__openai_small"
+@pytest.mark.asyncio
+async def test_any_embedder_id_names_a_vector_store():
+    """The store's name derives from the embedder id, so the id itself is unconstrained."""
+    config = EventLongTermMemoryConf(
+        session_id="s",
+        vector_store="vs",
+        segment_store="ss",
+        embedder="OpenAI text-embedding-3-large, 3072 dimensions",
     )
-    with pytest.raises(ValueError, match="Rename the embedder"):
-        event_backend_vector_store_name("Open-AI")
+    embedder = create_autospec(Embedder, instance=True)
+    embedder.dimensions = 3
+    embedder.similarity_metric = SimilarityMetric.COSINE
+    resource_manager = create_autospec(CommonResourceManager, instance=True)
+    resource_manager.get_embedder.return_value = embedder
+
+    await event_backend_vector_store(config, resource_manager)
+
+    vector_store_name = resource_manager.get_vector_store.await_args.kwargs[
+        "vector_store_name"
+    ]
+    assert re.fullmatch(r"[0-9a-f]{32}", vector_store_name)
 
 
 @pytest.mark.asyncio
@@ -143,7 +157,7 @@ async def test_event_params_opens_the_session_partition_of_the_embedders_collect
     vector_store.open_or_create_partition.assert_awaited_once_with("raced")
     resource_manager.get_vector_store.assert_awaited_once_with(
         "vs",
-        vector_store_name="long_term_memory__e",
+        vector_store_name="9f2137ad9dd259d3b15516148bd5d7cc",
         vector_dimensions=3,
         similarity_metric=SimilarityMetric.COSINE,
         indexed_properties=event_backend_indexed_properties(),

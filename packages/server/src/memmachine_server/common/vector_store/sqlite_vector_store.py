@@ -55,7 +55,6 @@ from memmachine_server.common.properties_json import (
 )
 
 from .data_types import (
-    VECTOR_STORE_NAME_MAX_BYTES,
     IndexedProperties,
     PartitionSchema,
     QueryMatch,
@@ -66,7 +65,7 @@ from .data_types import (
     indexed_property_names,
     validate_vector_store_name,
 )
-from .utils import validate_filter, validate_identifier
+from .utils import _IDENTIFIER_MAX_BYTES, validate_filter, validate_identifier
 from .vector_search_engine import VectorSearchEngine
 from .vector_store import VectorStore, VectorStorePartition
 
@@ -101,7 +100,7 @@ class _PartitionRow(BaseSQLiteVectorStore):
     __tablename__ = "vector_store_sqlite_pt"
 
     vector_store_name: MappedColumn[str] = mapped_column(
-        String(VECTOR_STORE_NAME_MAX_BYTES), primary_key=True
+        String(_IDENTIFIER_MAX_BYTES), primary_key=True
     )
     partition_key: MappedColumn[str] = mapped_column(String(255), primary_key=True)
     # The dimensions, metric and declared schema the partition was created
@@ -141,7 +140,7 @@ class _PendingOperationRow(BaseSQLiteVectorStore):
     )
 
     vector_store_name: MappedColumn[str] = mapped_column(
-        String(VECTOR_STORE_NAME_MAX_BYTES), primary_key=True
+        String(_IDENTIFIER_MAX_BYTES), primary_key=True
     )
     partition_key: MappedColumn[str] = mapped_column(String(255), primary_key=True)
     record_row_id: MappedColumn[int] = mapped_column(Integer, primary_key=True)

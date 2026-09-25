@@ -3,14 +3,11 @@
 import pytest
 
 from memmachine_server.common.vector_store.data_types import (
-    VECTOR_STORE_NAME_MAX_BYTES,
     validate_vector_store_name,
 )
 
 
-@pytest.mark.parametrize(
-    "name", ["long_term_memory__openai_small", "x" * VECTOR_STORE_NAME_MAX_BYTES]
-)
+@pytest.mark.parametrize("name", ["test_vector_store", "0" * 32])
 def test_a_vector_store_name_of_lowercase_letters_digits_and_underscores(name):
     validate_vector_store_name(name)
 
@@ -22,7 +19,7 @@ def test_a_vector_store_name_of_lowercase_letters_digits_and_underscores(name):
         "Upper",
         "with-hyphen",
         "trailing_newline\n",
-        "x" * (VECTOR_STORE_NAME_MAX_BYTES + 1),
+        "0" * 33,
     ],
 )
 def test_any_other_vector_store_name_is_refused(name):
