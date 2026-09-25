@@ -24,14 +24,15 @@ from memmachine_server.common.filter.filter_parser import (
     Or as FilterOr,
 )
 
-_IDENTIFIER_RE = re.compile(r"^[a-z0-9_]+$")
+# Matched with fullmatch: `$` also matches before a trailing newline.
+_IDENTIFIER_RE = re.compile(r"[a-z0-9_]+")
 _IDENTIFIER_MAX_BYTES = 32
 
 
 def validate_identifier(value: str) -> bool:
     """Return True if value is a valid identifier (a-z0-9_, max 32 bytes)."""
     return (
-        bool(_IDENTIFIER_RE.match(value))
+        bool(_IDENTIFIER_RE.fullmatch(value))
         and len(value.encode()) <= _IDENTIFIER_MAX_BYTES
     )
 

@@ -138,7 +138,9 @@ async def test_a_taken_name_is_already_exists_whatever_the_config(
         await registry.create(NAMESPACE, "c", OTHER_CONFIG)
 
 
-@pytest.mark.parametrize("invalid_name", ["", "Upper", "with-hyphen", "x" * 33])
+@pytest.mark.parametrize(
+    "invalid_name", ["", "Upper", "with-hyphen", "trailing_newline\n", "x" * 33]
+)
 def test_a_vector_store_name_must_be_an_identifier(invalid_name):
     with pytest.raises(ValueError, match="Vector store name"):
         SQLAlchemyVectorStoreCollectionRegistry(

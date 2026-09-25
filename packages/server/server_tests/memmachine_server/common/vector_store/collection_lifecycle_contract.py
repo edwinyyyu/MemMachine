@@ -265,3 +265,14 @@ class CollectionLifecycleContract:
         # ...and the tombstone's next round reclaims it.
         assert await store.purge_deleted_collections() is True
         assert await self._drained_count(store) == baseline
+
+    @pytest.mark.asyncio
+    async def test_a_trailing_newline_is_not_part_of_a_valid_identifier(self, store):
+        for namespace, name in (
+            (LIFECYCLE_NAMESPACE, f"{LIFECYCLE_NAME}\n"),
+            (f"{LIFECYCLE_NAMESPACE}\n", LIFECYCLE_NAME),
+        ):
+            with pytest.raises(ValueError, match="must match"):
+                await store.create_collection(
+                    namespace=namespace, name=name, config=LIFECYCLE_CONFIG
+                )
