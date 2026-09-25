@@ -346,7 +346,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
           milvus_vector_store:
             provider: milvus
             config:
-              uri: ./memmachine_milvus.db
+              uri: http://localhost:19530
               # uri: https://example.api.gcp-us-west1.zillizcloud.com
               # token: $MILVUS_TOKEN
               # db_name: default
@@ -389,9 +389,9 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
               request_timeout_seconds: 30 # Bounds every request to Qdrant
               # api_key: $QDRANT_API_KEY # Required for Qdrant Cloud
           milvus_vector_store: # VectorStore for event or vector-backed semantic memory
-            provider: milvus # Milvus Lite by default, or Milvus server / Zilliz Cloud
+            provider: milvus # Milvus server or Zilliz Cloud
             config:
-              uri: ./memmachine_milvus.db # Local Milvus Lite file path
+              uri: http://localhost:19530 # Milvus server or Zilliz Cloud endpoint
               # token: $MILVUS_TOKEN # Required for Zilliz Cloud or auth-enabled Milvus
               # db_name: default # Optional Milvus database name
               consistency_level: Session # Strong, Session, Bounded, or Eventually

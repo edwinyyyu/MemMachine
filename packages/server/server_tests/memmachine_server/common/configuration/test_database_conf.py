@@ -286,7 +286,7 @@ def test_serialize_deserialize_database_conf(db_conf_dict):
 
 def test_milvus_conf_defaults():
     conf = MilvusConf(collection_registry="db")
-    assert conf.uri == "./milvus.db"
+    assert conf.uri == "http://localhost:19530"
     assert conf.token == SecretStr("")
     assert conf.db_name == ""
     assert conf.consistency_level == "Session"
@@ -319,6 +319,11 @@ def test_milvus_conf_rejects_invalid_values():
         MilvusConf(collection_registry="db", uri="")
     with pytest.raises(ValueError, match="consistency_level"):
         MilvusConf(collection_registry="db", consistency_level="Linearizable")
+
+
+def test_milvus_conf_rejects_a_milvus_lite_file():
+    with pytest.raises(ValueError, match="Milvus Lite files are not supported"):
+        MilvusConf(collection_registry="db", uri="./milvus.db")
 
 
 def test_milvus_conf_rejects_a_timeout_that_is_not_a_positive_whole_second():

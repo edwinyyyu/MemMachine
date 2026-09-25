@@ -545,7 +545,9 @@ def _milvus_only_conf() -> MagicMock:
     conf.nebula_graph_confs = {}
     conf.qdrant_confs = {}
     conf.milvus_confs = {
-        "milvus1": MilvusConf(collection_registry="registry", uri="./milvus.db"),
+        "milvus1": MilvusConf(
+            collection_registry="registry", uri="http://milvus:19530"
+        ),
     }
     conf.sqlite_vector_store_confs = {}
     conf.sqlite_vec_vector_store_confs = {}
@@ -611,7 +613,7 @@ async def test_milvus_token_and_db_name_omitted_when_empty():
         builder = DatabaseManager(conf)
         await builder.async_get_milvus_client("milvus1")
 
-    assert mock_cls.call_args.kwargs == {"uri": "./milvus.db", "timeout": 30}
+    assert mock_cls.call_args.kwargs == {"uri": "http://milvus:19530", "timeout": 30}
 
 
 @pytest.mark.asyncio
