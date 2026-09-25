@@ -606,17 +606,17 @@ async def test_contexts_property_filter(
 
 
 @pytest.mark.asyncio
-async def test_filtered_context_comes_from_the_segments_nearest_the_seed(
+async def test_context_comes_from_the_segments_nearest_the_seed(
     partition: SQLAlchemySegmentStorePartition,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A filtered read takes its matches from a bounded window on each side.
+    """A context read takes its context from a bounded number of segments on each side.
 
-    With the window at 4 segments, a match 5 or more segments from the
-    seed is not context, however few matches lie within the window. An
-    unfiltered read is not bounded by the window.
+    With the bound at 4 segments, a match 5 or more segments from the seed
+    is not context, however few matches lie within the bound, and an
+    unfiltered read returns no segment beyond it either.
     """
-    monkeypatch.setattr(sqlalchemy_segment_store, "_MAX_FILTERED_CONTEXT_SCAN", 4)
+    monkeypatch.setattr(sqlalchemy_segment_store, "_MAX_CONTEXT_DISTANCE", 4)
     tags = {1: "a", 2: "b", 3: "b", 4: "a", 5: "a", 6: "a"}
     seed = _seg(ts_offset_seconds=0, properties={"tag": "a"})
     backward = {
@@ -644,7 +644,11 @@ async def test_filtered_context_comes_from_the_segments_nearest_the_seed(
     unfiltered = await partition.get_segment_contexts(
         [seed.uuid], max_backward_segments=6, max_forward_segments=6
     )
-    assert len(unfiltered[seed.uuid]) == 13
+    assert [segment.uuid for segment in unfiltered[seed.uuid]] == [
+        *(backward[distance].uuid for distance in (4, 3, 2, 1)),
+        seed.uuid,
+        *(forward[distance].uuid for distance in (1, 2, 3, 4)),
+    ]
 
 
 @pytest.mark.asyncio

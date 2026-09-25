@@ -118,9 +118,9 @@ _MAX_MINT_ATTEMPTS = 10
 # Partition deletion depends on RETURNING, which SQLite added in 3.35.
 _MIN_SQLITE_VERSION = (3, 35)
 
-# A context read with a property filter takes its matches from at most this
-# many segments on each side of a seed, matching or not.
-_MAX_FILTERED_CONTEXT_SCAN = 1_000
+# A context read takes its context from at most this many segments on each
+# side of a seed, matching or not.
+_MAX_CONTEXT_DISTANCE = 1_000
 
 
 class _RegistryInsertRejectedError(Exception):
@@ -680,10 +680,11 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
 
         `seed_ordering_values` is the seed's (timestamp, event_uuid, index,
         offset): bound parameters or an enclosing statement's columns.
-        Unfiltered, the context is the next `limit` segments. With a property
-        filter, it is the first `limit` matches among the next
-        _MAX_FILTERED_CONTEXT_SCAN segments, read without the filter, which
-        the planner cannot estimate, so the plan stays an ordered index scan.
+        Context comes from at most the next _MAX_CONTEXT_DISTANCE segments.
+        Unfiltered, it is the first `limit` of them. With a property filter,
+        it is the first `limit` matches among them, read without the filter,
+        which the planner cannot estimate, so the plan stays an ordered index
+        scan.
         Returns nothing once the partition is deleted.
         """
         # Built from Core columns, the table's and the window's: building from
@@ -715,8 +716,8 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             .correlate_except(SegmentRow.__table__)
         )
         if property_filter is None:
-            return walk.limit(limit)
-        window = walk.limit(_MAX_FILTERED_CONTEXT_SCAN).subquery("window")
+            return walk.limit(min(limit, _MAX_CONTEXT_DISTANCE))
+        window = walk.limit(_MAX_CONTEXT_DISTANCE).subquery("window")
         return (
             select(window)
             .where(
