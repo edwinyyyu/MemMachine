@@ -66,19 +66,6 @@ async def _queued(registry: SQLAlchemyVectorStoreCollectionRegistry) -> list[UUI
         return list(rows.scalars())
 
 
-async def _clean_rounds(
-    registry: SQLAlchemyVectorStoreCollectionRegistry,
-) -> dict[UUID, bool]:
-    """Each tombstone of the registry, and whether a round has found it clean."""
-    async with registry._engine.connect() as connection:
-        rows = await connection.execute(
-            select(
-                registry._purge_queue.c.incarnation, registry._purge_queue.c.clean_at
-            )
-        )
-        return {row.incarnation: row.clean_at is not None for row in rows}
-
-
 def _database_time_ago(engine: AsyncEngine, delta: timedelta) -> ColumnElement:
     """The database clock's now less `delta`, written by the database in the form of its own stamps."""
     if engine.dialect.name == "sqlite":
@@ -86,34 +73,20 @@ def _database_time_ago(engine: AsyncEngine, delta: timedelta) -> ColumnElement:
     return func.now() - delta
 
 
-async def _age_clean_round(
+async def _age_deletion(
     registry: SQLAlchemyVectorStoreCollectionRegistry,
     incarnation: UUID,
     extra: timedelta = timedelta(0),
 ) -> None:
-    """Move the tombstone's clean round back past the retention, on the database clock."""
+    """Move the tombstone's deletion back past the retention, by `extra` more, on the database clock."""
     async with registry._engine.begin() as connection:
         await connection.execute(
             update(registry._purge_queue)
             .where(registry._purge_queue.c.incarnation == incarnation)
             .values(
-                clean_at=_database_time_ago(
+                enqueued_at=_database_time_ago(
                     registry._engine, RETENTION + timedelta(seconds=1) + extra
                 )
-            )
-        )
-
-
-async def _age_enqueue(
-    registry: SQLAlchemyVectorStoreCollectionRegistry, incarnation: UUID
-) -> None:
-    """Move the tombstone's enqueue stamp back a minute, on the database clock."""
-    async with registry._engine.begin() as connection:
-        await connection.execute(
-            update(registry._purge_queue)
-            .where(registry._purge_queue.c.incarnation == incarnation)
-            .values(
-                enqueued_at=_database_time_ago(registry._engine, timedelta(minutes=1))
             )
         )
 
@@ -226,6 +199,7 @@ async def test_registries_of_two_vector_stores_share_a_database_and_nothing_else
     assert in_second.incarnation == two
 
     await first.unregister(NAMESPACE, "c")
+    await _age_deletion(first, one)
     assert await second.is_live(two)
     assert await _round(second, found=False) is None
     assert await _round(first, found=False) == one
@@ -292,6 +266,7 @@ async def test_a_claim_names_where_the_points_are(sqlalchemy_engine, vector_stor
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     incarnation = await registry.register(NAMESPACE, "c", OTHER_CONFIG)
     await registry.unregister(NAMESPACE, "c")
+    await _age_deletion(registry, incarnation)
 
     async with registry.claim_due() as claim:
         assert claim is not None
@@ -302,7 +277,19 @@ async def test_a_claim_names_where_the_points_are(sqlalchemy_engine, vector_stor
 
 
 @pytest.mark.asyncio
-async def test_rounds_go_oldest_first_and_a_clean_round_stamps_the_tombstone(
+async def test_a_tombstone_is_not_due_before_the_retention(
+    sqlalchemy_engine, vector_store_name
+):
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    incarnation = await registry.register(NAMESPACE, "a", CONFIG)
+    await registry.unregister(NAMESPACE, "a")
+
+    assert await _round(registry, found=False) is None
+    assert await _queued(registry) == [incarnation]
+
+
+@pytest.mark.asyncio
+async def test_due_tombstones_go_oldest_deletion_first_until_a_round_finds_nothing(
     sqlalchemy_engine, vector_store_name, monkeypatch
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
@@ -317,46 +304,25 @@ async def test_rounds_go_oldest_first_and_a_clean_round_stamps_the_tombstone(
     await registry.unregister(NAMESPACE, "b")
     # The later deletion, with the larger incarnation, is made the older, so
     # only the ordering by deletion can put it first.
-    await _age_enqueue(registry, second)
+    await _age_deletion(registry, first)
+    await _age_deletion(registry, second, extra=timedelta(minutes=1))
 
     assert await _round(registry, found=True) == second
-    # Found points: not stamped clean, and still the oldest deletion.
+    # Found points: still due, and still the oldest deletion.
     assert await _round(registry, found=False) == second
+    assert await _queued(registry) == [first]
     assert await _round(registry, found=False) == first
-    # Both had a clean round less than the retention ago: nothing is due.
+    assert await _queued(registry) == []
     assert await _round(registry, found=False) is None
-    assert await _queued(registry) == [second, first]
-    assert await _clean_rounds(registry) == {first: True, second: True}
 
 
 @pytest.mark.asyncio
-async def test_tombstones_found_clean_are_claimed_oldest_round_first(
+async def test_a_tombstone_queued_by_a_real_deletion_comes_due_by_the_database_clock(
     sqlalchemy_engine, vector_store_name
 ):
-    """Past the retention, the tombstone whose clean round is oldest goes
-    first, whatever the order of the deletions."""
-    registry = await _registry(sqlalchemy_engine, vector_store_name)
-    first = await registry.register(NAMESPACE, "a", CONFIG)
-    second = await registry.register(NAMESPACE, "b", CONFIG)
-    await registry.unregister(NAMESPACE, "a")
-    await registry.unregister(NAMESPACE, "b")
-    await _age_enqueue(registry, first)
-    assert await _round(registry, found=False) == first
-    assert await _round(registry, found=False) == second
-    await _age_clean_round(registry, first)
-    await _age_clean_round(registry, second, extra=timedelta(minutes=1))
-
-    assert await _round(registry, found=False) == second
-    assert await _round(registry, found=False) == first
-
-
-@pytest.mark.asyncio
-async def test_a_tombstone_stamped_by_a_real_round_is_removed_when_due_again(
-    sqlalchemy_engine, vector_store_name
-):
-    """The removal compares the stamp the database clock wrote, by the
-    database's arithmetic: with no retention the second clean round removes
-    the tombstone, and no stamp is rewritten by the test."""
+    """The claim compares the stamp the database clock wrote, by the
+    database's arithmetic: with no retention the first round claims the
+    tombstone, and no stamp is rewritten by the test."""
     registry = await _registry(
         sqlalchemy_engine, vector_store_name, tombstone_retention=timedelta(0)
     )
@@ -364,23 +330,20 @@ async def test_a_tombstone_stamped_by_a_real_round_is_removed_when_due_again(
     await registry.unregister(NAMESPACE, "a")
 
     assert await _round(registry, found=False) == incarnation
-    assert await _round(registry, found=False) == incarnation
 
     assert await _queued(registry) == []
-    assert await _round(registry, found=False) is None
 
 
 @pytest.mark.asyncio
-async def test_a_changed_retention_applies_to_tombstones_already_stamped(
+async def test_a_changed_retention_applies_to_tombstones_already_queued(
     sqlalchemy_engine, vector_store_name
 ):
-    """Only the clean round's time is stored; the retention in force when a
-    claim is decided applies, including to tombstones stamped under another."""
-    stamped_under_a_day = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = await stamped_under_a_day.register(NAMESPACE, "a", CONFIG)
-    await stamped_under_a_day.unregister(NAMESPACE, "a")
-    assert await _round(stamped_under_a_day, found=False) == incarnation
-    assert await _round(stamped_under_a_day, found=False) is None
+    """Only the deletion's time is stored; the retention in force when a
+    claim is decided applies, including to tombstones queued under another."""
+    queued_under_a_day = await _registry(sqlalchemy_engine, vector_store_name)
+    incarnation = await queued_under_a_day.register(NAMESPACE, "a", CONFIG)
+    await queued_under_a_day.unregister(NAMESPACE, "a")
+    assert await _round(queued_under_a_day, found=False) is None
 
     no_retention = await _registry(
         sqlalchemy_engine, vector_store_name, tombstone_retention=timedelta(0)
@@ -390,89 +353,25 @@ async def test_a_changed_retention_applies_to_tombstones_already_stamped(
 
 
 @pytest.mark.asyncio
-async def test_a_tombstone_is_removed_by_a_clean_round_after_the_retention(
-    sqlalchemy_engine, vector_store_name
-):
-    registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = await registry.register(NAMESPACE, "a", CONFIG)
-    await registry.unregister(NAMESPACE, "a")
-    assert await _round(registry, found=False) == incarnation
-    await _age_clean_round(registry, incarnation)
-
-    assert await _round(registry, found=False) == incarnation
-
-    assert await _queued(registry) == []
-
-
-@pytest.mark.asyncio
-async def test_a_late_write_found_after_the_retention_restarts_the_rounds(
-    sqlalchemy_engine, vector_store_name
-):
-    registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = await registry.register(NAMESPACE, "a", CONFIG)
-    await registry.unregister(NAMESPACE, "a")
-    assert await _round(registry, found=False) == incarnation
-    await _age_clean_round(registry, incarnation)
-
-    assert await _round(registry, found=True) == incarnation
-
-    assert await _clean_rounds(registry) == {incarnation: False}
-    assert await _round(registry, found=False) == incarnation
-    assert await _clean_rounds(registry) == {incarnation: True}
-    assert await _round(registry, found=False) is None
-    assert await _queued(registry) == [incarnation]
-
-
-@pytest.mark.asyncio
-async def test_a_clean_round_does_not_remove_a_tombstone_another_round_found_points_under(
-    sqlalchemy_engine, vector_store_name
-):
-    """Two purgers on one SQLite registry can claim the same tombstone: the
-    one that found nothing must not remove what the one that found points
-    just un-stamped, or a later write under the incarnation is orphaned."""
-    if sqlalchemy_engine.dialect.name != "sqlite":
-        pytest.skip("the row lock keeps claims apart on this dialect")
-    registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = await registry.register(NAMESPACE, "c", CONFIG)
-    await registry.unregister(NAMESPACE, "c")
-    assert await _round(registry, found=False) == incarnation
-    await _age_clean_round(registry, incarnation)
-
-    async with registry.claim_due() as stale:
-        assert stale is not None
-        assert stale.incarnation == incarnation
-        # A second purger claims the same entry, finds points, un-stamps it.
-        async with registry.claim_due() as other:
-            assert other is not None
-            assert other.incarnation == incarnation
-            other.found = True
-        stale.found = False
-
-    assert await _queued(registry) == [incarnation]
-    assert await _clean_rounds(registry) == {incarnation: False}
-
-
-@pytest.mark.asyncio
 async def test_a_round_whose_body_raises_keeps_the_tombstone_as_it_was(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     incarnation = await registry.register(NAMESPACE, "a", CONFIG)
     await registry.unregister(NAMESPACE, "a")
+    await _age_deletion(registry, incarnation)
 
     async def refused_reclamation() -> None:
         async with registry.claim_due() as claim:
             assert claim is not None
             assert claim.incarnation == incarnation
-            claim.found = True
+            claim.found = False
             raise RuntimeError("the backend refused")
 
     with pytest.raises(RuntimeError):
         await refused_reclamation()
 
-    assert await _clean_rounds(registry) == {incarnation: False}
-    assert await _round(registry, found=False) == incarnation
-    assert await _clean_rounds(registry) == {incarnation: True}
+    assert await _queued(registry) == [incarnation]
 
 
 @pytest.mark.asyncio
@@ -480,12 +379,14 @@ async def test_a_round_that_reports_nothing_is_an_error(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    await registry.register(NAMESPACE, "a", CONFIG)
+    incarnation = await registry.register(NAMESPACE, "a", CONFIG)
     await registry.unregister(NAMESPACE, "a")
+    await _age_deletion(registry, incarnation)
 
     with pytest.raises(RuntimeError, match="without reporting"):
         async with registry.claim_due():
             pass
+    assert await _queued(registry) == [incarnation]
 
 
 @pytest.mark.asyncio
@@ -533,9 +434,8 @@ async def test_purge_rounds_keep_time_by_the_database_clock(
     database's clock, never the client's.
 
     The database's now() is shadowed by one running ten days behind the
-    real clock: the tombstone's deletion and clean round are stamped by it,
-    and a retention of a day, long past by the real clock, has not passed
-    by it.
+    real clock: the tombstone's deletion is stamped by it, and a retention
+    of a day, long past by the real clock, has not passed by it.
     """
     if sqlalchemy_engine.dialect.name != "postgresql":
         pytest.skip("SQLite's clock cannot be shadowed")
@@ -559,22 +459,16 @@ async def test_purge_rounds_keep_time_by_the_database_clock(
         incarnation = await registry.register(NAMESPACE, "a", CONFIG)
         await registry.unregister(NAMESPACE, "a")
 
-        assert await _round(registry, found=False) == incarnation
-
         queue = registry._purge_queue
         async with skewed_engine.connect() as connection:
             row = (
                 await connection.execute(
-                    select(
-                        queue.c.enqueued_at,
-                        queue.c.clean_at,
-                        text("pg_catalog.now() AS real_now"),
-                    )
+                    select(queue.c.enqueued_at, text("pg_catalog.now() AS real_now"))
                 )
             ).one()
         assert row.real_now - row.enqueued_at > timedelta(days=9)
-        assert row.real_now - row.clean_at > timedelta(days=9)
         assert await _round(registry, found=False) is None
+        assert await _queued(registry) == [incarnation]
     finally:
         await skewed_engine.dispose()
         async with sqlalchemy_engine.begin() as connection:
@@ -593,7 +487,8 @@ async def test_a_claim_skips_a_tombstone_another_purger_holds(
     free = await registry.register(NAMESPACE, "free", CONFIG)
     await registry.unregister(NAMESPACE, "held")
     await registry.unregister(NAMESPACE, "free")
-    await _age_enqueue(registry, held)
+    await _age_deletion(registry, held, extra=timedelta(minutes=1))
+    await _age_deletion(registry, free)
 
     queue = registry._purge_queue
     claim = None
@@ -755,14 +650,16 @@ async def test_a_mint_checks_the_queue_after_its_insert(
 @pytest.mark.asyncio
 async def test_a_round_claims_one_tombstone(sqlalchemy_engine, vector_store_name):
     """A claim takes one tombstone and leaves the others to other purgers."""
-    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    registry = await _registry(
+        sqlalchemy_engine, vector_store_name, tombstone_retention=timedelta(0)
+    )
     for name in ("a", "b", "c"):
         await registry.register(NAMESPACE, name, CONFIG)
         await registry.unregister(NAMESPACE, name)
 
     assert await _round(registry, found=False) is not None
 
-    assert sorted((await _clean_rounds(registry)).values()) == [False, False, True]
+    assert len(await _queued(registry)) == 2
 
 
 @pytest.mark.asyncio

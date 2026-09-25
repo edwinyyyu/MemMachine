@@ -263,10 +263,10 @@ class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
         default=86400,
         gt=0,
         description=(
-            "Seconds a deleted collection's registry entry outlives the first purge "
-            "round that finds nothing under it, so a write to Qdrant that landed "
-            "after that round is still reclaimed; keep it orders of magnitude "
-            "above the longest a request to Qdrant can be in flight."
+            "Seconds a deleted collection's records are kept before its purge "
+            "starts, so every write to Qdrant in flight at the deletion has landed "
+            "and is reclaimed; keep it orders of magnitude above the longest a "
+            "request to Qdrant can be in flight."
         ),
     )
     request_timeout_seconds: int = Field(
@@ -315,10 +315,10 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         default=86400,
         gt=0,
         description=(
-            "Seconds a deleted collection's registry entry outlives the first purge "
-            "round that finds nothing under it, so a write to Milvus that landed "
-            "after that round is still reclaimed; keep it orders of magnitude "
-            "above the longest a request to Milvus can be in flight."
+            "Seconds a deleted collection's records are kept before its purge "
+            "starts, so every write to Milvus in flight at the deletion has landed "
+            "and is reclaimed; keep it orders of magnitude above the longest a "
+            "request to Milvus can be in flight."
         ),
     )
     request_timeout_seconds: int = Field(
