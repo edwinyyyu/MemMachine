@@ -550,6 +550,44 @@ class TestFilters:
         )
         assert {m.record.uuid for m in or_results[0].matches} == {r1.uuid, r2.uuid}
 
+    @pytest.mark.asyncio
+    async def test_a_limit_above_the_search_cap_is_refused(self, collection):
+        with pytest.raises(ValueError, match="at most 16384"):
+            await collection.query(
+                query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=16_385
+            )
+
+
+class TestScores:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("metric", "expected"),
+        [
+            (SimilarityMetric.COSINE, 0.6),
+            (SimilarityMetric.DOT, 1.2),
+            (SimilarityMetric.EUCLIDEAN, math.sqrt(2.0 * 2.0 + 1.0 - 2.0 * 1.2)),
+        ],
+    )
+    async def test_scores_are_the_metric_values(self, store, metric, expected):
+        """Scores come from the server: cosine similarity, inner product, and
+        Euclidean distance (Milvus returns it squared)."""
+        name = f"scores_{metric.value}"
+        await store.create_collection(
+            namespace=NAMESPACE,
+            name=name,
+            config=VectorStoreCollectionConfig(
+                vector_dimensions=VECTOR_DIM, similarity_metric=metric
+            ),
+        )
+        collection = await store.open_collection(namespace=NAMESPACE, name=name)
+        assert collection is not None
+        record = _make_record(vector=[1.2, 1.6, 0.0])
+        await collection.upsert(records=[record])
+
+        [result] = await collection.query(query_vectors=[[1.0, 0.0, 0.0]], limit=1)
+        assert result.matches[0].score == pytest.approx(expected, abs=1e-3)
+        await store.delete_collection(namespace=NAMESPACE, name=name)
+
 
 class TestGetAndDelete:
     @pytest.mark.asyncio

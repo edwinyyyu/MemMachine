@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import math
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast, override
@@ -39,7 +40,7 @@ from memmachine_server.common.properties_json import (
     decode_properties,
     encode_properties,
 )
-from memmachine_server.common.utils import compute_similarity, ensure_tz_aware
+from memmachine_server.common.utils import ensure_tz_aware
 
 from .collection_registry import RegisteredCollection, VectorStoreCollectionRegistry
 from .data_types import (
@@ -71,6 +72,8 @@ _PROPERTY_FILTER_PREFIX = "_p_"
 _MAX_UUID_LENGTH = 36
 _MAX_PRIMARY_ID_LENGTH = 128
 _INCARNATION_HEX_LENGTH = 32
+# quotaAndLimits.limits.topK: the most results one search may ask for.
+_MAX_SEARCH_LIMIT = 16_384
 _FALSE_EXPR = f'{_ID_FIELD} == "__memmachine_no_match__"'
 
 # Consecutive lost creation races before open-or-create gives up: every
@@ -278,20 +281,15 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             fields.append(_PROPERTIES_FIELD)
         return fields
 
-    @staticmethod
-    def _score_from_entity_vector(
-        query_vector: Sequence[float],
-        entity: Mapping[str, Any],
-        similarity_metric: SimilarityMetric,
-    ) -> float:
-        raw_vector = entity.get(_VECTOR_FIELD)
-        if raw_vector is None:
-            raise ValueError("Milvus search result did not include the vector field")
-        return compute_similarity(
-            list(query_vector),
-            [list(cast(Sequence[float], raw_vector))],
-            similarity_metric,
-        )[0]
+    def _score(self, distance: float) -> float:
+        """The store's score for a distance Milvus returned.
+
+        Milvus returns cosine similarity and inner product as they are, and
+        the squared Euclidean distance.
+        """
+        if self._config.similarity_metric is SimilarityMetric.EUCLIDEAN:
+            return math.sqrt(max(distance, 0.0))
+        return distance
 
     def _partition_filter(self) -> str:
         return _incarnation_filter(self._incarnation)
@@ -339,6 +337,11 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 return []
             if limit <= 0:
                 return [QueryResult(matches=[]) for _ in query_vectors]
+            if limit > _MAX_SEARCH_LIMIT:
+                raise ValueError(
+                    f"Milvus returns at most {_MAX_SEARCH_LIMIT} results per "
+                    f"search, got limit={limit}"
+                )
 
             await self._fence()
             filter_expr = self._partition_filter()
@@ -354,11 +357,8 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 data=query_vectors,
                 filter=filter_expr,
                 limit=limit,
-                # Milvus Lite returns COSINE as distance, while Zilliz Cloud
-                # returns it as similarity. Fetch vectors and compute scores
-                # locally so MemMachine score semantics stay consistent.
                 output_fields=self._output_fields(
-                    return_vector=True,
+                    return_vector=return_vector,
                     return_properties=return_properties,
                 ),
                 anns_field=_VECTOR_FIELD,
@@ -366,17 +366,11 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             )
 
             results: list[QueryResult] = []
-            for query_vector, raw_matches in zip(
-                query_vectors, raw_results, strict=True
-            ):
+            for raw_matches in raw_results:
                 matches: list[QueryMatch] = []
                 for raw_match in raw_matches:
                     entity = cast(Mapping[str, Any], raw_match["entity"])
-                    score = self._score_from_entity_vector(
-                        query_vector,
-                        entity,
-                        self._config.similarity_metric,
-                    )
+                    score = self._score(raw_match["distance"])
                     if not self._passes_threshold(
                         score, score_threshold, self._config.similarity_metric
                     ):
