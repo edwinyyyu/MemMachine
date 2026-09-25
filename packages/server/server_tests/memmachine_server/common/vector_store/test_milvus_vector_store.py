@@ -57,6 +57,7 @@ INDEXED_PROPERTIES: dict[str, PropertyType] = {
 TOMBSTONE_RETENTION = timedelta(0)
 REQUEST_TIMEOUT_SECONDS = 30
 MAX_VARCHAR_LENGTH = 1024
+PURGE_BATCH_SIZE = 10000
 
 
 def _normalize(vector: list[float]) -> list[float]:
@@ -88,6 +89,7 @@ async def _params(client, registry_engine, **overrides) -> MilvusVectorStorePara
         "consistency_level": "Session",
         "request_timeout_seconds": REQUEST_TIMEOUT_SECONDS,
         "max_varchar_length": MAX_VARCHAR_LENGTH,
+        "purge_batch_size": PURGE_BATCH_SIZE,
     }
     params.update(overrides)
     params["partition_registry"] = SQLAlchemyVectorStorePartitionRegistry(
@@ -840,10 +842,11 @@ class TestPartitionIsolation:
 
 class TestPurgeBatches:
     @pytest.mark.asyncio
-    async def test_a_purge_round_reclaims_at_most_one_batch(self, store, monkeypatch):
-        monkeypatch.setattr(
-            "memmachine_server.common.vector_store.milvus_vector_store._PURGE_BATCH_SIZE",
-            2,
+    async def test_a_purge_round_reclaims_at_most_one_batch(self, store):
+        store = MilvusVectorStore(
+            await _params(
+                store._client, store._partition_registry._engine, purge_batch_size=2
+            )
         )
         await store.create_partition("batched")
         partition = await store.get_partition("batched")

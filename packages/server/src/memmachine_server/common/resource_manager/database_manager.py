@@ -769,6 +769,7 @@ class DatabaseManager:
                 consistency_level=conf.consistency_level,
                 request_timeout_seconds=conf.request_timeout_seconds,
                 max_varchar_length=conf.max_varchar_length,
+                purge_batch_size=conf.purge_batch_size,
             )
         )
 
