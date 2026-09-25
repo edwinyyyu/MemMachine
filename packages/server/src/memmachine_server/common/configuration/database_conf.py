@@ -323,6 +323,15 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         gt=0,
         description="Seconds a request to Milvus may take before the client gives up.",
     )
+    max_varchar_length: int = Field(
+        default=65535,
+        gt=0,
+        description=(
+            "Bytes a declared string property can hold: the length of its "
+            "VARCHAR field. Milvus refuses a length above its "
+            "proxy.maxVarCharLength, 65535 unless the server sets it otherwise."
+        ),
+    )
 
     @field_validator("uri", mode="before")
     @classmethod

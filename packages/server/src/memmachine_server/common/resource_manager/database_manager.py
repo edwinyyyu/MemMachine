@@ -745,6 +745,7 @@ class DatabaseManager:
                 collection_registry=collection_registry,
                 consistency_level=conf.consistency_level,
                 request_timeout_seconds=conf.request_timeout_seconds,
+                max_varchar_length=conf.max_varchar_length,
             )
             try:
                 store = MilvusVectorStore(params)
