@@ -89,14 +89,16 @@ async def store(milvus_client, tmp_path):
     registry_engine = create_async_engine(
         f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}"
     )
+    collection_registry = SQLAlchemyVectorStoreCollectionRegistry(
+        engine=registry_engine,
+        vector_store_name=VECTOR_STORE_NAME,
+        tombstone_retention=TOMBSTONE_RETENTION,
+    )
+    await collection_registry.startup()
     vector_store = MilvusVectorStore(
         MilvusVectorStoreParams(
             client=milvus_client,
-            collection_registry=SQLAlchemyVectorStoreCollectionRegistry(
-                engine=registry_engine,
-                vector_store_name=VECTOR_STORE_NAME,
-                tombstone_retention=TOMBSTONE_RETENTION,
-            ),
+            collection_registry=collection_registry,
             consistency_level="Session",
             request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
         )

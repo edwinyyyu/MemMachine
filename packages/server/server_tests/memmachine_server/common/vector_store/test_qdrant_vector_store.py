@@ -72,22 +72,24 @@ async def registry_engine(tmp_path):
     await engine.dispose()
 
 
-def _params(client, registry_engine, **overrides) -> QdrantVectorStoreParams:
-    """Parameters for one store: its own registry over the shared registry database."""
+async def _params(client, registry_engine, **overrides) -> QdrantVectorStoreParams:
+    """Parameters for one store: its own started registry over the shared registry database."""
+    collection_registry = SQLAlchemyVectorStoreCollectionRegistry(
+        engine=registry_engine,
+        vector_store_name=VECTOR_STORE_NAME,
+        tombstone_retention=TOMBSTONE_RETENTION,
+    )
+    await collection_registry.startup()
     return QdrantVectorStoreParams(
         client=client,
-        collection_registry=SQLAlchemyVectorStoreCollectionRegistry(
-            engine=registry_engine,
-            vector_store_name=VECTOR_STORE_NAME,
-            tombstone_retention=TOMBSTONE_RETENTION,
-        ),
+        collection_registry=collection_registry,
         **overrides,
     )
 
 
 @pytest_asyncio.fixture
 async def store(any_qdrant_client, registry_engine):
-    s = QdrantVectorStore(_params(any_qdrant_client, registry_engine))
+    s = QdrantVectorStore(await _params(any_qdrant_client, registry_engine))
     await s.startup()
     yield s
 
@@ -1155,7 +1157,7 @@ class TestMetrics:
         mock_factory.get_histogram.return_value = mock_histogram
 
         store = QdrantVectorStore(
-            _params(qdrant_client, registry_engine, metrics_factory=mock_factory)
+            await _params(qdrant_client, registry_engine, metrics_factory=mock_factory)
         )
         await store.startup()
 
@@ -1237,7 +1239,7 @@ class TestCollectionLifecycleAcrossWorkers:
             ),
         )
 
-        store = QdrantVectorStore(_params(qdrant_client, registry_engine))
+        store = QdrantVectorStore(await _params(qdrant_client, registry_engine))
         await store.startup()
         try:
             await store.open_or_create_collection(
@@ -1273,8 +1275,8 @@ class TestCollectionLifecycleAcrossWorkers:
         config = self._config()
         native = QdrantVectorStore._build_native_collection_name(namespace, config)
 
-        store_a = QdrantVectorStore(_params(client_a, registry_engine))
-        store_b = QdrantVectorStore(_params(client_b, registry_engine))
+        store_a = QdrantVectorStore(await _params(client_a, registry_engine))
+        store_b = QdrantVectorStore(await _params(client_b, registry_engine))
         await store_a.startup()
         await store_b.startup()
 

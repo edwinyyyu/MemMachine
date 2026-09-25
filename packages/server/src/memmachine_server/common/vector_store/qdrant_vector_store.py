@@ -539,7 +539,7 @@ class QdrantVectorStoreParams(BaseModel):
             of that, so the registry lives where a primary key and a
             transaction can. Every store on the deployment, in any
             process, uses this registry, and no store on another
-            deployment does.
+            deployment does. The caller starts it before handing it over.
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -637,12 +637,13 @@ class QdrantVectorStore(VectorStore):
 
     @override
     async def startup(self) -> None:
-        """Ready the registry; the client's lifecycle is managed externally."""
-        await self._collection_registry.startup()
+        # The caller owns the client's and the registry's lifecycles.
+        pass
 
     @override
     async def shutdown(self) -> None:
-        """No-op; client lifecycle is managed externally."""
+        # The caller owns the client's and the registry's lifecycles.
+        pass
 
     def _build_collection_handle(
         self, namespace: str, name: str, registered: RegisteredCollection
