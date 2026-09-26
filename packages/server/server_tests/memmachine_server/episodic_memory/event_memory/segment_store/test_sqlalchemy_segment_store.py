@@ -809,16 +809,28 @@ async def test_random_context_reads_agree_with_a_model(
     Several seeds per read, filters of every node type, and many segments
     sharing a timestamp, with another partition's segments at the same
     times. The partition is far smaller than a filtered read's window, so
-    every match on a side is within it.
+    every match on a side is within it. Events take random UUIDs in sorted
+    order, so events sharing a timestamp come in the same order every run.
     """
     rng = random.Random(random_seed)
     config = _plaintext_partition_config()
     partition = await store.open_or_create_partition(PARTITION_KEY, config)
     other_partition = await store.open_or_create_partition("other_partition", config)
-    segments = [segment for _ in range(30) for segment in _random_event_segments(rng)]
+    event_uuids = iter(sorted(uuid4() for _ in range(45)))
+    segments = [
+        segment
+        for _ in range(30)
+        for segment in _random_event_segments(rng, next(event_uuids))
+    ]
     await partition.add_segments(_links(*segments))
     await other_partition.add_segments(
-        _links(*(segment for _ in range(15) for segment in _random_event_segments(rng)))
+        _links(
+            *(
+                segment
+                for _ in range(15)
+                for segment in _random_event_segments(rng, next(event_uuids))
+            )
+        )
     )
     timeline = sorted(
         segments,
@@ -866,12 +878,11 @@ async def test_random_context_reads_agree_with_a_model(
         ), (property_filter, max_backward_segments, max_forward_segments)
 
 
-def _random_event_segments(rng: random.Random) -> list[Segment]:
+def _random_event_segments(rng: random.Random, event_uuid: UUID) -> list[Segment]:
     """One event's segments at one random time, each with random properties.
 
     Every segment has `tag` and `role`; about half have `opt`.
     """
-    event_uuid = uuid4()
     ts_offset_seconds = rng.randrange(20)
     segments = []
     for index in range(rng.randint(1, 2)):
