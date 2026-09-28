@@ -931,7 +931,7 @@ class TestPurgeBatches:
             return len(
                 store._client.query(
                     collection_name=native,
-                    filter=f'partition_key == "{incarnation.hex}"',
+                    filter=f'partition_key == "{incarnation}"',
                     output_fields=["id"],
                     limit=16384,
                 )

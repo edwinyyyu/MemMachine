@@ -79,7 +79,7 @@ def _incarnation_filter(incarnation: UUID) -> models.Filter:
         must=[
             models.FieldCondition(
                 key=_PAYLOAD_INCARNATION,
-                match=models.MatchValue(value=incarnation.hex),
+                match=models.MatchValue(value=str(incarnation)),
             ),
         ],
     )
@@ -289,7 +289,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     ) -> dict[str, PropertyValue]:
         """Build Qdrant-compatible payload from record properties."""
         payload: dict[str, PropertyValue] = {
-            _PAYLOAD_INCARNATION: self._incarnation.hex,
+            _PAYLOAD_INCARNATION: str(self._incarnation),
         }
         if properties:
             for key, value in properties.items():
@@ -463,7 +463,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                 for point in points
                 if point.payload
                 and cast(dict[str, Any], point.payload).get(_PAYLOAD_INCARNATION)
-                == self._incarnation.hex
+                == str(self._incarnation)
             }
 
             records: list[Record] = []

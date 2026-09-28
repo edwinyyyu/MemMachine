@@ -80,7 +80,6 @@ seconds, restores the timezone the value was written in.
 
 _MAX_UUID_LENGTH = 36
 _MAX_PRIMARY_ID_LENGTH = 128
-_INCARNATION_HEX_LENGTH = 32
 _FALSE_EXPR = f'{_ID_FIELD} == "__memmachine_no_match__"'
 
 _DECLARED_DATA_TYPES: dict[type[PropertyValue], DataType] = {
@@ -227,7 +226,7 @@ def _milvus_filter(
 
 def _incarnation_filter(incarnation: UUID) -> str:
     """A Milvus expression matching the entities of one collection incarnation."""
-    return f"{_PARTITION_KEY_FIELD} == {_expr_string(incarnation.hex)}"
+    return f"{_PARTITION_KEY_FIELD} == {_expr_string(str(incarnation))}"
 
 
 class MilvusVectorStoreCollection(VectorStoreCollection):
@@ -248,7 +247,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
     @staticmethod
     def _primary_id(incarnation: UUID, record_uuid: UUID) -> str:
         """Build a native primary key unique within a shared native collection."""
-        return f"{incarnation.hex}:{record_uuid}"
+        return f"{incarnation}:{record_uuid}"
 
     def __init__(
         self,
@@ -308,7 +307,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         entity: dict[str, Any] = {
             _ID_FIELD: self._primary_id(self._incarnation, record.uuid),
             _RECORD_UUID_FIELD: str(record.uuid),
-            _PARTITION_KEY_FIELD: self._incarnation.hex,
+            _PARTITION_KEY_FIELD: str(self._incarnation),
             _VECTOR_FIELD: record.vector,
             _PROPERTIES_FIELD: encode_properties(
                 {key: value for key, value in properties.items() if key not in declared}
@@ -759,7 +758,7 @@ class MilvusVectorStore(VectorStore):
             schema.add_field(
                 field_name=_PARTITION_KEY_FIELD,
                 datatype=DataType.VARCHAR,
-                max_length=_INCARNATION_HEX_LENGTH,
+                max_length=_MAX_UUID_LENGTH,
                 is_partition_key=True,
             )
             schema.add_field(
@@ -955,7 +954,7 @@ class MilvusVectorStore(VectorStore):
                 # ending in the character after the colon: a key-range query
                 # reads the sorted key index instead of scanning the
                 # partition-key column of the incarnation's whole partition.
-                prefix = claim.incarnation.hex
+                prefix = str(claim.incarnation)
                 listed = await asyncio.to_thread(
                     self._client.query,
                     collection_name=native_collection_name,
