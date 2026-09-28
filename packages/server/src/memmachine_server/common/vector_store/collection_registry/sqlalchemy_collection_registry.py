@@ -36,6 +36,8 @@ from sqlalchemy import (
     delete,
     func,
     insert,
+    literal,
+    or_,
     select,
     update,
 )
@@ -87,9 +89,13 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     backend can be in flight. The retention is measured on the database
     clock.
 
-    A purge round that raises counts against its tombstone; a tombstone
-    whose last `_MAX_FAILED_PURGE_ROUNDS` rounds all raised is dead-lettered:
-    kept, never re-minted, no longer claimed, and reported by an error log.
+    A purge round that raises counts against its tombstone and backs it off:
+    after its f-th consecutive failed round it is claimed again only once
+    `purge_retry_backoff` doubled f - 1 times, at most
+    `max_purge_retry_backoff`, has passed since that round, and the
+    tombstones behind it are claimed meanwhile. A tombstone whose
+    last `_MAX_FAILED_PURGE_ROUNDS` rounds all raised is dead-lettered: kept,
+    never re-minted, no longer claimed, and reported by an error log.
     Setting its `failed_rounds` back to 0 returns it to the purge.
     """
 
@@ -99,6 +105,8 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
         engine: AsyncEngine,
         vector_store_name: str,
         tombstone_retention: timedelta,
+        purge_retry_backoff: timedelta = timedelta(seconds=30),
+        max_purge_retry_backoff: timedelta = timedelta(hours=1),
     ) -> None:
         """Bind to the tables of the registry of the vector store `vector_store_name`."""
         if not validate_identifier(vector_store_name):
@@ -114,6 +122,8 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
         self._engine = engine
         self._is_sqlite = engine.dialect.name == "sqlite"
         self._tombstone_retention = tombstone_retention
+        self._purge_retry_backoff = purge_retry_backoff
+        self._max_purge_retry_backoff = max_purge_retry_backoff
         table_prefix = f"collection_registry_{vector_store_name}"
         metadata = MetaData()
         self._collections = Table(
@@ -136,8 +146,10 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             # The configuration names the native collection the points are in.
             Column("config", _JSON_AUTO, nullable=False),
             Column("enqueued_at", DateTime(timezone=True), nullable=False),
-            # Consecutive purge rounds on the tombstone that raised.
+            # Consecutive purge rounds on the tombstone that raised, and when
+            # the last one did, on the database clock.
             Column("failed_rounds", Integer, nullable=False, default=0),
+            Column("last_failed_at", DateTime(timezone=True), nullable=True),
         )
         Index(f"{table_prefix}_gc__ea", self._purge_queue.c.enqueued_at)
         self._metadata = metadata
@@ -307,9 +319,11 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
         # the next; on SQLite a doubly claimed entry costs a repeated,
         # idempotent round. A round that raises, its stored configuration
         # included, rolls back and then counts against the tombstone in a
-        # transaction of its own; a dead-lettered tombstone is skipped, so
-        # one that always fails holds up the queue for a bounded number of
-        # rounds instead of every round.
+        # transaction of its own, with the time it failed. The backoff is
+        # computed from that recorded time and count, not stored as a time
+        # to retry at; it filters the due range the index bounds, so a claim
+        # reads each due tombstone that is backing off, and none that is not
+        # yet due.
         queue = self._purge_queue
         claimed: UUID | None = None
         try:
@@ -325,6 +339,10 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                         .where(
                             queue.c.enqueued_at <= self._retention_cutoff(),
                             queue.c.failed_rounds < _MAX_FAILED_PURGE_ROUNDS,
+                            or_(
+                                queue.c.failed_rounds == 0,
+                                queue.c.last_failed_at <= self._backoff_cutoff(),
+                            ),
                         )
                         .order_by(queue.c.enqueued_at)
                         .limit(1)
@@ -380,7 +398,10 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                 await connection.execute(
                     update(queue)
                     .where(queue.c.incarnation == incarnation)
-                    .values(failed_rounds=queue.c.failed_rounds + 1)
+                    .values(
+                        failed_rounds=queue.c.failed_rounds + 1,
+                        last_failed_at=func.now(),
+                    )
                     .returning(queue.c.failed_rounds)
                 )
             ).scalar_one_or_none()
@@ -394,6 +415,28 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                 error,
                 queue.name,
             )
+
+    def _backoff_cutoff(self) -> ColumnElement:
+        """The database clock's now, less each queue row's backoff, computed by the database."""
+        # 1 << (f - 1) is 2 ** (f - 1) on both dialects.
+        doublings = literal(1, Integer).op("<<")(self._purge_queue.c.failed_rounds - 1)
+        if self._is_sqlite:
+            seconds = func.min(
+                int(self._purge_retry_backoff.total_seconds()) * doublings,
+                int(self._max_purge_retry_backoff.total_seconds()),
+            )
+            return func.datetime(
+                "now",
+                func.printf("-%d seconds", seconds),
+                type_=DateTime(timezone=True),
+            )
+        return func.now() - func.least(
+            bindparam("retry_backoff", self._purge_retry_backoff, type_=Interval)
+            * doublings,
+            bindparam(
+                "max_retry_backoff", self._max_purge_retry_backoff, type_=Interval
+            ),
+        )
 
     def _retention_cutoff(self) -> ColumnElement:
         """The database clock's now, less the retention, computed by the database."""

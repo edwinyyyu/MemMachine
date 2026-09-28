@@ -155,10 +155,12 @@ class VectorStoreCollectionRegistry(ABC):
         and sets `claim.found`. When the body ends, the registry records
         the outcome: a round that found points leaves the tombstone due; a
         round that found none removes the tombstone and frees its
-        incarnation. A body that raises leaves the tombstone to be claimed
-        again and counts a failed round against it; a tombstone whose rounds
-        keep failing is dead-lettered after a bound the registry sets: kept,
-        no longer claimed, and reported, instead of retried forever.
+        incarnation. A body that raises counts a failed round against the
+        tombstone, which is claimed again after a backoff that grows with each
+        consecutive failure, while the tombstones behind it are claimed; a
+        tombstone whose rounds keep failing is dead-lettered after a bound the
+        registry sets: kept, no longer claimed, and reported, instead of
+        retried forever.
 
         A registry that can hold a claim hands the tombstone to no other
         purger for the body's duration; one that cannot lets a doubly

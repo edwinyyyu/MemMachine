@@ -133,6 +133,20 @@ async def _failed_rounds(
         ).scalar_one()
 
 
+async def _age_last_failure(
+    registry: SQLAlchemyVectorStoreCollectionRegistry,
+    incarnation: UUID,
+    ago: timedelta,
+) -> None:
+    """Move the tombstone's last failed round back to `ago` before now, on the database clock."""
+    async with registry._engine.begin() as connection:
+        await connection.execute(
+            update(registry._purge_queue)
+            .where(registry._purge_queue.c.incarnation == incarnation)
+            .values(last_failed_at=_database_time_ago(registry._engine, ago))
+        )
+
+
 async def _failing_round(registry: SQLAlchemyVectorStoreCollectionRegistry) -> UUID:
     """One purge round whose body raises; the incarnation it claimed."""
     claimed: list[UUID] = []
@@ -404,7 +418,73 @@ async def test_a_round_whose_body_raises_keeps_the_tombstone_and_counts_the_fail
 
     assert await _queued(registry) == [incarnation]
     assert await _failed_rounds(registry, incarnation) == 1
+    # Backing off: claimed again once 30 seconds have passed since the failure.
+    assert await _round(registry, found=False) is None
+    await _age_last_failure(registry, incarnation, timedelta(seconds=35))
     assert await _round(registry, found=False) == incarnation
+
+
+@pytest.mark.asyncio
+async def test_a_failed_tombstone_backs_off_while_the_ones_behind_it_are_claimed(
+    sqlalchemy_engine, vector_store_name
+):
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    failing = await registry.register(NAMESPACE, "a", CONFIG)
+    await registry.unregister(NAMESPACE, "a")
+    await _age_deletion(registry, failing, extra=timedelta(hours=1))
+    later = await registry.register(NAMESPACE, "b", CONFIG)
+    await registry.unregister(NAMESPACE, "b")
+    await _age_deletion(registry, later)
+
+    assert await _failing_round(registry) == failing
+    assert await _round(registry, found=False) == later
+
+
+@pytest.mark.asyncio
+async def test_the_backoff_doubles_with_each_failure_and_runs_from_the_last_one(
+    sqlalchemy_engine, vector_store_name
+):
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    incarnation = await registry.register(NAMESPACE, "a", CONFIG)
+    await registry.unregister(NAMESPACE, "a")
+    # Due for days: the backoff still runs from the last failure, not from
+    # when the tombstone came due.
+    await _age_deletion(registry, incarnation, extra=timedelta(days=3))
+
+    await _failing_round(registry)
+    await _age_last_failure(registry, incarnation, timedelta(seconds=35))
+    await _failing_round(registry)
+    # Two failures: a minute from the second.
+    await _age_last_failure(registry, incarnation, timedelta(seconds=50))
+    assert await _round(registry, found=True) is None
+    await _age_last_failure(registry, incarnation, timedelta(seconds=70))
+    assert await _round(registry, found=True) == incarnation
+
+
+@pytest.mark.asyncio
+async def test_the_backoff_stops_doubling_at_its_maximum(
+    sqlalchemy_engine, vector_store_name
+):
+    registry = SQLAlchemyVectorStoreCollectionRegistry(
+        engine=sqlalchemy_engine,
+        vector_store_name=vector_store_name,
+        tombstone_retention=RETENTION,
+        purge_retry_backoff=timedelta(seconds=30),
+        max_purge_retry_backoff=timedelta(minutes=2),
+    )
+    await registry.startup()
+    incarnation = await registry.register(NAMESPACE, "a", CONFIG)
+    await registry.unregister(NAMESPACE, "a")
+    await _age_deletion(registry, incarnation)
+
+    for _ in range(5):
+        await _failing_round(registry)
+        await _age_last_failure(registry, incarnation, timedelta(days=1))
+    # Five failures: 30 seconds doubled four times is 8 minutes, capped at 2.
+    await _age_last_failure(registry, incarnation, timedelta(seconds=110))
+    assert await _round(registry, found=True) is None
+    await _age_last_failure(registry, incarnation, timedelta(seconds=130))
+    assert await _round(registry, found=True) == incarnation
 
 
 @pytest.mark.asyncio
@@ -421,6 +501,8 @@ async def test_a_tombstone_whose_rounds_keep_failing_is_dead_lettered_and_report
 
     with caplog.at_level(logging.ERROR):
         for _ in range(_MAX_FAILED_PURGE_ROUNDS):
+            # Past its backoff, so it is the oldest tombstone claimable.
+            await _age_last_failure(registry, failing, timedelta(days=1))
             assert await _failing_round(registry) == failing
 
     assert [
@@ -446,6 +528,7 @@ async def test_a_round_that_finds_points_clears_the_failed_rounds(
 
     for _ in range(_MAX_FAILED_PURGE_ROUNDS - 1):
         await _failing_round(registry)
+        await _age_last_failure(registry, incarnation, timedelta(days=1))
     assert await _round(registry, found=True) == incarnation
     assert await _failed_rounds(registry, incarnation) == 0
 
