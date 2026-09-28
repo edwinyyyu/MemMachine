@@ -58,6 +58,14 @@ class VectorStoreCollection(ABC):
         Insert records with new UUIDs,
         and update records with existing UUIDs.
 
+        A record's UUID is minted by the service for that record: random,
+        or derived only from identifiers the service minted itself. It is
+        never a value a caller supplied or one derived from it, even where
+        an ingestion path would pass the caller's identifier through: the
+        collections of one store may share the backend's id space, so a
+        UUID a caller chose could name, and replace, another collection's
+        record.
+
         Args:
             records (Iterable[Record]):
                 Iterable of records to upsert.
