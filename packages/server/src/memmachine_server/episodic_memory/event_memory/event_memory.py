@@ -78,6 +78,7 @@ logger = logging.getLogger(__name__)
 # short because the keys share the identifier budget.
 EVENT_TIMESTAMP_KEY: Final[str] = reserved_property_key("em", "timestamp")
 EVENT_SOURCE_KEY: Final[str] = reserved_property_key("em", "source")
+BLOCK_KIND_KEY: Final[str] = reserved_property_key("em", "block_kind")
 
 # Every property a vector record carries, with the type the collection
 # declares: the fields a search filters on at the vector stage. User
@@ -85,6 +86,7 @@ EVENT_SOURCE_KEY: Final[str] = reserved_property_key("em", "source")
 _RESERVED_PROPERTY_SCHEMA: Final[dict[str, type[PropertyValue]]] = {
     EVENT_TIMESTAMP_KEY: cast(type[PropertyValue], datetime.datetime),
     EVENT_SOURCE_KEY: cast(type[PropertyValue], str),
+    BLOCK_KIND_KEY: cast(type[PropertyValue], str),
 }
 
 # Seconds a claim on pending derivatives waits past their writer's budget,
@@ -108,6 +110,7 @@ def _system_predicates(
     since: datetime.datetime | None = None,
     until: datetime.datetime | None = None,
     source_ids: Iterable[str] | None = None,
+    block_kinds: Iterable[str] | None = None,
 ) -> FilterExpr | None:
     """The predicates on reserved keys that a vector store evaluates.
 
@@ -124,6 +127,9 @@ def _system_predicates(
         else None,
         In(field=EVENT_SOURCE_KEY, values=list(source_ids))
         if source_ids is not None
+        else None,
+        In(field=BLOCK_KIND_KEY, values=list(block_kinds))
+        if block_kinds is not None
         else None,
     ]
     return _conjoin(clauses)
@@ -855,6 +861,7 @@ class EventMemoryPartition:
         since: datetime.datetime | None = None,
         until: datetime.datetime | None = None,
         source_ids: Iterable[str] | None = None,
+        block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
     ) -> list[QueryHit]:
         """
@@ -882,6 +889,9 @@ class EventMemoryPartition:
             source_ids (Iterable[str] | None):
                 Keep only events of these sources; an empty list keeps
                 none, and None keeps every source (default: None).
+            block_kinds (Iterable[str] | None):
+                Keep only segments whose block is of these kinds; an empty
+                list keeps none, and None keeps every kind (default: None).
             property_filter (FilterExpr | None):
                 A filter over the segments' properties; None filters
                 nothing (default: None). The vector search applies only
@@ -912,6 +922,7 @@ class EventMemoryPartition:
                 since=since,
                 until=until,
                 source_ids=source_ids,
+                block_kinds=block_kinds,
                 property_filter=property_filter,
             )
 
@@ -925,12 +936,14 @@ class EventMemoryPartition:
         since: datetime.datetime | None,
         until: datetime.datetime | None,
         source_ids: Iterable[str] | None,
+        block_kinds: Iterable[str] | None,
         property_filter: FilterExpr | None,
     ) -> list[QueryHit]:
         if expand_context < 0:
             raise ValueError(f"expand_context must be nonnegative: {expand_context}")
         t_start = time.monotonic()
         source_ids = list(source_ids) if source_ids is not None else None
+        block_kinds = list(block_kinds) if block_kinds is not None else None
 
         query_embedding = (
             await self._embedder.search_embed(
@@ -951,6 +964,7 @@ class EventMemoryPartition:
                     since=since,
                     until=until,
                     source_ids=source_ids,
+                    block_kinds=block_kinds,
                 ),
                 extract_filter(
                     map_filter_fields(property_filter, self._to_vector_record_property),
@@ -982,6 +996,7 @@ class EventMemoryPartition:
             since=since,
             until=until,
             source_ids=source_ids,
+            block_kinds=block_kinds,
             property_filter=property_filter,
         )
         before = expand_context // 3
@@ -996,6 +1011,7 @@ class EventMemoryPartition:
                     since=since,
                     until=until,
                     source_ids=source_ids,
+                    block_kinds=block_kinds,
                     property_filter=property_filter,
                 )
             )
@@ -1085,6 +1101,7 @@ class EventMemoryPartition:
         since: datetime.datetime | None = None,
         until: datetime.datetime | None = None,
         source_ids: Iterable[str] | None = None,
+        block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
     ) -> Neighborhood:
         """
@@ -1111,6 +1128,9 @@ class EventMemoryPartition:
             source_ids (Iterable[str] | None):
                 Keep only neighbors of these sources; an empty list keeps
                 none, and None keeps every source (default: None).
+            block_kinds (Iterable[str] | None):
+                Keep only neighbors whose block is of these kinds; an empty
+                list keeps none, and None keeps every kind (default: None).
             property_filter (FilterExpr | None):
                 A filter over the neighbors' user properties; None filters
                 nothing (default: None).
@@ -1135,6 +1155,7 @@ class EventMemoryPartition:
                     since=since,
                     until=until,
                     source_ids=source_ids,
+                    block_kinds=block_kinds,
                     property_filter=property_filter,
                 )
             )
@@ -1227,6 +1248,7 @@ def _build_derivative_record(
             if key in schema_fields
         },
         EVENT_TIMESTAMP_KEY: derivative.timestamp,
+        BLOCK_KIND_KEY: derivative.block.block_type,
     }
     if derivative.source_id is not None:
         properties[EVENT_SOURCE_KEY] = derivative.source_id
