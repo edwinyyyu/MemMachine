@@ -26,6 +26,7 @@ from sqlalchemy import (
     ColumnElement,
     DateTime,
     Index,
+    Integer,
     Interval,
     MetaData,
     String,
@@ -36,10 +37,11 @@ from sqlalchemy import (
     func,
     insert,
     select,
+    update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from memmachine_server.common.vector_store.data_types import (
     VectorStoreAttemptsExhaustedError,
@@ -61,6 +63,9 @@ logger = logging.getLogger(__name__)
 
 _MAX_MINT_ATTEMPTS = 10
 
+# Consecutive failed purge rounds after which a tombstone is dead-lettered.
+_MAX_FAILED_PURGE_ROUNDS = 10
+
 _JSON_AUTO = JSON().with_variant(JSONB, "postgresql")
 
 
@@ -81,6 +86,11 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     it must exceed, by orders of magnitude, the longest a write to the
     backend can be in flight. The retention is measured on the database
     clock.
+
+    A purge round that raises counts against its tombstone; a tombstone
+    whose last `_MAX_FAILED_PURGE_ROUNDS` rounds all raised is dead-lettered:
+    kept, never re-minted, no longer claimed, and reported by an error log.
+    Setting its `failed_rounds` back to 0 returns it to the purge.
     """
 
     def __init__(
@@ -126,6 +136,8 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             # The configuration names the native collection the points are in.
             Column("config", _JSON_AUTO, nullable=False),
             Column("enqueued_at", DateTime(timezone=True), nullable=False),
+            # Consecutive purge rounds on the tombstone that raised.
+            Column("failed_rounds", Integer, nullable=False, default=0),
         )
         Index(f"{table_prefix}_gc__ea", self._purge_queue.c.enqueued_at)
         self._metadata = metadata
@@ -293,36 +305,95 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
         # themselves. The claim is a row lock held for the body: on
         # PostgreSQL a concurrent purger skips the locked entry and takes
         # the next; on SQLite a doubly claimed entry costs a repeated,
-        # idempotent round.
+        # idempotent round. A round that raises, its stored configuration
+        # included, rolls back and then counts against the tombstone in a
+        # transaction of its own; a dead-lettered tombstone is skipped, so
+        # one that always fails holds up the queue for a bounded number of
+        # rounds instead of every round.
+        queue = self._purge_queue
+        claimed: UUID | None = None
+        try:
+            async with self._engine.begin() as connection:
+                row = (
+                    await connection.execute(
+                        select(
+                            queue.c.incarnation,
+                            queue.c.namespace,
+                            queue.c.config,
+                            queue.c.failed_rounds,
+                        )
+                        .where(
+                            queue.c.enqueued_at <= self._retention_cutoff(),
+                            queue.c.failed_rounds < _MAX_FAILED_PURGE_ROUNDS,
+                        )
+                        .order_by(queue.c.enqueued_at)
+                        .limit(1)
+                        .with_for_update(skip_locked=True)
+                    )
+                ).one_or_none()
+                if row is None:
+                    yield None
+                    return
+                claimed = row.incarnation
+                claim = PurgeClaim(
+                    incarnation=row.incarnation,
+                    namespace=row.namespace,
+                    config=VectorStoreCollectionConfig.model_validate(row.config),
+                )
+                yield claim
+                await self._record_round(connection, claim, row.failed_rounds)
+        except Exception as error:
+            if claimed is not None:
+                await self._count_failed_round(claimed, error)
+            raise
+
+    async def _record_round(
+        self, connection: AsyncConnection, claim: PurgeClaim, failed_rounds: int
+    ) -> None:
+        """Record what a purge round found, in the claim's transaction.
+
+        A round that found nothing removes the tombstone; one that found
+        points clears the failed rounds before it.
+        """
+        if claim.found is None:
+            raise RuntimeError(
+                f"Purge round for incarnation {claim.incarnation} ended "
+                "without reporting what it found"
+            )
+        queue = self._purge_queue
+        if not claim.found:
+            await connection.execute(
+                delete(queue).where(queue.c.incarnation == claim.incarnation)
+            )
+        elif failed_rounds:
+            await connection.execute(
+                update(queue)
+                .where(queue.c.incarnation == claim.incarnation)
+                .values(failed_rounds=0)
+            )
+
+    async def _count_failed_round(self, incarnation: UUID, error: Exception) -> None:
+        """Count a raised purge round against a tombstone, and report its dead-lettering."""
         queue = self._purge_queue
         async with self._engine.begin() as connection:
-            row = (
+            failed_rounds = (
                 await connection.execute(
-                    select(queue.c.incarnation, queue.c.namespace, queue.c.config)
-                    .where(queue.c.enqueued_at <= self._retention_cutoff())
-                    .order_by(queue.c.enqueued_at)
-                    .limit(1)
-                    .with_for_update(skip_locked=True)
+                    update(queue)
+                    .where(queue.c.incarnation == incarnation)
+                    .values(failed_rounds=queue.c.failed_rounds + 1)
+                    .returning(queue.c.failed_rounds)
                 )
-            ).one_or_none()
-            if row is None:
-                yield None
-                return
-            claim = PurgeClaim(
-                incarnation=row.incarnation,
-                namespace=row.namespace,
-                config=VectorStoreCollectionConfig.model_validate(row.config),
+            ).scalar_one_or_none()
+        if failed_rounds == _MAX_FAILED_PURGE_ROUNDS:
+            logger.error(
+                "Purge of incarnation %s failed %d rounds in a row and is "
+                "dead-lettered: its points stay and it is no longer claimed. "
+                "Last error: %r. Set its failed_rounds to 0 in %s to retry it.",
+                incarnation,
+                failed_rounds,
+                error,
+                queue.name,
             )
-            yield claim
-            if claim.found is None:
-                raise RuntimeError(
-                    f"Purge round for incarnation {claim.incarnation} ended "
-                    "without reporting what it found"
-                )
-            if not claim.found:
-                await connection.execute(
-                    delete(queue).where(queue.c.incarnation == claim.incarnation)
-                )
 
     def _retention_cutoff(self) -> ColumnElement:
         """The database clock's now, less the retention, computed by the database."""
