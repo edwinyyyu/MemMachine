@@ -387,10 +387,13 @@ class CollectionLifecycleContract:
         )
         registry = store._collection_registry
         register = registry.register
+        lost_registrations = 0
 
         async def another_process_wins(namespace, name, config):
             # The other process registers between this caller's lookup and
             # its own registration.
+            nonlocal lost_registrations
+            lost_registrations += 1
             await register(namespace, name, config)
             raise VectorStoreCollectionAlreadyExistsError(namespace, name)
 
@@ -399,6 +402,9 @@ class CollectionLifecycleContract:
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME, config=LIFECYCLE_CONFIG
         )
         monkeypatch.undo()
+
+        # It lost once, then found the winner instead of registering again.
+        assert lost_registrations == 1
 
         winner = await registry.get(LIFECYCLE_NAMESPACE, LIFECYCLE_NAME)
         assert winner is not None
@@ -426,8 +432,11 @@ class CollectionLifecycleContract:
         registry = store._collection_registry
         register = registry.register
         other_config = VectorStoreCollectionConfig(vector_dimensions=4)
+        lost_registrations = 0
 
         async def another_process_wins(namespace, name, config):
+            nonlocal lost_registrations
+            lost_registrations += 1
             await register(namespace, name, other_config)
             raise VectorStoreCollectionAlreadyExistsError(namespace, name)
 
@@ -439,6 +448,7 @@ class CollectionLifecycleContract:
                 config=LIFECYCLE_CONFIG,
             )
         monkeypatch.undo()
+        assert lost_registrations == 1
         await store.delete_collection(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
         )
