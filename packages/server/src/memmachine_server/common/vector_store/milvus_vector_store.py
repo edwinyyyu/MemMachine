@@ -949,19 +949,10 @@ class MilvusVectorStore(VectorStore):
                 native_collection_name,
                 timeout=self._request_timeout_seconds,
             ):
-                # Primary keys begin with the incarnation and a colon, so its
-                # keys are exactly those between that prefix and the prefix
-                # ending in the character after the colon: a key-range query
-                # reads the sorted key index instead of scanning the
-                # partition-key column of the incarnation's whole partition.
-                prefix = str(claim.incarnation)
                 listed = await asyncio.to_thread(
                     self._client.query,
                     collection_name=native_collection_name,
-                    filter=(
-                        f"{_ID_FIELD} > {_expr_string(f'{prefix}:')}"
-                        f" and {_ID_FIELD} < {_expr_string(f'{prefix};')}"
-                    ),
+                    filter=_incarnation_filter(claim.incarnation),
                     output_fields=[_ID_FIELD],
                     limit=self._purge_batch_size,
                     timeout=self._request_timeout_seconds,
