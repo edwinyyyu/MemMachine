@@ -713,11 +713,32 @@ class MilvusVectorStore(VectorStore):
     async def _create_native_collection(
         self, namespace: str, config: VectorStoreCollectionConfig
     ) -> None:
-        """Idempotently create the native Milvus collection."""
+        """Ensure the native Milvus collection exists, is indexed and is loaded.
+
+        Creation is three server steps, each run only when it is missing, so
+        a creation that failed or was interrupted part way is completed by
+        the next one, as if it had never been attempted.
+        """
         self._validate_metric(config.similarity_metric)
         native_collection_name = MilvusVectorStore._build_native_collection_name(
             namespace, config
         )
+        index_params = self._client.prepare_index_params()
+        index_params.add_index(
+            field_name=_VECTOR_FIELD,
+            index_name=_VECTOR_FIELD,
+            index_type=_VECTOR_INDEX_TYPE,
+            metric_type=self._SIMILARITY_METRIC_TO_MILVUS_METRIC[
+                config.similarity_metric
+            ],
+            params=_VECTOR_INDEX_PARAMS,
+        )
+        for key, declared_type in config.indexed_properties_schema.items():
+            index_params.add_index(
+                field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
+                index_name=f"{_DECLARED_FIELD_PREFIX}{key}",
+                index_type=_DECLARED_INDEX_TYPES[declared_type],
+            )
 
         def _create_collection() -> None:
             schema = self._client.create_schema(
@@ -750,15 +771,6 @@ class MilvusVectorStore(VectorStore):
                 field_name=_PROPERTIES_FIELD,
                 datatype=DataType.JSON,
             )
-            index_params = self._client.prepare_index_params()
-            index_params.add_index(
-                field_name=_VECTOR_FIELD,
-                index_type=_VECTOR_INDEX_TYPE,
-                metric_type=self._SIMILARITY_METRIC_TO_MILVUS_METRIC[
-                    config.similarity_metric
-                ],
-                params=_VECTOR_INDEX_PARAMS,
-            )
             for key, declared_type in config.indexed_properties_schema.items():
                 if declared_type is str:
                     schema.add_field(
@@ -779,31 +791,55 @@ class MilvusVectorStore(VectorStore):
                         datatype=DataType.INT32,
                         nullable=True,
                     )
-                index_params.add_index(
-                    field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
-                    index_type=_DECLARED_INDEX_TYPES[declared_type],
-                )
 
+            # Without index_params, so the indexes and the load below are
+            # steps of their own.
             self._client.create_collection(
                 collection_name=native_collection_name,
                 schema=schema,
-                index_params=index_params,
                 consistency_level=self._consistency_level,
                 properties={"partitionkey.isolation": True},
                 timeout=self._request_timeout_seconds,
             )
 
-        if await asyncio.to_thread(
+        if not await asyncio.to_thread(
             self._client.has_collection,
             native_collection_name,
             timeout=self._request_timeout_seconds,
         ):
-            return
-        try:
-            await asyncio.to_thread(_create_collection)
-        except MilvusException as exc:
-            if not MilvusVectorStore._is_already_exists_error(exc):
-                raise
+            try:
+                await asyncio.to_thread(_create_collection)
+            except MilvusException as exc:
+                if not MilvusVectorStore._is_already_exists_error(exc):
+                    raise
+
+        # Index names are their field names, so the ones present say which
+        # fields are indexed. A racing creator's index of the same
+        # definition makes create_index succeed, not fail.
+        existing = set(
+            await asyncio.to_thread(
+                self._client.list_indexes,
+                native_collection_name,
+                timeout=self._request_timeout_seconds,
+            )
+        )
+        missing = self._client.prepare_index_params()
+        missing.extend(
+            index for index in index_params if index.index_name not in existing
+        )
+        if missing:
+            await asyncio.to_thread(
+                self._client.create_index,
+                native_collection_name,
+                missing,
+                timeout=self._request_timeout_seconds,
+            )
+        # A no-op when the collection is already loaded.
+        await asyncio.to_thread(
+            self._client.load_collection,
+            native_collection_name,
+            timeout=self._request_timeout_seconds,
+        )
 
     @override
     async def create_collection(

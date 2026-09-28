@@ -118,6 +118,9 @@ async def store(milvus_client, tmp_path):
 _CLIENT_REQUESTS = (
     "has_collection",
     "create_collection",
+    "list_indexes",
+    "create_index",
+    "load_collection",
     "get",
     "query",
     "upsert",
@@ -188,6 +191,47 @@ async def collection(store):
 
 
 class TestCollectionLifecycle:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failing_step", ["create_index", "load_collection"])
+    async def test_a_creation_that_failed_part_way_is_as_if_never_attempted(
+        self, store, monkeypatch, failing_step
+    ):
+        """The next creation completes the native collection a failed one left behind."""
+        namespace = f"partial_{failing_step}"
+        config = VectorStoreCollectionConfig(
+            vector_dimensions=VECTOR_DIM, indexed_properties_schema={"name": str}
+        )
+
+        def refuse(*args, **kwargs):
+            raise pymilvus.MilvusException(message=f"{failing_step} refused")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(store._client, failing_step, refuse)
+            with pytest.raises(pymilvus.MilvusException, match="refused"):
+                await store.create_collection(
+                    namespace=namespace, name="partial", config=config
+                )
+        assert await store.open_collection(namespace=namespace, name="partial") is None
+
+        await store.create_collection(
+            namespace=namespace, name="partial", config=config
+        )
+        coll = await store.open_collection(namespace=namespace, name="partial")
+        assert coll is not None
+        record = _make_record(
+            vector=_normalize([1.0, 0.0, 0.0]), properties={"name": "alice"}
+        )
+        await coll.upsert(records=[record])
+        [result] = await coll.query(
+            query_vectors=[record.vector],
+            limit=1,
+            property_filter=Comparison(field="name", op="=", value="alice"),
+        )
+        assert [match.record.uuid for match in result.matches] == [record.uuid]
+        native = coll._native_collection_name
+        assert set(store._client.list_indexes(native)) == {"vector", "_p_name"}
+        await store.delete_collection(namespace=namespace, name="partial")
+
     @pytest.mark.asyncio
     async def test_create_open_delete(self, store):
         await store.create_collection(
