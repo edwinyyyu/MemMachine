@@ -50,8 +50,8 @@ from .data_types import (
     TextBlock,
 )
 from .deriver import Deriver
+from .event_memory_store import EventMemoryStorePartition
 from .formatting import format_timestamp
-from .segment_store import SegmentStorePartition
 from .segmenter import Segmenter
 
 logger = logging.getLogger(__name__)
@@ -103,8 +103,8 @@ class EventMemoryParams(BaseModel):
     Parameters for EventMemory.
 
     Attributes:
-        segment_store_partition (SegmentStorePartition):
-            Segment store partition.
+        event_memory_store_partition (EventMemoryStorePartition):
+            Event memory store partition.
         vector_store_partition (VectorStorePartition):
             Vector store partition.
         segmenter (Segmenter):
@@ -118,9 +118,9 @@ class EventMemoryParams(BaseModel):
             (default: None).
     """
 
-    segment_store_partition: InstanceOf[SegmentStorePartition] = Field(
+    event_memory_store_partition: InstanceOf[EventMemoryStorePartition] = Field(
         ...,
-        description="Segment store partition",
+        description="Event memory store partition",
     )
     vector_store_partition: InstanceOf[VectorStorePartition] = Field(
         ...,
@@ -154,7 +154,7 @@ class EventMemory:
 
     # Every property a vector record carries, with the type the collection
     # declares: the fields a search filters on at the vector stage. User
-    # properties stay in the segment store.
+    # properties stay in the event memory store.
     _RESERVED_PROPERTY_SCHEMA: ClassVar[dict[str, type[PropertyValue]]] = {
         EVENT_TIMESTAMP_KEY: cast(type[PropertyValue], datetime.datetime),
         EVENT_SOURCE_KEY: cast(type[PropertyValue], str),
@@ -179,7 +179,7 @@ class EventMemory:
                 Parameters for the EventMemory.
 
         """
-        self._segment_store_partition = params.segment_store_partition
+        self._event_memory_store_partition = params.event_memory_store_partition
         self._vector_store_partition = params.vector_store_partition
         self._segmenter = params.segmenter
         self._deriver = params.deriver
@@ -242,7 +242,7 @@ class EventMemory:
         Raises:
             ValueError:
                 If any event supplies a reserved or illegal property key.
-            SegmentStoreEventAlreadyStoredError:
+            EventMemoryStoreEventAlreadyStoredError:
                 If the memory already holds any of the events.
         """
         async with self._tracker("encode_events"):
@@ -315,12 +315,12 @@ class EventMemory:
             for event, segment_list in zip(events, segment_lists, strict=True)
         }
 
-        # The records are written inside the segment store's transaction:
+        # The records are written inside the event memory store's transaction:
         # the segments commit only once the vector store has acknowledged
         # their records, and an upsert that fails rolls them back.
-        async with self._segment_store_partition.write() as writer:
+        async with self._event_memory_store_partition.write() as writer:
             await writer.add_events(events_to_segments)
-            t_segment_store = time.monotonic()
+            t_event_memory_store = time.monotonic()
             if derivative_records:
                 try:
                     await self._vector_store_partition.upsert(
@@ -347,9 +347,9 @@ class EventMemory:
             "segmentation": t_segmentation - t_start,
             "derivation": t_derivation - t_segmentation,
             "embedding": t_embedding - t_derivation,
-            "segment_store": (t_segment_store - t_embedding)
+            "event_memory_store": (t_event_memory_store - t_embedding)
             + (t_commit - t_vector_store),
-            "vector_store": t_vector_store - t_segment_store,
+            "vector_store": t_vector_store - t_event_memory_store,
         }
 
         logger.debug(
@@ -376,7 +376,7 @@ class EventMemory:
         """Build a vector record from a derivative, its embedding and its segment's properties.
 
         The record carries the reserved keys and the segment properties the
-        vector store declares. The segment store holds every property and
+        vector store declares. The event memory store holds every property and
         evaluates the whole filter (see `_vector_store_filter`).
         """
         declared = self._vector_store_partition.indexed_properties
@@ -415,10 +415,10 @@ class EventMemory:
 
         A vector record carries the properties the store declares, so
         a conjunct naming any other field has nothing to match there and is
-        left to the segment store, which holds every property and evaluates
+        left to the event memory store, which holds every property and evaluates
         the whole filter on the context windows. A conjunct is dropped whole
         when any field under it is undeclared, so dropping only ever widens
-        the vector search; the segment store narrows it back.
+        the vector search; the event memory store narrows it back.
         """
         declared = self._vector_store_partition.indexed_properties
         mapped = map_filter_fields(property_filter, self._to_vector_record_property)
@@ -556,7 +556,7 @@ class EventMemory:
             if segment_uuid not in cosine_similarity_by_seed_uuid:
                 cosine_similarity_by_seed_uuid[segment_uuid] = match.cosine_similarity
 
-        seed_segments = await self._segment_store_partition.get_segments(
+        seed_segments = await self._event_memory_store_partition.get_segments(
             cosine_similarity_by_seed_uuid.keys(),
             since=since,
             until=until,
@@ -568,7 +568,7 @@ class EventMemory:
         neighborhoods: dict[UUID, Neighborhood] = {}
         if expand_context > 0 and seed_segments:
             neighborhoods = (
-                await self._segment_store_partition.get_segment_neighborhoods(
+                await self._event_memory_store_partition.get_segment_neighborhoods(
                     seed_segments.keys(),
                     before=before,
                     after=after,
@@ -616,10 +616,8 @@ class EventMemory:
         self, record_uuids: list[UUID]
     ) -> dict[UUID, UUID]:
         """The segment of each record, repairing records found without one."""
-        linked = (
-            await self._segment_store_partition.get_segment_uuids_by_derivative_uuids(
-                record_uuids
-            )
+        linked = await self._event_memory_store_partition.get_segment_uuids_by_derivative_uuids(
+            record_uuids
         )
         unlinked = [uuid for uuid in record_uuids if uuid not in linked]
         if unlinked:
@@ -643,7 +641,7 @@ class EventMemory:
             dict[UUID, UUID]:
                 The links found, from record uuid to segment uuid.
         """
-        async with self._segment_store_partition.write(exclusive=True) as writer:
+        async with self._event_memory_store_partition.write(exclusive=True) as writer:
             linked = await writer.get_segment_uuids_by_derivative_uuids(record_uuids)
         orphans = [uuid for uuid in record_uuids if uuid not in linked]
         if orphans:
@@ -704,7 +702,7 @@ class EventMemory:
         """
         async with self._tracker("expand"):
             neighborhoods = (
-                await self._segment_store_partition.get_segment_neighborhoods(
+                await self._event_memory_store_partition.get_segment_neighborhoods(
                     [seed_uuid],
                     before=before,
                     after=after,
@@ -846,10 +844,8 @@ class EventMemory:
             await self._forget_events(event_uuids)
 
     async def _forget_events(self, event_uuids: set[UUID]) -> None:
-        derivatives_by_event = (
-            await self._segment_store_partition.get_derivative_uuids_by_event_uuids(
-                event_uuids
-            )
+        derivatives_by_event = await self._event_memory_store_partition.get_derivative_uuids_by_event_uuids(
+            event_uuids
         )
         derivative_uuids = {
             derivative_uuid
@@ -863,7 +859,7 @@ class EventMemory:
         if derivative_uuids:
             await self._vector_store_partition.delete(record_uuids=derivative_uuids)
 
-        await self._segment_store_partition.delete_events(event_uuids)
+        await self._event_memory_store_partition.delete_events(event_uuids)
 
 
 def _conjuncts(expr: FilterExpr) -> list[FilterExpr]:
