@@ -3,8 +3,9 @@
 import json
 import logging
 import sqlite3
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta, timezone
+from functools import partial
 from typing import override
 from uuid import UUID, uuid4
 
@@ -34,6 +35,7 @@ from sqlalchemy import (
     bindparam,
     case,
     delete,
+    false,
     func,
     insert,
     literal,
@@ -46,6 +48,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.engine import Dialect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -61,6 +64,7 @@ from sqlalchemy.orm import (
     mapped_column,
 )
 from sqlalchemy.pool import StaticPool
+from sqlalchemy.types import TypeDecorator
 
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
@@ -88,9 +92,10 @@ from memmachine_server.common.properties_json import (
     decode_properties,
     encode_properties,
 )
-from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
+from memmachine_server.common.utils import utc_offset_seconds
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Derivative,
+    Neighborhood,
     NullContext,
     Segment,
     decode_block,
@@ -125,7 +130,7 @@ _JSON_AUTO = JSON().with_variant(JSONB, "postgresql")
 
 # Consecutive failed mint attempts before the store concludes it
 # is re-attempting a persistent database error rather than losing races: a real
-# uuid collision is a once-in-the-universe event and each race retry
+# UUID collision is a once-in-the-universe event and each race retry
 # requires another actor to have changed the registry in a ~millisecond
 # window, so consecutive failures at this depth mean the IntegrityError
 # has some other, permanent cause.
@@ -142,6 +147,12 @@ _MAX_CONTEXT_DISTANCE = 1_000
 # before it is no longer claimed.
 _MAX_CLAIM_ATTEMPTS_WITHOUT_PROGRESS = 10
 
+# A neighborhood read's row predicates over a column collection, the
+# segment table's or a window's.
+_NeighborConditions = Callable[
+    [ColumnCollection[str, ColumnElement]], list[ColumnElement[bool]]
+]
+
 
 class _RegistryInsertRejectedError(Exception):
     """A registry insert was rejected although its key is free.
@@ -153,6 +164,37 @@ class _RegistryInsertRejectedError(Exception):
 
 
 # ORM models
+
+
+class UtcInstant(TypeDecorator[datetime]):
+    """A timestamp column that holds a UTC instant.
+
+    On write, a timezone-aware datetime is converted to UTC and a naive
+    one is rejected. On read, PostgreSQL returns an aware datetime, which
+    is passed through; SQLite stores no zone and returns a naive one,
+    which is given `tzinfo=UTC`, the zone it was written in.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    @override
+    def process_bind_param(
+        self, value: datetime | None, dialect: Dialect
+    ) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError(f"a timestamp must be timezone-aware: {value!r}")
+        return value.astimezone(UTC)
+
+    @override
+    def process_result_value(
+        self, value: datetime | None, dialect: Dialect
+    ) -> datetime | None:
+        if value is None or value.tzinfo is not None:
+            return value
+        return value.replace(tzinfo=UTC)
 
 
 class BaseSegmentStore(DeclarativeBase):
@@ -198,12 +240,11 @@ class SegmentRow(BaseSegmentStore):
     event_uuid: MappedColumn[UUID] = mapped_column(Uuid, nullable=False)
     index: MappedColumn[int] = mapped_column(Integer, nullable=False)
     offset: MappedColumn[int] = mapped_column(Integer, nullable=False)
-    timestamp: MappedColumn[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    timestamp: MappedColumn[datetime] = mapped_column(UtcInstant, nullable=False)
     timestamp_timezone_offset: MappedColumn[int] = mapped_column(
         Integer, nullable=False, default=0
     )
+    source_id: MappedColumn[str | None] = mapped_column(String(255), nullable=True)
     context: MappedColumn[bytes] = mapped_column(LargeBinary, nullable=False)
     block: MappedColumn[bytes] = mapped_column(LargeBinary, nullable=False)
     properties: MappedColumn[dict[str, JsonValue]] = mapped_column(
@@ -279,6 +320,10 @@ class PendingDerivativesRow(BaseSegmentStore):
     uuid: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
     incarnation: MappedColumn[UUID] = mapped_column(Uuid, nullable=False)
     event_uuid: MappedColumn[UUID] = mapped_column(Uuid, nullable=False)
+    # The event's properties, stored as a segment row stores its own.
+    properties: MappedColumn[dict[str, JsonValue]] = mapped_column(
+        _JSON_AUTO, nullable=False, default=dict
+    )
     created_at: MappedColumn[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -323,17 +368,12 @@ class PendingDerivativeRow(BaseSegmentStore):
     pending_uuid: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
     uuid: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
     segment_uuid: MappedColumn[UUID] = mapped_column(Uuid, nullable=False)
-    timestamp: MappedColumn[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    timestamp: MappedColumn[datetime] = mapped_column(UtcInstant, nullable=False)
     timestamp_timezone_offset: MappedColumn[int] = mapped_column(
         Integer, nullable=False, default=0
     )
-    context: MappedColumn[bytes] = mapped_column(LargeBinary, nullable=False)
+    source_id: MappedColumn[str | None] = mapped_column(String(255), nullable=True)
     block: MappedColumn[bytes] = mapped_column(LargeBinary, nullable=False)
-    properties: MappedColumn[dict[str, JsonValue]] = mapped_column(
-        _JSON_AUTO, nullable=False, default=dict
-    )
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -643,8 +683,9 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 "offset": segment.offset,
                 # Store the UTC instant; SQLite does not persist tzinfo, so the
                 # original offset is recorded separately and reapplied on read.
-                "timestamp": ensure_tz_aware(segment.timestamp).astimezone(UTC),
+                "timestamp": segment.timestamp,
                 "timestamp_timezone_offset": utc_offset_seconds(segment.timestamp),
+                "source_id": segment.source_id,
                 "context": self._payload_codec.encode(
                     json.dumps(encode_context(segment.context)).encode("utf-8")
                 ),
@@ -692,6 +733,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                         "uuid": pending.uuid,
                         "incarnation": self._incarnation,
                         "event_uuid": pending.event_uuid,
+                        "properties": encode_properties(pending.properties),
                         "created_at": func.now(),
                     }
                     for pending in pending_derivatives
@@ -703,15 +745,12 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 "pending_uuid": pending.uuid,
                 "uuid": derivative.uuid,
                 "segment_uuid": derivative.segment_uuid,
-                "timestamp": ensure_tz_aware(derivative.timestamp).astimezone(UTC),
+                "timestamp": derivative.timestamp,
                 "timestamp_timezone_offset": utc_offset_seconds(derivative.timestamp),
-                "context": self._payload_codec.encode(
-                    json.dumps(encode_context(derivative.context)).encode("utf-8")
-                ),
+                "source_id": derivative.source_id,
                 "block": self._payload_codec.encode(
                     json.dumps(encode_block(derivative.block)).encode("utf-8")
                 ),
-                "properties": encode_properties(derivative.properties),
             }
             for pending in pending_derivatives
             for derivative in pending.derivatives
@@ -745,76 +784,102 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     # Retrieval
 
     @override
-    async def get_segment_contexts(
+    async def get_segments(
         self,
-        seed_segment_uuids: Iterable[UUID],
+        segment_uuids: Iterable[UUID],
         *,
-        max_backward_segments: int = 0,
-        max_forward_segments: int = 0,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        source_ids: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
-    ) -> dict[UUID, list[Segment]]:
-        seed_segment_uuids = set(seed_segment_uuids)
-        if not seed_segment_uuids:
+    ) -> dict[UUID, Segment]:
+        SQLAlchemySegmentStorePartition._require_aware_bounds(since, until)
+        segment_uuids = set(segment_uuids)
+        if not segment_uuids:
             return {}
+        conditions = SQLAlchemySegmentStorePartition._row_conditions(
+            SegmentRow.__table__.c,
+            since=since,
+            until=until,
+            source_ids=source_ids,
+            property_filter=property_filter,
+        )
 
         async with (
-            self._tracker("get_segment_contexts"),
+            self._tracker("get_segments"),
             self._create_session() as session,
         ):
-            seed_segments_query = select(SegmentRow).where(
-                SegmentRow.uuid.in_(seed_segment_uuids),
-                SegmentRow.incarnation == self._incarnation,
-                self._registry_row_query().exists(),
+            rows_by_uuid = await self._segment_rows_by_uuid(
+                session, segment_uuids, conditions
             )
-            if property_filter is not None:
-                seed_segments_query = seed_segments_query.where(
-                    compile_sql_filter(
-                        property_filter,
-                        lambda field: (
-                            SQLAlchemySegmentStorePartition._resolve_segment_field(
-                                field, columns=SegmentRow.__table__.c
-                            )
-                        ),
-                    )
-                )
-            seed_segment_rows = (
-                (await session.execute(seed_segments_query)).scalars().all()
-            )
-
-            seed_segment_rows_by_uuid: dict[UUID, SegmentRow] = {
-                row.uuid: row for row in seed_segment_rows
+            if not rows_by_uuid:
+                # Empty may mean a stale handle; the registry read raises if so.
+                await self._ensure_partition_live(session)
+            return {
+                segment_uuid: self._segment_from_segment_row(row)
+                for segment_uuid, row in rows_by_uuid.items()
             }
-            if not seed_segment_rows_by_uuid:
+
+    @override
+    async def get_segment_neighborhoods(
+        self,
+        seed_uuids: Iterable[UUID],
+        *,
+        before: int = 0,
+        after: int = 0,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        source_ids: Iterable[str] | None = None,
+        property_filter: FilterExpr | None = None,
+    ) -> dict[UUID, Neighborhood]:
+        if before < 0:
+            raise ValueError(f"before must be nonnegative: {before}")
+        if after < 0:
+            raise ValueError(f"after must be nonnegative: {after}")
+        SQLAlchemySegmentStorePartition._require_aware_bounds(since, until)
+        seed_uuids = set(seed_uuids)
+        if not seed_uuids:
+            return {}
+        filtered = any(
+            value is not None for value in (since, until, source_ids, property_filter)
+        )
+        neighbor_conditions = (
+            partial(
+                SQLAlchemySegmentStorePartition._row_conditions,
+                since=since,
+                until=until,
+                source_ids=None if source_ids is None else list(source_ids),
+                property_filter=property_filter,
+            )
+            if filtered
+            else None
+        )
+
+        async with (
+            self._tracker("get_segment_neighborhoods"),
+            self._create_session() as session,
+        ):
+            # The seed is an address: it is located whatever the filters say.
+            seed_rows_by_uuid = await self._segment_rows_by_uuid(
+                session, seed_uuids, []
+            )
+            if not seed_rows_by_uuid:
                 await self._ensure_partition_live(session)
                 return {}
 
-            # Short-circuit: no context needed.
-            if max_backward_segments <= 0 and max_forward_segments <= 0:
+            if before <= 0 and after <= 0:
                 return {
-                    seed_segment_uuid: [
-                        self._segment_from_segment_row(
-                            seed_segment_row,
-                        )
-                    ]
-                    for seed_segment_uuid, seed_segment_row in seed_segment_rows_by_uuid.items()
+                    seed_uuid: Neighborhood(before=[], after=[])
+                    for seed_uuid in seed_rows_by_uuid
                 }
 
-            # Get backward/forward context rows.
             if not self._is_sqlite:
-                context_rows_by_seed = await self._get_context_rows_lateral(
-                    session,
-                    seed_segment_rows_by_uuid,
-                    max_backward_segments,
-                    max_forward_segments,
-                    property_filter,
+                neighbor_rows_by_seed = await self._get_context_rows_lateral(
+                    session, seed_rows_by_uuid, before, after, neighbor_conditions
                 )
             else:
-                context_rows_by_seed = await self._get_context_rows_loop(
-                    session,
-                    seed_segment_rows_by_uuid,
-                    max_backward_segments,
-                    max_forward_segments,
-                    property_filter,
+                neighbor_rows_by_seed = await self._get_context_rows_loop(
+                    session, seed_rows_by_uuid, before, after, neighbor_conditions
                 )
 
             # Each statement above took its own snapshot (READ COMMITTED):
@@ -824,26 +889,43 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             # turns that window into the contractual stale-handle error.
             await self._ensure_partition_live(session)
 
-            # Assemble results: [backward (reversed) + seed + forward].
-            segments_by_seed: dict[UUID, list[Segment]] = {}
-            for seed_uuid, seed_row in seed_segment_rows_by_uuid.items():
-                backward_rows, forward_rows = context_rows_by_seed.get(
-                    seed_uuid, ([], [])
+            return {
+                seed_uuid: Neighborhood(
+                    before=[
+                        self._segment_from_segment_row(row)
+                        for row in reversed(backward_rows)
+                    ],
+                    after=[self._segment_from_segment_row(row) for row in forward_rows],
                 )
-                segments_by_seed[seed_uuid] = [
-                    self._segment_from_segment_row(row)
-                    for row in [*reversed(backward_rows), seed_row, *forward_rows]
-                ]
+                for seed_uuid, (
+                    backward_rows,
+                    forward_rows,
+                ) in neighbor_rows_by_seed.items()
+            }
 
-            return segments_by_seed
+    async def _segment_rows_by_uuid(
+        self,
+        session: AsyncSession,
+        segment_uuids: set[UUID],
+        conditions: Sequence[ColumnElement[bool]],
+    ) -> dict[UUID, SegmentRow]:
+        """The rows of this partition among `segment_uuids` that satisfy `conditions`."""
+        query = select(SegmentRow).where(
+            SegmentRow.uuid.in_(segment_uuids),
+            SegmentRow.incarnation == self._incarnation,
+            self._registry_row_query().exists(),
+            *conditions,
+        )
+        rows = (await session.execute(query)).scalars().all()
+        return {row.uuid: row for row in rows}
 
     async def _get_context_rows_lateral(
         self,
         session: AsyncSession,
         seed_rows_by_uuid: Mapping[UUID, SegmentRow],
-        max_backward_segments: int,
-        max_forward_segments: int,
-        property_filter: FilterExpr | None,
+        before: int,
+        after: int,
+        neighbor_conditions: _NeighborConditions | None,
     ) -> dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]]:
         """Get backward/forward context using LATERAL joins (non-SQLite)."""
         seeds_subquery = (
@@ -879,7 +961,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     seed_ordering_columns,
                     backward=backward,
                     limit=limit,
-                    property_filter=property_filter,
+                    neighbor_conditions=neighbor_conditions,
                 )
                 .subquery()
                 .lateral("context")
@@ -902,18 +984,14 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             return rows_by_seed
 
         backward_rows_by_seed = (
-            await get_context_rows_directional(
-                backward=True, limit=max_backward_segments
-            )
-            if max_backward_segments > 0
+            await get_context_rows_directional(backward=True, limit=before)
+            if before > 0
             else {seed_uuid: [] for seed_uuid in seed_rows_by_uuid}
         )
 
         forward_rows_by_seed = (
-            await get_context_rows_directional(
-                backward=False, limit=max_forward_segments
-            )
-            if max_forward_segments > 0
+            await get_context_rows_directional(backward=False, limit=after)
+            if after > 0
             else {seed_uuid: [] for seed_uuid in seed_rows_by_uuid}
         )
 
@@ -929,9 +1007,9 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         self,
         session: AsyncSession,
         seed_rows_by_uuid: Mapping[UUID, SegmentRow],
-        max_backward_segments: int,
-        max_forward_segments: int,
-        property_filter: FilterExpr | None,
+        before: int,
+        after: int,
+        neighbor_conditions: _NeighborConditions | None,
     ) -> dict[UUID, tuple[list[SegmentRow], list[SegmentRow]]]:
         """Get backward/forward context per seed (SQLite fallback)."""
         # Build one statement per direction and run it for each seed, binding
@@ -958,7 +1036,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                     seed_ordering_values,
                     backward=backward,
                     limit=limit,
-                    property_filter=property_filter,
+                    neighbor_conditions=neighbor_conditions,
                 )
             )
             rows_by_seed: dict[UUID, list[SegmentRow]] = {}
@@ -977,18 +1055,14 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             return rows_by_seed
 
         backward_rows_by_seed = (
-            await get_context_rows_directional(
-                backward=True, limit=max_backward_segments
-            )
-            if max_backward_segments > 0
+            await get_context_rows_directional(backward=True, limit=before)
+            if before > 0
             else {seed_uuid: [] for seed_uuid in seed_rows_by_uuid}
         )
 
         forward_rows_by_seed = (
-            await get_context_rows_directional(
-                backward=False, limit=max_forward_segments
-            )
-            if max_forward_segments > 0
+            await get_context_rows_directional(backward=False, limit=after)
+            if after > 0
             else {seed_uuid: [] for seed_uuid in seed_rows_by_uuid}
         )
 
@@ -1006,17 +1080,16 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         *,
         backward: bool,
         limit: int,
-        property_filter: FilterExpr | None,
+        neighbor_conditions: _NeighborConditions | None,
     ) -> Select:
         """Select a seed's context on one side, nearest the seed first.
 
         `seed_ordering_values` is the seed's (timestamp, event_uuid, index,
         offset): bound parameters or an enclosing statement's columns.
-        Context comes from at most the next _MAX_CONTEXT_DISTANCE segments.
-        Unfiltered, it is the first `limit` of them. With a property filter,
-        it is the first `limit` matches among them, read without the filter,
-        which the planner cannot estimate, so the plan stays an ordered index
-        scan.
+        Context comes from at most the next _MAX_CONTEXT_DISTANCE segments. Unfiltered, it is the first `limit`
+        of them. With `neighbor_conditions`, it is the first `limit` matches
+        among them, read without the conditions, which the planner cannot
+        estimate, so the plan stays an ordered index scan.
         Returns nothing once the partition is deleted.
         """
         # Built from Core columns, the table's and the window's: building from
@@ -1047,21 +1120,12 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             # position instead of selecting from it again.
             .correlate_except(SegmentRow.__table__)
         )
-        if property_filter is None:
+        if neighbor_conditions is None:
             return walk.limit(min(limit, _MAX_CONTEXT_DISTANCE))
         window = walk.limit(_MAX_CONTEXT_DISTANCE).subquery("window")
         return (
             select(window)
-            .where(
-                compile_sql_filter(
-                    property_filter,
-                    lambda field: (
-                        SQLAlchemySegmentStorePartition._resolve_segment_field(
-                            field, columns=window.c
-                        )
-                    ),
-                )
-            )
+            .where(*neighbor_conditions(window.c))
             .order_by(
                 *SQLAlchemySegmentStorePartition._chronological_order(
                     window.c, descending=backward
@@ -1082,6 +1146,56 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         """
         order = [columns.timestamp, columns.event_uuid, columns.index, columns.offset]
         return [column.desc() for column in order] if descending else order
+
+    @staticmethod
+    def _require_aware_bounds(since: datetime | None, until: datetime | None) -> None:
+        """Reject a naive bound, which names no instant.
+
+        Called before a session is opened, so a bad bound costs no round
+        trip.
+        """
+        for name, bound in (("since", since), ("until", until)):
+            if bound is not None and bound.tzinfo is None:
+                raise ValueError(f"{name} must be timezone-aware: {bound!r}")
+
+    @staticmethod
+    def _row_conditions(
+        columns: ColumnCollection[str, ColumnElement],
+        *,
+        since: datetime | None,
+        until: datetime | None,
+        source_ids: Iterable[str] | None,
+        property_filter: FilterExpr | None,
+    ) -> list[ColumnElement[bool]]:
+        """A read's row predicates over `columns`, on the typed fields and the properties.
+
+        `columns` is the segment table's columns or a subquery's. The
+        timestamp column's type binds an aware bound as its UTC instant,
+        which is what the column holds and what SQLite compares digit by
+        digit. An empty id or kind list admits nothing.
+        """
+        conditions: list[ColumnElement[bool]] = []
+        if since is not None:
+            conditions.append(columns.timestamp >= since)
+        if until is not None:
+            conditions.append(columns.timestamp < until)
+        if source_ids is not None:
+            source_ids = list(source_ids)
+            conditions.append(
+                columns.source_id.in_(source_ids) if source_ids else false()
+            )
+        if property_filter is not None:
+            conditions.append(
+                compile_sql_filter(
+                    property_filter,
+                    lambda field: (
+                        SQLAlchemySegmentStorePartition._resolve_segment_field(
+                            field, columns=columns
+                        )
+                    ),
+                )
+            )
+        return conditions
 
     @override
     async def get_segment_uuids_by_derivative_uuids(
@@ -1247,8 +1361,6 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
                 )
             )
 
-    # Helpers
-
     @staticmethod
     def _resolve_segment_field(
         field: str,
@@ -1272,13 +1384,14 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         block = decode_block(json.loads(self._payload_codec.decode(row.block)))
         properties = decode_properties(row.properties)
         original_timezone = timezone(timedelta(seconds=row.timestamp_timezone_offset))
-        timestamp = ensure_tz_aware(row.timestamp).astimezone(original_timezone)
+        timestamp = row.timestamp.astimezone(original_timezone)
         return Segment(
             uuid=row.uuid,
             event_uuid=row.event_uuid,
             index=row.index,
             offset=row.offset,
             timestamp=timestamp,
+            source_id=row.source_id,
             context=context,
             block=block,
             properties=properties,
@@ -1979,6 +2092,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                         PendingDerivativesRow.uuid,
                         PendingDerivativesRow.incarnation,
                         PendingDerivativesRow.event_uuid,
+                        PendingDerivativesRow.properties,
                         PendingDerivativesRow.claim_generation,
                         PendingDerivativesRow.attempts_without_progress,
                     )
@@ -2014,6 +2128,7 @@ class SQLAlchemySegmentStore(SegmentStore):
             pending_derivatives=PendingDerivatives(
                 uuid=claimed.uuid,
                 event_uuid=claimed.event_uuid,
+                properties=decode_properties(claimed.properties),
                 derivatives=[
                     _derivative_from_pending_derivative_row(row, payload_codec)
                     for row in derivative_rows
@@ -2370,15 +2485,11 @@ def _derivative_from_pending_derivative_row(
     row: PendingDerivativeRow, payload_codec: PayloadCodec
 ) -> Derivative:
     """Convert a PendingDerivativeRow into a Derivative."""
-    context = decode_context(json.loads(payload_codec.decode(row.context)))
-    if context is None:
-        context = NullContext()
     original_timezone = timezone(timedelta(seconds=row.timestamp_timezone_offset))
     return Derivative(
         uuid=row.uuid,
         segment_uuid=row.segment_uuid,
-        timestamp=ensure_tz_aware(row.timestamp).astimezone(original_timezone),
-        context=context,
+        timestamp=row.timestamp.astimezone(original_timezone),
+        source_id=row.source_id,
         block=decode_block(json.loads(payload_codec.decode(row.block))),
-        properties=decode_properties(row.properties),
     )

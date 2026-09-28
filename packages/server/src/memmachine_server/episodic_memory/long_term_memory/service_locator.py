@@ -160,11 +160,6 @@ async def event_memory_from_config(
             "Event memory needs the long-term memory configuration to name "
             "a vector store, a segment store, and an embedder"
         )
-    reranker = (
-        await resource_manager.get_reranker(config.reranker, validate=True)
-        if config.reranker is not None
-        else None
-    )
     return EventMemory(
         EventMemoryParams(
             segment_store=await resource_manager.get_segment_store(
@@ -186,7 +181,6 @@ async def event_memory_from_config(
             embedder=await resource_manager.get_embedder(
                 config.embedder, validate=True
             ),
-            reranker=reranker,
             metrics_factory=await resource_manager.get_metrics_factory("prometheus"),
         )
     )
