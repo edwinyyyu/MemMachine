@@ -742,12 +742,15 @@ class TestFilters:
         }
 
     @pytest.mark.asyncio
-    async def test_a_declared_property_of_another_type_is_refused(self, collection):
+    @pytest.mark.parametrize("value", ["old", 30.0])
+    async def test_a_declared_property_of_another_type_is_refused(
+        self, collection, value
+    ):
         with pytest.raises(TypeError, match="declared int"):
             await collection.upsert(
                 records=[
                     _make_record(
-                        vector=_normalize([1.0, 0.0, 0.0]), properties={"age": "old"}
+                        vector=_normalize([1.0, 0.0, 0.0]), properties={"age": value}
                     )
                 ]
             )

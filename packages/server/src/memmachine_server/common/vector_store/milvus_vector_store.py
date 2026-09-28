@@ -316,7 +316,12 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         }
         for key, declared_type in declared.items():
             value = properties.get(key)
-            if value is not None and not _fits(value, declared_type):
+            # A filter compares an int property with a float, but an INT64
+            # field stores only ints.
+            if value is not None and (
+                not _fits(value, declared_type)
+                or (declared_type is int and isinstance(value, float))
+            ):
                 raise TypeError(
                     f"Property {key!r} is declared {declared_type.__name__}, "
                     f"got {type(value).__name__}"
