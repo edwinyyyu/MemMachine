@@ -377,6 +377,73 @@ class CollectionLifecycleContract:
             )
 
     @pytest.mark.asyncio
+    async def test_open_or_create_opens_the_winner_after_losing_the_create(
+        self, store, monkeypatch
+    ):
+        """A creator whose registration loses to another process's opens
+        the winner's collection, bound to the winner's life."""
+        await store.delete_collection(
+            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
+        )
+        registry = store._collection_registry
+        register = registry.register
+
+        async def another_process_wins(namespace, name, config):
+            # The other process registers between this caller's lookup and
+            # its own registration.
+            await register(namespace, name, config)
+            raise VectorStoreCollectionAlreadyExistsError(namespace, name)
+
+        monkeypatch.setattr(registry, "register", another_process_wins)
+        collection = await store.open_or_create_collection(
+            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME, config=LIFECYCLE_CONFIG
+        )
+        monkeypatch.undo()
+
+        winner = await registry.get(LIFECYCLE_NAMESPACE, LIFECYCLE_NAME)
+        assert winner is not None
+        assert collection._incarnation == winner.incarnation
+        record = _records(1)[0]
+        await collection.upsert(records=[record])
+        opened = await store.open_collection(
+            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
+        )
+        assert opened is not None
+        assert await opened.get(record_uuids=[record.uuid])
+        await store.delete_collection(
+            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
+        )
+
+    @pytest.mark.asyncio
+    async def test_open_or_create_refuses_a_winner_of_another_configuration(
+        self, store, monkeypatch
+    ):
+        """A creator that loses to a winner registered with another
+        configuration gets the mismatch, not a handle to the winner's."""
+        await store.delete_collection(
+            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
+        )
+        registry = store._collection_registry
+        register = registry.register
+        other_config = VectorStoreCollectionConfig(vector_dimensions=4)
+
+        async def another_process_wins(namespace, name, config):
+            await register(namespace, name, other_config)
+            raise VectorStoreCollectionAlreadyExistsError(namespace, name)
+
+        monkeypatch.setattr(registry, "register", another_process_wins)
+        with pytest.raises(VectorStoreCollectionConfigMismatchError):
+            await store.open_or_create_collection(
+                namespace=LIFECYCLE_NAMESPACE,
+                name=LIFECYCLE_NAME,
+                config=LIFECYCLE_CONFIG,
+            )
+        monkeypatch.undo()
+        await store.delete_collection(
+            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
+        )
+
+    @pytest.mark.asyncio
     async def test_open_or_create_creates_again_when_the_winner_is_gone(
         self, store, monkeypatch
     ):
