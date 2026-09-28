@@ -121,6 +121,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             metadata,
             Column("incarnation", Uuid, primary_key=True),
             Column("namespace", String(_IDENTIFIER_MAX_BYTES), nullable=False),
+            # The logical name is carried for forensics; the purge never reads it.
             Column("name", String(_IDENTIFIER_MAX_BYTES), nullable=False),
             # The configuration names the native collection the points are in.
             Column("config", _JSON_AUTO, nullable=False),
