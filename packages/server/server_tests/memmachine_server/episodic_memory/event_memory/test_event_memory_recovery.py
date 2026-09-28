@@ -25,6 +25,7 @@ from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import 
     WholeTextDeriver,
 )
 from memmachine_server.episodic_memory.event_memory.event_memory import (
+    EVENT_TIMESTAMP_KEY,
     EventMemory,
     EventMemoryParams,
     EventMemoryPartition,
@@ -262,14 +263,18 @@ async def test_a_query_deletes_the_unlinked_records_it_finds(
     [embedding] = await fake_embedder.ingest_embed(["hello"])
     await vector_store_partition.upsert(
         records=[
-            Record(uuid=unlinked_uuid, vector=embedding, properties={"_timestamp": _T0})
+            Record(
+                uuid=unlinked_uuid,
+                vector=embedding,
+                properties={EVENT_TIMESTAMP_KEY: _T0},
+            )
         ]
     )
 
     result = await partition.query("hello")
 
     assert unlinked_uuid not in vector_store_partition.records
-    assert len(result.scored_segment_contexts) == 1
+    assert len(result) == 1
 
 
 async def test_a_failed_cleanup_of_unlinked_records_leaves_the_query_answered(
@@ -280,13 +285,17 @@ async def test_a_failed_cleanup_of_unlinked_records_leaves_the_query_answered(
     await partition.encode_events([_event("hello")])
     [embedding] = await fake_embedder.ingest_embed(["hello"])
     await vector_store_partition.upsert(
-        records=[Record(uuid=uuid4(), vector=embedding, properties={"_timestamp": _T0})]
+        records=[
+            Record(
+                uuid=uuid4(), vector=embedding, properties={EVENT_TIMESTAMP_KEY: _T0}
+            )
+        ]
     )
     vector_store_partition.fail_deletes = True
 
     result = await partition.query("hello")
 
-    assert len(result.scored_segment_contexts) == 1
+    assert len(result) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +416,7 @@ async def test_background_work_writes_the_derivatives_an_encode_left_pending(
     assert len(vector_store_partition.records) == 1
     assert not await event_memory._finish_pending_derivatives()
     result = await partition.query("hello")
-    assert len(result.scored_segment_contexts) == 1
+    assert len(result) == 1
 
 
 async def test_background_work_retries_pending_derivatives_after_a_failed_write(
