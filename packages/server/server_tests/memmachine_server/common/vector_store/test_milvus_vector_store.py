@@ -128,17 +128,20 @@ _CLIENT_REQUESTS = (
 
 @pytest.mark.asyncio
 async def test_every_request_carries_the_timeout(store, monkeypatch):
+    # Its own namespace: a native collection an earlier test left behind
+    # would let create_collection skip its Milvus request.
+    namespace = "timed_namespace"
     spies = {}
     for name in _CLIENT_REQUESTS:
         spies[name] = MagicMock(wraps=getattr(store._client, name))
         monkeypatch.setattr(store._client, name, spies[name])
 
     await store.create_collection(
-        namespace=NAMESPACE,
+        namespace=namespace,
         name="timed",
         config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
     )
-    coll = await store.open_collection(namespace=NAMESPACE, name="timed")
+    coll = await store.open_collection(namespace=namespace, name="timed")
     assert coll is not None
     record, kept = (
         _make_record(vector=_normalize([1.0, 0.0, 0.0])),
@@ -148,7 +151,7 @@ async def test_every_request_carries_the_timeout(store, monkeypatch):
     await coll.query(query_vectors=[record.vector], limit=1)
     await coll.get(record_uuids=[record.uuid])
     await coll.delete(record_uuids=[record.uuid])
-    await store.delete_collection(namespace=NAMESPACE, name="timed")
+    await store.delete_collection(namespace=namespace, name="timed")
     # The purge finds the record the deletion left and reclaims it.
     while await store.purge_deleted_collections():
         pass
