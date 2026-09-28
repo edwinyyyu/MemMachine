@@ -70,8 +70,8 @@ class InMemoryEventMemoryStorePartition(EventMemoryStorePartition):
     """Minimal in-memory event memory store partition for testing.
 
     Mirrors the SQLAlchemy store's reads: one total order, a filtered
-    lookup by uuid, and a walk around a given segment that never returns
-    the segment.
+    lookup by uuid, and a walk around a given segment within its session
+    that never returns the segment.
     """
 
     def __init__(
@@ -134,6 +134,7 @@ class InMemoryEventMemoryStorePartition(EventMemoryStorePartition):
         *,
         since: datetime | None,
         until: datetime | None,
+        session_ids: list[str] | None,
         source_ids: list[str] | None,
         block_kinds: list[str] | None,
         normalized_filter: FilterExpr | None,
@@ -144,6 +145,8 @@ class InMemoryEventMemoryStorePartition(EventMemoryStorePartition):
         if since is not None and segment.timestamp < since:
             return False
         if until is not None and segment.timestamp >= until:
+            return False
+        if session_ids is not None and segment.session_id not in session_ids:
             return False
         if source_ids is not None and segment.source_id not in source_ids:
             return False
@@ -176,6 +179,7 @@ class InMemoryEventMemoryStorePartition(EventMemoryStorePartition):
         *,
         since: datetime | None,
         until: datetime | None,
+        session_ids: Iterable[str] | None,
         source_ids: Iterable[str] | None,
         block_kinds: Iterable[str] | None,
         property_filter: FilterExpr | None,
@@ -185,6 +189,7 @@ class InMemoryEventMemoryStorePartition(EventMemoryStorePartition):
             if property_filter is not None
             else None
         )
+        listed_sessions = list(session_ids) if session_ids is not None else None
         listed_sources = list(source_ids) if source_ids is not None else None
         listed_kinds = list(block_kinds) if block_kinds is not None else None
 
@@ -193,6 +198,7 @@ class InMemoryEventMemoryStorePartition(EventMemoryStorePartition):
                 segment,
                 since=since,
                 until=until,
+                session_ids=listed_sessions,
                 source_ids=listed_sources,
                 block_kinds=listed_kinds,
                 normalized_filter=normalized_filter,
@@ -207,6 +213,7 @@ class InMemoryEventMemoryStorePartition(EventMemoryStorePartition):
         *,
         since: datetime | None = None,
         until: datetime | None = None,
+        session_ids: Iterable[str] | None = None,
         source_ids: Iterable[str] | None = None,
         block_kinds: Iterable[str] | None = None,
         property_filter: FilterExpr | None = None,
@@ -214,6 +221,7 @@ class InMemoryEventMemoryStorePartition(EventMemoryStorePartition):
         passes = self._admits(
             since=since,
             until=until,
+            session_ids=session_ids,
             source_ids=source_ids,
             block_kinds=block_kinds,
             property_filter=property_filter,
@@ -245,6 +253,7 @@ class InMemoryEventMemoryStorePartition(EventMemoryStorePartition):
         passes = self._admits(
             since=since,
             until=until,
+            session_ids=None,
             source_ids=source_ids,
             block_kinds=block_kinds,
             property_filter=property_filter,
@@ -255,7 +264,7 @@ class InMemoryEventMemoryStorePartition(EventMemoryStorePartition):
             if seed is None:
                 continue
             key = _order_key(seed)
-            walk = self._ordered()
+            walk = [s for s in self._ordered() if s.session_id == seed.session_id]
             backward = [s for s in walk if _order_key(s) < key and passes(s)]
             forward = [s for s in walk if _order_key(s) > key and passes(s)]
             neighborhoods[seed.uuid] = Neighborhood(
