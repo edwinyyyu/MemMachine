@@ -41,15 +41,15 @@ class PurgeClaim:
     The registry fills in what the round needs to find the dead
     incarnation's points: `incarnation`, the value they carry, and
     `namespace` and `config`, which name the native collection they are
-    in. The round sets `found` before the claim ends: True when points
-    remained under the incarnation, False when none did. The registry
+    in. The round sets `points_found` before the claim ends: True when
+    points remained under the incarnation, False when none did. The registry
     records that outcome when the claim ends.
     """
 
     incarnation: UUID
     namespace: str
     config: VectorStoreCollectionConfig
-    found: bool | None = None
+    points_found: bool | None = None
 
 
 class VectorStoreCollectionRegistry(ABC):
@@ -152,7 +152,7 @@ class VectorStoreCollectionRegistry(ABC):
         deletion. The caller runs one round in the body: it looks for
         points under `claim.incarnation` in the native collection that
         `claim.namespace` and `claim.config` name, deletes any it finds,
-        and sets `claim.found`. When the body ends, the registry records
+        and sets `claim.points_found`. When the body ends, the registry records
         the outcome: a round that found points leaves the tombstone due; a
         round that found none removes the tombstone and frees its
         incarnation. A body that raises counts a failed round against the

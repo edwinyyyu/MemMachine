@@ -849,11 +849,11 @@ class MilvusVectorStore(VectorStore):
             else:
                 # The native collection is gone with everything in it.
                 primary_ids = []
-            claim.found = bool(primary_ids)
-            if claim.found:
+            claim.points_found = bool(primary_ids)
+            if claim.points_found:
                 await self._client.delete(
                     collection_name=native_collection_name,
                     ids=primary_ids,
                     timeout=self._request_timeout_seconds,
                 )
-            return claim.found
+            return claim.points_found
