@@ -84,8 +84,7 @@ class VectorStoreCollection(ABC):
         """
         Query for records matching the criteria by query vectors.
 
-        A match answers a record's UUID and score; the store keeps its
-        vector and properties to search and filter on, and returns neither.
+        A match answers a record's UUID and score.
 
         Args:
             query_vectors (Iterable[Sequence[float]]):
