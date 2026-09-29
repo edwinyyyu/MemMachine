@@ -260,6 +260,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         tracker: OperationTracker,
         is_live: Callable[[UUID], Awaitable[bool]],
         request_timeout_seconds: int,
+        consistency_level: str,
     ) -> None:
         """Initialize with a Milvus client and the incarnation the handle is bound to."""
         self._client = client
@@ -271,6 +272,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         self._tracker = tracker
         self._is_live = is_live
         self._request_timeout_seconds = request_timeout_seconds
+        self._consistency_level = consistency_level
 
     async def _fence(self) -> None:
         """Raise if this handle's incarnation is no longer the collection's.
@@ -457,6 +459,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                     return_properties=return_properties,
                 ),
                 anns_field=_VECTOR_FIELD,
+                consistency_level=self._consistency_level,
                 timeout=self._request_timeout_seconds,
             )
 
@@ -526,7 +529,9 @@ class MilvusVectorStoreParams(BaseModel):
             transaction can. Every store on the deployment, in any
             process, uses this registry, and no store on another
             deployment does. The caller starts it before handing it over.
-        consistency_level (str): Collection consistency level for newly created collections.
+        consistency_level (str):
+            The Milvus consistency level every read runs at, and the level
+            the native collections the store creates are given.
         request_timeout_seconds (int): Seconds any request to Milvus may take.
         max_varchar_length (int):
             Bytes a declared string property can hold: the length of its
@@ -548,8 +553,8 @@ class MilvusVectorStoreParams(BaseModel):
         description="The registry of the deployment the client reaches",
     )
     consistency_level: str = Field(
-        default="Session",
-        description="Milvus consistency level for newly created collections",
+        default="Bounded",
+        description="The Milvus consistency level every read runs at",
     )
     request_timeout_seconds: int = Field(
         ..., gt=0, description="Seconds any request to Milvus may take"
@@ -576,6 +581,16 @@ class MilvusVectorStore(VectorStore):
     deletion and reclamation across processes, which Milvus, with no
     transactions or unique constraints, cannot. Any process sharing the
     Milvus backend and the registry may serve any collection.
+
+    Every read runs at the configured consistency level, Bounded unless
+    configured. At Bounded a query reflects every write that returned at
+    least the server's `common.gracefulTime` (5 s by default) before it
+    began, and when the server has fallen further behind, it waits rather
+    than reads staler; it usually reflects later writes too. At Strong a
+    query reflects every write that returned before it began, at the cost
+    of waiting for the server to apply every write up to then, whichever
+    tenant made it. Milvus orders a record's writes by its write-ahead log,
+    so a record reads as its last write.
     """
 
     _SIMILARITY_METRIC_TO_MILVUS_METRIC: ClassVar[dict[SimilarityMetric, str]] = {
@@ -653,6 +668,7 @@ class MilvusVectorStore(VectorStore):
             tracker=self._tracker,
             is_live=self._collection_registry.is_live,
             request_timeout_seconds=self._request_timeout_seconds,
+            consistency_level=self._consistency_level,
         )
 
     async def _create_native_collection(
@@ -895,6 +911,7 @@ class MilvusVectorStore(VectorStore):
                     filter=_incarnation_filter(claim.incarnation),
                     output_fields=[_ID_FIELD],
                     limit=self._purge_batch_size,
+                    consistency_level=self._consistency_level,
                     timeout=self._request_timeout_seconds,
                 )
                 primary_ids = [entity[_ID_FIELD] for entity in listed]

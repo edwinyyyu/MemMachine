@@ -1281,3 +1281,8 @@ class TestLifecycleContract(CollectionLifecycleContract):
         return result.count
 
     stored_uuids = staticmethod(_stored_uuids)
+
+    @staticmethod
+    async def settle(collection) -> None:
+        # A Qdrant write returns once applied, so reads reflect it already.
+        pass

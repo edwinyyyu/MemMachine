@@ -86,8 +86,8 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     match `[a-z0-9_]+` and be at most 32 bytes. `tombstone_retention` is
     how long a dead incarnation's points are kept before its purge starts;
     it must exceed, by orders of magnitude, the longest a write to the
-    backend can be in flight. The retention is measured on the database
-    clock.
+    backend can be in flight and the delay before the store's reads reflect
+    a write. The retention is measured on the database clock.
 
     A purge round that raises counts against its tombstone and backs it off:
     after its f-th consecutive failed round it is claimed again only once

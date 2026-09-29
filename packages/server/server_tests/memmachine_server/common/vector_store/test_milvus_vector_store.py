@@ -72,6 +72,23 @@ def _make_record(
     )
 
 
+async def _settle(collection: MilvusVectorStoreCollection) -> None:
+    """Return once the store's reads reflect every write made so far.
+
+    The store reads at Bounded, which may lag its writes. A Strong read
+    returns only once the server has applied every earlier write, and with
+    one replica the store's later reads start from that point.
+    """
+    await collection._client.query(
+        collection_name=collection._native_collection_name,
+        filter=f'partition_key == "{collection._incarnation}"',
+        output_fields=["id"],
+        limit=1,
+        consistency_level="Strong",
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+
+
 async def _stored(
     collection: MilvusVectorStoreCollection, record_uuids: list[UUID]
 ) -> dict[UUID, Record]:
@@ -127,7 +144,6 @@ async def store(milvus_client, tmp_path):
         MilvusVectorStoreParams(
             client=milvus_client,
             collection_registry=collection_registry,
-            consistency_level="Session",
             request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
             max_varchar_length=MAX_VARCHAR_LENGTH,
             purge_batch_size=PURGE_BATCH_SIZE,
@@ -176,6 +192,7 @@ async def test_every_request_carries_the_timeout(store, monkeypatch):
         _make_record(vector=_normalize([0.0, 1.0, 0.0])),
     )
     await coll.upsert(records=[record, kept])
+    await _settle(coll)
     await coll.query(query_vectors=[record.vector], limit=1)
     await coll.delete(record_uuids=[record.uuid])
     await store.delete_collection(namespace=namespace, name="timed")
@@ -246,6 +263,7 @@ class TestCollectionLifecycle:
             vector=_normalize([1.0, 0.0, 0.0]), properties={"name": "alice"}
         )
         await coll.upsert(records=[record])
+        await _settle(coll)
         [result] = await coll.query(
             query_vectors=[record.vector],
             limit=1,
@@ -407,6 +425,7 @@ class TestUpsertAndQuery:
             properties={"name": "test"},
         )
         await collection.upsert(records=[record])
+        await _settle(collection)
 
         assert captured_kwargs is not None
         assert captured_kwargs["collection_name"] == collection._native_collection_name
@@ -423,6 +442,7 @@ class TestUpsertAndQuery:
         r3 = _make_record(vector=v3, properties={"name": "c"})
 
         await collection.upsert(records=[r1, r2, r3])
+        await _settle(collection)
 
         query_results = await collection.query(query_vectors=[v1], limit=3)
         matches = query_results[0].matches
@@ -443,6 +463,7 @@ class TestUpsertAndQuery:
         r1 = _make_record(vector=v1)
         r2 = _make_record(vector=v2)
         await collection.upsert(records=[r1, r2])
+        await _settle(collection)
 
         query_results = await collection.query(
             query_vectors=[v1], limit=10, score_threshold=0.9
@@ -456,6 +477,7 @@ class TestUpsertAndQuery:
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1, properties={"name": "test"})
         await collection.upsert(records=[r1])
+        await _settle(collection)
 
         no_vector = await collection.query(
             query_vectors=[v1], limit=10, return_vector=False
@@ -480,6 +502,7 @@ class TestUpsertAndQuery:
         r1 = _make_record(vector=v1, properties={"name": "a"})
         r2 = _make_record(vector=v2, properties={"name": "b"})
         await collection.upsert(records=[r1, r2])
+        await _settle(collection)
 
         all_results = await collection.query(query_vectors=[v1, v2], limit=1)
 
@@ -492,10 +515,12 @@ class TestUpsertAndQuery:
         v1 = _normalize([1.0, 0.0, 0.0])
         record = _make_record(vector=v1, properties={"name": "old"})
         await collection.upsert(records=[record])
+        await _settle(collection)
 
         await collection.upsert(
             records=[Record(uuid=record.uuid, vector=v1, properties={})]
         )
+        await _settle(collection)
 
         results = await collection.query(
             query_vectors=[v1],
@@ -512,6 +537,7 @@ class TestUpsertAndQuery:
         new_vector = _normalize([0.0, 1.0, 0.0])
         record = _make_record(vector=old_vector, properties={"name": "old"})
         await collection.upsert(records=[record])
+        await _settle(collection)
 
         async def fail_upsert(*args, **kwargs):
             raise RuntimeError("upsert failed")
@@ -552,6 +578,7 @@ class TestFilters:
             properties={"name": "carol", "age": 35, "score": 8.0, "active": True},
         )
         await collection.upsert(records=[r1, r2, r3])
+        await _settle(collection)
         return r1, r2, r3, v1
 
     async def _query(self, collection, query_vec, field, op, value):
@@ -594,6 +621,7 @@ class TestFilters:
         r1 = _make_record(vector=v1, properties={"created_at": dt_utc})
         r2 = _make_record(vector=v2, properties={"created_at": dt_other})
         await collection.upsert(records=[r1, r2])
+        await _settle(collection)
 
         plus5 = timezone(timedelta(hours=5))
         dt_filter = datetime(2024, 6, 15, 17, 0, 0, tzinfo=plus5)
@@ -610,6 +638,7 @@ class TestFilters:
         r_has_value = _make_record(vector=v1, properties={"name": "has_name"})
         r_missing = _make_record(vector=v2, properties={"age": 25})
         await collection.upsert(records=[r_has_value, r_missing])
+        await _settle(collection)
 
         null_results = await collection.query(
             query_vectors=[v1],
@@ -665,6 +694,7 @@ class TestFilters:
         r1, r2, r3, v1 = await self._setup(collection)
         bare = _make_record(vector=_normalize([1.0, 0.3, 0.0]), properties={})
         await collection.upsert(records=[bare])
+        await _settle(collection)
 
         async def uuids(expr):
             [result] = await collection.query(
@@ -708,6 +738,7 @@ class TestFilters:
             vector=_normalize([1.0, 0.1, 0.0]), properties={"color": "blue"}
         )
         await collection.upsert(records=[red, blue])
+        await _settle(collection)
 
         async def uuids(expr):
             [result] = await collection.query(
@@ -740,6 +771,7 @@ class TestFilters:
         )
         record = _make_record(vector=v1, properties={"created_at": written})
         await collection.upsert(records=[record])
+        await _settle(collection)
 
         [result] = await collection.query(query_vectors=[v1], limit=1)
         assert (
@@ -765,6 +797,7 @@ class TestFilters:
             )
         ]
         await collection.upsert(records=records)
+        await _settle(collection)
         v1 = _normalize([1.0, 0.0, 0.0])
 
         async def uuids(expr):
@@ -845,6 +878,7 @@ class TestScores:
         assert collection is not None
         record = _make_record(vector=[1.2, 1.6, 0.0])
         await collection.upsert(records=[record])
+        await _settle(collection)
 
         [result] = await collection.query(query_vectors=[[1.0, 0.0, 0.0]], limit=1)
         assert result.matches[0].score == pytest.approx(expected, abs=1e-3)
@@ -859,6 +893,7 @@ class TestDelete:
         r1 = _make_record(vector=v1)
         r2 = _make_record(vector=v2)
         await collection.upsert(records=[r1, r2])
+        await _settle(collection)
 
         await collection.delete(record_uuids=[r1.uuid])
 
@@ -885,9 +920,11 @@ class TestPartitionIsolation:
         await coll_a.upsert(
             records=[Record(uuid=record_uuid, vector=v1, properties={"name": "a"})]
         )
+        await _settle(coll_a)
         await coll_b.upsert(
             records=[Record(uuid=record_uuid, vector=v1, properties={"name": "b"})]
         )
+        await _settle(coll_b)
 
         stored_a = await _stored(coll_a, [record_uuid])
         stored_b = await _stored(coll_b, [record_uuid])
@@ -922,6 +959,7 @@ class TestPurgeBatches:
                 _make_record(vector=_normalize([1.0, float(i), 0.0])) for i in range(5)
             ]
         )
+        await _settle(collection)
         incarnation = collection._incarnation
         await store.delete_collection(namespace=NAMESPACE, name="batched")
         native = MilvusVectorStore._build_native_collection_name(NAMESPACE, config)
@@ -933,11 +971,13 @@ class TestPurgeBatches:
                     filter=f'partition_key == "{incarnation}"',
                     output_fields=["id"],
                     limit=16384,
+                    consistency_level="Strong",
                 )
             )
 
         left_after_each_round = []
         while await store.purge_deleted_collections():
+            await _settle(collection)
             left_after_each_round.append(await left_of_the_incarnation())
         assert left_after_each_round == [3, 1, 0]
 
@@ -953,8 +993,11 @@ class TestLifecycleContract(CollectionLifecycleContract):
             filter='id != ""',
             output_fields=["id"],
             limit=16384,
+            consistency_level="Strong",
         )
         return len(list(rows))
+
+    settle = staticmethod(_settle)
 
     @staticmethod
     async def stored_uuids(collection) -> set[UUID]:

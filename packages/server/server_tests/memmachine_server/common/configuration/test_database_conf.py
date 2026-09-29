@@ -289,7 +289,7 @@ def test_milvus_conf_defaults():
     assert conf.uri == "http://localhost:19530"
     assert conf.token == SecretStr("")
     assert conf.db_name == ""
-    assert conf.consistency_level == "Session"
+    assert conf.consistency_level == "Bounded"
     assert conf.tombstone_retention_seconds == 86400
     assert conf.request_timeout_seconds == 30
     assert conf.max_varchar_length == 65535

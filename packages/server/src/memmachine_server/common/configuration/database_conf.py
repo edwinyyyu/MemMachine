@@ -295,9 +295,9 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         description="Optional Milvus database name.",
     )
     consistency_level: str = Field(
-        default="Session",
+        default="Bounded",
         description=(
-            "Milvus consistency level for newly created collections. "
+            "The Milvus consistency level every read runs at. "
             "Supported values: Strong, Session, Bounded, Eventually."
         ),
     )

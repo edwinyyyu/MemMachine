@@ -6,9 +6,11 @@ class and supplies the `store` fixture, a started store;
 `count_stored(store, namespace, config)`, the number of records the backend
 physically holds in the native collection those name; and
 `stored_uuids(collection)`, the record UUIDs the backend holds under a
-handle's incarnation. Both read past the store's own API, whose reads may
-lag its writes, so a test observes what the backend holds, not what a
-query has caught up with. The backend may persist across tests (a
+handle's incarnation; and `settle(collection)`, which returns once the
+store's own reads reflect every write made so far. The first two read past
+the store's own API, whose reads may lag its writes, so a test observes
+what the backend holds, not what a query has caught up with; a test
+settles before a purge round, whose listing is such a read. The backend may persist across tests (a
 shared Qdrant or Milvus server): every test starts by deleting the
 collections it uses, and the purge tests count relative to a drained
 baseline.
@@ -68,10 +70,6 @@ async def _fresh(store, name: str):
     return collection
 
 
-def _uuids(result) -> set:
-    return {match.record.uuid for match in result.matches}
-
-
 class CollectionLifecycleContract:
     """Mixed into a store's test class, with its `store` fixture, `count_stored` and `stored_uuids`."""
 
@@ -83,6 +81,11 @@ class CollectionLifecycleContract:
     @staticmethod
     async def stored_uuids(collection) -> set[UUID]:
         """Record UUIDs the backend holds under the handle's incarnation."""
+        raise NotImplementedError
+
+    @staticmethod
+    async def settle(collection) -> None:
+        """Return once the store's reads reflect every write made so far."""
         raise NotImplementedError
 
     async def _drained_count(self, store) -> int:
@@ -131,16 +134,14 @@ class CollectionLifecycleContract:
         assert before.matches == []
 
         await new.upsert(records=[new_record])
-        [after] = await new.query(query_vectors=[new_record.vector], limit=5)
-        assert _uuids(after) == {new_record.uuid}
+        assert await self.stored_uuids(new) == {new_record.uuid}
 
         # The old life's handle cannot reach the new life's records.
         with pytest.raises(VectorStoreCollectionHandleStaleError):
             await old.query(query_vectors=[new_record.vector], limit=5)
         with pytest.raises(VectorStoreCollectionHandleStaleError):
             await old.delete(record_uuids=[new_record.uuid])
-        [still] = await new.query(query_vectors=[new_record.vector], limit=5)
-        assert _uuids(still) == {new_record.uuid}
+        assert await self.stored_uuids(new) == {new_record.uuid}
 
         await store.delete_collection(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
@@ -160,8 +161,7 @@ class CollectionLifecycleContract:
         )
         record = _records(1)[0]
         await first.upsert(records=[record])
-        [seen] = await second.query(query_vectors=[record.vector], limit=5)
-        assert _uuids(seen) == {record.uuid}
+        assert await self.stored_uuids(second) == {record.uuid}
 
         await store.delete_collection(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
@@ -202,6 +202,7 @@ class CollectionLifecycleContract:
         baseline = await self._drained_count(store)
         records = _records(5)
         await collection.upsert(records=records)
+        await self.settle(collection)
         assert (
             await self.count_stored(store, LIFECYCLE_NAMESPACE, LIFECYCLE_CONFIG)
             == baseline + 5
@@ -237,14 +238,15 @@ class CollectionLifecycleContract:
         gone = _records(3)
         await live.upsert(records=kept)
         await dead.upsert(records=gone)
+        await self.settle(live)
+        await self.settle(dead)
 
         await store.delete_collection(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
         )
 
         assert await self._drained_count(store) == baseline + 3
-        [result] = await live.query(query_vectors=[kept[0].vector], limit=10)
-        assert _uuids(result) == {record.uuid for record in kept}
+        assert await self.stored_uuids(live) == {record.uuid for record in kept}
         await store.delete_collection(namespace=LIFECYCLE_NAMESPACE, name=live_name)
         assert await self._drained_count(store) == baseline
 
@@ -271,6 +273,7 @@ class CollectionLifecycleContract:
 
         with pytest.raises(VectorStoreCollectionHandleStaleError, match=LIFECYCLE_NAME):
             await collection.upsert(records=records)
+        await self.settle(collection)
 
         # The write landed, under an incarnation nothing can reach...
         assert (
