@@ -36,9 +36,9 @@ has to be able to keep the promise.
 
 `VectorStoreCollection` states:
 
-> All data operations are scoped to this logical collection, whatever UUIDs
-> its records carry: a record's UUID names it in this collection only, and
-> the same UUID in another collection names another record.
+> All data operations are scoped to this logical collection: a record's
+> UUID names it in this collection only, and the same UUID in another
+> collection names another record.
 
 A record UUID may come from anywhere, a caller included: reusing one in
 another collection stores another record, and no operation on one collection

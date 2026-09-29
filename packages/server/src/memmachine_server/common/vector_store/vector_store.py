@@ -24,9 +24,9 @@ class VectorStoreCollection(ABC):
     A logical collection in a vector store.
 
     Identified by a (namespace, name) pair.
-    All data operations are scoped to this logical collection, whatever
-    UUIDs its records carry: a record's UUID names it in this collection
-    only, and the same UUID in another collection names another record.
+    All data operations are scoped to this logical collection: a record's
+    UUID names it in this collection only, and the same UUID in another
+    collection names another record.
 
     A handle is bound to one life of the collection: after the collection
     is deleted, its operations raise VectorStoreCollectionHandleStaleError,
