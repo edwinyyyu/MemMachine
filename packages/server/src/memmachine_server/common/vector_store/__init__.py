@@ -1,7 +1,6 @@
 """Public exports for vector store."""
 
 from .data_types import (
-    PropertyTypeMismatchError,
     QueryResult,
     Record,
     VectorStoreAttemptsExhaustedError,
@@ -13,7 +12,6 @@ from .data_types import (
 from .vector_store import VectorStore, VectorStoreCollection
 
 __all__ = [
-    "PropertyTypeMismatchError",
     "QueryResult",
     "Record",
     "VectorStore",

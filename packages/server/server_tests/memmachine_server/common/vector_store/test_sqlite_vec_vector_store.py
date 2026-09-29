@@ -21,7 +21,6 @@ from memmachine_server.common.filter.filter_parser import (
 )
 from memmachine_server.common.properties_json import decode_properties
 from memmachine_server.common.vector_store.data_types import (
-    PropertyTypeMismatchError,
     Record,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
@@ -600,7 +599,7 @@ class TestFilters:
     async def test_a_declared_property_of_another_type_is_refused(
         self, collection, key, value
     ):
-        with pytest.raises(PropertyTypeMismatchError, match=f"{key!r} is declared"):
+        with pytest.raises(ValueError, match=f"{key!r} is declared"):
             await collection.upsert(
                 records=[
                     _make_record(

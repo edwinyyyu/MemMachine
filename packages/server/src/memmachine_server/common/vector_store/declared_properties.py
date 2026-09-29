@@ -2,9 +2,10 @@
 
 from collections.abc import Mapping
 
-from memmachine_server.common.data_types import PropertyValue
-
-from .data_types import PropertyTypeMismatchError
+from memmachine_server.common.data_types import (
+    PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
+    PropertyValue,
+)
 
 
 def require_declared_types(
@@ -21,4 +22,8 @@ def require_declared_types(
         declared_type = indexed_properties_schema.get(key)
         # `bool` is an `int` at runtime and is its own property type here.
         if declared_type is not None and type(value) is not declared_type:
-            raise PropertyTypeMismatchError(key, declared_type, value)
+            raise ValueError(
+                f"Property {key!r} is declared as "
+                f"{PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[declared_type]}, "
+                f"got {type(value).__name__} {value!r}."
+            )

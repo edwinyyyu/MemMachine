@@ -70,7 +70,7 @@ class VectorStoreCollection(ABC):
                 are allowed.
 
         Raises:
-            PropertyTypeMismatchError:
+            ValueError:
                 If a record's declared property holds a value of another
                 type.
         """

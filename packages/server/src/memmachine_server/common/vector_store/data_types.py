@@ -129,23 +129,6 @@ class VectorStoreAttemptsExhaustedError(Exception):
     """
 
 
-class PropertyTypeMismatchError(ValueError):
-    """Raised when a record's value is not of its key's declared type."""
-
-    def __init__(
-        self, key: str, declared: type[PropertyValue], value: PropertyValue
-    ) -> None:
-        """Initialize with the key, its declared type and the offending value."""
-        self.key = key
-        self.declared = declared
-        self.value = value
-        super().__init__(
-            f"Property {key!r} is declared as "
-            f"{PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[declared]}, "
-            f"got {type(value).__name__} {value!r}."
-        )
-
-
 class Record(BaseModel):
     """
     A record to write to a vector store collection.
