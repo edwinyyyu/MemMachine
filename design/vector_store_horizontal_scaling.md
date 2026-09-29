@@ -13,7 +13,7 @@ correctness:
 - their catalogs lived inside the backend, which cannot arbitrate a create, a
   delete or a purge between processes;
 - they serialized their own operations with process-local locks;
-- a collection's name was the tenant discriminator on its points, so deleting
+- a collection's name was the tenant discriminator on its records, so deleting
   and re-creating a name did not end the old life (#1563).
 
 The goal is that any number of MemMachine server processes, on any hosts, can
@@ -56,14 +56,14 @@ behind its choices.
    incarnation. A racing creator loses at the registry's primary key.
 2. **Open.** The registry resolves `(namespace, name)` to the live incarnation
    and its configuration; the handle is bound to that incarnation.
-3. **Use.** Every point a handle writes carries its incarnation, and every
+3. **Use.** Every record a handle writes carries its incarnation, and every
    read and delete is scoped to it. Before each operation, and after each
    write, the handle checks that its incarnation is still live.
 4. **Delete.** One registry transaction removes the live row and queues a
    tombstone. Every handle of that life is stale from then on, in every
    process.
 5. **Purge.** Once the retention (a day by default) has passed, sweepers in
-   every process claim tombstones oldest first and reclaim their points in
+   every process claim tombstones oldest first and reclaim their records in
    bounded rounds, until a round finds none and the tombstone goes.
 
 ## Guarantees by store
@@ -82,7 +82,7 @@ behind its choices.
 - `collection_registry` (required): the relational database, a name under
   `resources.databases`, that holds the store's registry;
 - `tombstone_retention_seconds` (86,400): how long a deleted collection's
-  points stay before their purge starts;
+  records stay before their purge starts;
 - `request_timeout_seconds` (30): the bound on every request to the backend,
   which the retention must far exceed.
 

@@ -14,7 +14,7 @@ one process serves a backend:
 - One delete of a large tenant is one burst of work the backend applies at
   once, stalling other tenants (measured below).
 - Nothing records that a deletion is incomplete, so a crash part way through
-  leaves points no one will ever reclaim.
+  leaves records no one will ever reclaim.
 
 ## Design
 
@@ -26,7 +26,7 @@ and retried.
 `unregister` removes the live row and queues the incarnation's *tombstone* in
 one transaction (see [collection
 registry](vector_store_collection_registry.md)). The collection is unreachable
-when it commits. Its points stay in the backend until purge rounds reclaim
+when it commits. Its records stay in the backend until purge rounds reclaim
 them.
 
 A tombstone becomes *due* once `tombstone_retention_seconds` (per store;
@@ -36,13 +36,13 @@ A tombstone becomes *due* once `tombstone_retention_seconds` (per store;
   committed can land after it, and the backend cannot refuse it. Every such
   write has landed once the longest a request can be in flight has passed;
   `request_timeout_seconds` (30 unless configured) bounds that.
-- **Whom the round must see.** A round lists the incarnation's points with the
+- **Whom the round must see.** A round lists the incarnation's records with the
   store's own reads, which may lag writes by a delay the store states (see
   [consistency](vector_store_consistency.md)): at most 5 s on Milvus at
   Bounded. So the retention must also exceed that delay. It exceeds both by
   orders of magnitude, so a round that runs after it and finds nothing proves
   the incarnation empty for good, at the store's usual read level. A round
-  that lists points an earlier round deleted, before the deletion is
+  that lists records an earlier round deleted, before the deletion is
   reflected, deletes them again; that costs a round, never correctness.
   (Accepted: the purge reads at the same level as every other read of the
   store, not a stronger one.)
@@ -58,7 +58,7 @@ A tombstone becomes *due* once `tombstone_retention_seconds` (per store;
   queued, and no client clock enters a decision.
 - An incarnation is never re-minted while its tombstone exists, so no new
   collection can adopt, or have reclaimed out from under it, a dead life's
-  points.
+  records.
 
 ### The purge round
 
@@ -77,11 +77,11 @@ A round runs inside `claim_purgeable_incarnation()`:
    tombstone; that costs a repeated round and nothing more, since by the time
    any round runs no write can land, so a round finding nothing still proves
    the incarnation empty.
-2. **Round.** The store looks for points under the incarnation in the native
+2. **Round.** The store looks for records under the incarnation in the native
    collection the tombstone's `namespace` and `config` name, deletes what it
    finds (per backend, below), and reports whether it found any.
 3. **Record.** In the claim's transaction: a round that found nothing removes
-   the tombstone, which frees the incarnation; a round that found points keeps
+   the tombstone, which frees the incarnation; a round that found records keeps
    it due and clears its failed rounds.
 
 ### Failed rounds: backoff and dead-lettering
@@ -148,7 +148,7 @@ processes need no coordination: the claim arbitrates.
 - **Delete immediately, by filter** (the previous design). Rejected for the
   three defects above.
 - **Order the claim by failures first**, sinking a failing tombstone behind
-  untried ones. Rejected: it retains a failing tombstone's points indefinitely
+  untried ones. Rejected: it retains a failing tombstone's records indefinitely
   while the queue has other work, and hides the failure. The backoff gives the
   tombstones behind it their turn without reordering the queue.
 - **A `retry_at` column.** Rejected in favor of computing from recorded facts,
@@ -172,6 +172,6 @@ processes need no coordination: the claim arbitrates.
 - Deleted records stay in the backend at least the retention: storage is
   reclaimed a day after deletion by default.
 - An operator watches for the dead-letter error log. A dead-lettered
-  tombstone's points stay until someone resets its `failed_rounds`.
+  tombstone's records stay until someone resets its `failed_rounds`.
 - The purge loads the backend in bounded rounds from every process's sweeper;
   on PostgreSQL the rounds of different tombstones proceed in parallel.

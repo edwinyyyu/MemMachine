@@ -5,7 +5,7 @@ horizontal scaling](vector_store_horizontal_scaling.md).
 
 ## Problem
 
-A Qdrant or Milvus backend holds points and nothing that can arbitrate between
+A Qdrant or Milvus backend holds records and nothing that can arbitrate between
 processes: no transactions, no unique constraints, and until Qdrant 1.16 no
 conditional writes. The stores nevertheless kept their catalog inside the
 backend, one `__registry` collection per namespace, and serialized their own
@@ -17,7 +17,7 @@ could not decide anything:
   win, and Milvus's `insert` does not enforce primary-key uniqueness, so it
   kept two live entries.
 - **Deletion did not end a collection.** The logical name was the tenant
-  discriminator on every point, so a handle held in one process kept writing
+  discriminator on every record, so a handle held in one process kept writing
   into a collection another process had deleted and re-created under the same
   name (#1563, reproducible sequentially, without any race).
 - **Deletion raced with writes.** Delete was a filter-delete by name, and a
@@ -31,7 +31,7 @@ which no consumer did.
 
 A collection's catalog entry lives where a primary key and a transaction can
 arbitrate it: a relational database, reached through SQLAlchemy. The backend
-keeps only points, each carrying the *incarnation* of the collection life that
+keeps only records, each carrying the *incarnation* of the collection life that
 wrote it.
 
 ### Roles
@@ -88,7 +88,7 @@ bounds the purge claim, equality before order. The index follows the
 repository's naming scheme (table, two letters per column).
 
 The queue carries `namespace` and `config` because nothing else knows where a
-dead incarnation's points are once the collection is gone: the native
+dead incarnation's records are once the collection is gone: the native
 collection's name is derived from them, and every handle that knew them has
 been discarded. It carries `name` only so that an operator looking at a
 tombstone, a dead-lettered one above all, can tell which collection it was, as
@@ -135,7 +135,7 @@ native collection its configuration names exists, is indexed and is loaded,
 then registers:
 
 - A crash between the two leaves an empty native collection that the next
-  creation of the same configuration adopts, never a live row whose points
+  creation of the same configuration adopts, never a live row whose records
   have nowhere to go.
 - The registry's primary key is the one arbiter: a racing creator on any
   process loses at the insert, never in the backend.
@@ -174,7 +174,7 @@ the same name is a new life the old handle cannot reach.
 - Every write reads it again after the remote call, so a write that completed
   under an incarnation that died meanwhile raises instead of reporting
   success.
-- A read is not checked afterwards. A deleted collection's points stay until a
+- A read is not checked afterwards. A deleted collection's records stay until a
   purge round claims its tombstone, so a read in flight when the deletion
   commits returns a snapshot from before it, never a state halfway through a
   deletion: the answer it would have given had it run a moment earlier.
@@ -210,7 +210,7 @@ where the backend is remote:
   name first, in a separate transaction, and would still need the name-keyed
   path for a caller that holds no handle.
 - **The registry keeps the namespace** in the queue, because a dead
-  incarnation's points can be found only through the native collection its
+  incarnation's records can be found only through the native collection its
   namespace and configuration name. In #1627, where a store is one native
   collection, the queue no longer needs it.
 - **`startup` keeps its name.** It creates the tables when missing, which is
@@ -236,7 +236,7 @@ where the backend is remote:
 - Every Qdrant or Milvus store needs a relational database: `QdrantConf` and
   `MilvusConf` name one in `collection_registry`, a required key.
 - Existing Qdrant and Milvus data is orphaned: the per-namespace registry
-  collections are no longer read, and existing points carry name-keyed values
+  collections are no longer read, and existing records carry name-keyed values
   no incarnation resolves. No migration; pre-GA.
 - A liveness read costs every operation one indexed lookup on the registry's
   database (two for a write).
