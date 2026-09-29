@@ -34,9 +34,9 @@ registry](vector_store_collection_registry.md),
   filter compares; the datetime's UTC offset is stored beside it so the stored
   record is the one written, as the other stores keep it, though nothing in
   the store reads it back. Undeclared properties go in the JSON field, still
-  filterable by path. Negation is the complement, as on Qdrant: a negated condition holds
-  where the property has no value, which Milvus's SQL-style null evaluation
-  does not give on its own.
+  filterable by path. Negation is the complement, as on Qdrant: a negated
+  condition holds where the property has no value, which Milvus's SQL-style
+  null evaluation does not give on its own.
 - **Scores** are the server's (cosine similarity, inner product, and the
   square root of Milvus's squared Euclidean distance).
 - **Server-configured limits stay the server's.** A search `limit` reaches the
