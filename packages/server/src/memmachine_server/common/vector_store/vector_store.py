@@ -24,7 +24,9 @@ class VectorStoreCollection(ABC):
     A logical collection in a vector store.
 
     Identified by a (namespace, name) pair.
-    All data operations are scoped to this logical collection.
+    All data operations are scoped to this logical collection, whatever
+    UUIDs its records carry: a record's UUID names it in this collection
+    only, and the same UUID in another collection names another record.
 
     A handle is bound to one life of the collection: after the collection
     is deleted, its operations raise VectorStoreCollectionHandleStaleError,
@@ -60,14 +62,6 @@ class VectorStoreCollection(ABC):
 
         Insert records with new UUIDs,
         and update records with existing UUIDs.
-
-        A record's UUID is minted by the service for that record: random,
-        or derived only from identifiers the service minted itself. It is
-        never a value a caller supplied or one derived from it, even where
-        an ingestion path would pass the caller's identifier through: the
-        collections of one store may share the backend's id space, so a
-        UUID a caller chose could name, and replace, another collection's
-        record.
 
         Args:
             records (Iterable[Record]):

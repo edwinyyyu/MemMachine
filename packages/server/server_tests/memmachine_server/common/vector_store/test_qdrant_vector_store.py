@@ -32,6 +32,7 @@ from memmachine_server.common.vector_store.data_types import (
 )
 from memmachine_server.common.vector_store.qdrant_vector_store import (
     _PAYLOAD_INCARNATION,
+    _PAYLOAD_RECORD_UUID,
     QdrantVectorStore,
     QdrantVectorStoreCollection,
     QdrantVectorStoreParams,
@@ -61,10 +62,10 @@ async def _stored_uuids(collection) -> set[UUID]:
             ]
         ),
         limit=10000,
-        with_payload=False,
+        with_payload=[_PAYLOAD_RECORD_UUID],
         with_vectors=False,
     )
-    return {UUID(str(point.id)) for point in points}
+    return {UUID(str((point.payload or {})[_PAYLOAD_RECORD_UUID])) for point in points}
 
 
 @pytest.fixture
@@ -986,6 +987,45 @@ class TestPartitionIsolation:
 
         [result] = await coll_a.query(query_vectors=[v1], limit=10)
         assert [match.record_uuid for match in result.matches] == [r1.uuid]
+
+        await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
+        await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
+
+    @pytest.mark.asyncio
+    async def test_the_same_uuid_in_two_collections_is_two_records(self, store):
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+        await store.create_collection(
+            namespace=NAMESPACE, name="tenant_a", config=config
+        )
+        await store.create_collection(
+            namespace=NAMESPACE, name="tenant_b", config=config
+        )
+        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        assert coll_a is not None
+        assert coll_b is not None
+
+        record_uuid = uuid4()
+        v1 = _normalize([1.0, 0.0, 0.0])
+        await coll_a.upsert(
+            records=[Record(uuid=record_uuid, vector=v1, properties={"name": "a"})]
+        )
+        await coll_b.upsert(
+            records=[Record(uuid=record_uuid, vector=v1, properties={"name": "b"})]
+        )
+
+        assert await _stored_uuids(coll_a) == {record_uuid}
+        assert await _stored_uuids(coll_b) == {record_uuid}
+        [kept_a] = await coll_a.query(
+            query_vectors=[v1],
+            limit=10,
+            property_filter=Comparison(field="name", op="=", value="a"),
+        )
+        assert [match.record_uuid for match in kept_a.matches] == [record_uuid]
+
+        await coll_a.delete(record_uuids=[record_uuid])
+        assert await _stored_uuids(coll_a) == set()
+        assert await _stored_uuids(coll_b) == {record_uuid}
 
         await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")

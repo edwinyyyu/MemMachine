@@ -4,7 +4,7 @@ import hashlib
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import datetime
 from typing import Any, ClassVar, override
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import grpc
 import grpc.aio
@@ -65,6 +65,13 @@ _PAYLOAD_INCARNATION = f"{_SYSTEM_KEY_PREFIX}incarnation"
 Points carry the incarnation, never the collection's name: a collection
 deleted and re-created under the same name gets a fresh incarnation, and
 its predecessor's points are invisible to it while the purge reclaims them.
+"""
+_PAYLOAD_RECORD_UUID = f"{_SYSTEM_KEY_PREFIX}record_uuid"
+"""The payload key holding a point's record UUID.
+
+A point's id is derived from its incarnation and record UUID (`_point_id`),
+so this is where a query reads the record UUID back, and where someone
+inspecting a collection finds a record by hand.
 """
 
 # Consecutive lost creation races before open-or-create gives up: every
@@ -283,6 +290,15 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     def config(self) -> VectorStoreCollectionConfig:
         return self._config
 
+    def _point_id(self, record_uuid: UUID) -> UUID:
+        """The point id of a record: a UUIDv5 of the record UUID under the incarnation.
+
+        Collections of one native collection never share a point id, whatever
+        record UUIDs they carry, and a collection created again under a name
+        writes points the dead life's, awaiting purge, cannot collide with.
+        """
+        return uuid5(self._incarnation, str(record_uuid))
+
     def _build_payload(
         self,
         properties: dict[str, PropertyValue] | None,
@@ -318,9 +334,12 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                 properties = record.properties if record.properties is not None else {}
                 points.append(
                     models.PointStruct(
-                        id=record.uuid,
+                        id=str(self._point_id(record.uuid)),
                         vector=record.vector,
-                        payload=self._build_payload(properties),
+                        payload={
+                            **self._build_payload(properties),
+                            _PAYLOAD_RECORD_UUID: str(record.uuid),
+                        },
                     )
                 )
             if points:
@@ -377,7 +396,9 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                     score_threshold=score_threshold,
                     limit=limit,
                     with_vector=False,
-                    with_payload=False,
+                    with_payload=models.PayloadSelectorInclude(
+                        include=[_PAYLOAD_RECORD_UUID]
+                    ),
                 )
                 for query_vector in query_vectors
             ]
@@ -390,7 +411,12 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
             return [
                 QueryResult(
                     matches=[
-                        QueryMatch(score=point.score, record_uuid=UUID(str(point.id)))
+                        QueryMatch(
+                            score=point.score,
+                            record_uuid=UUID(
+                                (point.payload or {})[_PAYLOAD_RECORD_UUID]
+                            ),
+                        )
                         for point in batch.points
                     ]
                 )
@@ -411,15 +437,8 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
             await self._fence()
             await self._client.delete(
                 collection_name=self._native_collection_name,
-                points_selector=models.FilterSelector(
-                    filter=models.Filter(
-                        must=[
-                            _incarnation_filter(self._incarnation),
-                            models.HasIdCondition(
-                                has_id=list(uuid_list),
-                            ),
-                        ],
-                    ),
+                points_selector=models.PointIdsList(
+                    points=[str(self._point_id(uuid)) for uuid in uuid_list]
                 ),
             )
             await self._fence()
