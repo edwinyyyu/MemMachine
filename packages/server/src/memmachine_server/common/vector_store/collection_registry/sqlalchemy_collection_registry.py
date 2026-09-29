@@ -12,7 +12,7 @@ claim is a row lock.
 """
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import override
@@ -367,7 +367,9 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
 
     @override
     @asynccontextmanager
-    async def claim_purgeable_incarnation(self) -> AsyncIterator[PurgeClaim | None]:
+    async def claim_purgeable_incarnation(
+        self,
+    ) -> AsyncGenerator[PurgeClaim | None, None]:
         # The retention is applied when a claim is decided, on the database
         # clock, so a changed retention applies to every tombstone. The
         # claim is a row lock held for the body: on PostgreSQL a concurrent
